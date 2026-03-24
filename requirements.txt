@@ -1,0 +1,40 @@
+# Streamlit UI
+streamlit>=1.30.0
+streamlit-shadcn-ui>=0.1.0  # Modern UI components
+
+# FastAPI Backend
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6  # For file uploads
+
+# AI
+openai>=1.0.0  # DeepSeek 兼容 OpenAI SDK
+
+# 飞书
+lark-oapi>=1.0.0
+
+# OCR
+baidu-aip>=4.16.0
+
+# 文件处理
+python-docx>=1.0.0
+openpyxl>=3.1.0
+PyPDF2>=3.0.0
+Pillow>=10.0.0
+pymupdf>=1.23.0  # PDF 转图片（用于扫描件 OCR）
+
+# OCR 依赖
+chardet>=5.0.0,<6  # baidu-aip 依赖，避免 requests 兼容性警告
+
+# 工具
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# Type Checking
+mypy>=1.8.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+hypothesis>=6.100.0
+httpx>=0.27.0  # For FastAPI TestClient

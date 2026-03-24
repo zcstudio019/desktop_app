@@ -1,0 +1,45 @@
+# 环境变量（包含敏感信息）
+.env
+sonarqube.env
+
+# SonarQube
+sonar-project.properties
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+
+# Node
+node_modules/
+dist/
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build
+*.egg-info/
+build/
+
+# Ruff cache
+.ruff_cache/

@@ -1,0 +1,51 @@
+========================================
+  贷款申请助手 - 使用说明
+========================================
+
+【首次使用】
+
+1. 安装 Python 3.10 或更高版本
+   下载地址: https://www.python.org/downloads/
+   安装时勾选 "Add Python to PATH"
+
+2. 双击运行 install.bat
+   - 自动安装所需依赖
+   - 创建配置文件模板
+
+3. 编辑 .env 文件，填入 API 密钥
+   - DEEPSEEK_API_KEY: DeepSeek API 密钥
+   - FEISHU_APP_ID/SECRET: 飞书应用凭证
+   - BAIDU_OCR_API_KEY/SECRET: 百度 OCR 密钥
+
+4. 双击运行 run.bat 启动程序
+
+
+【日常使用】
+
+- 双击 run.bat 启动
+- 浏览器会自动打开 http://localhost:8501
+- 关闭窗口即可退出
+
+
+【常见问题】
+
+Q: 提示"未检测到 Python"
+A: 请安装 Python 并确保勾选了 "Add Python to PATH"
+
+Q: 依赖安装失败
+A: 检查网络连接，或尝试使用国内镜像:
+   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+Q: 启动后浏览器没有自动打开
+A: 手动访问 http://localhost:8501
+
+Q: AI 提取失败
+A: 检查 .env 中的 DEEPSEEK_API_KEY 是否正确
+
+Q: 保存到飞书失败
+A: 检查 .env 中的飞书配置是否正确
+
+
+【技术支持】
+
+如有问题，请联系开发人员。

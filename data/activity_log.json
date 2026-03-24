@@ -1,0 +1,824 @@
+{
+  "customers": {
+    "我": {
+      "hasApplication": true,
+      "hasMatching": false,
+      "lastUpdate": "2026-02-08T07:07:11.818120+00:00"
+    },
+    "名称：磬爵(上海)水处理科技有限公司": {
+      "hasApplication": true,
+      "hasMatching": false,
+      "lastUpdate": "2026-02-01T16:22:32.390669"
+    },
+    "名称：上海昭晟机电设备有限公司": {
+      "hasApplication": true,
+      "hasMatching": false,
+      "lastUpdate": "2026-02-01T17:21:02.842919"
+    },
+    "上海昭晟机电设备有限公司": {
+      "hasApplication": true,
+      "hasMatching": true,
+      "lastUpdate": "2026-03-04T08:58:29.688373+00:00"
+    },
+    "上海昭晟机电": {
+      "hasApplication": true,
+      "hasMatching": true,
+      "lastUpdate": "2026-02-01T19:33:39.318982"
+    },
+    "合适": {
+      "hasApplication": true,
+      "hasMatching": false,
+      "lastUpdate": "2026-03-04T07:35:16.076376+00:00"
+    },
+    "根据这份资料": {
+      "hasApplication": true,
+      "hasMatching": false,
+      "lastUpdate": "2026-03-10T01:14:09.349191+00:00"
+    },
+    "一份申请表": {
+      "hasApplication": true,
+      "hasMatching": false,
+      "lastUpdate": "2026-03-10T01:17:40.183561+00:00"
+    },
+    "王东海": {
+      "hasApplication": true,
+      "hasMatching": true,
+      "lastUpdate": "2026-03-10T01:26:28.600301+00:00"
+    }
+  },
+  "activities": [
+    {
+      "id": "adfc6c79",
+      "type": "upload",
+      "time": "2026-03-10T01:27:56.404074+00:00",
+      "status": "completed",
+      "filename": "上海昭晟机电（江苏）有限公司2025-11月报表(1).xlsx",
+      "customer": "王东海",
+      "documentType": "财务数据提取"
+    },
+    {
+      "id": "8ed9f965",
+      "type": "matching",
+      "time": "2026-03-10T01:26:28.588602+00:00",
+      "status": "completed",
+      "customer": "王东海"
+    },
+    {
+      "id": "6c15a0a6",
+      "type": "application",
+      "time": "2026-03-10T01:24:18.774668+00:00",
+      "status": "completed",
+      "customer": "王东海"
+    },
+    {
+      "id": "68574185",
+      "type": "application",
+      "time": "2026-03-10T01:17:40.178953+00:00",
+      "status": "completed",
+      "customer": "一份申请表"
+    },
+    {
+      "id": "883a3e7f",
+      "type": "application",
+      "time": "2026-03-10T01:14:09.336814+00:00",
+      "status": "completed",
+      "customer": "根据这份资料"
+    },
+    {
+      "id": "1624f403",
+      "type": "upload",
+      "time": "2026-03-10T01:12:56.984287+00:00",
+      "status": "completed",
+      "filename": "王东海(1).pdf",
+      "customer": "王东海",
+      "documentType": "个人征信提取"
+    },
+    {
+      "id": "f47e053d",
+      "type": "upload",
+      "time": "2026-03-10T01:11:19.854031+00:00",
+      "status": "completed",
+      "filename": "王东海(1).pdf",
+      "customer": "王东海",
+      "documentType": "个人征信提取"
+    },
+    {
+      "id": "7749da69",
+      "type": "upload",
+      "time": "2026-03-05T03:26:28.197134+00:00",
+      "status": "completed",
+      "filename": "上海昭晟机电（江苏）有限公司2025-11月报表(1).xlsx",
+      "customer": "上海昭晟机电（江苏）有限公司",
+      "documentType": "财务数据提取"
+    },
+    {
+      "id": "cafd36c9",
+      "type": "upload",
+      "time": "2026-03-05T03:23:49.523044+00:00",
+      "status": "completed",
+      "filename": "海鸥路6号房产证（一期）(1).pdf",
+      "customer": "上海昭晟机电（江苏）有限公司",
+      "documentType": "抵押物信息提取"
+    },
+    {
+      "id": "7051380c",
+      "type": "application",
+      "time": "2026-03-04T08:58:29.679211+00:00",
+      "status": "completed",
+      "customer": "上海昭晟机电设备有限公司"
+    },
+    {
+      "id": "c88e646e",
+      "type": "application",
+      "time": "2026-03-04T07:56:27.998230+00:00",
+      "status": "completed",
+      "customer": "上海昭晟机电设备有限公司"
+    },
+    {
+      "id": "a70925b0",
+      "type": "application",
+      "time": "2026-03-04T07:35:16.068546+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "524abfb2",
+      "type": "application",
+      "time": "2026-03-04T07:34:13.807371+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "53900f93",
+      "type": "application",
+      "time": "2026-03-04T07:33:09.614329+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "3a190078",
+      "type": "application",
+      "time": "2026-03-04T06:45:43.218457+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "10322da9",
+      "type": "application",
+      "time": "2026-03-04T06:43:50.997985+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "bcefb5ef",
+      "type": "application",
+      "time": "2026-03-04T06:41:42.986100+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "a83edc71",
+      "type": "application",
+      "time": "2026-03-04T06:28:18.813943+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "9b63010a",
+      "type": "application",
+      "time": "2026-03-04T06:22:45.105545+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "b5d044e3",
+      "type": "application",
+      "time": "2026-03-04T06:21:39.546310+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "d5193469",
+      "type": "application",
+      "time": "2026-03-04T06:19:17.935624+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "f495c36e",
+      "type": "application",
+      "time": "2026-03-04T06:14:54.655044+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "940d69b7",
+      "type": "application",
+      "time": "2026-03-04T05:32:01.916009+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "6b508e18",
+      "type": "application",
+      "time": "2026-03-04T05:25:20.701344+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "10337230",
+      "type": "application",
+      "time": "2026-03-04T05:12:00.363845+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "b5e05ec4",
+      "type": "application",
+      "time": "2026-03-03T06:03:58.534049+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "52de5700",
+      "type": "application",
+      "time": "2026-03-03T06:03:28.654677+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "3c77da20",
+      "type": "upload",
+      "time": "2026-03-02T08:59:27.535845+00:00",
+      "status": "completed",
+      "filename": "上海昭晟机电（江苏）有限公司2025-11月报表.xlsx",
+      "documentType": "财务数据提取"
+    },
+    {
+      "id": "3437120d",
+      "type": "upload",
+      "time": "2026-03-02T07:58:28.450753+00:00",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "customer": "上海昭晟机电设备有限公司",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "92f41564",
+      "type": "upload",
+      "time": "2026-03-02T07:47:55.568851+00:00",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "customer": "上海昭晟机电设备有限公司",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "7a21c71b",
+      "type": "application",
+      "time": "2026-03-02T01:40:04.334424+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "ed227da2",
+      "type": "application",
+      "time": "2026-03-02T01:38:44.524457+00:00",
+      "status": "completed",
+      "customer": "合适"
+    },
+    {
+      "id": "7ee34df6",
+      "type": "upload",
+      "time": "2026-02-08T12:53:27.713844+00:00",
+      "status": "completed",
+      "filename": "335acf2adc879a18befa7519d170c024.jpg",
+      "documentType": "个人收入纳税/公积金"
+    },
+    {
+      "id": "793689ae",
+      "type": "upload",
+      "time": "2026-02-08T12:42:46.004870+00:00",
+      "status": "completed",
+      "filename": "3695cbb9ca2b1fc872625b2b811513e8.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "da3d09c7",
+      "type": "upload",
+      "time": "2026-02-08T12:42:46.001303+00:00",
+      "status": "completed",
+      "filename": "7fe6221743b5b8f59143dc6a122d9242.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "951d2fe8",
+      "type": "upload",
+      "time": "2026-02-08T12:42:45.998076+00:00",
+      "status": "completed",
+      "filename": "940b7e14b39efb1f7b5070aaddca7128.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "fa4587ae",
+      "type": "upload",
+      "time": "2026-02-08T12:42:45.994827+00:00",
+      "status": "completed",
+      "filename": "c5962da081ed964b5de6db879ff557dd.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "3776d03e",
+      "type": "upload",
+      "time": "2026-02-08T12:19:23.693935+00:00",
+      "status": "completed",
+      "filename": "3695cbb9ca2b1fc872625b2b811513e8.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "c10beaad",
+      "type": "upload",
+      "time": "2026-02-08T12:19:23.688787+00:00",
+      "status": "completed",
+      "filename": "7fe6221743b5b8f59143dc6a122d9242.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "293219a7",
+      "type": "upload",
+      "time": "2026-02-08T12:19:23.683087+00:00",
+      "status": "completed",
+      "filename": "940b7e14b39efb1f7b5070aaddca7128.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "a07dd3ad",
+      "type": "upload",
+      "time": "2026-02-08T12:19:23.675532+00:00",
+      "status": "completed",
+      "filename": "c5962da081ed964b5de6db879ff557dd.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "209d20ae",
+      "type": "upload",
+      "time": "2026-02-08T12:05:47.598102+00:00",
+      "status": "completed",
+      "filename": "3695cbb9ca2b1fc872625b2b811513e8.jpg",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "0d785689",
+      "type": "upload",
+      "time": "2026-02-08T12:05:47.595026+00:00",
+      "status": "completed",
+      "filename": "7fe6221743b5b8f59143dc6a122d9242.jpg",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "077ddc5c",
+      "type": "upload",
+      "time": "2026-02-08T12:05:47.591738+00:00",
+      "status": "completed",
+      "filename": "940b7e14b39efb1f7b5070aaddca7128.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "652d94cb",
+      "type": "upload",
+      "time": "2026-02-08T12:05:47.588180+00:00",
+      "status": "completed",
+      "filename": "c5962da081ed964b5de6db879ff557dd.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "b4417436",
+      "type": "upload",
+      "time": "2026-02-08T11:45:48.695535+00:00",
+      "status": "completed",
+      "filename": "3695cbb9ca2b1fc872625b2b811513e8.jpg",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "f1be86f6",
+      "type": "upload",
+      "time": "2026-02-08T11:45:48.693531+00:00",
+      "status": "completed",
+      "filename": "7fe6221743b5b8f59143dc6a122d9242.jpg",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "91ffe8a0",
+      "type": "upload",
+      "time": "2026-02-08T11:45:48.690983+00:00",
+      "status": "completed",
+      "filename": "940b7e14b39efb1f7b5070aaddca7128.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "e2fc2f60",
+      "type": "upload",
+      "time": "2026-02-08T11:45:48.688565+00:00",
+      "status": "completed",
+      "filename": "c5962da081ed964b5de6db879ff557dd.jpg",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "d24755f9",
+      "type": "upload",
+      "time": "2026-02-08T07:11:29.826788+00:00",
+      "status": "completed",
+      "filename": "a7d33431ee30f8c0795d0d88f95d5c5d.png",
+      "customer": "上海燕瑞贸易有限公司",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "398fe17a",
+      "type": "application",
+      "time": "2026-02-08T07:07:11.813765+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "6d58e50e",
+      "type": "application",
+      "time": "2026-02-08T06:55:47.964626+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "99b8975f",
+      "type": "upload",
+      "time": "2026-02-08T06:43:09.944835+00:00",
+      "status": "completed",
+      "filename": "a7d33431ee30f8c0795d0d88f95d5c5d.png",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "5068a917",
+      "type": "upload",
+      "time": "2026-02-08T06:41:46.842789+00:00",
+      "status": "completed",
+      "filename": "60ec81a7aabf82276afbe1fb686993de.jpg",
+      "documentType": "个人收入纳税/公积金"
+    },
+    {
+      "id": "c6882cd0",
+      "type": "upload",
+      "time": "2026-02-08T06:41:10.274103+00:00",
+      "status": "completed",
+      "filename": "fdf98871542b79c811bbe1e9dc86dd65.png",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "2bd86779",
+      "type": "application",
+      "time": "2026-02-08T06:39:07.023449+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "8be3a281",
+      "type": "upload",
+      "time": "2026-02-08T06:33:46.364601+00:00",
+      "status": "completed",
+      "filename": "fdf98871542b79c811bbe1e9dc86dd65.png",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "baad730d",
+      "type": "application",
+      "time": "2026-02-08T06:31:57.711514+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "79408d60",
+      "type": "upload",
+      "time": "2026-02-08T06:20:29.163892+00:00",
+      "status": "completed",
+      "filename": "fdf98871542b79c811bbe1e9dc86dd65.png",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "35cd2b68",
+      "type": "upload",
+      "time": "2026-02-08T06:15:01.207867+00:00",
+      "status": "completed",
+      "filename": "fdf98871542b79c811bbe1e9dc86dd65.png",
+      "documentType": "水母报告提取"
+    },
+    {
+      "id": "25d6ea8f",
+      "type": "application",
+      "time": "2026-02-08T06:02:59.984548+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "c013c009",
+      "type": "upload",
+      "time": "2026-02-08T05:58:52.676980+00:00",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "customer": "上海昭晟机电设备有限公司",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "cf0b7073",
+      "type": "application",
+      "time": "2026-02-08T05:55:34.218323+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "ecb84721",
+      "type": "upload",
+      "time": "2026-02-08T05:46:14.006318+00:00",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "customer": "上海昭晟机电设备有限公司",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "399964c9",
+      "type": "application",
+      "time": "2026-02-08T05:33:58.850787+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "f1eb6d10",
+      "type": "application",
+      "time": "2026-02-08T05:24:38.152724+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "4c250e65",
+      "type": "application",
+      "time": "2026-02-08T04:59:13.398954+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "6c8577d7",
+      "type": "application",
+      "time": "2026-02-08T04:48:29.839709+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "c2ad7fab",
+      "type": "application",
+      "time": "2026-02-08T04:46:18.581549+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "aece54f7",
+      "type": "application",
+      "time": "2026-02-08T04:43:00.672884+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "0d866609",
+      "type": "application",
+      "time": "2026-02-08T04:36:17.465229+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "73ccc01e",
+      "type": "application",
+      "time": "2026-02-08T04:34:15.373625+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "b4bab2e6",
+      "type": "application",
+      "time": "2026-02-08T04:28:09.806055+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "0971f358",
+      "type": "application",
+      "time": "2026-02-08T04:27:23.799083+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "cdae11bf",
+      "type": "application",
+      "time": "2026-02-08T04:27:21.250015+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "33b6e3dd",
+      "type": "application",
+      "time": "2026-02-08T04:27:02.319039+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "678f2608",
+      "type": "application",
+      "time": "2026-02-08T04:26:59.694780+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "2a939035",
+      "type": "application",
+      "time": "2026-02-08T04:22:47.712139+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "ce816a22",
+      "type": "application",
+      "time": "2026-02-08T04:22:45.133720+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "08078720",
+      "type": "application",
+      "time": "2026-02-08T04:06:10.276650+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "e289f5c2",
+      "type": "application",
+      "time": "2026-02-08T04:06:08.454527+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "395ecdb2",
+      "type": "application",
+      "time": "2026-02-08T04:05:44.476237+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "84bf11b1",
+      "type": "application",
+      "time": "2026-02-08T04:05:39.983456+00:00",
+      "status": "completed",
+      "customer": "我"
+    },
+    {
+      "id": "76a9e285",
+      "type": "upload",
+      "time": "2026-02-03T22:36:34.036443",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "customer": "上海昭晟机电设备有限公司",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "9e88ecf7",
+      "type": "upload",
+      "time": "2026-02-03T22:33:56.717730",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "customer": "上海昭晟机电设备有限公司",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "e74a90ac",
+      "type": "upload",
+      "time": "2026-02-03T22:30:21.019830",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "customer": "上海昭晟机电设备有限公司",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "443d2155",
+      "type": "upload",
+      "time": "2026-02-03T22:18:55.522389",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "customer": "上海昭晟机电设备有限公司",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "5362e0aa",
+      "type": "upload",
+      "time": "2026-02-03T22:10:13.381954",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "885f6ac1",
+      "type": "upload",
+      "time": "2026-02-03T21:50:24.779885",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "c46b3149",
+      "type": "matching",
+      "time": "2026-02-01T19:33:39.315979",
+      "status": "completed",
+      "customer": "上海昭晟机电"
+    },
+    {
+      "id": "7069243d",
+      "type": "matching",
+      "time": "2026-02-01T18:17:03.823107",
+      "status": "completed",
+      "customer": "上海昭晟机电"
+    },
+    {
+      "id": "96b032c4",
+      "type": "application",
+      "time": "2026-02-01T18:14:13.006091",
+      "status": "completed",
+      "customer": "上海昭晟机电"
+    },
+    {
+      "id": "3f563eb0",
+      "type": "application",
+      "time": "2026-02-01T18:08:13.995452",
+      "status": "completed",
+      "customer": "上海昭晟机电"
+    },
+    {
+      "id": "37630200",
+      "type": "application",
+      "time": "2026-02-01T17:56:19.803578",
+      "status": "completed",
+      "customer": "上海昭晟机电"
+    },
+    {
+      "id": "f6517323",
+      "type": "matching",
+      "time": "2026-02-01T17:31:32.192519",
+      "status": "completed",
+      "customer": "上海昭晟机电设备有限公司"
+    },
+    {
+      "id": "0b11fd8f",
+      "type": "application",
+      "time": "2026-02-01T17:28:47.309724",
+      "status": "completed",
+      "customer": "上海昭晟机电设备有限公司"
+    },
+    {
+      "id": "cd0fa311",
+      "type": "application",
+      "time": "2026-02-01T17:21:02.840186",
+      "status": "completed",
+      "customer": "名称：上海昭晟机电设备有限公司"
+    },
+    {
+      "id": "f73ae9e9",
+      "type": "application",
+      "time": "2026-02-01T17:16:44.722480",
+      "status": "completed",
+      "customer": "名称：上海昭晟机电设备有限公司"
+    },
+    {
+      "id": "c63b4b20",
+      "type": "upload",
+      "time": "2026-02-01T17:14:19.334415",
+      "status": "completed",
+      "filename": "上海征信报告20260108.pdf",
+      "documentType": "企业征信提取"
+    },
+    {
+      "id": "819c5c1b",
+      "type": "upload",
+      "time": "2026-02-01T17:06:07.644992",
+      "status": "completed",
+      "filename": "江苏公司北京银行2025年流水(1).xlsx",
+      "customer": "上海昭晟机电（江苏）有限公司",
+      "documentType": "企业流水提取"
+    }
+  ]
+}

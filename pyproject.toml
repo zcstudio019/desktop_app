@@ -1,0 +1,107 @@
+[project]
+name = "loan-assistant-backend"
+version = "1.0.0"
+requires-python = ">=3.10"
+
+# ============================================================
+# Ruff - Python Linter & Formatter (替代 flake8 + isort + black)
+# ============================================================
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["backend"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import sorting)
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "S",    # flake8-bandit (安全检查)
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "DTZ",  # flake8-datetimez
+    "T20",  # flake8-print (禁止 print)
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # Ruff-specific rules
+]
+ignore = [
+    "S101",    # assert 在测试中允许
+    "S603",    # subprocess 调用（按需放开）
+    "T201",    # print 在开发阶段暂时允许
+    "E501",    # 行长度由 formatter 管理
+    "RUF001",  # 中文全角字符（字符串中）- 中文项目正常
+    "RUF002",  # 中文全角字符（文档字符串中）- 中文项目正常
+    "RUF003",  # 中文全角字符（注释中）- 中文项目正常
+    "N815",    # 类属性驼峰命名 - API 字段名/飞书字段名需要
+    "N806",    # 函数内变量驼峰命名 - API 字段名需要
+    "N803",    # 参数驼峰命名 - API 字段名需要
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/**/*.py" = ["S101", "S106", "RUF012"]  # 测试文件允许 assert、硬编码密码、可变类属性
+"backend/tests/conftest.py" = ["S101", "S106", "W291"]  # conftest 允许 PDF 测试数据中的尾部空格
+"backend/routers/*.py" = ["B008", "E402"]                 # FastAPI 路由允许 File(...) 等默认参数；sys.path 后的导入
+"backend/routers/chat_extraction.py" = ["E402"]           # sys.path 后的导入（由 chat.py 初始化）
+"backend/routers/chat_storage.py" = ["E402"]              # sys.path 后的导入（由 chat.py 初始化）
+"backend/middleware/*.py" = ["B008"]                        # FastAPI Depends() 标准用法
+"backend/main.py" = ["T201", "E402"]                     # 入口文件允许 print；sys.path 后的导入
+"backend/tests/*.py" = ["S101", "S106", "RUF012", "E402"]  # 测试文件允许 assert、硬编码密码、可变类属性；sys.path 后的导入
+"backend/services/__init__.py" = ["E402"]                    # sys.path 操作后的导入必须在后面
+"backend/services/local_storage_service.py" = ["S608"]       # SQL 字段名来自白名单 allowed_fields，非注入风险
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+# ============================================================
+# Mypy - 静态类型检查
+# ============================================================
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false          # 渐进式：先不强制所有函数都有类型注解
+disallow_incomplete_defs = true        # 但如果写了部分注解，必须写完整
+check_untyped_defs = true              # 检查没有注解的函数体内的类型错误
+no_implicit_optional = true            # 禁止隐式 Optional
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "."
+
+[[tool.mypy.overrides]]
+module = [
+    "lark_oapi.*",
+    "aip.*",
+    "docx.*",
+    "openpyxl.*",
+    "fitz.*",
+    "streamlit.*",
+    "streamlit_shadcn_ui.*",
+]
+ignore_missing_imports = true
+
+# ============================================================
+# Bandit - 独立安全扫描（更深度的安全检查）
+# ============================================================
+[tool.bandit]
+targets = ["backend"]
+exclude_dirs = ["backend/tests"]
+skips = ["B101"]  # 跳过 assert 检查
+
+# ============================================================
+# Pytest 配置
+# ============================================================
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]

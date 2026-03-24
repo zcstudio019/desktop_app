@@ -1,0 +1,3198 @@
+/* eslint-disable react-refresh/only-export-components -- Exports utility functions and types alongside components for test access */
+/**
+ * ChatPage Component - AI Chat Interface
+ * 
+ * Provides an interactive chat interface for the loan assistant.
+ * Integrates with the backend chat API and supports file attachments.
+ * 
+ * Feature: frontend-backend-integration, frontend-ui-optimization
+ * Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7
+ */
+
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { 
+  Send, Paperclip, X, FileText, Upload, ClipboardList, Target, Loader2, 
+  FileSpreadsheet, Image, File, ChevronDown, ChevronRight,
+  User, Building2, CreditCard, Banknote, AlertCircle, CheckCircle2,
+  FileCheck, Percent, Calendar, DollarSign, Building,
+  Edit3, Save, Download, RefreshCw
+} from 'lucide-react';
+import { sendChat, clearCustomerCache } from '../services/api';
+import {
+  getFieldIcon, getSectionIcon, formatTableValue, isNestedObject, isArrayOfObjects,
+  DataSectionCard, ArrayDataCard
+} from './DataDisplayComponents';
+import { useLoading } from '../hooks/useLoading';
+import { useAbortController } from '../hooks/useAbortController';
+import { useApp } from '../context/AppContext';
+import type { ChatMessage, ChatFile, ChatResponse } from '../services/types';
+
+// ============================================
+// Utility Functions
+// ============================================
+
+/**
+ * Convert a File to base64 encoded string
+ * Feature: frontend-backend-integration, Property 11: File Base64 Encoding
+ * 
+ * @param file - The file to convert
+ * @returns Promise resolving to base64 encoded string
+ */
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Remove the data URL prefix (e.g., "data:application/pdf;base64,")
+      const base64 = result.split(',')[1] || '';
+      resolve(base64);
+    };
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function createDownloadLink(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function buildApplicationFormHtml(
+  customerName: string,
+  loanType: string,
+  applicationData: Record<string, Record<string, unknown>>
+): string {
+  const safeCustomerName = customerName.trim() || '未命名';
+  const loanTypeLabel = loanType === 'personal' ? '个人贷款' : '企业贷款';
+  const exportedAt = new Date().toLocaleString('zh-CN', { hour12: false });
+
+  const sectionsHtml = Object.entries(applicationData)
+    .map(([sectionName, sectionData]) => {
+      const rows = Object.entries(sectionData)
+        .map(([fieldName, value]) => {
+          const renderedValue = escapeHtml(String(value ?? '-').trim() || '-').replace(/\r?\n/g, '<br />');
+          return `
+            <tr>
+              <th>${escapeHtml(fieldName)}</th>
+              <td>${renderedValue}</td>
+            </tr>
+          `;
+        })
+        .join('');
+
+      return `
+        <section class="section-card">
+          <div class="section-header">
+            <div class="section-title">${escapeHtml(sectionName)}</div>
+            <div class="section-count">${Object.keys(sectionData).length} 项</div>
+          </div>
+          <div class="table-shell">
+            <table>
+              <tbody>
+                ${rows}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      `;
+    })
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>贷款申请表 - ${escapeHtml(safeCustomerName)}</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f8fafc;
+        --card: #ffffff;
+        --border: #e2e8f0;
+        --text: #0f172a;
+        --muted: #64748b;
+        --header: #eff6ff;
+        --header-border: #bfdbfe;
+        --chip: #dbeafe;
+        --chip-text: #1d4ed8;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 32px 24px 48px;
+      }
+
+      .hero {
+        background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+        border: 1px solid var(--header-border);
+        border-radius: 24px;
+        padding: 28px;
+        margin-bottom: 24px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 32px;
+        line-height: 1.2;
+      }
+
+      .hero-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .hero-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--chip);
+        color: var(--chip-text);
+        font-weight: 600;
+      }
+
+      .section-card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        overflow: hidden;
+        margin-bottom: 20px;
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+      }
+
+      .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 18px 20px;
+        background: var(--header);
+        border-bottom: 1px solid var(--header-border);
+      }
+
+      .section-title {
+        font-size: 20px;
+        font-weight: 700;
+      }
+
+      .section-count {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .table-shell {
+        padding: 20px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+
+      th,
+      td {
+        border: 1px solid var(--border);
+        padding: 12px 14px;
+        text-align: left;
+        vertical-align: top;
+        word-break: break-word;
+      }
+
+      th {
+        width: 32%;
+        background: #f8fafc;
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      @media print {
+        body { background: #fff; }
+        main { padding: 0; }
+        .hero,
+        .section-card {
+          box-shadow: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <h1>贷款申请表</h1>
+        <div class="hero-meta">
+          <span class="hero-chip">${escapeHtml(safeCustomerName)}</span>
+          <span>贷款类型：${escapeHtml(loanTypeLabel)}</span>
+          <span>导出时间：${escapeHtml(exportedAt)}</span>
+        </div>
+      </section>
+      ${sectionsHtml}
+    </main>
+  </body>
+</html>`;
+}
+
+// ============================================
+// Sub-Components
+// ============================================
+
+// ============================================
+// Design Tokens for ChatPage
+// Feature: frontend-ui-optimization
+// ============================================
+
+/** AI Avatar styling - indigo background with bot icon */
+const AI_AVATAR_STYLE = {
+  size: 36,
+  bgColor: '#6366F1',  // indigo-500
+  iconColor: '#FFFFFF',
+};
+
+/** User message bubble styling */
+const USER_MESSAGE_STYLE = {
+  bgColor: '#3B82F6',  // blue-500
+  textColor: '#FFFFFF',
+  borderRadius: '18px 18px 4px 18px',
+};
+
+/** AI message bubble styling */
+const AI_MESSAGE_STYLE = {
+  bgColor: '#F3F4F6',  // gray-100
+  textColor: '#1F2937',
+  borderRadius: '18px 18px 18px 4px',
+};
+
+// ============================================
+// Extended Message Type with Reasoning
+// ============================================
+
+/**
+ * Extended chat message with optional reasoning and structured data
+ */
+interface ChatMessageWithReasoning extends ChatMessage {
+  /** AI reasoning/thinking process */
+  reasoning?: string | null;
+  /** Detected intent for this message */
+  intent?: ChatResponse['intent'];
+  /** Structured data associated with the response */
+  data?: Record<string, unknown> | null;
+}
+
+// ============================================
+// Reasoning Collapse Component
+// Feature: AI thinking process display
+// ============================================
+
+interface ReasoningCollapseProps {
+  reasoning: string;
+}
+
+/**
+ * ReasoningCollapse Component
+ * 
+ * Displays AI thinking/reasoning process in a collapsible section.
+ * Default collapsed, click to expand.
+ */
+const ReasoningCollapse: React.FC<ReasoningCollapseProps> = ({ reasoning }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!reasoning || !reasoning.trim()) return null;
+
+  return (
+    <div className="mb-2 text-xs" data-testid="reasoning-collapse">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center gap-1 text-gray-500 transition-colors hover:text-gray-700"
+        data-testid="reasoning-toggle"
+      >
+        {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        <span className="font-medium">思考过程</span>
+      </button>
+      {isExpanded && (
+        <div
+          className="mt-2 rounded-lg bg-gray-50 p-3 italic whitespace-pre-wrap text-gray-600"
+          data-testid="reasoning-content"
+        >
+          {reasoning}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================
+// Structured Data Display Components
+// Feature: Structured data cards for extract/application/matching intents
+// ============================================
+
+/**
+ * Get icon for document type
+ */
+function getDocumentTypeIcon(documentType: string): React.ReactNode {
+  const typeIcons: Record<string, React.ReactNode> = {
+    '个人征信提取': <User className="w-4 h-4" />,
+    '企业征信提取': <Building2 className="w-4 h-4" />,
+    '个人流水提取': <Banknote className="w-4 h-4" />,
+    '企业流水提取': <Banknote className="w-4 h-4" />,
+    '财务数据提取': <FileSpreadsheet className="w-4 h-4" />,
+    '抵押物信息提取': <Building className="w-4 h-4" />,
+    '水母报告提取': <FileCheck className="w-4 h-4" />,
+    '个人收入纳税/公积金': <CreditCard className="w-4 h-4" />,
+  };
+  return typeIcons[documentType] || <FileText className="w-4 h-4" />;
+}
+
+// getFieldIcon, getSectionIcon, formatTableValue, isNestedObject, isArrayOfObjects,
+// DataTable, DataSectionCard, ArrayDataCard are imported from DataDisplayComponents
+
+
+
+// ============================================
+// Extraction Result Card Component
+// ============================================
+
+interface ExtractionFileResult {
+  filename: string;
+  documentType?: string;
+  content?: Record<string, unknown>;
+  customerName?: string | null;
+  error?: string;
+  saveError?: string;
+  savedToFeishu?: boolean;
+}
+
+interface ExtractionResultCardProps {
+  files: ExtractionFileResult[];
+}
+
+// getSectionIcon moved to DataDisplayComponents
+
+// formatTableValue, isNestedObject, isArrayOfObjects moved to DataDisplayComponents
+
+// DataTable, DataSectionCard, ArrayDataCard moved to DataDisplayComponents
+
+/**
+ * ExtractionResultCard Component
+ * 
+ * Displays extraction results from uploaded files in a grouped card format.
+ * Shows document type, customer name, and all extracted fields organized by category.
+ * Each category is displayed as a separate card with a table layout.
+ */
+const ExtractionResultCard: React.FC<ExtractionResultCardProps> = ({ files }) => {
+  if (!files || files.length === 0) return null;
+  
+  return (
+    <div className="mt-3 space-y-4" data-testid="extraction-result-card">
+      {files.map((file, index) => (
+        <div 
+          key={`${file.filename}-${index}`}
+          className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm"
+          data-testid={`extraction-file-${index}`}
+        >
+          {/* File Header */}
+          <div className="px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-gray-100">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {/* Document Type Icon */}
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                  file.error ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
+                }`}>
+                  {file.error ? (
+                    <AlertCircle className="w-5 h-5" />
+                  ) : (
+                    getDocumentTypeIcon(file.documentType || '')
+                  )}
+                </div>
+                <div>
+                  <div className="font-medium text-gray-800 text-sm">{file.filename}</div>
+                  {file.documentType && !file.error && (
+                    <div className="text-xs text-gray-500 mt-0.5">{file.documentType}</div>
+                  )}
+                </div>
+              </div>
+              {/* Status Badge */}
+              {file.error ? (
+                <span className="px-2.5 py-1 bg-red-100 text-red-600 text-xs rounded-full font-medium">
+                  处理失败
+                </span>
+              ) : file.saveError ? (
+                <span className="px-2.5 py-1 bg-amber-100 text-amber-700 text-xs rounded-full font-medium">
+                  已提取未保存
+                </span>
+              ) : (
+                <span className="px-2.5 py-1 bg-green-100 text-green-600 text-xs rounded-full font-medium flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" />
+                  提取成功
+                </span>
+              )}
+            </div>
+          </div>
+          
+          {/* Error Message */}
+          {file.error && (
+            <div className="px-4 py-3 bg-red-50 text-red-600 text-sm">
+              {file.error}
+            </div>
+          )}
+
+          {file.saveError && !file.error && (
+            <div className="px-4 py-3 bg-amber-50 text-amber-700 text-sm">
+              {file.saveError}
+            </div>
+          )}
+          
+          {/* Content - Grouped Cards */}
+          {!file.error && file.content && (
+            <div className="p-4 space-y-4">
+              {/* Customer Name Banner */}
+              {file.customerName && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-indigo-50 rounded-lg border border-indigo-100">
+                  <User className="w-4 h-4 text-indigo-500" />
+                  <span className="text-sm text-indigo-600">客户名称：</span>
+                  <span className="text-sm font-semibold text-indigo-800">{file.customerName}</span>
+                </div>
+              )}
+              
+              {/* Data Sections - Group by top-level keys */}
+              {Object.entries(file.content).map(([key, value]) => {
+                // 如果是嵌套对象，渲染为独立卡片
+                if (isNestedObject(value)) {
+                  return (
+                    <DataSectionCard 
+                      key={key} 
+                      title={key} 
+                      data={value as Record<string, unknown>} 
+                    />
+                  );
+                }
+                // 如果是对象数组，渲染为表格卡片
+                if (isArrayOfObjects(value)) {
+                  return (
+                    <ArrayDataCard 
+                      key={key} 
+                      title={key} 
+                      data={value as Array<Record<string, unknown>>} 
+                    />
+                  );
+                }
+                // 简单值会被收集到"其他信息"卡片中
+                return null;
+              })}
+              
+              {/* Collect simple top-level values into "其他信息" card */}
+              {(() => {
+                const simpleEntries = Object.entries(file.content).filter(
+                  ([, value]) => !isNestedObject(value) && !isArrayOfObjects(value)
+                );
+                if (simpleEntries.length === 0) return null;
+                return (
+                  <DataSectionCard 
+                    title="其他信息" 
+                    data={Object.fromEntries(simpleEntries)} 
+                  />
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ============================================
+// Application Guide Card Component
+// ============================================
+
+interface ApplicationGuideCardProps {
+  data: {
+    action?: string;
+    requiredFields?: string[];
+  };
+  onNavigate?: (page: string) => void;
+}
+
+/**
+ * ApplicationGuideCard Component
+ * 
+ * Displays guidance for application generation with required fields.
+ */
+const ApplicationGuideCard: React.FC<ApplicationGuideCardProps> = ({ data, onNavigate }) => {
+  const fieldLabels: Record<string, string> = {
+    customerName: '客户名称',
+    loanType: '贷款类型',
+  };
+  
+  return (
+    <div 
+      className="mt-3 bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm"
+      data-testid="application-guide-card"
+    >
+      <div className="px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-gray-100">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center">
+            <ClipboardList className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="font-medium text-gray-800 text-sm">申请表生成</div>
+            <div className="text-xs text-gray-500 mt-0.5">请提供以下信息</div>
+          </div>
+        </div>
+      </div>
+      
+      <div className="px-4 py-3">
+        <div className="space-y-2">
+          {data.requiredFields?.map((field) => (
+            <div key={field} className="flex items-center gap-2 text-sm">
+              <div className="w-5 h-5 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-xs">
+                {data.requiredFields?.indexOf(field) !== undefined ? data.requiredFields.indexOf(field) + 1 : '•'}
+              </div>
+              <span className="text-gray-700">{fieldLabels[field] || field}</span>
+            </div>
+          ))}
+        </div>
+        
+        {onNavigate && (
+          <button
+            onClick={() => onNavigate('application')}
+            className="mt-4 w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          >
+            <ClipboardList className="w-4 h-4" />
+            前往申请表生成
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ============================================
+// Matching Guide Card Component
+// ============================================
+
+interface MatchingGuideCardProps {
+  data: {
+    action?: string;
+    requiredFields?: string[];
+  };
+  onNavigate?: (page: string) => void;
+}
+
+/**
+ * MatchingGuideCard Component
+ * 
+ * Displays guidance for scheme matching with required information.
+ */
+const MatchingGuideCard: React.FC<MatchingGuideCardProps> = ({ data: _data, onNavigate }) => {
+  
+  const infoItems = [
+    { icon: <CreditCard className="w-4 h-4" />, label: '征信情况' },
+    { icon: <Banknote className="w-4 h-4" />, label: '流水情况' },
+    { icon: <Building className="w-4 h-4" />, label: '资产情况' },
+  ];
+  
+  return (
+    <div 
+      className="mt-3 bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm"
+      data-testid="matching-guide-card"
+    >
+      <div className="px-4 py-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-gray-100">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center">
+            <Target className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="font-medium text-gray-800 text-sm">方案匹配</div>
+            <div className="text-xs text-gray-500 mt-0.5">请提供客户基本信息</div>
+          </div>
+        </div>
+      </div>
+      
+      <div className="px-4 py-3">
+        <div className="space-y-2">
+          {infoItems.map((item, index) => (
+            <div key={index} className="flex items-center gap-2 text-sm">
+              <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                {item.icon}
+              </div>
+              <span className="text-gray-700">{item.label}</span>
+            </div>
+          ))}
+        </div>
+        
+        {onNavigate && (
+          <button
+            onClick={() => onNavigate('matching')}
+            className="mt-4 w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          >
+            <Target className="w-4 h-4" />
+            前往方案匹配
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ============================================
+// Application Result Card Component
+// ============================================
+
+interface ApplicationResultCardProps {
+  data: {
+    customerFound?: boolean;
+    customerName?: string;
+    loanType?: string;
+    applicationData?: Record<string, Record<string, unknown>>;  // JSON structured data
+    applicationContent?: string;  // Markdown fallback
+    warnings?: string[];
+    needsInput?: boolean;
+    requiredFields?: string[];
+  };
+  onNavigate?: (page: string) => void;
+}
+
+/**
+ * EditableDataSectionCardChat Component
+ * 
+ * Renders a section with title and data table for ChatPage.
+ * In edit mode, field values become editable inputs.
+ */
+interface EditableDataSectionCardChatProps {
+  title: string;
+  data: Record<string, unknown>;
+  editMode: boolean;
+  onFieldChange: (sectionTitle: string, fieldName: string, value: string) => void;
+}
+
+const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = ({ 
+  title, 
+  data, 
+  editMode, 
+  onFieldChange 
+}) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  const entries = Object.entries(data).filter(
+    ([, value]) => typeof value !== 'object' || value === null
+  );
+  const nestedEntries = Object.entries(data).filter(
+    ([, value]) => typeof value === 'object' && value !== null && !Array.isArray(value)
+  );
+  
+  if (entries.length === 0 && nestedEntries.length === 0) return null;
+  
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+      {/* Section Header */}
+      <div 
+        className="px-3 py-2 bg-gradient-to-r from-slate-50 to-gray-50 border-b border-gray-100 cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-md flex items-center justify-center bg-blue-100 text-blue-600">
+              {getSectionIcon(title)}
+            </div>
+            <span className="font-medium text-gray-700 text-sm">{title}</span>
+            <span className="text-xs text-gray-400">({entries.length} 项)</span>
+          </div>
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400" />
+          )}
+        </div>
+      </div>
+      
+      {/* Section Content */}
+      {isExpanded && (
+        <div className="p-3 space-y-3">
+          {/* Simple key-value pairs */}
+          {entries.length > 0 && (
+            <div className="overflow-hidden rounded-lg border border-gray-200">
+              <table className="w-full text-sm">
+                <tbody>
+                  {entries.map(([key, value], idx) => (
+                    <tr 
+                      key={key} 
+                      className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
+                    >
+                      <td className="px-3 py-2 text-gray-500 font-medium w-1/3 border-r border-gray-100">
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-400">{getFieldIcon(key)}</span>
+                          <span className="truncate">{key}</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-gray-800">
+                        {editMode ? (
+                          <input
+                            type="text"
+                            value={String(value ?? '')}
+                            onChange={(e) => onFieldChange(title, key, e.target.value)}
+                            className="w-full px-2 py-1 border border-blue-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                            data-testid={`edit-field-${title}-${key}`}
+                          />
+                        ) : (
+                          <span className="break-words" title={String(value ?? '')}>
+                            {formatTableValue(value)}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          
+          {/* Nested objects as sub-cards */}
+          {nestedEntries.map(([key, value]) => (
+            <EditableDataSectionCardChat 
+              key={key} 
+              title={key} 
+              data={value as Record<string, unknown>}
+              editMode={editMode}
+              onFieldChange={onFieldChange}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * ApplicationResultCard Component
+ * 
+ * Displays generated application form content.
+ * - If applicationData (JSON) is available, renders as grouped cards with edit support
+ * - Falls back to Markdown rendering if only applicationContent is available
+ * Shows customer info and warnings if any.
+ */
+const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onNavigate }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  const [editMode, setEditMode] = useState(false);
+  const [editedData, setEditedData] = useState<Record<string, Record<string, unknown>>>({});
+  // savedData 持久化已保存的编辑内容，退出编辑后仍显示最新数据
+  const [savedData, setSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
+  
+  /**
+   * Handle field change in edit mode
+   * 使用 useCallback 避免闭包陷阱（踩坑点 #31）
+   * Note: Must be declared before any early returns to satisfy rules-of-hooks
+   */
+  const handleFieldChange = useCallback((sectionTitle: string, fieldName: string, value: string) => {
+    setEditedData(prev => ({
+      ...prev,
+      [sectionTitle]: {
+        ...(prev[sectionTitle] || {}),
+        [fieldName]: value,
+      },
+    }));
+  }, []);
+  
+  // If needs input, show the guide card instead
+  if (data.needsInput) {
+    return <ApplicationGuideCard data={data} onNavigate={onNavigate} />;
+  }
+  
+  // If no application data at all, show guide card
+  if (!data.applicationData && !data.applicationContent) {
+    return <ApplicationGuideCard data={data} onNavigate={onNavigate} />;
+  }
+  
+  const loanTypeLabel = data.loanType === 'personal' ? '个人贷款' : '企业贷款';
+  const hasStructuredData = data.applicationData && Object.keys(data.applicationData).length > 0;
+  
+  // Determine which data to display: savedData > editMode editedData > original
+  const displayData = savedData
+    ? savedData
+    : (editMode && Object.keys(editedData).length > 0
+      ? editedData
+      : (data.applicationData || {}));
+  
+  /**
+   * Toggle edit mode - 进入编辑时优先从 savedData 初始化，其次从原始数据
+   */
+  const toggleEditMode = () => {
+    if (!editMode) {
+      // Entering edit mode - initialize from savedData or original data
+      const baseData = savedData || data.applicationData;
+      if (baseData) {
+        setEditedData(baseData);
+      }
+    }
+    setEditMode(!editMode);
+  };
+  
+  /**
+   * Save edited data - 持久化到 savedData，退出编辑后仍显示最新内容
+   */
+  const saveEditedData = () => {
+    if (Object.keys(editedData).length > 0) {
+      setSavedData(editedData);
+    }
+    setEditMode(false);
+  };
+  
+  /**
+   * Download application as .json file
+   */
+  const downloadJSON = () => {
+    const dataToDownload = savedData || (Object.keys(editedData).length > 0 ? editedData : data.applicationData);
+    if (!dataToDownload || Object.keys(dataToDownload).length === 0) return;
+
+    const jsonContent = JSON.stringify(dataToDownload, null, 2);
+    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `贷款申请表_${data.customerName || '未命名'}_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  void downloadJSON;
+
+  const downloadFormHtml = () => {
+    const dataToDownload = savedData || (Object.keys(editedData).length > 0 ? editedData : data.applicationData);
+    if (!dataToDownload || Object.keys(dataToDownload).length === 0) return;
+
+    const htmlContent = buildApplicationFormHtml(
+      data.customerName || '',
+      data.loanType || 'enterprise',
+      dataToDownload
+    );
+    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+    createDownloadLink(
+      blob,
+      `贷款申请表_${data.customerName || '未命名'}_${new Date().toISOString().split('T')[0]}.html`
+    );
+  };
+  
+  return (
+    <div 
+      className="mt-3 bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm"
+      data-testid="application-result-card"
+    >
+      {/* Header */}
+      <div className="px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-gray-100">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+              data.customerFound ? 'bg-green-100 text-green-600' : 'bg-amber-100 text-amber-600'
+            }`}>
+              {data.customerFound ? (
+                <CheckCircle2 className="w-5 h-5" />
+              ) : (
+                <ClipboardList className="w-5 h-5" />
+              )}
+            </div>
+            <div>
+              <div className="font-medium text-gray-800 text-sm">
+                {data.customerFound ? '申请表已生成' : '空白申请表模板'}
+                {editMode && (
+                  <span className="ml-2 text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded">编辑中</span>
+                )}
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                {data.customerName && `客户：${data.customerName}`}
+                {data.customerName && ' · '}
+                {loanTypeLabel}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Edit/Save Button */}
+            {hasStructuredData && (
+              editMode ? (
+                <button
+                  onClick={saveEditedData}
+                  className="flex items-center gap-1 px-2.5 py-1.5 bg-green-500 text-white text-xs font-medium hover:bg-green-600 transition-colors rounded-lg"
+                  data-testid="save-button"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  保存
+                </button>
+              ) : (
+                <button
+                  onClick={toggleEditMode}
+                  className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-100 text-gray-700 text-xs font-medium hover:bg-gray-200 transition-colors rounded-lg"
+                  data-testid="edit-button"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  编辑
+                </button>
+              )
+            )}
+            {/* Download form button */}
+            {hasStructuredData && (
+              <button
+                onClick={downloadFormHtml}
+                className="flex items-center gap-1 px-2.5 py-1.5 bg-purple-500 text-white text-xs font-medium hover:bg-purple-600 transition-colors rounded-lg"
+                data-testid="download-form-button"
+              >
+                <Download className="w-3.5 h-3.5" />
+                下载表单
+              </button>
+            )}
+            {/* Expand/Collapse Button */}
+            <button
+              onClick={() => setIsExpanded(!isExpanded)}
+              className="p-1.5 hover:bg-amber-100 rounded-lg transition-colors"
+            >
+              {isExpanded ? (
+                <ChevronDown className="w-4 h-4 text-gray-500" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-gray-500" />
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      {/* Warnings */}
+      {data.warnings && data.warnings.length > 0 && (
+        <div className="px-4 py-2 bg-yellow-50 border-b border-yellow-100">
+          {data.warnings.map((warning, index) => (
+            <div key={index} className="flex items-center gap-2 text-xs text-yellow-700">
+              <AlertCircle className="w-3.5 h-3.5" />
+              <span>{warning}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      
+      {/* Content */}
+      {isExpanded && (
+        <div className="p-4">
+          {hasStructuredData ? (
+            // Render as grouped cards using EditableDataSectionCardChat
+            <div className="space-y-4" data-testid="application-structured-data">
+              {Object.entries(displayData).map(([sectionName, sectionData]) => {
+                if (typeof sectionData === 'object' && sectionData !== null && !Array.isArray(sectionData)) {
+                  return (
+                    <EditableDataSectionCardChat 
+                      key={sectionName} 
+                      title={sectionName} 
+                      data={sectionData as Record<string, unknown>}
+                      editMode={editMode}
+                      onFieldChange={handleFieldChange}
+                    />
+                  );
+                }
+                return null;
+              })}
+            </div>
+          ) : (
+            // Fallback to Markdown rendering
+            <div 
+              className="prose prose-sm max-w-none text-gray-700 overflow-x-auto prose-table:border-collapse prose-th:border prose-th:border-gray-300 prose-th:bg-gray-100 prose-th:px-3 prose-th:py-2 prose-td:border prose-td:border-gray-300 prose-td:px-3 prose-td:py-2"
+              data-testid="application-markdown-content"
+            >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {data.applicationContent || ''}
+              </ReactMarkdown>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================
+// Matching Result Card Component
+// ============================================
+
+interface MatchingResultCardProps {
+  data: {
+    customerFound?: boolean;
+    customerName?: string;
+    creditType?: string;
+    matchingData?: {  // JSON structured data (new)
+      核心发现?: Record<string, string>;
+      客户资料摘要?: Record<string, string>;
+      待补充资料?: {
+        必须补充?: string[];
+        建议补充?: string[];
+      };
+      推荐方案?: MatchingSchemeItem[];
+      不推荐产品?: Array<Record<string, string>>;
+      下一步建议?: string;
+      准备材料?: Record<string, string[]>;
+      审批流程?: Array<{ 步骤: string; 内容: string; 预计时间: string }>;
+    };
+    matchResult?: string;  // Markdown fallback
+    needsInput?: boolean;
+    requiredFields?: string[];
+  };
+  onNavigate?: (page: string) => void;
+}
+
+/**
+ * MatchingDataSectionCard Component
+ * 
+ * Renders a section of matching data as a card with table layout.
+ */
+interface MatchingDataSectionCardProps {
+  title: string;
+  data: Record<string, unknown>;
+  icon?: React.ReactNode;
+  iconBgColor?: string;
+}
+
+const MatchingDataSectionCard: React.FC<MatchingDataSectionCardProps> = ({ 
+  title, 
+  data, 
+  icon,
+  iconBgColor = 'bg-emerald-100 text-emerald-600'
+}) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  const entries = Object.entries(data).filter(
+    ([, value]) => typeof value !== 'object' || value === null
+  );
+  
+  if (entries.length === 0) return null;
+  
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+      {/* Section Header */}
+      <div 
+        className="px-3 py-2 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-gray-100 cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className={`w-7 h-7 rounded-md flex items-center justify-center ${iconBgColor}`}>
+              {icon || <Target className="w-4 h-4" />}
+            </div>
+            <span className="font-medium text-gray-700 text-sm">{title}</span>
+            <span className="text-xs text-gray-400">({entries.length} 项)</span>
+          </div>
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400" />
+          )}
+        </div>
+      </div>
+      
+      {/* Section Content */}
+      {isExpanded && (
+        <div className="p-3">
+          <div className="overflow-hidden rounded-lg border border-gray-200">
+            <table className="w-full text-sm">
+              <tbody>
+                {entries.map(([key, value], idx) => (
+                  <tr 
+                    key={key} 
+                    className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
+                  >
+                    <td className="px-3 py-2 text-gray-500 font-medium w-1/3 border-r border-gray-100">
+                      <span className="truncate">{key}</span>
+                    </td>
+                    <td className="px-3 py-2 text-gray-800">
+                      <span className="break-words">
+                        {formatTableValue(value)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * MatchingSupplementCard Component
+ * 
+ * Renders the "待补充资料" section with lists.
+ */
+interface MatchingSupplementCardProps {
+  data: {
+    必须补充?: string[];
+    建议补充?: string[];
+  };
+}
+
+const MatchingSupplementCard: React.FC<MatchingSupplementCardProps> = ({ data }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  const requiredItems = data.必须补充 || [];
+  const suggestedItems = data.建议补充 || [];
+  
+  if (requiredItems.length === 0 && suggestedItems.length === 0) return null;
+  
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+      {/* Section Header */}
+      <div 
+        className="px-3 py-2 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-gray-100 cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-md flex items-center justify-center bg-amber-100 text-amber-600">
+              <AlertCircle className="w-4 h-4" />
+            </div>
+            <span className="font-medium text-gray-700 text-sm">待补充资料</span>
+          </div>
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400" />
+          )}
+        </div>
+      </div>
+      
+      {/* Section Content */}
+      {isExpanded && (
+        <div className="p-3 space-y-3">
+          {/* Required Items */}
+          {requiredItems.length > 0 && (
+            <div>
+              <div className="text-xs font-medium text-red-600 mb-2 flex items-center gap-1">
+                <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                必须补充
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {requiredItems.map((item, idx) => (
+                  <span 
+                    key={idx}
+                    className="px-2.5 py-1 bg-red-50 text-red-700 text-xs rounded-full border border-red-200"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Suggested Items */}
+          {suggestedItems.length > 0 && (
+            <div>
+              <div className="text-xs font-medium text-amber-600 mb-2 flex items-center gap-1">
+                <span className="w-2 h-2 bg-amber-500 rounded-full"></span>
+                建议补充
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {suggestedItems.map((item, idx) => (
+                  <span 
+                    key={idx}
+                    className="px-2.5 py-1 bg-amber-50 text-amber-700 text-xs rounded-full border border-amber-200"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================
+// Markdown to Structured Data Parser
+// Feature: Parse AI matching result markdown to structured data
+// ============================================
+
+/**
+ * Parsed scheme from markdown
+ */
+interface ParsedScheme {
+  方案名称: string;
+  银行名称?: string;
+  产品名称?: string;
+  可贷额度?: string;
+  参考利率?: string;
+  贷款期限?: string;
+  还款方式?: string;
+  准入条件?: string[];
+  [key: string]: string | string[] | undefined;
+}
+
+/**
+ * Parsed matching result from markdown
+ */
+interface ParsedMatchingResult {
+  客户资料摘要?: Record<string, string>;
+  推荐方案?: ParsedScheme[];
+  不推荐产品?: Array<{ 产品: string; 原因: string }>;
+  替代建议?: string[];
+  需补充信息?: string[];
+  准备材料?: Record<string, string[]>;
+  审批流程?: Array<{ 步骤: string; 内容: string; 预计时间: string }>;
+  rawMarkdown?: string;
+}
+
+/**
+ * Parse markdown matching result to structured data
+ * 
+ * Extracts:
+ * - 客户资料摘要 (table format)
+ * - 推荐方案 (#### 方案N: format)
+ * - 不推荐产品 (table format)
+ * - 替代建议 (list format)
+ * - 需补充信息 (list format)
+ * 
+ * @param markdown - The markdown content from AI
+ * @returns Parsed structured data or null if parsing fails
+ */
+function parseMarkdownToSchemes(markdown: string): ParsedMatchingResult | null {
+  if (!markdown || typeof markdown !== 'string') {
+    return null;
+  }
+
+  const result: ParsedMatchingResult = {
+    rawMarkdown: markdown,
+  };
+
+  try {
+    // Debug: log first 500 chars to see actual format
+    console.warn('[parseMarkdownToSchemes] Input preview:', markdown.substring(0, 500));
+    
+    // 1. Parse 客户资料摘要 (table format)
+    // Very flexible pattern: match any line containing "客户资料摘要" followed by a table
+    const summaryMatch = markdown.match(/(?:.*)?客户资料摘要[^\n]*\n([\s\S]*?\|[\s\S]*?)(?=\n(?:二、|###|🚨|$))/i);
+    if (summaryMatch) {
+      const tableRows = summaryMatch[0].match(/\|([^|]+)\|([^|]+)\|/g);
+      if (tableRows && tableRows.length > 1) {
+        const summary: Record<string, string> = {};
+        tableRows.slice(1).forEach(row => {
+          // Skip header separator row (|---|---|)
+          if (row.includes('---')) return;
+          const cells = row.split('|').filter(c => c.trim());
+          if (cells.length >= 2) {
+            const key = cells[0].trim();
+            const value = cells[1].trim();
+            if (key && value && key !== '项目' && key !== '内容') {
+              summary[key] = value;
+            }
+          }
+        });
+        if (Object.keys(summary).length > 0) {
+          result.客户资料摘要 = summary;
+        }
+      }
+    }
+
+    // 2. Parse 推荐方案 (multiple formats supported)
+    // Format 1: #### 方案1：【华瑞银行】线上抵押贷
+    // Format 2: ### 方案1：【银行名称】产品名称
+    // Format 3: **方案1：【银行名称】产品名称**
+    const schemeRegex = /(?:#{2,4}\s*)?(?:\*\*)?方案\s*(\d+)[：:]\s*【([^】]+)】([^\n*]+)(?:\*\*)?([\s\S]*?)(?=(?:#{2,4}\s*)?(?:\*\*)?方案\s*\d+|###|##|$)/g;
+    const schemes: ParsedScheme[] = [];
+    let schemeMatch;
+    
+    console.warn('[parseMarkdownToSchemes] Looking for schemes...');
+
+    while ((schemeMatch = schemeRegex.exec(markdown)) !== null) {
+      const [, , bankName, productName, content] = schemeMatch;
+      console.warn('[parseMarkdownToSchemes] Found scheme:', bankName, productName);
+      const scheme: ParsedScheme = {
+        方案名称: `【${bankName}】${productName.trim()}`,
+        银行名称: bankName.trim(),
+        产品名称: productName.trim(),
+      };
+
+      // Parse scheme details
+      const lines = content.split('\n');
+      const conditions: string[] = [];
+
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+
+        // Parse key-value pairs like "- 可贷额度：xxx"
+        const kvMatch = trimmedLine.match(/^-\s*([^：:]+)[：:](.+)$/);
+        if (kvMatch) {
+          const [, key, value] = kvMatch;
+          const cleanKey = key.trim();
+          const cleanValue = value.trim();
+
+          if (cleanKey === '准入条件核对' || cleanKey === '准入条件') {
+            // Skip, conditions are parsed separately
+            continue;
+          }
+
+          // Map common keys
+          if (cleanKey.includes('额度')) {
+            scheme.可贷额度 = cleanValue;
+          } else if (cleanKey.includes('利率')) {
+            scheme.参考利率 = cleanValue;
+          } else if (cleanKey.includes('期限')) {
+            scheme.贷款期限 = cleanValue;
+          } else if (cleanKey.includes('还款')) {
+            scheme.还款方式 = cleanValue;
+          } else if (cleanKey.includes('来源')) {
+            scheme.来源 = cleanValue;
+          } else {
+            scheme[cleanKey] = cleanValue;
+          }
+        }
+
+        // Parse condition items like "  - ✅ 条件1：xxx" or "  - ⚠️ 需沟通"
+        const conditionMatch = trimmedLine.match(/^-\s*(✅|⚠️|❌)\s*(.+)$/u);
+        if (conditionMatch) {
+          conditions.push(`${conditionMatch[1]} ${conditionMatch[2]}`);
+        }
+      }
+
+      if (conditions.length > 0) {
+        scheme.准入条件 = conditions;
+      }
+
+      schemes.push(scheme);
+    }
+
+    // Alternative pattern: ### 二、推荐方案 with #### 方案1：
+    if (schemes.length === 0) {
+      const altSchemeRegex = /####\s*方案\s*(\d+)[：:]\s*([^\n]+)([\s\S]*?)(?=####\s*方案|###|$)/g;
+      while ((schemeMatch = altSchemeRegex.exec(markdown)) !== null) {
+        const [, , title, content] = schemeMatch;
+        const scheme: ParsedScheme = {
+          方案名称: title.trim(),
+        };
+
+        // Try to extract bank name from title like "【银行名】产品名"
+        const bankMatch = title.match(/【([^】]+)】(.+)/);
+        if (bankMatch) {
+          scheme.银行名称 = bankMatch[1].trim();
+          scheme.产品名称 = bankMatch[2].trim();
+        }
+
+        // Parse content
+        const lines = content.split('\n');
+        const conditions: string[] = [];
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+
+          const kvMatch = trimmedLine.match(/^-\s*([^：:]+)[：:](.+)$/);
+          if (kvMatch) {
+            const [, key, value] = kvMatch;
+            const cleanKey = key.trim();
+            const cleanValue = value.trim();
+
+            if (cleanKey.includes('额度')) {
+              scheme.可贷额度 = cleanValue;
+            } else if (cleanKey.includes('利率')) {
+              scheme.参考利率 = cleanValue;
+            } else if (cleanKey.includes('期限')) {
+              scheme.贷款期限 = cleanValue;
+            } else if (cleanKey.includes('还款')) {
+              scheme.还款方式 = cleanValue;
+            } else if (!cleanKey.includes('准入条件')) {
+              scheme[cleanKey] = cleanValue;
+            }
+          }
+
+          const conditionMatch = trimmedLine.match(/^-\s*(✅|⚠️|❌)\s*(.+)$/u);
+          if (conditionMatch) {
+            conditions.push(`${conditionMatch[1]} ${conditionMatch[2]}`);
+          }
+        }
+
+        if (conditions.length > 0) {
+          scheme.准入条件 = conditions;
+        }
+
+        if (scheme.方案名称) {
+          schemes.push(scheme);
+        }
+      }
+    }
+
+    if (schemes.length > 0) {
+      result.推荐方案 = schemes;
+    }
+
+    // 3. Parse 不推荐产品 (table format)
+    const notRecommendMatch = markdown.match(/###?\s*三、不推荐的产品及原因[\s\S]*?\|[\s\S]*?(?=###|$)/);
+    if (notRecommendMatch) {
+      const tableRows = notRecommendMatch[0].match(/\|([^|]+)\|([^|]+)\|/g);
+      if (tableRows && tableRows.length > 1) {
+        const notRecommended: Array<{ 产品: string; 原因: string }> = [];
+        tableRows.slice(1).forEach(row => {
+          if (row.includes('---')) return;
+          const cells = row.split('|').filter(c => c.trim());
+          if (cells.length >= 2) {
+            const product = cells[0].trim();
+            const reason = cells[1].trim();
+            if (product && reason && product !== '产品' && product !== '不符合原因') {
+              notRecommended.push({ 产品: product, 原因: reason });
+            }
+          }
+        });
+        if (notRecommended.length > 0) {
+          result.不推荐产品 = notRecommended;
+        }
+      }
+    }
+
+    // 4. Parse 替代建议 (list format)
+    const alternativeMatch = markdown.match(/###?\s*四、替代建议[\s\S]*?(?=###|$)/);
+    if (alternativeMatch) {
+      const listItems = alternativeMatch[0].match(/^-\s+(.+)$/gm);
+      if (listItems && listItems.length > 0) {
+        result.替代建议 = listItems.map(item => item.replace(/^-\s+/, '').trim());
+      }
+    }
+
+    // 5. Parse 需补充信息 (list format)
+    const supplementMatch = markdown.match(/###?\s*五、需补充信息[\s\S]*?(?=###|$)/);
+    if (supplementMatch) {
+      const listItems = supplementMatch[0].match(/^\d+\.\s+(.+)$/gm);
+      if (listItems && listItems.length > 0) {
+        result.需补充信息 = listItems.map(item => item.replace(/^\d+\.\s+/, '').trim());
+      }
+    }
+
+    // 6. Parse 准备材料 section
+    const materialsMatch = markdown.match(/(?:#{2,4}\s*)?(?:六、)?准备材料[^\n]*\n([\s\S]*?)(?=(?:#{2,4}\s*)?(?:七、|审批流程|$))/i);
+    if (materialsMatch) {
+      const materialsContent = materialsMatch[1];
+      const materials: Record<string, string[]> = {};
+      let currentCategory = '其他';
+      
+      for (const line of materialsContent.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        
+        // Category header: **基础材料（必备）**: or **经营证明材料**:
+        const categoryMatch = trimmed.match(/^\*\*([^*]+)\*\*[：:]*$/);
+        if (categoryMatch) {
+          currentCategory = categoryMatch[1].replace(/[（(][^）)]*[）)]/g, '').trim();
+          if (!materials[currentCategory]) materials[currentCategory] = [];
+          continue;
+        }
+        
+        // List item: - 营业执照复印件
+        const itemMatch = trimmed.match(/^[-•]\s+(.+)$/);
+        if (itemMatch) {
+          if (!materials[currentCategory]) materials[currentCategory] = [];
+          materials[currentCategory].push(itemMatch[1].trim());
+        }
+      }
+      
+      if (Object.keys(materials).length > 0) {
+        result.准备材料 = materials;
+      }
+    }
+
+    // 7. Parse 审批流程 section (table format)
+    const processMatch = markdown.match(/(?:#{2,4}\s*)?(?:七、)?审批流程[^\n]*\n([\s\S]*?)(?=(?:#{2,4}\s*)?(?:八、|⚠️|---|\n##|\n#|$))/i);
+    if (processMatch) {
+      const processContent = processMatch[1];
+      const steps: Array<{ 步骤: string; 内容: string; 预计时间: string }> = [];
+      
+      const tableRows = processContent.match(/\|([^|]+)\|([^|]+)\|([^|]+)\|/g);
+      if (tableRows) {
+        for (const row of tableRows) {
+          if (row.includes('---') || row.includes('步骤') || row.includes('内容')) continue;
+          const cells = row.split('|').filter(c => c.trim());
+          if (cells.length >= 3) {
+            const step = cells[0].trim().replace(/^\d+\.\s*/, '');
+            const content = cells[1].trim();
+            const time = cells[2].trim();
+            if (step && content) {
+              steps.push({ 步骤: step, 内容: content, 预计时间: time });
+            }
+          }
+        }
+      }
+      
+      if (steps.length > 0) {
+        result.审批流程 = steps;
+      }
+    }
+
+    // Return result if we parsed something useful
+    const hasUsefulData = 
+      (result.推荐方案 && result.推荐方案.length > 0) ||
+      (result.客户资料摘要 && Object.keys(result.客户资料摘要).length > 0) ||
+      (result.不推荐产品 && result.不推荐产品.length > 0) ||
+      (result.替代建议 && result.替代建议.length > 0) ||
+      (result.需补充信息 && result.需补充信息.length > 0) ||
+      (result.准备材料 && Object.keys(result.准备材料).length > 0) ||
+      (result.审批流程 && result.审批流程.length > 0);
+    
+    console.warn('[parseMarkdownToSchemes] Parse result:', {
+      hasUsefulData,
+      schemesCount: result.推荐方案?.length || 0,
+      summaryKeys: result.客户资料摘要 ? Object.keys(result.客户资料摘要) : [],
+      notRecommendedCount: result.不推荐产品?.length || 0,
+    });
+    
+    if (hasUsefulData) {
+      return result;
+    }
+
+    // If nothing useful found, return null to fallback to markdown rendering
+    return null;
+  } catch (error) {
+    console.error('Failed to parse markdown to schemes:', error);
+    return null;
+  }
+}
+
+/**
+ * ParsedSchemeCard Component
+ * 
+ * Renders a single parsed scheme as a card with green gradient styling.
+ * Similar to MatchingSchemeCard but for parsed markdown data.
+ */
+interface ParsedSchemeCardProps {
+  scheme: ParsedScheme;
+  index: number;
+}
+
+const ParsedSchemeCard: React.FC<ParsedSchemeCardProps> = ({ scheme, index }) => {
+  const [showConditions, setShowConditions] = useState(false);
+  
+  // Key fields to display prominently
+  const keyFields = ['可贷额度', '参考利率', '贷款期限', '还款方式'];
+  // Fields to exclude from "other info"
+  const excludeFields = ['方案名称', '银行名称', '产品名称', '准入条件', ...keyFields];
+  
+  // Get other fields
+  const otherFields = Object.entries(scheme).filter(
+    ([key, value]) => !excludeFields.includes(key) && typeof value === 'string'
+  );
+  
+  return (
+    <div 
+      className="p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl border border-green-200 shadow-sm"
+      data-testid={`parsed-scheme-${index}`}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-3">
+        <span className="w-8 h-8 bg-green-500 text-white text-sm font-bold rounded-full flex items-center justify-center shadow-sm">
+          {index + 1}
+        </span>
+        <div className="flex-1">
+          <div className="font-semibold text-green-800 text-base">
+            {scheme.方案名称 || `方案 ${index + 1}`}
+          </div>
+          {scheme.银行名称 && scheme.产品名称 && scheme.方案名称 !== `【${scheme.银行名称}】${scheme.产品名称}` && (
+            <div className="text-xs text-green-600 mt-0.5">
+              {scheme.银行名称} · {scheme.产品名称}
+            </div>
+          )}
+        </div>
+      </div>
+      
+      {/* Key Fields Grid */}
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        {keyFields.map(field => {
+          const value = scheme[field];
+          if (!value || typeof value !== 'string') return null;
+          
+          const icons: Record<string, React.ReactNode> = {
+            '可贷额度': <DollarSign className="w-4 h-4" />,
+            '参考利率': <Percent className="w-4 h-4" />,
+            '贷款期限': <Calendar className="w-4 h-4" />,
+            '还款方式': <CreditCard className="w-4 h-4" />,
+          };
+          
+          return (
+            <div 
+              key={field}
+              className="flex items-start gap-2 p-2 bg-white/60 rounded-lg"
+            >
+              <div className="w-6 h-6 rounded-md bg-green-100 text-green-600 flex items-center justify-center shrink-0">
+                {icons[field] || <FileText className="w-4 h-4" />}
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs text-gray-500">{field}</div>
+                <div className="text-sm font-medium text-gray-800 break-words">{value}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      
+      {/* Other Fields */}
+      {otherFields.length > 0 && (
+        <div className="text-sm text-gray-600 mb-3 space-y-1">
+          {otherFields.map(([key, value]) => (
+            <div key={key} className="flex items-start gap-1">
+              <span className="text-gray-400 shrink-0">{key}:</span>
+              <span className="text-gray-700">{value as string}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      
+      {/* Conditions */}
+      {scheme.准入条件 && scheme.准入条件.length > 0 && (
+        <div className="border-t border-green-200 pt-3 mt-3">
+          <button
+            onClick={() => setShowConditions(!showConditions)}
+            className="flex items-center gap-1 text-xs text-green-600 hover:text-green-700 transition-colors"
+          >
+            {showConditions ? (
+              <ChevronDown className="w-3 h-3" />
+            ) : (
+              <ChevronRight className="w-3 h-3" />
+            )}
+            <span className="font-medium">准入条件核对</span>
+            <span className="text-green-500">({scheme.准入条件.length} 项)</span>
+          </button>
+          {showConditions && (
+            <div className="mt-2 space-y-1 pl-4">
+              {scheme.准入条件.map((condition, idx) => (
+                <div 
+                  key={idx}
+                  className={`text-xs ${
+                    condition.startsWith('✅') ? 'text-green-600' :
+                    condition.startsWith('⚠️') ? 'text-amber-600' :
+                    condition.startsWith('❌') ? 'text-red-600' :
+                    'text-gray-600'
+                  }`}
+                >
+                  {condition}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * ParsedMatchingResultDisplay Component
+ * 
+ * Renders the full parsed matching result with all sections.
+ */
+interface ParsedMatchingResultDisplayProps {
+  data: ParsedMatchingResult;
+}
+
+const ParsedMatchingResultDisplay: React.FC<ParsedMatchingResultDisplayProps> = ({ data }) => {
+  return (
+    <div className="space-y-4" data-testid="parsed-matching-result">
+      {/* 客户资料摘要 */}
+      {data.客户资料摘要 && Object.keys(data.客户资料摘要).length > 0 && (
+        <MatchingDataSectionCard 
+          title="客户资料摘要" 
+          data={data.客户资料摘要}
+          icon={<User className="w-4 h-4" />}
+          iconBgColor="bg-indigo-100 text-indigo-600"
+        />
+      )}
+      
+      {/* 推荐方案 */}
+      {data.推荐方案 && data.推荐方案.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-gradient-to-r from-green-50 to-emerald-50 border-b border-gray-100">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center bg-green-100 text-green-600">
+                <CheckCircle2 className="w-4 h-4" />
+              </div>
+              <span className="font-medium text-gray-700 text-sm">推荐方案</span>
+              <span className="text-xs text-gray-400">({data.推荐方案.length} 个)</span>
+            </div>
+          </div>
+          <div className="p-3 space-y-3">
+            {data.推荐方案.map((scheme, idx) => (
+              <ParsedSchemeCard key={idx} scheme={scheme} index={idx} />
+            ))}
+          </div>
+        </div>
+      )}
+      
+      {/* 不推荐产品 */}
+      {data.不推荐产品 && data.不推荐产品.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-gradient-to-r from-gray-50 to-slate-50 border-b border-gray-100">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center bg-gray-200 text-gray-600">
+                <X className="w-4 h-4" />
+              </div>
+              <span className="font-medium text-gray-700 text-sm">不推荐的产品</span>
+              <span className="text-xs text-gray-400">({data.不推荐产品.length} 个)</span>
+            </div>
+          </div>
+          <div className="p-3">
+            <div className="overflow-hidden rounded-lg border border-gray-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <th className="px-3 py-2 text-left text-gray-600 font-medium">产品</th>
+                    <th className="px-3 py-2 text-left text-gray-600 font-medium">不符合原因</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.不推荐产品.map((item, idx) => (
+                    <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                      <td className="px-3 py-2 text-gray-700">{item.产品}</td>
+                      <td className="px-3 py-2 text-gray-600">{item.原因}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* 替代建议 */}
+      {data.替代建议 && data.替代建议.length > 0 && (
+        <div className="p-3 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg border border-purple-200">
+          <div className="flex items-start gap-2">
+            <div className="w-6 h-6 rounded-md flex items-center justify-center bg-purple-100 text-purple-600 shrink-0 mt-0.5">
+              <Target className="w-3.5 h-3.5" />
+            </div>
+            <div className="flex-1">
+              <div className="text-xs font-medium text-purple-600 mb-2">替代建议</div>
+              <div className="space-y-1">
+                {data.替代建议.map((item, idx) => (
+                  <div key={idx} className="text-sm text-gray-700 flex items-start gap-2">
+                    <span className="text-purple-400">•</span>
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* 需补充信息 */}
+      {data.需补充信息 && data.需补充信息.length > 0 && (
+        <div className="p-3 bg-gradient-to-r from-amber-50 to-orange-50 rounded-lg border border-amber-200">
+          <div className="flex items-start gap-2">
+            <div className="w-6 h-6 rounded-md flex items-center justify-center bg-amber-100 text-amber-600 shrink-0 mt-0.5">
+              <AlertCircle className="w-3.5 h-3.5" />
+            </div>
+            <div className="flex-1">
+              <div className="text-xs font-medium text-amber-600 mb-2">需补充信息</div>
+              <div className="space-y-1">
+                {data.需补充信息.map((item, idx) => (
+                  <div key={idx} className="text-sm text-gray-700 flex items-start gap-2">
+                    <span className="text-amber-500 font-medium">{idx + 1}.</span>
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 准备材料 */}
+      {data.准备材料 && Object.keys(data.准备材料).length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-gradient-to-r from-cyan-50 to-blue-50 border-b border-gray-100">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center bg-cyan-100 text-cyan-600">
+                <FileCheck className="w-4 h-4" />
+              </div>
+              <span className="font-medium text-gray-700 text-sm">准备材料</span>
+            </div>
+          </div>
+          <div className="p-3 space-y-3">
+            {Object.entries(data.准备材料).map(([category, items], idx) => (
+              <div key={idx}>
+                <div className="text-xs font-medium text-gray-600 mb-1.5">{category}</div>
+                <div className="space-y-1">
+                  {items.map((item, itemIdx) => (
+                    <div key={itemIdx} className="text-sm text-gray-700 flex items-start gap-2 pl-2">
+                      <span className="text-cyan-500 mt-1">•</span>
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 审批流程 */}
+      {data.审批流程 && data.审批流程.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-gradient-to-r from-teal-50 to-emerald-50 border-b border-gray-100">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-md flex items-center justify-center bg-teal-100 text-teal-600">
+                <ClipboardList className="w-4 h-4" />
+              </div>
+              <span className="font-medium text-gray-700 text-sm">审批流程</span>
+            </div>
+          </div>
+          <div className="p-3">
+            <div className="overflow-hidden rounded-lg border border-gray-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <th className="px-3 py-2 text-left text-gray-600 font-medium">步骤</th>
+                    <th className="px-3 py-2 text-left text-gray-600 font-medium">内容</th>
+                    <th className="px-3 py-2 text-left text-gray-600 font-medium">预计时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.审批流程.map((step, idx) => (
+                    <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                      <td className="px-3 py-2 text-gray-700 font-medium">{step.步骤}</td>
+                      <td className="px-3 py-2 text-gray-600">{step.内容}</td>
+                      <td className="px-3 py-2 text-gray-500">{step.预计时间}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface MatchingSchemeItem {
+  方案名称?: string;
+  银行名称?: string;
+  产品名称?: string;
+  可贷额度?: string;
+  参考利率?: string;
+  贷款期限?: string;
+  还款方式?: string;
+  匹配理由?: string;
+  审批说明?: string;
+  准备材料?: Record<string, string[]>;
+  审批流程?: Array<{步骤: string; 内容: string; 预计时间: string}>;
+  [key: string]: string | Record<string, string[]> | Array<{步骤: string; 内容: string; 预计时间: string}> | undefined;
+}
+
+/**
+ * MatchingSchemeCard Component
+ * 
+ * Renders the "推荐方案" section as cards.
+ */
+interface MatchingSchemeCardProps {
+  schemes: MatchingSchemeItem[];
+}
+
+const MatchingSchemeCard: React.FC<MatchingSchemeCardProps> = ({ schemes }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  
+  if (!schemes || schemes.length === 0) return null;
+  
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+      {/* Section Header */}
+      <div 
+        className="px-3 py-2 bg-gradient-to-r from-green-50 to-emerald-50 border-b border-gray-100 cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-md flex items-center justify-center bg-green-100 text-green-600">
+              <CheckCircle2 className="w-4 h-4" />
+            </div>
+            <span className="font-medium text-gray-700 text-sm">推荐方案</span>
+            <span className="text-xs text-gray-400">({schemes.length} 个)</span>
+          </div>
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-gray-400" />
+          )}
+        </div>
+      </div>
+      
+      {/* Section Content */}
+      {isExpanded && (
+        <div className="p-3 space-y-4">
+          {schemes.map((scheme, idx) => {
+            // 提取准备材料和审批流程，其余字段正常显示
+            const 准备材料 = scheme['准备材料'] as unknown as Record<string, string[]> | undefined;
+            const 审批流程 = scheme['审批流程'] as unknown as Array<{步骤: string; 内容: string; 预计时间: string}> | undefined;
+            const 审批说明 = scheme['审批说明'] as string | undefined;
+            const basicEntries = Object.entries(scheme).filter(
+              ([key]) => key !== '方案名称' && key !== '准备材料' && key !== '审批流程' && key !== '审批说明'
+            );
+            
+            return (
+              <div 
+                key={idx}
+                className="border border-green-200 rounded-xl overflow-hidden"
+              >
+                {/* 方案标题 */}
+                <div className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-r from-green-50 to-emerald-50">
+                  <span className="w-6 h-6 bg-green-500 text-white text-xs font-bold rounded-full flex items-center justify-center shrink-0">
+                    {idx + 1}
+                  </span>
+                  <span className="font-medium text-green-800 text-sm">
+                    {scheme['方案名称'] as string || `方案 ${idx + 1}`}
+                  </span>
+                </div>
+                
+                {/* 基本信息 */}
+                <div className="px-3 py-2 grid grid-cols-2 gap-2 text-sm border-b border-green-100">
+                  {basicEntries.map(([key, value]) => (
+                    <div key={key} className="flex items-start gap-1">
+                      <span className="text-gray-500 shrink-0">{key}:</span>
+                      <span className="text-gray-800">{String(value) || '-'}</span>
+                    </div>
+                  ))}
+                </div>
+                
+                {/* 准备材料 */}
+                {准备材料 && Object.keys(准备材料).length > 0 && (
+                  <div className="px-3 py-2 border-b border-green-100">
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <FileCheck className="w-3.5 h-3.5 text-cyan-600" />
+                      <span className="text-xs font-medium text-cyan-700">准备材料</span>
+                    </div>
+                    <div className="space-y-2">
+                      {Object.entries(准备材料).map(([category, items], cIdx) => (
+                        <div key={cIdx}>
+                          <div className="text-xs text-gray-500 mb-1">{category}</div>
+                          <div className="flex flex-wrap gap-1">
+                            {(items as string[]).map((item, iIdx) => (
+                              <span key={iIdx} className="px-2 py-0.5 bg-cyan-50 text-cyan-700 text-xs rounded border border-cyan-100">
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* 审批流程 */}
+                {(审批流程 && 审批流程.length > 0) || 审批说明 ? (
+                  <div className="px-3 py-2">
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <ClipboardList className="w-3.5 h-3.5 text-teal-600" />
+                      <span className="text-xs font-medium text-teal-700">审批流程</span>
+                    </div>
+                    {审批流程 && 审批流程.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {审批流程.map((step, sIdx) => (
+                          <div key={sIdx} className="flex items-center gap-1 text-xs text-gray-600">
+                            <span className="w-4 h-4 bg-teal-100 text-teal-700 rounded-full flex items-center justify-center font-medium shrink-0">
+                              {sIdx + 1}
+                            </span>
+                            <span>{step.步骤}</span>
+                            {step.预计时间 && <span className="text-gray-400">({step.预计时间})</span>}
+                            {sIdx < 审批流程.length - 1 && <span className="text-gray-300 mx-0.5">→</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {审批说明 && (
+                      <div className="mt-2 text-xs text-gray-600 bg-teal-50 border border-teal-100 rounded-md px-2 py-1.5">
+                        {审批说明}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * MatchingResultCard Component
+ * 
+ * Displays scheme matching results.
+ * - If matchingData (JSON) is available, renders as grouped cards
+ * - Falls back to Markdown rendering if only matchResult is available
+ */
+const MatchingResultCard: React.FC<MatchingResultCardProps> = ({ data, onNavigate }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  
+  // If needs input, show the guide card instead
+  if (data.needsInput) {
+    return <MatchingGuideCard data={data} onNavigate={onNavigate} />;
+  }
+  
+  // If no match result at all, show guide card
+  if (!data.matchingData && !data.matchResult) {
+    return <MatchingGuideCard data={data} onNavigate={onNavigate} />;
+  }
+  
+  const creditTypeLabels: Record<string, string> = {
+    'personal': '个人贷款',
+    'enterprise': '企业贷款',
+    'enterprise_credit': '企业信用贷',
+  };
+  const creditTypeLabel = creditTypeLabels[data.creditType || ''] || '企业贷款';
+  
+  // Check if we have structured data
+  const hasStructuredData = data.matchingData && Object.keys(data.matchingData).length > 0;
+  
+  return (
+    <div 
+      className="mt-3 bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm"
+      data-testid="matching-result-card"
+    >
+      {/* Header */}
+      <div className="px-4 py-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-gray-100">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center">
+              <Target className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="font-medium text-gray-800 text-sm">方案匹配结果</div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                {data.customerName && `客户：${data.customerName}`}
+                {data.customerName && ' · '}
+                {creditTypeLabel}
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="p-1.5 hover:bg-emerald-100 rounded-lg transition-colors"
+          >
+            {isExpanded ? (
+              <ChevronDown className="w-4 h-4 text-gray-500" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-gray-500" />
+            )}
+          </button>
+        </div>
+      </div>
+      
+      {/* Content */}
+      {isExpanded && (
+        <div className="p-4">
+          {hasStructuredData ? (
+            // Render as grouped cards
+            <div className="space-y-4" data-testid="matching-structured-data">
+              {/* 核心发现 */}
+              {data.matchingData?.核心发现 && (
+                <MatchingDataSectionCard 
+                  title="核心发现" 
+                  data={data.matchingData.核心发现}
+                  icon={<FileText className="w-4 h-4" />}
+                  iconBgColor="bg-blue-100 text-blue-600"
+                />
+              )}
+              
+              {/* 客户资料摘要 */}
+              {data.matchingData?.客户资料摘要 && (
+                <MatchingDataSectionCard 
+                  title="客户资料摘要" 
+                  data={data.matchingData.客户资料摘要}
+                  icon={<User className="w-4 h-4" />}
+                  iconBgColor="bg-indigo-100 text-indigo-600"
+                />
+              )}
+              
+              {/* 待补充资料 */}
+              {data.matchingData?.待补充资料 && (
+                <MatchingSupplementCard data={data.matchingData.待补充资料} />
+              )}
+              
+              {/* 推荐方案 */}
+              {data.matchingData?.推荐方案 && data.matchingData.推荐方案.length > 0 && (
+                <MatchingSchemeCard schemes={data.matchingData.推荐方案} />
+              )}
+              
+              {/* 下一步建议 */}
+              {data.matchingData?.下一步建议 && (
+                <div className="p-3 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg border border-purple-200">
+                  <div className="flex items-start gap-2">
+                    <div className="w-6 h-6 rounded-md flex items-center justify-center bg-purple-100 text-purple-600 shrink-0 mt-0.5">
+                      <Target className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-purple-600 mb-1">下一步建议</div>
+                      <div className="text-sm text-gray-700">{data.matchingData.下一步建议}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            // Try to parse Markdown to structured data first
+            (() => {
+              const parsedData = parseMarkdownToSchemes(data.matchResult || '');
+              
+              // Use card rendering if we have any useful parsed data
+              if (parsedData) {
+                // Successfully parsed - render as cards
+                return <ParsedMatchingResultDisplay data={parsedData} />;
+              }
+              
+              // Fallback to Markdown rendering with enhanced styling
+              return (
+                <div 
+                  className="prose prose-sm max-w-none text-gray-700 overflow-x-auto 
+                    prose-headings:text-gray-800 prose-headings:font-semibold
+                    prose-h1:text-lg prose-h1:border-b prose-h1:border-gray-200 prose-h1:pb-2
+                    prose-h2:text-base prose-h2:text-blue-700 prose-h2:mt-4
+                    prose-h3:text-sm prose-h3:text-gray-700
+                    prose-h4:text-sm prose-h4:font-medium prose-h4:text-emerald-700
+                    prose-strong:text-gray-800
+                    prose-table:border-collapse prose-table:w-full prose-table:text-sm
+                    prose-th:border prose-th:border-gray-300 prose-th:bg-gray-100 prose-th:px-3 prose-th:py-2 prose-th:text-left
+                    prose-td:border prose-td:border-gray-300 prose-td:px-3 prose-td:py-2
+                    prose-ul:my-2 prose-li:my-0.5
+                    prose-p:my-2 prose-p:leading-relaxed
+                    [&_ul]:list-none [&_ul]:pl-0
+                    [&_li]:relative [&_li]:pl-5
+                    [&_li:before]:content-['✅'] [&_li:before]:absolute [&_li:before]:left-0
+                    [&_.方案]:bg-blue-50 [&_.方案]:p-3 [&_.方案]:rounded-lg [&_.方案]:my-2"
+                  data-testid="matching-markdown-content"
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {data.matchResult || ''}
+                  </ReactMarkdown>
+                </div>
+              );
+            })()
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================
+// Structured Data Card Renderer
+// ============================================
+
+interface StructuredDataCardProps {
+  intent: ChatResponse['intent'];
+  data: Record<string, unknown> | null;
+  onNavigate?: (page: string) => void;
+}
+
+/**
+ * StructuredDataCard Component
+ * 
+ * Renders the appropriate data card based on intent type.
+ */
+const StructuredDataCard: React.FC<StructuredDataCardProps> = ({ intent, data, onNavigate }) => {
+  if (!data) return null;
+  
+  switch (intent) {
+    case 'extract':
+      if (data.files && Array.isArray(data.files)) {
+        return <ExtractionResultCard files={data.files as ExtractionFileResult[]} />;
+      }
+      return null;
+    
+    case 'application':
+      // Check if we have application data (JSON or Markdown)
+      if (data.applicationData || data.applicationContent) {
+        return <ApplicationResultCard data={data as ApplicationResultCardProps['data']} onNavigate={onNavigate} />;
+      }
+      return <ApplicationGuideCard data={data as { action?: string; requiredFields?: string[] }} onNavigate={onNavigate} />;
+    
+    case 'matching':
+      // Check if we have match result (JSON or Markdown) or just guide
+      if (data.matchingData || data.matchResult) {
+        return <MatchingResultCard data={data as MatchingResultCardProps['data']} onNavigate={onNavigate} />;
+      }
+      return <MatchingGuideCard data={data as { action?: string; requiredFields?: string[] }} onNavigate={onNavigate} />;
+    
+    default:
+      return null;
+  }
+};
+
+// ============================================
+// File Attachment Display Component
+// ============================================
+
+/** File info embedded in message content */
+interface FileInfo {
+  name: string;
+  type: string;
+}
+
+/**
+ * Parse file info from message content
+ * Format: [FILE:name:type]
+ */
+function parseFileInfoFromContent(content: string): { text: string; files: FileInfo[] } {
+  const filePattern = /\[FILE:([^:]+):([^\]]+)\]/g;
+  const files: FileInfo[] = [];
+  let match;
+  
+  while ((match = filePattern.exec(content)) !== null) {
+    files.push({ name: match[1], type: match[2] });
+  }
+  
+  const text = content.replace(filePattern, '').trim();
+  return { text, files };
+}
+
+/**
+ * Get file icon based on file type/extension
+ */
+function getFileIcon(fileName: string, fileType: string): React.ReactNode {
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  
+  // PDF
+  if (ext === 'pdf' || fileType.includes('pdf')) {
+    return <FileText className="w-4 h-4 text-red-500" />;
+  }
+  // Excel
+  if (['xlsx', 'xls'].includes(ext) || fileType.includes('spreadsheet') || fileType.includes('excel')) {
+    return <FileSpreadsheet className="w-4 h-4 text-green-600" />;
+  }
+  // Word
+  if (['doc', 'docx'].includes(ext) || fileType.includes('word')) {
+    return <FileText className="w-4 h-4 text-blue-600" />;
+  }
+  // Image
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext) || fileType.startsWith('image/')) {
+    return <Image className="w-4 h-4 text-purple-500" />;
+  }
+  // Default
+  return <File className="w-4 h-4 text-gray-500" />;
+}
+
+/**
+ * FileAttachmentList Component
+ * Displays file attachments in message bubble
+ */
+const FileAttachmentList: React.FC<{ files: FileInfo[]; isUser: boolean }> = ({ files, isUser }) => {
+  if (files.length === 0) return null;
+  
+  return (
+    <div className="flex flex-col gap-1.5">
+      {files.map((file, index) => (
+        <div 
+          key={`${file.name}-${index}`}
+          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs ${
+            isUser 
+              ? 'bg-blue-400 bg-opacity-30' 
+              : 'bg-gray-200'
+          }`}
+        >
+          {getFileIcon(file.name, file.type)}
+          <span className="truncate max-w-[180px]" title={file.name}>
+            {file.name}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ============================================
+// Message Bubble Component
+// Feature: frontend-ui-optimization
+// Property 7: Message Bubble Styling Based on Role
+// ============================================
+
+interface MessageBubbleProps {
+  message: ChatMessageWithReasoning;
+  isTyping?: boolean;
+  onNavigate?: (page: string) => void;
+}
+
+/**
+ * MessageBubble Component
+ * 
+ * Renders chat messages with role-based styling.
+ * - User messages: blue background (#3B82F6), right-aligned, rounded 18px 18px 4px 18px
+ * - AI messages: gray background (#F3F4F6), left-aligned, rounded 18px 18px 18px 4px
+ * - AI messages with reasoning: show collapsible thinking process above the message
+ * - AI messages with structured data: show data cards below the message
+ * 
+ * Feature: frontend-ui-optimization
+ * Property 7: Message Bubble Styling Based on Role
+ * Validates: Requirements 5.2, 5.3
+ */
+const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isTyping, onNavigate }) => {
+  const { text, files } = parseFileInfoFromContent(message.content);
+  
+  if (message.role === 'user') {
+    return (
+      <div 
+        className="flex justify-end mb-4"
+        data-testid="message-bubble-user"
+        data-role="user"
+      >
+        <div 
+          className="text-white px-4 py-3 max-w-[70%] text-sm"
+          style={{
+            backgroundColor: USER_MESSAGE_STYLE.bgColor,
+            borderRadius: USER_MESSAGE_STYLE.borderRadius,
+          }}
+          data-testid="user-message-content"
+        >
+          {/* File attachments */}
+          {files.length > 0 && (
+            <div className={text ? 'mb-2' : ''}>
+              <FileAttachmentList files={files} isUser={true} />
+            </div>
+          )}
+          {/* Text content */}
+          {text && <div className="whitespace-pre-wrap">{text}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div 
+      className="flex gap-3 mb-4 items-start"
+      data-testid="message-bubble-assistant"
+      data-role="assistant"
+    >
+      {/* AI Avatar */}
+      <div 
+        className="flex items-center justify-center flex-shrink-0"
+        style={{
+          width: AI_AVATAR_STYLE.size,
+          height: AI_AVATAR_STYLE.size,
+          backgroundColor: AI_AVATAR_STYLE.bgColor,
+          borderRadius: '50%',
+        }}
+        data-testid="ai-avatar"
+      >
+        <BotIcon className="w-[18px] h-[18px] text-white" />
+      </div>
+      {/* AI Message Content */}
+      <div className="flex flex-col max-w-[85%]">
+        {/* Reasoning Collapse - shown above message if available */}
+        {message.reasoning && (
+          <ReasoningCollapse reasoning={message.reasoning} />
+        )}
+        <div 
+          className="text-gray-800 px-4 py-3 text-sm"
+          style={{
+            backgroundColor: AI_MESSAGE_STYLE.bgColor,
+            borderRadius: AI_MESSAGE_STYLE.borderRadius,
+          }}
+          data-testid="ai-message-content"
+        >
+          {isTyping && (
+            <div className="flex gap-2 items-center pb-2">
+              <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+              <span className="text-gray-400 text-xs">正在输入...</span>
+            </div>
+          )}
+          {/* 使用 ReactMarkdown 渲染 AI 消息，支持 Markdown 格式 */}
+          <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-hr:my-2">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {message.content}
+            </ReactMarkdown>
+          </div>
+        </div>
+        {/* Structured Data Card - shown below message based on intent */}
+        {message.intent && message.data && (
+          <StructuredDataCard 
+            intent={message.intent} 
+            data={message.data} 
+            onNavigate={onNavigate}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
+
+interface IntentActionsProps {
+  intent: ChatResponse['intent'];
+  onAction: (action: string) => void;
+}
+
+const IntentActions: React.FC<IntentActionsProps> = ({ intent, onAction }) => {
+  if (!intent || intent === 'chat') return null;
+
+  const actions = {
+    extract: { icon: Upload, label: '上传资料', action: 'upload' },
+    application: { icon: ClipboardList, label: '生成申请表', action: 'application' },
+    matching: { icon: Target, label: '匹配方案', action: 'matching' },
+  };
+
+  const actionConfig = actions[intent];
+  if (!actionConfig) return null;
+
+  const Icon = actionConfig.icon;
+
+  return (
+    <div className="flex gap-2 mt-3 pt-3 border-t border-gray-200">
+      <button
+        onClick={() => onAction(actionConfig.action)}
+        className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600 transition-colors"
+      >
+        <Icon className="w-4 h-4" />
+        {actionConfig.label}
+      </button>
+    </div>
+  );
+};
+
+interface FilePreviewProps {
+  files: File[];
+  onRemove: (index: number) => void;
+}
+
+const FilePreview: React.FC<FilePreviewProps> = ({ files, onRemove }) => {
+  if (files.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-2 px-4 py-2 border-t border-gray-200">
+      {files.map((file, index) => (
+        <div
+          key={`${file.name}-${index}`}
+          className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 rounded-lg text-sm"
+        >
+          <FileText className="w-4 h-4 text-gray-500" />
+          <span className="max-w-[150px] truncate">{file.name}</span>
+          <button
+            onClick={() => onRemove(index)}
+            className="p-0.5 hover:bg-gray-200 rounded"
+          >
+            <X className="w-3 h-3 text-gray-500" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const TypingIndicator: React.FC = () => (
+  <div className="flex gap-3 mb-4 items-start" data-testid="typing-indicator">
+    {/* AI Avatar */}
+    <div 
+      className="flex items-center justify-center flex-shrink-0"
+      style={{
+        width: AI_AVATAR_STYLE.size,
+        height: AI_AVATAR_STYLE.size,
+        backgroundColor: AI_AVATAR_STYLE.bgColor,
+        borderRadius: '50%',
+      }}
+    >
+      <BotIcon className="w-[18px] h-[18px] text-white" />
+    </div>
+    <div 
+      className="px-4 py-3"
+      style={{
+        backgroundColor: AI_MESSAGE_STYLE.bgColor,
+        borderRadius: AI_MESSAGE_STYLE.borderRadius,
+      }}
+    >
+      <div className="flex gap-1">
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+      </div>
+    </div>
+  </div>
+);
+
+const WelcomeMessage: React.FC = () => (
+  <div className="flex flex-col items-center gap-6 py-8 text-center" data-testid="welcome-message">
+    <div 
+      className="w-20 h-20 flex items-center justify-center mb-4"
+      style={{
+        backgroundColor: AI_AVATAR_STYLE.bgColor,
+        borderRadius: '50%',
+      }}
+    >
+      <SparklesIcon className="w-10 h-10 text-white" />
+    </div>
+    <div className="text-gray-700 text-base leading-relaxed">
+      你好！我是 DeepSeek 助手，可以帮你处理贷款相关问题。<br />
+      你可以上传资料、生成申请表，或直接问我任何问题。
+    </div>
+  </div>
+);
+
+// Icon Components
+const SparklesIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" />
+    <path d="M5 19l1 3 1-3 3-1-3-1-1-3-1 3-3 1 3 1z" />
+    <path d="M19 5l1 2 1-2 2-1-2-1-1-2-1 2-2 1 2 1z" />
+  </svg>
+);
+
+const BotIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="11" width="18" height="10" rx="2" />
+    <circle cx="12" cy="5" r="2" />
+    <path d="M12 7v4" />
+    <line x1="8" y1="16" x2="8" y2="16" />
+    <line x1="16" y1="16" x2="16" y2="16" />
+  </svg>
+);
+
+// ============================================
+// Main Component
+// ============================================
+
+interface ChatPageProps {
+  /** Callback when user wants to navigate to another page */
+  onNavigate?: (page: string) => void;
+}
+
+/**
+ * ChatPage Component
+ * 
+ * Main chat interface for interacting with the AI assistant.
+ * Supports text messages and file attachments.
+ * 
+ * Feature: frontend-backend-integration
+ * Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7
+ */
+const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
+  // Local state for conversation
+  const [messages, setMessages] = useState<ChatMessageWithReasoning[]>([]);
+  const [inputValue, setInputValue] = useState('');
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [lastIntent, setLastIntent] = useState<ChatResponse['intent']>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const [mergeModal, setMergeModal] = useState<{
+    customerName: string;
+    candidates: { customer_id: string; name: string; shared_keywords: string[] }[];
+    pendingMessage: string;
+    pendingFiles: ChatFile[] | null;
+    pendingMessages: ChatMessageWithReasoning[];
+  } | null>(null);
+
+  // Hooks
+  const { loading, error, execute } = useLoading<ChatResponse>();
+  const { getSignal } = useAbortController();
+  const { addChatMessage, state, setChatTaskStatus } = useApp();
+  
+  // Refs
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Ref to track if recovery is in progress
+  const isRecoveringRef = useRef(false);
+  // Ref to track if initial recovery check has been done
+  const hasCheckedRecoveryRef = useRef(false);
+  // Ref to store the latest send function to avoid closure issues (踩坑点 #31)
+  const sendRef = useRef<((msg: string, files: ChatFile[] | null, currentMessages: ChatMessageWithReasoning[]) => Promise<void>) | null>(null);
+
+  /**
+   * Send message with given parameters
+   * Extracted to avoid closure issues during recovery
+   */
+  const doSend = useCallback(async (
+    messageContent: string,
+    chatFiles: ChatFile[] | null,
+    currentMessages: ChatMessageWithReasoning[],
+    mergeDecisions?: Record<string, string>,
+  ) => {
+    // Create user message
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: messageContent,
+    };
+
+    // Update local state immediately
+    const newMessages = [...currentMessages, userMessage];
+    setMessages(newMessages);
+    addChatMessage(userMessage);
+
+    // Send to API
+    const { data: response, error: execError } = await execute(async () => {
+      return sendChat(
+        {
+          messages: newMessages,
+          files: chatFiles || undefined,
+          mergeDecisions,
+        },
+        getSignal()
+      );
+    });
+
+    if (response) {
+      // Check if any file has similarCustomers (needs merge decision)
+      const filesWithSimilar: Array<{
+        customerName?: string;
+        similarCustomers?: { customer_id: string; name: string; shared_keywords: string[] }[];
+      }> = [];
+
+      if (filesWithSimilar && filesWithSimilar.length > 0) {
+        // Show merge modal for the first unresolved file
+        const first = filesWithSimilar[0];
+        setMergeModal({
+          customerName: first.customerName || '',
+          candidates: first.similarCustomers!,
+          pendingMessage: messageContent,
+          pendingFiles: chatFiles,
+          pendingMessages: currentMessages,
+        });
+        // Don't add assistant message yet — wait for user decision
+        return;
+      }
+
+      // Add assistant response with reasoning, intent, and data
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: response.message,
+        reasoning: response.reasoning,
+        intent: response.intent,
+        data: response.data,
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+      addChatMessage(assistantMessage);
+      setLastIntent(response.intent);
+      // Mark task as done
+      setChatTaskStatus('done', null, null);
+    } else {
+      // Check if it was an abort (page switch) vs real error
+      // 使用 execute 返回的 error，避免闭包问题（踩坑点 #33）
+      const isAbortError = execError?.name === 'AbortError';
+      if (!isAbortError) {
+        // Real failure, reset status
+        setChatTaskStatus('idle', null, null);
+      }
+      // If aborted, keep 'sending' status for recovery
+    }
+  }, [execute, getSignal, addChatMessage, setChatTaskStatus]);
+
+  // Keep ref updated with latest function
+  useEffect(() => {
+    sendRef.current = doSend;
+  }, [doSend]);
+
+  // Sync with context on mount and handle task recovery
+  // Note: This effect intentionally runs only on mount to restore state from context.
+  // The setState calls sync external (context) state into local state, which is a valid pattern.
+  useEffect(() => {
+    // 只在首次挂载时从 Context 恢复消息和任务
+    if (hasCheckedRecoveryRef.current) {
+      return; // 已经检查过恢复，不再重复
+    }
+    
+    // 恢复消息历史
+    if (state.chat.messages.length > 0) {
+      setMessages(state.chat.messages);
+    }
+
+    // Check if there's a task to recover (only on mount)
+    const taskState = state.tasks.chat;
+    if (taskState.status === 'sending' && taskState.pendingMessage && !isRecoveringRef.current) {
+      isRecoveringRef.current = true;
+      const savedMessage = taskState.pendingMessage;
+      const savedFiles = taskState.pendingFiles;
+      const currentMsgs = state.chat.messages.length > 0 ? state.chat.messages : [];
+      
+      // Use setTimeout to ensure state is updated before calling send
+      // Pass params directly to avoid closure issues (踩坑点 #31)
+      setTimeout(() => {
+        if (sendRef.current) {
+          sendRef.current(savedMessage, savedFiles, currentMsgs as ChatMessageWithReasoning[]);
+        }
+        isRecoveringRef.current = false;
+      }, 100);
+    }
+    
+    // 标记已完成恢复检查
+    hasCheckedRecoveryRef.current = true;
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- Mount-only effect: intentionally excludes state deps to avoid re-running after mount
+  }, []);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 150)}px`;
+    }
+  }, [inputValue]);
+
+  /**
+   * Handle file selection
+   */
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    // Deduplicate: only add files not already in attachedFiles (by name)
+    setAttachedFiles(prev => {
+      const existingNames = new Set(prev.map(f => f.name));
+      const newFiles = files.filter(f => !existingNames.has(f.name));
+      return [...prev, ...newFiles];
+    });
+    // Reset input so same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, []);
+
+  /**
+   * Handle drag events for file drop
+   */
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only set dragging to false if we're leaving the container
+    if (e.currentTarget === e.target) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      // Filter for supported file types
+      const supportedTypes = ['.pdf', '.xlsx', '.xls', '.doc', '.docx', '.png', '.jpg', '.jpeg'];
+      const validFiles = files.filter(file => {
+        const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+        return supportedTypes.includes(ext);
+      });
+      
+      if (validFiles.length > 0) {
+        // Deduplicate: only add files not already in attachedFiles (by name)
+        setAttachedFiles(prev => {
+          const existingNames = new Set(prev.map(f => f.name));
+          const newFiles = validFiles.filter(f => !existingNames.has(f.name));
+          return [...prev, ...newFiles];
+        });
+      }
+    }
+  }, []);
+
+  /**
+   * Remove attached file
+   */
+  const handleRemoveFile = useCallback((index: number) => {
+    setAttachedFiles(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  /**
+   * Handle message submission
+   * Feature: frontend-backend-integration
+   * Requirements: 6.1, 6.5, 6.6
+   */
+  const handleSubmit = useCallback(async () => {
+    const content = inputValue.trim();
+    if (!content && attachedFiles.length === 0) return;
+    if (loading) return;
+
+    // Build message content with file info
+    let messageContent = content;
+    if (attachedFiles.length > 0) {
+      // Encode file info into message content: [FILE:name:type]
+      const fileMarkers = attachedFiles
+        .map(file => `[FILE:${file.name}:${file.type}]`)
+        .join('');
+      messageContent = fileMarkers + (content ? '\n' + content : '');
+    }
+
+    // Clear input immediately
+    setInputValue('');
+
+    // Prepare files for API
+    let chatFiles: ChatFile[] | null = null;
+    if (attachedFiles.length > 0) {
+      chatFiles = await Promise.all(
+        attachedFiles.map(async (file) => ({
+          name: file.name,
+          type: file.type,
+          content: await fileToBase64(file),
+        }))
+      );
+      setAttachedFiles([]);
+    }
+
+    // Save task state before starting (for recovery on page switch)
+    setChatTaskStatus('sending', messageContent, chatFiles);
+
+    // Use the extracted send function, pass current messages directly
+    await doSend(messageContent, chatFiles, messages);
+  }, [inputValue, attachedFiles, messages, loading, doSend, setChatTaskStatus]);
+
+  /**
+   * Handle keyboard events
+   */
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }, [handleSubmit]);
+
+  /**
+   * Handle intent action button click
+   */
+  const handleIntentAction = useCallback((action: string) => {
+    if (onNavigate) {
+      onNavigate(action);
+    }
+  }, [onNavigate]);
+
+  /**
+   * Handle quick action click
+   */
+  const handleQuickAction = useCallback((action: string) => {
+    const prompts: Record<string, string> = {
+      upload: '我想上传贷款资料',
+      application: '帮我生成贷款申请表',
+      matching: '帮我匹配贷款方案',
+    };
+    setInputValue(prompts[action] || '');
+    textareaRef.current?.focus();
+  }, []);
+
+  /**
+   * Handle switch customer: clear backend cache and reset conversation
+   */
+  const handleSwitchCustomer = useCallback(async () => {
+    try {
+      await clearCustomerCache();
+    } catch (err) {
+      console.error('Failed to clear customer cache:', err);
+    }
+    // Reset conversation
+    setMessages([]);
+    setInputValue('');
+    setAttachedFiles([]);
+    setLastIntent(null);
+  }, []);
+
+  const quickActions = [
+    { icon: '📤', label: '上传贷款资料', action: 'upload' },
+    { icon: '📝', label: '生成申请表', action: 'application' },
+    { icon: '🎯', label: '匹配贷款方案', action: 'matching' },
+  ];
+
+  /**
+   * Handle merge decision: user chose to merge into existing customer or create new
+   * targetCustomerId = existing customer_id to merge into, or null to create new
+   */
+  const handleMergeDecision = useCallback(async (targetCustomerId: string | null) => {
+    if (!mergeModal) return;
+    const { customerName, pendingMessage, pendingFiles, pendingMessages } = mergeModal;
+    setMergeModal(null);
+
+    const mergeDecisions: Record<string, string> | undefined = targetCustomerId
+      ? { [customerName]: targetCustomerId }
+      : undefined;
+
+    await doSend(pendingMessage, pendingFiles, pendingMessages, mergeDecisions);
+  }, [mergeModal, doSend]);
+
+  return (
+    <div 
+      className={`flex flex-col h-full bg-white relative ${isDragging ? 'ring-2 ring-blue-500 ring-inset' : ''}`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Merge Decision Modal */}
+      {mergeModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+            <div className="px-5 py-4 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-amber-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="font-semibold text-gray-800 text-sm">发现相似客户</div>
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    「{mergeModal.customerName}」与以下客户名称相似
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-sm text-gray-600">请选择将此次上传的资料归属到哪个客户：</p>
+              {mergeModal.candidates.map(c => (
+                <button
+                  key={c.customer_id}
+                  onClick={() => handleMergeDecision(c.customer_id)}
+                  className="w-full text-left px-4 py-3 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 transition-colors"
+                >
+                  <div className="font-medium text-blue-800 text-sm">{c.name}</div>
+                  <div className="text-xs text-blue-500 mt-0.5">
+                    共同关键词：{c.shared_keywords.join('、')}
+                  </div>
+                </button>
+              ))}
+              <button
+                onClick={() => handleMergeDecision(null)}
+                className="w-full text-left px-4 py-3 rounded-xl border border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors"
+              >
+                <div className="font-medium text-gray-700 text-sm">新建客户「{mergeModal.customerName}」</div>
+                <div className="text-xs text-gray-400 mt-0.5">作为独立客户保存</div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Drag Overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 bg-blue-50 bg-opacity-90 z-50 flex items-center justify-center pointer-events-none">
+          <div className="text-center">
+            <Upload className="w-16 h-16 text-blue-500 mx-auto mb-4" />
+            <p className="text-blue-600 text-lg font-medium">拖放文件到此处上传</p>
+            <p className="text-blue-400 text-sm mt-1">支持 PDF、Excel、Word、图片格式</p>
+          </div>
+        </div>
+      )}
+      {/* Chat Header - Feature: frontend-ui-optimization, Requirements: 5.1, 5.4 */}
+      <div 
+        className="h-16 bg-white border-b border-gray-200 flex items-center gap-3 px-6 flex-shrink-0"
+        data-testid="chat-header"
+      >
+        {/* AI Avatar with indigo background */}
+        <div 
+          className="flex items-center justify-center flex-shrink-0"
+          style={{
+            width: AI_AVATAR_STYLE.size,
+            height: AI_AVATAR_STYLE.size,
+            backgroundColor: AI_AVATAR_STYLE.bgColor,
+            borderRadius: '50%',
+          }}
+          data-testid="chat-header-avatar"
+        >
+          <BotIcon className="w-5 h-5 text-white" />
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-gray-800 text-base font-semibold" data-testid="chat-header-name">
+            DeepSeek 助手
+          </span>
+          <div className="flex items-center gap-2">
+            {/* Status indicator - green dot */}
+            <div 
+              className="w-2 h-2 bg-green-500 rounded-full"
+              data-testid="chat-header-status-dot"
+            />
+            <span 
+              className="text-green-500 text-xs font-medium"
+              data-testid="chat-header-status-text"
+            >
+              在线
+            </span>
+            {/* Version number */}
+            <span 
+              className="text-gray-400 text-xs"
+              data-testid="chat-header-version"
+            >
+              · V3
+            </span>
+          </div>
+        </div>
+        {/* Switch Customer Button - right side */}
+        <div className="ml-auto">
+          <button
+            onClick={handleSwitchCustomer}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            title="切换客户（清除缓存并重置对话）"
+            data-testid="switch-customer-button"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            切换客户
+          </button>
+        </div>
+      </div>
+
+      {/* Chat Messages */}
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="max-w-[50rem] mx-auto">
+          {messages.length === 0 ? (
+            <>
+              <WelcomeMessage />
+              {/* Quick Actions */}
+              <div className="text-center py-4">
+                <div className="text-gray-500 text-xs mb-3">快速开始</div>
+                <div className="flex gap-3 justify-center flex-wrap">
+                  {quickActions.map((action) => (
+                    <button
+                      key={action.action}
+                      onClick={() => handleQuickAction(action.action)}
+                      className="px-5 py-3 bg-gray-100 border border-gray-200 rounded-lg text-gray-800 text-sm hover:bg-gray-50 transition-colors"
+                    >
+                      {action.icon} {action.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {messages.map((msg, index) => (
+                <React.Fragment key={index}>
+                  <MessageBubble message={msg} onNavigate={onNavigate} />
+                  {/* Show intent actions after last assistant message (only if no structured data card) */}
+                  {msg.role === 'assistant' && index === messages.length - 1 && lastIntent && !msg.data && (
+                    <div className="ml-12 mb-4">
+                      <IntentActions intent={lastIntent} onAction={handleIntentAction} />
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
+            </>
+          )}
+          
+          {/* Typing Indicator */}
+          {loading && <TypingIndicator />}
+          
+          {/* Error Message */}
+          {error && (
+            <div className="flex justify-center mb-4">
+              <div className="bg-red-50 text-red-600 px-4 py-2 rounded-lg text-sm">
+                发送失败: {error.message}
+                <button
+                  onClick={handleSubmit}
+                  className="ml-2 underline hover:no-underline"
+                >
+                  重试
+                </button>
+              </div>
+            </div>
+          )}
+          
+          <div ref={messagesEndRef} />
+        </div>
+      </div>
+
+      {/* File Preview */}
+      <FilePreview files={attachedFiles} onRemove={handleRemoveFile} />
+
+      {/* Chat Input - Feature: frontend-ui-optimization, Requirements: 5.5, 5.6 */}
+      <div className="bg-white border-t border-gray-200 px-6 py-4 flex-shrink-0" data-testid="chat-input-bar">
+        <div className="max-w-[50rem] mx-auto flex gap-3 items-end">
+          {/* Hidden File Input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            onChange={handleFileSelect}
+            className="hidden"
+            accept=".pdf,.xlsx,.xls,.doc,.docx,.png,.jpg,.jpeg"
+            data-testid="file-input"
+          />
+          
+          {/* Attachment Button - rounded square, gray background */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center hover:bg-gray-200 transition-colors flex-shrink-0"
+            title="添加附件"
+            data-testid="attachment-button"
+          >
+            <Paperclip className="w-5 h-5 text-gray-500" />
+          </button>
+
+          {/* Input - pill-shaped with gray border */}
+          <div 
+            className="flex-1 bg-gray-50 border border-gray-300 rounded-full px-4 py-2 flex items-center"
+            data-testid="input-container"
+          >
+            <textarea
+              ref={textareaRef}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="输入消息，Shift+Enter 换行"
+              className="flex-1 bg-transparent border-none outline-none resize-none text-sm text-gray-800 placeholder-gray-400 min-h-[24px] max-h-[150px]"
+              rows={1}
+              disabled={loading}
+              data-testid="message-input"
+            />
+          </div>
+
+          {/* Send Button - circular, blue background */}
+          <button
+            onClick={handleSubmit}
+            disabled={loading || (!inputValue.trim() && attachedFiles.length === 0)}
+            className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+            data-testid="send-button"
+          >
+            {loading ? (
+              <Loader2 className="w-5 h-5 text-white animate-spin" />
+            ) : (
+              <Send className="w-5 h-5 text-white" />
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ChatPage;
+
+// Export design tokens and components for testing
+export { 
+  AI_AVATAR_STYLE, 
+  USER_MESSAGE_STYLE, 
+  AI_MESSAGE_STYLE,
+  MessageBubble,
+  ReasoningCollapse,
+  ExtractionResultCard,
+  ApplicationGuideCard,
+  MatchingGuideCard,
+  ApplicationResultCard,
+  MatchingResultCard,
+  StructuredDataCard,
+};
+export type { ChatMessageWithReasoning, ExtractionFileResult };
