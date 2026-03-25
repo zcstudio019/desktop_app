@@ -44,10 +44,12 @@ function resolveApiBase(): string {
       return 'http://127.0.0.1:8000';
     }
 
+    // 开发环境：前端在5173/5174端口，后端在8000端口
     if ((hostname === '127.0.0.1' || hostname === 'localhost') && (port === '5173' || port === '5174')) {
       return 'http://127.0.0.1:8000';
     }
 
+    // 生产环境：前端和后端在同一域名下，使用相同的origin
     return origin.replace(/\/+$/, '');
   }
 

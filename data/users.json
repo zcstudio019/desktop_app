@@ -29,6 +29,20 @@
       "password_algo": "pbkdf2_sha256",
       "password_iterations": 600000,
       "password_hash": "8766bfa32502dbbc903e1e89b6ff8090d22c1b8643a1d475b15e73fa033edd11"
+    },
+    {
+      "username": "周城",
+      "role": "user",
+      "created_at": "2026-03-25T09:01:07.383890+00:00",
+      "salt": "bf6fa7d4044283b1ddca54647b0ba96f",
+      "password_algo": "pbkdf2_sha256",
+      "password_iterations": 600000,
+      "password_hash": "c4594445c8caffb00c5a19bc6f80627957959db32d23e073994c395cbc42165e",
+      "security_question": "你的出生城市是？",
+      "security_answer_salt": "9efef5e2aa252702e1dcdb97188f5a1b",
+      "security_answer_algo": "pbkdf2_sha256",
+      "security_answer_iterations": 600000,
+      "security_answer_hash": "afd0ca03d3a0b4ab8580586238d86252b8a63450e3b77bbc7baccdc8ddea23fb"
     }
   ]
 }
