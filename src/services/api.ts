@@ -29,31 +29,17 @@ import { ApiError } from './types';
 export { ApiError };
 
 function resolveApiBase(): string {
-  const configuredBase = typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_BASE : undefined;
-  if (configuredBase && typeof configuredBase === 'string') {
-    return configuredBase.replace(/\/+$/, '');
+  // 1 优先使用环境变量（可选）
+  const base = import.meta.env?.VITE_API_BASE;
+  if (base) return base;
+
+  // 2 浏览器环境：直接用当前访问地址
+  if (typeof window !== 'undefined') {
+    return window.location.origin;
   }
 
-  if (typeof window !== 'undefined' && window.location) {
-    const origin = window.location.origin;
-    const protocol = window.location.protocol;
-    const hostname = window.location.hostname;
-    const port = window.location.port;
-
-    if (!origin || origin === 'null' || protocol === 'about:') {
-      return 'http://127.0.0.1:8000';
-    }
-
-    // 开发环境：前端在5173/5174端口，后端在8000端口
-    if ((hostname === '127.0.0.1' || hostname === 'localhost') && (port === '5173' || port === '5174')) {
-      return 'http://127.0.0.1:8000';
-    }
-
-    // 生产环境：前端和后端在同一域名下，使用相同的origin
-    return origin.replace(/\/+$/, '');
-  }
-
-  return 'http://127.0.0.1:8000';
+  // 3 兜底（只用于极端情况）
+  return "http://121.196.161.155:8000";
 }
 
 const API_BASE = resolveApiBase();

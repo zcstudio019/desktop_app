@@ -111,7 +111,7 @@ app.include_router(customer.router, prefix="/api")
 # Determine static directory path
 # When running from build: backend/main.py -> app/backend/main.py, static is at app/static
 # When running from source: backend/main.py -> desktop_app/backend/main.py, static is at desktop_app/static
-_static_dir = Path(__file__).parent.parent / "static"
+_static_dir = Path(__file__).parent.parent / "dist"
 
 if _static_dir.exists() and (_static_dir / "index.html").exists():
     logger.info(f"Production mode: serving static files from {_static_dir}")
