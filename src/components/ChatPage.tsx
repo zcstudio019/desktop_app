@@ -1,4 +1,4 @@
-/* eslint-disable react-refresh/only-export-components -- Exports utility functions and types alongside components for test access */
+﻿/* eslint-disable react-refresh/only-export-components -- Exports utility functions and types alongside components for test access */
 /**
  * ChatPage Component - AI Chat Interface
  * 
@@ -19,7 +19,7 @@ import {
   FileCheck, Percent, Calendar, DollarSign, Building,
   Edit3, Save, Download, RefreshCw
 } from 'lucide-react';
-import { sendChat, clearCustomerCache } from '../services/api';
+import { sendChat, clearCustomerCache, customerRagChat, generateCustomerRiskReport, getCustomerRiskReportHistory, listCustomers } from '../services/api';
 import {
   getFieldIcon, getSectionIcon, formatTableValue, isNestedObject, isArrayOfObjects,
   DataSectionCard, ArrayDataCard
@@ -27,7 +27,17 @@ import {
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
-import type { ChatMessage, ChatFile, ChatResponse } from '../services/types';
+import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
+import type {
+  ChatMessage,
+  ChatFile,
+  ChatResponse,
+  CustomerListItem,
+  CustomerRiskReportJson,
+  CustomerRiskReportHistoryItem,
+  CustomerRagChatResponse,
+  CustomerRiskReportResponse,
+} from '../services/types';
 
 // ============================================
 // Utility Functions
@@ -72,6 +82,160 @@ function createDownloadLink(blob: Blob, fileName: string): void {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+function formatCustomerContextLabel(customerId: string | null, customerName: string | null): string {
+  if (customerName && customerName.trim()) {
+    return customerName.trim();
+  }
+  if (!customerId) {
+    return '未选择客户';
+  }
+  return customerId.replace(/^(enterprise_|personal_)/, '');
+}
+
+function formatLocalDateTime(value?: string | null): string {
+  if (!value) {
+    return '未记录';
+  }
+  const normalized = value.includes('T')
+    ? value
+    : value.includes(' ')
+      ? `${value.replace(' ', 'T')}Z`
+      : value;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function formatRiskLevelLabel(level: string | null | undefined): string {
+  switch ((level || '').toLowerCase()) {
+    case 'low':
+      return '低风险';
+    case 'medium':
+      return '中风险';
+    case 'high':
+      return '高风险';
+    default:
+      return '待评估';
+  }
+}
+
+function formatCustomerTypeLabel(type: string | null | undefined): string {
+  switch ((type || '').toLowerCase()) {
+    case 'enterprise':
+      return '企业';
+    case 'personal':
+      return '个人';
+    default:
+      return type || '未说明';
+  }
+}
+
+function formatCompletenessStatus(status: string | null | undefined): string {
+  switch ((status || '').toLowerCase()) {
+    case 'complete':
+      return '完整';
+    case 'partial':
+      return '部分完整';
+    case 'missing':
+      return '缺失较多';
+    default:
+      return status || '待补充';
+  }
+}
+
+function formatRiskDimensionLabel(dimension: string | null | undefined): string {
+  switch ((dimension || '').toLowerCase()) {
+    case 'subject_qualification':
+      return '主体资质';
+    case 'credit_and_debt':
+      return '征信与负债';
+    case 'business_stability':
+      return '经营稳定性';
+    case 'repayment_source':
+      return '还款来源';
+    case 'data_completeness':
+      return '资料完整性';
+    default:
+      return dimension || '风险维度';
+  }
+}
+
+function formatRecommendationActionLabel(action: string | null | undefined): string {
+  switch ((action || '').toLowerCase()) {
+    case 'apply_now':
+      return '建议立即申请';
+    case 'optimize_then_apply':
+      return '建议优化后再申请';
+    case 'supplement_documents':
+      return '建议先补充资料';
+    case 'alternative_financing':
+      return '建议考虑替代融资路径';
+    case 'observe_and_reassess':
+      return '建议观察后再评估';
+    default:
+      return action || '建议补充资料后再判断';
+  }
+}
+
+function formatProductTypeLabel(productType: string | null | undefined): string {
+  switch ((productType || '').toLowerCase()) {
+    case 'mortgage':
+    case 'mortgage_loan':
+      return '抵押类融资';
+    case 'guarantee':
+    case 'guarantee_loan':
+      return '担保类融资';
+    case 'supply_chain':
+    case 'supply_chain_finance':
+      return '供应链融资';
+    case 'credit':
+    case 'credit_loan':
+      return '信用类融资';
+    case 'invoice':
+    case 'invoice_finance':
+      return '发票融资';
+    case 'tax':
+    case 'tax_loan':
+      return '税贷类融资';
+    default:
+      return productType || '待评估';
+  }
+}
+
+function getRiskTone(level: string | null | undefined): string {
+  switch ((level || '').toLowerCase()) {
+    case 'low':
+      return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    case 'medium':
+      return 'bg-amber-50 text-amber-700 border-amber-200';
+    case 'high':
+      return 'bg-rose-50 text-rose-700 border-rose-200';
+    default:
+      return 'bg-slate-50 text-slate-700 border-slate-200';
+  }
+}
+
+function getRiskBarTone(level: string | null | undefined): string {
+  switch ((level || '').toLowerCase()) {
+    case 'low':
+      return 'bg-emerald-500';
+    case 'medium':
+      return 'bg-amber-500';
+    case 'high':
+      return 'bg-rose-500';
+    default:
+      return 'bg-slate-400';
+  }
 }
 
 function buildApplicationFormHtml(
@@ -677,10 +841,68 @@ interface ApplicationResultCardProps {
     applicationData?: Record<string, Record<string, unknown>>;  // JSON structured data
     applicationContent?: string;  // Markdown fallback
     warnings?: string[];
+    metadata?: {
+      generated_at?: string;
+      customer_id?: string;
+      profile_version?: number;
+      profile_updated_at?: string;
+      data_sources?: string[];
+      stale?: boolean;
+      stale_reason?: string;
+      stale_at?: string;
+    };
     needsInput?: boolean;
     requiredFields?: string[];
   };
   onNavigate?: (page: string) => void;
+}
+
+function buildChatApplicationFieldSource(fieldName: string, value: unknown, metadata?: ApplicationResultCardProps['data']['metadata']) {
+  const text = String(value ?? '').trim();
+  const profileVersion = metadata?.profile_version ? `资料汇总 V${metadata.profile_version}` : '当前资料汇总';
+  const profileTime = metadata?.profile_updated_at
+    ? `，最近更新于 ${formatLocalDateTime(metadata.profile_updated_at)}`
+    : '';
+
+  if (!text || text === '-' || /待补充|无/.test(text)) {
+    return {
+      label: '待补字段',
+      detail: `当前客户资料中未找到可直接引用的内容，建议补充材料后重新生成。本次判断基于 ${profileVersion}${profileTime}。`,
+    };
+  }
+
+  if (/经营地址|注册地址|经营状态|统一社会信用代码|行业类型|成立时间/.test(fieldName)) {
+    return {
+      label: '企业征信 / 资料汇总',
+      detail: `主要来自企业征信报告基本信息和资料汇总，本次生成基于 ${profileVersion}${profileTime}。`,
+    };
+  }
+
+  if (/纳税|开票|营收|利润|财务|流水|收入|回款/.test(fieldName)) {
+    return {
+      label: '财务 / 纳税 / 流水资料',
+      detail: `主要来自财务数据、纳税资料、银行流水和经营类报告，本次生成基于 ${profileVersion}${profileTime}。`,
+    };
+  }
+
+  if (/征信|负债|逾期|担保|诉讼|信用卡|隐形负债/.test(fieldName)) {
+    return {
+      label: '征信 / 负债资料',
+      detail: `主要来自企业征信、个人征信、公共记录和负债资料；如字段可计算，系统会自动综合推导。本次生成基于 ${profileVersion}${profileTime}。`,
+    };
+  }
+
+  if (/抵押|资产|存货|固定资产|净资产/.test(fieldName)) {
+    return {
+      label: '资产 / 抵押材料',
+      detail: `主要来自抵押物资料、资产清单和补充材料，本次生成基于 ${profileVersion}${profileTime}。`,
+    };
+  }
+
+  return {
+    label: '资料汇总 / 结构化提取',
+    detail: `系统综合读取资料汇总与结构化提取结果生成该字段，本次依据为 ${profileVersion}${profileTime}。`,
+  };
 }
 
 /**
@@ -694,15 +916,18 @@ interface EditableDataSectionCardChatProps {
   data: Record<string, unknown>;
   editMode: boolean;
   onFieldChange: (sectionTitle: string, fieldName: string, value: string) => void;
+  metadata?: ApplicationResultCardProps['data']['metadata'];
 }
 
 const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = ({ 
   title, 
   data, 
   editMode, 
-  onFieldChange 
+  onFieldChange,
+  metadata,
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
+  const [expandedSourceKey, setExpandedSourceKey] = useState<string | null>(null);
   const entries = Object.entries(data).filter(
     ([, value]) => typeof value !== 'object' || value === null
   );
@@ -743,7 +968,11 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
             <div className="overflow-hidden rounded-lg border border-gray-200">
               <table className="w-full text-sm">
                 <tbody>
-                  {entries.map(([key, value], idx) => (
+                  {entries.map(([key, value], idx) => {
+                    const sourceInfo = buildChatApplicationFieldSource(key, value, metadata);
+                    const rowKey = `${title}-${key}`;
+                    const showSourceDetail = expandedSourceKey === rowKey;
+                    return (
                     <tr 
                       key={key} 
                       className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
@@ -764,13 +993,33 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                             data-testid={`edit-field-${title}-${key}`}
                           />
                         ) : (
-                          <span className="break-words" title={String(value ?? '')}>
-                            {formatTableValue(value)}
-                          </span>
+                          <div>
+                            <div className="break-words" title={String(value ?? '')}>
+                              {formatTableValue(value)}
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                                来源：{sourceInfo.label}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setExpandedSourceKey((prev) => (prev === rowKey ? null : rowKey))}
+                                className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
+                              >
+                                {showSourceDetail ? '收起来源' : '查看来源'}
+                              </button>
+                            </div>
+                            {showSourceDetail && (
+                              <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                                {sourceInfo.detail}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -784,6 +1033,7 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
               data={value as Record<string, unknown>}
               editMode={editMode}
               onFieldChange={onFieldChange}
+              metadata={metadata}
             />
           ))}
         </div>
@@ -801,6 +1051,7 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
  * Shows customer info and warnings if any.
  */
 const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onNavigate }) => {
+  const { state } = useApp();
   const [isExpanded, setIsExpanded] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [editedData, setEditedData] = useState<Record<string, Record<string, unknown>>>({});
@@ -834,6 +1085,27 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
   
   const loanTypeLabel = data.loanType === 'personal' ? '个人贷款' : '企业贷款';
   const hasStructuredData = data.applicationData && Object.keys(data.applicationData).length > 0;
+  const profileVersionLabel = data.metadata?.profile_version ? `V${data.metadata.profile_version}` : '版本待确认';
+  const profileUpdatedAtLabel = data.metadata?.profile_updated_at
+    ? formatLocalDateTime(data.metadata.profile_updated_at)
+    : '未记录';
+  const generatedAtLabel = data.metadata?.generated_at
+    ? formatLocalDateTime(data.metadata.generated_at)
+    : '刚刚生成';
+  const currentApplicationMetadata = state.application.result?.metadata;
+  const sameCustomerStale =
+    Boolean(currentApplicationMetadata?.stale) &&
+    Boolean(currentApplicationMetadata?.customer_id) &&
+    currentApplicationMetadata?.customer_id === data.metadata?.customer_id;
+  const staleReason = currentApplicationMetadata?.stale_reason || data.metadata?.stale_reason || '客户资料已更新，请重新生成申请表。';
+  const staleAtLabel = currentApplicationMetadata?.stale_at
+    ? formatLocalDateTime(currentApplicationMetadata.stale_at)
+    : data.metadata?.stale_at
+      ? formatLocalDateTime(data.metadata.stale_at)
+      : '';
+  const applicationStatusBadge = sameCustomerStale
+    ? { label: '待刷新', className: 'border-amber-200 bg-amber-50 text-amber-700' }
+    : { label: '最新可用', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' };
   
   // Determine which data to display: savedData > editMode editedData > original
   const displayData = savedData
@@ -924,6 +1196,9 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
             <div>
               <div className="font-medium text-gray-800 text-sm">
                 {data.customerFound ? '申请表已生成' : '空白申请表模板'}
+                <span className={`ml-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${applicationStatusBadge.className}`}>
+                  {applicationStatusBadge.label}
+                </span>
                 {editMode && (
                   <span className="ml-2 text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded">编辑中</span>
                 )}
@@ -932,6 +1207,11 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
                 {data.customerName && `客户：${data.customerName}`}
                 {data.customerName && ' · '}
                 {loanTypeLabel}
+              </div>
+              <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                <span>生成时间：{generatedAtLabel}</span>
+                <span>资料汇总版本：{profileVersionLabel}</span>
+                <span>资料更新时间：{profileUpdatedAtLabel}</span>
               </div>
             </div>
           </div>
@@ -995,6 +1275,44 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
           ))}
         </div>
       )}
+
+      <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-lg bg-white px-3 py-2">
+            <div className="text-[11px] text-slate-500">生成时间</div>
+            <div className="mt-1 text-sm font-semibold text-slate-800">{generatedAtLabel}</div>
+          </div>
+          <div className="rounded-lg bg-white px-3 py-2">
+            <div className="text-[11px] text-slate-500">资料汇总版本</div>
+            <div className="mt-1 text-sm font-semibold text-slate-800">{profileVersionLabel}</div>
+          </div>
+          <div className="rounded-lg bg-white px-3 py-2">
+            <div className="text-[11px] text-slate-500">资料汇总更新时间</div>
+            <div className="mt-1 text-sm font-semibold text-slate-800">{profileUpdatedAtLabel}</div>
+          </div>
+        </div>
+      </div>
+
+      {sameCustomerStale && (
+        <div className="border-b border-amber-100 bg-amber-50/80 px-4 py-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-amber-900">这份申请表已被新上传资料覆盖</div>
+              <div className="mt-1 text-sm text-amber-800">{staleReason}</div>
+              <div className="mt-1 text-xs text-amber-700">
+                {staleAtLabel ? `失效时间：${staleAtLabel}` : '请重新生成后再用于方案匹配或后续沟通。'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate?.('application')}
+              className="inline-flex items-center justify-center rounded-xl bg-amber-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
+            >
+              去申请表页重新生成
+            </button>
+          </div>
+        </div>
+      )}
       
       {/* Content */}
       {isExpanded && (
@@ -1011,6 +1329,7 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
                       data={sectionData as Record<string, unknown>}
                       editMode={editMode}
                       onFieldChange={handleFieldChange}
+                      metadata={data.metadata}
                     />
                   );
                 }
@@ -2049,6 +2368,7 @@ const MatchingSchemeCard: React.FC<MatchingSchemeCardProps> = ({ schemes }) => {
  * - Falls back to Markdown rendering if only matchResult is available
  */
 const MatchingResultCard: React.FC<MatchingResultCardProps> = ({ data, onNavigate }) => {
+  const { state } = useApp();
   const [isExpanded, setIsExpanded] = useState(true);
   
   // If needs input, show the guide card instead
@@ -2070,6 +2390,18 @@ const MatchingResultCard: React.FC<MatchingResultCardProps> = ({ data, onNavigat
   
   // Check if we have structured data
   const hasStructuredData = data.matchingData && Object.keys(data.matchingData).length > 0;
+  const currentSchemeMeta = state.scheme.result;
+  const sameCustomerStale =
+    Boolean(currentSchemeMeta?.stale) &&
+    Boolean(currentSchemeMeta?.customerId) &&
+    currentSchemeMeta?.customerId === state.extraction.currentCustomerId;
+  const staleReason = currentSchemeMeta?.staleReason || '客户资料已更新，请重新匹配方案。';
+  const staleAtLabel = currentSchemeMeta?.staleAt
+    ? formatLocalDateTime(currentSchemeMeta.staleAt)
+    : '';
+  const matchingStatusBadge = sameCustomerStale
+    ? { label: '待重匹配', className: 'border-amber-200 bg-amber-50 text-amber-700' }
+    : { label: '最新结果', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' };
   
   return (
     <div 
@@ -2084,7 +2416,12 @@ const MatchingResultCard: React.FC<MatchingResultCardProps> = ({ data, onNavigat
               <Target className="w-5 h-5" />
             </div>
             <div>
-              <div className="font-medium text-gray-800 text-sm">方案匹配结果</div>
+              <div className="font-medium text-gray-800 text-sm">
+                方案匹配结果
+                <span className={`ml-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${matchingStatusBadge.className}`}>
+                  {matchingStatusBadge.label}
+                </span>
+              </div>
               <div className="text-xs text-gray-500 mt-0.5">
                 {data.customerName && `客户：${data.customerName}`}
                 {data.customerName && ' · '}
@@ -2104,6 +2441,27 @@ const MatchingResultCard: React.FC<MatchingResultCardProps> = ({ data, onNavigat
           </button>
         </div>
       </div>
+
+      {sameCustomerStale && (
+        <div className="border-b border-amber-100 bg-amber-50/80 px-4 py-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-amber-900">这份方案匹配结果已被新上传资料覆盖</div>
+              <div className="mt-1 text-sm text-amber-800">{staleReason}</div>
+              <div className="mt-1 text-xs text-amber-700">
+                {staleAtLabel ? `失效时间：${staleAtLabel}` : '请重新匹配后再用于风险评估或客户沟通。'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate?.('scheme')}
+              className="inline-flex items-center justify-center rounded-xl bg-amber-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
+            >
+              去方案匹配页重新匹配
+            </button>
+          </div>
+        </div>
+      )}
       
       {/* Content */}
       {isExpanded && (
@@ -2206,10 +2564,734 @@ const MatchingResultCard: React.FC<MatchingResultCardProps> = ({ data, onNavigat
 // ============================================
 
 interface StructuredDataCardProps {
-  intent: ChatResponse['intent'];
+  intent?: ChatResponse['intent'] | null;
   data: Record<string, unknown> | null;
   onNavigate?: (page: string) => void;
 }
+
+function isRiskReportData(data: Record<string, unknown> | null): boolean {
+  if (!data) return false;
+  return 'customer_summary' in data && 'overall_assessment' in data && 'risk_dimensions' in data;
+}
+
+function buildRiskReportComparison(
+  currentReport: CustomerRiskReportJson,
+  previousReport?: CustomerRiskReportHistoryItem | null,
+): {
+  available: boolean;
+  scoreDelta: number;
+  completenessDelta: number;
+  previousRiskLevel: string;
+  addedMissingItems: string[];
+  resolvedMissingItems: string[];
+  actionChanged: boolean;
+} {
+  if (!previousReport) {
+    return {
+      available: false,
+      scoreDelta: 0,
+      completenessDelta: 0,
+      previousRiskLevel: '',
+      addedMissingItems: [],
+      resolvedMissingItems: [],
+      actionChanged: false,
+    };
+  }
+
+  const currentAssessment = currentReport.overall_assessment;
+  const previousAssessment = previousReport.report_json?.overall_assessment;
+  const currentCompleteness = currentReport.customer_summary?.data_completeness;
+  const previousCompleteness = previousReport.report_json?.customer_summary?.data_completeness;
+  const currentMissing = new Set(currentCompleteness?.missing_items || []);
+  const previousMissing = new Set(previousCompleteness?.missing_items || []);
+
+  return {
+    available: true,
+    scoreDelta: (currentAssessment?.total_score || 0) - (previousAssessment?.total_score || 0),
+    completenessDelta: (currentCompleteness?.score || 0) - (previousCompleteness?.score || 0),
+    previousRiskLevel: previousAssessment?.risk_level || '',
+    addedMissingItems: [...currentMissing].filter((item) => !previousMissing.has(item)),
+    resolvedMissingItems: [...previousMissing].filter((item) => !currentMissing.has(item)),
+    actionChanged:
+      (currentReport.final_recommendation?.action || '') !== (previousReport.report_json?.final_recommendation?.action || ''),
+  };
+}
+
+type CustomerRiskReportCardData = CustomerRiskReportJson & {
+  generated_at?: string;
+  profile_version?: number;
+  profile_updated_at?: string;
+  previous_report?: CustomerRiskReportHistoryItem | null;
+};
+
+const RiskReportCard: React.FC<{ report: CustomerRiskReportCardData }> = ({ report }) => {
+  const [copyState, setCopyState] = useState<'idle' | 'done'>('idle');
+  const [reportHistory, setReportHistory] = useState<CustomerRiskReportHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [showComparison, setShowComparison] = useState(false);
+  const summary = report.customer_summary;
+  const assessment = report.overall_assessment;
+  const generatedAt = report.generated_at;
+  const profileVersion = report.profile_version;
+  const profileUpdatedAt = report.profile_updated_at;
+  const previousReport = (report.previous_report as CustomerRiskReportHistoryItem | undefined) || reportHistory[1] || reportHistory[0] || null;
+  const comparison = buildRiskReportComparison(report, previousReport);
+  const reportStatusBadge = profileVersion
+    ? { label: `基于资料汇总 V${profileVersion}`, className: 'border-sky-200 bg-sky-50 text-sky-700' }
+    : { label: '版本待确认', className: 'border-slate-200 bg-slate-50 text-slate-600' };
+  const dimensions = report.risk_dimensions || [];
+  const noMatch = report.no_match_analysis;
+  const matchedSchemes = report.matched_schemes;
+  const suggestions = report.optimization_suggestions;
+  const plan = report.financing_plan;
+  const finalRecommendation = report.final_recommendation;
+  const riskBarWidth = `${Math.max(8, Math.min(assessment.total_score ?? 0, 100))}%`;
+  const suggestionTimeline = [
+    {
+      title: '短期优化',
+      description: suggestions.short_term?.length ? suggestions.short_term.join('；') : '暂无',
+      tone: 'border-blue-200 bg-blue-50 text-blue-700',
+    },
+    {
+      title: '中期优化',
+      description: suggestions.mid_term?.length ? suggestions.mid_term.join('；') : '暂无',
+      tone: 'border-violet-200 bg-violet-50 text-violet-700',
+    },
+    {
+      title: '补件建议',
+      description: suggestions.document_supplement?.length ? suggestions.document_supplement.join('、') : '暂无',
+      tone: 'border-amber-200 bg-amber-50 text-amber-700',
+    },
+    {
+      title: '征信与负债优化',
+      description: [
+        suggestions.credit_optimization?.length ? `征信优化：${suggestions.credit_optimization.join('；')}` : '',
+        suggestions.debt_optimization?.length ? `负债优化：${suggestions.debt_optimization.join('；')}` : '',
+      ].filter(Boolean).join('  ') || '暂无',
+      tone: 'border-rose-200 bg-rose-50 text-rose-700',
+    },
+  ];
+  const financingTimeline = [
+    {
+      title: '当前阶段',
+      description: plan.current_stage || '待补充',
+      tone: 'border-slate-200 bg-slate-50 text-slate-700',
+    },
+    {
+      title: '1-3个月规划',
+      description: plan.one_to_three_months?.length ? plan.one_to_three_months.join('；') : '暂无',
+      tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    },
+    {
+      title: '3-6个月规划',
+      description: plan.three_to_six_months?.length ? plan.three_to_six_months.join('；') : '暂无',
+      tone: 'border-cyan-200 bg-cyan-50 text-cyan-700',
+    },
+    {
+      title: '替代融资路径',
+      description: plan.alternative_paths?.length ? plan.alternative_paths.join('；') : '暂无',
+      tone: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700',
+    },
+  ];
+
+  useEffect(() => {
+    const customerId = summary.customer_id;
+    if (!customerId) return;
+    let active = true;
+    setHistoryLoading(true);
+    getCustomerRiskReportHistory(customerId, 2)
+      .then((response) => {
+        if (!active) return;
+        setReportHistory(response.items || []);
+      })
+      .catch(() => {
+        if (!active) return;
+        setReportHistory([]);
+      })
+      .finally(() => {
+        if (active) {
+          setHistoryLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [summary.customer_id, generatedAt, profileVersion]);
+
+  const exportMarkdown = useCallback(() => {
+    const markdownLines = [
+      '# 风险评估报告',
+      '',
+      `- 客户名称：${summary.customer_name || '未命名客户'}`,
+      `- 生成时间：${generatedAt ? formatLocalDateTime(generatedAt) : '刚刚生成'}`,
+      `- 资料汇总版本：${profileVersion ? `V${profileVersion}` : '版本待确认'}`,
+      `- 资料汇总更新时间：${profileUpdatedAt ? formatLocalDateTime(profileUpdatedAt) : '未记录'}`,
+      `- 客户类型：${formatCustomerTypeLabel(summary.customer_type)}`,
+      `- 综合评分：${assessment.total_score ?? '-'}`,
+      `- 风险等级：${formatRiskLevelLabel(assessment.risk_level)}`,
+      `- 资料完整度：${formatCompletenessStatus(summary.data_completeness?.status)}`,
+      `- 资料完整度评分：${summary.data_completeness?.score ?? '-'}`,
+      `- 申请建议：${assessment.immediate_application_recommended ? '建议立即申请' : '建议先优化后申请'}`,
+      '',
+      '## 客户概况',
+      `- 所属行业：${summary.industry || '待补充'}`,
+      `- 融资需求：${summary.financing_need || '待补充'}`,
+      `- 缺失资料：${summary.data_completeness?.missing_items?.length ? summary.data_completeness.missing_items.join('、') : '无'}`,
+      '',
+      '## 综合结论',
+      assessment.conclusion || '暂无结论',
+      '',
+      '## 风险维度评估',
+      ...dimensions.flatMap((item) => [
+        `### ${formatRiskDimensionLabel(item.dimension)}`,
+        `- 评分：${item.score} / 20`,
+        `- 风险等级：${formatRiskLevelLabel(item.risk_level)}`,
+        `- 说明：${item.summary || '暂无说明'}`,
+        `- 缺失资料：${item.missing_info?.length ? item.missing_info.join('、') : '无'}`,
+        '',
+      ]),
+      '## 融资方案分析',
+      ...(matchedSchemes.has_match && matchedSchemes.items.length > 0
+        ? matchedSchemes.items.flatMap((item, index) => [
+            `### 方案 ${index + 1}${item.product_name ? `：${item.product_name}` : ''}`,
+            `- 预计额度：${item.estimated_limit || '待评估'}`,
+            `- 预计利率：${item.estimated_rate || '待评估'}`,
+            `- 匹配原因：${item.match_reason || '待补充'}`,
+            `- 限制条件：${item.constraints?.length ? item.constraints.join('、') : '无'}`,
+            '',
+          ])
+        : [
+            '> 当前暂无可直接采用的匹配方案，建议先补强短板后再进行新一轮匹配。',
+            '',
+            `- 未匹配原因：${noMatch.reasons?.length ? noMatch.reasons.join('；') : '系统未命中可直接进件方案。'}`,
+            `- 核心短板：${noMatch.core_shortboards?.length ? noMatch.core_shortboards.join('、') : '需进一步补充资料评估。'}`,
+            '',
+          ]),
+      '## 优化建议',
+      ...suggestionTimeline.flatMap((item, index) => [
+        `### ${index + 1}. ${item.title}`,
+        item.description,
+        '',
+      ]),
+      '',
+      '## 融资规划',
+      ...financingTimeline.flatMap((item, index) => [
+        `### ${index + 1}. ${item.title}`,
+        item.description,
+        '',
+      ]),
+      '',
+      '## 最终建议',
+      `- 当前动作：${formatRecommendationActionLabel(finalRecommendation.action)}`,
+      `- 优先产品类型：${finalRecommendation.priority_product_types?.length ? finalRecommendation.priority_product_types.map((item) => formatProductTypeLabel(item)).join('、') : '待评估'}`,
+      `- 下一步：${finalRecommendation.next_steps?.length ? finalRecommendation.next_steps.join('；') : '先补齐核心资料'}`,
+      '',
+    ];
+    const blob = new Blob([markdownLines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+    createDownloadLink(blob, `风险评估报告_${summary.customer_name || '未命名客户'}.md`);
+  }, [assessment, dimensions, finalRecommendation, financingTimeline, generatedAt, matchedSchemes, noMatch, profileUpdatedAt, profileVersion, suggestionTimeline, summary]);
+
+  const copyReport = useCallback(async () => {
+    const text = [
+      `风险评估报告 - ${summary.customer_name || '未命名客户'}`,
+      `客户类型：${formatCustomerTypeLabel(summary.customer_type)}`,
+      `风险等级：${formatRiskLevelLabel(assessment.risk_level)}`,
+      `综合评分：${assessment.total_score ?? '-'}`,
+      `资料完整度：${formatCompletenessStatus(summary.data_completeness?.status)}`,
+      `综合结论：${assessment.conclusion || '暂无结论'}`,
+      '',
+      `客户概况：所属行业 ${summary.industry || '待补充'}；融资需求 ${summary.financing_need || '待补充'}；缺失资料 ${summary.data_completeness?.missing_items?.length ? summary.data_completeness.missing_items.join('、') : '无'}`,
+      '',
+      '风险维度评估：',
+      ...dimensions.map((item) => `- ${formatRiskDimensionLabel(item.dimension)}：${item.score}/20，${formatRiskLevelLabel(item.risk_level)}，${item.summary || '暂无说明'}`),
+      '',
+      matchedSchemes.has_match && matchedSchemes.items.length > 0
+        ? `融资方案分析：${matchedSchemes.items.map((item) => `${item.product_name || '未命名方案'}（${item.match_reason || '待补充'}）`).join('；')}`
+        : `融资方案分析：当前暂无可直接采用的匹配方案。未匹配原因：${noMatch.reasons?.join('；') || '系统未命中可直接进件方案。'}；核心短板：${noMatch.core_shortboards?.join('、') || '需进一步补充资料评估。'}`,
+      '',
+      `优化建议：${suggestionTimeline.map((item) => `${item.title}：${item.description}`).join('；')}`,
+      `融资规划：${financingTimeline.map((item) => `${item.title}：${item.description}`).join('；')}`,
+      `最终建议：当前动作 ${formatRecommendationActionLabel(finalRecommendation.action)}；优先产品类型 ${finalRecommendation.priority_product_types?.length ? finalRecommendation.priority_product_types.map((item) => formatProductTypeLabel(item)).join('、') : '待评估'}；下一步 ${finalRecommendation.next_steps?.length ? finalRecommendation.next_steps.join('；') : '先补齐核心资料'}`,
+    ].join('\n');
+    await navigator.clipboard.writeText(text);
+    setCopyState('done');
+    window.setTimeout(() => setCopyState('idle'), 1800);
+  }, [assessment, dimensions, finalRecommendation, financingTimeline, generatedAt, matchedSchemes, noMatch, profileUpdatedAt, profileVersion, suggestionTimeline, summary]);
+
+  const printReport = useCallback(() => {
+    const printWindow = window.open('', '_blank', 'width=1000,height=760');
+    if (!printWindow) return;
+    const printHtml = `
+      <!doctype html>
+      <html lang="zh-CN">
+      <head>
+        <meta charset="utf-8" />
+        <title>风险评估报告</title>
+        <style>
+          @page { margin: 92px 32px 72px; }
+          body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; margin: 32px; color: #0f172a; }
+          body { position: relative; }
+          h1 { font-size: 26px; margin-bottom: 8px; }
+          h2 { font-size: 18px; margin: 24px 0 10px; }
+          .meta { color: #475569; margin-bottom: 18px; }
+          .page-header { position: fixed; top: -62px; left: 0; right: 0; display:flex; justify-content:space-between; align-items:flex-end; border-bottom:1px solid #cbd5e1; padding-bottom:10px; }
+          .page-footer { position: fixed; bottom: -44px; left: 0; right: 0; display:flex; justify-content:space-between; color:#64748b; font-size:12px; border-top:1px solid #e2e8f0; padding-top:10px; }
+          .tag { display: inline-block; padding: 6px 12px; border-radius: 999px; background: #eef2ff; color: #4338ca; font-weight: 600; }
+          .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+          .summary-item { border: 1px solid #e2e8f0; border-radius: 14px; padding: 14px; background: #f8fafc; }
+          .summary-label { color: #64748b; font-size: 12px; }
+          .summary-value { margin-top: 6px; font-size: 20px; font-weight: 700; }
+          .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+          .card { border: 1px solid #e2e8f0; border-radius: 16px; padding: 16px; margin-bottom: 14px; }
+          .alert { border: 1px solid #fcd34d; background: linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%); }
+          .muted { color: #475569; line-height: 1.7; }
+          .progress-shell { height: 8px; border-radius: 999px; overflow: hidden; background: #e2e8f0; margin: 10px 0 8px; }
+          .progress-bar { height: 8px; border-radius: 999px; }
+          .timeline-item { display: grid; grid-template-columns: 36px 1fr; gap: 12px; align-items: start; margin-bottom: 14px; }
+          .timeline-dot { width: 32px; height: 32px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; }
+          .timeline-card { border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px 14px; background: #f8fafc; }
+          .timeline-title { font-weight: 700; margin-bottom: 6px; }
+          ul { padding-left: 18px; }
+          li { margin: 6px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="page-header">
+          <div>
+            <div style="font-size:12px;color:#64748b;">贷款助手风险评估中心</div>
+            <div style="font-size:16px;font-weight:700;color:#0f172a;">${escapeHtml(summary.customer_name || '未命名客户')}</div>
+          </div>
+          <div style="text-align:right;font-size:12px;color:#64748b;">
+            <div>生成时间：${escapeHtml(generatedAt ? formatLocalDateTime(generatedAt) : '刚刚生成')}</div>
+            <div>资料汇总版本：${escapeHtml(profileVersion ? `V${profileVersion}` : '版本待确认')}</div>
+          </div>
+        </div>
+        <h1>风险评估报告</h1>
+        <div class="meta">${escapeHtml(summary.customer_name || '未命名客户')} · ${escapeHtml(formatCustomerTypeLabel(summary.customer_type))}</div>
+        <div class="tag">${escapeHtml(formatRiskLevelLabel(assessment.risk_level))} / ${escapeHtml(String(assessment.total_score ?? '-'))} 分</div>
+        <div class="summary-grid">
+          <div class="summary-item">
+            <div class="summary-label">综合评分</div>
+            <div class="summary-value">${escapeHtml(String(assessment.total_score ?? '-'))}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">资料完整度</div>
+            <div class="summary-value" style="font-size:16px;">${escapeHtml(formatCompletenessStatus(summary.data_completeness?.status))}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">资料完整度评分</div>
+            <div class="summary-value" style="font-size:16px;">${escapeHtml(String(summary.data_completeness?.score ?? '-'))}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">申请建议</div>
+            <div class="summary-value" style="font-size:16px;">${escapeHtml(assessment.immediate_application_recommended ? '建议立即申请' : '建议先优化后申请')}</div>
+          </div>
+        </div>
+        <h2>综合结论</h2>
+        <div class="card muted">${escapeHtml(assessment.conclusion || '暂无结论')}</div>
+        <h2>风险维度评估</h2>
+        <div class="grid">
+          ${dimensions.map((item) => `
+            <div class="card">
+              <strong>${escapeHtml(formatRiskDimensionLabel(item.dimension))}</strong><br/>
+              <span class="muted">评分：${escapeHtml(String(item.score))} / 风险等级：${escapeHtml(formatRiskLevelLabel(item.risk_level))}</span>
+              <div class="progress-shell">
+                <div class="progress-bar" style="width:${Math.max(8, Math.min(100, (item.score / 20) * 100))}%; background:${item.risk_level === 'high' ? '#f43f5e' : item.risk_level === 'medium' ? '#f59e0b' : '#10b981'};"></div>
+              </div>
+              <div class="muted" style="margin-top:8px;">${escapeHtml(item.summary || '暂无说明')}</div>
+            </div>
+          `).join('')}
+        </div>
+        ${!matchedSchemes.has_match || matchedSchemes.items.length === 0 ? `
+          <h2>未匹配方案提示</h2>
+          <div class="card alert">
+            <div style="font-weight:700; color:#92400e;">当前暂无可直接采用的匹配方案</div>
+            <div class="muted" style="margin-top:8px;">现阶段更适合先补强短板，再进入下一轮产品匹配。</div>
+            <div class="grid" style="margin-top:12px;">
+              <div class="card" style="background:#fff; margin-bottom:0;">
+                <div style="font-size:12px; color:#b45309; font-weight:700;">未匹配原因</div>
+                <div class="muted" style="margin-top:8px;">${escapeHtml(noMatch.reasons?.join('；') || '系统未命中可直接进件方案。')}</div>
+              </div>
+              <div class="card" style="background:#fff; margin-bottom:0;">
+                <div style="font-size:12px; color:#b45309; font-weight:700;">核心短板</div>
+                <div class="muted" style="margin-top:8px;">${escapeHtml(noMatch.core_shortboards?.join('、') || '需进一步补充资料评估。')}</div>
+              </div>
+            </div>
+          </div>
+        ` : ''}
+        <h2>优化建议</h2>
+        <div class="card">
+          ${suggestionTimeline.map((item, index) => `
+            <div class="timeline-item">
+              <div class="timeline-dot">${index + 1}</div>
+              <div class="timeline-card">
+                <div class="timeline-title">${escapeHtml(item.title)}</div>
+                <div class="muted">${escapeHtml(item.description)}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        <h2>融资规划</h2>
+        <div class="card">
+          ${financingTimeline.map((item, index) => `
+            <div class="timeline-item">
+              <div class="timeline-dot">${index + 1}</div>
+              <div class="timeline-card">
+                <div class="timeline-title">${escapeHtml(item.title)}</div>
+                <div class="muted">${escapeHtml(item.description)}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="page-footer">
+          <div>贷款助手智能贷款审批管理系统</div>
+          <div>${escapeHtml(summary.customer_name || '未命名客户')} · ${escapeHtml(generatedAt ? formatLocalDateTime(generatedAt) : '刚刚生成')}</div>
+        </div>
+      </body>
+      </html>
+    `;
+    printWindow.document.open();
+    printWindow.document.write(printHtml);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  }, [assessment, dimensions, financingTimeline, generatedAt, matchedSchemes, noMatch, plan, profileUpdatedAt, profileVersion, suggestionTimeline, suggestions, summary]);
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 bg-[linear-gradient(135deg,#fff7ed_0%,#eff6ff_100%)] px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex flex-wrap items-center gap-2 text-lg font-semibold text-slate-800">
+              <span>风险评估报告</span>
+              <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${reportStatusBadge.className}`}>
+                {reportStatusBadge.label}
+              </span>
+            </div>
+            <div className="mt-1 text-sm text-slate-500">
+              {summary.customer_name || '未命名客户'}
+              {' · '}
+              {formatCustomerTypeLabel(summary.customer_type)}
+            </div>
+          </div>
+          <div className={`rounded-full border px-3 py-1 text-sm font-medium ${getRiskTone(assessment.risk_level)}`}>
+            {formatRiskLevelLabel(assessment.risk_level)}
+          </div>
+        </div>
+        <div className="mt-4 overflow-hidden rounded-full bg-white/80">
+          <div className={`h-2 rounded-full ${assessment.risk_level === 'high' ? 'bg-rose-500' : assessment.risk_level === 'medium' ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: riskBarWidth }} />
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-6">
+          <div className="rounded-xl bg-white/80 px-4 py-3">
+            <div className="text-xs text-slate-500">综合评分</div>
+            <div className="mt-1 text-2xl font-semibold text-slate-800">{assessment.total_score ?? '-'}</div>
+          </div>
+          <div className="rounded-xl bg-white/80 px-4 py-3">
+            <div className="text-xs text-slate-500">资料完整度</div>
+            <div className="mt-1 text-base font-semibold text-slate-800">
+              {formatCompletenessStatus(summary.data_completeness?.status)}
+            </div>
+          </div>
+          <div className="rounded-xl bg-white/80 px-4 py-3">
+            <div className="text-xs text-slate-500">资料完整度评分</div>
+            <div className="mt-1 text-base font-semibold text-slate-800">{summary.data_completeness?.score ?? '-'}</div>
+          </div>
+          <div className="rounded-xl bg-white/80 px-4 py-3">
+            <div className="text-xs text-slate-500">是否建议立即申请</div>
+            <div className="mt-1 text-base font-semibold text-slate-800">
+              {assessment.immediate_application_recommended ? '建议立即申请' : '建议先优化后申请'}
+            </div>
+          </div>
+          <div className="rounded-xl bg-white/80 px-4 py-3">
+            <div className="text-xs text-slate-500">生成时间</div>
+            <div className="mt-1 text-base font-semibold text-slate-800">
+              {generatedAt ? formatLocalDateTime(generatedAt) : '刚刚生成'}
+            </div>
+          </div>
+          <div className="rounded-xl bg-white/80 px-4 py-3">
+            <div className="text-xs text-slate-500">资料汇总版本</div>
+            <div className="mt-1 text-base font-semibold text-slate-800">{profileVersion ? `V${profileVersion}` : '版本待确认'}</div>
+            <div className="mt-1 text-[11px] text-slate-400">
+              {profileUpdatedAt ? formatLocalDateTime(profileUpdatedAt) : '未记录更新时间'}
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            onClick={() => void copyReport()}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+          >
+            {copyState === 'done' ? '已复制' : '复制报告'}
+          </button>
+          <button
+            onClick={exportMarkdown}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+          >
+            导出文稿
+          </button>
+          <button
+            onClick={printReport}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+          >
+            打印报告
+          </button>
+          <button
+            onClick={() => setShowComparison((value) => !value)}
+            disabled={!comparison.available && !historyLoading}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {showComparison ? '收起前后对比' : '查看前后对比'}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-4 p-5">
+        {assessment.risk_level === 'high' && (
+          <div className="rounded-2xl border border-rose-200 bg-[linear-gradient(135deg,#fff1f2_0%,#fff7ed_100%)] p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="rounded-full bg-rose-100 p-2 text-rose-600">
+                <AlertCircle className="h-4 w-4" />
+              </div>
+              <div>
+                <div className="text-sm font-semibold text-rose-800">高风险预警</div>
+                <div className="mt-1 text-sm leading-6 text-rose-900/80">
+                  当前客户风险等级为高风险，建议先处理待补资料与核心短板，再重新评估是否进入申请或方案匹配。
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showComparison && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-800">结果对比</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  对比当前报告与上一版报告的评分、缺失资料和建议变化。
+                </div>
+              </div>
+              {previousReport ? (
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
+                  对比上一版 V{previousReport.profile_version || '-'}
+                </span>
+              ) : null}
+            </div>
+            {historyLoading ? (
+              <div className="mt-4 rounded-xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
+                正在读取历史报告版本...
+              </div>
+            ) : comparison.available && previousReport ? (
+              <div className="mt-4 space-y-4">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-xs text-slate-500">综合评分变化</div>
+                    <div className={`mt-1 text-lg font-semibold ${comparison.scoreDelta >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {comparison.scoreDelta >= 0 ? '+' : ''}{comparison.scoreDelta}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-xs text-slate-500">完整度评分变化</div>
+                    <div className={`mt-1 text-lg font-semibold ${comparison.completenessDelta >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {comparison.completenessDelta >= 0 ? '+' : ''}{comparison.completenessDelta}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-xs text-slate-500">上一版风险等级</div>
+                    <div className="mt-1 text-base font-semibold text-slate-800">{formatRiskLevelLabel(comparison.previousRiskLevel)}</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-xs text-slate-500">建议动作变化</div>
+                    <div className="mt-1 text-base font-semibold text-slate-800">{comparison.actionChanged ? '已变化' : '保持一致'}</div>
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                    <div className="text-xs font-medium text-emerald-700">已补齐资料</div>
+                    <div className="mt-2 text-sm leading-6 text-slate-700">
+                      {comparison.resolvedMissingItems.length > 0 ? comparison.resolvedMissingItems.join('、') : '本次未识别到已补齐资料。'}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                    <div className="text-xs font-medium text-amber-700">新增缺口</div>
+                    <div className="mt-2 text-sm leading-6 text-slate-700">
+                      {comparison.addedMissingItems.length > 0 ? comparison.addedMissingItems.join('、') : '本次未出现新增缺失资料。'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
+                当前还没有可用于对比的上一版风险报告。建议先在资料更新前后各生成一次报告，再查看变化。
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-sm font-semibold text-slate-800">客户概况</div>
+            <div className="mt-3 space-y-2 text-sm text-slate-600">
+              <div>所属行业：{summary.industry || '待补充'}</div>
+              <div>融资需求：{summary.financing_need || '待补充'}</div>
+              <div>资料版本：{profileVersion ? `V${profileVersion}` : '版本待确认'}</div>
+              <div>
+                缺失资料：
+                {(summary.data_completeness?.missing_items || []).length > 0
+                  ? ` ${(summary.data_completeness?.missing_items || []).join('、')}`
+                  : ' 无'}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-sm font-semibold text-slate-800">综合结论</div>
+            <div className="mt-3 text-sm leading-6 text-slate-600">
+              {assessment.conclusion || '当前暂无综合结论。'}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="text-sm font-semibold text-slate-800">风险维度评估</div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {dimensions.map((item) => (
+              <div key={item.dimension} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium text-slate-800">{formatRiskDimensionLabel(item.dimension)}</div>
+                  <div className={`rounded-full border px-2.5 py-1 text-xs font-medium ${getRiskTone(item.risk_level)}`}>
+                    {formatRiskLevelLabel(item.risk_level)}
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>评分进度</span>
+                    <span>{item.score} / 20</span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
+                    <div
+                      className={`h-2 rounded-full ${getRiskBarTone(item.risk_level)}`}
+                      style={{ width: `${Math.max(8, Math.min(100, (item.score / 20) * 100))}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="mt-2 text-sm leading-6 text-slate-600">{item.summary || '暂无说明'}</div>
+                {(item.missing_info || []).length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {item.missing_info.map((missing) => (
+                      <span key={missing} className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs text-amber-700">
+                        待补：{missing}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-sm font-semibold text-slate-800">融资方案分析</div>
+            {matchedSchemes.has_match && matchedSchemes.items.length > 0 ? (
+              <div className="mt-3 space-y-3">
+                {matchedSchemes.items.map((item, index) => (
+                  <div key={`${item.product_name}-${index}`} className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                    <div className="text-sm font-medium text-emerald-800">{item.product_name || `方案 ${index + 1}`}</div>
+                    <div className="mt-2 space-y-1 text-sm text-slate-700">
+                      <div>预计额度：{item.estimated_limit || '待评估'}</div>
+                      <div>预计利率：{item.estimated_rate || '待评估'}</div>
+                      <div>匹配原因：{item.match_reason || '待补充'}</div>
+                      <div>限制条件：{item.constraints?.length ? item.constraints.join('、') : '无'}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-3 rounded-2xl border border-amber-200 bg-[linear-gradient(135deg,#fff7ed_0%,#fffbeb_100%)] p-4 shadow-sm">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 rounded-full bg-amber-100 p-2 text-amber-700">
+                    <AlertCircle className="h-4 w-4" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-sm font-semibold text-amber-900">当前暂无可直接采用的匹配方案</div>
+                    <div className="mt-2 text-sm leading-6 text-amber-900/80">
+                      系统已结合当前资料完成方案分析，现阶段更适合先补强短板，再进入下一轮产品匹配。
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <div className="rounded-xl bg-white/80 p-3">
+                        <div className="text-xs font-medium text-amber-700">未匹配原因</div>
+                        <div className="mt-2 text-sm leading-6 text-slate-700">
+                          {noMatch.reasons?.join('；') || '系统未命中可直接进件方案。'}
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-white/80 p-3">
+                        <div className="text-xs font-medium text-amber-700">核心短板</div>
+                        <div className="mt-2 text-sm leading-6 text-slate-700">
+                          {noMatch.core_shortboards?.join('、') || '需进一步补充资料评估。'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-sm font-semibold text-slate-800">最终建议</div>
+            <div className="mt-3 space-y-2 text-sm leading-6 text-slate-600">
+              <div>当前动作：{formatRecommendationActionLabel(finalRecommendation.action)}</div>
+              <div>优先产品类型：{finalRecommendation.priority_product_types?.length ? finalRecommendation.priority_product_types.map((item) => formatProductTypeLabel(item)).join('、') : '待评估'}</div>
+              <div>下一步：{finalRecommendation.next_steps?.length ? finalRecommendation.next_steps.join('；') : '先补齐核心资料'}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-sm font-semibold text-slate-800">优化建议</div>
+            <div className="mt-4 space-y-4">
+              {suggestionTimeline.map((item, index) => (
+                <div key={item.title} className="flex gap-3">
+                  <div className="flex flex-col items-center">
+                    <div className={`flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold ${item.tone}`}>
+                      {index + 1}
+                    </div>
+                    {index < suggestionTimeline.length - 1 ? <div className="mt-2 h-full min-h-[28px] w-px bg-slate-200" /> : null}
+                  </div>
+                  <div className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-sm font-medium text-slate-800">{item.title}</div>
+                    <div className="mt-2 text-sm leading-6 text-slate-600">{item.description}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="text-sm font-semibold text-slate-800">融资规划</div>
+            <div className="mt-4 space-y-4">
+              {financingTimeline.map((item, index) => (
+                <div key={item.title} className="flex gap-3">
+                  <div className="flex flex-col items-center">
+                    <div className={`flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold ${item.tone}`}>
+                      {index + 1}
+                    </div>
+                    {index < financingTimeline.length - 1 ? <div className="mt-2 h-full min-h-[28px] w-px bg-slate-200" /> : null}
+                  </div>
+                  <div className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-sm font-medium text-slate-800">{item.title}</div>
+                    <div className="mt-2 text-sm leading-6 text-slate-600">{item.description}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 /**
  * StructuredDataCard Component
@@ -2218,6 +3300,10 @@ interface StructuredDataCardProps {
  */
 const StructuredDataCard: React.FC<StructuredDataCardProps> = ({ intent, data, onNavigate }) => {
   if (!data) return null;
+
+  if (isRiskReportData(data)) {
+    return <RiskReportCard report={data as unknown as CustomerRiskReportJson} />;
+  }
   
   switch (intent) {
     case 'extract':
@@ -2429,7 +3515,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isTyping, onNavi
           </div>
         </div>
         {/* Structured Data Card - shown below message based on intent */}
-        {message.intent && message.data && (
+        {message.data && (
           <StructuredDataCard 
             intent={message.intent} 
             data={message.data} 
@@ -2544,7 +3630,7 @@ const WelcomeMessage: React.FC = () => (
       <SparklesIcon className="w-10 h-10 text-white" />
     </div>
     <div className="text-gray-700 text-base leading-relaxed">
-      你好！我是 DeepSeek 助手，可以帮你处理贷款相关问题。<br />
+      你好！我是智能助手，可以帮你处理贷款相关问题。<br />
       你可以上传资料、生成申请表，或直接问我任何问题。
     </div>
   </div>
@@ -2594,6 +3680,9 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [lastIntent, setLastIntent] = useState<ChatResponse['intent']>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [ragMode, setRagMode] = useState(false);
+  const [customerOptions, setCustomerOptions] = useState<CustomerListItem[]>([]);
+  const [customersLoading, setCustomersLoading] = useState(false);
 
   const [mergeModal, setMergeModal] = useState<{
     customerName: string;
@@ -2605,8 +3694,21 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
 
   // Hooks
   const { loading, error, execute } = useLoading<ChatResponse>();
+  const { loading: ragLoading, error: ragError, execute: executeRag } = useLoading<CustomerRagChatResponse>();
+  const { loading: riskLoading, error: riskError, execute: executeRisk } = useLoading<CustomerRiskReportResponse>();
   const { getSignal } = useAbortController();
-  const { addChatMessage, state, setChatTaskStatus } = useApp();
+  const { addChatMessage, state, setChatTaskStatus, setCurrentCustomer, recordSystemActivity } = useApp();
+  const currentCustomerId = state.extraction.currentCustomerId;
+  const currentCustomerName = state.extraction.currentCustomer;
+  const busy = loading || ragLoading || riskLoading;
+  const activeError = error || ragError || riskError;
+  const [riskFeedback, setRiskFeedback] = useState<{
+    tone: ProcessFeedbackTone;
+    title: string;
+    description: string;
+    persistenceHint: string;
+    nextStep: string;
+  } | null>(null);
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -2646,6 +3748,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         {
           messages: newMessages,
           files: chatFiles || undefined,
+          customerId: currentCustomerId,
+          customerName: currentCustomerName,
           mergeDecisions,
         },
         getSignal()
@@ -2684,6 +3788,25 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       setMessages(prev => [...prev, assistantMessage]);
       addChatMessage(assistantMessage);
       setLastIntent(response.intent);
+      if (response.intent === 'application') {
+        recordSystemActivity({
+          type: 'application',
+          title: 'AI 对话已生成申请表',
+          description: '系统已按当前客户上下文完成申请表生成。',
+          customerName: currentCustomerName,
+          customerId: currentCustomerId,
+          status: 'success',
+        });
+      } else if (response.intent === 'matching') {
+        recordSystemActivity({
+          type: 'matching',
+          title: 'AI 对话已完成方案匹配',
+          description: '系统已按当前客户上下文完成方案匹配。',
+          customerName: currentCustomerName,
+          customerId: currentCustomerId,
+          status: 'success',
+        });
+      }
       // Mark task as done
       setChatTaskStatus('done', null, null);
     } else {
@@ -2696,7 +3819,136 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       }
       // If aborted, keep 'sending' status for recovery
     }
-  }, [execute, getSignal, addChatMessage, setChatTaskStatus]);
+  }, [execute, getSignal, addChatMessage, currentCustomerId, currentCustomerName, recordSystemActivity, setChatTaskStatus]);
+
+  const doRagSend = useCallback(async (
+    question: string,
+    currentMessages: ChatMessageWithReasoning[],
+  ) => {
+    if (!currentCustomerId) {
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: '请先选择或上传客户资料，再进行资料问答。',
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      addChatMessage(assistantMessage);
+      return;
+    }
+
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: question,
+    };
+
+    const newMessages = [...currentMessages, userMessage];
+    setMessages(newMessages);
+    addChatMessage(userMessage);
+
+    const { data: response } = await executeRag(async () => {
+      return customerRagChat(currentCustomerId, { question }, getSignal());
+    });
+
+    if (response) {
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: response.answer,
+        data: {
+          answer: response.answer,
+          evidence: response.evidence,
+          missing_info: response.missing_info,
+        },
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      addChatMessage(assistantMessage);
+      recordSystemActivity({
+        type: 'rag',
+        title: '资料问答已完成',
+        description: `系统已基于当前客户资料回答问题，并返回 ${response.evidence?.length ?? 0} 条证据。`,
+        customerName: currentCustomerName,
+        customerId: currentCustomerId,
+        status: 'success',
+      });
+      setChatTaskStatus('done', null, null);
+    } else {
+      setChatTaskStatus('idle', null, null);
+    }
+  }, [addChatMessage, currentCustomerId, currentCustomerName, executeRag, getSignal, recordSystemActivity, setChatTaskStatus]);
+
+  const handleGenerateRiskReport = useCallback(async () => {
+    if (!currentCustomerId) {
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: '请先选择客户，再生成风险评估报告。',
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      addChatMessage(assistantMessage);
+      return;
+    }
+
+    setRiskFeedback({
+      tone: 'processing',
+      title: '正在生成风险评估报告',
+      description: '系统正在读取当前客户资料、执行规则评分，并组织结构化风险报告。',
+      persistenceHint: '主流程处理中，生成完成后会同步展示最新报告。',
+      nextStep: '请稍候，完成后建议直接核对综合结论和优化建议。',
+    });
+
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: '请基于当前客户资料生成风险评估报告。',
+    };
+
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+    addChatMessage(userMessage);
+    setChatTaskStatus('sending', userMessage.content, null);
+
+    const { data: response } = await executeRisk(async () => {
+      return generateCustomerRiskReport(currentCustomerId, getSignal());
+    });
+
+    if (response) {
+      const overall = response.report_json?.overall_assessment;
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: `已生成当前客户的风险评估报告。综合结论为：${formatRiskLevelLabel(overall?.risk_level)}，综合评分 ${overall?.total_score ?? '-'} 分。`,
+        data: {
+          ...(response.report_json as unknown as Record<string, unknown>),
+          generated_at: response.generated_at,
+          profile_version: response.profile_version,
+          profile_updated_at: response.profile_updated_at,
+          previous_report: response.previous_report,
+        },
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      addChatMessage(assistantMessage);
+      recordSystemActivity({
+        type: 'risk',
+        title: '风险评估报告已生成',
+        description: `系统已完成风险评估，当前结论为 ${formatRiskLevelLabel(overall?.risk_level)}。`,
+        customerName: currentCustomerName,
+        customerId: currentCustomerId,
+        status: 'success',
+      });
+      setRiskFeedback({
+        tone: 'success',
+        title: '风险评估报告已生成',
+        description: `系统已完成风险评估，当前结论为 ${formatRiskLevelLabel(overall?.risk_level)}，综合评分 ${overall?.total_score ?? '-'} 分。`,
+        persistenceHint: '主流程已生成成功。',
+        nextStep: '建议继续查看风险维度、优化建议和融资规划。',
+      });
+      setChatTaskStatus('done', null, null);
+    } else {
+      setRiskFeedback({
+        tone: 'error',
+        title: '风险评估报告生成失败',
+        description: riskError?.message || '本次风险评估未成功生成。',
+        persistenceHint: '主流程未生成成功。',
+        nextStep: '请检查当前客户资料是否完整后再试一次。',
+      });
+      setChatTaskStatus('idle', null, null);
+    }
+  }, [addChatMessage, currentCustomerId, currentCustomerName, executeRisk, getSignal, messages, recordSystemActivity, riskError?.message, setChatTaskStatus]);
 
   // Keep ref updated with latest function
   useEffect(() => {
@@ -2740,10 +3992,39 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- Mount-only effect: intentionally excludes state deps to avoid re-running after mount
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCustomers = async () => {
+      setCustomersLoading(true);
+      try {
+        const items = await listCustomers(undefined, getSignal());
+        if (!cancelled) {
+          setCustomerOptions(items);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Failed to load customers for chat selector:', err);
+          setCustomerOptions([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setCustomersLoading(false);
+        }
+      }
+    };
+
+    void loadCustomers();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [getSignal]);
+
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
+  }, [messages, busy]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -2833,7 +4114,15 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   const handleSubmit = useCallback(async () => {
     const content = inputValue.trim();
     if (!content && attachedFiles.length === 0) return;
-    if (loading) return;
+    if (busy) return;
+
+    if (ragMode) {
+      setInputValue('');
+      setAttachedFiles([]);
+      setChatTaskStatus('sending', content, null);
+      await doRagSend(content, messages);
+      return;
+    }
 
     // Build message content with file info
     let messageContent = content;
@@ -2866,7 +4155,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
 
     // Use the extracted send function, pass current messages directly
     await doSend(messageContent, chatFiles, messages);
-  }, [inputValue, attachedFiles, messages, loading, doSend, setChatTaskStatus]);
+  }, [inputValue, attachedFiles, messages, busy, ragMode, doRagSend, doSend, setChatTaskStatus]);
 
   /**
    * Handle keyboard events
@@ -2893,12 +4182,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   const handleQuickAction = useCallback((action: string) => {
     const prompts: Record<string, string> = {
       upload: '我想上传贷款资料',
-      application: '帮我生成贷款申请表',
-      matching: '帮我匹配贷款方案',
+      application: currentCustomerId ? '帮我生成一份企业贷款申请表' : '帮我生成贷款申请表',
+      matching: currentCustomerId ? '帮我匹配贷款方案' : '帮我匹配贷款方案',
     };
     setInputValue(prompts[action] || '');
     textareaRef.current?.focus();
-  }, []);
+  }, [currentCustomerId]);
 
   /**
    * Handle switch customer: clear backend cache and reset conversation
@@ -2914,7 +4203,18 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     setInputValue('');
     setAttachedFiles([]);
     setLastIntent(null);
-  }, []);
+    setCurrentCustomer(null, null);
+  }, [setCurrentCustomer]);
+
+  const handleCustomerChange = useCallback((customerId: string) => {
+    if (!customerId) {
+      setCurrentCustomer(null, null);
+      return;
+    }
+
+    const target = customerOptions.find((item) => item.record_id === customerId);
+    setCurrentCustomer(target?.name ?? null, customerId);
+  }, [customerOptions, setCurrentCustomer]);
 
   const quickActions = [
     { icon: '📤', label: '上传贷款资料', action: 'upload' },
@@ -2940,7 +4240,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
 
   return (
     <div 
-      className={`flex flex-col h-full bg-white relative ${isDragging ? 'ring-2 ring-blue-500 ring-inset' : ''}`}
+      className={`flex flex-col h-full bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] relative ${isDragging ? 'ring-2 ring-blue-500 ring-inset' : ''}`}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -3000,60 +4300,130 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       )}
       {/* Chat Header - Feature: frontend-ui-optimization, Requirements: 5.1, 5.4 */}
       <div 
-        className="h-16 bg-white border-b border-gray-200 flex items-center gap-3 px-6 flex-shrink-0"
+        className="border-b border-slate-200 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.14),_transparent_28%),linear-gradient(135deg,#ffffff_0%,#f8fafc_100%)] px-6 py-4 flex-shrink-0"
         data-testid="chat-header"
       >
-        {/* AI Avatar with indigo background */}
-        <div 
-          className="flex items-center justify-center flex-shrink-0"
-          style={{
-            width: AI_AVATAR_STYLE.size,
-            height: AI_AVATAR_STYLE.size,
-            backgroundColor: AI_AVATAR_STYLE.bgColor,
-            borderRadius: '50%',
-          }}
-          data-testid="chat-header-avatar"
-        >
-          <BotIcon className="w-5 h-5 text-white" />
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-gray-800 text-base font-semibold" data-testid="chat-header-name">
-            DeepSeek 助手
-          </span>
-          <div className="flex items-center gap-2">
-            {/* Status indicator - green dot */}
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3">
             <div 
-              className="w-2 h-2 bg-green-500 rounded-full"
-              data-testid="chat-header-status-dot"
-            />
-            <span 
-              className="text-green-500 text-xs font-medium"
-              data-testid="chat-header-status-text"
+              className="flex items-center justify-center flex-shrink-0"
+              style={{
+                width: AI_AVATAR_STYLE.size,
+                height: AI_AVATAR_STYLE.size,
+                backgroundColor: AI_AVATAR_STYLE.bgColor,
+                borderRadius: '50%',
+              }}
+              data-testid="chat-header-avatar"
             >
-              在线
+              <BotIcon className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-gray-800 text-base font-semibold" data-testid="chat-header-name">
+                智能助手
+              </span>
+              <div className="flex items-center gap-2">
+                <div 
+                  className="w-2 h-2 bg-green-500 rounded-full"
+                  data-testid="chat-header-status-dot"
+                />
+                <span 
+                  className="text-green-500 text-xs font-medium"
+                  data-testid="chat-header-status-text"
+                >
+                  在线
+                </span>
+                <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[11px] font-medium text-blue-700">
+                  当前服务链路已统一客户上下文
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+            <div className="hidden md:block">
+              <label className="sr-only" htmlFor="chat-customer-select">选择客户</label>
+              <select
+                id="chat-customer-select"
+                value={currentCustomerId ?? ''}
+                onChange={(e) => handleCustomerChange(e.target.value)}
+                className="min-w-[240px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none shadow-sm transition-colors focus:border-blue-300 focus:bg-white"
+              >
+                <option value="">
+                  {customersLoading ? '加载客户中...' : '请选择客户'}
+                </option>
+                {customerOptions.map((customer) => (
+                  <option key={customer.record_id} value={customer.record_id}>
+                    {formatCustomerContextLabel(customer.record_id, customer.name)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={() => setRagMode((prev) => !prev)}
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+                ragMode
+                  ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                  : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+              }`}
+              title="切换资料问答模式"
+            >
+              <FileCheck className="w-3.5 h-3.5" />
+              {ragMode ? '资料问答已开启' : '开启资料问答'}
+            </button>
+            <button
+              onClick={handleGenerateRiskReport}
+              disabled={busy}
+              className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              title="生成当前客户风险评估报告"
+            >
+              <AlertCircle className="w-3.5 h-3.5" />
+              生成风险报告
+            </button>
+            <button
+              onClick={handleSwitchCustomer}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-700 transition-colors"
+              title="清空当前客户和对话"
+              data-testid="switch-customer-button"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              清空当前客户
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {currentCustomerId ? (
+        <div className="border-b border-slate-100 bg-slate-50/80 px-6 py-2">
+          <div className="mx-auto max-w-[50rem] text-xs text-slate-600">
+            当前已选择客户：
+            <span className="ml-1 font-medium text-slate-800">
+              {formatCustomerContextLabel(currentCustomerId, currentCustomerName)}
             </span>
-            {/* Version number */}
-            <span 
-              className="text-gray-400 text-xs"
-              data-testid="chat-header-version"
-            >
-              · V3
+            <span className="ml-2 text-slate-500">
+              生成申请表、匹配方案、资料问答和风险报告都会默认基于该客户处理
             </span>
           </div>
         </div>
-        {/* Switch Customer Button - right side */}
-        <div className="ml-auto">
-          <button
-            onClick={handleSwitchCustomer}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:text-gray-700 transition-colors"
-            title="切换客户（清除缓存并重置对话）"
-            data-testid="switch-customer-button"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            切换客户
-          </button>
+      ) : (
+        <div className="border-b border-slate-100 bg-amber-50/80 px-6 py-2">
+          <div className="mx-auto max-w-[50rem] text-xs text-amber-700">
+            当前还没有选定客户。建议先在顶部选择客户，再继续申请表生成、方案匹配、资料问答或风险报告。
+          </div>
         </div>
-      </div>
+      )}
+
+      {riskFeedback ? (
+        <div className="border-b border-slate-100 bg-white px-6 py-4">
+          <div className="mx-auto max-w-[50rem]">
+            <ProcessFeedbackCard
+              tone={riskFeedback.tone}
+              title={riskFeedback.title}
+              description={riskFeedback.description}
+              persistenceHint={riskFeedback.persistenceHint}
+              nextStep={riskFeedback.nextStep}
+            />
+          </div>
+        </div>
+      ) : null}
 
       {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
@@ -3074,6 +4444,24 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                       {action.icon} {action.label}
                     </button>
                   ))}
+                  <button
+                    onClick={() => {
+                      setRagMode(true);
+                      setInputValue('请基于当前客户资料回答问题');
+                      textareaRef.current?.focus();
+                    }}
+                    className="px-5 py-3 bg-indigo-50 border border-indigo-200 rounded-lg text-indigo-700 text-sm hover:bg-indigo-100 transition-colors"
+                  >
+                    开始资料问答
+                  </button>
+                  <button
+                    onClick={() => {
+                      void handleGenerateRiskReport();
+                    }}
+                    className="px-5 py-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-sm hover:bg-amber-100 transition-colors"
+                  >
+                    开始生成风险报告
+                  </button>
                 </div>
               </div>
             </>
@@ -3094,18 +4482,18 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           )}
           
           {/* Typing Indicator */}
-          {loading && <TypingIndicator />}
+          {busy && <TypingIndicator />}
           
           {/* Error Message */}
-          {error && (
+          {activeError && (
             <div className="flex justify-center mb-4">
               <div className="bg-red-50 text-red-600 px-4 py-2 rounded-lg text-sm">
-                发送失败: {error.message}
+                本次发送未成功：{activeError.message}
                 <button
                   onClick={handleSubmit}
                   className="ml-2 underline hover:no-underline"
                 >
-                  重试
+                  再试一次
                 </button>
               </div>
             </div>
@@ -3152,10 +4540,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入消息，Shift+Enter 换行"
+              placeholder={ragMode ? '请输入资料问答问题，Shift+Enter 换行' : '请输入要处理的内容，Shift+Enter 换行'}
               className="flex-1 bg-transparent border-none outline-none resize-none text-sm text-gray-800 placeholder-gray-400 min-h-[24px] max-h-[150px]"
               rows={1}
-              disabled={loading}
+              disabled={busy}
               data-testid="message-input"
             />
           </div>
@@ -3163,11 +4551,11 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           {/* Send Button - circular, blue background */}
           <button
             onClick={handleSubmit}
-            disabled={loading || (!inputValue.trim() && attachedFiles.length === 0)}
+            disabled={busy || (!inputValue.trim() && attachedFiles.length === 0)}
             className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
             data-testid="send-button"
           >
-            {loading ? (
+            {busy ? (
               <Loader2 className="w-5 h-5 text-white animate-spin" />
             ) : (
               <Send className="w-5 h-5 text-white" />
@@ -3196,3 +4584,5 @@ export {
   StructuredDataCard,
 };
 export type { ChatMessageWithReasoning, ExtractionFileResult };
+
+

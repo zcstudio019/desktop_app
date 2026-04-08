@@ -1,4 +1,4 @@
-"""
+﻿"""
 Customer List Router
 
 Provides customer listing with role-based filtering:
@@ -22,13 +22,32 @@ desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
-from config import USE_LOCAL_STORAGE  # 新增：存储模式配置
 from services.feishu_service import FeishuService
 
-from backend.services import get_storage_service  # 新增：存储服务 factory
+from backend.services import get_storage_service, supports_structured_storage  # 新增：存储服务 factory
 
+from backend.services.markdown_profile_service import (
+    get_or_create_customer_profile,
+    get_rag_source_priority,
+    get_risk_report_schema_template,
+    regenerate_customer_profile,
+)
+from backend.services.activity_service import add_activity
+from backend.services.profile_sync_service import ProfileSyncService
+from backend.services.rag_service import RagService
+from backend.services.risk_assessment_service import RiskAssessmentService
 from ..middleware.auth import get_current_user
-from ..models.schemas import CustomerDetail, CustomerListItem
+from ..models.schemas import (
+    CustomerRiskReportResponse,
+    CustomerRiskReportHistoryItem,
+    CustomerRiskReportHistoryResponse,
+    CustomerRagChatRequest,
+    CustomerRagChatResponse,
+    CustomerDetail,
+    CustomerListItem,
+    CustomerProfileMarkdownResponse,
+    UpdateCustomerProfileMarkdownRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +57,11 @@ router = APIRouter(prefix="/customers", tags=["Customers"])
 # Initialize service
 feishu_service = FeishuService()
 storage_service = get_storage_service()  # 根据配置返回本地存储或飞书服务
+HAS_DB_STORAGE = supports_structured_storage(storage_service)
+
+rag_service = RagService()
+risk_assessment_service = RiskAssessmentService(rag_service=rag_service)
+profile_sync_service = ProfileSyncService()
 
 
 def _extract_text_value(field_value: Any) -> str:
@@ -108,7 +132,7 @@ async def list_customers(
     Returns:
         list[CustomerListItem]: List of customer records.
     """
-    if USE_LOCAL_STORAGE:
+    if HAS_DB_STORAGE:
         return await _list_customers_local(search, current_user)
     else:
         return await _list_customers_feishu(search, current_user)
@@ -118,17 +142,8 @@ async def _list_customers_local(
     search: str,
     current_user: dict,
 ) -> list[CustomerListItem]:
-    """List customers from local SQLite database.
-
-    Args:
-        search: Optional search string to filter by customer name.
-        current_user: The authenticated user.
-
-    Returns:
-        list[CustomerListItem]: List of customer records.
-    """
+    """List customers from local SQLite database."""
     try:
-        # 从本地数据库获取所有客户
         customers = await storage_service.list_customers()
     except Exception as e:
         logger.error(f"Failed to fetch customers from local storage: {e}")
@@ -140,7 +155,6 @@ async def _list_customers_local(
     is_admin = _is_admin(current_user)
     username = _get_username(current_user)
     search_text = search.strip().lower()
-
     result: list[CustomerListItem] = []
 
     for customer in customers:
@@ -151,17 +165,23 @@ async def _list_customers_local(
         if not is_admin and (customer.get("uploader") or "") != username:
             continue
 
-        # Search filter
         if search_text and search_text not in customer_name.lower():
             continue
+
+        latest_report = await storage_service.get_latest_customer_risk_report(customer_id) if customer_id else None
+        latest_report_json = (latest_report or {}).get("report_json") or {}
+        latest_assessment = latest_report_json.get("overall_assessment") or {}
 
         result.append(
             CustomerListItem(
                 name=customer_name,
-                record_id=customer_id,  # 使用 customer_id 作为 record_id
+                record_id=customer_id,
                 uploader=customer.get("uploader") or "",
                 upload_time=customer.get("upload_time") or created_at,
                 customer_type=customer.get("customer_type") or "enterprise",
+                risk_level=latest_assessment.get("risk_level") or "",
+                last_report_generated_at=(latest_report or {}).get("generated_at") or "",
+                profile_version=(latest_report or {}).get("profile_version"),
             )
         )
 
@@ -261,7 +281,7 @@ async def get_table_fields(
     Raises:
         HTTPException: 500 if database error.
     """
-    if not USE_LOCAL_STORAGE:
+    if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     try:
@@ -290,7 +310,7 @@ async def update_table_field(
     Raises:
         HTTPException: 404 if not found, 500 if error.
     """
-    if not USE_LOCAL_STORAGE:
+    if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     try:
@@ -323,7 +343,7 @@ async def get_customers_table(
     Raises:
         HTTPException: 500 if database error.
     """
-    if not USE_LOCAL_STORAGE:
+    if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     try:
@@ -431,7 +451,7 @@ async def get_customer_detail(
     Raises:
         HTTPException: 404 if record not found, 403 if access denied.
     """
-    if USE_LOCAL_STORAGE:
+    if HAS_DB_STORAGE:
         return await _get_customer_detail_local(record_id, current_user)
     else:
         return await _get_customer_detail_feishu(record_id, current_user)
@@ -574,6 +594,257 @@ async def _get_customer_detail_feishu(
 # Extraction Data Endpoints
 # ============================================
 
+
+def _build_profile_response(
+    customer: dict[str, Any],
+    profile: dict[str, Any],
+    auto_generated: bool,
+) -> CustomerProfileMarkdownResponse:
+    return CustomerProfileMarkdownResponse(
+        customer_id=customer.get("customer_id") or "",
+        customer_name=customer.get("name") or "",
+        markdown_content=profile.get("markdown_content") or "",
+        source_mode=profile.get("source_mode") or "auto",
+        auto_generated=auto_generated,
+        version=profile.get("version") or 1,
+        updated_at=profile.get("updated_at"),
+        rag_source_priority=profile.get("rag_source_priority") or get_rag_source_priority(),
+        risk_report_schema=profile.get("risk_report_schema") or get_risk_report_schema_template(),
+    )
+
+
+@router.get("/{customer_id}/profile-markdown", response_model=CustomerProfileMarkdownResponse)
+async def get_customer_profile_markdown(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> CustomerProfileMarkdownResponse:
+    """Get markdown profile for a customer."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="当前模式暂不支持资料汇总 Markdown")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    _ensure_local_customer_access(customer, current_user)
+
+    try:
+        profile, auto_generated = await get_or_create_customer_profile(storage_service, customer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Failed to get profile markdown for %s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail="获取资料汇总失败") from exc
+
+    return _build_profile_response(customer, profile, auto_generated)
+
+
+@router.put("/{customer_id}/profile-markdown", response_model=CustomerProfileMarkdownResponse)
+async def update_customer_profile_markdown(
+    customer_id: str,
+    body: UpdateCustomerProfileMarkdownRequest,
+    current_user: dict = Depends(get_current_user),
+) -> CustomerProfileMarkdownResponse:
+    """Save markdown profile edits for a customer."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="当前模式暂不支持资料汇总 Markdown")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    _ensure_local_customer_access(customer, current_user)
+
+    try:
+        profile = await storage_service.upsert_customer_profile(
+            {
+                "customer_id": customer_id,
+                "title": body.title or f"{customer.get('name') or customer_id}资料汇总",
+                "markdown_content": body.markdown_content,
+                "source_mode": "manual",
+                "source_snapshot": {
+                    "saved_by": current_user.get("username") or "",
+                    "customer_name": customer.get("name") or "",
+                },
+                "rag_source_priority": get_rag_source_priority(),
+                "risk_report_schema": get_risk_report_schema_template(),
+            }
+        )
+        await profile_sync_service.handle_profile_markdown_saved(storage_service, customer_id)
+        add_activity(
+            activity_type="profile",
+            customer=customer.get("name") or "",
+            customer_id=customer_id,
+            username=current_user.get("username") or "",
+            status="completed",
+            title="资料汇总已保存",
+            description="已保存客户资料汇总，资料问答和风险评估将优先使用最新版本。",
+            metadata={
+                "profileVersion": profile.get("version") or 1,
+                "updatedAt": profile.get("updated_at") or "",
+                "sourceMode": profile.get("source_mode") or "manual",
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to save profile markdown for %s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail="保存资料汇总失败") from exc
+
+    return _build_profile_response(customer, profile, False)
+
+
+@router.delete("/{customer_id}/profile-markdown")
+async def delete_customer_profile_markdown(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, bool]:
+    """Delete markdown profile and rebuild an auto-generated baseline."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="当前模式暂不支持资料汇总 Markdown")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    _ensure_local_customer_access(customer, current_user)
+
+    try:
+        await storage_service.delete_customer_profile(customer_id)
+        rebuilt_profile = await regenerate_customer_profile(storage_service, customer_id)
+        await profile_sync_service.handle_profile_markdown_saved(storage_service, customer_id)
+        add_activity(
+            activity_type="profile",
+            customer=customer.get("name") or "",
+            customer_id=customer_id,
+            username=current_user.get("username") or "",
+            status="completed",
+            title="资料汇总已恢复系统整理",
+            description="系统已删除手动版本，并按当前客户资料重新生成默认资料汇总。",
+            metadata={
+                "profileVersion": (rebuilt_profile or {}).get("version") or 1,
+                "updatedAt": (rebuilt_profile or {}).get("updated_at") or "",
+                "sourceMode": (rebuilt_profile or {}).get("source_mode") or "auto",
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to delete/reset profile markdown for %s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail="删除资料汇总失败") from exc
+
+    return {"success": True}
+
+
+@router.post("/{customer_id}/rag-chat", response_model=CustomerRagChatResponse)
+async def customer_rag_chat(
+    customer_id: str,
+    body: CustomerRagChatRequest,
+    current_user: dict = Depends(get_current_user),
+) -> CustomerRagChatResponse:
+    """Answer a question strictly from the current customer_id scoped materials."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="当前模式暂不支持客户级资料问答")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    _ensure_local_customer_access(customer, current_user)
+
+    question = (body.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    try:
+        result = await rag_service.answer_question(storage_service, customer_id, question)
+    except Exception as exc:
+        logger.error("RAG chat failed for %s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail="客户资料问答失败") from exc
+
+    return CustomerRagChatResponse(
+        answer=result.get("answer") or "",
+        evidence=result.get("evidence") or [],
+        missing_info=result.get("missing_info") or [],
+    )
+
+
+@router.post("/{customer_id}/risk-report/generate", response_model=CustomerRiskReportResponse)
+async def generate_customer_risk_report(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> CustomerRiskReportResponse:
+    """Generate a structured risk report strictly scoped to the current customer_id."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="褰撳墠妯″紡鏆備笉鏀寔瀹㈡埛椋庨櫓璇勪及鎶ュ憡")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="鏈壘鍒拌瀹㈡埛璁板綍")
+    _ensure_local_customer_access(customer, current_user)
+
+    try:
+        previous_report = await storage_service.get_latest_customer_risk_report(customer_id)
+        result = await risk_assessment_service.generate_report(storage_service, customer_id)
+        await storage_service.save_customer_risk_report(
+            {
+                "customer_id": customer_id,
+                "generated_at": result.get("generated_at") or "",
+                "profile_version": result.get("profile_version") or 1,
+                "profile_updated_at": result.get("profile_updated_at") or "",
+                "report_json": result.get("report_json") or {},
+                "report_markdown": result.get("report_markdown") or "",
+            }
+        )
+        add_activity(
+            activity_type="risk",
+            customer=customer.get("name") or "",
+            customer_id=customer_id,
+            username=current_user.get("username") or "",
+            status="completed",
+            title="风险评估报告已生成",
+            description="系统已基于当前客户最新资料生成结构化风险评估报告。",
+            metadata={
+                "generatedAt": result.get("generated_at") or "",
+                "riskLevel": (result.get("report_json") or {}).get("overall_assessment", {}).get("risk_level", ""),
+                "totalScore": (result.get("report_json") or {}).get("overall_assessment", {}).get("total_score", 0),
+                "profileVersion": (profile := await storage_service.get_customer_profile(customer_id) or {}).get("version") or 1,
+                "profileUpdatedAt": profile.get("updated_at") or "",
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Risk report generation failed for %s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail="鐢熸垚椋庨櫓璇勪及鎶ュ憡澶辫触") from exc
+
+    return CustomerRiskReportResponse(
+        report_json=result.get("report_json") or {},
+        report_markdown=result.get("report_markdown") or "",
+        generated_at=result.get("generated_at") or "",
+        profile_version=result.get("profile_version") or 1,
+        profile_updated_at=result.get("profile_updated_at") or "",
+        previous_report=CustomerRiskReportHistoryItem(**previous_report) if previous_report else None,
+    )
+
+
+@router.get("/{customer_id}/risk-reports/history", response_model=CustomerRiskReportHistoryResponse)
+async def get_customer_risk_report_history(
+    customer_id: str,
+    limit: int = Query(default=5, ge=1, le=20),
+    current_user: dict = Depends(get_current_user),
+) -> CustomerRiskReportHistoryResponse:
+    """Get recent risk report history for one customer."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="当前模式暂不支持风险报告历史")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    _ensure_local_customer_access(customer, current_user)
+
+    try:
+        items = await storage_service.list_customer_risk_reports(customer_id, limit=limit)
+    except Exception as exc:
+        logger.error("Failed to load risk report history for %s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail="获取风险报告历史失败") from exc
+
+    return CustomerRiskReportHistoryResponse(
+        items=[CustomerRiskReportHistoryItem(**item) for item in items]
+    )
+
 class ExtractionItem(BaseModel):
     """单条 extraction 记录"""
     extraction_id: str
@@ -611,7 +882,7 @@ async def get_customer_extractions(
     Raises:
         HTTPException: 500 if database error.
     """
-    if not USE_LOCAL_STORAGE:
+    if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     customer = await storage_service.get_customer(customer_id)
@@ -661,7 +932,7 @@ async def update_customer_field(
     Raises:
         HTTPException: 400 if field not allowed, 404 if not found, 500 if error.
     """
-    if not USE_LOCAL_STORAGE:
+    if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     if body.field not in _UPDATABLE_CUSTOMER_FIELDS:
@@ -705,7 +976,7 @@ async def update_customer_extraction(
     Raises:
         HTTPException: 404 if not found, 500 if database error.
     """
-    if not USE_LOCAL_STORAGE:
+    if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     customer = await storage_service.get_customer(customer_id)
@@ -737,7 +1008,7 @@ async def delete_customer(
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, bool]:
     """Delete a customer row and all related documents/extractions."""
-    if not USE_LOCAL_STORAGE:
+    if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     customer = await storage_service.get_customer(customer_id)
@@ -764,7 +1035,7 @@ async def delete_customer_document(
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, bool]:
     """Delete a single uploaded document and its linked extraction records."""
-    if not USE_LOCAL_STORAGE:
+    if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     customer = await storage_service.get_customer(customer_id)
@@ -791,3 +1062,4 @@ async def delete_customer_document(
         raise HTTPException(status_code=404, detail="未找到该资料记录")
 
     return {"success": True}
+

@@ -1,118 +1,34 @@
-"""
-Activity Service
+"""Persistent activity logging backed by SQLAlchemy."""
 
-Manages activity logging and dashboard statistics.
-Stores data in a local JSON file for persistence.
+from __future__ import annotations
 
-Features:
-- Track file uploads, application generation, and scheme matching
-- Calculate dashboard statistics (today uploads, pending, completed, total customers)
-- Maintain customer status (hasApplication, hasMatching)
-"""
-
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from threading import RLock
 from typing import Any
 
-# Configure logging
+from sqlalchemy import desc
+
+from backend.database import SessionLocal
+from backend.db_models import ActivityLogEntry, CustomerActivityState
+
 logger = logging.getLogger(__name__)
 
-# File lock for thread-safe operations.
-# Use a re-entrant lock because load_activity_log() may initialize the file
-# by calling save_activity_log() while already holding the lock.
-_file_lock = RLock()
+
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
 
 
-def _get_data_file_path() -> Path:
-    """Get the path to the activity log file.
+def _loads_metadata(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        import json
 
-    Supports both development and portable environments.
-
-    Returns:
-        Path to activity_log.json
-    """
-    # Try multiple possible locations
-    possible_paths = [
-        # Development: desktop_app/data/activity_log.json
-        Path(__file__).parent.parent.parent / "data" / "activity_log.json",
-        # Portable: same directory as backend
-        Path(__file__).parent.parent / "data" / "activity_log.json",
-        # Fallback: current working directory
-        Path.cwd() / "data" / "activity_log.json",
-    ]
-
-    for path in possible_paths:
-        if path.exists():
-            return path
-        # Check if parent directory exists (we can create the file)
-        if path.parent.exists():
-            return path
-
-    # Default to first option and create directory if needed
-    default_path = possible_paths[0]
-    default_path.parent.mkdir(parents=True, exist_ok=True)
-    return default_path
-
-
-def _get_empty_data() -> dict[str, Any]:
-    """Get empty data structure."""
-    return {"customers": {}, "activities": []}
-
-
-def load_activity_log() -> dict[str, Any]:
-    """Load activity log from local JSON file.
-
-    Returns:
-        Dictionary with customers and activities data
-    """
-    file_path = _get_data_file_path()
-
-    with _file_lock:
-        try:
-            if not file_path.exists():
-                logger.info(f"Activity log file not found, creating: {file_path}")
-                save_activity_log(_get_empty_data())
-                return _get_empty_data()
-
-            with open(file_path, encoding="utf-8") as f:
-                data = json.load(f)
-                logger.debug(f"Loaded activity log with {len(data.get('activities', []))} activities")
-                return data
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse activity log: {e}")
-            return _get_empty_data()
-        except Exception as e:
-            logger.error(f"Failed to load activity log: {e}")
-            return _get_empty_data()
-
-
-def save_activity_log(data: dict[str, Any]) -> bool:
-    """Save activity log to local JSON file.
-
-    Args:
-        data: Dictionary with customers and activities data
-
-    Returns:
-        True if save successful, False otherwise
-    """
-    file_path = _get_data_file_path()
-
-    with _file_lock:
-        try:
-            # Ensure directory exists
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.debug(f"Saved activity log to {file_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save activity log: {e}")
-            return False
+        data = json.loads(value)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def add_activity(
@@ -121,195 +37,179 @@ def add_activity(
     customer: str | None = None,
     status: str = "completed",
     document_type: str | None = None,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    customer_id: str | None = None,
+    username: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> str | None:
-    """Add a new activity record.
-
-    Args:
-        activity_type: Type of activity (upload, application, matching)
-        filename: Name of the file (for upload activities)
-        customer: Customer name
-        status: Activity status (completed, processing, error)
-        document_type: Type of document (for upload activities)
-
-    Returns:
-        Activity ID if successful, None otherwise
-    """
-    data = load_activity_log()
-
+    """Append one activity entry to persistent SQL storage."""
     activity_id = str(uuid.uuid4())[:8]
-    activity = {"id": activity_id, "type": activity_type, "time": datetime.now(tz=timezone.utc).isoformat(), "status": status}
+    activity_time = _now_iso()
 
-    if filename:
-        activity["filename"] = filename
-    if customer:
-        activity["customer"] = customer
-    if document_type:
-        activity["documentType"] = document_type
+    try:
+        import json
 
-    # Add to beginning of list (most recent first)
-    data["activities"].insert(0, activity)
-
-    # Keep only last 100 activities
-    data["activities"] = data["activities"][:100]
-
-    if save_activity_log(data):
-        logger.info(f"Added activity: {activity_type} for {customer or filename}")
+        with SessionLocal() as db:
+            db.add(
+                ActivityLogEntry(
+                    activity_id=activity_id,
+                    activity_type=activity_type,
+                    activity_time=activity_time,
+                    status=status,
+                    title=title or "",
+                    description=description or "",
+                    customer_name=customer or "",
+                    customer_id=customer_id or "",
+                    username=username or "",
+                    file_name=filename or "",
+                    file_type=document_type or "",
+                    metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
+                )
+            )
+            db.commit()
+        logger.info(
+            "Added activity type=%s customer=%s customer_id=%s status=%s",
+            activity_type,
+            customer or "",
+            customer_id or "",
+            status,
+        )
         return activity_id
-    return None
+    except Exception as exc:
+        logger.error("Failed to persist activity log entry: %s", exc)
+        return None
 
 
 def update_customer_status(
-    customer: str, has_application: bool | None = None, has_matching: bool | None = None
+    customer: str,
+    has_application: bool | None = None,
+    has_matching: bool | None = None,
 ) -> bool:
-    """Update customer status.
-
-    Args:
-        customer: Customer name
-        has_application: Whether customer has application generated
-        has_matching: Whether customer has scheme matched
-
-    Returns:
-        True if update successful, False otherwise
-    """
+    """Upsert customer activity summary state."""
     if not customer:
         return False
 
-    data = load_activity_log()
-
-    # Initialize customer if not exists
-    if customer not in data["customers"]:
-        data["customers"][customer] = {
-            "hasApplication": False,
-            "hasMatching": False,
-            "lastUpdate": datetime.now(tz=timezone.utc).isoformat(),
-        }
-
-    # Update status
-    if has_application is not None:
-        data["customers"][customer]["hasApplication"] = has_application
-    if has_matching is not None:
-        data["customers"][customer]["hasMatching"] = has_matching
-
-    data["customers"][customer]["lastUpdate"] = datetime.now(tz=timezone.utc).isoformat()
-
-    if save_activity_log(data):
-        logger.info(f"Updated customer status: {customer}")
+    try:
+        with SessionLocal() as db:
+            state = db.query(CustomerActivityState).filter(CustomerActivityState.customer_name == customer).first()
+            if state is None:
+                state = CustomerActivityState(
+                    customer_name=customer,
+                    has_application=1 if has_application else 0,
+                    has_matching=1 if has_matching else 0,
+                    last_update=_now_iso(),
+                )
+                db.add(state)
+            else:
+                if has_application is not None:
+                    state.has_application = 1 if has_application else 0
+                if has_matching is not None:
+                    state.has_matching = 1 if has_matching else 0
+                state.last_update = _now_iso()
+            db.commit()
+        logger.info("Updated customer status for %s", customer)
         return True
-    return False
+    except Exception as exc:
+        logger.error("Failed to update customer status for %s: %s", customer, exc)
+        return False
 
 
 def get_dashboard_stats(feishu_records: list[dict] | None = None) -> dict[str, int]:
-    """Get dashboard statistics.
+    """Compute dashboard stats from SQL activity storage."""
+    try:
+        with SessionLocal() as db:
+            states = db.query(CustomerActivityState).all()
+            pending = 0
+            completed = 0
+            for state in states:
+                has_app = bool(state.has_application)
+                has_match = bool(state.has_matching)
+                if has_app and has_match:
+                    completed += 1
+                elif has_app or has_match:
+                    pending += 1
 
-    Args:
-        feishu_records: Optional list of Feishu records (to avoid duplicate API calls)
+            today = datetime.now(tz=timezone.utc).date().isoformat()
+            today_uploads = (
+                db.query(ActivityLogEntry)
+                .filter(ActivityLogEntry.activity_type == "upload")
+                .all()
+            )
+            today_upload_count = sum(1 for item in today_uploads if str(item.activity_time or "").startswith(today))
 
-    Returns:
-        Dictionary with todayUploads, pending, completed, totalCustomers
-    """
-    data = load_activity_log()
-    customers = data.get("customers", {})
-
-    # Calculate pending and completed from local data
-    pending = 0
-    completed = 0
-
-    for _customer_name, customer_data in customers.items():
-        has_app = customer_data.get("hasApplication", False)
-        has_match = customer_data.get("hasMatching", False)
-
-        if has_app and has_match:
-            completed += 1
-        elif has_app or has_match:
-            pending += 1
-
-    # Calculate today uploads from activities
-    today = datetime.now(tz=timezone.utc).date().isoformat()
-    today_uploads = 0
-
-    for activity in data.get("activities", []):
-        if activity.get("type") == "upload":
-            activity_time = activity.get("time", "")
-            if activity_time.startswith(today):
-                today_uploads += 1
-
-    # Total customers from Feishu (if provided) or local data
-    total_customers = len(feishu_records) if feishu_records is not None else len(customers)
-
-    return {
-        "todayUploads": today_uploads,
-        "pending": pending,
-        "completed": completed,
-        "totalCustomers": total_customers,
-    }
+            total_customers = len(feishu_records) if feishu_records is not None else len(states)
+            return {
+                "todayUploads": today_upload_count,
+                "pending": pending,
+                "completed": completed,
+                "totalCustomers": total_customers,
+            }
+    except Exception as exc:
+        logger.error("Failed to compute dashboard stats from activity log: %s", exc)
+        return {
+            "todayUploads": 0,
+            "pending": 0,
+            "completed": 0,
+            "totalCustomers": len(feishu_records) if feishu_records is not None else 0,
+        }
 
 
 def get_recent_activities(limit: int = 10) -> list[dict[str, Any]]:
-    """Get recent activities.
+    """Return recent activities formatted for dashboard consumption."""
+    try:
+        with SessionLocal() as db:
+            rows = (
+                db.query(ActivityLogEntry)
+                .order_by(desc(ActivityLogEntry.activity_time), desc(ActivityLogEntry.id))
+                .limit(limit)
+                .all()
+            )
 
-    Args:
-        limit: Maximum number of activities to return
-
-    Returns:
-        List of recent activities
-    """
-    data = load_activity_log()
-    activities = data.get("activities", [])
-
-    # Format activities for frontend
-    formatted = []
-    for activity in activities[:limit]:
-        formatted_activity = {
-            "id": activity.get("id", ""),
-            "type": activity.get("type", ""),
-            "time": _format_relative_time(activity.get("time", "")),
-            "status": activity.get("status", "completed"),
-        }
-
-        # Add optional fields
-        if "filename" in activity:
-            formatted_activity["fileName"] = activity["filename"]
-        if "customer" in activity:
-            formatted_activity["customerName"] = activity["customer"]
-        if "documentType" in activity:
-            formatted_activity["fileType"] = activity["documentType"]
-
-        formatted.append(formatted_activity)
-
-    return formatted
+        activities: list[dict[str, Any]] = []
+        for row in rows:
+            activities.append(
+                {
+                    "id": row.activity_id,
+                    "type": row.activity_type or "",
+                    "time": _format_relative_time(row.activity_time or ""),
+                    "createdAt": row.activity_time or "",
+                    "status": row.status or "completed",
+                    "title": row.title or "",
+                    "description": row.description or "",
+                    "customerName": row.customer_name or "",
+                    "customerId": row.customer_id or "",
+                    "username": row.username or "",
+                    "fileName": row.file_name or "",
+                    "fileType": row.file_type or "",
+                    "metadata": _loads_metadata(row.metadata_json),
+                }
+            )
+        return activities
+    except Exception as exc:
+        logger.error("Failed to load recent activities from SQL storage: %s", exc)
+        return []
 
 
 def _format_relative_time(iso_time: str) -> str:
-    """Format ISO time string to relative time.
-
-    Args:
-        iso_time: ISO format time string
-
-    Returns:
-        Relative time string (e.g., "10 分钟前")
-    """
     if not iso_time:
         return "未知时间"
 
     try:
-        dt = datetime.fromisoformat(iso_time)
+        dt = datetime.fromisoformat(iso_time.replace("Z", "+00:00"))
         now = datetime.now(tz=timezone.utc)
         diff = now - dt
-
         seconds = diff.total_seconds()
 
         if seconds < 60:
             return "刚刚"
-        elif seconds < 3600:
-            minutes = int(seconds / 60)
-            return f"{minutes} 分钟前"
-        elif seconds < 86400:
-            hours = int(seconds / 3600)
-            return f"{hours} 小时前"
-        elif seconds < 604800:
-            days = int(seconds / 86400)
-            return f"{days} 天前"
-        else:
-            return dt.strftime("%Y-%m-%d")
+        if seconds < 3600:
+            return f"{int(seconds / 60)} 分钟前"
+        if seconds < 86400:
+            return f"{int(seconds / 3600)} 小时前"
+        if seconds < 604800:
+            return f"{int(seconds / 86400)} 天前"
+        return dt.astimezone().strftime("%Y-%m-%d")
     except Exception:
         return "未知时间"

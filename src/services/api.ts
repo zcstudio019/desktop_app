@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API client for frontend-backend integration.
  *
  * This module provides typed wrappers for all backend API endpoints.
@@ -11,6 +11,11 @@ import type {
   ChatResponse,
   CustomerDetail,
   CustomerListItem,
+  CustomerProfileMarkdownResponse,
+  CustomerRagChatRequest,
+  CustomerRagChatResponse,
+  CustomerRiskReportHistoryResponse,
+  CustomerRiskReportResponse,
   CustomerTableRow,
   ExtractionGroup,
   FileProcessResponse,
@@ -21,7 +26,11 @@ import type {
   StorageSaveRequest,
   StorageSaveResponse,
   TableField,
+  UpdateCustomerProfileMarkdownRequest,
+  UpdateCurrentUserProfileRequest,
   UserInfo,
+  ChangeCurrentUserPasswordRequest,
+  SetCurrentUserSecurityQuestionRequest,
 } from './types';
 
 import { ApiError } from './types';
@@ -29,17 +38,22 @@ import { ApiError } from './types';
 export { ApiError };
 
 function resolveApiBase(): string {
-  // 1 优先使用环境变量（可选）
-  const base = import.meta.env?.VITE_API_BASE;
-  if (base) return base;
+  const base = import.meta.env?.VITE_API_BASE?.trim();
+  if (base) return base.replace(/\/+$/, '');
 
-  // 2 浏览器环境：直接用当前访问地址
-  if (typeof window !== 'undefined') {
-    return window.location.origin;
+  if (typeof window !== 'undefined' && window.location) {
+    const { hostname, port, origin } = window.location;
+    const isLocalDevServer =
+      (hostname === '127.0.0.1' || hostname === 'localhost') && (port === '5173' || port === '5174');
+
+    if (isLocalDevServer) {
+      return 'http://127.0.0.1:8000';
+    }
+
+    return origin.replace(/\/+$/, '');
   }
 
-  // 3 兜底（只用于极端情况）
-  return "http://121.196.161.155:8000";
+  return '';
 }
 
 const API_BASE = resolveApiBase();
@@ -166,16 +180,25 @@ export interface DashboardStats {
   pending: number;
   completed: number;
   totalCustomers: number;
+  pendingMaterialCustomers?: number;
+  reportedCustomers?: number;
+  highRiskCustomers?: number;
 }
 
 export interface Activity {
   id: string;
   type: string;
   time: string;
+  createdAt?: string;
   status: string;
   fileName?: string;
   fileType?: string;
   customerName?: string;
+  customerId?: string;
+  username?: string;
+  title?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ActivitiesResponse {
@@ -201,6 +224,19 @@ export async function getDashboardActivities(
     signal,
   });
   return handleResponse<ActivitiesResponse>(response);
+}
+
+export async function getCustomerRiskReportHistory(
+  customerId: string,
+  limit: number = 2,
+  signal?: AbortSignal
+): Promise<CustomerRiskReportHistoryResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${customerId}/risk-reports/history?limit=${limit}`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<CustomerRiskReportHistoryResponse>(response);
 }
 
 // ==================== Wiki/Product Cache API ====================
@@ -262,6 +298,7 @@ export async function refreshWikiCache(signal?: AbortSignal): Promise<WikiRefres
 export interface SavedApplicationListItem {
   id: string;
   customerName: string;
+  customerId?: string | null;
   loanType: string;
   savedAt: string;
 }
@@ -272,6 +309,7 @@ export interface SavedApplication extends SavedApplicationListItem {
 
 export interface SaveApplicationRequest {
   customerName: string;
+  customerId?: string | null;
   loanType: string;
   applicationData: Record<string, unknown>;
 }
@@ -491,6 +529,45 @@ export async function getCurrentUser(signal?: AbortSignal): Promise<UserInfo> {
   return handleResponse<UserInfo>(response);
 }
 
+export async function updateCurrentUserProfile(
+  request: UpdateCurrentUserProfileRequest,
+  signal?: AbortSignal
+): Promise<UserInfo> {
+  const response = await fetch(`${API_BASE}/api/auth/me`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return handleResponse<UserInfo>(response);
+}
+
+export async function changeCurrentUserPassword(
+  request: ChangeCurrentUserPasswordRequest,
+  signal?: AbortSignal
+): Promise<{ success: boolean; message: string }> {
+  const response = await fetch(`${API_BASE}/api/auth/change-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return handleResponse<{ success: boolean; message: string }>(response);
+}
+
+export async function setCurrentUserSecurityQuestion(
+  request: SetCurrentUserSecurityQuestionRequest,
+  signal?: AbortSignal
+): Promise<UserInfo> {
+  const response = await fetch(`${API_BASE}/api/auth/security-question`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return handleResponse<UserInfo>(response);
+}
+
 export async function listUsers(signal?: AbortSignal): Promise<UserInfo[]> {
   const response = await fetch(`${API_BASE}/api/auth/users`, {
     method: 'GET',
@@ -598,6 +675,70 @@ export async function deleteCustomer(
   return handleResponse<{ success: boolean }>(response);
 }
 
+export async function getCustomerProfileMarkdown(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<CustomerProfileMarkdownResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/profile-markdown`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<CustomerProfileMarkdownResponse>(response);
+}
+
+export async function updateCustomerProfileMarkdown(
+  customerId: string,
+  request: UpdateCustomerProfileMarkdownRequest,
+  signal?: AbortSignal
+): Promise<CustomerProfileMarkdownResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/profile-markdown`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return handleResponse<CustomerProfileMarkdownResponse>(response);
+}
+
+export async function deleteCustomerProfileMarkdown(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<{ success: boolean }> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/profile-markdown`, {
+    method: 'DELETE',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<{ success: boolean }>(response);
+}
+
+export async function customerRagChat(
+  customerId: string,
+  request: CustomerRagChatRequest,
+  signal?: AbortSignal
+): Promise<CustomerRagChatResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/rag-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return handleResponse<CustomerRagChatResponse>(response);
+}
+
+export async function generateCustomerRiskReport(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<CustomerRiskReportResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/risk-report/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<CustomerRiskReportResponse>(response);
+}
+
 // ==================== Customer Table API ====================
 
 /**
@@ -655,3 +796,5 @@ export async function updateTableField(
   });
   return handleResponse<{ success: boolean }>(response);
 }
+
+

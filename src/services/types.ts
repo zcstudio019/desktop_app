@@ -35,6 +35,8 @@ export interface StorageSaveRequest {
   documentType: string;
   /** Customer name for record matching */
   customerName: string;
+  /** Stable customer ID for forcing the save into the current customer context */
+  customerId?: string | null;
   /** Content to save */
   content: Record<string, unknown>;
   /** Original uploaded file name for structured summary tracing */
@@ -51,6 +53,8 @@ export interface StorageSaveResponse {
   success: boolean;
   /** Record ID if saved successfully */
   recordId: string | null;
+  /** Stable customer context ID for later profile/RAG/report operations */
+  customerId?: string | null;
   /** Whether a new record was created (vs updated) */
   isNew: boolean;
   /** Error message if save failed */
@@ -71,6 +75,8 @@ export type FeishuSaveResponse = StorageSaveResponse;
 export interface ApplicationRequest {
   /** Customer name to generate application for */
   customerName: string;
+  /** Stable customer ID for summary sync */
+  customerId?: string | null;
   /** Type of loan */
   loanType: 'enterprise' | 'personal';
 }
@@ -87,6 +93,17 @@ export interface ApplicationResponse {
   customerFound: boolean;
   /** Any warnings during generation */
   warnings: string[];
+  /** Generation metadata and profile version context */
+  metadata?: {
+    generated_at?: string;
+    customer_id?: string;
+    profile_version?: number;
+    profile_updated_at?: string;
+    data_sources?: string[];
+    stale?: boolean;
+    stale_reason?: string;
+    stale_at?: string;
+  };
 }
 
 // ============================================
@@ -99,6 +116,10 @@ export interface ApplicationResponse {
 export interface SchemeMatchRequest {
   /** Customer data for matching */
   customerData: Record<string, unknown>;
+  /** Stable customer ID for snapshot sync */
+  customerId?: string | null;
+  /** Customer name for snapshot sync */
+  customerName?: string | null;
   /** Type of credit to match against */
   creditType: 'personal' | 'enterprise_credit' | 'enterprise_mortgage';
 }
@@ -154,6 +175,10 @@ export interface ChatRequest {
   messages: ChatMessage[];
   /** Optional file attachments */
   files?: ChatFile[];
+  /** Current selected customer context */
+  customerId?: string | null;
+  /** Current selected customer name */
+  customerName?: string | null;
   /** User merge decisions: { customerName -> target_customer_id } */
   mergeDecisions?: Record<string, string>;
 }
@@ -303,6 +328,26 @@ export interface UserInfo {
   username: string;
   role: string;
   created_at?: string;
+  last_login_at?: string;
+  updated_at?: string;
+  display_name?: string;
+  phone?: string;
+  has_security_question?: boolean;
+}
+
+export interface UpdateCurrentUserProfileRequest {
+  display_name?: string;
+  phone?: string;
+}
+
+export interface ChangeCurrentUserPasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
+export interface SetCurrentUserSecurityQuestionRequest {
+  security_question: string;
+  security_answer: string;
 }
 
 // ============================================
@@ -318,6 +363,9 @@ export interface CustomerListItem {
   uploader: string;
   upload_time: string;
   customer_type: string;
+  risk_level?: string;
+  last_report_generated_at?: string;
+  profile_version?: number | null;
 }
 
 /**
@@ -329,6 +377,139 @@ export interface CustomerDetail {
   uploader: string;
   upload_time: string;
   fields: Record<string, string>;
+}
+
+export interface CustomerProfileMarkdownResponse {
+  customer_id: string;
+  customer_name: string;
+  markdown_content: string;
+  source_mode: 'auto' | 'manual' | string;
+  auto_generated: boolean;
+  version: number;
+  updated_at?: string | null;
+  rag_source_priority: string[];
+  risk_report_schema: Record<string, unknown>;
+}
+
+export interface UpdateCustomerProfileMarkdownRequest {
+  markdown_content: string;
+  title?: string;
+}
+
+export interface CustomerRagChatRequest {
+  question: string;
+}
+
+export interface RagEvidenceItem {
+  source_type: string;
+  text: string;
+  score: number;
+}
+
+export interface CustomerRagChatResponse {
+  answer: string;
+  evidence: RagEvidenceItem[];
+  missing_info: string[];
+}
+
+export interface RiskReportBasisItem {
+  source_type: string;
+  text: string;
+  score: number;
+}
+
+export interface RiskDimensionAssessment {
+  dimension: string;
+  score: number;
+  risk_level: 'low' | 'medium' | 'high' | string;
+  summary: string;
+  basis: RiskReportBasisItem[];
+  missing_info: string[];
+}
+
+export interface CustomerRiskReportJson {
+  generated_at?: string;
+  profile_version?: number;
+  profile_updated_at?: string;
+  customer_summary: {
+    customer_id: string;
+    customer_name: string;
+    customer_type: string;
+    industry: string;
+    financing_need: string;
+    data_completeness: {
+      status: string;
+      score: number;
+      missing_items: string[];
+    };
+  };
+  overall_assessment: {
+    total_score: number;
+    risk_level: 'low' | 'medium' | 'high' | string;
+    conclusion: string;
+    immediate_application_recommended: boolean;
+    basis: RiskReportBasisItem[];
+  };
+  risk_dimensions: RiskDimensionAssessment[];
+  matched_schemes: {
+    has_match: boolean;
+    items: Array<{
+      product_name: string;
+      estimated_limit: string;
+      estimated_rate: string;
+      match_reason: string;
+      constraints: string[];
+      basis: RiskReportBasisItem[];
+    }>;
+  };
+  no_match_analysis: {
+    has_no_match_issue: boolean;
+    reasons: string[];
+    core_shortboards: string[];
+    basis: RiskReportBasisItem[];
+  };
+  optimization_suggestions: {
+    short_term: string[];
+    mid_term: string[];
+    document_supplement: string[];
+    credit_optimization: string[];
+    debt_optimization: string[];
+  };
+  financing_plan: {
+    current_stage: string;
+    one_to_three_months: string[];
+    three_to_six_months: string[];
+    alternative_paths: string[];
+  };
+  final_recommendation: {
+    action: string;
+    priority_product_types: string[];
+    next_steps: string[];
+    basis: RiskReportBasisItem[];
+  };
+}
+
+export interface CustomerRiskReportResponse {
+  report_json: CustomerRiskReportJson;
+  report_markdown: string;
+  generated_at: string;
+  profile_version?: number;
+  profile_updated_at?: string;
+  previous_report?: CustomerRiskReportHistoryItem | null;
+}
+
+export interface CustomerRiskReportHistoryItem {
+  report_id: string;
+  customer_id: string;
+  generated_at: string;
+  profile_version?: number;
+  profile_updated_at?: string;
+  report_json: CustomerRiskReportJson;
+  report_markdown: string;
+}
+
+export interface CustomerRiskReportHistoryResponse {
+  items: CustomerRiskReportHistoryItem[];
 }
 
 // ============================================

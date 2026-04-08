@@ -21,9 +21,10 @@ desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
-from config import USE_LOCAL_STORAGE
 from services.feishu_service import FeishuService, FeishuServiceError
 
+from backend.services import get_storage_service, supports_structured_storage
+from backend.services.risk_assessment_service import RiskAssessmentService
 from ..services.activity_service import (
     get_dashboard_stats,
     get_recent_activities,
@@ -38,6 +39,9 @@ router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 # Initialize services
 feishu_service = FeishuService()
+storage_service = get_storage_service()
+HAS_DB_STORAGE = supports_structured_storage(storage_service)
+risk_assessment_service = RiskAssessmentService()
 FEISHU_STATS_TIMEOUT_SECONDS = 5
 DASHBOARD_STATS_FAILED_MESSAGE = "获取工作台统计失败，请稍后重试。"
 ACTIVITIES_FAILED_MESSAGE = "获取最近活动失败，请稍后重试。"
@@ -53,6 +57,9 @@ class DashboardStatsResponse(BaseModel):
     pending: int
     completed: int
     totalCustomers: int
+    pendingMaterialCustomers: int = 0
+    reportedCustomers: int = 0
+    highRiskCustomers: int = 0
 
 
 class ActivityResponse(BaseModel):
@@ -61,10 +68,16 @@ class ActivityResponse(BaseModel):
     id: str
     type: str
     time: str
+    createdAt: str = ""
     status: str
     fileName: str = ""
     fileType: str = ""
     customerName: str = ""
+    customerId: str = ""
+    username: str = ""
+    title: str = ""
+    description: str = ""
+    metadata: dict = {}
 
 
 class ActivitiesResponse(BaseModel):
@@ -78,8 +91,8 @@ class ActivitiesResponse(BaseModel):
 
 async def _load_feishu_records_for_stats() -> list[dict] | None:
     """Load Feishu records without blocking the server in local mode or on slow networks."""
-    if USE_LOCAL_STORAGE:
-        logger.info("Local storage mode enabled; skipping Feishu fetch for dashboard stats")
+    if HAS_DB_STORAGE:
+        logger.info("Structured DB storage enabled; skipping Feishu fetch for dashboard stats")
         return None
 
     try:
@@ -120,8 +133,50 @@ async def get_stats(_current_user: dict = Depends(get_current_user)) -> Dashboar
         # so one slow upstream call cannot stall every other API route.
         feishu_records = await _load_feishu_records_for_stats()
 
-        # Get stats with Feishu records
+        # Get baseline activity stats.
         stats = get_dashboard_stats(feishu_records)
+
+        if HAS_DB_STORAGE:
+            customers = await storage_service.list_customers()
+            stats["totalCustomers"] = len(customers)
+
+            pending_material_customers = 0
+            reported_customers = 0
+            high_risk_customers = 0
+
+            for customer in customers:
+                if not isinstance(customer, dict):
+                    logger.warning("Skipping invalid customer row in dashboard stats: %r", customer)
+                    continue
+
+                customer_id = customer.get("customer_id") or ""
+                if not customer_id:
+                    continue
+
+                try:
+                    latest_report = await storage_service.get_latest_customer_risk_report(customer_id)
+                    if isinstance(latest_report, dict):
+                        reported_customers += 1
+                        risk_level = (
+                            ((latest_report.get("report_json") or {}).get("overall_assessment") or {}).get("risk_level") or ""
+                        )
+                        if str(risk_level).lower() == "high":
+                            high_risk_customers += 1
+                    elif latest_report:
+                        logger.warning("Skipping invalid risk report snapshot in dashboard stats for %s: %r", customer_id, latest_report)
+
+                    material_summary = await risk_assessment_service.summarize_customer_materials(storage_service, customer_id)
+                    if isinstance(material_summary, dict) and material_summary.get("missing_items"):
+                        pending_material_customers += 1
+                    elif material_summary and not isinstance(material_summary, dict):
+                        logger.warning("Skipping invalid material summary in dashboard stats for %s: %r", customer_id, material_summary)
+                except Exception as customer_exc:
+                    logger.warning("Skipping customer during dashboard stats %s due to error: %s", customer_id, customer_exc)
+                    continue
+
+            stats["pendingMaterialCustomers"] = pending_material_customers
+            stats["reportedCustomers"] = reported_customers
+            stats["highRiskCustomers"] = high_risk_customers
 
         logger.info(f"Dashboard stats: {stats}")
         return DashboardStatsResponse(**stats)
@@ -160,10 +215,16 @@ async def get_activities(limit: int = 10, _current_user: dict = Depends(get_curr
                     id=activity.get("id", ""),
                     type=activity.get("type", ""),
                     time=activity.get("time", ""),
+                    createdAt=activity.get("createdAt", ""),
                     status=activity.get("status", "completed"),
                     fileName=activity.get("fileName", ""),
                     fileType=activity.get("fileType", ""),
                     customerName=activity.get("customerName", ""),
+                    customerId=activity.get("customerId", ""),
+                    username=activity.get("username", ""),
+                    title=activity.get("title", ""),
+                    description=activity.get("description", ""),
+                    metadata=activity.get("metadata", {}) or {},
                 )
             )
 

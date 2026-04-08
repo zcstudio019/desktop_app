@@ -1,43 +1,57 @@
-import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+"""Database engine and session configuration."""
 
-from dotenv import load_dotenv
+from __future__ import annotations
+
+import os
 from pathlib import Path
 
-# 加载 .env
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(env_path)
 
-# 环境变量
-USE_LOCAL_STORAGE = os.getenv("USE_LOCAL_STORAGE", "true").lower() == "true"
 
-if USE_LOCAL_STORAGE:
-    # SQLite
-    DB_PATH = os.getenv("LOCAL_DB_PATH", "data/customers.db")
-    SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
-else:
-    # MySQL (阿里云RDS)
-    DB_HOST = os.getenv("DB_HOST")
-    DB_PORT = os.getenv("DB_PORT", "3306")
-    DB_USER = os.getenv("DB_USER")
-    DB_PASSWORD = os.getenv("DB_PASSWORD")
-    DB_NAME = os.getenv("DB_NAME")
+def _resolve_database_url() -> tuple[str, str]:
+    database_url = (os.getenv("DATABASE_URL") or "").strip()
+    if database_url:
+        backend = "mysql" if database_url.startswith("mysql") else "sqlite"
+        return database_url, backend
 
-    SQLALCHEMY_DATABASE_URL = (
-        f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}"
-        f"@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4"
-    )
+    db_host = (os.getenv("DB_HOST") or "").strip()
+    db_port = (os.getenv("DB_PORT") or "3306").strip()
+    db_user = (os.getenv("DB_USER") or "").strip()
+    db_password = (os.getenv("DB_PASSWORD") or "").strip()
+    db_name = (os.getenv("DB_NAME") or "").strip()
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    echo=True,
-    pool_pre_ping=True
-)
+    if all([db_host, db_user, db_password, db_name]):
+        url = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
+        return url, "mysql"
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db_path = (os.getenv("LOCAL_DB_PATH") or "data/customers.db").strip()
+    if not Path(db_path).is_absolute():
+        db_path = str((Path(__file__).resolve().parent.parent / db_path).resolve())
+    return f"sqlite:///{db_path}", "sqlite"
 
+
+SQLALCHEMY_DATABASE_URL, DB_BACKEND = _resolve_database_url()
+
+engine_kwargs: dict[str, object] = {
+    "pool_pre_ping": True,
+    "future": True,
+}
+
+if DB_BACKEND == "sqlite":
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
+if (os.getenv("SQL_ECHO") or "").lower() == "true":
+    engine_kwargs["echo"] = True
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **engine_kwargs)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 Base = declarative_base()
+
 
 def get_db():
     db = SessionLocal()

@@ -19,7 +19,6 @@ import logging
 import sys
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -28,9 +27,13 @@ desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
-from config import USE_LOCAL_STORAGE
+from backend.database import SessionLocal
+from backend.db_models import SavedApplicationRecord
 from backend.routers.chat_helpers import get_customer_data_local
-from backend.services import get_storage_service
+from backend.services import get_storage_service, supports_structured_storage
+from backend.services.activity_service import add_activity, update_customer_status
+from backend.services.product_cache_service import get_cache_content, save_cache_map
+from backend.services.profile_sync_service import ProfileSyncService
 from services.ai_service import AIService, AIServiceError
 from services.feishu_service import FeishuAuthError, FeishuNetworkError, FeishuService, FeishuServiceError
 from services.wiki_service import WikiService, WikiServiceError
@@ -59,6 +62,8 @@ wiki_service = WikiService()
 ai_service = AIService()
 feishu_service = FeishuService()
 storage_service = get_storage_service()
+HAS_DB_STORAGE = supports_structured_storage(storage_service)
+profile_sync_service = ProfileSyncService()
 
 INVALID_CREDIT_TYPE_MESSAGE = "贷款方案类型无效，请重新选择。"
 PRODUCT_LIBRARY_FETCH_FAILED_MESSAGE = "产品库获取失败，请稍后重试。"
@@ -71,10 +76,6 @@ APPLICATION_DETAIL_FAILED_MESSAGE = "获取申请表详情失败，请稍后重�
 APPLICATION_DELETE_FAILED_MESSAGE = "删除申请表失败，请稍后重试。"
 NATURAL_LANGUAGE_PARSE_FAILED_MESSAGE = "自然语言解析失败，请稍后重试。"
 CUSTOMER_SEARCH_FAILED_MESSAGE = "客户搜索失败，请稍后重试。"
-
-# 缓存文件路径
-CACHE_FILE = Path(__file__).parent.parent.parent / "data" / "product_cache.json"
-APPLICATION_CACHE_FILE = Path(__file__).parent.parent.parent / "data" / "application_cache.json"
 
 # 自然语言解析提示词
 NATURAL_LANGUAGE_PARSE_PROMPT = """你是一个贷款信息提取助手。请从用户的自然语言描述中提取贷款相关信息。
@@ -109,40 +110,10 @@ NATURAL_LANGUAGE_PARSE_PROMPT = """你是一个贷款信息提取助手。请从
 """
 
 
-def load_product_cache() -> dict:
-    """加载本地产品库缓存
-
-    Returns:
-        dict: 缓存数据，包含 enterprise 和 personal 字段
-        如果缓存不存在或解析失败返回空 dict
-
-    注意：
-    - #16: dict.get() 使用 `or ""` 处理 None
-    """
-    if not CACHE_FILE.exists():
-        logger.info("产品库缓存不存在")
-        return {}
-
-    try:
-        with open(CACHE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        logger.info("产品库缓存加载成功")
-        return data
-    except Exception as e:
-        logger.error(f"加载产品库缓存失败: {e}")
-        return {}
-
-
 def save_product_cache(enterprise: str, personal: str) -> None:
-    """保存产品库到本地缓存"""
-    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    cache_data = {"enterprise": enterprise, "personal": personal, "lastUpdated": datetime.now(tz=timezone.utc).isoformat()}
-
+    """保存产品库到数据库缓存。"""
     try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache_data, f, ensure_ascii=False, indent=2)
-        logger.info("产品库缓存保存成功")
+        save_cache_map(enterprise, personal)
     except Exception as e:
         logger.error(f"保存产品库缓存失败: {e}")
 
@@ -173,11 +144,9 @@ def get_products_by_credit_type(credit_type: str) -> str:
     logger.info(f"Getting products for credit type: {credit_type}")
 
     # 1. 尝试从缓存加载
-    cache = load_product_cache()
-
     if credit_type == "personal":
         # 尝试从缓存获取
-        cached_products = cache.get("personal") or ""
+        cached_products = get_cache_content("personal")
         if cached_products:
             logger.info(f"Using cached personal products, length: {len(cached_products)}")
             return cached_products
@@ -188,7 +157,7 @@ def get_products_by_credit_type(credit_type: str) -> str:
         logger.info(f"Retrieved personal products, length: {len(products)}")
 
         # 保存到缓存（同时获取企业产品以完整缓存）
-        enterprise_products = cache.get("enterprise") or ""
+        enterprise_products = get_cache_content("enterprise_credit")
         if not enterprise_products:
             try:
                 enterprise_products = wiki_service.get_enterprise_products()
@@ -201,25 +170,32 @@ def get_products_by_credit_type(credit_type: str) -> str:
 
     elif credit_type in ["enterprise_credit", "enterprise_mortgage", "enterprise"]:
         # 尝试从缓存获取
-        cached_products = cache.get("enterprise") or ""
+        cache_key = "enterprise_mortgage" if credit_type == "enterprise_mortgage" else "enterprise_credit"
+        cached_products = get_cache_content(cache_key)
         if cached_products:
             logger.info(f"Using cached enterprise products, length: {len(cached_products)}")
             return cached_products
 
         # 缓存不存在，从飞书获取
         logger.info("Enterprise products cache miss, fetching from Feishu")
-        products = wiki_service.get_enterprise_products()
+        if credit_type == "enterprise_mortgage":
+            products = wiki_service.get_document_content(wiki_service.PRODUCT_DOCS["enterprise_mortgage"])
+        else:
+            products = wiki_service.get_enterprise_products()
         logger.info(f"Retrieved enterprise products, length: {len(products)}")
 
         # 保存到缓存（同时获取个人产品以完整缓存）
-        personal_products = cache.get("personal") or ""
+        personal_products = get_cache_content("personal")
         if not personal_products:
             try:
                 personal_products = wiki_service.get_personal_products()
             except Exception as e:
                 logger.warning(f"Failed to fetch personal products for cache: {e}")
                 personal_products = ""
-        save_product_cache(products, personal_products)
+        if credit_type == "enterprise_mortgage":
+            save_cache_map(get_cache_content("enterprise_credit"), personal_products, enterprise_mortgage=products)
+        else:
+            save_product_cache(products, personal_products)
 
         return products
 
@@ -311,6 +287,37 @@ async def match_scheme(
         logger.error(f"Unexpected error matching schemes: {e}")
         raise HTTPException(status_code=500, detail=SCHEME_MATCH_FAILED_MESSAGE) from e
 
+    if HAS_DB_STORAGE and request.customerId:
+        try:
+            await profile_sync_service.handle_scheme_matched(
+                storage_service=storage_service,
+                customer_id=request.customerId,
+                customer_name=request.customerName or "",
+                match_result=match_result,
+            )
+        except Exception as sync_exc:
+            logger.warning(
+                "scheme_snapshot finish customer_id=%s operation_type=scheme_matched status=failed error=%s",
+                request.customerId,
+                sync_exc,
+            )
+
+    add_activity(
+        activity_type="matching",
+        customer=request.customerName or "",
+        customer_id=request.customerId,
+        username=current_user.get("username") or "",
+        status="completed",
+        title="融资方案匹配已完成",
+        description="系统已基于当前客户资料完成最新一轮融资方案匹配。",
+        metadata={
+            "creditType": request.creditType,
+            "hasCustomerContext": bool(request.customerId),
+        },
+    )
+    if request.customerName:
+        update_customer_status(request.customerName, has_matching=True)
+
     # Step 4: Return response
     # Requirement 4.6: Return matchResult in Markdown format with recommended schemes
     return SchemeMatchResponse(matchResult=match_result)
@@ -321,44 +328,82 @@ async def match_scheme(
 # =============================================================================
 
 
+def _legacy_load_application_cache_file() -> list:
+    """Deprecated local JSON helper kept only for historical reference."""
+    logger.info("Legacy JSON application cache helper is disabled in SQLAlchemy mode")
+    return []
+
+
+def _legacy_save_application_cache_file(applications: list) -> None:
+    """Deprecated local JSON helper kept only for historical reference."""
+    logger.info("Legacy JSON application cache save helper is disabled in SQLAlchemy mode")
+
 def load_application_cache() -> list:
-    """加载本地申请表缓存
-
-    Returns:
-        list: 已保存的申请表列表
-        如果缓存不存在或解析失败返回空列表
-
-    注意：
-    - #16: dict.get() 使用 `or []` 处理 None
-    """
-    if not APPLICATION_CACHE_FILE.exists():
-        logger.info("申请表缓存不存在")
-        return []
-
+    """Load saved applications from SQLAlchemy-backed storage."""
     try:
-        with open(APPLICATION_CACHE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        # #16: 处理 None 情况
-        applications = data.get("applications") or []
-        logger.info(f"申请表缓存加载成功，共 {len(applications)} 条记录")
-        return applications
-    except Exception as e:
-        logger.error(f"加载申请表缓存失败: {e}")
+        with SessionLocal() as db:
+            rows = (
+                db.query(SavedApplicationRecord)
+                .order_by(SavedApplicationRecord.saved_at.desc(), SavedApplicationRecord.id.desc())
+                .all()
+            )
+            applications = []
+            for row in rows:
+                try:
+                    application_data = json.loads(row.application_data) if row.application_data else {}
+                except Exception:
+                    application_data = {}
+                applications.append(
+                    {
+                        "id": row.application_id,
+                        "customerName": row.customer_name or "",
+                        "customerId": row.customer_id or "",
+                        "loanType": row.loan_type or "enterprise",
+                        "applicationData": application_data,
+                        "savedAt": row.saved_at or "",
+                        "ownerUsername": row.owner_username or "",
+                        "source": row.source or "manual",
+                        "stale": bool(row.stale),
+                        "stale_reason": row.stale_reason or "",
+                        "stale_at": row.stale_at or "",
+                        "profile_version": row.profile_version or 1,
+                        "profile_updated_at": row.profile_updated_at or "",
+                    }
+                )
+            logger.info("Loaded %s saved applications from SQLAlchemy storage", len(applications))
+            return applications
+    except Exception as exc:
+        logger.error("Failed to load saved applications from SQLAlchemy storage: %s", exc)
         return []
 
 
 def save_application_cache(applications: list) -> None:
-    """保存申请表到本地缓存"""
-    APPLICATION_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    cache_data = {"applications": applications, "lastUpdated": datetime.now(tz=timezone.utc).isoformat()}
-
+    """Persist saved applications with SQLAlchemy instead of JSON cache."""
     try:
-        with open(APPLICATION_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache_data, f, ensure_ascii=False, indent=2)
-        logger.info(f"申请表缓存保存成功，共 {len(applications)} 条记录")
-    except Exception as e:
-        logger.error(f"保存申请表缓存失败: {e}")
+        with SessionLocal() as db:
+            db.query(SavedApplicationRecord).delete()
+            for app in applications:
+                db.add(
+                    SavedApplicationRecord(
+                        application_id=app.get("id") or str(uuid.uuid4()),
+                        customer_name=app.get("customerName") or "",
+                        customer_id=app.get("customerId") or "",
+                        loan_type=app.get("loanType") or "enterprise",
+                        application_data=json.dumps(app.get("applicationData") or {}, ensure_ascii=False),
+                        saved_at=app.get("savedAt") or datetime.now(tz=timezone.utc).isoformat(),
+                        owner_username=app.get("ownerUsername") or "",
+                        source=app.get("source") or "manual",
+                        stale=1 if app.get("stale") else 0,
+                        stale_reason=app.get("stale_reason") or "",
+                        stale_at=app.get("stale_at") or "",
+                        profile_version=int(app.get("profile_version") or 1),
+                        profile_updated_at=app.get("profile_updated_at") or "",
+                    )
+                )
+            db.commit()
+        logger.info("Persisted %s saved applications to SQLAlchemy storage", len(applications))
+    except Exception as exc:
+        logger.error("Failed to save saved applications to SQLAlchemy storage: %s", exc)
         raise
 
 
@@ -383,7 +428,7 @@ async def list_saved_applications(current_user: dict = Depends(get_current_user)
     logger.info("获取已保存的申请表列表")
 
     try:
-        applications = load_application_cache()
+        applications = await storage_service.list_saved_applications()
 
         # 转换为列表项格式（不含完整 applicationData）
         result = []
@@ -394,6 +439,7 @@ async def list_saved_applications(current_user: dict = Depends(get_current_user)
                 SavedApplicationListItem(
                     id=app.get("id") or "",
                     customerName=app.get("customerName") or "",
+                    customerId=app.get("customerId"),
                     loanType=app.get("loanType") or "",
                     savedAt=app.get("savedAt") or "",
                 )
@@ -424,33 +470,71 @@ async def save_application(
 
     try:
         # 加载现有缓存
-        applications = load_application_cache()
+        applications = await storage_service.list_saved_applications()
 
         # 生成唯一 ID 和时间戳
         app_id = str(uuid.uuid4())
         saved_at = datetime.now(tz=timezone.utc).isoformat()
+        profile_version = 1
+        profile_updated_at = ""
+        if request.customerId:
+            profile = await storage_service.get_customer_profile(request.customerId)
+            if profile:
+                profile_version = int(profile.get("version") or 1)
+                profile_updated_at = profile.get("updated_at") or ""
 
         # 创建新申请表记录
         new_application = {
             "id": app_id,
             "customerName": request.customerName,
+            "customerId": request.customerId,
             "loanType": request.loanType,
             "applicationData": request.applicationData,
             "savedAt": saved_at,
             "ownerUsername": current_user["username"],
+            "source": "manual",
+            "stale": False,
+            "profile_version": profile_version,
+            "profile_updated_at": profile_updated_at,
         }
 
         # 添加到列表（新记录在前）
         applications.insert(0, new_application)
+        # saved via SQLAlchemy storage
 
         # 保存到缓存
-        save_application_cache(applications)
+        # SQLAlchemy delete already persisted
+
+        if request.customerId:
+            await profile_sync_service.refresh_profile_and_index(
+                storage_service=storage_service,
+                customer_id=request.customerId,
+                operation_type="application_summary_saved",
+                refresh_profile=True,
+            )
 
         logger.info(f"申请表保存成功: {app_id}")
+
+        add_activity(
+            activity_type="application",
+            customer=request.customerName,
+            customer_id=request.customerId,
+            username=current_user.get("username") or "",
+            status="completed",
+            title="申请表已保存",
+            description="系统已保存申请表，并同步更新资料汇总与问答索引。",
+            metadata={
+                "applicationId": app_id,
+                "loanType": request.loanType,
+                "savedAt": saved_at,
+            },
+        )
+        update_customer_status(request.customerName, has_application=True)
 
         return SavedApplication(
             id=app_id,
             customerName=request.customerName,
+            customerId=request.customerId,
             loanType=request.loanType,
             applicationData=request.applicationData,
             savedAt=saved_at,
@@ -480,7 +564,7 @@ async def get_application(
     logger.info(f"获取申请表详情: {application_id}")
 
     try:
-        applications = load_application_cache()
+        applications = await storage_service.list_saved_applications()
 
         # 查找指定 ID 的申请表
         for app in applications:
@@ -490,6 +574,7 @@ async def get_application(
                 return SavedApplication(
                     id=app.get("id") or "",
                     customerName=app.get("customerName") or "",
+                    customerId=app.get("customerId"),
                     loanType=app.get("loanType") or "",
                     applicationData=app.get("applicationData") or {},
                     savedAt=app.get("savedAt") or "",
@@ -525,14 +610,13 @@ async def delete_application(
     logger.info(f"删除申请表: {application_id}")
 
     try:
-        applications = load_application_cache()
-        matched_application = next((app for app in applications if app.get("id") == application_id), None)
+        matched_application = await storage_service.get_saved_application(application_id)
 
         if not matched_application or not _can_access_application(matched_application, current_user):
             logger.warning(f"申请表不存在: {application_id}")
             raise HTTPException(status_code=404, detail=APPLICATION_NOT_FOUND_MESSAGE)
 
-        applications = [app for app in applications if app.get("id") != application_id]
+        await storage_service.delete_saved_application(application_id)
 
         # 保存更新后的缓存
         save_application_cache(applications)
@@ -697,7 +781,7 @@ async def search_customer(
         return SearchCustomerResponse(found=False, customerData={}, recordId=None)
 
     try:
-        if USE_LOCAL_STORAGE:
+        if HAS_DB_STORAGE:
             customer_found, customer_data = await get_customer_data_local(request.customerName.strip())
             if not customer_found:
                 logger.info("Local customer not found: %s", request.customerName)

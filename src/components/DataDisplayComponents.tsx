@@ -98,9 +98,28 @@ export function getSectionIcon(sectionName: string): React.ReactNode {
 // Value Formatting
 // ============================================
 
+function formatScientificNotationString(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(-?\d+(?:\.\d+)?e[+-]?\d+)(.*)$/i);
+  if (!match) return value;
+
+  const numericValue = Number(match[1]);
+  if (!Number.isFinite(numericValue)) return value;
+
+  const unitSuffix = match[2] || '';
+  const formatted = Number.isInteger(numericValue)
+    ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(numericValue)
+    : new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(numericValue);
+
+  return `${formatted}${unitSuffix}`;
+}
+
 export function formatTableValue(value: unknown): string {
   if (value === null || value === undefined) return '-';
-  if (typeof value === 'string') return value || '-';
+  if (typeof value === 'string') {
+    if (!value) return '-';
+    return formatScientificNotationString(value);
+  }
   if (typeof value === 'number') return value.toLocaleString();
   if (typeof value === 'boolean') return value ? '是' : '否';
   if (Array.isArray(value)) {

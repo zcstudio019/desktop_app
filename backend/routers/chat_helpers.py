@@ -34,9 +34,6 @@ logger = logging.getLogger(__name__)
 ai_service = AIService()
 storage_service = get_storage_service()
 
-# 缓存文件路径
-APPLICATION_CACHE_FILE = Path(__file__).parent.parent.parent / "data" / "application_cache.json"
-
 # ===== 客户名称相关常量 =====
 
 _PRONOUN_EXCLUSIONS = {"该公司", "该企业", "该客户", "这个公司", "这家公司"}
@@ -69,6 +66,16 @@ _GENERIC_CUSTOMER_REFERENCE_PATTERNS = [
     r"^(客户|公司|企业)$",
 ]
 _GENERIC_CUSTOMER_REFERENCE_KEYWORDS = ("申请表", "资料", "文件", "模板", "方案", "内容")
+_GENERIC_INTENT_ONLY_KEYWORDS = (
+    "贷款",
+    "融资",
+    "匹配",
+    "生成",
+    "输出",
+    "填写",
+    "问答",
+    "风险报告",
+)
 _COMPANY_NAME_HINTS = (
     "公司", "企业", "集团", "有限", "股份", "工作室", "事务所",
     "合作社", "商行", "门市部", "中心", "银行", "医院", "学校", "厂",
@@ -129,6 +136,15 @@ def _looks_like_customer_name(name: str) -> bool:
         and not any(hint in normalized for hint in _COMPANY_NAME_HINTS)
     ):
         return False
+
+    # 避免把“企业贷款申请表”“匹配贷款方案”之类的任务短语误识别为客户名称。
+    if any(keyword in normalized for keyword in _GENERIC_CUSTOMER_REFERENCE_KEYWORDS):
+        if any(keyword in normalized for keyword in _GENERIC_INTENT_ONLY_KEYWORDS):
+            if not any(
+                company_hint in normalized
+                for company_hint in ("有限公司", "有限责任公司", "股份有限公司", "集团", "合作社", "事务所", "工作室")
+            ):
+                return False
 
     return True
 
@@ -604,7 +620,8 @@ def _extract_customer_name_from_rules(message: str) -> str | None:
             return extracted
 
     # 模式3：“输出/生成/填写/匹配 XXX 的…”
-    match3 = re.search(r"(输出|生成|填写|匹配)([^\s,，、的]+)的?", message)
+    # 这里限制必须出现“的”，减少把“生成一份企业贷款申请表”这类任务短语误识别成客户名。
+    match3 = re.search(r"(输出|生成|填写|匹配)\s*([^\s,，、]+?)\s*的", message)
     if match3:
         extracted = _finalize_customer_name_candidate(match3.group(2))
         if extracted:
@@ -1826,10 +1843,10 @@ def is_application_based_matching(message: str) -> bool:
 # ===== 申请表缓存查询 =====
 
 
-def get_latest_application_for_customer(
+async def get_latest_application_for_customer(
     customer_name: str,
 ) -> tuple[bool, dict, str]:
-    """从申请表缓存中获取指定客户的最新申请表数据。
+    """从业务存储中获取指定客户的最新申请表数据。
 
     Args:
         customer_name: 客户名称
@@ -1837,20 +1854,15 @@ def get_latest_application_for_customer(
     Returns:
         Tuple of (found, flattened_data_dict, loan_type)
     """
-    if not APPLICATION_CACHE_FILE.exists():
-        logger.info("[AppMatch] 申请表缓存文件不存在")
-        return (False, {}, "enterprise")
-
     try:
-        cache = _load_application_cache()
-        applications = cache.get("applications") or []
+        applications = await storage_service.list_saved_applications()
         if not applications:
-            logger.info("[AppMatch] application cache is empty")
+            logger.info("[AppMatch] saved applications storage is empty")
             return (False, {}, "enterprise")
 
-        target_app = _find_customer_application(applications, customer_name)
+        target_app = await _find_customer_application(applications, customer_name)
         if not target_app:
-            logger.info(f"[AppMatch] no cached application for {customer_name}")
+            logger.info(f"[AppMatch] no saved application for {customer_name}")
             return (False, {}, "enterprise")
 
         loan_type = target_app.get("loanType") or "enterprise"
@@ -1868,24 +1880,13 @@ def get_latest_application_for_customer(
         return (True, flattened, loan_type)
 
     except Exception as e:
-        logger.error(f"[AppMatch] 读取申请表缓存失败: {e}")
+        logger.error(f"[AppMatch] 读取申请表存储失败: {e}")
         return (False, {}, "enterprise")
 
-
-def _load_application_cache() -> dict:
-    """Load application cache from file.
-
-    Returns:
-        Cache dictionary
-    """
-    with open(APPLICATION_CACHE_FILE, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _find_customer_application(
+async def _find_customer_application(
     applications: list, customer_name: str,
 ) -> dict | None:
-    """Find the latest application for a customer.
+    """Find the latest non-stale application for a customer.
 
     Args:
         applications: List of application records
@@ -1894,7 +1895,13 @@ def _find_customer_application(
     Returns:
         Application dict or None
     """
+    _, resolved_customer_id = await _resolve_customer_id(customer_name)
     for app in applications:
+        if app.get("stale"):
+            continue
+        app_customer_id = app.get("customerId") or ""
+        if resolved_customer_id and app_customer_id == resolved_customer_id:
+            return app
         app_name = app.get("customerName") or ""
         if app_name == customer_name:
             return app

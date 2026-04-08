@@ -4,12 +4,23 @@ import json
 import logging
 import os
 import sqlite3
+import uuid
 from pathlib import Path
+
+# NOTE:
+# This module is retained only as a local SQLite fallback for development.
+# Production MySQL / RDS deployments should use SQLAlchemyStorageService instead.
 
 logger = logging.getLogger(__name__)
 
 # 摘要最大字符数（避免单元格内容过长）
 _SUMMARY_MAX_CHARS = 200
+DEFAULT_RAG_SOURCE_PRIORITY = [
+    "customer_profile_markdown",
+    "parsed_document_text",
+    "scheme_match_summary",
+    "application_summary",
+]
 
 
 def _build_extraction_summary(data: dict, max_chars: int = _SUMMARY_MAX_CHARS) -> str:
@@ -85,6 +96,11 @@ class LocalStorageService:
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
+    def _column_exists(self, cursor: sqlite3.Cursor, table_name: str, column_name: str) -> bool:
+        """Check whether a SQLite table already contains the given column."""
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return any(str(row[1]).lower() == column_name.lower() for row in cursor.fetchall())
+
     def _init_tables(self) -> None:
         """初始化数据库表结构和索引"""
         conn = self._get_connection()
@@ -121,6 +137,8 @@ class LocalStorageService:
             ]:
                 try:
                     col_name = col_def.split()[0]
+                    if self._column_exists(cursor, "customers", col_name):
+                        continue
                     cursor.execute(
                         f"ALTER TABLE customers ADD COLUMN {col_def}"
                     )
@@ -191,6 +209,90 @@ class LocalStorageService:
             ''')
 
             # 创建 table_fields 表（动态字段配置）
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS customer_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    customer_id VARCHAR(64) UNIQUE NOT NULL,
+                    title VARCHAR(255) DEFAULT '',
+                    markdown_content TEXT DEFAULT '',
+                    source_mode VARCHAR(20) DEFAULT 'auto',
+                    source_snapshot_json TEXT DEFAULT '{}',
+                    rag_source_priority_json TEXT DEFAULT '[]',
+                    risk_report_schema_json TEXT DEFAULT '{}',
+                    version INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_customer_profiles_customer_id
+                ON customer_profiles(customer_id)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS customer_scheme_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_id VARCHAR(64) UNIQUE NOT NULL,
+                    customer_id VARCHAR(64) NOT NULL,
+                    customer_name VARCHAR(255) DEFAULT '',
+                    summary_markdown TEXT DEFAULT '',
+                    raw_result TEXT DEFAULT '',
+                    source VARCHAR(50) DEFAULT 'manual',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_customer_scheme_snapshots_customer_id
+                ON customer_scheme_snapshots(customer_id)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS customer_document_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chunk_id VARCHAR(64) UNIQUE NOT NULL,
+                    customer_id VARCHAR(64) NOT NULL,
+                    source_type VARCHAR(50) NOT NULL,
+                    source_id VARCHAR(64) DEFAULT '',
+                    chunk_index INTEGER DEFAULT 0,
+                    chunk_text TEXT NOT NULL,
+                    embedding_json TEXT DEFAULT '[]',
+                    metadata_json TEXT DEFAULT '{}',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_customer_document_chunks_customer_id
+                ON customer_document_chunks(customer_id)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS customer_risk_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id VARCHAR(64) UNIQUE NOT NULL,
+                    customer_id VARCHAR(64) NOT NULL,
+                    profile_version INTEGER DEFAULT 1,
+                    profile_updated_at VARCHAR(64) DEFAULT '',
+                    generated_at VARCHAR(64) NOT NULL,
+                    report_json TEXT DEFAULT '{}',
+                    report_markdown TEXT DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_customer_risk_reports_customer_id
+                ON customer_risk_reports(customer_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_customer_risk_reports_generated_at
+                ON customer_risk_reports(generated_at)
+            ''')
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS table_fields (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -438,6 +540,21 @@ class LocalStorageService:
             )
 
             # 删除客户记录
+            cursor.execute(
+                'DELETE FROM customer_profiles WHERE customer_id = ?',
+                (customer_id,)
+            )
+
+            cursor.execute(
+                'DELETE FROM customer_scheme_snapshots WHERE customer_id = ?',
+                (customer_id,)
+            )
+
+            cursor.execute(
+                'DELETE FROM customer_document_chunks WHERE customer_id = ?',
+                (customer_id,)
+            )
+
             cursor.execute(
                 'DELETE FROM customers WHERE customer_id = ?',
                 (customer_id,)
@@ -798,6 +915,312 @@ class LocalStorageService:
 
     # ==================== 辅助方法 ====================
 
+    async def get_customer_profile(self, customer_id: str) -> dict | None:
+        """Get markdown profile for a customer."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                SELECT customer_id, title, markdown_content, source_mode,
+                       source_snapshot_json, rag_source_priority_json,
+                       risk_report_schema_json, version, created_at, updated_at
+                FROM customer_profiles
+                WHERE customer_id = ?
+                ''',
+                (customer_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._row_to_customer_profile(row)
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to load customer profile: {e}") from e
+        finally:
+            conn.close()
+
+    async def upsert_customer_profile(self, profile_data: dict) -> dict:
+        """Create or update markdown profile for a customer."""
+        customer_id = profile_data.get("customer_id")
+        if not customer_id:
+            raise ValueError("customer_id is required")
+
+        existing = await self.get_customer_profile(customer_id)
+        version = int(existing.get("version", 0)) + 1 if existing else int(profile_data.get("version") or 1)
+        source_snapshot_json = json.dumps(profile_data.get("source_snapshot") or {}, ensure_ascii=False)
+        rag_source_priority_json = json.dumps(
+            profile_data.get("rag_source_priority") or DEFAULT_RAG_SOURCE_PRIORITY,
+            ensure_ascii=False,
+        )
+        risk_report_schema_json = json.dumps(profile_data.get("risk_report_schema") or {}, ensure_ascii=False)
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                INSERT INTO customer_profiles (
+                    customer_id, title, markdown_content, source_mode,
+                    source_snapshot_json, rag_source_priority_json,
+                    risk_report_schema_json, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(customer_id) DO UPDATE SET
+                    title = excluded.title,
+                    markdown_content = excluded.markdown_content,
+                    source_mode = excluded.source_mode,
+                    source_snapshot_json = excluded.source_snapshot_json,
+                    rag_source_priority_json = excluded.rag_source_priority_json,
+                    risk_report_schema_json = excluded.risk_report_schema_json,
+                    version = excluded.version,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    customer_id,
+                    profile_data.get("title") or "",
+                    profile_data.get("markdown_content") or "",
+                    profile_data.get("source_mode") or "auto",
+                    source_snapshot_json,
+                    rag_source_priority_json,
+                    risk_report_schema_json,
+                    version,
+                ),
+            )
+            conn.commit()
+            saved = await self.get_customer_profile(customer_id)
+            if not saved:
+                raise RuntimeError("Markdown profile save returned empty result")
+            return saved
+        except sqlite3.Error as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to save customer profile: {e}") from e
+        finally:
+            conn.close()
+
+    async def delete_customer_profile(self, customer_id: str) -> bool:
+        """Delete markdown profile for a customer."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('DELETE FROM customer_profiles WHERE customer_id = ?', (customer_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to delete customer profile: {e}") from e
+        finally:
+            conn.close()
+
+    async def save_scheme_snapshot(self, snapshot_data: dict) -> dict:
+        """Persist the latest scheme matching summary for a customer."""
+        customer_id = snapshot_data.get("customer_id")
+        if not customer_id:
+            raise ValueError("customer_id is required")
+
+        snapshot_id = snapshot_data.get("snapshot_id") or customer_id
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                INSERT INTO customer_scheme_snapshots (
+                    snapshot_id, customer_id, customer_name, summary_markdown, raw_result, source
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    customer_name = excluded.customer_name,
+                    summary_markdown = excluded.summary_markdown,
+                    raw_result = excluded.raw_result,
+                    source = excluded.source,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    snapshot_id,
+                    customer_id,
+                    snapshot_data.get("customer_name") or "",
+                    snapshot_data.get("summary_markdown") or "",
+                    snapshot_data.get("raw_result") or "",
+                    snapshot_data.get("source") or "manual",
+                ),
+            )
+            conn.commit()
+            latest = await self.get_latest_scheme_snapshot(customer_id)
+            return latest or {}
+        except sqlite3.Error as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to save scheme snapshot: {e}") from e
+        finally:
+            conn.close()
+
+    async def get_latest_scheme_snapshot(self, customer_id: str) -> dict | None:
+        """Get the latest scheme summary snapshot for a customer."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                SELECT snapshot_id, customer_id, customer_name, summary_markdown, raw_result, source,
+                       created_at, updated_at
+                FROM customer_scheme_snapshots
+                WHERE customer_id = ?
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT 1
+                ''',
+                (customer_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "snapshot_id": row[0],
+                "customer_id": row[1],
+                "customer_name": row[2],
+                "summary_markdown": row[3],
+                "raw_result": row[4],
+                "source": row[5],
+                "created_at": row[6],
+                "updated_at": row[7],
+            }
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to load scheme snapshot: {e}") from e
+        finally:
+            conn.close()
+
+    async def replace_customer_chunks(self, customer_id: str, chunks: list[dict]) -> None:
+        """Replace all RAG chunks for a customer."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('DELETE FROM customer_document_chunks WHERE customer_id = ?', (customer_id,))
+            for chunk in chunks:
+                cursor.execute(
+                    '''
+                    INSERT INTO customer_document_chunks (
+                        chunk_id, customer_id, source_type, source_id, chunk_index,
+                        chunk_text, embedding_json, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        chunk["chunk_id"],
+                        customer_id,
+                        chunk.get("source_type") or "",
+                        chunk.get("source_id") or "",
+                        int(chunk.get("chunk_index") or 0),
+                        chunk.get("chunk_text") or "",
+                        json.dumps(chunk.get("embedding") or [], ensure_ascii=False),
+                        json.dumps(chunk.get("metadata") or {}, ensure_ascii=False),
+                    ),
+                )
+            conn.commit()
+        except sqlite3.Error as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to replace customer chunks: {e}") from e
+        finally:
+            conn.close()
+
+    async def save_customer_risk_report(self, report_data: dict) -> dict:
+        """Persist one generated customer risk report for later comparison."""
+        customer_id = report_data.get("customer_id")
+        generated_at = report_data.get("generated_at")
+        if not customer_id or not generated_at:
+            raise ValueError("customer_id and generated_at are required")
+
+        report_id = report_data.get("report_id") or str(uuid.uuid4())[:12]
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                INSERT INTO customer_risk_reports (
+                    report_id, customer_id, profile_version, profile_updated_at,
+                    generated_at, report_json, report_markdown
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    report_id,
+                    customer_id,
+                    int(report_data.get("profile_version") or 1),
+                    report_data.get("profile_updated_at") or "",
+                    generated_at,
+                    json.dumps(report_data.get("report_json") or {}, ensure_ascii=False),
+                    report_data.get("report_markdown") or "",
+                ),
+            )
+            conn.commit()
+            return {
+                "report_id": report_id,
+                "customer_id": customer_id,
+                "profile_version": int(report_data.get("profile_version") or 1),
+                "profile_updated_at": report_data.get("profile_updated_at") or "",
+                "generated_at": generated_at,
+                "report_json": report_data.get("report_json") or {},
+                "report_markdown": report_data.get("report_markdown") or "",
+            }
+        except sqlite3.Error as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to save customer risk report: {e}") from e
+        finally:
+            conn.close()
+
+    async def list_customer_risk_reports(self, customer_id: str, limit: int = 5) -> list[dict]:
+        """List recent risk report history for one customer."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                SELECT report_id, customer_id, profile_version, profile_updated_at,
+                       generated_at, report_json, report_markdown
+                FROM customer_risk_reports
+                WHERE customer_id = ?
+                ORDER BY datetime(generated_at) DESC, id DESC
+                LIMIT ?
+                ''',
+                (customer_id, max(1, int(limit))),
+            )
+            rows = cursor.fetchall()
+            return [
+                {
+                    "report_id": row[0],
+                    "customer_id": row[1],
+                    "profile_version": row[2] or 1,
+                    "profile_updated_at": row[3] or "",
+                    "generated_at": row[4] or "",
+                    "report_json": json.loads(row[5]) if row[5] else {},
+                    "report_markdown": row[6] or "",
+                }
+                for row in rows
+            ]
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to list customer risk reports: {e}") from e
+        finally:
+            conn.close()
+
+    async def get_latest_customer_risk_report(self, customer_id: str) -> dict | None:
+        """Get the most recent risk report snapshot for a customer."""
+        reports = await self.list_customer_risk_reports(customer_id, limit=1)
+        return reports[0] if reports else None
+
+    async def get_customer_chunks(self, customer_id: str) -> list[dict]:
+        """List all stored RAG chunks for a customer."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                SELECT chunk_id, customer_id, source_type, source_id, chunk_index,
+                       chunk_text, embedding_json, metadata_json, created_at, updated_at
+                FROM customer_document_chunks
+                WHERE customer_id = ?
+                ORDER BY source_type, chunk_index, id
+                ''',
+                (customer_id,),
+            )
+            rows = cursor.fetchall()
+            return [self._row_to_customer_chunk(row) for row in rows]
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to load customer chunks: {e}") from e
+        finally:
+            conn.close()
+
     def _row_to_customer(self, row: tuple) -> dict:
         """
         将数据库行转换为客户字典
@@ -878,6 +1301,36 @@ class LocalStorageService:
             'extracted_data': extracted_data,
             'confidence': row[6],
             'created_at': row[7]
+        }
+
+    def _row_to_customer_profile(self, row: tuple) -> dict:
+        """Convert customer profile row to dict."""
+        return {
+            "customer_id": row[0],
+            "title": row[1] or "",
+            "markdown_content": row[2] or "",
+            "source_mode": row[3] or "auto",
+            "source_snapshot": json.loads(row[4]) if row[4] else {},
+            "rag_source_priority": json.loads(row[5]) if row[5] else list(DEFAULT_RAG_SOURCE_PRIORITY),
+            "risk_report_schema": json.loads(row[6]) if row[6] else {},
+            "version": row[7] or 1,
+            "created_at": row[8],
+            "updated_at": row[9],
+        }
+
+    def _row_to_customer_chunk(self, row: tuple) -> dict:
+        """Convert customer chunk row to dict."""
+        return {
+            "chunk_id": row[0],
+            "customer_id": row[1],
+            "source_type": row[2],
+            "source_id": row[3] or "",
+            "chunk_index": row[4] or 0,
+            "chunk_text": row[5] or "",
+            "embedding": json.loads(row[6]) if row[6] else [],
+            "metadata": json.loads(row[7]) if row[7] else {},
+            "created_at": row[8],
+            "updated_at": row[9],
         }
 
     # ==================== 动态字段配置 ====================

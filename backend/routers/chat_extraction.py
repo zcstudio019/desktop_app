@@ -566,7 +566,7 @@ async def _process_type_group(
         )
 
     filenames = [ext["filename"] for ext in group]
-    saved, record_id, error_msg, similar_customers = await save_fn(
+    saved, record_id, error_msg, similar_customers, customer_id = await save_fn(
         ", ".join(filenames), doc_type, merged, customer_name, current_user,
         target_customer_id=target_customer_id,
     )
@@ -585,6 +585,7 @@ async def _process_type_group(
             "documentType": doc_type,
             "content": merged if i == 0 else ext["content"],
             "customerName": customer_name,
+            "customerId": customer_id,
             "savedToFeishu": saved,
             "recordId": record_id,
             "feishuError": error_msg,

@@ -45,10 +45,10 @@ async def save_to_storage(
     feishu_service: Any,
     target_customer_id: str | None = None,
     file_bytes: bytes | None = None,
-) -> tuple[bool, str | None, str | None, list[dict]]:
+) -> tuple[bool, str | None, str | None, list[dict], str | None]:
     """Save extracted data to storage (local SQLite or Feishu)."""
     if use_local:
-        return await _save_to_local_storage(
+        result = await _save_to_local_storage(
             chat_file_name,
             document_type,
             content,
@@ -58,6 +58,19 @@ async def save_to_storage(
             target_customer_id,
             file_bytes=file_bytes,
         )
+        saved, _, _, _, customer_id = result
+        if saved and customer_id:
+            try:
+                from backend.services.profile_sync_service import ProfileSyncService
+
+                await ProfileSyncService().handle_document_saved(storage_service, customer_id)
+            except Exception as exc:
+                logger.warning(
+                    "[Local Save] profile_sync failed customer_id=%s operation_type=document_saved status=failed error=%s",
+                    customer_id,
+                    exc,
+                )
+        return result
 
     saved, record_id, error_msg = _save_to_feishu_legacy(
         chat_file_name,
@@ -67,7 +80,7 @@ async def save_to_storage(
         current_user,
         feishu_service,
     )
-    return (saved, record_id, error_msg, [])
+    return (saved, record_id, error_msg, [], None)
 
 
 def _determine_customer_id(customer_name: str, document_type: str) -> tuple[str, str]:
@@ -301,11 +314,11 @@ async def _save_to_local_storage(
     storage_service: Any,
     target_customer_id: str | None = None,
     file_bytes: bytes | None = None,
-) -> tuple[bool, str | None, str | None, list[dict]]:
+) -> tuple[bool, str | None, str | None, list[dict], str | None]:
     """Save extracted data to local SQLite database."""
     if not customer_name:
         logger.warning("[Local Save] Missing customer name for %s", chat_file_name)
-        return (False, None, MISSING_CUSTOMER_NAME_MESSAGE, [])
+        return (False, None, MISSING_CUSTOMER_NAME_MESSAGE, [], None)
 
     try:
         if target_customer_id:
@@ -323,7 +336,7 @@ async def _save_to_local_storage(
                 file_bytes=file_bytes,
             )
             logger.info("[Local Save] MERGED into %s: %s", target_customer_id, chat_file_name)
-            return (True, extraction_id, None, [])
+            return (True, extraction_id, None, [], target_customer_id)
 
         customer_id, customer_type = await _resolve_customer_target(
             storage_service,
@@ -345,10 +358,10 @@ async def _save_to_local_storage(
             file_bytes=file_bytes,
         )
         logger.info("[Local Save] SUCCESS: %s -> extraction_id=%s", chat_file_name, extraction_id)
-        return (True, extraction_id, None, [])
+        return (True, extraction_id, None, [], customer_id)
     except Exception as exc:
         logger.error("[Local Save] Error for %s: %s", chat_file_name, exc, exc_info=True)
-        return (False, None, LOCAL_SAVE_FAILED_MESSAGE, [])
+        return (False, None, LOCAL_SAVE_FAILED_MESSAGE, [], None)
 
 
 def _save_to_feishu_legacy(

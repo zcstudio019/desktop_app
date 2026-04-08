@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { KeyRound, RefreshCcw, Shield, Trash2, UserCog, X } from 'lucide-react';
 import { ApiError, type UserInfo } from '../services/types';
 import { deleteUser, listUsers, resetPassword } from '../services/api';
@@ -15,7 +15,13 @@ function formatCreatedAt(value?: string): string {
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return date.toLocaleString('zh-CN', { hour12: false });
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
 }
 
 const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
@@ -42,7 +48,7 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
       } else if (err instanceof Error) {
         setError(err.message);
       } else {
-        setError('加载账号列表失败，请稍后重试。');
+        setError('加载账号列表失败，请稍后再试。');
       }
     } finally {
       setLoading(false);
@@ -71,7 +77,7 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
       } else if (err instanceof Error) {
         setError(err.message);
       } else {
-        setError('删除账号失败，请稍后重试。');
+        setError('删除账号失败，请稍后再试。');
       }
     } finally {
       setActionLoading(null);
@@ -102,7 +108,7 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
       } else if (err instanceof Error) {
         setResetError(err.message);
       } else {
-        setResetError('重置密码失败，请稍后重试。');
+        setResetError('重置密码失败，请稍后再试。');
       }
     } finally {
       setActionLoading(null);
@@ -110,29 +116,29 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
   };
 
   return (
-    <div className="p-6 md:p-8 space-y-6" data-testid="admin-users-page">
-      <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-6">
+    <div className="space-y-6 p-6 md:p-8" data-testid="admin-users-page">
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-sm font-medium mb-3">
-              <Shield className="w-4 h-4" />
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
+              <Shield className="h-4 w-4" />
               管理员功能
             </div>
             <h2 className="text-2xl font-bold text-slate-900">账号管理</h2>
-            <p className="text-sm text-slate-500 mt-2">查看已注册账号，删除停用账号，或远程为同事重置登录密码。</p>
+            <p className="mt-2 text-sm text-slate-500">查看已注册账号，删除停用账号，或为同事远程重置登录密码。</p>
           </div>
           <button
             type="button"
             onClick={() => void loadUsers()}
             disabled={loading}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
           >
-            <RefreshCcw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCcw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             刷新账号列表
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="text-sm text-slate-500">账号总数</div>
             <div className="mt-2 text-2xl font-semibold text-slate-900" data-testid="user-count">{users.length}</div>
@@ -143,24 +149,24 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
           </div>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="text-sm text-slate-500">当前账号</div>
-            <div className="mt-2 text-lg font-semibold text-slate-900 truncate">{currentUsername || '未识别'}</div>
+            <div className="mt-2 truncate text-lg font-semibold text-slate-900">{currentUsername || '未识别'}</div>
           </div>
         </div>
       </section>
 
-      {notice && (
+      {notice ? (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700" data-testid="admin-notice">
           {notice}
         </div>
-      )}
-      {error && (
+      ) : null}
+      {error ? (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" data-testid="admin-error">
           {error}
         </div>
-      )}
+      ) : null}
 
-      <section className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200">
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 px-6 py-4">
           <h3 className="text-lg font-semibold text-slate-900">已注册账号</h3>
         </div>
 
@@ -187,7 +193,7 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
                     <tr key={user.username} data-testid={`user-row-${user.username}`}>
                       <td className="px-6 py-4">
                         <div className="font-medium text-slate-900">{user.username}</div>
-                        {isCurrentUser && <div className="text-xs text-slate-500 mt-1">当前登录账号</div>}
+                        {isCurrentUser ? <div className="mt-1 text-xs text-slate-500">当前登录账号</div> : null}
                       </td>
                       <td className="px-6 py-4">
                         <span
@@ -210,16 +216,16 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
                             }}
                             className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-slate-700 hover:bg-slate-50"
                           >
-                            <KeyRound className="w-4 h-4" />
+                            <KeyRound className="h-4 w-4" />
                             重置密码
                           </button>
                           <button
                             type="button"
                             onClick={() => void handleDelete(user)}
                             disabled={isCurrentUser || isOnlyAdmin || actionLoading === `delete:${user.username}`}
-                            className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3 py-2 text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3 py-2 text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Trash2 className="h-4 w-4" />
                             删除账号
                           </button>
                         </div>
@@ -233,13 +239,13 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
         )}
       </section>
 
-      {resetTarget && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-slate-200">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+      {resetTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
-                  <UserCog className="w-5 h-5 text-blue-600" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50">
+                  <UserCog className="h-5 w-5 text-blue-600" />
                 </div>
                 <div>
                   <h3 className="font-semibold text-slate-900">远程重置密码</h3>
@@ -255,13 +261,13 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
                 }}
                 className="text-slate-400 hover:text-slate-600"
               >
-                <X className="w-5 h-5" />
+                <X className="h-5 w-5" />
               </button>
             </div>
 
-            <div className="px-6 py-5 space-y-4">
+            <div className="space-y-4 px-6 py-5">
               <div>
-                <label htmlFor="new-password" className="block text-sm font-medium text-slate-700 mb-2">
+                <label htmlFor="new-password" className="mb-2 block text-sm font-medium text-slate-700">
                   新的临时密码
                 </label>
                 <input
@@ -270,10 +276,10 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
                   value={newPassword}
                   onChange={(event) => setNewPassword(event.target.value)}
                   placeholder="请输入新的临时密码"
-                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              {resetError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{resetError}</div>}
+              {resetError ? <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{resetError}</div> : null}
               <div className="flex justify-end gap-3">
                 <button
                   type="button"
@@ -298,7 +304,7 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
             </div>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 };

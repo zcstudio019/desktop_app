@@ -18,11 +18,12 @@ import {
   FileText, Upload, Check, X, Loader2, AlertCircle,
   Building2, User, Landmark, Wallet, BarChart3, Home, FileSearch, Receipt
 } from 'lucide-react';
-import { processFile, saveToStorage } from '../services/api';
+import { listCustomers, processFile, saveToStorage } from '../services/api';
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp, type ExtractionResult, type UploadQueueItem } from '../context/AppContext';
-import { ApiError, classifyError, ErrorType } from '../services/types';
+import { ApiError, classifyError, ErrorType, type CustomerListItem } from '../services/types';
+import ProcessFeedbackCard from './common/ProcessFeedbackCard';
 
 // ============================================
 // Type Definitions
@@ -202,6 +203,12 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function formatCustomerOptionLabel(customerId: string | null | undefined, customerName: string | null | undefined): string {
+  if (customerName?.trim()) return customerName.trim();
+  if (!customerId) return '未选择客户';
+  return customerId.replace(/^(enterprise_|personal_)/, '');
+}
+
 function validateFile(file: File): { valid: boolean; error?: string } {
   const ext = getFileExtension(file.name);
   if (!ALL_ACCEPTED_EXTENSIONS.includes(ext)) {
@@ -343,7 +350,7 @@ const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
 // ============================================
 
 const UploadPage: React.FC = () => {
-  const { addCustomerData, state, setUploadTaskStatus } = useApp();
+  const { addCustomerData, state, setApplicationResult, setCurrentCustomer, setSchemeResult, setUploadTaskStatus, recordSystemActivity } = useApp();
   const { error, execute, reset: resetLoading } = useLoading<void>();
   const { getSignal, abort } = useAbortController();
 
@@ -352,6 +359,8 @@ const UploadPage: React.FC = () => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedDocumentType, setSelectedDocumentType] = useState<string>('enterprise_credit');
   const [customerName, setCustomerName] = useState<string>('');
+  const [customerOptions, setCustomerOptions] = useState<CustomerListItem[]>([]);
+  const [customersLoading, setCustomersLoading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
@@ -362,6 +371,58 @@ const UploadPage: React.FC = () => {
     () => uploadQueue.some((item) => item.status === 'pending' || item.status === 'processing'),
     [uploadQueue]
   );
+  const uploadSummary = useMemo(() => {
+    const successCount = uploadQueue.filter((item) => item.status === 'success').length;
+    const errorCount = uploadQueue.filter((item) => item.status === 'error').length;
+
+    if (isProcessing) {
+      return {
+        tone: 'processing' as const,
+        title: '正在处理上传资料',
+        description: '系统正在解析文件、保存客户资料，并自动刷新资料汇总与问答索引。',
+        persistenceHint: '处理中，完成后会自动保存已识别资料。',
+        nextStep: '请稍候，处理完成后可去资料汇总或 AI 对话查看最新结果。',
+      };
+    }
+
+    if (uploadQueue.length === 0) {
+      return {
+        tone: 'idle' as const,
+        title: '等待上传资料',
+        description: '支持企业征信、个人征信、流水、财务数据、水母报告等资料。',
+        persistenceHint: '尚未开始本轮上传。',
+        nextStep: '先选择客户与资料类型，再上传文件。',
+      };
+    }
+
+    if (successCount > 0 && errorCount > 0) {
+      return {
+        tone: 'partial' as const,
+        title: '部分资料处理成功',
+        description: `本轮已成功保存 ${successCount} 份资料，另有 ${errorCount} 份处理失败。`,
+        persistenceHint: '成功部分已保存到当前客户，并已触发资料汇总更新。',
+        nextStep: '可先继续使用已保存资料，再补传失败文件。',
+      };
+    }
+
+    if (successCount > 0) {
+      return {
+        tone: 'success' as const,
+        title: '资料上传已完成',
+        description: `本轮 ${successCount} 份资料已全部保存，并已自动刷新资料汇总与问答索引。`,
+        persistenceHint: '主流程已完成保存。',
+        nextStep: '建议前往资料汇总核对内容，或去 AI 对话继续问答与生成报告。',
+      };
+    }
+
+    return {
+      tone: 'error' as const,
+      title: '资料处理失败',
+      description: error?.message || '本轮上传未成功，系统未保存新的资料内容。',
+      persistenceHint: '主流程未保存成功。',
+      nextStep: '请检查文件格式或网络状态后重新上传。',
+    };
+  }, [error?.message, isProcessing, uploadQueue]);
 
   // Update task status in context when queue changes
   useEffect(() => {
@@ -392,7 +453,39 @@ const UploadPage: React.FC = () => {
     }
   }, [state.tasks.upload, setUploadTaskStatus]); // Re-run when task state changes for recovery
 
-  // 娉ㄦ剰锛歝ustomerNameOverride 鍙傛暟鐢ㄤ簬閬垮厤闂寘闄烽槺 #31
+  useEffect(() => {
+    let cancelled = false;
+    const loadCustomers = async () => {
+      setCustomersLoading(true);
+      try {
+        const items = await listCustomers(undefined, getSignal());
+        if (!cancelled) {
+          setCustomerOptions(items);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          console.error('Failed to load customers for upload selector:', loadError);
+          setCustomerOptions([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setCustomersLoading(false);
+        }
+      }
+    };
+    void loadCustomers();
+    return () => {
+      cancelled = true;
+    };
+  }, [getSignal]);
+
+  useEffect(() => {
+    if (state.extraction.currentCustomer) {
+      setCustomerName(state.extraction.currentCustomer);
+    }
+  }, [state.extraction.currentCustomer]);
+
+  // Note: customerNameOverride is passed explicitly to avoid stale closure issues.
   const processQueueItem = useCallback(async (item: QueueItem, customerNameOverride: string): Promise<void> => {
     const signal = getSignal();
     setUploadQueue((prev) => prev.map((q) => 
@@ -408,14 +501,21 @@ const UploadPage: React.FC = () => {
       setUploadQueue((prev) => prev.map((q) => 
         q.id === item.id ? { ...q, progress: 80 } : q
       ));
-      // 浼樺厛浣跨敤鐢ㄦ埛杈撳叆鐨勫鎴峰悕绉帮紝閬垮厤闂寘闄烽槺 #31
-      const finalCustomerName = customerNameOverride.trim() || processResult.customerName || '';
+      const activeCustomerId = state.extraction.currentCustomerId ?? null;
+      const activeCustomerName = activeCustomerId ? state.extraction.currentCustomer ?? '' : '';
+      // Prefer the selected customer context first, then manual input, then OCR result.
+      const finalCustomerName =
+        activeCustomerName.trim() ||
+        customerNameOverride.trim() ||
+        processResult.customerName ||
+        '';
       if (!finalCustomerName) {
         throw new Error('未识别到客户名称，请先补充客户名称后再保存。');
       }
       const storageResult = await saveToStorage({
         documentType: processResult.documentType,
         customerName: finalCustomerName,
+        customerId: activeCustomerId,
         content: processResult.content,
         fileName: item.file.name,
       }, signal);
@@ -426,10 +526,12 @@ const UploadPage: React.FC = () => {
         customerName: processResult.customerName,
         savedToFeishu: storageResult.success,
         recordId: storageResult.recordId,
+        customerId: storageResult.customerId ?? null,
       };
 
       // Use addCustomerData to group by customer name
-      addCustomerData(finalCustomerName, extractionResult);
+      addCustomerData(activeCustomerName || finalCustomerName, extractionResult);
+      setCurrentCustomer(activeCustomerName || finalCustomerName, storageResult.customerId ?? activeCustomerId);
       setUploadQueue((prev) => prev.map((q) => 
         q.id === item.id ? { ...q, status: 'success' as const, progress: 100, result: extractionResult } : q
       ));
@@ -445,6 +547,67 @@ const UploadPage: React.FC = () => {
         result: extractionResult,
       };
       setUploadedFiles((prev) => [uploadedFile, ...prev]);
+      if (
+        activeCustomerId &&
+        state.application.result &&
+        state.application.result.metadata?.customer_id === activeCustomerId
+      ) {
+        setApplicationResult(
+          {
+            ...state.application.result,
+            metadata: {
+              ...state.application.result.metadata,
+              stale: true,
+              stale_reason: `${item.file.name} 已上传并覆盖同类旧资料，请重新生成申请表以使用最新内容。`,
+              stale_at: new Date().toISOString(),
+            },
+          },
+          activeCustomerName || finalCustomerName,
+        );
+      }
+      recordSystemActivity({
+        type: 'upload',
+        title: '客户资料上传完成',
+        description: `${item.file.name} 已保存，并已自动更新资料汇总与问答索引。`,
+        customerName: activeCustomerName || finalCustomerName,
+        customerId: storageResult.customerId ?? activeCustomerId,
+        status: 'success',
+      });
+      if (
+        activeCustomerId &&
+        state.application.result &&
+        state.application.result.metadata?.customer_id === activeCustomerId
+      ) {
+        recordSystemActivity({
+          type: 'application',
+          title: '申请表需重新生成',
+          description: `${item.file.name} 已覆盖同类旧资料，原申请表已标记为需重生成。`,
+          customerName: activeCustomerName || finalCustomerName,
+          customerId: storageResult.customerId ?? activeCustomerId,
+          status: 'warning',
+        });
+      }
+      if (
+        activeCustomerId &&
+        state.scheme.result &&
+        state.scheme.result.customerId === activeCustomerId &&
+        state.scheme.result.result
+      ) {
+        setSchemeResult({
+          ...state.scheme.result,
+          stale: true,
+          staleReason: `${item.file.name} 已上传并覆盖同类旧资料，请重新匹配方案以使用最新内容。`,
+          staleAt: new Date().toISOString(),
+        });
+        recordSystemActivity({
+          type: 'matching',
+          title: '方案匹配需重新执行',
+          description: `${item.file.name} 已覆盖同类旧资料，原方案匹配结果已标记为需重新匹配。`,
+          customerName: activeCustomerName || finalCustomerName,
+          customerId: storageResult.customerId ?? activeCustomerId,
+          status: 'warning',
+        });
+      }
     } catch (err) {
       let errorMessage = '处理失败';
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -462,9 +625,9 @@ const UploadPage: React.FC = () => {
         q.id === item.id ? { ...q, status: 'error' as const, error: errorMessage } : q
       ));
     }
-  }, [getSignal, addCustomerData]);
+  }, [addCustomerData, getSignal, recordSystemActivity, setApplicationResult, setCurrentCustomer, setSchemeResult, state.application.result, state.extraction.currentCustomer, state.extraction.currentCustomerId, state.scheme.result]);
 
-  // 娉ㄦ剰锛歝ustomerNameOverride 鍙傛暟鐢ㄤ簬閬垮厤闂寘闄烽槺 #31
+  // Note: customerNameOverride is passed explicitly to avoid stale closure issues.
   const processQueue = useCallback(async (itemsToProcess?: QueueItem[], customerNameOverride?: string) => {
     if (processingRef.current) return;
     processingRef.current = true;
@@ -507,10 +670,10 @@ const UploadPage: React.FC = () => {
     }
     setUploadQueue((prev) => [...prev, ...newItems]);
     // Pass the new items directly to avoid stale closure issue
-    // 鍚屾椂浼犻€?customerName 鍙傛暟锛岄伩鍏嶉棴鍖呴櫡闃?#31
+    // Pass customerName together to avoid stale closure issues.
     const pendingNewItems = newItems.filter(item => item.status === 'pending');
     if (pendingNewItems.length > 0) {
-      const currentCustomerName = customerName; // 鎹曡幏褰撳墠鍊?
+      const currentCustomerName = customerName; // Capture the latest value before scheduling.
       setTimeout(() => processQueue(pendingNewItems, currentCustomerName), 100);
     }
   }, [selectedDocumentType, processQueue, customerName]);
@@ -547,6 +710,18 @@ const UploadPage: React.FC = () => {
     fileInputRef.current?.click();
   }, []);
 
+  const handleCustomerSelect = useCallback((customerId: string) => {
+    if (!customerId) {
+      setCurrentCustomer(null, null);
+      setCustomerName('');
+      return;
+    }
+    const target = customerOptions.find((item) => item.record_id === customerId);
+    const nextName = target?.name ?? '';
+    setCurrentCustomer(nextName || null, customerId);
+    setCustomerName(nextName);
+  }, [customerOptions, setCurrentCustomer]);
+
   const handleCancelUpload = useCallback(() => {
     abort();
     setUploadQueue((prev) => prev.map((item) => 
@@ -567,7 +742,8 @@ const UploadPage: React.FC = () => {
   }, []);
 
   const viewResult = useCallback((result: ExtractionResult) => {
-    alert(JSON.stringify(result.content, null, 2));
+    void result;
+    alert('资料已提取完成。可前往“资料汇总”或“客户管理”查看整理后的内容。');
   }, []);
 
   return (
@@ -579,6 +755,18 @@ const UploadPage: React.FC = () => {
           <p className="text-gray-500 text-sm">请上传客户的征信、流水、财务数据等资料</p>
         </div>
         <div className="flex gap-3">
+          <select
+            value={state.extraction.currentCustomerId || ''}
+            onChange={(e) => handleCustomerSelect(e.target.value)}
+            className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[220px]"
+          >
+            <option value="">{customersLoading ? '加载客户中...' : '请选择客户'}</option>
+            {customerOptions.map((customer) => (
+              <option key={customer.record_id} value={customer.record_id}>
+                {formatCustomerOptionLabel(customer.record_id, customer.name)}
+              </option>
+            ))}
+          </select>
           <select
             value={selectedDocumentType}
             onChange={(e) => setSelectedDocumentType(e.target.value)}
@@ -596,15 +784,63 @@ const UploadPage: React.FC = () => {
             placeholder="输入客户名称（用于智能合并）"
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-48"
           />
+          {state.extraction.currentCustomerId && (
+            <button
+              type="button"
+              onClick={() => handleCustomerSelect('')}
+              className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors"
+            >
+              清空选择
+            </button>
+          )}
           <button
             onClick={handleUploadClick}
             disabled={isProcessing}
             className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isProcessing ? '处理中...' : '选择文件'}
+            {isProcessing ? '资料处理中...' : '选择文件并开始处理'}
           </button>
         </div>
       </div>
+
+      <div className="mb-6 grid gap-4 md:grid-cols-3">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-xs text-slate-500">当前客户上下文</div>
+          <div className="mt-2 text-base font-semibold text-slate-800">
+            {state.extraction.currentCustomer || '未选择客户'}
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            新上传资料会优先并入当前客户，并自动刷新资料汇总与问答索引
+          </div>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-xs text-slate-500">处理状态</div>
+          <div className="mt-2 text-base font-semibold text-slate-800">
+            {isProcessing ? '系统正在处理资料' : uploadQueue.length > 0 ? '本轮上传已处理完成' : '等待上传资料'}
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            {isProcessing ? '上传成功后将自动触发资料汇总更新和索引重建' : '支持企业征信、个人征信、流水、财务数据、水母报告等资料'}
+          </div>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-xs text-slate-500">本轮结果</div>
+          <div className="mt-2 text-base font-semibold text-slate-800">
+            成功 {uploadQueue.filter((item) => item.status === 'success').length} 份 / 失败 {uploadQueue.filter((item) => item.status === 'error').length} 份
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            已上传文件 {uploadedFiles.length} 份，可继续补传并自动并入同一客户资料
+          </div>
+        </div>
+      </div>
+
+      <ProcessFeedbackCard
+        tone={uploadSummary.tone}
+        title={uploadSummary.title}
+        description={uploadSummary.description}
+        persistenceHint={uploadSummary.persistenceHint}
+        nextStep={uploadSummary.nextStep}
+        className="mb-6"
+      />
 
       {/* Hidden file input */}
       <input
@@ -697,7 +933,7 @@ const UploadPage: React.FC = () => {
         {uploadedFiles.length === 0 ? (
           <div className="text-center py-8 text-gray-400">
             <FileText className="w-12 h-12 mx-auto mb-2 opacity-50" />
-            <p>暂无已上传文件</p>
+            <p>本轮还没有已上传资料</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -727,7 +963,7 @@ const UploadPage: React.FC = () => {
                       onClick={() => viewResult(file.result)}
                       className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-gray-500 text-xs hover:bg-gray-50 transition-colors"
                     >
-                      查看
+                      查看整理结果
                     </button>
                     <button
                       onClick={() => removeUploadedFile(file.id)}
@@ -749,7 +985,7 @@ const UploadPage: React.FC = () => {
           <div className="flex items-start gap-2">
             <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
             <div>
-              <p className="text-red-800 font-medium">处理出错</p>
+              <p className="text-red-800 font-medium">本次处理未完成</p>
               <p className="text-red-600 text-sm">{error.message}</p>
             </div>
             <button onClick={resetLoading} className="text-red-400 hover:text-red-600 ml-2">
@@ -763,4 +999,5 @@ const UploadPage: React.FC = () => {
 };
 
 export default UploadPage;
+
 

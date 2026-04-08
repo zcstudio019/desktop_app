@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CustomerListPage Component - Customer list with card-based layout
  *
  * Features:
@@ -11,7 +11,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { Search, Users, Clock, User, Filter, Download, RefreshCw, X } from 'lucide-react';
+import { Search, Users, Clock, User, Filter, Download, RefreshCw, X, AlertCircle } from 'lucide-react';
 import { listCustomers, getCustomerDetail } from '../services/api';
 import { ApiError } from '../services/types';
 import type { CustomerListItem, CustomerDetail } from '../services/types';
@@ -28,7 +28,12 @@ function formatTime(timeStr: string): string {
   if (/^\d{4}\.\d{2}\.\d{2}$/.test(timeStr)) return timeStr.replace(/\./g, '/');
 
   try {
-    const date = new Date(timeStr);
+    const normalized = timeStr.includes('T')
+      ? timeStr
+      : timeStr.includes(' ')
+        ? `${timeStr.replace(' ', 'T')}Z`
+        : timeStr;
+    const date = new Date(normalized);
     if (Number.isNaN(date.getTime())) return timeStr;
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -38,6 +43,27 @@ function formatTime(timeStr: string): string {
     return h === '00' && min === '00' ? `${y}/${m}/${d}` : `${y}/${m}/${d} ${h}:${min}`;
   } catch {
     return timeStr;
+  }
+}
+
+function formatCustomerDisplayId(recordId: string): string {
+  return recordId.replace(/^(enterprise_|personal_)/, '');
+}
+
+function inferCustomerType(recordId: string): string {
+  return recordId.startsWith('personal_') ? '个人' : '企业';
+}
+
+function getRiskLevelLabel(level?: string): string {
+  switch ((level || '').toLowerCase()) {
+    case 'high':
+      return '高风险';
+    case 'medium':
+      return '中风险';
+    case 'low':
+      return '低风险';
+    default:
+      return '';
   }
 }
 
@@ -60,6 +86,9 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
 
   const isAdmin = userRole === 'admin';
   const modalRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const uploaderFilterRef = useRef<HTMLSelectElement>(null);
+  const listSectionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!hasLoaded) return;
@@ -103,6 +132,43 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
   const handleRefresh = useCallback(() => {
     fetchCustomers(debouncedQuery);
   }, [fetchCustomers, debouncedQuery]);
+
+  const ensureListLoaded = useCallback(() => {
+    if (!hasLoaded) {
+      handleInitialLoad();
+      return false;
+    }
+    return true;
+  }, [handleInitialLoad, hasLoaded]);
+
+  const focusSearch = useCallback(() => {
+    const ready = ensureListLoaded();
+    window.setTimeout(() => {
+      if (!ready) {
+        searchInputRef.current?.focus();
+        return;
+      }
+      searchInputRef.current?.focus();
+    }, ready ? 0 : 350);
+  }, [ensureListLoaded]);
+
+  const focusUploaderFilter = useCallback(() => {
+    const ready = ensureListLoaded();
+    window.setTimeout(() => {
+      if (isAdmin && uploaderFilterRef.current) {
+        uploaderFilterRef.current.focus();
+      } else {
+        searchInputRef.current?.focus();
+      }
+    }, ready ? 0 : 350);
+  }, [ensureListLoaded, isAdmin]);
+
+  const scrollToList = useCallback(() => {
+    const ready = ensureListLoaded();
+    window.setTimeout(() => {
+      listSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, ready ? 0 : 350);
+  }, [ensureListLoaded]);
 
   const handleCardClick = useCallback(async (recordId: string) => {
     setShowModal(true);
@@ -163,16 +229,43 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
   }, [customers, uploaderFilter, isAdmin]);
 
   return (
-    <div className="p-6" data-testid="customer-list-page">
-      <div className="mb-6">
-        <h2 className="text-lg font-semibold text-gray-800">客户列表</h2>
-        <p className="text-sm text-gray-500 mt-1">
-          {isAdmin ? '管理所有客户资料' : `${username} 的客户资料`}
-        </p>
+    <div className="bg-[linear-gradient(180deg,#f8fafc_0%,#f1f5f9_100%)] p-6" data-testid="customer-list-page">
+      <div className="mb-6 rounded-[28px] border border-slate-200/80 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.16),_transparent_36%),linear-gradient(135deg,#ffffff_0%,#f8fafc_100%)] p-6 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-800">客户列表</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {isAdmin ? '集中查看并检索所有客户资料，支持按上传人筛选与详情核验。' : `查看 ${username} 当前可管理的客户资料，并继续进入后续流程。`}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={focusSearch}
+              className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+            >
+              搜索客户
+            </button>
+            <button
+              type="button"
+              onClick={scrollToList}
+              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+            >
+              查看详情
+            </button>
+            <button
+              type="button"
+              onClick={focusUploaderFilter}
+              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+            >
+              按上传人筛选
+            </button>
+          </div>
+        </div>
       </div>
 
       {!hasLoaded && (
-        <div className="flex flex-col items-center justify-center py-20" data-testid="initial-state">
+        <div className="flex flex-col items-center justify-center rounded-[28px] border border-dashed border-slate-300 bg-white/85 py-20 shadow-sm" data-testid="initial-state">
           <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mb-6">
             <Users size={36} className="text-blue-500" />
           </div>
@@ -190,15 +283,21 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
 
       {hasLoaded && (
         <>
+          <div ref={listSectionRef} className="mb-6 rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm">
+            <div className="mb-3 text-sm font-semibold text-slate-800">客户检索与筛选</div>
+            <div className="text-xs text-slate-500">支持按客户名称快速搜索，也可按上传人筛选，点击客户卡片可查看完整资料详情。</div>
+          </div>
+
           <div className="flex flex-col sm:flex-row gap-3 mb-6">
             <div className="relative flex-1">
               <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
+                ref={searchInputRef}
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="搜索客户名称..."
-                className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white transition-shadow"
+                className="w-full rounded-xl border border-slate-200 bg-white pl-10 pr-4 py-2.5 text-sm transition-shadow focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
@@ -206,9 +305,10 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
               <div className="relative">
                 <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <select
+                  ref={uploaderFilterRef}
                   value={uploaderFilter}
                   onChange={(e) => setUploaderFilter(e.target.value)}
-                  className="pl-9 pr-8 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white appearance-none cursor-pointer min-w-[160px]"
+                  className="min-w-[160px] appearance-none rounded-xl border border-slate-200 bg-white pl-9 pr-8 py-2.5 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">全部上传者</option>
                   {uniqueUploaders.map((uploader) => (
@@ -223,7 +323,7 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
             <button
               onClick={handleRefresh}
               disabled={loading}
-              className="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 hover:border-gray-300 active:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-gray-600 transition-colors hover:border-gray-300 hover:bg-gray-50 active:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
               刷新
@@ -234,22 +334,22 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
             <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
               {error}
               <button onClick={handleRefresh} className="ml-3 text-red-600 underline hover:text-red-800">
-                重试
+                再试一次
               </button>
             </div>
           )}
 
           {loading && (
-            <div className="flex items-center justify-center py-20" data-testid="customer-list-loading">
+            <div className="flex items-center justify-center rounded-[28px] border border-dashed border-slate-300 bg-white/85 py-20 shadow-sm" data-testid="customer-list-loading">
               <div className="text-center">
                 <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                <p className="text-sm text-gray-500">加载中...</p>
+                <p className="text-sm text-gray-500">正在加载客户列表...</p>
               </div>
             </div>
           )}
 
           {!loading && !error && filteredCustomers.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-20" data-testid="customer-list-empty">
+            <div className="flex flex-col items-center justify-center rounded-[28px] border border-dashed border-slate-300 bg-white/85 py-20 shadow-sm" data-testid="customer-list-empty">
               <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
                 <Users size={28} className="text-gray-400" />
               </div>
@@ -257,7 +357,7 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
                 {searchQuery ? '未找到匹配的客户' : '暂无客户数据'}
               </h3>
               <p className="text-sm text-gray-400">
-                {searchQuery ? '请尝试其他搜索关键词' : '上传客户资料后将在此显示'}
+                {searchQuery ? '换个关键词再试试' : '上传客户资料后，这里会自动显示对应客户'}
               </p>
             </div>
           )}
@@ -270,11 +370,19 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="customer-card-grid">
-                {filteredCustomers.map((customer) => (
+                {filteredCustomers.map((customer) => {
+                  const isHighRisk = (customer.risk_level || '').toLowerCase() === 'high';
+                  const riskLabel = getRiskLevelLabel(customer.risk_level);
+
+                  return (
                   <div
                     key={customer.record_id}
                     onClick={() => handleCardClick(customer.record_id)}
-                    className="bg-white rounded-xl border border-gray-100 p-5 hover:shadow-md hover:border-blue-200 transition-all cursor-pointer group"
+                    className={`rounded-xl border p-5 transition-all cursor-pointer group ${
+                      isHighRisk
+                        ? 'border-rose-200 bg-[linear-gradient(180deg,#ffffff_0%,#fff7f7_100%)] hover:border-rose-300 hover:shadow-[0_10px_30px_rgba(244,63,94,0.08)]'
+                        : 'bg-white border-gray-100 hover:shadow-md hover:border-blue-200'
+                    }`}
                   >
                     <div className="flex items-start gap-3 mb-3">
                       <div
@@ -303,11 +411,21 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
                           >
                             {customer.customer_type === 'personal' ? '个人' : '企业'}
                           </span>
+                          {riskLabel && (
+                            <span className={`px-1.5 py-0.5 text-xs rounded font-medium shrink-0 ${isHighRisk ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                              {riskLabel}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="space-y-2 text-sm">
+                      {isHighRisk && (
+                        <div className="rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+                          最新风险报告提示该客户为高风险，建议先查看风险报告与待补资料，再继续后续操作。
+                        </div>
+                      )}
                       {isAdmin && customer.uploader && (
                         <div className="flex items-center gap-2 text-gray-500">
                           <Users size={14} className="flex-shrink-0" />
@@ -320,9 +438,16 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
                           <span>{formatTime(customer.upload_time)}</span>
                         </div>
                       )}
+                      {customer.last_report_generated_at && (
+                        <div className="flex items-center gap-2 text-gray-400">
+                          <AlertCircle size={14} className="flex-shrink-0" />
+                          <span>报告时间：{formatTime(customer.last_report_generated_at)}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           )}
@@ -366,7 +491,11 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="bg-gray-50 rounded-lg p-3">
                       <div className="text-xs text-gray-400 mb-1">记录 ID</div>
-                      <div className="text-sm text-gray-700 font-mono break-all">{selectedDetail.record_id}</div>
+                      <div className="text-sm text-gray-700 break-all">{formatCustomerDisplayId(selectedDetail.record_id)}</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3">
+                      <div className="text-xs text-gray-400 mb-1">客户类型</div>
+                      <div className="text-sm text-gray-700">{inferCustomerType(selectedDetail.record_id)}</div>
                     </div>
                     {selectedDetail.uploader && (
                       <div className="bg-gray-50 rounded-lg p-3">
@@ -442,3 +571,4 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
 };
 
 export default CustomerListPage;
+

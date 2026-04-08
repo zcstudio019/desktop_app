@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ApplicationPage - Loan Application Generation
  *
  * This component allows users to generate loan application forms
@@ -9,18 +9,19 @@
  * Task 8.1: Update application page layout
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   FileText, Download, Loader2, AlertTriangle, CheckCircle, XCircle, 
   User, Search, Edit3, Save, ChevronDown, ChevronRight,
   Building2, CreditCard, Banknote, Calendar, DollarSign, Building, 
-  BadgeCheck, FileCheck, FileSpreadsheet
+  BadgeCheck, FileCheck, FileSpreadsheet, Copy
 } from 'lucide-react';
 import { generateApplication, saveApplication } from '../services/api';
 import type { ApplicationResponse } from '../services/types';
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
+import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
 
 /**
  * Loan type options
@@ -102,6 +103,35 @@ function createDownloadLink(blob: Blob, fileName: string): void {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+function normalizeSectionTitle(value: string): string {
+  const map: Record<string, string> = {
+    '鍩烘湰淇℃伅': '基本信息',
+    '涓汉淇℃伅': '个人信息',
+    '浼佷笟淇℃伅': '企业信息',
+    '璐锋淇℃伅': '贷款信息',
+    '璐㈠姟淇℃伅': '财务信息',
+    '璧勪骇淇℃伅': '资产信息',
+    '寰佷俊淇℃伅': '征信信息',
+    '娴佹按淇℃伅': '流水信息',
+    '鍏朵粬淇℃伅': '其他信息',
+  };
+  return map[value] || value;
+}
+
+function normalizeFieldLabel(value: string): string {
+  const map: Record<string, string> = {
+    '濮撳悕': '姓名',
+    '浼佷笟鍚嶇О': '企业名称',
+    '鍏徃鍚嶇О': '公司名称',
+    '韬唤璇佸彿': '身份证号',
+    '缁熶竴绀句細淇＄敤浠ｇ爜': '统一社会信用代码',
+    '璐锋閲戦': '贷款金额',
+    '鍒╃巼': '利率',
+    '鏃ユ湡': '日期',
+  };
+  return map[value] || value;
 }
 
 function buildApplicationFormHtml(
@@ -336,6 +366,7 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const entries = Object.entries(data);
+  const normalizedTitle = normalizeSectionTitle(title);
   
   if (entries.length === 0) return null;
   
@@ -351,7 +382,7 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
             <div className="w-7 h-7 rounded-md flex items-center justify-center bg-blue-100 text-blue-600">
               {getSectionIcon(title)}
             </div>
-            <span className="font-medium text-gray-700 text-sm">{title}</span>
+            <span className="font-medium text-gray-700 text-sm">{normalizedTitle}</span>
             <span className="text-xs text-gray-400">({entries.length} 项)</span>
           </div>
           {isExpanded ? (
@@ -376,7 +407,7 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
                     <td className="px-3 py-2 text-gray-500 font-medium w-1/3 border-r border-gray-100">
                       <div className="flex items-center gap-2">
                         <span className="text-gray-400">{getFieldIcon(key)}</span>
-                        <span className="truncate">{key}</span>
+                        <span className="truncate">{normalizeFieldLabel(key)}</span>
                       </div>
                     </td>
                     <td className="px-3 py-2 text-gray-800">
@@ -442,11 +473,14 @@ const ApplicationPage: React.FC = () => {
   // Save to cache state
   const [saving, setSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [copySuccess, setCopySuccess] = useState<boolean>(false);
 
   // Ref to track if recovery is in progress (avoid duplicate calls)
   const isRecoveringRef = useRef(false);
-  // Ref to store the latest generate function to avoid closure issues (踩坑点 #31)
+  // Ref to store the latest generate function to avoid closure issues during recovery.
   const generateRef = useRef<((name: string, type: LoanType) => Promise<void>) | null>(null);
+  const currentCustomerName = state.extraction.currentCustomer;
+  const currentCustomerId = state.extraction.currentCustomerId;
 
   /**
    * Generate application with given parameters
@@ -458,6 +492,7 @@ const ApplicationPage: React.FC = () => {
       return generateApplication(
         {
           customerName: name,
+          customerId: currentCustomerId,
           loanType: type,
         },
         signal
@@ -477,6 +512,7 @@ const ApplicationPage: React.FC = () => {
           customerFound: response.customerFound,
           warnings: response.warnings,
           applicationData: response.applicationData,
+          metadata: response.metadata,
         },
         name
       );
@@ -484,7 +520,7 @@ const ApplicationPage: React.FC = () => {
       setApplicationTaskStatus('done', null);
     } else {
       // Check if it was an abort (page switch) vs real error
-      // 使用 execute 返回的 error，避免闭包问题（踩坑点 #33）
+      // Use the error returned by execute() to avoid stale closure issues.
       const isAbortError = execError?.name === 'AbortError';
       if (!isAbortError) {
         // Real failure, reset status
@@ -492,7 +528,7 @@ const ApplicationPage: React.FC = () => {
       }
       // If aborted, keep 'generating' status for recovery
     }
-  }, [execute, getSignal, setApplicationResult, setApplicationTaskStatus]);
+  }, [currentCustomerId, execute, getSignal, setApplicationResult, setApplicationTaskStatus]);
 
   // Keep ref updated with latest function
   useEffect(() => {
@@ -508,6 +544,7 @@ const ApplicationPage: React.FC = () => {
         customerFound: state.application.result.customerFound,
         warnings: state.application.result.warnings,
         applicationData: state.application.result.applicationData,
+        metadata: state.application.result.metadata,
       });
       // Also restore editedData so it's ready if user enters edit mode
       if (state.application.result.applicationData) {
@@ -527,7 +564,7 @@ const ApplicationPage: React.FC = () => {
       setLoanType(savedType as LoanType);
       
       // Use setTimeout to ensure state is updated before calling generate
-      // Pass params directly to avoid closure issues (踩坑点 #31)
+      // Pass params directly to avoid stale closure issues.
       setTimeout(() => {
         if (generateRef.current) {
           generateRef.current(savedName, savedType as LoanType);
@@ -599,51 +636,48 @@ const ApplicationPage: React.FC = () => {
    * This function now saves directly to backend instead of just updating local state
    */
   const saveEditedData = async () => {
-      const dataToSave = editMode ? editedData : (result?.applicationData || {});
-      if (!dataToSave || Object.keys(dataToSave).length === 0) return;
+    const dataToSave = editMode ? editedData : (result?.applicationData || {});
+    if (!dataToSave || Object.keys(dataToSave).length === 0) return;
 
-      setSaving(true);
-      setSaveSuccess(false);
+    setSaving(true);
+    setSaveSuccess(false);
 
-      try {
-        // Save to backend
-        await saveApplication({
-          customerName: customerName.trim() || '未命名客户',
-          loanType: loanType,
+    try {
+      const safeCustomerName = customerName.trim() || '未命名客户';
+
+      await saveApplication({
+        customerName: safeCustomerName,
+        loanType,
+        applicationData: dataToSave,
+      });
+
+      if (result) {
+        const updatedResult = {
+          ...result,
           applicationData: dataToSave,
-        });
-
-        // Update local state with saved data
-        if (result) {
-          const updatedResult = {
-            ...result,
+        };
+        setResult(updatedResult);
+        setApplicationResult(
+          {
+            content: updatedResult.applicationContent,
+            customerFound: updatedResult.customerFound,
+            warnings: updatedResult.warnings,
             applicationData: dataToSave,
-          };
-          setResult(updatedResult);
-          // Also update context so data persists across page navigation
-          setApplicationResult(
-            {
-              content: updatedResult.applicationContent,
-              customerFound: updatedResult.customerFound,
-              warnings: updatedResult.warnings,
-              applicationData: dataToSave,
-            },
-            customerName.trim() || '未命名客户'
-          );
-        }
-
-        // Exit edit mode
-        setEditMode(false);
-
-        // Show success message
-        setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 3000);
-      } catch (err) {
-        console.error('Failed to save application:', err);
-      } finally {
-        setSaving(false);
+            metadata: updatedResult.metadata,
+          },
+          safeCustomerName
+        );
       }
-    };
+
+      setEditMode(false);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err) {
+      console.error('Failed to save application:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   /**
    * Download application as .md file
@@ -656,7 +690,7 @@ const ApplicationPage: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `贷款申请表_${customerName || '未命名'}_${new Date().toISOString().split('T')[0]}.md`;
+    link.download = `贷款申请表__.md`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -690,16 +724,160 @@ const ApplicationPage: React.FC = () => {
     reset();
   };
 
+  const copyApplication = async () => {
+    if (!result?.applicationContent) return;
+    await navigator.clipboard.writeText(result.applicationContent);
+    setCopySuccess(true);
+    setTimeout(() => setCopySuccess(false), 1800);
+  };
+
   // Determine which data to display (edited or original)
   const displayData = editMode ? editedData : (result?.applicationData || {});
   const hasStructuredData = Object.keys(displayData).length > 0;
 
+  const applicationFeedback = useMemo<{
+    tone: ProcessFeedbackTone;
+    title: string;
+    description: string;
+    persistenceHint?: string;
+    nextStep?: string;
+  }>(() => {
+    if (loading) {
+      return {
+        tone: 'processing',
+        title: '正在生成申请表',
+        description: '系统正在读取客户资料、资料汇总和申请表模板，请稍候。',
+        persistenceHint: '处理中',
+        nextStep: '稍候片刻，生成完成后可直接查看、复制或下载申请表。',
+      };
+    }
+
+    if (error) {
+      return {
+        tone: result ? 'partial' : 'error',
+        title: result ? '生成异常，但上一版申请表仍可查看' : '申请表生成失败',
+        description: result
+          ? '本次生成没有完成，但上一版申请表仍保留在当前页面，可继续查看。'
+          : '本次没有成功生成申请表，请检查客户资料是否完整后再试一次。',
+        persistenceHint: result ? '主流程已保留上一版结果' : '本次未生成新结果',
+        nextStep: result ? '确认资料更新后重新生成，或先查看现有申请表。' : '先补齐客户资料，再重新生成申请表。',
+      };
+    }
+
+    if (saveSuccess) {
+      return {
+        tone: 'success',
+        title: '申请表已保存',
+        description: '当前申请表修改已保存，后续页面切换后仍可继续使用。',
+        persistenceHint: '保存成功',
+        nextStep: '可继续导出申请表，或进入方案匹配使用最新申请表。',
+      };
+    }
+
+    if (result?.metadata?.stale) {
+      return {
+        tone: 'partial',
+        title: '当前申请表需要刷新',
+        description: result.metadata.stale_reason || '检测到客户资料已更新，建议基于最新资料重新生成申请表。',
+        persistenceHint: '旧结果仍可查看',
+        nextStep: '请点击重新生成，确保申请表和最新客户资料保持一致。',
+      };
+    }
+
+    if (result) {
+      return {
+        tone: 'success',
+        title: result.customerFound ? '申请表已生成' : '已生成可编辑模板',
+        description: result.customerFound
+          ? '系统已根据当前客户资料生成申请表，并同步写入当前上下文。'
+          : '暂未找到完整客户资料，系统已提供可继续补充的申请表模板。',
+        persistenceHint: result.customerFound ? '生成成功' : '主流程已生成模板',
+        nextStep: result.customerFound ? '建议先核对字段，再保存、下载或进入方案匹配。' : '请先补充关键字段，再保存申请表。',
+      };
+    }
+
+    return {
+      tone: 'idle',
+      title: customerName.trim() ? '已准备好生成申请表' : '等待开始生成申请表',
+      description: customerName.trim()
+        ? '当前客户信息已填写，可直接开始生成申请表。'
+        : '请输入客户名称并选择贷款类型，系统会基于现有资料生成申请表。',
+      persistenceHint: '待开始',
+      nextStep: customerName.trim() ? '点击开始生成申请表即可进入下一步。' : '先填写客户名称，再开始生成申请表。',
+    };
+  }, [customerName, error, loading, result, saveSuccess]);
+
   return (
     <div data-testid="application-page" className="min-h-screen bg-slate-50 p-6">
-      {/* Page Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-800 mb-1">贷款申请表生成</h1>
-        <p className="text-gray-500 text-sm">基于已上传资料自动生成申请表</p>
+      <section className="mb-6 rounded-[28px] border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-blue-50/60 p-8 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
+        <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
+          <div className="max-w-3xl">
+            <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+              <FileText className="h-3.5 w-3.5" />
+              贷款申请表生成
+            </div>
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-900">申请表生成</h1>
+            <p className="mt-3 text-sm leading-7 text-slate-600">基于当前客户资料、资料汇总和结构化提取内容生成贷款申请表，并保留版本信息供后续匹配与风控复用。</p>
+          </div>
+          <div className="grid min-w-[320px] gap-3 rounded-3xl border border-slate-200 bg-white/90 p-4 shadow-sm sm:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs font-medium text-slate-500">当前客户</div>
+              <div className="mt-2 text-base font-semibold text-slate-900">{currentCustomerName || '未选择客户'}</div>
+              <div className="mt-1 text-xs text-slate-500">{currentCustomerId ? '已绑定当前客户上下文' : '当前未绑定客户'}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-medium text-slate-500">当前状态</div>
+                <div className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium ${result?.metadata?.stale ? 'bg-amber-100 text-amber-700' : result ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                  {result?.metadata?.stale ? '待刷新' : result ? '最新可用' : '未生成'}
+                </div>
+              </div>
+              <div className="mt-2 text-base font-semibold text-slate-900">
+                {result?.metadata?.stale ? '申请表待刷新' : result ? '申请表最新可用' : '尚未生成申请表'}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                资料版本：{result?.metadata?.profile_version ? `V${result.metadata.profile_version}` : '未标记'}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm mb-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-sm font-semibold text-gray-800">当前客户上下文</div>
+            <div className="mt-2 text-base font-semibold text-gray-900">
+              {currentCustomerName || '未选择客户'}
+            </div>
+            <div className="mt-1 text-sm text-gray-500">
+              {currentCustomerId
+                ? '申请表会默认基于当前客户资料、资料汇总和版本信息生成。'
+                : '如果你已经在其他页面选择了客户，这里可以一键带入当前客户。'}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                if (currentCustomerName) {
+                  setCustomerName(currentCustomerName);
+                }
+              }}
+              disabled={!currentCustomerName || loading}
+              className="inline-flex items-center gap-2 px-4 py-2.5 border border-blue-200 bg-blue-50 text-blue-700 text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <User className="w-4 h-4" />
+              带入当前客户
+            </button>
+            <div className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              {currentCustomerId ? '已绑定当前客户' : '当前未绑定客户'}
+            </div>
+            <div className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+              {result?.metadata?.stale ? '申请表待刷新' : result ? '申请表最新可用' : '尚未生成申请表'}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Form Section - Requirement 7.1, 7.2 */}
@@ -710,7 +888,7 @@ const ApplicationPage: React.FC = () => {
       >
         <h2 className="text-gray-800 text-base font-semibold mb-4 flex items-center gap-2">
           <User className="w-4 h-4 text-blue-500" />
-          客户信息
+          {'客户信息'}
         </h2>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -721,7 +899,7 @@ const ApplicationPage: React.FC = () => {
               data-testid="customer-name-label"
               className="text-gray-600 text-sm mb-1.5 block font-medium"
             >
-              客户名称 <span className="text-red-500">*</span>
+              {'客户名称'} <span className="text-red-500">*</span>
             </label>
             <div className="relative">
               <input
@@ -758,7 +936,7 @@ const ApplicationPage: React.FC = () => {
               data-testid="loan-type-label"
               className="text-gray-600 text-sm mb-1.5 block font-medium"
             >
-              贷款类型
+              {'贷款类型'}
             </label>
             <select
               id="loanType"
@@ -785,8 +963,8 @@ const ApplicationPage: React.FC = () => {
               }}
               disabled={loading}
             >
-              <option value="enterprise">企业贷款</option>
-              <option value="personal">个人贷款</option>
+              <option value="enterprise">{'企业贷款'}</option>
+              <option value="personal">{'个人贷款'}</option>
             </select>
           </div>
 
@@ -802,12 +980,12 @@ const ApplicationPage: React.FC = () => {
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  生成中...
+                  {'正在生成...'}
                 </>
               ) : (
                 <>
                   <FileText className="w-4 h-4" />
-                  生成申请表
+                  {'开始生成申请表'}
                 </>
               )}
             </button>
@@ -820,13 +998,22 @@ const ApplicationPage: React.FC = () => {
                 className="px-4 py-2.5 border border-gray-300 text-gray-600 text-sm hover:bg-gray-50 transition-colors"
                 style={{ borderRadius: '8px' }}
               >
-                取消
+                {'取消本次生成'}
               </button>
             )}
           </div>
         </form>
       </div>
 
+
+      <ProcessFeedbackCard
+        tone={applicationFeedback.tone}
+        title={applicationFeedback.title}
+        description={applicationFeedback.description}
+        persistenceHint={applicationFeedback.persistenceHint}
+        nextStep={applicationFeedback.nextStep}
+        className="mb-6"
+      />
       {/* Error Display */}
       {/* Requirement 4.6: Display error message if generation fails */}
       {error && (
@@ -837,7 +1024,7 @@ const ApplicationPage: React.FC = () => {
         >
           <XCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
           <div>
-            <span className="text-red-800 text-base font-semibold">生成失败</span>
+            <span className="text-red-800 text-base font-semibold">{'申请表生成失败'}</span>
             <p className="text-red-600 text-sm mt-1">{error.message}</p>
           </div>
         </div>
@@ -871,6 +1058,9 @@ const ApplicationPage: React.FC = () => {
               >
                 {result.customerFound ? '申请表生成完成' : '申请表已生成（空白模板）'}
               </span>
+              <span className="ml-3 inline-flex items-center rounded-full bg-white/80 px-2.5 py-1 text-xs font-medium text-slate-700">
+                {result.metadata?.stale ? '待刷新' : '最新可用'}
+              </span>
               <span
                 data-testid="status-subtitle"
                 className={`text-sm ml-2 ${
@@ -878,8 +1068,8 @@ const ApplicationPage: React.FC = () => {
                 }`}
               >
                 {result.customerFound
-                  ? '· 已自动填充客户信息'
-                  : '· 未找到客户资料，请手动填写'}
+                  ? '· 已结合当前客户资料自动填充'
+                  : '· 暂未找到完整客户资料，可继续补充后保存'}
               </span>
             </div>
           </div>
@@ -894,7 +1084,7 @@ const ApplicationPage: React.FC = () => {
             >
               <div className="flex items-center gap-2 mb-2">
                 <AlertTriangle className="w-4 h-4 text-amber-600" />
-                <span className="text-amber-800 font-semibold text-sm">注意事项</span>
+                <span className="text-amber-800 font-semibold text-sm">需要关注</span>
               </div>
               <ul className="list-disc list-inside space-y-1">
                 {result.warnings.map((warning, index) => (
@@ -913,15 +1103,15 @@ const ApplicationPage: React.FC = () => {
             className="bg-white border border-gray-200 p-6 shadow-sm"
             style={{ borderRadius: '12px' }}
           >
-            <div className="flex items-center justify-between mb-4">
+            <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <h2 className="text-gray-800 text-base font-semibold flex items-center gap-2">
                 <FileText className="w-4 h-4 text-blue-500" />
-                申请表内容
+                {'申请表内容'}
                 {editMode && (
-                  <span className="text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded">编辑中</span>
+                  <span className="text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded">{'编辑中'}</span>
                 )}
               </h2>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {/* Edit/Save Button - Combined functionality */}
                 {hasStructuredData && (
                   editMode ? (
@@ -939,7 +1129,7 @@ const ApplicationPage: React.FC = () => {
                       {saving ? (
                         <>
                           <Loader2 className="w-4 h-4 animate-spin" />
-                          保存中...
+                          正在保存...
                         </>
                       ) : saveSuccess ? (
                         <>
@@ -958,8 +1148,7 @@ const ApplicationPage: React.FC = () => {
                       <button
                         data-testid="edit-button"
                         onClick={toggleEditMode}
-                        className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-200 transition-colors"
-                        style={{ borderRadius: '8px' }}
+                        className="flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
                       >
                         <Edit3 className="w-4 h-4" />
                         编辑
@@ -968,17 +1157,16 @@ const ApplicationPage: React.FC = () => {
                         data-testid="save-to-cache-button"
                         onClick={saveEditedData}
                         disabled={saving}
-                        className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors shadow-md ${
+                        className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium transition-colors shadow-md ${
                           saveSuccess 
                             ? 'bg-green-500 text-white' 
                             : 'bg-orange-500 text-white hover:bg-orange-600'
                         }`}
-                        style={{ borderRadius: '8px' }}
                       >
                         {saving ? (
                           <>
                             <Loader2 className="w-4 h-4 animate-spin" />
-                            保存中...
+                            正在保存...
                           </>
                         ) : saveSuccess ? (
                           <>
@@ -998,32 +1186,39 @@ const ApplicationPage: React.FC = () => {
                 {/* Download HTML Form Button */}
                 {hasStructuredData && (
                   <button
+                    type="button"
+                    onClick={copyApplication}
+                    className="flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                  >
+                    <Copy className="w-4 h-4" />
+                    {copySuccess ? '已复制申请表' : '复制申请表'}
+                  </button>
+                )}
+                {hasStructuredData && (
+                  <button
                     data-testid="download-form-button"
                     onClick={downloadFormHtml}
-                    className="flex items-center gap-2 px-4 py-2 bg-purple-500 text-white text-sm font-medium hover:bg-purple-600 transition-colors shadow-md"
-                    style={{ borderRadius: '8px' }}
+                    className="flex items-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-700 transition hover:bg-violet-100"
                   >
                     <Download className="w-4 h-4" />
-                    下载表单
+                    导出表单
                   </button>
                 )}
                 {/* Download Markdown Button - Requirement 7.4 */}
                 <button
                   data-testid="download-button"
                   onClick={downloadMarkdown}
-                  className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors shadow-md"
-                  style={{ borderRadius: '8px' }}
+                  className="flex items-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 transition hover:bg-blue-100"
                 >
                   <Download className="w-4 h-4" />
-                  下载 Markdown
+                  导出文稿
                 </button>
                 <button
                   data-testid="clear-button"
                   onClick={handleClear}
-                  className="px-4 py-2 border border-gray-300 text-gray-600 text-sm hover:bg-gray-50 transition-colors"
-                  style={{ borderRadius: '8px' }}
+                  className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
                 >
-                  清除
+                  清空当前结果
                 </button>
               </div>
             </div>
@@ -1071,8 +1266,8 @@ const ApplicationPage: React.FC = () => {
           style={{ borderRadius: '12px' }}
         >
           <FileText className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-          <h3 className="text-gray-600 font-medium mb-2">暂无申请表</h3>
-          <p className="text-gray-400 text-sm">输入客户名称并点击"生成申请表"开始</p>
+          <h3 className="text-gray-600 font-medium mb-2">{'当前还没有申请表结果'}</h3>
+          <p className="text-gray-400 text-sm">{'确认客户资料后，点击“开始生成申请表”即可进入下一步。'}</p>
         </div>
       )}
     </div>
@@ -1080,3 +1275,6 @@ const ApplicationPage: React.FC = () => {
 };
 
 export default ApplicationPage;
+
+
+

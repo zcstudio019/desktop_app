@@ -43,3 +43,21 @@ build/
 
 # Ruff cache
 .ruff_cache/
+
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.pyc
+
+.env
+.env.*
+!.env.example
+
+data/*.db
+backend/data/*.db
+
+data/users.json
+data/activity_log.json
+data/product_cache.json
+data/application_cache.json

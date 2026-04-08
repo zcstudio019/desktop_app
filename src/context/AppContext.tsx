@@ -9,7 +9,7 @@
  * Property 5: State Persistence Across Navigation
  */
 
-import React, { createContext, useContext, useReducer, type ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from 'react';
 
 // ============================================
 // Type Definitions
@@ -29,6 +29,8 @@ export interface ExtractionResult {
   savedToFeishu: boolean;
   /** Stored record ID if saved */
   recordId: string | null;
+  /** Stable customer ID for customer-scoped features */
+  customerId?: string | null;
 }
 
 /**
@@ -43,6 +45,28 @@ export interface ApplicationResult {
   warnings: string[];
   /** Structured application data by section */
   applicationData?: Record<string, Record<string, string>>;
+  /** Generation metadata and profile version context */
+  metadata?: {
+    generated_at?: string;
+    customer_id?: string;
+    profile_version?: number;
+    profile_updated_at?: string;
+    data_sources?: string[];
+    stale?: boolean;
+    stale_reason?: string;
+    stale_at?: string;
+  };
+}
+
+export interface SchemeResult {
+  result: string | null;
+  lastCreditType: string | null;
+  customerId?: string | null;
+  customerName?: string | null;
+  matchedAt?: string;
+  stale?: boolean;
+  staleReason?: string;
+  staleAt?: string;
 }
 
 /**
@@ -83,7 +107,12 @@ export interface TaskStates {
   /** Scheme matching task state */
   scheme: {
     status: 'idle' | 'matching' | 'done';
-    params: { creditType: string; customerData: Record<string, unknown> } | null;
+    params: {
+      creditType: string;
+      customerData: Record<string, unknown>;
+      customerId?: string | null;
+      customerName?: string | null;
+    } | null;
   };
   /** Chat task state */
   chat: {
@@ -91,6 +120,17 @@ export interface TaskStates {
     pendingMessage: string | null;
     pendingFiles: Array<{ name: string; type: string; content: string }> | null;
   };
+}
+
+export interface SystemActivityItem {
+  id: string;
+  type: 'upload' | 'profile' | 'application' | 'matching' | 'rag' | 'risk';
+  title: string;
+  description: string;
+  customerName?: string | null;
+  customerId?: string | null;
+  status: 'success' | 'processing' | 'warning';
+  createdAt: string;
 }
 
 /**
@@ -103,6 +143,8 @@ export interface AppState {
     results: ExtractionResult[];
     /** Current customer name being worked on */
     currentCustomer: string | null;
+    /** Current customer ID being worked on */
+    currentCustomerId: string | null;
     /** Customer data grouped by customer name */
     customerDataMap: Record<string, ExtractionResult[]>;
   };
@@ -115,10 +157,8 @@ export interface AppState {
   };
   /** Scheme matching state */
   scheme: {
-    /** Matching result */
-    result: string | null;
-    /** Last credit type used for matching */
-    lastCreditType: string | null;
+    /** Matching result and metadata */
+    result: SchemeResult | null;
   };
   /** Chat state */
   chat: {
@@ -127,6 +167,10 @@ export interface AppState {
   };
   /** Task states for page navigation recovery */
   tasks: TaskStates;
+  /** Lightweight system activity feed for product-style visibility */
+  system: {
+    recentActivities: SystemActivityItem[];
+  };
 }
 
 /**
@@ -135,15 +179,16 @@ export interface AppState {
 export type AppAction =
   | { type: 'ADD_EXTRACTION'; payload: ExtractionResult }
   | { type: 'ADD_CUSTOMER_DATA'; payload: { customerName: string; result: ExtractionResult } }
-  | { type: 'SET_CUSTOMER'; payload: string | null }
+  | { type: 'SET_CUSTOMER'; payload: { name: string | null; customerId?: string | null } }
   | { type: 'SET_APPLICATION'; payload: ApplicationResult | null; customer?: string }
-  | { type: 'SET_SCHEME'; payload: string | null; creditType?: string }
+  | { type: 'SET_SCHEME'; payload: SchemeResult | null }
   | { type: 'ADD_CHAT_MESSAGE'; payload: ChatMessage }
   | { type: 'CLEAR_CHAT' }
   | { type: 'SET_UPLOAD_TASK'; payload: { status: TaskStates['upload']['status']; queue: UploadQueueItem[] } }
   | { type: 'SET_APPLICATION_TASK'; payload: { status: TaskStates['application']['status']; params: TaskStates['application']['params'] } }
   | { type: 'SET_SCHEME_TASK'; payload: { status: TaskStates['scheme']['status']; params: TaskStates['scheme']['params'] } }
   | { type: 'SET_CHAT_TASK'; payload: { status: TaskStates['chat']['status']; pendingMessage: string | null; pendingFiles: TaskStates['chat']['pendingFiles'] } }
+  | { type: 'ADD_SYSTEM_ACTIVITY'; payload: SystemActivityItem }
   | { type: 'RESET' };
 
 /**
@@ -159,11 +204,11 @@ export interface AppContextValue {
   /** Add extraction result grouped by customer name */
   addCustomerData: (customerName: string, result: ExtractionResult) => void;
   /** Set the current customer name */
-  setCurrentCustomer: (name: string | null) => void;
+  setCurrentCustomer: (name: string | null, customerId?: string | null) => void;
   /** Set the application generation result */
   setApplicationResult: (result: ApplicationResult | null, customer?: string) => void;
   /** Set the scheme matching result */
-  setSchemeResult: (result: string | null, creditType?: string) => void;
+  setSchemeResult: (result: SchemeResult | null) => void;
   /** Add a chat message to history */
   addChatMessage: (message: ChatMessage) => void;
   /** Clear all chat history */
@@ -176,6 +221,8 @@ export interface AppContextValue {
   setSchemeTaskStatus: (status: TaskStates['scheme']['status'], params: TaskStates['scheme']['params']) => void;
   /** Set chat task status */
   setChatTaskStatus: (status: TaskStates['chat']['status'], pendingMessage: string | null, pendingFiles: TaskStates['chat']['pendingFiles']) => void;
+  /** Add one system activity item */
+  recordSystemActivity: (activity: Omit<SystemActivityItem, 'id' | 'createdAt'>) => void;
   /** Reset all state to initial values */
   reset: () => void;
 }
@@ -191,6 +238,7 @@ const initialState: AppState = {
   extraction: {
     results: [],
     currentCustomer: null,
+    currentCustomerId: null,
     customerDataMap: {},
   },
   application: {
@@ -199,7 +247,6 @@ const initialState: AppState = {
   },
   scheme: {
     result: null,
-    lastCreditType: null,
   },
   chat: {
     messages: [],
@@ -223,7 +270,46 @@ const initialState: AppState = {
       pendingFiles: null,
     },
   },
+  system: {
+    recentActivities: [],
+  },
 };
+
+const PERSISTED_APP_STATE_KEY = 'loan-assistant-app-state';
+
+function loadPersistedAppState(): Partial<AppState> | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(PERSISTED_APP_STATE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as Partial<AppState>;
+  } catch {
+    return null;
+  }
+}
+
+function buildInitialState(initialStateOverride?: AppState): AppState {
+  if (initialStateOverride) {
+    return initialStateOverride;
+  }
+
+  const persisted = loadPersistedAppState();
+  if (!persisted) {
+    return initialState;
+  }
+
+  return {
+    ...initialState,
+    extraction: {
+      ...initialState.extraction,
+      currentCustomer: persisted.extraction?.currentCustomer ?? initialState.extraction.currentCustomer,
+      currentCustomerId: persisted.extraction?.currentCustomerId ?? initialState.extraction.currentCustomerId,
+    },
+    system: {
+      recentActivities: persisted.system?.recentActivities ?? initialState.system.recentActivities,
+    },
+  };
+}
 
 // ============================================
 // Reducer
@@ -246,6 +332,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
           results: [...state.extraction.results, action.payload],
           // Auto-set current customer if extracted
           currentCustomer: action.payload.customerName ?? state.extraction.currentCustomer,
+          currentCustomerId: action.payload.customerId ?? state.extraction.currentCustomerId,
         },
       };
 
@@ -264,16 +351,30 @@ function appReducer(state: AppState, action: AppAction): AppState {
           },
           // Auto-set current customer if not set
           currentCustomer: state.extraction.currentCustomer ?? customerName,
+          currentCustomerId: state.extraction.currentCustomerId ?? result.customerId ?? null,
         },
       };
     }
 
     case 'SET_CUSTOMER':
+      if (
+        state.extraction.currentCustomer === action.payload.name &&
+        (
+          action.payload.customerId === undefined ||
+          state.extraction.currentCustomerId === action.payload.customerId
+        )
+      ) {
+        return state;
+      }
       return {
         ...state,
         extraction: {
           ...state.extraction,
-          currentCustomer: action.payload,
+          currentCustomer: action.payload.name,
+          currentCustomerId:
+            action.payload.customerId === undefined
+              ? state.extraction.currentCustomerId
+              : action.payload.customerId,
         },
       };
 
@@ -291,7 +392,6 @@ function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         scheme: {
           result: action.payload,
-          lastCreditType: action.creditType ?? state.scheme.lastCreditType,
         },
       };
 
@@ -362,6 +462,17 @@ function appReducer(state: AppState, action: AppAction): AppState {
         },
       };
 
+    case 'ADD_SYSTEM_ACTIVITY':
+      return {
+        ...state,
+        system: {
+          recentActivities: [
+            action.payload,
+            ...state.system.recentActivities,
+          ].slice(0, 12),
+        },
+      };
+
     case 'RESET':
       return initialState;
 
@@ -410,92 +521,92 @@ interface AppProviderProps {
  * Property 5: State Persistence Across Navigation
  */
 export function AppProvider({ children, initialStateOverride }: AppProviderProps): React.ReactElement {
-  const [state, dispatch] = useReducer(appReducer, initialStateOverride ?? initialState);
+  const [state, dispatch] = useReducer(appReducer, initialStateOverride, buildInitialState);
 
   /**
    * Add an extraction result to the state
    * @param result - The extraction result to add
    */
-  const addExtractionResult = (result: ExtractionResult): void => {
+  const addExtractionResult = useCallback((result: ExtractionResult): void => {
     dispatch({ type: 'ADD_EXTRACTION', payload: result });
-  };
+  }, []);
 
   /**
    * Add extraction result grouped by customer name
    * @param customerName - The customer name to group by
    * @param result - The extraction result to add
    */
-  const addCustomerData = (customerName: string, result: ExtractionResult): void => {
+  const addCustomerData = useCallback((customerName: string, result: ExtractionResult): void => {
     dispatch({ type: 'ADD_CUSTOMER_DATA', payload: { customerName, result } });
-  };
+  }, []);
 
   /**
    * Set the current customer name
    * @param name - Customer name or null to clear
    */
-  const setCurrentCustomer = (name: string | null): void => {
-    dispatch({ type: 'SET_CUSTOMER', payload: name });
-  };
+  const setCurrentCustomer = useCallback((name: string | null, customerId?: string | null): void => {
+    dispatch({ type: 'SET_CUSTOMER', payload: { name, customerId } });
+  }, []);
 
   /**
    * Set the application generation result
    * @param result - Application result or null to clear
    * @param customer - Optional customer name to associate
    */
-  const setApplicationResult = (result: ApplicationResult | null, customer?: string): void => {
+  const setApplicationResult = useCallback((result: ApplicationResult | null, customer?: string): void => {
     dispatch({ type: 'SET_APPLICATION', payload: result, customer });
-  };
+  }, []);
 
   /**
    * Set the scheme matching result
    * @param result - Matching result or null to clear
    * @param creditType - Optional credit type to associate
    */
-  const setSchemeResult = (result: string | null, creditType?: string): void => {
-    dispatch({ type: 'SET_SCHEME', payload: result, creditType });
-  };
+  const setSchemeResult = useCallback((result: SchemeResult | null): void => {
+    dispatch({ type: 'SET_SCHEME', payload: result });
+  }, []);
 
   /**
    * Add a chat message to history
    * @param message - The message to add
    */
-  const addChatMessage = (message: ChatMessage): void => {
+  const addChatMessage = useCallback((message: ChatMessage): void => {
     dispatch({ type: 'ADD_CHAT_MESSAGE', payload: message });
-  };
+  }, []);
 
   /**
    * Clear all chat history
    */
-  const clearChatHistory = (): void => {
+  const clearChatHistory = useCallback((): void => {
     dispatch({ type: 'CLEAR_CHAT' });
-  };
+  }, []);
 
   /**
    * Set upload task status
    * @param status - Task status
    * @param queue - Upload queue items
    */
-  const setUploadTaskStatus = (status: TaskStates['upload']['status'], queue: UploadQueueItem[]): void => {
+  const setUploadTaskStatus = useCallback((status: TaskStates['upload']['status'], queue: UploadQueueItem[]): void => {
     dispatch({ type: 'SET_UPLOAD_TASK', payload: { status, queue } });
-  };
+  }, []);
 
   /**
    * Set application task status
    * @param status - Task status
    * @param params - Task parameters
    */
-  const setApplicationTaskStatus = (status: TaskStates['application']['status'], params: TaskStates['application']['params']): void => {
+  const setApplicationTaskStatus = useCallback((status: TaskStates['application']['status'], params: TaskStates['application']['params']): void => {
     dispatch({ type: 'SET_APPLICATION_TASK', payload: { status, params } });
-  };
+  }, []);
 
   /**
    * Set scheme task status
    * @param status - Task status
    * @param params - Task parameters
    */
-  const setSchemeTaskStatus = (status: TaskStates['scheme']['status'], params: TaskStates['scheme']['params']): void => {
+  const setSchemeTaskStatus = useCallback((status: TaskStates['scheme']['status'], params: TaskStates['scheme']['params']): void => {
     dispatch({ type: 'SET_SCHEME_TASK', payload: { status, params } });
-  };
+  }, []);
 
   /**
    * Set chat task status
@@ -503,18 +614,48 @@ export function AppProvider({ children, initialStateOverride }: AppProviderProps
    * @param pendingMessage - Pending message
    * @param pendingFiles - Pending files
    */
-  const setChatTaskStatus = (status: TaskStates['chat']['status'], pendingMessage: string | null, pendingFiles: TaskStates['chat']['pendingFiles']): void => {
+  const setChatTaskStatus = useCallback((status: TaskStates['chat']['status'], pendingMessage: string | null, pendingFiles: TaskStates['chat']['pendingFiles']): void => {
     dispatch({ type: 'SET_CHAT_TASK', payload: { status, pendingMessage, pendingFiles } });
-  };
+  }, []);
+
+  const recordSystemActivity = useCallback((activity: Omit<SystemActivityItem, 'id' | 'createdAt'>): void => {
+    dispatch({
+      type: 'ADD_SYSTEM_ACTIVITY',
+      payload: {
+        ...activity,
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: new Date().toISOString(),
+      },
+    });
+  }, []);
 
   /**
    * Reset all state to initial values
    */
-  const reset = (): void => {
+  const reset = useCallback((): void => {
     dispatch({ type: 'RESET' });
-  };
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(PERSISTED_APP_STATE_KEY);
+    }
+  }, []);
 
-  const contextValue: AppContextValue = {
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      PERSISTED_APP_STATE_KEY,
+      JSON.stringify({
+        extraction: {
+          currentCustomer: state.extraction.currentCustomer,
+          currentCustomerId: state.extraction.currentCustomerId,
+        },
+        system: {
+          recentActivities: state.system.recentActivities,
+        },
+      }),
+    );
+  }, [state.extraction.currentCustomer, state.extraction.currentCustomerId, state.system.recentActivities]);
+
+  const contextValue: AppContextValue = useMemo(() => ({
     state,
     dispatch,
     addExtractionResult,
@@ -528,8 +669,24 @@ export function AppProvider({ children, initialStateOverride }: AppProviderProps
     setApplicationTaskStatus,
     setSchemeTaskStatus,
     setChatTaskStatus,
+    recordSystemActivity,
     reset,
-  };
+  }), [
+    state,
+    addExtractionResult,
+    addCustomerData,
+    setCurrentCustomer,
+    setApplicationResult,
+    setSchemeResult,
+    addChatMessage,
+    clearChatHistory,
+    setUploadTaskStatus,
+    setApplicationTaskStatus,
+    setSchemeTaskStatus,
+    setChatTaskStatus,
+    recordSystemActivity,
+    reset,
+  ]);
 
   return <AppContext.Provider value={contextValue}>{children}</AppContext.Provider>;
 }

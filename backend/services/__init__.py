@@ -1,46 +1,60 @@
-"""Backend services module"""
+"""Backend storage service factory."""
+
+from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-# Add desktop_app to path for imports
 desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
 from config import LOCAL_DB_PATH, USE_LOCAL_STORAGE
 
-from .local_storage_service import LocalStorageService
+from backend.database import DB_BACKEND
 
-# 尝试导入 FeishuService（可能不在 backend/services 目录）
+from .local_storage_service import LocalStorageService
+from .sqlalchemy_storage_service import SQLAlchemyStorageService
+
 try:
     from services.feishu_service import FeishuService
 except ImportError:
-    # 如果导入失败，创建一个占位类
-    class FeishuService:
-        """FeishuService 占位类（实际服务在 services/ 目录）"""
+    class FeishuService:  # type: ignore[override]
         def __init__(self):
-            raise NotImplementedError("FeishuService 需要从 services/ 目录导入")
+            raise NotImplementedError("FeishuService not available")
 
 
-def get_storage_service() -> LocalStorageService | FeishuService:
-    """
-    根据配置返回存储服务实例
+def get_storage_service() -> LocalStorageService | SQLAlchemyStorageService | FeishuService:
+    """Return the most appropriate storage service for the current environment."""
+    if DB_BACKEND == "mysql":
+        return SQLAlchemyStorageService()
 
-    Returns:
-        LocalStorageService: 当 USE_LOCAL_STORAGE=True 时返回本地存储服务
-        FeishuService: 当 USE_LOCAL_STORAGE=False 时返回飞书存储服务
-
-    Requirements:
-        - 2.1: 支持通过 USE_LOCAL_STORAGE 环境变量切换存储后端
-        - 2.2: 本地存储使用 LOCAL_DB_PATH 配置的数据库路径
-    """
     if USE_LOCAL_STORAGE:
+        # Local SQLite fallback is for development-only use.
         return LocalStorageService(db_path=LOCAL_DB_PATH)
-    else:
-        # 导入实际的 FeishuService
-        from services.feishu_service import FeishuService as RealFeishuService
-        return RealFeishuService()
+
+    from services.feishu_service import FeishuService as RealFeishuService
+
+    return RealFeishuService()
 
 
-__all__ = ['FeishuService', 'LocalStorageService', 'get_storage_service']
+def supports_structured_storage(service: object) -> bool:
+    """Return True when the storage backend supports customer-scoped DB operations."""
+    required_methods = (
+        "get_customer",
+        "list_customers",
+        "save_document",
+        "save_extraction",
+        "get_customer_profile",
+        "upsert_customer_profile",
+    )
+    return all(hasattr(service, method_name) for method_name in required_methods)
+
+
+__all__ = [
+    "FeishuService",
+    "LocalStorageService",
+    "SQLAlchemyStorageService",
+    "get_storage_service",
+    "supports_structured_storage",
+]

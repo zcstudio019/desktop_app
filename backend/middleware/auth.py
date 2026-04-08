@@ -1,4 +1,4 @@
-"""
+﻿"""
 JWT authentication helpers for FastAPI.
 
 Provides token creation/verification plus FastAPI dependencies
@@ -66,10 +66,11 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
 
     username = payload.get("sub")
     role = payload.get("role")
+    token_iat = payload.get("iat")
     if not username or not role:
         raise HTTPException(status_code=401, detail="无效的认证令牌")
 
-    return {"username": username, "role": role}
+    return {"username": username, "role": role, "token_iat": token_iat}
 
 
 async def get_current_user_optional(authorization: str = Header(None)) -> dict | None:
@@ -87,3 +88,4 @@ async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return current_user
+

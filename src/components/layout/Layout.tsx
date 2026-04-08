@@ -46,7 +46,15 @@ const Layout: React.FC<LayoutProps> = ({
       />
 
       <div className="flex-1 flex flex-col overflow-hidden" data-testid="main-content">
-        <Header pageTitle={pageTitle} userName={userName} notificationCount={notificationCount} />
+        <Header
+          pageTitle={pageTitle}
+          userName={userName}
+          userRole={userRole}
+          notificationCount={notificationCount}
+          onNavigate={onNavigate}
+          onLogout={onLogout}
+        />
+
 
         <main
           className="flex-1 overflow-auto bg-slate-50"

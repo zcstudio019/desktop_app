@@ -9,10 +9,8 @@ Endpoints:
 - GET /wiki/cache-status - 获取缓存状态（最后更新时间等）
 """
 
-import json
 import logging
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,6 +22,7 @@ if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
 from services.wiki_service import WikiService, WikiServiceError
+from backend.services.product_cache_service import get_cache_map, save_cache_map
 from ..middleware.auth import get_current_user, require_admin
 
 # Configure logging
@@ -35,9 +34,6 @@ router = APIRouter(prefix="/wiki", tags=["Wiki"])
 # Initialize services
 wiki_service = WikiService()
 WIKI_REFRESH_FAILED_MESSAGE = "刷新产品库缓存失败，请稍后重试。"
-
-# 缓存文件路径
-CACHE_FILE = Path(__file__).parent.parent.parent / "data" / "product_cache.json"
 
 
 # ==================== Response Models ====================
@@ -71,57 +67,9 @@ class RefreshResponse(BaseModel):
 # ==================== Helper Functions ====================
 
 
-def load_cache() -> dict | None:
-    """从 JSON 文件加载缓存
-
-    Returns:
-        dict: 缓存数据，如果不存在或解析失败返回 None
-
-    注意：
-    - #16: dict.get() 使用 `or default` 处理 None
-    """
-    if not CACHE_FILE.exists():
-        logger.info("缓存文件不存在")
-        return None
-
-    try:
-        with open(CACHE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        logger.info("缓存文件加载成功")
-        return data
-    except json.JSONDecodeError as e:
-        logger.error(f"缓存文件解析失败: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"读取缓存文件失败: {e}")
-        return None
-
-
 def save_cache(enterprise: str, personal: str) -> str:
-    """保存缓存到 JSON 文件
-
-    Args:
-        enterprise: 企业产品库内容
-        personal: 个人产品库内容
-
-    Returns:
-        str: 更新时间戳 (ISO 格式)
-    """
-    # 确保 data 目录存在
-    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    last_updated = datetime.now(tz=timezone.utc).isoformat()
-
-    cache_data = {"enterprise": enterprise, "personal": personal, "lastUpdated": last_updated}
-
-    try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache_data, f, ensure_ascii=False, indent=2)
-        logger.info(f"缓存保存成功: {CACHE_FILE}")
-        return last_updated
-    except Exception as e:
-        logger.error(f"保存缓存文件失败: {e}")
-        raise
+    """保存缓存到数据库。"""
+    return save_cache_map(enterprise, personal)
 
 
 def count_products(content: str) -> int:
@@ -163,9 +111,9 @@ async def get_cache_status(_current_user: dict = Depends(get_current_user)) -> C
     """
     logger.info("获取缓存状态")
 
-    cache = load_cache()
+    cache = get_cache_map()
 
-    if cache is None:
+    if not cache or (not cache.get("enterprise") and not cache.get("personal")):
         return CacheStatusResponse(cached=False, lastUpdated=None, enterpriseProductCount=0, personalProductCount=0)
 
     # #16: 使用 `or ""` 处理可能的 None 值
@@ -197,9 +145,9 @@ async def get_cache(_current_user: dict = Depends(get_current_user)) -> CacheCon
     """
     logger.info("获取缓存内容")
 
-    cache = load_cache()
+    cache = get_cache_map()
 
-    if cache is None:
+    if not cache or (not cache.get("enterprise") and not cache.get("personal")):
         logger.warning("缓存不存在，返回 404")
         raise HTTPException(status_code=404, detail="产品库缓存不存在，请先刷新缓存")
 

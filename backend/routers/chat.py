@@ -17,6 +17,8 @@ Requirements:
 import json
 import logging
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,6 @@ desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
-from config import USE_LOCAL_STORAGE
 from prompts import get_cached_prompts, load_prompts
 from services.ai_service import AIService, AIServiceError
 from services.feishu_service import FeishuService, FeishuServiceError
@@ -36,10 +37,20 @@ from services.ocr_service import OCRService
 from services.wiki_service import WikiService, WikiServiceError
 from utils.json_parser import parse_json
 
-from backend.services import get_storage_service
+from backend.services import get_storage_service, supports_structured_storage
+from backend.services.markdown_profile_service import get_or_create_customer_profile
+from backend.services.product_cache_service import get_cache_content
+from backend.services.profile_sync_service import ProfileSyncService
+from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
 
 from ..middleware.auth import get_current_user_optional
-from ..models.schemas import ChatRequest, ChatResponse
+from ..models.schemas import (
+    ChatMessageRecordResponse,
+    ChatRequest,
+    ChatResponse,
+    ChatSessionCreateRequest,
+    ChatSessionSummary,
+)
 from ..services.activity_service import add_activity, update_customer_status
 from .chat_extraction import (
     extract_customer_fields_from_feishu,
@@ -79,12 +90,12 @@ ocr_service = OCRService()
 feishu_service = FeishuService()
 wiki_service = WikiService()
 storage_service = get_storage_service()
+chat_storage_service = SQLAlchemyStorageService()
+HAS_DB_STORAGE = supports_structured_storage(storage_service)
+profile_sync_service = ProfileSyncService()
 
 # Initialize extraction module services
 init_extraction_services(ai_service, file_service, ocr_service)
-
-# Cache file paths
-PRODUCT_CACHE_FILE = Path(__file__).parent.parent.parent / "data" / "product_cache.json"
 
 # Cross-request customer name cache (desktop single-user scenario)
 _customer_name_cache: str | None = None
@@ -106,29 +117,14 @@ def get_products_with_cache(credit_type: str) -> str:
     Returns:
         产品库内容字符串
     """
-    cache = _load_product_cache()
     cache_key = _get_cache_key(credit_type)
-
-    cached = cache.get(cache_key) or ""
+    cached = get_cache_content(cache_key)
     if cached:
         logger.info(f"Using cached products [{cache_key}], length: {len(cached)}")
         return cached
 
     logger.info(f"Cache miss [{cache_key}], fetching from Feishu")
     return _fetch_products(credit_type)
-
-
-def _load_product_cache() -> dict:
-    """Load product cache from disk."""
-    if not PRODUCT_CACHE_FILE.exists():
-        return {}
-    try:
-        with open(PRODUCT_CACHE_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning(f"加载产品库缓存失败: {e}")
-        return {}
-
 
 def _get_cache_key(credit_type: str) -> str:
     """Map credit_type to cache key."""
@@ -401,11 +397,11 @@ async def _save_to_feishu(
         target_customer_id: If set, merge into this existing customer
 
     Returns:
-        Tuple of (saved, record_id, error_msg, similar_customers)
+        Tuple of (saved, record_id, error_msg, similar_customers, customer_id)
     """
     return await save_to_storage(
         chat_file_name, document_type, content, customer_name, current_user,
-        use_local=USE_LOCAL_STORAGE,
+        use_local=HAS_DB_STORAGE,
         storage_service=storage_service,
         feishu_service=feishu_service,
         target_customer_id=target_customer_id,
@@ -430,7 +426,7 @@ async def _fetch_customer_data(
         Tuple of (found, data, loan_type_override, error_message)
     """
     # 1. 优先查申请表缓存（无论 use_application 是否为 True）
-    app_found, app_data, app_loan_type = get_latest_application_for_customer(customer_name)
+    app_found, app_data, app_loan_type = await get_latest_application_for_customer(customer_name)
     if app_found and app_data:
         logger.info(f"[Matching] 使用申请表数据匹配客户「{customer_name}」")
         return (True, app_data, app_loan_type, None)
@@ -438,7 +434,7 @@ async def _fetch_customer_data(
     # 2. 没有申请表，用 OCR 提取数据
     logger.info(f"[Matching] 未找到申请表，使用 OCR 数据匹配客户「{customer_name}」")
 
-    if USE_LOCAL_STORAGE:
+    if HAS_DB_STORAGE:
         found, data = await get_customer_data_local(customer_name)
         if not found or not data:
             return (False, {}, None, f"未找到客户「{customer_name}」的资料，请先上传客户资料后再进行方案匹配。")
@@ -535,9 +531,30 @@ _CREDIT_TYPE_MAP = {
     "enterprise": "enterprise_credit",
 }
 
+_GENERIC_SELECTED_CUSTOMER_OVERRIDES = (
+    "申请表",
+    "贷款申请",
+    "贷款方案",
+    "匹配方案",
+    "企业贷款",
+    "个人贷款",
+)
+
+
+def _should_prefer_selected_customer(customer_name: str | None) -> bool:
+    if not customer_name:
+        return True
+    normalized = customer_name.strip()
+    if not normalized:
+        return True
+    return any(keyword in normalized for keyword in _GENERIC_SELECTED_CUSTOMER_OVERRIDES)
+
 
 async def handle_matching_intent(
-    message: str, conversation_history: list[dict[str, str]]
+    message: str,
+    conversation_history: list[dict[str, str]],
+    selected_customer_id: str | None = None,
+    selected_customer_name: str | None = None,
 ) -> dict[str, Any]:
     """Handle matching intent - get customer data and match schemes.
 
@@ -552,6 +569,14 @@ async def handle_matching_intent(
 
     customer_name, loan_type = _extract_intent_params(message, conversation_history)
     credit_type = _CREDIT_TYPE_MAP.get(loan_type, "enterprise_credit")
+
+    if _should_prefer_selected_customer(customer_name) and selected_customer_name:
+        customer_name = selected_customer_name
+        logger.info(
+            "Using selected customer context for matching intent customer_id=%s customer_name=%s",
+            selected_customer_id,
+            selected_customer_name,
+        )
 
     if not customer_name:
         return {
@@ -674,7 +699,10 @@ async def handle_instant_matching_intent(
 
 
 async def handle_application_intent(
-    message: str, conversation_history: list[dict[str, str]]
+    message: str,
+    conversation_history: list[dict[str, str]],
+    selected_customer_id: str | None = None,
+    selected_customer_name: str | None = None,
 ) -> dict[str, Any]:
     """Handle application intent - search customer and generate application.
 
@@ -690,6 +718,14 @@ async def handle_application_intent(
     customer_name, loan_type = _extract_intent_params(message, conversation_history)
     if loan_type not in ("enterprise", "personal"):
         loan_type = "enterprise"
+
+    if _should_prefer_selected_customer(customer_name) and selected_customer_name:
+        customer_name = selected_customer_name
+        logger.info(
+            "Using selected customer context for application intent customer_id=%s customer_name=%s",
+            selected_customer_id,
+            selected_customer_name,
+        )
 
     if not customer_name:
         return {
@@ -710,7 +746,13 @@ async def handle_application_intent(
         return customer_data
 
     try:
-        return _generate_application(customer_name, customer_data, customer_found, loan_type)
+        return await _generate_application(
+            customer_name,
+            customer_data,
+            customer_found,
+            loan_type,
+            selected_customer_id=selected_customer_id,
+        )
     except AIServiceError as e:
         logger.error(f"AI service error: {e}")
         return {
@@ -736,7 +778,7 @@ async def _fetch_application_customer_data(
     Returns:
         Tuple of (found, data). found=None means error, data=error_response.
     """
-    if USE_LOCAL_STORAGE:
+    if HAS_DB_STORAGE:
         found, data = await get_customer_data_local(customer_name)
         return (found, data)
 
@@ -757,8 +799,12 @@ async def _fetch_application_customer_data(
         )
 
 
-def _generate_application(
-    customer_name: str, customer_data: dict, customer_found: bool, loan_type: str
+async def _generate_application(
+    customer_name: str,
+    customer_data: dict,
+    customer_found: bool,
+    loan_type: str,
+    selected_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate application using AI.
 
@@ -784,14 +830,48 @@ def _generate_application(
         }
 
     application_data = parse_json(ai_result)
-    application_content = (
-        _convert_application_data_to_markdown(application_data, loan_type, customer_name)
-        if application_data else ai_result
-    )
+    if application_data and loan_type == "enterprise":
+        try:
+            from backend.routers.application import (
+                _enhance_enterprise_application_data,
+                _render_application_markdown,
+            )
+
+            application_data = _enhance_enterprise_application_data(application_data, customer_data)
+            application_content = _render_application_markdown(loan_type, application_data)
+        except Exception as enhancement_exc:
+            logger.warning("Failed to enhance enterprise application data: %s", enhancement_exc)
+            application_content = _convert_application_data_to_markdown(application_data, loan_type, customer_name)
+    else:
+        application_content = (
+            _convert_application_data_to_markdown(application_data, loan_type, customer_name)
+            if application_data else ai_result
+        )
     if application_data is None:
         logger.warning("Failed to parse application JSON, using raw content as Markdown")
 
     warnings = _validate_application(application_content or ai_result, customer_data, validate_no_fabrication)
+    metadata: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "customer_id": selected_customer_id or "",
+        "stale": False,
+        "stale_reason": "",
+        "stale_at": "",
+        "data_sources": (
+            ["customer_profile_markdown", "parsed_document_text", "application_summary"]
+            if selected_customer_id
+            else ["manual_customer_name"]
+        ),
+    }
+    if HAS_DB_STORAGE and selected_customer_id:
+        try:
+            profile, _ = await get_or_create_customer_profile(storage_service, selected_customer_id)
+            metadata["profile_version"] = (profile or {}).get("version") or 1
+            metadata["profile_updated_at"] = (profile or {}).get("updated_at") or ""
+        except Exception as profile_exc:
+            logger.warning("Failed to load chat application profile metadata: %s", profile_exc)
+            metadata["profile_version"] = 1
+            metadata["profile_updated_at"] = ""
     response_message = _build_application_response_message(customer_name, customer_found, warnings)
 
     add_activity(activity_type="application", customer=customer_name, status="completed")
@@ -807,6 +887,7 @@ def _generate_application(
             "applicationData": application_data,
             "applicationContent": application_content,
             "warnings": warnings,
+            "metadata": metadata,
         },
     }
 
@@ -853,6 +934,159 @@ def _build_application_response_message(
     return msg
 
 
+# ===== Chat Session Persistence =====
+
+
+def _build_session_title(message: str, customer_name: str | None = None) -> str:
+    base = (message or "").strip().replace("\n", " ")
+    if not base:
+        base = "新对话"
+    if len(base) > 20:
+        base = f"{base[:20]}..."
+    if customer_name:
+        return f"{customer_name} · {base}"
+    return base
+
+
+def _to_session_summary(session_data: dict[str, Any]) -> ChatSessionSummary:
+    return ChatSessionSummary(
+        sessionId=session_data.get("session_id") or "",
+        title=session_data.get("title") or "",
+        customerId=session_data.get("customer_id") or "",
+        customerName=session_data.get("customer_name") or "",
+        lastMessagePreview=session_data.get("last_message_preview") or "",
+        createdAt=session_data.get("created_at") or "",
+        updatedAt=session_data.get("updated_at") or "",
+    )
+
+
+def _to_chat_message_response(message_data: dict[str, Any]) -> ChatMessageRecordResponse:
+    return ChatMessageRecordResponse(
+        messageId=message_data.get("message_id") or "",
+        sessionId=message_data.get("session_id") or "",
+        role=message_data.get("role") or "user",
+        content=message_data.get("content") or "",
+        sequence=int(message_data.get("sequence") or 0),
+        createdAt=message_data.get("created_at") or "",
+    )
+
+
+async def _ensure_chat_session(
+    request: ChatRequest,
+    user_message: str,
+    current_user: dict | None,
+) -> tuple[dict[str, Any], bool]:
+    username = (current_user or {}).get("username") or "anonymous"
+    session_id = request.sessionId
+    session = None
+    created = False
+    if session_id:
+        session = await chat_storage_service.get_chat_session(session_id)
+    if not session:
+        created = True
+        session = await chat_storage_service.create_chat_session(
+            {
+                "session_id": session_id or uuid.uuid4().hex,
+                "username": username,
+                "customer_id": request.customerId or "",
+                "customer_name": request.customerName or "",
+                "title": _build_session_title(user_message, request.customerName),
+                "last_message_preview": user_message.strip()[:500],
+            }
+        )
+    return session, created
+
+
+async def _persist_chat_exchange(
+    request: ChatRequest,
+    response_message: str,
+    current_user: dict | None,
+) -> dict[str, Any]:
+    if not request.messages:
+        return {}
+
+    user_message = request.messages[-1].content
+    session, created = await _ensure_chat_session(request, user_message, current_user)
+    session_id = session.get("session_id") or ""
+    existing_messages = await chat_storage_service.get_chat_messages(session_id)
+    should_save_full_history = created or not existing_messages
+    next_sequence = len(existing_messages)
+
+    if should_save_full_history:
+        for index, message in enumerate(request.messages):
+            await chat_storage_service.save_chat_message(
+                {
+                    "message_id": uuid.uuid4().hex,
+                    "session_id": session_id,
+                    "role": message.role,
+                    "content": message.content,
+                    "sequence": index,
+                }
+            )
+        next_sequence = len(request.messages)
+    else:
+        await chat_storage_service.save_chat_message(
+            {
+                "message_id": uuid.uuid4().hex,
+                "session_id": session_id,
+                "role": "user",
+                "content": user_message,
+                "sequence": next_sequence,
+            }
+        )
+        next_sequence += 1
+
+    await chat_storage_service.save_chat_message(
+        {
+            "message_id": uuid.uuid4().hex,
+            "session_id": session_id,
+            "role": "assistant",
+            "content": response_message,
+            "sequence": next_sequence,
+        }
+    )
+    return session
+
+
+@router.post("/sessions", response_model=ChatSessionSummary)
+async def create_chat_session(
+    request: ChatSessionCreateRequest,
+    current_user: dict | None = Depends(get_current_user_optional),
+) -> ChatSessionSummary:
+    session = await chat_storage_service.create_chat_session(
+        {
+            "session_id": uuid.uuid4().hex,
+            "username": (current_user or {}).get("username") or "anonymous",
+            "customer_id": request.customerId or "",
+            "customer_name": request.customerName or "",
+            "title": request.title or _build_session_title("新对话", request.customerName),
+            "last_message_preview": "",
+        }
+    )
+    return _to_session_summary(session)
+
+
+@router.get("/sessions", response_model=list[ChatSessionSummary])
+async def list_chat_sessions(
+    customer_id: str | None = None,
+    current_user: dict | None = Depends(get_current_user_optional),
+) -> list[ChatSessionSummary]:
+    sessions = await chat_storage_service.list_chat_sessions(
+        username=(current_user or {}).get("username") or "anonymous",
+        customer_id=customer_id,
+    )
+    return [_to_session_summary(item) for item in sessions]
+
+
+@router.get("/sessions/{session_id}/messages", response_model=list[ChatMessageRecordResponse])
+async def list_chat_messages(
+    session_id: str,
+    _current_user: dict | None = Depends(get_current_user_optional),
+) -> list[ChatMessageRecordResponse]:
+    messages = await chat_storage_service.get_chat_messages(session_id)
+    return [_to_chat_message_response(item) for item in messages]
+
+
 # ===== Main Chat Route =====
 
 @router.post("", response_model=ChatResponse)
@@ -883,9 +1117,19 @@ async def chat(
 
     try:
         result = await _dispatch_intent(intent, request, user_message, conversation_history, current_user)
+        persisted_session: dict[str, Any] | None = None
+        try:
+            persisted_session = await _persist_chat_exchange(request, result["message"], current_user)
+        except Exception as persist_exc:
+            logger.warning("chat persistence failed: %s", persist_exc)
+        response_data = result.get("data")
+        if not isinstance(response_data, dict):
+            response_data = {} if response_data is None else {"value": response_data}
+        if persisted_session:
+            response_data["chatSession"] = _to_session_summary(persisted_session).dict()
         return ChatResponse(
             message=result["message"], intent=intent,
-            data=result.get("data"), reasoning=result.get("reasoning"),
+            data=response_data or None, reasoning=result.get("reasoning"),
         )
     except HTTPException:
         raise
@@ -919,12 +1163,22 @@ async def _dispatch_intent(
     if intent == "extract":
         return await _handle_extract_intent(request, user_message, conversation_history, current_user)
     elif intent == "application":
-        return await handle_application_intent(user_message, conversation_history)
+        return await handle_application_intent(
+            user_message,
+            conversation_history,
+            selected_customer_id=request.customerId,
+            selected_customer_name=request.customerName,
+        )
     elif intent == "matching":
         if is_instant_matching_request(user_message):
             logger.info("Detected instant matching request")
             return await handle_instant_matching_intent(user_message, conversation_history)
-        return await handle_matching_intent(user_message, conversation_history)
+        return await handle_matching_intent(
+            user_message,
+            conversation_history,
+            selected_customer_id=request.customerId,
+            selected_customer_name=request.customerName,
+        )
     else:
         msg, reasoning = generate_chat_response(user_message, conversation_history)
         return {"message": msg, "data": None, "reasoning": reasoning}
@@ -964,6 +1218,20 @@ async def _handle_extract_intent(
         _save_to_feishu,
         merge_decisions=request.mergeDecisions,
     )
+
+    for customer_id in {
+        file_result.get("customerId")
+        for file_result in response_data.get("files", [])
+        if file_result.get("savedToFeishu") and file_result.get("customerId")
+    }:
+        try:
+            await profile_sync_service.handle_document_saved(storage_service, customer_id)
+        except Exception as exc:
+            logger.warning(
+                "profile_sync finish customer_id=%s operation_type=chat_extract status=failed error=%s",
+                customer_id,
+                exc,
+            )
 
     _update_customer_name_cache(response_data)
 

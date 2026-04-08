@@ -47,10 +47,10 @@ const StatCard: React.FC<StatCardProps> = ({
 
   return (
     <div
-      className="bg-white rounded-xl shadow-sm p-5 flex items-start gap-4"
+      className="flex items-start gap-4 rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-sm"
       style={{
-        borderRadius: '12px',
-        boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1)',
+        borderRadius: '24px',
+        boxShadow: '0 10px 28px rgba(15, 23, 42, 0.06)',
       }}
       data-testid="stat-card"
     >
