@@ -293,7 +293,28 @@ async def _replace_existing_documents_of_same_type(
         doc_id = document.get("doc_id")
         if not doc_id:
             continue
-        await storage_service.delete_document(doc_id)
+        try:
+            deleted = await storage_service.delete_document(doc_id)
+        except Exception as exc:
+            logger.error(
+                "[Local Save] Failed to replace existing document customer_id=%s document_type=%s old_doc_id=%s error=%s",
+                customer_id,
+                document_type,
+                doc_id,
+                exc,
+                exc_info=True,
+            )
+            raise RuntimeError(f"替换旧资料失败，无法删除旧文档：{doc_id}") from exc
+
+        if not deleted:
+            logger.warning(
+                "[Local Save] Existing document disappeared during replacement customer_id=%s document_type=%s old_doc_id=%s",
+                customer_id,
+                document_type,
+                doc_id,
+            )
+            raise RuntimeError(f"替换旧资料失败，未找到旧文档：{doc_id}")
+
         replaced_count += 1
 
     if replaced_count:
@@ -361,6 +382,8 @@ async def _save_to_local_storage(
         return (True, extraction_id, None, [], customer_id)
     except Exception as exc:
         logger.error("[Local Save] Error for %s: %s", chat_file_name, exc, exc_info=True)
+        if "替换旧资料失败" in str(exc):
+            return (False, None, "替换旧资料失败，请稍后重试。", [], None)
         return (False, None, LOCAL_SAVE_FAILED_MESSAGE, [], None)
 
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import delete, desc, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.database import Base, SessionLocal, engine
 from backend.db_models import (
@@ -22,6 +24,8 @@ from backend.db_models import (
     SavedApplicationRecord,
     TableField,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SQLAlchemyStorageService:
@@ -254,15 +258,37 @@ class SQLAlchemyStorageService:
 
     async def delete_document(self, doc_id: str) -> bool:
         with self._session_factory() as db:
-            row = db.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
-            if not row:
-                return False
-            extractions = db.execute(select(Extraction).where(Extraction.doc_id == doc_id)).scalars().all()
-            for extraction in extractions:
-                db.delete(extraction)
-            db.delete(row)
-            db.commit()
-            return True
+            try:
+                row = db.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
+                if not row:
+                    return False
+
+                extraction_delete_result = db.execute(
+                    delete(Extraction).where(Extraction.doc_id == doc_id)
+                )
+                deleted_extractions = extraction_delete_result.rowcount or 0
+                db.flush()
+
+                db.delete(row)
+                db.flush()
+                db.commit()
+
+                logger.info(
+                    "[SQLAlchemyStorage] Deleted document doc_id=%s extractions_deleted=%s document_deleted=true",
+                    doc_id,
+                    deleted_extractions,
+                )
+                return True
+            except SQLAlchemyError as exc:
+                db.rollback()
+                logger.error(
+                    "[SQLAlchemyStorage] Failed to delete document doc_id=%s during replacement extractions_deleted_before_failure=%s error=%s",
+                    doc_id,
+                    locals().get("deleted_extractions", 0),
+                    exc,
+                    exc_info=True,
+                )
+                raise
 
     async def save_extraction(self, extraction_data: dict) -> dict:
         with self._session_factory() as db:
