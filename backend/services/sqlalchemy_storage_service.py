@@ -228,13 +228,114 @@ class SQLAlchemyStorageService:
 
     async def delete_customer(self, customer_id: str) -> bool:
         with self._session_factory() as db:
-            row = db.execute(select(Customer).where(Customer.customer_id == customer_id)).scalar_one_or_none()
-            if not row:
-                return False
-            db.execute(update(Document).where(Document.customer_id == customer_id).values(customer_id=customer_id))
-            db.delete(row)
-            db.commit()
-            return True
+            try:
+                row = db.execute(select(Customer).where(Customer.customer_id == customer_id)).scalar_one_or_none()
+                if not row:
+                    return False
+
+                document_ids = db.execute(
+                    select(Document.doc_id).where(Document.customer_id == customer_id)
+                ).scalars().all()
+
+                chat_session_ids = db.execute(
+                    select(ChatSession.session_id).where(ChatSession.customer_id == customer_id)
+                ).scalars().all()
+
+                deleted_counts: dict[str, int] = {
+                    "chat_messages": 0,
+                    "chat_sessions": 0,
+                    "saved_applications": 0,
+                    "customer_risk_reports": 0,
+                    "customer_scheme_snapshots": 0,
+                    "customer_profile": 0,
+                    "customer_document_chunks": 0,
+                    "extractions": 0,
+                    "documents": 0,
+                    "customer": 0,
+                }
+
+                if chat_session_ids:
+                    message_result = db.execute(
+                        delete(ChatMessageRecord).where(ChatMessageRecord.session_id.in_(chat_session_ids))
+                    )
+                    deleted_counts["chat_messages"] = message_result.rowcount or 0
+                    db.flush()
+
+                session_result = db.execute(
+                    delete(ChatSession).where(ChatSession.customer_id == customer_id)
+                )
+                deleted_counts["chat_sessions"] = session_result.rowcount or 0
+                db.flush()
+
+                saved_applications_result = db.execute(
+                    delete(SavedApplicationRecord).where(SavedApplicationRecord.customer_id == customer_id)
+                )
+                deleted_counts["saved_applications"] = saved_applications_result.rowcount or 0
+                db.flush()
+
+                risk_reports_result = db.execute(
+                    delete(CustomerRiskReport).where(CustomerRiskReport.customer_id == customer_id)
+                )
+                deleted_counts["customer_risk_reports"] = risk_reports_result.rowcount or 0
+                db.flush()
+
+                scheme_snapshots_result = db.execute(
+                    delete(CustomerSchemeSnapshot).where(CustomerSchemeSnapshot.customer_id == customer_id)
+                )
+                deleted_counts["customer_scheme_snapshots"] = scheme_snapshots_result.rowcount or 0
+                db.flush()
+
+                profile_result = db.execute(
+                    delete(CustomerProfile).where(CustomerProfile.customer_id == customer_id)
+                )
+                deleted_counts["customer_profile"] = profile_result.rowcount or 0
+                db.flush()
+
+                chunks_result = db.execute(
+                    delete(CustomerDocumentChunk).where(CustomerDocumentChunk.customer_id == customer_id)
+                )
+                deleted_counts["customer_document_chunks"] = chunks_result.rowcount or 0
+                db.flush()
+
+                if document_ids:
+                    extraction_result = db.execute(
+                        delete(Extraction).where(Extraction.doc_id.in_(document_ids))
+                    )
+                    deleted_counts["extractions"] += extraction_result.rowcount or 0
+                    db.flush()
+
+                extraction_by_customer_result = db.execute(
+                    delete(Extraction).where(Extraction.customer_id == customer_id)
+                )
+                deleted_counts["extractions"] += extraction_by_customer_result.rowcount or 0
+                db.flush()
+
+                document_result = db.execute(
+                    delete(Document).where(Document.customer_id == customer_id)
+                )
+                deleted_counts["documents"] = document_result.rowcount or 0
+                db.flush()
+
+                db.delete(row)
+                deleted_counts["customer"] = 1
+                db.flush()
+
+                db.commit()
+                logger.info(
+                    "[SQLAlchemyStorage] Deleted customer customer_id=%s deleted=%s",
+                    customer_id,
+                    deleted_counts,
+                )
+                return True
+            except SQLAlchemyError as exc:
+                db.rollback()
+                logger.error(
+                    "[SQLAlchemyStorage] Failed to delete customer customer_id=%s error=%s",
+                    customer_id,
+                    exc,
+                    exc_info=True,
+                )
+                raise
 
     async def save_document(self, doc_data: dict) -> dict:
         with self._session_factory() as db:
