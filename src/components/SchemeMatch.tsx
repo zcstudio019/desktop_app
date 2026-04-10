@@ -1,10 +1,11 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Download, Loader2, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react';
 import { createSchemeMatchJob, getApplication, getChatJobStatus, listCustomers, listSavedApplications, parseNaturalLanguage, searchCustomer, type SavedApplicationListItem } from '../services/api';
-import type { ChatJobStatusResponse, CustomerListItem, SchemeMatchRequest } from '../services/types';
+import type { ChatJobStatusResponse, ChatJobSummaryResponse, CustomerListItem, SchemeMatchRequest } from '../services/types';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
+import AsyncJobCard from './common/AsyncJobCard';
 import { getJobStatusText, getJobTypeLabel } from '../config/jobDisplay';
 
 type CreditType = 'personal' | 'enterprise_credit' | 'enterprise_mortgage';
@@ -87,6 +88,7 @@ const SchemeMatchPage: React.FC = () => {
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [jobPolling, setJobPolling] = useState(false);
+  const [activeJobCard, setActiveJobCard] = useState<ChatJobSummaryResponse | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const recoverRef = useRef(false);
   const stopPollingRef = useRef(false);
@@ -130,6 +132,7 @@ const SchemeMatchPage: React.FC = () => {
     stopPollingRef.current = false;
     setJobPolling(true);
     setLoading(false);
+    setActiveJobCard((prev) => prev ? { ...prev, status: 'running', progressMessage: '正在处理任务', errorMessage: null } : prev);
 
     try {
       while (true) {
@@ -147,6 +150,21 @@ const SchemeMatchPage: React.FC = () => {
         let status: ChatJobStatusResponse;
         try {
           status = await getChatJobStatus(jobId, getSignal());
+          setActiveJobCard({
+            jobId: status.jobId,
+            jobType: status.jobType,
+            jobTypeLabel: status.jobTypeLabel,
+            customerId: status.customerId,
+            customerName: status.customerName || customerName || '',
+            status: status.status,
+            progressMessage: status.progressMessage,
+            errorMessage: status.errorMessage,
+            createdAt: status.createdAt,
+            startedAt: status.startedAt,
+            finishedAt: status.finishedAt,
+            targetPage: status.targetPage,
+            resultSummary: status.resultSummary,
+          });
         } catch (issue) {
           failureCount += 1;
           if (failureCount >= 3) {
@@ -220,6 +238,20 @@ const SchemeMatchPage: React.FC = () => {
     setSchemeTaskStatus('matching', { creditType: type, customerData, customerName: request.customerName, customerId: request.customerId });
     try {
       const job = await createSchemeMatchJob(request, getSignal());
+      setActiveJobCard({
+        jobId: job.jobId,
+        jobType: 'scheme_match',
+        customerId: request.customerId || '',
+        customerName: request.customerName || '',
+        status: job.status,
+        progressMessage: '任务已提交',
+        errorMessage: null,
+        createdAt: new Date().toISOString(),
+        startedAt: '',
+        finishedAt: '',
+        targetPage: 'scheme',
+        resultSummary: null,
+      });
       setSchemeTaskStatus('idle', null);
       await pollSchemeJob(job.jobId, type, request.customerName, request.customerId);
     } catch (issue) {
@@ -234,6 +266,21 @@ const SchemeMatchPage: React.FC = () => {
       setLoading(false);
     }
   }, [currentCustomerId, currentCustomerName, getSignal, pollSchemeJob, setSchemeTaskStatus]);
+
+  const handleOpenCurrentSchemeJob = useCallback((job: ChatJobSummaryResponse) => {
+    if (job.status === 'success') {
+      basisRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (!jobPolling) {
+      void pollSchemeJob(
+        job.jobId,
+        creditType,
+        job.customerName || currentCustomerName || undefined,
+        job.customerId || currentCustomerId || undefined,
+      );
+    }
+  }, [creditType, currentCustomerId, currentCustomerName, jobPolling, pollSchemeJob]);
 
   matchRef.current = doMatch;
 
@@ -395,6 +442,17 @@ const SchemeMatchPage: React.FC = () => {
       </div>
 
       <ProcessFeedbackCard tone={feedback.tone} title={feedback.title} description={feedback.description} persistenceHint={feedback.persistenceHint} nextStep={feedback.nextStep} />
+      {activeJobCard ? (
+        <div className="mb-6">
+          <AsyncJobCard
+            job={activeJobCard}
+            variant="compact"
+            isLatestCompleted={activeJobCard.status === 'success'}
+            actionLabelOverride={activeJobCard.status === 'success' ? '查看当前结果' : undefined}
+            onAction={(job) => handleOpenCurrentSchemeJob(job as ChatJobSummaryResponse)}
+          />
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">

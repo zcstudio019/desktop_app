@@ -1,8 +1,31 @@
+import packageJson from '../../package.json';
+
+function pad(value: number) {
+  return String(value).padStart(2, '0');
+}
+
+function formatBuildDate(value: Date) {
+  return `${value.getFullYear()}/${pad(value.getMonth() + 1)}/${pad(value.getDate())}`;
+}
+
+function formatBuildDateTime(value: Date) {
+  return `${formatBuildDate(value)} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+}
+
+function formatBuildVersionSuffix(value: Date) {
+  return `${value.getFullYear()}${pad(value.getMonth() + 1)}${pad(value.getDate())}.${pad(value.getHours())}${pad(value.getMinutes())}`;
+}
+
+const buildTime = new Date();
+const baseVersion = `V${packageJson.version}`;
+
 export const SYSTEM_INFO = {
   name: '贷款助手',
   subtitle: '智能贷款申请管理系统',
-  version: 'V1.0.0',
-  releaseDate: '2026/04/08',
+  baseVersion,
+  version: `${baseVersion}-${formatBuildVersionSuffix(buildTime)}`,
+  releaseDate: formatBuildDate(buildTime),
+  buildTime: formatBuildDateTime(buildTime),
 } as const;
 
 export function getSystemVersionLabel(): string {

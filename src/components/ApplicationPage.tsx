@@ -17,10 +17,11 @@ import {
   BadgeCheck, FileCheck, FileSpreadsheet, Copy
 } from 'lucide-react';
 import { createApplicationJob, getChatJobStatus, saveApplication } from '../services/api';
-import type { ApplicationResponse, ChatJobStatusResponse } from '../services/types';
+import type { ApplicationResponse, ChatJobStatusResponse, ChatJobSummaryResponse } from '../services/types';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
+import AsyncJobCard from './common/AsyncJobCard';
 import { getJobStatusText, getJobTypeLabel } from '../config/jobDisplay';
 
 /**
@@ -478,7 +479,9 @@ const ApplicationPage: React.FC = () => {
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
     const [jobPolling, setJobPolling] = useState<boolean>(false);
     const [jobError, setJobError] = useState<string | null>(null);
+    const [activeJobCard, setActiveJobCard] = useState<ChatJobSummaryResponse | null>(null);
     const stopPollingRef = useRef(false);
+    const resultSectionRef = useRef<HTMLDivElement | null>(null);
 
     const currentCustomerName = state.extraction.currentCustomer;
     const currentCustomerId = state.extraction.currentCustomerId;
@@ -490,6 +493,7 @@ const ApplicationPage: React.FC = () => {
       setJobPolling(true);
       setJobError(null);
       setLoading(false);
+      setActiveJobCard((prev) => prev ? { ...prev, status: 'running', progressMessage: '正在处理任务', errorMessage: null } : prev);
 
       try {
         while (true) {
@@ -506,6 +510,21 @@ const ApplicationPage: React.FC = () => {
           let status: ChatJobStatusResponse | null = null;
           try {
             status = await getChatJobStatus(jobId, getSignal());
+            setActiveJobCard({
+              jobId: status.jobId,
+              jobType: status.jobType,
+              jobTypeLabel: status.jobTypeLabel,
+              customerId: status.customerId,
+              customerName: status.customerName || customerName,
+              status: status.status,
+              progressMessage: status.progressMessage,
+              errorMessage: status.errorMessage,
+              createdAt: status.createdAt,
+              startedAt: status.startedAt,
+              finishedAt: status.finishedAt,
+              targetPage: status.targetPage,
+              resultSummary: status.resultSummary,
+            });
           } catch (issue) {
             failureCount += 1;
             if (failureCount >= 3) {
@@ -576,6 +595,20 @@ const ApplicationPage: React.FC = () => {
         },
         getSignal(),
       );
+      setActiveJobCard({
+        jobId: job.jobId,
+        jobType: 'application_generate',
+        customerId: currentCustomerId || '',
+        customerName: name,
+        status: job.status,
+        progressMessage: '任务已提交',
+        errorMessage: null,
+        createdAt: new Date().toISOString(),
+        startedAt: '',
+        finishedAt: '',
+        targetPage: 'application',
+        resultSummary: null,
+      });
       setApplicationTaskStatus('idle', null);
       await pollApplicationJob(job.jobId, name);
     } catch (issue) {
@@ -780,6 +813,15 @@ const ApplicationPage: React.FC = () => {
   const displayData = editMode ? editedData : (result?.applicationData || {});
   const hasStructuredData = Object.keys(displayData).length > 0;
   const applicationJobLabel = getJobTypeLabel('application_generate');
+  const handleOpenCurrentApplicationJob = useCallback((job: ChatJobSummaryResponse) => {
+    if (job.status === 'success') {
+      resultSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (!jobPolling && job.customerName) {
+      void pollApplicationJob(job.jobId, job.customerName);
+    }
+  }, [jobPolling, pollApplicationJob]);
 
   const applicationFeedback = useMemo<{
     tone: ProcessFeedbackTone;
@@ -1062,6 +1104,17 @@ const ApplicationPage: React.FC = () => {
         nextStep={applicationFeedback.nextStep}
         className="mb-6"
       />
+      {activeJobCard ? (
+        <div className="mb-6">
+          <AsyncJobCard
+            job={activeJobCard}
+            variant="compact"
+            isLatestCompleted={activeJobCard.status === 'success'}
+            actionLabelOverride={activeJobCard.status === 'success' ? '查看当前结果' : undefined}
+            onAction={(job) => handleOpenCurrentApplicationJob(job as ChatJobSummaryResponse)}
+          />
+        </div>
+      ) : null}
       {/* Error Display */}
       {/* Requirement 4.6: Display error message if generation fails */}
       {error && (
@@ -1080,7 +1133,7 @@ const ApplicationPage: React.FC = () => {
 
       {/* Result Section - Requirement 7.3 */}
       {result && (
-        <>
+        <div ref={resultSectionRef}>
           {/* Status Banner */}
           {/* Requirement 4.4: Indicate whether customer data was found */}
           <div
@@ -1303,7 +1356,7 @@ const ApplicationPage: React.FC = () => {
               </div>
             )}
           </div>
-        </>
+        </div>
       )}
 
       {/* Empty State */}
