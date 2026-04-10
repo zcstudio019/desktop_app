@@ -60,6 +60,75 @@ class SQLAlchemyStorageService:
         except Exception:
             return fallback
 
+    def _truncate_text(self, value: Any, limit: int) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
+
+    def _build_async_job_request_snapshot(self, job_data: dict[str, Any]) -> dict[str, Any]:
+        request_payload = job_data.get("request_json")
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+
+        try:
+            messages = request_payload.get("messages")
+            files = request_payload.get("files")
+
+            messages_preview: list[dict[str, str]] = []
+            if isinstance(messages, list):
+                for message in messages[:5]:
+                    if not isinstance(message, dict):
+                        continue
+                    messages_preview.append(
+                        {
+                            "role": self._truncate_text(message.get("role") or "", 20),
+                            "content": self._truncate_text(message.get("content") or "", 300),
+                        }
+                    )
+
+            file_names: list[str] = []
+            if isinstance(files, list):
+                for file_item in files[:10]:
+                    if isinstance(file_item, dict):
+                        file_names.append(
+                            self._truncate_text(
+                                file_item.get("fileName")
+                                or file_item.get("name")
+                                or file_item.get("filename")
+                                or "未命名文件",
+                                120,
+                            )
+                        )
+
+            snapshot = {
+                "jobType": self._truncate_text(job_data.get("job_type") or request_payload.get("jobType") or "", 64),
+                "customerId": self._truncate_text(job_data.get("customer_id") or request_payload.get("customerId") or request_payload.get("customer_id") or "", 64),
+                "customerName": self._truncate_text(request_payload.get("customerName") or request_payload.get("customer_name") or "", 255),
+                "username": self._truncate_text(job_data.get("username") or request_payload.get("username") or "", 128),
+                "fileNames": file_names,
+                "fileCount": len(files) if isinstance(files, list) else 0,
+                "messagesPreview": messages_preview,
+                "messageCount": len(messages) if isinstance(messages, list) else 0,
+                "createdFrom": self._truncate_text(request_payload.get("createdFrom") or request_payload.get("source") or "async_jobs", 64),
+            }
+            return snapshot
+        except Exception as exc:
+            logger.warning("[SQLAlchemyStorage] Failed to sanitize async job request payload: %s", exc)
+            return {
+                "jobType": self._truncate_text(job_data.get("job_type") or "", 64),
+                "customerId": self._truncate_text(job_data.get("customer_id") or "", 64),
+                "customerName": self._truncate_text((request_payload or {}).get("customerName") or "", 255),
+                "username": self._truncate_text(job_data.get("username") or "", 128),
+                "fileNames": [],
+                "fileCount": 0,
+                "messagesPreview": [],
+                "messageCount": 0,
+                "createdFrom": "async_jobs",
+            }
+
     def _resolve_async_job_customer_name(self, row: AsyncJobRecord) -> str:
         request_payload = self._loads(row.request_json, {}) or {}
         if isinstance(request_payload, dict):
@@ -768,6 +837,7 @@ class SQLAlchemyStorageService:
 
     async def create_async_job(self, job_data: dict[str, Any]) -> dict[str, Any]:
         with self._session_factory() as db:
+            request_snapshot = self._build_async_job_request_snapshot(job_data)
             row = AsyncJobRecord(
                 job_id=job_data["job_id"],
                 job_type=job_data.get("job_type") or "chat_extract",
@@ -775,7 +845,7 @@ class SQLAlchemyStorageService:
                 username=job_data.get("username") or "",
                 status=job_data.get("status") or "pending",
                 progress_message=job_data.get("progress_message") or "",
-                request_json=self._dumps(job_data.get("request_json"), "{}"),
+                request_json=self._dumps(request_snapshot, "{}"),
                 result_json=self._dumps(job_data.get("result_json"), "{}"),
                 error_message=job_data.get("error_message") or "",
                 started_at=job_data.get("started_at") or "",
@@ -822,7 +892,7 @@ class SQLAlchemyStorageService:
             if "progress_message" in updates:
                 row.progress_message = updates["progress_message"] or ""
             if "request_json" in updates:
-                row.request_json = self._dumps(updates.get("request_json"), "{}")
+                row.request_json = self._dumps(self._build_async_job_request_snapshot({"request_json": updates.get("request_json"), "job_type": row.job_type, "customer_id": row.customer_id, "username": row.username}), "{}")
             if "result_json" in updates:
                 row.result_json = self._dumps(updates.get("result_json"), "{}")
             if "error_message" in updates:

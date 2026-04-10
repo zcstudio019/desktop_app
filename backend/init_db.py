@@ -12,6 +12,19 @@ def init_database() -> None:
     Base.metadata.create_all(bind=engine, checkfirst=True)
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
+        dialect = engine.dialect.name.lower()
+        if dialect == "mysql":
+            connection.execute(
+                text(
+                    """
+                    ALTER TABLE async_jobs
+                    MODIFY COLUMN request_json LONGTEXT NULL,
+                    MODIFY COLUMN result_json LONGTEXT NULL,
+                    MODIFY COLUMN error_message LONGTEXT NULL
+                    """
+                )
+            )
+            connection.commit()
 
 
 if __name__ == "__main__":

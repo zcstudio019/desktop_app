@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy import Column, DateTime, Float, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.mysql import LONGTEXT
 
 from .database import Base
 
@@ -163,9 +164,9 @@ class AsyncJobRecord(Base):
     username = Column(String(128), default="", nullable=False, index=True)
     status = Column(String(32), default="pending", nullable=False, index=True)
     progress_message = Column(String(255), default="")
-    request_json = Column(Text, default="{}")
-    result_json = Column(Text, default="{}")
-    error_message = Column(Text, default="")
+    request_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="{}")
+    result_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="{}")
+    error_message = Column(Text().with_variant(LONGTEXT(), "mysql"), default="")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     started_at = Column(String(64), default="")
     finished_at = Column(String(64), default="")
