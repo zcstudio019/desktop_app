@@ -11,10 +11,12 @@ Endpoints:
 
 import logging
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 # Add desktop_app to path for imports
@@ -38,6 +40,7 @@ from backend.services.rag_service import RagService
 from backend.services.risk_assessment_service import RiskAssessmentService
 from ..middleware.auth import get_current_user
 from ..models.schemas import (
+    ChatJobCreateResponse,
     CustomerRiskReportResponse,
     CustomerRiskReportHistoryItem,
     CustomerRiskReportHistoryResponse,
@@ -62,6 +65,115 @@ HAS_DB_STORAGE = supports_structured_storage(storage_service)
 rag_service = RagService()
 risk_assessment_service = RiskAssessmentService(rag_service=rag_service)
 profile_sync_service = ProfileSyncService()
+
+
+async def _build_customer_risk_report_payload(
+    customer_id: str,
+    current_user: dict,
+) -> dict[str, Any]:
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="鏈壘鍒拌瀹㈡埛璁板綍")
+    _ensure_local_customer_access(customer, current_user)
+
+    previous_report = await storage_service.get_latest_customer_risk_report(customer_id)
+    result = await risk_assessment_service.generate_report(storage_service, customer_id)
+    await storage_service.save_customer_risk_report(
+        {
+            "customer_id": customer_id,
+            "generated_at": result.get("generated_at") or "",
+            "profile_version": result.get("profile_version") or 1,
+            "profile_updated_at": result.get("profile_updated_at") or "",
+            "report_json": result.get("report_json") or {},
+            "report_markdown": result.get("report_markdown") or "",
+        }
+    )
+    profile = await storage_service.get_customer_profile(customer_id) or {}
+    add_activity(
+        activity_type="risk",
+        customer=customer.get("name") or "",
+        customer_id=customer_id,
+        username=current_user.get("username") or "",
+        status="completed",
+        title="风险评估报告已生成",
+        description="系统已基于当前客户最新资料生成结构化风险评估报告。",
+        metadata={
+            "generatedAt": result.get("generated_at") or "",
+            "riskLevel": (result.get("report_json") or {}).get("overall_assessment", {}).get("risk_level", ""),
+            "totalScore": (result.get("report_json") or {}).get("overall_assessment", {}).get("total_score", 0),
+            "profileVersion": profile.get("version") or 1,
+            "profileUpdatedAt": profile.get("updated_at") or "",
+        },
+    )
+
+    response_payload = CustomerRiskReportResponse(
+        report_json=result.get("report_json") or {},
+        report_markdown=result.get("report_markdown") or "",
+        generated_at=result.get("generated_at") or "",
+        profile_version=result.get("profile_version") or 1,
+        profile_updated_at=result.get("profile_updated_at") or "",
+        previous_report=CustomerRiskReportHistoryItem(**previous_report) if previous_report else None,
+    )
+    payload = response_payload.model_dump()
+    payload["customerId"] = customer_id
+    payload["customerName"] = customer.get("name") or ""
+    return payload
+
+
+async def _run_customer_risk_report_job(
+    job_id: str,
+    customer_id: str,
+    current_user_payload: dict[str, Any],
+) -> None:
+    async def update_progress(message: str) -> None:
+        logger.info("[Risk Job] progress job_id=%s stage=%s", job_id, message)
+        await storage_service.update_async_job(job_id, {"progress_message": message})
+
+    await storage_service.update_async_job(
+        job_id,
+        {
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "progress_message": "已接收任务",
+        },
+    )
+
+    try:
+        await update_progress("正在读取客户资料")
+        await update_progress("正在进行规则评估")
+        payload = await _build_customer_risk_report_payload(customer_id, current_user_payload)
+        await update_progress("正在生成风险报告")
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "success",
+                "progress_message": "处理完成",
+                "result_json": payload,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except HTTPException as exc:
+        logger.error("[Risk Job] failed job_id=%s detail=%s", job_id, exc.detail, exc_info=True)
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "风险报告生成失败",
+                "error_message": str(exc.detail),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as exc:
+        logger.error("[Risk Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "风险报告生成失败",
+                "error_message": str(exc) or "风险评估任务执行失败",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
 
 def _extract_text_value(field_value: Any) -> str:
@@ -769,55 +881,49 @@ async def generate_customer_risk_report(
     """Generate a structured risk report strictly scoped to the current customer_id."""
     if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="褰撳墠妯″紡鏆備笉鏀寔瀹㈡埛椋庨櫓璇勪及鎶ュ憡")
-
-    customer = await storage_service.get_customer(customer_id)
-    if not customer:
-        raise HTTPException(status_code=404, detail="鏈壘鍒拌瀹㈡埛璁板綍")
-    _ensure_local_customer_access(customer, current_user)
-
     try:
-        previous_report = await storage_service.get_latest_customer_risk_report(customer_id)
-        result = await risk_assessment_service.generate_report(storage_service, customer_id)
-        await storage_service.save_customer_risk_report(
-            {
-                "customer_id": customer_id,
-                "generated_at": result.get("generated_at") or "",
-                "profile_version": result.get("profile_version") or 1,
-                "profile_updated_at": result.get("profile_updated_at") or "",
-                "report_json": result.get("report_json") or {},
-                "report_markdown": result.get("report_markdown") or "",
-            }
-        )
-        add_activity(
-            activity_type="risk",
-            customer=customer.get("name") or "",
-            customer_id=customer_id,
-            username=current_user.get("username") or "",
-            status="completed",
-            title="风险评估报告已生成",
-            description="系统已基于当前客户最新资料生成结构化风险评估报告。",
-            metadata={
-                "generatedAt": result.get("generated_at") or "",
-                "riskLevel": (result.get("report_json") or {}).get("overall_assessment", {}).get("risk_level", ""),
-                "totalScore": (result.get("report_json") or {}).get("overall_assessment", {}).get("total_score", 0),
-                "profileVersion": (profile := await storage_service.get_customer_profile(customer_id) or {}).get("version") or 1,
-                "profileUpdatedAt": profile.get("updated_at") or "",
-            },
-        )
+        payload = await _build_customer_risk_report_payload(customer_id, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         logger.error("Risk report generation failed for %s: %s", customer_id, exc)
         raise HTTPException(status_code=500, detail="鐢熸垚椋庨櫓璇勪及鎶ュ憡澶辫触") from exc
 
-    return CustomerRiskReportResponse(
-        report_json=result.get("report_json") or {},
-        report_markdown=result.get("report_markdown") or "",
-        generated_at=result.get("generated_at") or "",
-        profile_version=result.get("profile_version") or 1,
-        profile_updated_at=result.get("profile_updated_at") or "",
-        previous_report=CustomerRiskReportHistoryItem(**previous_report) if previous_report else None,
+    return CustomerRiskReportResponse(**payload)
+
+
+@router.post("/{customer_id}/risk-report/jobs", response_model=ChatJobCreateResponse)
+async def create_customer_risk_report_job(
+    customer_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+) -> ChatJobCreateResponse:
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="褰撳墠妯″紡鏆備笉鏀寔瀹㈡埛椋庨櫓璇勪及鎶ュ憡")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="鏈壘鍒拌瀹㈡埛璁板綍")
+    _ensure_local_customer_access(customer, current_user)
+
+    job_id = uuid.uuid4().hex
+    request_payload = {
+        "customerId": customer_id,
+        "customerName": customer.get("name") or "",
+    }
+    await storage_service.create_async_job(
+        {
+            "job_id": job_id,
+            "job_type": "risk_report",
+            "customer_id": customer_id,
+            "username": current_user.get("username") or "",
+            "status": "pending",
+            "progress_message": "已接收任务",
+            "request_json": request_payload,
+        }
     )
+    background_tasks.add_task(_run_customer_risk_report_job, job_id, customer_id, current_user)
+    return ChatJobCreateResponse(jobId=job_id, status="pending")
 
 
 @router.get("/{customer_id}/risk-reports/history", response_model=CustomerRiskReportHistoryResponse)

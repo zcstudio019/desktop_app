@@ -9,7 +9,7 @@
  * Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { 
@@ -19,11 +19,18 @@ import {
   FileCheck, Percent, Calendar, DollarSign, Building,
   Edit3, Save, Download, RefreshCw
 } from 'lucide-react';
-import { sendChat, clearCustomerCache, customerRagChat, generateCustomerRiskReport, getCustomerRiskReportHistory, listCustomers } from '../services/api';
+import { createChatJob, createCustomerRiskReportJob, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers } from '../services/api';
 import {
   getFieldIcon, getSectionIcon, formatTableValue, isNestedObject, isArrayOfObjects,
   DataSectionCard, ArrayDataCard
 } from './DataDisplayComponents';
+import {
+  canContinueViewingJob,
+  getJobResultSummary,
+  getJobSuccessAction,
+  getJobTypeLabel,
+  getReadableJobProgress,
+} from '../config/jobDisplay';
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
@@ -31,6 +38,8 @@ import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessF
 import type {
   ChatMessage,
   ChatFile,
+  ChatJobSummaryResponse,
+  ChatJobStatusResponse,
   ChatResponse,
   CustomerListItem,
   CustomerRiskReportJson,
@@ -3664,6 +3673,85 @@ interface ChatPageProps {
   onNavigate?: (page: string) => void;
 }
 
+const CHAT_JOB_STORAGE_KEY = 'loan-assistant-chat-job';
+const CHAT_JOB_COMPLETED_STORAGE_KEY = 'loan-assistant-chat-job-completed';
+const CHAT_JOB_POLL_INTERVAL_MS = 2000;
+const CHAT_JOB_MAX_POLL_MS = 5 * 60 * 1000;
+const CHAT_JOB_MAX_FAILURES = 3;
+const CHAT_JOB_STALE_MS = 10 * 60 * 1000;
+
+interface PendingChatJobState {
+  jobId: string;
+  customerId: string | null;
+  customerName: string | null;
+  createdAt: string;
+  requestMessages: ChatMessageWithReasoning[];
+}
+
+interface ChatJobCompletionTarget {
+  jobId: string;
+  jobType: string;
+  customerId: string | null;
+  customerName: string | null;
+  targetPage: string | null;
+  actionLabel: string;
+}
+
+function isRunningJobStale(job: Pick<ChatJobSummaryResponse, 'status' | 'startedAt' | 'createdAt'>): boolean {
+  if (job.status !== 'running') {
+    return false;
+  }
+  const base = job.startedAt || job.createdAt;
+  if (!base) {
+    return false;
+  }
+  const startedAt = new Date(base).getTime();
+  if (Number.isNaN(startedAt)) {
+    return false;
+  }
+  return Date.now() - startedAt > CHAT_JOB_STALE_MS;
+}
+
+function getChatJobStatusLabel(job: ChatJobSummaryResponse): string {
+  if (isRunningJobStale(job)) {
+    return '可能已中断';
+  }
+  switch (job.status) {
+    case 'pending':
+      return '排队中';
+    case 'running':
+      return '处理中';
+    case 'success':
+      return '已完成';
+    case 'failed':
+      return '已失败';
+    default:
+      return job.status;
+  }
+}
+
+function getChatJobStatusTone(job: ChatJobSummaryResponse): string {
+  if (isRunningJobStale(job)) {
+    return 'border-amber-200 bg-amber-50 text-amber-700';
+  }
+  switch (job.status) {
+    case 'pending':
+      return 'border-slate-200 bg-slate-50 text-slate-700';
+    case 'running':
+      return 'border-blue-200 bg-blue-50 text-blue-700';
+    case 'success':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'failed':
+      return 'border-rose-200 bg-rose-50 text-rose-700';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-700';
+  }
+}
+
+function getReadableChatJobProgress(job: Pick<ChatJobSummaryResponse, 'status' | 'progressMessage' | 'errorMessage' | 'startedAt' | 'createdAt' | 'jobType'>): string {
+  return getReadableJobProgress(job, isRunningJobStale(job as ChatJobSummaryResponse));
+}
+
 /**
  * ChatPage Component
  * 
@@ -3695,13 +3783,20 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   // Hooks
   const { loading, error, execute } = useLoading<ChatResponse>();
   const { loading: ragLoading, error: ragError, execute: executeRag } = useLoading<CustomerRagChatResponse>();
-  const { loading: riskLoading, error: riskError, execute: executeRisk } = useLoading<CustomerRiskReportResponse>();
   const { getSignal } = useAbortController();
-  const { addChatMessage, state, setChatTaskStatus, setCurrentCustomer, recordSystemActivity } = useApp();
+  const { addChatMessage, state, setApplicationResult, setChatTaskStatus, setCurrentCustomer, setSchemeResult, recordSystemActivity } = useApp();
   const currentCustomerId = state.extraction.currentCustomerId;
   const currentCustomerName = state.extraction.currentCustomer;
-  const busy = loading || ragLoading || riskLoading;
-  const activeError = error || ragError || riskError;
+  const [chatJobPolling, setChatJobPolling] = useState(false);
+  const busy = loading || ragLoading || chatJobPolling;
+  const activeError = error || ragError;
+  const [chatJobFeedback, setChatJobFeedback] = useState<{
+    tone: ProcessFeedbackTone;
+    title: string;
+    description: string;
+    persistenceHint: string;
+    nextStep: string;
+  } | null>(null);
   const [riskFeedback, setRiskFeedback] = useState<{
     tone: ProcessFeedbackTone;
     title: string;
@@ -3709,17 +3804,187 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     persistenceHint: string;
     nextStep: string;
   } | null>(null);
+  const [recentChatJobs, setRecentChatJobs] = useState<ChatJobSummaryResponse[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
+  const [jobFilterMode, setJobFilterMode] = useState<'current' | 'all'>('current');
+  const [latestCompletedChatJob, setLatestCompletedChatJob] = useState<ChatJobCompletionTarget | null>(null);
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const chatJobPollTimeoutRef = useRef<number | null>(null);
+  const chatJobFailureCountRef = useRef(0);
+  const completedChatJobIdsRef = useRef<Set<string>>(new Set());
   // Ref to track if recovery is in progress
   const isRecoveringRef = useRef(false);
   // Ref to track if initial recovery check has been done
   const hasCheckedRecoveryRef = useRef(false);
   // Ref to store the latest send function to avoid closure issues (踩坑点 #31)
   const sendRef = useRef<((msg: string, files: ChatFile[] | null, currentMessages: ChatMessageWithReasoning[]) => Promise<void>) | null>(null);
+
+  const persistPendingChatJob = useCallback((payload: PendingChatJobState) => {
+    try {
+      window.localStorage.setItem(CHAT_JOB_STORAGE_KEY, JSON.stringify(payload));
+    } catch (storageError) {
+      console.warn('Failed to persist pending chat job:', storageError);
+    }
+  }, []);
+
+  const clearPendingChatJob = useCallback(() => {
+    try {
+      window.localStorage.removeItem(CHAT_JOB_STORAGE_KEY);
+    } catch (storageError) {
+      console.warn('Failed to clear pending chat job:', storageError);
+    }
+  }, []);
+
+  const readPendingChatJob = useCallback((): PendingChatJobState | null => {
+    try {
+      const raw = window.localStorage.getItem(CHAT_JOB_STORAGE_KEY);
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw) as PendingChatJobState;
+      if (!parsed?.jobId || !parsed?.createdAt || !Array.isArray(parsed?.requestMessages)) {
+        return null;
+      }
+      return parsed;
+    } catch (storageError) {
+      console.warn('Failed to read pending chat job:', storageError);
+      return null;
+    }
+  }, []);
+
+  const loadCompletedChatJobIds = useCallback(() => {
+    try {
+      const raw = window.localStorage.getItem(CHAT_JOB_COMPLETED_STORAGE_KEY);
+      if (!raw) {
+        completedChatJobIdsRef.current = new Set();
+        return;
+      }
+      const ids = JSON.parse(raw) as string[];
+      completedChatJobIdsRef.current = new Set(Array.isArray(ids) ? ids : []);
+    } catch (storageError) {
+      console.warn('Failed to load completed chat job ids:', storageError);
+      completedChatJobIdsRef.current = new Set();
+    }
+  }, []);
+
+  const markChatJobCompleted = useCallback((jobId: string) => {
+    completedChatJobIdsRef.current.add(jobId);
+    try {
+      window.localStorage.setItem(
+        CHAT_JOB_COMPLETED_STORAGE_KEY,
+        JSON.stringify(Array.from(completedChatJobIdsRef.current).slice(-50)),
+      );
+    } catch (storageError) {
+      console.warn('Failed to persist completed chat job ids:', storageError);
+    }
+  }, []);
+
+  const consumeCompletedJobResult = useCallback((
+    jobStatus: ChatJobStatusResponse,
+    requestMessages: ChatMessageWithReasoning[],
+    resolvedCustomerId: string | null,
+    resolvedCustomerName: string | null,
+  ) => {
+    const result = jobStatus.result ?? null;
+    const successAction = getJobSuccessAction(jobStatus.jobType, jobStatus.targetPage);
+    setLatestCompletedChatJob({
+      jobId: jobStatus.jobId,
+      jobType: jobStatus.jobType,
+      customerId: resolvedCustomerId,
+      customerName: resolvedCustomerName,
+      targetPage: successAction.targetPage,
+      actionLabel: successAction.actionLabel,
+    });
+
+    if (completedChatJobIdsRef.current.has(jobStatus.jobId)) {
+      return;
+    }
+
+    if (jobStatus.jobType === 'chat_extract' && result) {
+      const response = result as unknown as ChatResponse;
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: response.message,
+        reasoning: response.reasoning,
+        intent: response.intent,
+        data: response.data,
+      };
+      setMessages((prev) => {
+        const baseMessages = prev.length > 0 ? prev : requestMessages;
+        return [...baseMessages, assistantMessage];
+      });
+      addChatMessage(assistantMessage);
+      setLastIntent(response.intent);
+    }
+
+    if (jobStatus.jobType === 'risk_report' && result) {
+      const response = result as unknown as CustomerRiskReportResponse;
+      const overall = response.report_json?.overall_assessment;
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: `已生成当前客户的风险评估报告。综合结论为：${formatRiskLevelLabel(overall?.risk_level)}，综合评分 ${overall?.total_score ?? '-'} 分。`,
+        data: {
+          ...(response.report_json as unknown as Record<string, unknown>),
+          generated_at: response.generated_at,
+          profile_version: response.profile_version,
+          profile_updated_at: response.profile_updated_at,
+          previous_report: response.previous_report,
+        },
+      };
+      setMessages((prev) => {
+        const baseMessages = prev.length > 0 ? prev : requestMessages;
+        return [...baseMessages, assistantMessage];
+      });
+      addChatMessage(assistantMessage);
+    }
+
+    if (jobStatus.jobType === 'application_generate' && result) {
+      const response = result as unknown as import('../services/types').ApplicationResponse;
+      setApplicationResult(
+        {
+          content: response.applicationContent,
+          customerFound: response.customerFound,
+          warnings: response.warnings,
+          applicationData: response.applicationData,
+          metadata: response.metadata,
+        },
+        resolvedCustomerName ?? undefined,
+      );
+    }
+
+    if (jobStatus.jobType === 'scheme_match' && result) {
+      const response = result as unknown as import('../services/types').SchemeMatchResponse & { creditType?: string };
+      setSchemeResult({
+        result: response.matchResult,
+        lastCreditType: response.creditType ?? null,
+        customerId: resolvedCustomerId,
+        customerName: resolvedCustomerName,
+        matchedAt: jobStatus.finishedAt || new Date().toISOString(),
+        stale: false,
+        staleReason: '',
+        staleAt: '',
+      });
+    }
+
+    markChatJobCompleted(jobStatus.jobId);
+  }, [addChatMessage, markChatJobCompleted, setApplicationResult, setSchemeResult]);
+
+  const loadRecentChatJobs = useCallback(async () => {
+    setJobsLoading(true);
+    try {
+      const jobs = await listChatJobs(8, getSignal());
+      setRecentChatJobs(jobs);
+    } catch (jobsError) {
+      console.error('Failed to load recent chat jobs:', jobsError);
+      setRecentChatJobs([]);
+    } finally {
+      setJobsLoading(false);
+    }
+  }, [getSignal]);
 
   /**
    * Send message with given parameters
@@ -3741,6 +4006,51 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     const newMessages = [...currentMessages, userMessage];
     setMessages(newMessages);
     addChatMessage(userMessage);
+
+    if (chatFiles && chatFiles.length > 0) {
+      setChatJobFeedback({
+        tone: 'processing',
+        title: '资料提取任务已提交',
+        description: '系统已接收本次资料提取任务，正在后台排队处理。',
+        persistenceHint: '主流程已进入后台处理，页面会自动轮询状态。',
+        nextStep: '请稍候，完成后会自动展示提取结果。',
+      });
+
+      try {
+        const job = await createChatJob(
+          {
+            messages: newMessages,
+            files: chatFiles,
+            customerId: currentCustomerId,
+            customerName: currentCustomerName,
+            mergeDecisions,
+          },
+          getSignal(),
+        );
+        persistPendingChatJob({
+          jobId: job.jobId,
+          customerId: currentCustomerId,
+          customerName: currentCustomerName,
+          createdAt: new Date().toISOString(),
+          requestMessages: newMessages,
+        });
+        void loadRecentChatJobs();
+        setChatTaskStatus('idle', null, null);
+        await pollChatJob(job.jobId, newMessages, { startedAt: Date.now() });
+      } catch (jobError) {
+        console.error('Failed to create chat job:', jobError);
+        clearPendingChatJob();
+        setChatJobFeedback({
+          tone: 'error',
+          title: '资料提取任务提交失败',
+          description: jobError instanceof Error ? jobError.message : '本次提取任务未能成功提交。',
+          persistenceHint: '主流程尚未进入后台处理。',
+          nextStep: '请检查网络或稍后重试一次。',
+        });
+        setChatTaskStatus('idle', null, null);
+      }
+      return;
+    }
 
     // Send to API
     const { data: response, error: execError } = await execute(async () => {
@@ -3819,7 +4129,187 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       }
       // If aborted, keep 'sending' status for recovery
     }
-  }, [execute, getSignal, addChatMessage, currentCustomerId, currentCustomerName, recordSystemActivity, setChatTaskStatus]);
+  }, [execute, getSignal, addChatMessage, currentCustomerId, currentCustomerName, recordSystemActivity, setChatTaskStatus, pollChatJob, persistPendingChatJob, clearPendingChatJob, loadRecentChatJobs]);
+
+  async function pollChatJob(
+    jobId: string,
+    requestMessages: ChatMessageWithReasoning[],
+    options?: { startedAt?: number; restored?: boolean; customerId?: string | null; customerName?: string | null },
+  ) {
+    const startedAt = options?.startedAt ?? Date.now();
+    chatJobFailureCountRef.current = 0;
+    setChatJobPolling(true);
+
+    const waitForNextPoll = (): Promise<void> =>
+      new Promise((resolve) => {
+        chatJobPollTimeoutRef.current = window.setTimeout(() => {
+          chatJobPollTimeoutRef.current = null;
+          resolve();
+        }, CHAT_JOB_POLL_INTERVAL_MS);
+      });
+
+    const fetchJobStatus = async (): Promise<ChatJobStatusResponse | null> => {
+      try {
+        return await getChatJobStatus(jobId, getSignal());
+      } catch (pollError) {
+        console.error('Failed to poll chat job status:', pollError);
+        chatJobFailureCountRef.current += 1;
+        return null;
+      }
+    };
+
+    try {
+      let status: ChatJobStatusResponse | null = await fetchJobStatus();
+
+      while (true) {
+        if (Date.now() - startedAt > CHAT_JOB_MAX_POLL_MS) {
+          clearPendingChatJob();
+          setChatJobFeedback({
+            tone: 'partial',
+            title: '任务处理时间较长',
+            description: '本次任务仍未完成，已停止自动轮询。',
+            persistenceHint: '后台任务可能仍在继续执行。',
+            nextStep: '请稍后重新进入页面查看，或在最近任务列表中继续查看。',
+          });
+          setChatTaskStatus('idle', null, null);
+          return;
+        }
+
+        if (!status) {
+          if (chatJobFailureCountRef.current >= CHAT_JOB_MAX_FAILURES) {
+            clearPendingChatJob();
+            setChatJobFeedback({
+              tone: 'error',
+              title: '任务状态获取失败',
+              description: '连续多次获取任务状态失败，已停止自动轮询。',
+              persistenceHint: '后台任务可能仍在继续执行，但当前页面无法确认最终结果。',
+              nextStep: '请稍后刷新页面重试，或前往资料汇总查看是否已写入资料。',
+            });
+            setChatTaskStatus('idle', null, null);
+            return;
+          }
+
+          setChatJobFeedback({
+            tone: 'partial',
+            title: '正在重新连接任务状态',
+            description: '当前网络波动，系统正在尝试重新获取任务进度。',
+            persistenceHint: '后台任务仍可能在继续执行。',
+            nextStep: '请保持页面打开，系统会继续自动重试。',
+          });
+          await waitForNextPoll();
+          status = await fetchJobStatus();
+          continue;
+        }
+
+        chatJobFailureCountRef.current = 0;
+
+        if (isRunningJobStale(status)) {
+          clearPendingChatJob();
+          setChatJobFeedback({
+            tone: 'partial',
+            title: '任务可能已中断',
+            description: '这条任务已运行较长时间，系统判断它可能没有继续推进。',
+            persistenceHint: '后台任务可能已中断，当前页面已停止自动轮询。',
+            nextStep: '建议重新提交一次资料提取任务。',
+          });
+          setChatTaskStatus('idle', null, null);
+          return;
+        }
+
+        if (status.status === 'pending' || status.status === 'running') {
+          setChatJobFeedback({
+            tone: 'processing',
+            title: options?.restored ? `已恢复${getJobTypeLabel(status.jobType, status.jobTypeLabel)}` : `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}处理中`,
+            description: getReadableChatJobProgress(status),
+            persistenceHint: '主流程已进入后台处理，本页会自动轮询最新结果。',
+            nextStep: '请稍候，完成后会自动展示结果或提供对应业务页跳转。',
+          });
+          await waitForNextPoll();
+          status = await fetchJobStatus();
+          continue;
+        }
+
+        if (status.status === 'success' && status.result) {
+          if (status.jobType === 'chat_extract') {
+            clearPendingChatJob();
+          }
+          const resolvedCustomerId = status.customerId || options?.customerId || currentCustomerId;
+          const resolvedCustomerName =
+            status.customerName ||
+            options?.customerName ||
+            customerOptions.find((item) => item.record_id === resolvedCustomerId)?.name ||
+            currentCustomerName ||
+            null;
+          consumeCompletedJobResult(status, requestMessages, resolvedCustomerId ?? null, resolvedCustomerName);
+          setChatJobFeedback({
+            tone: 'success',
+            title: `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}已完成`,
+            description: getJobResultSummary(status.jobType, status.result as Record<string, unknown> | null | undefined, status.customerName, status.resultSummary) || getReadableChatJobProgress(status),
+            persistenceHint: '主流程已生成成功。',
+            nextStep: status.jobType === 'chat_extract' ? '建议继续核对提取结果，并前往资料汇总查看最新变化。' : '可继续查看结果，或跳转到对应业务页面处理。',
+          });
+          recordSystemActivity(
+            status.jobType === 'risk_report'
+              ? {
+                  type: 'risk',
+                  title: '风险评估报告已完成',
+                  description: '系统已在后台完成风险评估并生成报告。',
+                  customerName: resolvedCustomerName,
+                  customerId: resolvedCustomerId,
+                  status: 'success',
+                }
+              : status.jobType === 'scheme_match'
+                ? {
+                    type: 'matching',
+                    title: '方案匹配已完成',
+                    description: '系统已在后台完成融资方案匹配。',
+                    customerName: resolvedCustomerName,
+                    customerId: resolvedCustomerId,
+                    status: 'success',
+                  }
+                : status.jobType === 'application_generate'
+                  ? {
+                      type: 'application',
+                      title: '申请表生成已完成',
+                      description: '系统已在后台生成最新申请表。',
+                      customerName: resolvedCustomerName,
+                      customerId: resolvedCustomerId,
+                      status: 'success',
+                    }
+                  : {
+                      type: 'upload',
+                      title: 'AI 对话资料提取已完成',
+                      description: '系统已在后台完成资料提取、保存和资料汇总同步。',
+                      customerName: resolvedCustomerName,
+                      customerId: resolvedCustomerId,
+                      status: 'success',
+                    },
+          );
+          setChatTaskStatus('done', null, null);
+          return;
+        }
+
+        if (status.jobType === 'chat_extract') {
+          clearPendingChatJob();
+        }
+        setChatJobFeedback({
+          tone: 'error',
+          title: `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}失败`,
+          description: status.errorMessage || '本次任务未成功完成。',
+          persistenceHint: '主流程未成功完成。',
+          nextStep: '请检查当前资料或网络状态后重试，必要时缩小单次处理范围。',
+        });
+        setChatTaskStatus('idle', null, null);
+        if (status.jobType === 'chat_extract') {
+          setMessages(requestMessages);
+        }
+        return;
+      }
+    } finally {
+      void loadRecentChatJobs();
+      setChatJobPolling(false);
+    }
+  }
 
   const doRagSend = useCallback(async (
     question: string,
@@ -3903,57 +4393,34 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     addChatMessage(userMessage);
     setChatTaskStatus('sending', userMessage.content, null);
 
-    const { data: response } = await executeRisk(async () => {
-      return generateCustomerRiskReport(currentCustomerId, getSignal());
-    });
-
-    if (response) {
-      const overall = response.report_json?.overall_assessment;
-      const assistantMessage: ChatMessageWithReasoning = {
-        role: 'assistant',
-        content: `已生成当前客户的风险评估报告。综合结论为：${formatRiskLevelLabel(overall?.risk_level)}，综合评分 ${overall?.total_score ?? '-'} 分。`,
-        data: {
-          ...(response.report_json as unknown as Record<string, unknown>),
-          generated_at: response.generated_at,
-          profile_version: response.profile_version,
-          profile_updated_at: response.profile_updated_at,
-          previous_report: response.previous_report,
-        },
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-      addChatMessage(assistantMessage);
-      recordSystemActivity({
-        type: 'risk',
-        title: '风险评估报告已生成',
-        description: `系统已完成风险评估，当前结论为 ${formatRiskLevelLabel(overall?.risk_level)}。`,
-        customerName: currentCustomerName,
+    try {
+      const job = await createCustomerRiskReportJob(currentCustomerId, getSignal());
+      void loadRecentChatJobs();
+      await pollChatJob(job.jobId, newMessages, {
+        startedAt: Date.now(),
         customerId: currentCustomerId,
-        status: 'success',
+        customerName: currentCustomerName,
       });
-      setRiskFeedback({
-        tone: 'success',
-        title: '风险评估报告已生成',
-        description: `系统已完成风险评估，当前结论为 ${formatRiskLevelLabel(overall?.risk_level)}，综合评分 ${overall?.total_score ?? '-'} 分。`,
-        persistenceHint: '主流程已生成成功。',
-        nextStep: '建议继续查看风险维度、优化建议和融资规划。',
-      });
-      setChatTaskStatus('done', null, null);
-    } else {
+    } catch (jobError) {
       setRiskFeedback({
         tone: 'error',
-        title: '风险评估报告生成失败',
-        description: riskError?.message || '本次风险评估未成功生成。',
-        persistenceHint: '主流程未生成成功。',
-        nextStep: '请检查当前客户资料是否完整后再试一次。',
+        title: '风险评估报告提交失败',
+        description: jobError instanceof Error ? jobError.message : '本次风险评估任务未能成功提交。',
+        persistenceHint: '主流程尚未进入后台处理。',
+        nextStep: '请检查网络或稍后重试一次。',
       });
       setChatTaskStatus('idle', null, null);
     }
-  }, [addChatMessage, currentCustomerId, currentCustomerName, executeRisk, getSignal, messages, recordSystemActivity, riskError?.message, setChatTaskStatus]);
+  }, [addChatMessage, currentCustomerId, currentCustomerName, getSignal, loadRecentChatJobs, messages, pollChatJob, setChatTaskStatus]);
 
   // Keep ref updated with latest function
   useEffect(() => {
     sendRef.current = doSend;
   }, [doSend]);
+
+  useEffect(() => {
+    loadCompletedChatJobIds();
+  }, [loadCompletedChatJobIds]);
 
   // Sync with context on mount and handle task recovery
   // Note: This effect intentionally runs only on mount to restore state from context.
@@ -3969,6 +4436,40 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       setMessages(state.chat.messages);
     }
 
+    const pendingJob = readPendingChatJob();
+    if (pendingJob && !isRecoveringRef.current) {
+      const pendingStartedAt = new Date(pendingJob.createdAt).getTime();
+      if (!Number.isNaN(pendingStartedAt) && Date.now() - pendingStartedAt > CHAT_JOB_MAX_POLL_MS) {
+        clearPendingChatJob();
+        setChatJobFeedback({
+          tone: 'partial',
+          title: '发现未完成的旧任务',
+          description: '这条资料提取任务处理时间过长，已停止自动恢复轮询。',
+          persistenceHint: '后台任务可能已经完成，也可能仍在继续执行。',
+          nextStep: '建议前往资料汇总查看是否已写入资料，或重新发起一次提取。',
+        });
+        hasCheckedRecoveryRef.current = true;
+        return;
+      }
+
+      isRecoveringRef.current = true;
+      if (pendingJob.customerId || pendingJob.customerName) {
+        setCurrentCustomer(pendingJob.customerName ?? null, pendingJob.customerId ?? null);
+      }
+      if (state.chat.messages.length === 0 && pendingJob.requestMessages.length > 0) {
+        setMessages(pendingJob.requestMessages);
+      }
+      setTimeout(() => {
+        void pollChatJob(pendingJob.jobId, pendingJob.requestMessages, {
+          startedAt: pendingStartedAt,
+          restored: true,
+        });
+        isRecoveringRef.current = false;
+      }, 100);
+      hasCheckedRecoveryRef.current = true;
+      return;
+    }
+
     // Check if there's a task to recover (only on mount)
     const taskState = state.tasks.chat;
     if (taskState.status === 'sending' && taskState.pendingMessage && !isRecoveringRef.current) {
@@ -3976,7 +4477,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       const savedMessage = taskState.pendingMessage;
       const savedFiles = taskState.pendingFiles;
       const currentMsgs = state.chat.messages.length > 0 ? state.chat.messages : [];
-      
+
       // Use setTimeout to ensure state is updated before calling send
       // Pass params directly to avoid closure issues (踩坑点 #31)
       setTimeout(() => {
@@ -4015,11 +4516,20 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     };
 
     void loadCustomers();
+    void loadRecentChatJobs();
 
     return () => {
       cancelled = true;
     };
-  }, [getSignal]);
+  }, [getSignal, loadRecentChatJobs]);
+
+  useEffect(() => {
+    return () => {
+      if (chatJobPollTimeoutRef.current) {
+        window.clearTimeout(chatJobPollTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -4216,6 +4726,52 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     setCurrentCustomer(target?.name ?? null, customerId);
   }, [customerOptions, setCurrentCustomer]);
 
+  const handleOpenJob = useCallback(async (job: ChatJobSummaryResponse) => {
+    const pendingJob = readPendingChatJob();
+    const requestMessages =
+      pendingJob?.jobId === job.jobId
+        ? pendingJob.requestMessages
+        : messages;
+    const successAction = getJobSuccessAction(job.jobType, job.targetPage);
+
+    if (job.customerId) {
+      const matchedCustomer = customerOptions.find((item) => item.record_id === job.customerId);
+      setCurrentCustomer(matchedCustomer?.name ?? null, job.customerId);
+    }
+
+    if (job.status === 'success' && successAction.targetPage) {
+      const status = await getChatJobStatus(job.jobId, getSignal());
+      const resolvedCustomerName = status.customerName || job.customerName || (job.customerId ? (customerOptions.find((item) => item.record_id === job.customerId)?.name ?? null) : null);
+      consumeCompletedJobResult(status, requestMessages, job.customerId || null, resolvedCustomerName);
+      onNavigate?.(successAction.targetPage);
+      return;
+    }
+
+    await pollChatJob(job.jobId, requestMessages, {
+      startedAt: new Date(job.startedAt || job.createdAt || new Date().toISOString()).getTime(),
+      restored: true,
+      customerId: job.customerId || null,
+      customerName: job.customerName || (job.customerId ? (customerOptions.find((item) => item.record_id === job.customerId)?.name ?? null) : null),
+    });
+  }, [readPendingChatJob, messages, customerOptions, setCurrentCustomer, getSignal, consumeCompletedJobResult, onNavigate, pollChatJob]);
+
+  const handleJumpToProfile = useCallback(() => {
+    if (!latestCompletedChatJob?.customerId) {
+      return;
+    }
+    setCurrentCustomer(latestCompletedChatJob.customerName ?? null, latestCompletedChatJob.customerId);
+    if (latestCompletedChatJob.targetPage) {
+      onNavigate?.(latestCompletedChatJob.targetPage);
+    }
+  }, [latestCompletedChatJob, onNavigate, setCurrentCustomer]);
+
+  const displayedChatJobs = useMemo(() => {
+    if (jobFilterMode === 'current' && currentCustomerId) {
+      return recentChatJobs.filter((job) => job.customerId === currentCustomerId);
+    }
+    return recentChatJobs;
+  }, [jobFilterMode, currentCustomerId, recentChatJobs]);
+
   const quickActions = [
     { icon: '📤', label: '上传贷款资料', action: 'upload' },
     { icon: '📝', label: '生成申请表', action: 'application' },
@@ -4410,6 +4966,141 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           </div>
         </div>
       )}
+
+      <div className="border-b border-slate-100 bg-white px-6 py-4">
+        <div className="mx-auto max-w-[50rem]">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-slate-800">最近处理任务</div>
+                <div className="text-xs text-slate-500">
+                    可查看资料提取、风险报告、方案匹配和申请表生成任务，也可以手动继续查看未完成任务。
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setJobFilterMode('current')}
+                    className={`rounded-md px-3 py-1 transition-colors ${
+                      jobFilterMode === 'current'
+                        ? 'bg-blue-50 text-blue-700'
+                        : 'text-slate-500 hover:bg-slate-50'
+                    }`}
+                  >
+                    当前客户
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJobFilterMode('all')}
+                    className={`rounded-md px-3 py-1 transition-colors ${
+                      jobFilterMode === 'all'
+                        ? 'bg-blue-50 text-blue-700'
+                        : 'text-slate-500 hover:bg-slate-50'
+                    }`}
+                  >
+                    全部任务
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadRecentChatJobs()}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-100"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${jobsLoading ? 'animate-spin' : ''}`} />
+                  刷新任务
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 space-y-2">
+              {displayedChatJobs.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-white/80 px-4 py-4 text-xs text-slate-500">
+                  {jobsLoading ? '正在加载最近任务...' : jobFilterMode === 'current' && currentCustomerId ? '当前客户还没有最近处理任务。' : '当前还没有处理任务记录。'}
+                </div>
+              ) : (
+                displayedChatJobs.map((job: ChatJobSummaryResponse) => (
+                  <div
+                    key={job.jobId}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] font-medium text-slate-600">
+                              {getJobTypeLabel(job.jobType, job.jobTypeLabel)}
+                            </span>
+                            <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${getChatJobStatusTone(job)}`}>
+                              {getChatJobStatusLabel(job)}
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              创建时间：{formatLocalDateTime(job.createdAt)}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            关联客户：{job.customerName || formatCustomerContextLabel(job.customerId, null)}
+                            {job.customerId ? ` (${job.customerId})` : ''}
+                          </div>
+                          <div className="text-sm text-slate-700">
+                            {getJobResultSummary(job.jobType, undefined, job.customerName, job.resultSummary) || getReadableChatJobProgress(job)}
+                          </div>
+                        {job.errorMessage ? (
+                          <div className="text-xs text-rose-600">{job.errorMessage}</div>
+                        ) : null}
+                      </div>
+                      <div className="flex shrink-0 gap-2">
+                          {canContinueViewingJob(job.jobType) ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleOpenJob(job)}
+                              className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+                            >
+                              {job.status === 'success'
+                                ? getJobSuccessAction(job.jobType, job.targetPage).actionLabel
+                                : job.status === 'failed'
+                                  ? '查看结果'
+                                  : '继续查看'}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    {isRunningJobStale(job) ? (
+                      <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        任务可能已中断，请重新提交。
+                      </div>
+                    ) : null}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {chatJobFeedback ? (
+        <div className="border-b border-slate-100 bg-white px-6 py-4">
+          <div className="mx-auto max-w-[50rem]">
+            <ProcessFeedbackCard
+              tone={chatJobFeedback.tone}
+              title={chatJobFeedback.title}
+              description={chatJobFeedback.description}
+              persistenceHint={chatJobFeedback.persistenceHint}
+              nextStep={chatJobFeedback.nextStep}
+            />
+            {chatJobFeedback.tone === 'success' && latestCompletedChatJob?.customerId && latestCompletedChatJob.targetPage ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleJumpToProfile}
+                    className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+                  >
+                    {latestCompletedChatJob.actionLabel}
+                  </button>
+                </div>
+              ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {riskFeedback ? (
         <div className="border-b border-slate-100 bg-white px-6 py-4">

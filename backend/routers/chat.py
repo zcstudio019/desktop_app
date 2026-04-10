@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 # Add desktop_app to path for imports
 desktop_app_path = Path(__file__).parent.parent.parent
@@ -38,6 +38,11 @@ from services.wiki_service import WikiService, WikiServiceError
 from utils.json_parser import parse_json
 
 from backend.services import get_storage_service, supports_structured_storage
+from backend.services.job_display_config import (
+    build_job_result_summary,
+    get_job_target_page,
+    get_job_type_label,
+)
 from backend.services.markdown_profile_service import get_or_create_customer_profile
 from backend.services.product_cache_service import get_cache_content
 from backend.services.profile_sync_service import ProfileSyncService
@@ -46,6 +51,9 @@ from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
 from ..middleware.auth import get_current_user_optional
 from ..models.schemas import (
     ChatMessageRecordResponse,
+    ChatJobCreateResponse,
+    ChatJobSummaryResponse,
+    ChatJobStatusResponse,
     ChatRequest,
     ChatResponse,
     ChatSessionCreateRequest,
@@ -1048,6 +1056,117 @@ async def _persist_chat_exchange(
     return session
 
 
+def _model_to_dict(model: Any) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    if hasattr(model, "dict"):
+        return model.dict()
+    return dict(model)
+
+
+async def _build_chat_response_payload(
+    request: ChatRequest,
+    intent: str,
+    result: dict[str, Any],
+    current_user: dict | None,
+) -> dict[str, Any]:
+    persisted_session: dict[str, Any] | None = None
+    try:
+        persisted_session = await _persist_chat_exchange(request, result["message"], current_user)
+    except Exception as persist_exc:
+        logger.warning("chat persistence failed in async job: %s", persist_exc)
+
+    response_data = result.get("data")
+    if not isinstance(response_data, dict):
+        response_data = {} if response_data is None else {"value": response_data}
+    if persisted_session:
+        response_data["chatSession"] = _to_session_summary(persisted_session).dict()
+
+    return {
+        "message": result["message"],
+        "intent": intent,
+        "data": response_data or None,
+        "reasoning": result.get("reasoning"),
+    }
+
+
+async def _run_chat_extract_job(
+    job_id: str,
+    request_payload: dict[str, Any],
+    current_user_payload: dict[str, Any] | None,
+) -> None:
+    async def update_progress(message: str) -> None:
+        logger.info("[Chat Job] progress job_id=%s stage=%s", job_id, message)
+        await chat_storage_service.update_async_job(
+            job_id,
+            {"progress_message": message},
+        )
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    logger.info("[Chat Job] start job_id=%s stage=%s", job_id, "已接收文件")
+    await chat_storage_service.update_async_job(
+        job_id,
+        {
+            "status": "running",
+            "started_at": started_at,
+            "progress_message": "正在解析上传资料",
+        },
+    )
+
+    try:
+        request = ChatRequest(**request_payload)
+        if not request.files:
+            raise ValueError("当前任务没有可处理的文件")
+        if not request.messages:
+            raise ValueError("当前任务没有有效的聊天消息")
+
+        user_message = request.messages[-1].content
+        conversation_history = [{"role": msg.role, "content": msg.content} for msg in request.messages[:-1]]
+        await update_progress("已接收文件")
+        await update_progress("正在识别资料类型")
+
+        await chat_storage_service.update_async_job(
+            job_id,
+            {"progress_message": "正在提取文件内容并识别资料类型"},
+        )
+        result = await _handle_extract_intent(
+            request,
+            user_message,
+            conversation_history,
+            current_user_payload,
+            progress_callback=update_progress,
+        )
+
+        await chat_storage_service.update_async_job(
+            job_id,
+            {"progress_message": "正在写入资料汇总并同步客户资料"},
+        )
+        response_payload = await _build_chat_response_payload(request, "extract", result, current_user_payload)
+
+        await chat_storage_service.update_async_job(
+            job_id,
+            {
+                "status": "success",
+                "progress_message": "资料提取已完成",
+                "result_json": response_payload,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        await update_progress("处理完成")
+        logger.info("[Chat Job] success job_id=%s stage=finished", job_id)
+    except Exception as exc:
+        logger.error("[Chat Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
+        await chat_storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "资料提取失败",
+                "error_message": str(exc) or "资料提取任务执行失败，请稍后重试。",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+
 @router.post("/sessions", response_model=ChatSessionSummary)
 async def create_chat_session(
     request: ChatSessionCreateRequest,
@@ -1085,6 +1204,101 @@ async def list_chat_messages(
 ) -> list[ChatMessageRecordResponse]:
     messages = await chat_storage_service.get_chat_messages(session_id)
     return [_to_chat_message_response(item) for item in messages]
+
+
+@router.post("/jobs", response_model=ChatJobCreateResponse)
+async def create_chat_job(
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict | None = Depends(get_current_user_optional),
+) -> ChatJobCreateResponse:
+    if not request.files:
+        raise HTTPException(status_code=400, detail="当前任务没有可处理的文件")
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="当前任务没有有效的聊天消息")
+
+    job_id = uuid.uuid4().hex
+    username = (current_user or {}).get("username") or "anonymous"
+    request_payload = _model_to_dict(request)
+
+    await chat_storage_service.create_async_job(
+        {
+            "job_id": job_id,
+            "job_type": "chat_extract",
+            "customer_id": request.customerId or "",
+            "username": username,
+            "status": "pending",
+            "progress_message": "任务已创建，等待后台处理",
+            "request_json": request_payload,
+        }
+    )
+    logger.info("[Chat Job] created job_id=%s username=%s customer_id=%s", job_id, username, request.customerId or "")
+    background_tasks.add_task(_run_chat_extract_job, job_id, request_payload, current_user)
+    return ChatJobCreateResponse(jobId=job_id, status="pending")
+
+
+@router.get("/jobs/{job_id}", response_model=ChatJobStatusResponse)
+async def get_chat_job(
+    job_id: str,
+    current_user: dict | None = Depends(get_current_user_optional),
+) -> ChatJobStatusResponse:
+    job = await chat_storage_service.get_async_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="未找到该任务")
+
+    username = (current_user or {}).get("username") or "anonymous"
+    if job.get("username") and job.get("username") != username:
+        raise HTTPException(status_code=403, detail="无权查看该任务")
+
+    result_payload = job.get("result_json") or None
+
+    job_type = job.get("job_type") or "chat_extract"
+    customer_name = job.get("customer_name") or ""
+    typed_result = result_payload if isinstance(result_payload, dict) and result_payload else None
+
+    return ChatJobStatusResponse(
+        jobId=job.get("job_id") or job_id,
+        jobType=job_type,
+        jobTypeLabel=get_job_type_label(job_type),
+        customerId=job.get("customer_id") or "",
+        customerName=customer_name,
+        status=job.get("status") or "pending",
+        progressMessage=job.get("progress_message") or "",
+        result=typed_result,
+        errorMessage=job.get("error_message") or None,
+        createdAt=job.get("created_at") or "",
+        startedAt=job.get("started_at") or "",
+        finishedAt=job.get("finished_at") or "",
+        targetPage=get_job_target_page(job_type),
+        resultSummary=build_job_result_summary(job_type, typed_result, customer_name),
+    )
+
+
+@router.get("/jobs", response_model=list[ChatJobSummaryResponse])
+async def list_chat_jobs(
+    limit: int = 10,
+    current_user: dict | None = Depends(get_current_user_optional),
+) -> list[ChatJobSummaryResponse]:
+    username = (current_user or {}).get("username") or "anonymous"
+    jobs = await chat_storage_service.list_async_jobs(username=username, limit=max(1, min(limit, 30)))
+    return [
+        ChatJobSummaryResponse(
+            jobId=job.get("job_id") or "",
+            jobType=(job_type := job.get("job_type") or "chat_extract"),
+            jobTypeLabel=get_job_type_label(job_type),
+            customerId=job.get("customer_id") or "",
+            customerName=(customer_name := job.get("customer_name") or ""),
+            status=job.get("status") or "pending",
+            progressMessage=job.get("progress_message") or "",
+            errorMessage=job.get("error_message") or None,
+            createdAt=job.get("created_at") or "",
+            startedAt=job.get("started_at") or "",
+            finishedAt=job.get("finished_at") or "",
+            targetPage=get_job_target_page(job_type),
+            resultSummary=build_job_result_summary(job_type, job.get("result_json") if isinstance(job.get("result_json"), dict) else None, customer_name),
+        )
+        for job in jobs
+    ]
 
 
 # ===== Main Chat Route =====
@@ -1189,6 +1403,7 @@ async def _handle_extract_intent(
     user_message: str,
     conversation_history: list[dict[str, str]],
     current_user: dict | None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Handle extract intent - process uploaded files.
 
@@ -1217,8 +1432,11 @@ async def _handle_extract_intent(
         current_user,
         _save_to_feishu,
         merge_decisions=request.mergeDecisions,
+        progress_callback=progress_callback,
     )
 
+    if progress_callback:
+        await progress_callback("正在更新资料汇总")
     for customer_id in {
         file_result.get("customerId")
         for file_result in response_data.get("files", [])

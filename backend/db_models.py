@@ -153,6 +153,24 @@ class ProductCacheEntry(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
+class AsyncJobRecord(Base):
+    __tablename__ = "async_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(String(64), unique=True, nullable=False, index=True)
+    job_type = Column(String(64), nullable=False, index=True)
+    customer_id = Column(String(64), default="", index=True)
+    username = Column(String(128), default="", nullable=False, index=True)
+    status = Column(String(32), default="pending", nullable=False, index=True)
+    progress_message = Column(String(255), default="")
+    request_json = Column(Text, default="{}")
+    result_json = Column(Text, default="{}")
+    error_message = Column(Text, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    started_at = Column(String(64), default="")
+    finished_at = Column(String(64), default="")
+
+
 class SavedApplicationRecord(Base):
     __tablename__ = "saved_applications"
 

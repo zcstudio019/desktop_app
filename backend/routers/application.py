@@ -17,11 +17,12 @@ import json
 import logging
 import re
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 # Add desktop_app to path for imports
 desktop_app_path = Path(__file__).parent.parent.parent
@@ -38,7 +39,7 @@ from services.ai_service import AIService, AIServiceError, validate_no_fabricati
 from services.feishu_service import FeishuService, FeishuServiceError
 
 from ..middleware.auth import get_current_user
-from ..models.schemas import ApplicationRequest, ApplicationResponse
+from ..models.schemas import ApplicationRequest, ApplicationResponse, ChatJobCreateResponse
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -52,6 +53,64 @@ ai_service = AIService()
 storage_service = get_storage_service()
 HAS_DB_STORAGE = supports_structured_storage(storage_service)
 profile_sync_service = ProfileSyncService()
+
+
+async def _run_application_generate_job(
+    job_id: str,
+    request_payload: dict[str, Any],
+    current_user_payload: dict[str, Any],
+) -> None:
+    async def update_progress(message: str) -> None:
+        logger.info("[Application Job] progress job_id=%s stage=%s", job_id, message)
+        await storage_service.update_async_job(job_id, {"progress_message": message})
+
+    await storage_service.update_async_job(
+        job_id,
+        {
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "progress_message": "已接收任务",
+        },
+    )
+
+    try:
+        request = ApplicationRequest(**request_payload)
+        await update_progress("正在读取客户资料")
+        await update_progress("正在加载申请表模板")
+        await update_progress("正在生成申请表")
+        response = await generate_application(request, current_user_payload)
+        await update_progress("正在更新申请表摘要")
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "success",
+                "progress_message": "处理完成",
+                "result_json": response.model_dump(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except HTTPException as exc:
+        logger.error("[Application Job] failed job_id=%s detail=%s", job_id, exc.detail, exc_info=True)
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "申请表生成失败",
+                "error_message": str(exc.detail),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as exc:
+        logger.error("[Application Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "申请表生成失败",
+                "error_message": str(exc) or "申请表生成任务执行失败",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
 INVALID_LOAN_TYPE_MESSAGE = "贷款类型无效，请选择企业贷款或个人贷款。"
 CUSTOMER_DATA_SEARCH_FAILED_MESSAGE = "客户资料查询失败，请稍后重试。"
@@ -1141,3 +1200,26 @@ async def generate_application(
         warnings=warnings,
         metadata=generation_metadata,
     )
+
+
+@router.post("/jobs", response_model=ChatJobCreateResponse)
+async def create_application_job(
+    request: ApplicationRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+) -> ChatJobCreateResponse:
+    job_id = uuid.uuid4().hex
+    request_payload = request.model_dump()
+    await storage_service.create_async_job(
+        {
+            "job_id": job_id,
+            "job_type": "application_generate",
+            "customer_id": request.customerId or "",
+            "username": current_user.get("username") or "",
+            "status": "pending",
+            "progress_message": "已接收任务",
+            "request_json": request_payload,
+        }
+    )
+    background_tasks.add_task(_run_application_generate_job, job_id, request_payload, current_user)
+    return ChatJobCreateResponse(jobId=job_id, status="pending")

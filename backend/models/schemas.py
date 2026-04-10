@@ -353,12 +353,59 @@ class ChatResponse(BaseModel):
     )
 
 
+ChatJobStatusResponse.model_rebuild()
+
+
 class ChatSessionCreateRequest(BaseModel):
     """Request model for creating a chat session."""
 
     title: str | None = Field(default=None, description="Optional session title")
     customerId: str | None = Field(default=None, description="Current customer ID")
     customerName: str | None = Field(default=None, description="Current customer name")
+
+
+class ChatJobCreateResponse(BaseModel):
+    """Response returned immediately after creating an async chat job."""
+
+    jobId: str = Field(..., description="Async job ID")
+    status: str = Field(default="pending", description="Initial job status")
+
+
+class ChatJobStatusResponse(BaseModel):
+    """Status payload for async chat extraction jobs."""
+
+    jobId: str = Field(..., description="Async job ID")
+    jobType: str = Field(default="chat_extract", description="Job type")
+    customerId: str = Field(default="", description="Linked customer ID")
+    customerName: str = Field(default="", description="Linked customer name")
+    status: str = Field(default="pending", description="pending/running/success/failed")
+    progressMessage: str = Field(default="", description="Human-readable progress message")
+    result: dict[str, Any] | None = Field(default=None, description="Completed async job result payload")
+    errorMessage: str | None = Field(default=None, description="Failure reason")
+    createdAt: str = Field(default="", description="Job creation time")
+    startedAt: str = Field(default="", description="Job start time")
+    finishedAt: str = Field(default="", description="Job finish time")
+    jobTypeLabel: str = Field(default="处理任务", description="Localized job type label")
+    targetPage: str | None = Field(default=None, description="Recommended target page after success")
+    resultSummary: str | None = Field(default=None, description="Short summary for completed job result")
+
+
+class ChatJobSummaryResponse(BaseModel):
+    """Lightweight summary payload for recent async chat jobs."""
+
+    jobId: str = Field(..., description="Async job ID")
+    jobType: str = Field(default="chat_extract", description="Job type")
+    customerId: str = Field(default="", description="Linked customer ID")
+    customerName: str = Field(default="", description="Linked customer name")
+    status: str = Field(default="pending", description="pending/running/success/failed")
+    progressMessage: str = Field(default="", description="Human-readable progress message")
+    errorMessage: str | None = Field(default=None, description="Failure reason")
+    createdAt: str = Field(default="", description="Job creation time")
+    startedAt: str = Field(default="", description="Job start time")
+    finishedAt: str = Field(default="", description="Job finish time")
+    jobTypeLabel: str = Field(default="处理任务", description="Localized job type label")
+    targetPage: str | None = Field(default=None, description="Recommended target page after success")
+    resultSummary: str | None = Field(default=None, description="Short summary for completed job result")
 
 
 class ChatSessionSummary(BaseModel):

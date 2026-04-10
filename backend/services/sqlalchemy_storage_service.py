@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from backend.database import Base, SessionLocal, engine
 from backend.db_models import (
+    AsyncJobRecord,
     ChatMessageRecord,
     ChatSession,
     Customer,
@@ -35,7 +36,12 @@ class SQLAlchemyStorageService:
         self._session_factory = SessionLocal
         Base.metadata.create_all(
             bind=engine,
-            tables=[ChatSession.__table__, ChatMessageRecord.__table__, ProductCacheEntry.__table__],
+            tables=[
+                ChatSession.__table__,
+                ChatMessageRecord.__table__,
+                ProductCacheEntry.__table__,
+                AsyncJobRecord.__table__,
+            ],
             checkfirst=True,
         )
 
@@ -53,6 +59,39 @@ class SQLAlchemyStorageService:
             return json.loads(value)
         except Exception:
             return fallback
+
+    def _resolve_async_job_customer_name(self, row: AsyncJobRecord) -> str:
+        request_payload = self._loads(row.request_json, {}) or {}
+        if isinstance(request_payload, dict):
+            customer_name = (
+                request_payload.get("customerName")
+                or request_payload.get("customer_name")
+                or request_payload.get("title")
+                or ""
+            )
+            if isinstance(customer_name, str) and customer_name.strip():
+                return customer_name.strip()
+
+        result_payload = self._loads(row.result_json, {}) or {}
+        if isinstance(result_payload, dict):
+            customer_name = (
+                result_payload.get("customerName")
+                or result_payload.get("customer_name")
+                or ""
+            )
+            if isinstance(customer_name, str) and customer_name.strip():
+                return customer_name.strip()
+
+        customer_id = row.customer_id or ""
+        if customer_id:
+            with self._session_factory() as lookup_db:
+                customer_row = lookup_db.execute(
+                    select(Customer).where(Customer.customer_id == customer_id)
+                ).scalar_one_or_none()
+                if customer_row and customer_row.name:
+                    return customer_row.name
+
+        return ""
 
     def _row_to_customer(self, row: Customer) -> dict[str, Any]:
         return {
@@ -195,6 +234,23 @@ class SQLAlchemyStorageService:
             "source": row.source or "wiki",
             "created_at": row.created_at.isoformat() if row.created_at else "",
             "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+        }
+
+    def _row_to_async_job(self, row: AsyncJobRecord) -> dict[str, Any]:
+        return {
+            "job_id": row.job_id,
+            "job_type": row.job_type or "",
+            "customer_id": row.customer_id or "",
+            "customer_name": self._resolve_async_job_customer_name(row),
+            "username": row.username or "",
+            "status": row.status or "pending",
+            "progress_message": row.progress_message or "",
+            "request_json": self._loads(row.request_json, {}),
+            "result_json": self._loads(row.result_json, {}),
+            "error_message": row.error_message or "",
+            "created_at": row.created_at.isoformat() if row.created_at else "",
+            "started_at": row.started_at or "",
+            "finished_at": row.finished_at or "",
         }
 
     async def create_customer(self, customer_data: dict) -> dict:
@@ -709,6 +765,76 @@ class SQLAlchemyStorageService:
             db.commit()
             db.refresh(row)
             return self._row_to_product_cache(row)
+
+    async def create_async_job(self, job_data: dict[str, Any]) -> dict[str, Any]:
+        with self._session_factory() as db:
+            row = AsyncJobRecord(
+                job_id=job_data["job_id"],
+                job_type=job_data.get("job_type") or "chat_extract",
+                customer_id=job_data.get("customer_id") or "",
+                username=job_data.get("username") or "",
+                status=job_data.get("status") or "pending",
+                progress_message=job_data.get("progress_message") or "",
+                request_json=self._dumps(job_data.get("request_json"), "{}"),
+                result_json=self._dumps(job_data.get("result_json"), "{}"),
+                error_message=job_data.get("error_message") or "",
+                started_at=job_data.get("started_at") or "",
+                finished_at=job_data.get("finished_at") or "",
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return self._row_to_async_job(row)
+
+    async def get_async_job(self, job_id: str) -> dict[str, Any] | None:
+        with self._session_factory() as db:
+            row = db.execute(
+                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
+            ).scalar_one_or_none()
+            return self._row_to_async_job(row) if row else None
+
+    async def list_async_jobs(self, username: str, limit: int = 10) -> list[dict[str, Any]]:
+        with self._session_factory() as db:
+            rows = db.execute(
+                select(AsyncJobRecord)
+                .where(AsyncJobRecord.username == username)
+                .order_by(desc(AsyncJobRecord.created_at))
+                .limit(limit)
+            ).scalars().all()
+            return [self._row_to_async_job(row) for row in rows]
+
+    async def update_async_job(self, job_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        with self._session_factory() as db:
+            row = db.execute(
+                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
+            ).scalar_one_or_none()
+            if not row:
+                return None
+
+            if "job_type" in updates:
+                row.job_type = updates["job_type"] or row.job_type
+            if "customer_id" in updates:
+                row.customer_id = updates["customer_id"] or ""
+            if "username" in updates:
+                row.username = updates["username"] or row.username
+            if "status" in updates:
+                row.status = updates["status"] or row.status
+            if "progress_message" in updates:
+                row.progress_message = updates["progress_message"] or ""
+            if "request_json" in updates:
+                row.request_json = self._dumps(updates.get("request_json"), "{}")
+            if "result_json" in updates:
+                row.result_json = self._dumps(updates.get("result_json"), "{}")
+            if "error_message" in updates:
+                row.error_message = updates["error_message"] or ""
+            if "started_at" in updates:
+                row.started_at = updates["started_at"] or ""
+            if "finished_at" in updates:
+                row.finished_at = updates["finished_at"] or ""
+
+            db.commit()
+            db.refresh(row)
+            return self._row_to_async_job(row)
 
     async def get_product_cache_entry(self, cache_key: str) -> dict[str, Any] | None:
         with self._session_factory() as db:

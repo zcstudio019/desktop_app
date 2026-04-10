@@ -175,6 +175,8 @@ export interface ChatRequest {
   messages: ChatMessage[];
   /** Optional file attachments */
   files?: ChatFile[];
+  /** Optional persisted chat session ID */
+  sessionId?: string | null;
   /** Current selected customer context */
   customerId?: string | null;
   /** Current selected customer name */
@@ -195,6 +197,44 @@ export interface ChatResponse {
   data: Record<string, unknown> | null;
   /** AI reasoning/thinking process (from DeepSeek thinking feature) */
   reasoning?: string | null;
+}
+
+export interface ChatJobCreateResponse {
+  jobId: string;
+  status: 'pending' | 'running' | 'success' | 'failed' | string;
+}
+
+export interface ChatJobSummaryResponse {
+  jobId: string;
+  jobType: string;
+  jobTypeLabel?: string;
+  customerId: string;
+  customerName: string;
+  status: 'pending' | 'running' | 'success' | 'failed' | string;
+  progressMessage: string;
+  errorMessage?: string | null;
+  createdAt: string;
+  startedAt: string;
+  finishedAt: string;
+  targetPage?: string | null;
+  resultSummary?: string | null;
+}
+
+export interface ChatJobStatusResponse {
+  jobId: string;
+  jobType: string;
+  jobTypeLabel?: string;
+  customerId: string;
+  customerName: string;
+  status: 'pending' | 'running' | 'success' | 'failed' | string;
+  progressMessage: string;
+  result: Record<string, unknown> | null;
+  errorMessage?: string | null;
+  createdAt: string;
+  startedAt: string;
+  finishedAt: string;
+  targetPage?: string | null;
+  resultSummary?: string | null;
 }
 
 

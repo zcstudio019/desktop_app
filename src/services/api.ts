@@ -8,6 +8,9 @@ import type {
   ApplicationRequest,
   ApplicationResponse,
   ChatRequest,
+  ChatJobCreateResponse,
+  ChatJobSummaryResponse,
+  ChatJobStatusResponse,
   ChatResponse,
   CustomerDetail,
   CustomerListItem,
@@ -138,6 +141,19 @@ export async function generateApplication(
   return handleResponse<ApplicationResponse>(response);
 }
 
+export async function createApplicationJob(
+  request: ApplicationRequest,
+  signal?: AbortSignal
+): Promise<ChatJobCreateResponse> {
+  const response = await fetch(`${API_BASE}/api/application/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return handleResponse<ChatJobCreateResponse>(response);
+}
+
 export async function matchScheme(
   request: SchemeMatchRequest,
   signal?: AbortSignal
@@ -151,6 +167,19 @@ export async function matchScheme(
   return handleResponse<SchemeMatchResponse>(response);
 }
 
+export async function createSchemeMatchJob(
+  request: SchemeMatchRequest,
+  signal?: AbortSignal
+): Promise<ChatJobCreateResponse> {
+  const response = await fetch(`${API_BASE}/api/scheme/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return handleResponse<ChatJobCreateResponse>(response);
+}
+
 export async function sendChat(
   request: ChatRequest,
   signal?: AbortSignal
@@ -162,6 +191,43 @@ export async function sendChat(
     signal,
   });
   return handleResponse<ChatResponse>(response);
+}
+
+export async function createChatJob(
+  request: ChatRequest,
+  signal?: AbortSignal
+): Promise<ChatJobCreateResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return handleResponse<ChatJobCreateResponse>(response);
+}
+
+export async function getChatJobStatus(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<ChatJobStatusResponse> {
+  const response = await fetch(`${API_BASE}/api/chat/jobs/${jobId}`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<ChatJobStatusResponse>(response);
+}
+
+export async function listChatJobs(
+  limit = 10,
+  signal?: AbortSignal
+): Promise<ChatJobSummaryResponse[]> {
+  const response = await fetch(`${API_BASE}/api/chat/jobs?limit=${limit}`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<ChatJobSummaryResponse[]>(response);
 }
 
 export async function clearCustomerCache(signal?: AbortSignal): Promise<{ message: string }> {
@@ -737,6 +803,18 @@ export async function generateCustomerRiskReport(
     signal,
   });
   return handleResponse<CustomerRiskReportResponse>(response);
+}
+
+export async function createCustomerRiskReportJob(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<ChatJobCreateResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/risk-report/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<ChatJobCreateResponse>(response);
 }
 
 // ==================== Customer Table API ====================

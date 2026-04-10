@@ -1,11 +1,11 @@
 ﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Download, Loader2, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react';
-import { getApplication, listCustomers, listSavedApplications, matchScheme, parseNaturalLanguage, searchCustomer, type SavedApplicationListItem } from '../services/api';
-import type { CustomerListItem, SchemeMatchRequest } from '../services/types';
+import { createSchemeMatchJob, getApplication, getChatJobStatus, listCustomers, listSavedApplications, parseNaturalLanguage, searchCustomer, type SavedApplicationListItem } from '../services/api';
+import type { ChatJobStatusResponse, CustomerListItem, SchemeMatchRequest } from '../services/types';
 import { useAbortController } from '../hooks/useAbortController';
-import { useLoading } from '../hooks/useLoading';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
+import { getJobStatusText, getJobTypeLabel } from '../config/jobDisplay';
 
 type CreditType = 'personal' | 'enterprise_credit' | 'enterprise_mortgage';
 type DataSource = 'currentCustomer' | 'savedApplication' | 'manual' | 'searchCustomer';
@@ -70,8 +70,9 @@ const downloadResult = (content: string, name: string) => {
 
 const SchemeMatchPage: React.FC = () => {
   const { state, setCurrentCustomer, setSchemeResult, setSchemeTaskStatus, recordSystemActivity } = useApp();
-  const { loading, error, data, execute, reset } = useLoading<string>();
   const { getSignal, abort } = useAbortController();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
   const [customers, setCustomers] = useState<CustomerListItem[]>([]);
   const [applications, setApplications] = useState<SavedApplicationListItem[]>([]);
   const [creditType, setCreditType] = useState<CreditType>('enterprise_credit');
@@ -85,8 +86,10 @@ const SchemeMatchPage: React.FC = () => {
   const [searchDataState, setSearchDataState] = useState<Record<string, unknown> | null>(null);
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [jobPolling, setJobPolling] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
   const recoverRef = useRef(false);
+  const stopPollingRef = useRef(false);
   const matchRef = useRef<((t: CreditType, d: Record<string, unknown>, n?: string | null, i?: string | null) => Promise<void>) | null>(null);
   const basisRef = useRef<HTMLDivElement | null>(null);
 
@@ -95,7 +98,8 @@ const SchemeMatchPage: React.FC = () => {
   const currentResults = currentCustomerName ? state.extraction.customerDataMap[currentCustomerName] || [] : [];
   const currentData = useMemo(() => mergeResults(currentResults), [currentResults]);
   const schemeResult = state.scheme.result;
-  const activeResult = schemeResult?.result ?? data ?? null;
+  const activeResult = schemeResult?.result ?? null;
+  const schemeJobLabel = getJobTypeLabel('scheme_match');
 
   useEffect(() => {
     let mounted = true;
@@ -115,17 +119,121 @@ const SchemeMatchPage: React.FC = () => {
     };
   }, [getSignal]);
 
-  const doMatch = useCallback(async (type: CreditType, customerData: Record<string, unknown>, customerName?: string | null, customerId?: string | null) => {
-    const request: SchemeMatchRequest = { creditType: type, customerData, customerName: customerName ?? currentCustomerName, customerId: customerId ?? currentCustomerId };
-    setSchemeTaskStatus('matching', { creditType: type, customerData, customerName: request.customerName, customerId: request.customerId });
-    const result = await execute(async () => (await matchScheme(request, getSignal())).matchResult);
-    if (result.data !== null) {
-      const matchedAt = new Date().toISOString();
-      setSchemeResult({ result: result.data, lastCreditType: type, customerId: request.customerId, customerName: request.customerName, matchedAt, stale: false, staleReason: '', staleAt: '' });
-      setSchemeTaskStatus('done', null);
-      recordSystemActivity({ type: 'matching', title: '融资方案匹配已完成', description: '已生成当前客户的融资方案匹配结果。', customerName: request.customerName ?? null, customerId: request.customerId ?? null, status: 'success' });
+  const pollSchemeJob = useCallback(async (
+    jobId: string,
+    type: CreditType,
+    customerName?: string | null,
+    customerId?: string | null,
+  ) => {
+    const startedAt = Date.now();
+    let failureCount = 0;
+    stopPollingRef.current = false;
+    setJobPolling(true);
+    setLoading(false);
+
+    try {
+      while (true) {
+        if (stopPollingRef.current) {
+          return;
+        }
+        if (Date.now() - startedAt > 5 * 60 * 1000) {
+          const message = '任务处理时间较长，请稍后重新进入页面查看。';
+          setActionError(message);
+          setError(new Error(message));
+          setSchemeTaskStatus('idle', null);
+          return;
+        }
+
+        let status: ChatJobStatusResponse;
+        try {
+          status = await getChatJobStatus(jobId, getSignal());
+        } catch (issue) {
+          failureCount += 1;
+          if (failureCount >= 3) {
+            const message = issue instanceof Error ? issue.message : '任务状态获取失败';
+            setActionError(message);
+            setError(new Error(message));
+            setSchemeTaskStatus('idle', null);
+            return;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          continue;
+        }
+
+        failureCount = 0;
+
+        if (status.status === 'pending' || status.status === 'running') {
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          continue;
+        }
+
+        if (status.status === 'success' && status.result) {
+          const response = status.result as unknown as { matchResult: string; creditType?: string; customerName?: string; customerId?: string };
+          const resolvedCustomerName = response.customerName || customerName || currentCustomerName || null;
+          const resolvedCustomerId = response.customerId || customerId || currentCustomerId || null;
+          setSchemeResult({
+            result: response.matchResult,
+            lastCreditType: (response.creditType as CreditType | undefined) ?? type,
+            customerId: resolvedCustomerId,
+            customerName: resolvedCustomerName,
+            matchedAt: status.finishedAt || new Date().toISOString(),
+            stale: false,
+            staleReason: '',
+            staleAt: '',
+          });
+          setSchemeTaskStatus('done', null);
+          setError(null);
+          setActionError(null);
+          recordSystemActivity({
+            type: 'matching',
+            title: getJobStatusText('scheme_match', 'success'),
+            description: '已生成当前客户的融资方案匹配结果。',
+            customerName: resolvedCustomerName,
+            customerId: resolvedCustomerId,
+            status: 'success',
+          });
+          return;
+        }
+
+        const message = status.errorMessage || getJobStatusText('scheme_match', 'failed');
+        setActionError(message);
+        setError(new Error(message));
+        setSchemeTaskStatus('idle', null);
+        return;
+      }
+    } finally {
+      setJobPolling(false);
+      stopPollingRef.current = false;
     }
-  }, [currentCustomerId, currentCustomerName, execute, getSignal, recordSystemActivity, setSchemeResult, setSchemeTaskStatus]);
+  }, [currentCustomerId, currentCustomerName, getSignal, recordSystemActivity, setSchemeResult, setSchemeTaskStatus]);
+
+  const doMatch = useCallback(async (type: CreditType, customerData: Record<string, unknown>, customerName?: string | null, customerId?: string | null) => {
+    const request: SchemeMatchRequest = {
+      creditType: type,
+      customerData,
+      customerName: customerName ?? currentCustomerName,
+      customerId: customerId ?? currentCustomerId,
+    };
+    setLoading(true);
+    setError(null);
+    setActionError(null);
+    setSchemeTaskStatus('matching', { creditType: type, customerData, customerName: request.customerName, customerId: request.customerId });
+    try {
+      const job = await createSchemeMatchJob(request, getSignal());
+      setSchemeTaskStatus('idle', null);
+      await pollSchemeJob(job.jobId, type, request.customerName, request.customerId);
+    } catch (issue) {
+      if (issue instanceof Error && issue.name === 'AbortError') {
+        return;
+      }
+      const nextError = issue instanceof Error ? issue : new Error(getJobStatusText('scheme_match', 'failed'));
+      setError(nextError);
+      setActionError(nextError.message);
+      setSchemeTaskStatus('idle', null);
+    } finally {
+      setLoading(false);
+    }
+  }, [currentCustomerId, currentCustomerName, getSignal, pollSchemeJob, setSchemeTaskStatus]);
 
   matchRef.current = doMatch;
 
@@ -141,25 +249,22 @@ const SchemeMatchPage: React.FC = () => {
     });
   }, [state.tasks.scheme]);
 
-  useEffect(() => {
-    if (error && error.name !== 'AbortError') setSchemeTaskStatus('idle', null);
-  }, [error, setSchemeTaskStatus]);
-
   const feedback = useMemo(() => {
     let tone: ProcessFeedbackTone = 'idle';
     let title = '等待开始方案匹配';
     let description = '选择客户和资料来源后，即可生成融资方案匹配结果。';
     let persistenceHint = '当前不会影响已保存的申请表与资料汇总。';
     let nextStep = '先选定客户，再确认本次匹配使用的资料来源。';
-    if (loading) {
+    const isMatching = loading || jobPolling;
+    if (isMatching) {
       tone = 'processing';
-      title = '正在生成融资方案匹配结果';
+      title = getJobStatusText('scheme_match', 'running');
       description = '系统正在读取资料并与产品规则进行比对。';
-      persistenceHint = '匹配进行中，现有资料与旧结果仍会保留。';
+      persistenceHint = jobPolling ? '任务处理中，现有资料与旧结果仍会保留。' : '任务已提交，现有资料与旧结果仍会保留。';
       nextStep = '请稍候，完成后可直接查看结果与依据。';
     } else if (error || actionError) {
       tone = activeResult ? 'partial' : 'error';
-      title = activeResult ? '本次匹配失败，但上一版结果仍可查看' : '方案匹配失败';
+      title = activeResult ? '本次匹配失败，但上一版结果仍可查看' : getJobStatusText('scheme_match', 'failed');
       description = actionError || error?.message || '本次匹配未完成，请稍后重试。';
       persistenceHint = activeResult ? '旧结果仍保留，可先继续查看。' : '主流程资料仍已保存，不影响其他页面继续使用。';
       nextStep = activeResult ? '确认资料更新后可重新匹配。' : '先确认客户资料来源是否可用，再重新发起匹配。';
@@ -171,13 +276,13 @@ const SchemeMatchPage: React.FC = () => {
       nextStep = '点击“开始匹配方案”，使用最新资料重跑。';
     } else if (activeResult) {
       tone = 'success';
-      title = '融资方案匹配已完成';
+      title = getJobStatusText('scheme_match', 'success');
       description = '当前客户的匹配结果已生成，可继续查看、复制或下载。';
       persistenceHint = '结果已同步到当前客户上下文，可用于后续风险评估。';
       nextStep = '如客户资料更新，建议重新匹配保持结果最新。';
     }
     return { tone, title, description, persistenceHint, nextStep };
-  }, [actionError, activeResult, error, loading, schemeResult?.stale, schemeResult?.staleReason]);
+  }, [actionError, activeResult, error, loading, jobPolling, schemeResult?.stale, schemeResult?.staleReason]);
 
   const selectedApplication = applications.find((item) => item.id === selectedApplicationId) || null;
 
@@ -228,7 +333,7 @@ const SchemeMatchPage: React.FC = () => {
   };
 
   const startMatch = async () => {
-    reset();
+    setError(null);
     setActionError(null);
     try {
       const payload = await resolvePayload();
@@ -238,6 +343,16 @@ const SchemeMatchPage: React.FC = () => {
       setActionError(message);
       setSchemeTaskStatus('idle', null);
     }
+  };
+
+  const handleCancelMatch = () => {
+    stopPollingRef.current = true;
+    abort();
+    setLoading(false);
+    setJobPolling(false);
+    setActionError('已停止查看当前任务状态，可稍后重新进入页面查看。');
+    setError(new Error('已停止查看当前任务状态，可稍后重新进入页面查看。'));
+    setSchemeTaskStatus('idle', null);
   };
 
   const copyResult = async () => {
@@ -256,7 +371,7 @@ const SchemeMatchPage: React.FC = () => {
       <section className="rounded-[28px] border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-blue-50/60 p-8 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
         <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
           <div className="max-w-3xl">
-            <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700"><Sparkles className="h-3.5 w-3.5" />融资方案匹配</div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700"><Sparkles className="h-3.5 w-3.5" />{schemeJobLabel}</div>
             <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-900">方案匹配</h1>
             <p className="mt-3 text-sm leading-7 text-slate-600">先确定当前客户，再选择匹配所用资料。系统会基于最新客户资料、已保存申请表或手动整理内容输出可执行的融资方案建议。</p>
           </div>
@@ -283,7 +398,7 @@ const SchemeMatchPage: React.FC = () => {
 
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between"><div><div className="text-sm font-semibold text-slate-900">匹配参数</div><div className="mt-1 text-sm text-slate-500">根据资料来源选择适合的匹配输入方式。</div></div>{loading ? <button type="button" onClick={abort} className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-100"><AlertTriangle className="h-4 w-4" />取消本次匹配</button> : null}</div>
+          <div className="flex items-center justify-between"><div><div className="text-sm font-semibold text-slate-900">匹配参数</div><div className="mt-1 text-sm text-slate-500">根据资料来源选择适合的匹配输入方式。</div></div>{loading || jobPolling ? <button type="button" onClick={handleCancelMatch} className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-100"><AlertTriangle className="h-4 w-4" />取消本次匹配</button> : null}</div>
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="space-y-2"><span className="text-sm font-medium text-slate-700">融资类型</span><select value={creditType} onChange={(e) => setCreditType(e.target.value as CreditType)} className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100">{CREDIT_TYPES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
             <label className="space-y-2"><span className="text-sm font-medium text-slate-700">资料来源</span><select value={dataSource} onChange={(e) => setDataSource(e.target.value as DataSource)} className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100">{DATA_SOURCES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
@@ -299,8 +414,8 @@ const SchemeMatchPage: React.FC = () => {
           {dataSource === 'searchCustomer' ? <div className="mt-6 space-y-4 rounded-3xl border border-slate-200 bg-slate-50 p-5"><div className="flex flex-col gap-3 sm:flex-row"><input value={searchName} onChange={(e) => setSearchName(e.target.value)} placeholder="请输入客户名称" className="h-11 flex-1 rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100" /><button type="button" onClick={() => void searchNamedCustomer()} className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-4 text-sm font-medium text-blue-700 transition hover:bg-blue-100"><Search className="h-4 w-4" />搜索客户资料</button></div>{searchStatus ? <div className="text-sm text-slate-600">{searchStatus}</div> : null}</div> : null}
 
           <div className="mt-6 flex flex-wrap gap-3">
-            <button type="button" onClick={() => void startMatch()} disabled={loading} className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{loading ? '正在匹配方案...' : '开始匹配方案'}</button>
-            <button type="button" onClick={() => { reset(); setActionError(null); setManualError(null); setSearchStatus(null); setManualData(null); setManualFields([]); setSearchDataState(null); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-5 py-3 text-sm font-medium text-slate-600 transition hover:bg-slate-50"><RefreshCw className="h-4 w-4" />重置本页输入</button>
+            <button type="button" onClick={() => void startMatch()} disabled={loading || jobPolling} className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">{loading || jobPolling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{loading || jobPolling ? '正在匹配方案...' : '开始匹配方案'}</button>
+            <button type="button" onClick={() => { stopPollingRef.current = true; setError(null); setActionError(null); setManualError(null); setSearchStatus(null); setManualData(null); setManualFields([]); setSearchDataState(null); }} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-5 py-3 text-sm font-medium text-slate-600 transition hover:bg-slate-50"><RefreshCw className="h-4 w-4" />重置本页输入</button>
           </div>
         </div>
 

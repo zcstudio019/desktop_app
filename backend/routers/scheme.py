@@ -19,8 +19,10 @@ import logging
 import sys
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 # Add desktop_app to path for imports
 desktop_app_path = Path(__file__).parent.parent.parent
@@ -40,6 +42,7 @@ from services.wiki_service import WikiService, WikiServiceError
 
 from ..middleware.auth import get_current_user
 from ..models.schemas import (
+    ChatJobCreateResponse,
     NaturalLanguageRequest,
     NaturalLanguageResponse,
     SaveApplicationRequest,
@@ -64,6 +67,142 @@ feishu_service = FeishuService()
 storage_service = get_storage_service()
 HAS_DB_STORAGE = supports_structured_storage(storage_service)
 profile_sync_service = ProfileSyncService()
+
+
+async def _match_scheme_payload(
+    request: SchemeMatchRequest,
+    current_user: dict,
+) -> dict[str, Any]:
+    logger.info("Matching scheme for user=%s, credit type=%s", current_user["username"], request.creditType)
+    logger.debug(f"Customer data keys: {list(request.customerData.keys())}")
+
+    valid_credit_types = ["personal", "enterprise_credit", "enterprise_mortgage"]
+    if request.creditType not in valid_credit_types:
+        raise HTTPException(status_code=400, detail=INVALID_CREDIT_TYPE_MESSAGE)
+
+    try:
+        products = get_products_by_credit_type(request.creditType)
+        if not products:
+            logger.warning(f"Empty product library for credit type: {request.creditType}")
+            raise HTTPException(status_code=500, detail=PRODUCT_LIBRARY_EMPTY_MESSAGE)
+        logger.info(f"Retrieved product library, length: {len(products)} characters")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=INVALID_CREDIT_TYPE_MESSAGE) from e
+    except WikiServiceError as e:
+        logger.error(f"Unexpected error retrieving products: {e}")
+        raise HTTPException(status_code=500, detail=PRODUCT_LIBRARY_FETCH_FAILED_MESSAGE) from e
+
+    try:
+        match_result = ai_service.match_scheme(
+            customer_data=request.customerData, products=products, credit_type=request.creditType
+        )
+        if not match_result:
+            logger.warning("AI returned empty match result")
+            raise HTTPException(status_code=500, detail=SCHEME_MATCH_FAILED_MESSAGE)
+        logger.info(f"Scheme matching completed, result length: {len(match_result)} characters")
+    except AIServiceError as e:
+        logger.error(f"AI service error: {e}")
+        raise HTTPException(status_code=500, detail=SCHEME_MATCH_FAILED_MESSAGE) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error matching schemes: {e}")
+        raise HTTPException(status_code=500, detail=SCHEME_MATCH_FAILED_MESSAGE) from e
+
+    if HAS_DB_STORAGE and request.customerId:
+        try:
+            await profile_sync_service.handle_scheme_matched(
+                storage_service=storage_service,
+                customer_id=request.customerId,
+                customer_name=request.customerName or "",
+                match_result=match_result,
+            )
+        except Exception as sync_exc:
+            logger.warning(
+                "scheme_snapshot finish customer_id=%s operation_type=scheme_matched status=failed error=%s",
+                request.customerId,
+                sync_exc,
+            )
+
+    add_activity(
+        activity_type="matching",
+        customer=request.customerName or "",
+        customer_id=request.customerId,
+        username=current_user.get("username") or "",
+        status="completed",
+        title="融资方案匹配已完成",
+        description="系统已基于当前客户资料完成最新一轮融资方案匹配。",
+        metadata={
+            "creditType": request.creditType,
+            "hasCustomerContext": bool(request.customerId),
+        },
+    )
+    if request.customerName:
+        update_customer_status(request.customerName, has_matching=True)
+
+    return {
+        "matchResult": match_result,
+        "customerId": request.customerId or "",
+        "customerName": request.customerName or "",
+        "creditType": request.creditType,
+    }
+
+
+async def _run_scheme_match_job(
+    job_id: str,
+    request_payload: dict[str, Any],
+    current_user_payload: dict[str, Any],
+) -> None:
+    async def update_progress(message: str) -> None:
+        logger.info("[Scheme Job] progress job_id=%s stage=%s", job_id, message)
+        await storage_service.update_async_job(job_id, {"progress_message": message})
+
+    await storage_service.update_async_job(
+        job_id,
+        {
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "progress_message": "已接收任务",
+        },
+    )
+
+    try:
+        request = SchemeMatchRequest(**request_payload)
+        await update_progress("正在读取匹配资料")
+        await update_progress("正在加载产品库")
+        payload = await _match_scheme_payload(request, current_user_payload)
+        await update_progress("正在生成匹配方案")
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "success",
+                "progress_message": "处理完成",
+                "result_json": payload,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except HTTPException as exc:
+        logger.error("[Scheme Job] failed job_id=%s detail=%s", job_id, exc.detail, exc_info=True)
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "方案匹配失败",
+                "error_message": str(exc.detail),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as exc:
+        logger.error("[Scheme Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
+        await storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "方案匹配失败",
+                "error_message": str(exc) or "方案匹配任务执行失败",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
 INVALID_CREDIT_TYPE_MESSAGE = "贷款方案类型无效，请重新选择。"
 PRODUCT_LIBRARY_FETCH_FAILED_MESSAGE = "产品库获取失败，请稍后重试。"
@@ -213,114 +352,34 @@ async def match_scheme(
     """
     Match customer data against product libraries.
 
-    This endpoint:
-    1. Retrieves the appropriate product library from Feishu Wiki based on creditType
-    2. Uses AI to match customer data against product requirements
-    3. Returns recommended schemes in Markdown format
-
-    **Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7**
-
-    Args:
-        request: SchemeMatchRequest with customerData and creditType
-
-    Returns:
-        SchemeMatchResponse with matchResult in Markdown format
-
-    Raises:
-        HTTPException 400: Invalid creditType
-        HTTPException 500: Service errors (Wiki, AI)
+    Legacy synchronous entry kept for compatibility.
+    New heavy matching flows should prefer /scheme/jobs.
     """
-    logger.info("Matching scheme for user=%s, credit type=%s", current_user["username"], request.creditType)
-    logger.debug(f"Customer data keys: {list(request.customerData.keys())}")
+    payload = await _match_scheme_payload(request, current_user)
+    return SchemeMatchResponse(matchResult=payload["matchResult"])
 
-    # Step 1: Validate creditType
-    valid_credit_types = ["personal", "enterprise_credit", "enterprise_mortgage"]
-    if request.creditType not in valid_credit_types:
-        raise HTTPException(status_code=400, detail=INVALID_CREDIT_TYPE_MESSAGE)
 
-    # Step 2: Get product library from Feishu Wiki
-    # Requirement 4.1: Retrieve product library from Feishu Wiki based on creditType
-    try:
-        products = get_products_by_credit_type(request.creditType)
-
-        if not products:
-            logger.warning(f"Empty product library for credit type: {request.creditType}")
-            raise HTTPException(status_code=500, detail=PRODUCT_LIBRARY_EMPTY_MESSAGE)
-
-        logger.info(f"Retrieved product library, length: {len(products)} characters")
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=INVALID_CREDIT_TYPE_MESSAGE) from e
-
-    except WikiServiceError as e:
-        logger.error(f"Wiki service error: {e}")
-        raise HTTPException(status_code=500, detail=PRODUCT_LIBRARY_FETCH_FAILED_MESSAGE) from e
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        logger.error(f"Unexpected error retrieving products: {e}")
-        raise HTTPException(status_code=500, detail=PRODUCT_LIBRARY_FETCH_FAILED_MESSAGE) from e
-
-    # Step 3: Call AI to match schemes
-    # Requirement 4.5: Use AI to match customer data against product requirements
-    try:
-        match_result = ai_service.match_scheme(
-            customer_data=request.customerData, products=products, credit_type=request.creditType
-        )
-
-        if not match_result:
-            logger.warning("AI returned empty match result")
-            raise HTTPException(status_code=500, detail=SCHEME_MATCH_FAILED_MESSAGE)
-
-        logger.info(f"Scheme matching completed, result length: {len(match_result)} characters")
-
-    except AIServiceError as e:
-        logger.error(f"AI service error: {e}")
-        raise HTTPException(status_code=500, detail=SCHEME_MATCH_FAILED_MESSAGE) from e
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        logger.error(f"Unexpected error matching schemes: {e}")
-        raise HTTPException(status_code=500, detail=SCHEME_MATCH_FAILED_MESSAGE) from e
-
-    if HAS_DB_STORAGE and request.customerId:
-        try:
-            await profile_sync_service.handle_scheme_matched(
-                storage_service=storage_service,
-                customer_id=request.customerId,
-                customer_name=request.customerName or "",
-                match_result=match_result,
-            )
-        except Exception as sync_exc:
-            logger.warning(
-                "scheme_snapshot finish customer_id=%s operation_type=scheme_matched status=failed error=%s",
-                request.customerId,
-                sync_exc,
-            )
-
-    add_activity(
-        activity_type="matching",
-        customer=request.customerName or "",
-        customer_id=request.customerId,
-        username=current_user.get("username") or "",
-        status="completed",
-        title="融资方案匹配已完成",
-        description="系统已基于当前客户资料完成最新一轮融资方案匹配。",
-        metadata={
-            "creditType": request.creditType,
-            "hasCustomerContext": bool(request.customerId),
-        },
+@router.post("/jobs", response_model=ChatJobCreateResponse)
+async def create_scheme_match_job(
+    request: SchemeMatchRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+) -> ChatJobCreateResponse:
+    job_id = uuid.uuid4().hex
+    request_payload = request.model_dump()
+    await storage_service.create_async_job(
+        {
+            "job_id": job_id,
+            "job_type": "scheme_match",
+            "customer_id": request.customerId or "",
+            "username": current_user.get("username") or "",
+            "status": "pending",
+            "progress_message": "已接收任务",
+            "request_json": request_payload,
+        }
     )
-    if request.customerName:
-        update_customer_status(request.customerName, has_matching=True)
-
-    # Step 4: Return response
-    # Requirement 4.6: Return matchResult in Markdown format with recommended schemes
-    return SchemeMatchResponse(matchResult=match_result)
+    background_tasks.add_task(_run_scheme_match_job, job_id, request_payload, current_user)
+    return ChatJobCreateResponse(jobId=job_id, status="pending")
 
 
 # =============================================================================

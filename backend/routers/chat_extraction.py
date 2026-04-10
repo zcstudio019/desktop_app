@@ -23,6 +23,8 @@ from .chat_storage import MISSING_CUSTOMER_NAME_MESSAGE as STORAGE_MISSING_CUSTO
 
 logger = logging.getLogger(__name__)
 
+MAX_AI_INPUT_CHARS = 12000
+
 AI_RISK_BLOCKED_ERROR = "ai_risk_blocked"
 AI_SERVICE_ERROR = "ai_service_error"
 OCR_ERROR = "ocr_error"
@@ -167,6 +169,20 @@ def classify_and_extract_data(text_content: str) -> tuple[str, dict]:
     return (document_type, content)
 
 
+def _truncate_ai_input(text_content: str, filename: str) -> str:
+    """Cap oversized extracted text before sending it to AI services."""
+    if len(text_content) <= MAX_AI_INPUT_CHARS:
+        return text_content
+
+    logger.warning(
+        "[Chat Extraction] Truncating AI input for %s from %s to %s chars",
+        filename,
+        len(text_content),
+        MAX_AI_INPUT_CHARS,
+    )
+    return text_content[:MAX_AI_INPUT_CHARS]
+
+
 def extract_single_chat_file(
     chat_file: ChatFile,
     explicit_customer_name: str | None,
@@ -195,7 +211,8 @@ def extract_single_chat_file(
     if not text_content or not text_content.strip():
         return {"filename": chat_file.name, "error": "No text content extracted"}
 
-    document_type, content = classify_and_extract_data(text_content)
+    ai_ready_text = _truncate_ai_input(text_content, chat_file.name)
+    document_type, content = classify_and_extract_data(ai_ready_text)
 
     ai_extracted_name = extract_customer_name(content)
     text_extracted_name = None if ai_extracted_name else extract_customer_name_from_text(text_content)
@@ -597,6 +614,19 @@ async def _process_type_group(
     return results
 
 
+async def _emit_progress(progress_callback: Any, message: str) -> None:
+    """Emit standardized progress stage if a callback is provided."""
+    if not progress_callback:
+        return
+
+    try:
+        result = progress_callback(message)
+        if hasattr(result, "__await__"):
+            await result
+    except Exception as exc:
+        logger.warning("Progress callback failed: %s", exc)
+
+
 async def process_chat_files(
     files: list[ChatFile],
     explicit_customer_name: str | None,
@@ -604,6 +634,7 @@ async def process_chat_files(
     current_user: dict | None,
     save_fn: Any,
     merge_decisions: dict[str, str] | None = None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Process files attached to chat message.
 
@@ -626,7 +657,9 @@ async def process_chat_files(
     if not files:
         return {"error": "No files provided"}
 
+    await _emit_progress(progress_callback, "正在识别资料类型")
     extractions = _extract_all_files(files, explicit_customer_name, contextual_customer_name)
+    await _emit_progress(progress_callback, "正在提取结构化内容")
     type_groups, error_results = _group_by_doc_type(extractions)
 
     results = list(error_results)
@@ -638,6 +671,7 @@ async def process_chat_files(
         target_customer_id: str | None = None
         if merge_decisions and customer_name:
             target_customer_id = merge_decisions.get(customer_name)
+        await _emit_progress(progress_callback, "正在保存客户资料")
         group_results = await _process_type_group(
             doc_type, group, customer_name, current_user, save_fn, target_customer_id
         )

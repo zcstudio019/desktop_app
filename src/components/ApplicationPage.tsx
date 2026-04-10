@@ -9,19 +9,19 @@
  * Task 8.1: Update application page layout
  */
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   FileText, Download, Loader2, AlertTriangle, CheckCircle, XCircle, 
   User, Search, Edit3, Save, ChevronDown, ChevronRight,
   Building2, CreditCard, Banknote, Calendar, DollarSign, Building, 
   BadgeCheck, FileCheck, FileSpreadsheet, Copy
 } from 'lucide-react';
-import { generateApplication, saveApplication } from '../services/api';
-import type { ApplicationResponse } from '../services/types';
-import { useLoading } from '../hooks/useLoading';
+import { createApplicationJob, getChatJobStatus, saveApplication } from '../services/api';
+import type { ApplicationResponse, ChatJobStatusResponse } from '../services/types';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
+import { getJobStatusText, getJobTypeLabel } from '../config/jobDisplay';
 
 /**
  * Loan type options
@@ -457,8 +457,10 @@ const ApplicationPage: React.FC = () => {
   const [loanType, setLoanType] = useState<LoanType>('enterprise');
 
   // API integration hooks
-  const { loading, error, execute, reset } = useLoading<ApplicationResponse>();
   const { getSignal, abort } = useAbortController();
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<Error | null>(null);
+  const reset = useCallback(() => setError(null), []);
 
   // Global state
   const { state, setApplicationResult, setApplicationTaskStatus } = useApp();
@@ -471,69 +473,123 @@ const ApplicationPage: React.FC = () => {
   const [editedData, setEditedData] = useState<Record<string, Record<string, string>>>({});
   
   // Save to cache state
-  const [saving, setSaving] = useState<boolean>(false);
-  const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
-  const [copySuccess, setCopySuccess] = useState<boolean>(false);
+    const [saving, setSaving] = useState<boolean>(false);
+    const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+    const [copySuccess, setCopySuccess] = useState<boolean>(false);
+    const [jobPolling, setJobPolling] = useState<boolean>(false);
+    const [jobError, setJobError] = useState<string | null>(null);
+    const stopPollingRef = useRef(false);
 
-  // Ref to track if recovery is in progress (avoid duplicate calls)
-  const isRecoveringRef = useRef(false);
-  // Ref to store the latest generate function to avoid closure issues during recovery.
-  const generateRef = useRef<((name: string, type: LoanType) => Promise<void>) | null>(null);
-  const currentCustomerName = state.extraction.currentCustomer;
-  const currentCustomerId = state.extraction.currentCustomerId;
+    const currentCustomerName = state.extraction.currentCustomer;
+    const currentCustomerId = state.extraction.currentCustomerId;
 
-  /**
-   * Generate application with given parameters
-   * Extracted to avoid closure issues during recovery
-   */
+    const pollApplicationJob = useCallback(async (jobId: string, customerName: string) => {
+      const startedAt = Date.now();
+      let failureCount = 0;
+      stopPollingRef.current = false;
+      setJobPolling(true);
+      setJobError(null);
+      setLoading(false);
+
+      try {
+        while (true) {
+          if (stopPollingRef.current) {
+            return;
+          }
+          if (Date.now() - startedAt > 5 * 60 * 1000) {
+            setJobError('任务处理时间较长，请稍后重新进入页面查看。');
+            setError(new Error('任务处理时间较长，请稍后重新进入页面查看。'));
+            setApplicationTaskStatus('idle', null);
+            return;
+          }
+
+          let status: ChatJobStatusResponse | null = null;
+          try {
+            status = await getChatJobStatus(jobId, getSignal());
+          } catch (issue) {
+            failureCount += 1;
+            if (failureCount >= 3) {
+              const message = issue instanceof Error ? issue.message : '任务状态获取失败';
+              setJobError(message);
+              setError(new Error(message));
+              setApplicationTaskStatus('idle', null);
+              return;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 2000));
+            continue;
+          }
+
+          failureCount = 0;
+
+          if (status.status === 'pending' || status.status === 'running') {
+            await new Promise((resolve) => window.setTimeout(resolve, 2000));
+            continue;
+          }
+
+          if (status.status === 'success' && status.result) {
+            const response = status.result as unknown as ApplicationResponse;
+            setResult(response);
+            setError(null);
+            if (response.applicationData) {
+              setEditedData(response.applicationData);
+            }
+            setApplicationResult(
+              {
+                content: response.applicationContent,
+                customerFound: response.customerFound,
+                warnings: response.warnings,
+                applicationData: response.applicationData,
+                metadata: response.metadata,
+              },
+              customerName,
+            );
+            setApplicationTaskStatus('done', null);
+            return;
+          }
+
+          const message = status.errorMessage || '申请表生成失败';
+          setJobError(message);
+          setError(new Error(message));
+          setApplicationTaskStatus('idle', null);
+          return;
+        }
+      } finally {
+        setJobPolling(false);
+        stopPollingRef.current = false;
+      }
+    }, [getSignal, setApplicationResult, setApplicationTaskStatus]);
+
+    /**
+     * Generate application with given parameters
+     * Extracted to avoid closure issues during recovery
+     */
   const doGenerate = useCallback(async (name: string, type: LoanType) => {
-    const { data: response, error: execError } = await execute(async () => {
-      const signal = getSignal();
-      return generateApplication(
+    setLoading(true);
+    setError(null);
+    setJobError(null);
+    try {
+      const job = await createApplicationJob(
         {
           customerName: name,
           customerId: currentCustomerId,
           loanType: type,
         },
-        signal
+        getSignal(),
       );
-    });
-
-    if (response) {
-      setResult(response);
-      // Initialize edited data from applicationData
-      if (response.applicationData) {
-        setEditedData(response.applicationData);
+      setApplicationTaskStatus('idle', null);
+      await pollApplicationJob(job.jobId, name);
+    } catch (issue) {
+      if (issue instanceof Error && issue.name === 'AbortError') {
+        return;
       }
-      // Store in context for cross-component use (including applicationData for page recovery)
-      setApplicationResult(
-        {
-          content: response.applicationContent,
-          customerFound: response.customerFound,
-          warnings: response.warnings,
-          applicationData: response.applicationData,
-          metadata: response.metadata,
-        },
-        name
-      );
-      // Mark task as done
-      setApplicationTaskStatus('done', null);
-    } else {
-      // Check if it was an abort (page switch) vs real error
-      // Use the error returned by execute() to avoid stale closure issues.
-      const isAbortError = execError?.name === 'AbortError';
-      if (!isAbortError) {
-        // Real failure, reset status
-        setApplicationTaskStatus('idle', null);
-      }
-      // If aborted, keep 'generating' status for recovery
+      const nextError = issue instanceof Error ? issue : new Error('申请表生成任务提交失败');
+      setError(nextError);
+      setJobError(nextError.message);
+      setApplicationTaskStatus('idle', null);
+    } finally {
+      setLoading(false);
     }
-  }, [currentCustomerId, execute, getSignal, setApplicationResult, setApplicationTaskStatus]);
-
-  // Keep ref updated with latest function
-  useEffect(() => {
-    generateRef.current = doGenerate;
-  }, [doGenerate]);
+  }, [currentCustomerId, getSignal, pollApplicationJob, setApplicationTaskStatus]);
 
   // Sync with context on mount and handle task recovery
   useEffect(() => {
@@ -555,25 +611,7 @@ const ApplicationPage: React.FC = () => {
       setCustomerName(state.application.lastCustomer);
     }
 
-    // Check if there's a task to recover
-    const taskState = state.tasks.application;
-    if (taskState.status === 'generating' && taskState.params && !isRecoveringRef.current) {
-      isRecoveringRef.current = true;
-      const { customerName: savedName, loanType: savedType } = taskState.params;
-      setCustomerName(savedName);
-      setLoanType(savedType as LoanType);
-      
-      // Use setTimeout to ensure state is updated before calling generate
-      // Pass params directly to avoid stale closure issues.
-      setTimeout(() => {
-        if (generateRef.current) {
-          generateRef.current(savedName, savedType as LoanType);
-        }
-        isRecoveringRef.current = false;
-      }, 100);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- Mount-time recovery: intentionally reads state.application.result/lastCustomer only on mount and task recovery
-  }, [state.tasks.application]); // Re-run when task state changes for recovery
+  }, [state.application.lastCustomer, state.application.result]);
 
   /**
    * Handle form submission
@@ -604,7 +642,13 @@ const ApplicationPage: React.FC = () => {
    * Handle cancel request
    */
   const handleCancel = () => {
+    stopPollingRef.current = true;
     abort();
+    setLoading(false);
+    setJobPolling(false);
+    setApplicationTaskStatus('idle', null);
+    setJobError('已停止查看当前任务状态，可稍后重新进入页面查看。');
+    setError(new Error('已停止查看当前任务状态，可稍后重新进入页面查看。'));
     reset();
   };
 
@@ -716,6 +760,7 @@ const ApplicationPage: React.FC = () => {
    * Clear result and reset form
    */
   const handleClear = () => {
+    stopPollingRef.current = true;
     setResult(null);
     setEditMode(false);
     setEditedData({});
@@ -734,6 +779,7 @@ const ApplicationPage: React.FC = () => {
   // Determine which data to display (edited or original)
   const displayData = editMode ? editedData : (result?.applicationData || {});
   const hasStructuredData = Object.keys(displayData).length > 0;
+  const applicationJobLabel = getJobTypeLabel('application_generate');
 
   const applicationFeedback = useMemo<{
     tone: ProcessFeedbackTone;
@@ -742,23 +788,25 @@ const ApplicationPage: React.FC = () => {
     persistenceHint?: string;
     nextStep?: string;
   }>(() => {
-    if (loading) {
+    const isGenerating = loading || jobPolling;
+
+    if (isGenerating) {
       return {
         tone: 'processing',
-        title: '正在生成申请表',
-        description: '系统正在读取客户资料、资料汇总和申请表模板，请稍候。',
-        persistenceHint: '处理中',
+        title: getJobStatusText('application_generate', 'running'),
+        description: '系统正在后台读取客户资料、资料汇总和申请表模板，请稍候。',
+        persistenceHint: jobPolling ? '任务处理中' : '任务已提交',
         nextStep: '稍候片刻，生成完成后可直接查看、复制或下载申请表。',
       };
     }
 
-    if (error) {
+    if (jobError || error) {
       return {
         tone: result ? 'partial' : 'error',
-        title: result ? '生成异常，但上一版申请表仍可查看' : '申请表生成失败',
+        title: result ? '生成异常，但上一版申请表仍可查看' : getJobStatusText('application_generate', 'failed'),
         description: result
           ? '本次生成没有完成，但上一版申请表仍保留在当前页面，可继续查看。'
-          : '本次没有成功生成申请表，请检查客户资料是否完整后再试一次。',
+          : jobError || error?.message || '本次没有成功生成申请表，请检查客户资料是否完整后再试一次。',
         persistenceHint: result ? '主流程已保留上一版结果' : '本次未生成新结果',
         nextStep: result ? '确认资料更新后重新生成，或先查看现有申请表。' : '先补齐客户资料，再重新生成申请表。',
       };
@@ -787,7 +835,7 @@ const ApplicationPage: React.FC = () => {
     if (result) {
       return {
         tone: 'success',
-        title: result.customerFound ? '申请表已生成' : '已生成可编辑模板',
+        title: result.customerFound ? getJobStatusText('application_generate', 'success') : '已生成可编辑模板',
         description: result.customerFound
           ? '系统已根据当前客户资料生成申请表，并同步写入当前上下文。'
           : '暂未找到完整客户资料，系统已提供可继续补充的申请表模板。',
@@ -805,7 +853,7 @@ const ApplicationPage: React.FC = () => {
       persistenceHint: '待开始',
       nextStep: customerName.trim() ? '点击开始生成申请表即可进入下一步。' : '先填写客户名称，再开始生成申请表。',
     };
-  }, [customerName, error, loading, result, saveSuccess]);
+  }, [customerName, error, jobError, loading, jobPolling, result, saveSuccess]);
 
   return (
     <div data-testid="application-page" className="min-h-screen bg-slate-50 p-6">
@@ -814,7 +862,7 @@ const ApplicationPage: React.FC = () => {
           <div className="max-w-3xl">
             <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
               <FileText className="h-3.5 w-3.5" />
-              贷款申请表生成
+              {applicationJobLabel}
             </div>
             <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-900">申请表生成</h1>
             <p className="mt-3 text-sm leading-7 text-slate-600">基于当前客户资料、资料汇总和结构化提取内容生成贷款申请表，并保留版本信息供后续匹配与风控复用。</p>
@@ -864,7 +912,7 @@ const ApplicationPage: React.FC = () => {
                   setCustomerName(currentCustomerName);
                 }
               }}
-              disabled={!currentCustomerName || loading}
+              disabled={!currentCustomerName || loading || jobPolling}
               className="inline-flex items-center gap-2 px-4 py-2.5 border border-blue-200 bg-blue-50 text-blue-700 text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <User className="w-4 h-4" />
@@ -922,7 +970,7 @@ const ApplicationPage: React.FC = () => {
                   e.target.style.borderColor = '#D1D5DB';
                   e.target.style.boxShadow = 'none';
                 }}
-                disabled={loading}
+                disabled={loading || jobPolling}
                 required
               />
               <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -961,7 +1009,7 @@ const ApplicationPage: React.FC = () => {
                 e.target.style.borderColor = '#D1D5DB';
                 e.target.style.boxShadow = 'none';
               }}
-              disabled={loading}
+              disabled={loading || jobPolling}
             >
               <option value="enterprise">{'企业贷款'}</option>
               <option value="personal">{'个人贷款'}</option>
@@ -973,11 +1021,11 @@ const ApplicationPage: React.FC = () => {
             <button
               type="submit"
               data-testid="submit-button"
-              disabled={loading || !customerName.trim()}
+              disabled={loading || jobPolling || !customerName.trim()}
               className="flex items-center gap-2 px-6 py-2.5 bg-blue-500 text-white text-sm font-medium hover:bg-blue-600 transition-colors shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ borderRadius: '8px' }}
             >
-              {loading ? (
+              {loading || jobPolling ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   {'正在生成...'}
@@ -990,7 +1038,7 @@ const ApplicationPage: React.FC = () => {
               )}
             </button>
 
-            {loading && (
+            {(loading || jobPolling) && (
               <button
                 type="button"
                 data-testid="cancel-button"
