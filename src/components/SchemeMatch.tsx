@@ -102,6 +102,7 @@ const SchemeMatchPage: React.FC = () => {
   const schemeResult = state.scheme.result;
   const activeResult = schemeResult?.result ?? null;
   const schemeJobLabel = getJobTypeLabel('scheme_match');
+  const currentResultTaskLabel = activeJobCard ? getJobTypeLabel(activeJobCard.jobType, activeJobCard.jobTypeLabel) : schemeJobLabel;
 
   useEffect(() => {
     let mounted = true;
@@ -478,6 +479,24 @@ const SchemeMatchPage: React.FC = () => {
         </div>
 
         <div className="space-y-6">
+          <div className="rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-emerald-50/60 p-6 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">结果查看区</div>
+                <div className="mt-1 text-sm leading-6 text-slate-500">
+                  右侧集中展示当前方案匹配结果、任务反馈和匹配依据，方便你核对本次输出是否基于正确客户和正确资料来源。
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
+                  当前客户：{schemeResult?.customerName || currentCustomerName || '未选择客户'}
+                </span>
+                <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                  当前任务：{currentResultTaskLabel}
+                </span>
+              </div>
+            </div>
+          </div>
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex items-center justify-between"><div><div className="text-sm font-semibold text-slate-900">匹配结果</div><div className="mt-1 text-sm text-slate-500">生成后会同步写入当前客户上下文，供风险评估与资料问答复用。</div></div>{activeResult ? <div className="flex flex-wrap gap-2"><button type="button" onClick={copyResult} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50">{copySuccess ? '已复制结果' : '复制匹配结果'}</button><button type="button" onClick={scrollToBasis} className="inline-flex items-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 transition hover:bg-blue-100">查看匹配依据</button><button type="button" onClick={() => downloadResult(activeResult, schemeResult?.customerName || currentCustomerName || '当前客户')} className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"><Download className="h-4 w-4" />下载结果</button></div> : null}</div>
             {schemeResult?.stale ? <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">当前方案匹配结果已因资料更新失效。建议使用最新资料重新匹配，避免沿用旧结论。</div> : null}

@@ -3310,34 +3310,90 @@ const RiskReportCard: React.FC<{ report: CustomerRiskReportCardData }> = ({ repo
 const StructuredDataCard: React.FC<StructuredDataCardProps> = ({ intent, data, onNavigate }) => {
   if (!data) return null;
 
+  let sectionTitle = '结构化结果';
+  let sectionDescription = '系统已整理当前任务的结构化内容，可在下方继续核对细节。';
+  let sectionIcon: React.ReactNode = <FileText className="w-4 h-4" />;
+  let sectionTone = 'border-slate-200 bg-slate-50/80 text-slate-800';
+
   if (isRiskReportData(data)) {
-    return <RiskReportCard report={data as unknown as CustomerRiskReportJson} />;
+    sectionTitle = '风险评估结果';
+    sectionDescription = '系统已生成当前客户的风险评估报告，可重点查看综合结论、风险维度和优化建议。';
+    sectionIcon = <AlertCircle className="w-4 h-4" />;
+    sectionTone = 'border-amber-200 bg-amber-50/80 text-amber-800';
+    return (
+      <div className="mt-3 space-y-3">
+        <div className={`rounded-xl border px-4 py-3 ${sectionTone}`}>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-current/15 bg-white/70">
+              {sectionIcon}
+            </span>
+            <div className="text-sm font-semibold">{sectionTitle}</div>
+          </div>
+          <div className="mt-2 text-xs leading-5 text-slate-600">{sectionDescription}</div>
+        </div>
+        <RiskReportCard report={data as unknown as CustomerRiskReportJson} />
+      </div>
+    );
   }
+
+  let content: React.ReactNode = null;
   
   switch (intent) {
     case 'extract':
+      sectionTitle = '资料提取结果';
+      sectionDescription = '系统已按文档类型整理提取内容，右侧可直接核对字段和结构化结果。';
+      sectionIcon = <FileCheck className="w-4 h-4" />;
+      sectionTone = 'border-blue-200 bg-blue-50/80 text-blue-800';
       if (data.files && Array.isArray(data.files)) {
-        return <ExtractionResultCard files={data.files as ExtractionFileResult[]} />;
+        content = <ExtractionResultCard files={data.files as ExtractionFileResult[]} />;
+        break;
       }
       return null;
     
     case 'application':
+      sectionTitle = '申请表结果';
+      sectionDescription = '系统已整理申请表内容，支持继续核对结构化字段、版本信息和生成依据。';
+      sectionIcon = <ClipboardList className="w-4 h-4" />;
+      sectionTone = 'border-orange-200 bg-orange-50/80 text-orange-800';
       // Check if we have application data (JSON or Markdown)
       if (data.applicationData || data.applicationContent) {
-        return <ApplicationResultCard data={data as ApplicationResultCardProps['data']} onNavigate={onNavigate} />;
+        content = <ApplicationResultCard data={data as ApplicationResultCardProps['data']} onNavigate={onNavigate} />;
+        break;
       }
-      return <ApplicationGuideCard data={data as { action?: string; requiredFields?: string[] }} onNavigate={onNavigate} />;
+      content = <ApplicationGuideCard data={data as { action?: string; requiredFields?: string[] }} onNavigate={onNavigate} />;
+      break;
     
     case 'matching':
+      sectionTitle = '方案匹配结果';
+      sectionDescription = '系统已整理当前客户的方案匹配结果，可继续查看推荐方案、限制条件和补充建议。';
+      sectionIcon = <Target className="w-4 h-4" />;
+      sectionTone = 'border-emerald-200 bg-emerald-50/80 text-emerald-800';
       // Check if we have match result (JSON or Markdown) or just guide
       if (data.matchingData || data.matchResult) {
-        return <MatchingResultCard data={data as MatchingResultCardProps['data']} onNavigate={onNavigate} />;
+        content = <MatchingResultCard data={data as MatchingResultCardProps['data']} onNavigate={onNavigate} />;
+        break;
       }
-      return <MatchingGuideCard data={data as { action?: string; requiredFields?: string[] }} onNavigate={onNavigate} />;
+      content = <MatchingGuideCard data={data as { action?: string; requiredFields?: string[] }} onNavigate={onNavigate} />;
+      break;
     
     default:
       return null;
   }
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className={`rounded-xl border px-4 py-3 ${sectionTone}`}>
+        <div className="flex items-center gap-2">
+          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-current/15 bg-white/70">
+            {sectionIcon}
+          </span>
+          <div className="text-sm font-semibold">{sectionTitle}</div>
+        </div>
+        <div className="mt-2 text-xs leading-5 text-slate-600">{sectionDescription}</div>
+      </div>
+      {content}
+    </div>
+  );
 };
 
 // ============================================
@@ -3777,9 +3833,15 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobFilterMode, setJobFilterMode] = useState<'current' | 'all'>('current');
   const [showRecentJobs, setShowRecentJobs] = useState(true);
+  const [collapsedJobGroups, setCollapsedJobGroups] = useState<Record<string, boolean>>({
+    running: false,
+    success: true,
+    failed: false,
+  });
   const [latestCompletedChatJob, setLatestCompletedChatJob] = useState<ChatJobCompletionTarget | null>(null);
   
   // Refs
+  const resultTopRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -4588,6 +4650,13 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, busy]);
 
+  useEffect(() => {
+    if (!latestCompletedChatJob?.jobId) {
+      return;
+    }
+    resultTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [latestCompletedChatJob?.jobId]);
+
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
@@ -4824,6 +4893,61 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     return recentChatJobs;
   }, [jobFilterMode, currentCustomerId, recentChatJobs]);
 
+  const groupedDisplayedChatJobs = useMemo(() => {
+    const sortJobsForSidebar = (jobs: ChatJobSummaryResponse[]) => {
+      const sorted = [...jobs].sort((a, b) => {
+        const aIsCurrent = latestCompletedChatJob?.jobId === a.jobId ? 1 : 0;
+        const bIsCurrent = latestCompletedChatJob?.jobId === b.jobId ? 1 : 0;
+        if (aIsCurrent !== bIsCurrent) {
+          return bIsCurrent - aIsCurrent;
+        }
+
+        const aTime = new Date(a.finishedAt || a.startedAt || a.createdAt || 0).getTime();
+        const bTime = new Date(b.finishedAt || b.startedAt || b.createdAt || 0).getTime();
+        return bTime - aTime;
+      });
+      return sorted;
+    };
+
+    const running = sortJobsForSidebar(displayedChatJobs.filter((job) => job.status === 'pending' || job.status === 'running'));
+    const failed = sortJobsForSidebar(displayedChatJobs.filter((job) => job.status === 'failed'));
+    const success = sortJobsForSidebar(displayedChatJobs.filter((job) => job.status === 'success'));
+
+    return [
+      {
+        key: 'running',
+        label: '处理中',
+        jobs: running,
+        icon: <Loader2 className="h-3.5 w-3.5" />,
+        tone: 'border-blue-200 bg-blue-50 text-blue-700',
+        countTone: 'bg-blue-100 text-blue-700',
+      },
+      {
+        key: 'failed',
+        label: '已失败',
+        jobs: failed,
+        icon: <AlertCircle className="h-3.5 w-3.5" />,
+        tone: 'border-rose-200 bg-rose-50 text-rose-700',
+        countTone: 'bg-rose-100 text-rose-700',
+      },
+      {
+        key: 'success',
+        label: '已完成',
+        jobs: success,
+        icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+        tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+        countTone: 'bg-emerald-100 text-emerald-700',
+      },
+    ].filter((group) => group.jobs.length > 0);
+  }, [displayedChatJobs, latestCompletedChatJob?.jobId]);
+
+  const toggleJobGroup = useCallback((groupKey: string) => {
+    setCollapsedJobGroups((prev) => ({
+      ...prev,
+      [groupKey]: !prev[groupKey],
+    }));
+  }, []);
+
   const quickActions = [
     { icon: '📤', label: '上传贷款资料', action: 'upload' },
     { icon: '📝', label: '生成申请表', action: 'application' },
@@ -4845,6 +4969,125 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
 
     await doSend(pendingMessage, pendingFiles, pendingMessages, mergeDecisions);
   }, [mergeModal, doSend]);
+
+  const recentJobsPanel = (
+    <div className="rounded-2xl border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-4 shadow-sm">
+      <div className="flex flex-col gap-2">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+              任务侧栏
+            </span>
+            <div className="text-sm font-semibold text-slate-800">最近处理任务</div>
+          </div>
+          <div className="text-xs leading-5 text-slate-500">
+            左侧查看资料提取、风险报告、方案匹配和申请表生成任务，右侧集中查看提取内容、反馈状态与结构化结果。
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowRecentJobs((prev) => !prev)}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-100"
+          >
+            {showRecentJobs ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            {showRecentJobs ? '隐藏任务' : '展开任务'}
+          </button>
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setJobFilterMode('current')}
+              className={`rounded-md px-3 py-1 transition-colors ${
+                jobFilterMode === 'current'
+                  ? 'bg-blue-50 text-blue-700'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              当前客户
+            </button>
+            <button
+              type="button"
+              onClick={() => setJobFilterMode('all')}
+              className={`rounded-md px-3 py-1 transition-colors ${
+                jobFilterMode === 'all'
+                  ? 'bg-blue-50 text-blue-700'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              全部任务
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadRecentChatJobs()}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-100"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${jobsLoading ? 'animate-spin' : ''}`} />
+            刷新任务
+          </button>
+        </div>
+      </div>
+
+      {showRecentJobs ? (
+        <div className="mt-4 space-y-3">
+          {displayedChatJobs.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-4 text-xs text-slate-500">
+              {jobsLoading ? '正在加载最近任务...' : jobFilterMode === 'current' && currentCustomerId ? '当前客户还没有最近处理任务。' : '当前还没有处理任务记录。'}
+            </div>
+          ) : (
+            groupedDisplayedChatJobs.map((group) => (
+              <div key={group.key} className="space-y-2">
+                <div className="flex items-center justify-between px-1">
+                  <button
+                    type="button"
+                    onClick={() => toggleJobGroup(group.key)}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-90 ${group.tone}`}
+                  >
+                    <span className={group.key === 'running' ? 'animate-spin' : ''}>
+                      {group.icon}
+                    </span>
+                    {collapsedJobGroups[group.key] ? (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    )}
+                    <span>{group.label}</span>
+                  </button>
+                  <div className={`rounded-full px-2 py-0.5 text-[11px] ${group.countTone}`}>
+                    {group.jobs.length} 条
+                  </div>
+                </div>
+                {collapsedJobGroups[group.key] ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-3 text-xs text-slate-500">
+                    当前已折叠“{group.label}”分组，点击标题可展开查看。
+                  </div>
+                ) : (
+                  group.jobs.map((job) => {
+                    const isLatestCompleted =
+                      job.status === 'success' &&
+                      latestCompletedChatJob?.jobId === job.jobId;
+                    return (
+                      <AsyncJobCard
+                        key={job.jobId}
+                        job={job}
+                        isLatestCompleted={isLatestCompleted}
+                        className={isLatestCompleted ? 'ring-2 ring-emerald-100' : ''}
+                        onAction={(selectedJob) => void handleOpenJob(selectedJob as ChatJobSummaryResponse)}
+                      />
+                    );
+                  })
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-3 text-xs text-slate-500">
+          当前已隐藏最近处理任务。{displayedChatJobs.length > 0 ? `当前筛选下共 ${displayedChatJobs.length} 条任务。` : '可随时展开查看任务进度和结果。'}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div 
@@ -5019,207 +5262,178 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         </div>
       )}
 
-      <div className="border-b border-slate-100 bg-white px-6 py-4">
-        <div className="mx-auto max-w-[50rem]">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-semibold text-slate-800">最近处理任务</div>
-                <div className="text-xs text-slate-500">
-                    可查看资料提取、风险报告、方案匹配和申请表生成任务，也可以手动继续查看未完成任务。
-                </div>
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="mx-auto max-w-[82rem]">
+          <div className="grid gap-6 xl:grid-cols-[22rem_minmax(0,1fr)]">
+            <aside className="xl:sticky xl:top-6 xl:self-start">
+              <div className="xl:max-h-[calc(100vh-12rem)] xl:overflow-y-auto xl:pr-1">
+                {recentJobsPanel}
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowRecentJobs((prev) => !prev)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-100"
-                >
-                  {showRecentJobs ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                  {showRecentJobs ? '隐藏任务' : '展开任务'}
-                </button>
-                <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setJobFilterMode('current')}
-                    className={`rounded-md px-3 py-1 transition-colors ${
-                      jobFilterMode === 'current'
-                        ? 'bg-blue-50 text-blue-700'
-                        : 'text-slate-500 hover:bg-slate-50'
-                    }`}
-                  >
-                    当前客户
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setJobFilterMode('all')}
-                    className={`rounded-md px-3 py-1 transition-colors ${
-                      jobFilterMode === 'all'
-                        ? 'bg-blue-50 text-blue-700'
-                        : 'text-slate-500 hover:bg-slate-50'
-                    }`}
-                  >
-                    全部任务
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void loadRecentChatJobs()}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-100"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${jobsLoading ? 'animate-spin' : ''}`} />
-                  刷新任务
-                </button>
-              </div>
-            </div>
+            </aside>
 
-            {showRecentJobs ? (
-              <div className="mt-3 space-y-2">
-                {displayedChatJobs.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-white/80 px-4 py-4 text-xs text-slate-500">
-                    {jobsLoading ? '正在加载最近任务...' : jobFilterMode === 'current' && currentCustomerId ? '当前客户还没有最近处理任务。' : '当前还没有处理任务记录。'}
-                  </div>
-                ) : (
-                  displayedChatJobs.map((job: ChatJobSummaryResponse) => (
-                    (() => {
-                      const isLatestCompleted =
-                        job.status === 'success' &&
-                        latestCompletedChatJob?.jobId === job.jobId;
-                      return (
-                    <AsyncJobCard
-                      key={job.jobId}
-                      job={job}
-                      isLatestCompleted={isLatestCompleted}
-                      onAction={(selectedJob) => void handleOpenJob(selectedJob as ChatJobSummaryResponse)}
-                    />
-                      );
-                    })()
-                  ))
-                )}
-              </div>
-            ) : (
-              <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-white/80 px-4 py-3 text-xs text-slate-500">
-                当前已隐藏最近处理任务。{displayedChatJobs.length > 0 ? `当前筛选下共 ${displayedChatJobs.length} 条任务。` : '可随时展开查看任务进度和结果。'}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {chatJobFeedback ? (
-        <div className="border-b border-slate-100 bg-white px-6 py-4">
-          <div className="mx-auto max-w-[50rem]">
-            <ProcessFeedbackCard
-              tone={chatJobFeedback.tone}
-              title={chatJobFeedback.title}
-              description={chatJobFeedback.description}
-              persistenceHint={chatJobFeedback.persistenceHint}
-              nextStep={chatJobFeedback.nextStep}
-            />
-            {chatJobFeedback.tone === 'success' && latestCompletedChatJob?.customerId && latestCompletedChatJob.targetPage ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={handleJumpToProfile}
-                    className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
-                  >
-                    {latestCompletedChatJob.actionLabel}
-                  </button>
+            <section className="min-w-0 space-y-4">
+              <div ref={resultTopRef} />
+              {chatJobFeedback ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <ProcessFeedbackCard
+                    tone={chatJobFeedback.tone}
+                    title={chatJobFeedback.title}
+                    description={chatJobFeedback.description}
+                    persistenceHint={chatJobFeedback.persistenceHint}
+                    nextStep={chatJobFeedback.nextStep}
+                  />
+                  {chatJobFeedback.tone === 'success' && latestCompletedChatJob?.customerId && latestCompletedChatJob.targetPage ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={handleJumpToProfile}
+                        className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+                      >
+                        {latestCompletedChatJob.actionLabel}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
-          </div>
-        </div>
-      ) : null}
 
-      {riskFeedback ? (
-        <div className="border-b border-slate-100 bg-white px-6 py-4">
-          <div className="mx-auto max-w-[50rem]">
-            <ProcessFeedbackCard
-              tone={riskFeedback.tone}
-              title={riskFeedback.title}
-              description={riskFeedback.description}
-              persistenceHint={riskFeedback.persistenceHint}
-              nextStep={riskFeedback.nextStep}
-            />
-          </div>
-        </div>
-      ) : null}
-
-      {/* Chat Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="max-w-[50rem] mx-auto">
-          {messages.length === 0 ? (
-            <>
-              <WelcomeMessage />
-              {/* Quick Actions */}
-              <div className="text-center py-4">
-                <div className="text-gray-500 text-xs mb-3">快速开始</div>
-                <div className="flex gap-3 justify-center flex-wrap">
-                  {quickActions.map((action) => (
-                    <button
-                      key={action.action}
-                      onClick={() => handleQuickAction(action.action)}
-                      className="px-5 py-3 bg-gray-100 border border-gray-200 rounded-lg text-gray-800 text-sm hover:bg-gray-50 transition-colors"
-                    >
-                      {action.icon} {action.label}
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => {
-                      setRagMode(true);
-                      setInputValue('请基于当前客户资料回答问题');
-                      textareaRef.current?.focus();
-                    }}
-                    className="px-5 py-3 bg-indigo-50 border border-indigo-200 rounded-lg text-indigo-700 text-sm hover:bg-indigo-100 transition-colors"
-                  >
-                    开始资料问答
-                  </button>
-                  <button
-                    onClick={() => {
-                      void handleGenerateRiskReport();
-                    }}
-                    className="px-5 py-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-sm hover:bg-amber-100 transition-colors"
-                  >
-                    开始生成风险报告
-                  </button>
+              {riskFeedback ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <ProcessFeedbackCard
+                    tone={riskFeedback.tone}
+                    title={riskFeedback.title}
+                    description={riskFeedback.description}
+                    persistenceHint={riskFeedback.persistenceHint}
+                    nextStep={riskFeedback.nextStep}
+                  />
                 </div>
-              </div>
-            </>
-          ) : (
-            <>
-              {messages.map((msg, index) => (
-                <React.Fragment key={index}>
-                  <MessageBubble message={msg} onNavigate={onNavigate} />
-                  {/* Show intent actions after last assistant message (only if no structured data card) */}
-                  {msg.role === 'assistant' && index === messages.length - 1 && lastIntent && !msg.data && (
-                    <div className="ml-12 mb-4">
-                      <IntentActions intent={lastIntent} onAction={handleIntentAction} />
+              ) : null}
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-4 flex flex-col gap-1 border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                      结果查看区
+                    </span>
+                    <div className="text-sm font-semibold text-slate-800">
+                      当前查看结果
                     </div>
-                  )}
-                </React.Fragment>
-              ))}
-            </>
-          )}
-          
-          {/* Typing Indicator */}
-          {busy && <TypingIndicator />}
-          
-          {/* Error Message */}
-          {activeError && (
-            <div className="flex justify-center mb-4">
-              <div className="bg-red-50 text-red-600 px-4 py-2 rounded-lg text-sm">
-                本次发送未成功：{activeError.message}
-                <button
-                  onClick={handleSubmit}
-                  className="ml-2 underline hover:no-underline"
-                >
-                  再试一次
-                </button>
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    右侧集中展示资料提取内容、任务反馈、风险报告和结构化结果，方便边看任务边核对内容。
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <span className="inline-flex rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700">
+                      当前客户：{formatCustomerContextLabel(
+                        latestCompletedChatJob?.customerId ?? currentCustomerId ?? null,
+                        latestCompletedChatJob?.customerName ?? currentCustomerName ?? null
+                      )}
+                    </span>
+                    <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+                      当前任务：{latestCompletedChatJob ? getJobTypeLabel(latestCompletedChatJob.jobType) : '聊天结果'}
+                    </span>
+                  </div>
+                </div>
+                {messages.length === 0 ? (
+                  <>
+                    {displayedChatJobs.length > 0 ? (
+                      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 px-6 py-8 text-center">
+                        <div className="text-sm font-semibold text-slate-700">当前还没有结果内容</div>
+                        <div className="mt-2 text-xs leading-6 text-slate-500">
+                          你可以先从左侧选择一条最近任务继续查看，或重新提交资料提取、风险报告、方案匹配、申请表生成任务。
+                        </div>
+                        <div className="mt-4 flex flex-wrap justify-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setShowRecentJobs(true)}
+                            className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+                          >
+                            回到左侧查看任务
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setInputValue('我想上传贷款资料');
+                              textareaRef.current?.focus();
+                            }}
+                            className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50"
+                          >
+                            重新发起资料提取
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <WelcomeMessage />
+                        <div className="text-center py-4">
+                          <div className="text-gray-500 text-xs mb-3">快速开始</div>
+                          <div className="flex gap-3 justify-center flex-wrap">
+                            {quickActions.map((action) => (
+                              <button
+                                key={action.action}
+                                onClick={() => handleQuickAction(action.action)}
+                                className="px-5 py-3 bg-gray-100 border border-gray-200 rounded-lg text-gray-800 text-sm hover:bg-gray-50 transition-colors"
+                              >
+                                {action.icon} {action.label}
+                              </button>
+                            ))}
+                            <button
+                              onClick={() => {
+                                setRagMode(true);
+                                setInputValue('请基于当前客户资料回答问题');
+                                textareaRef.current?.focus();
+                              }}
+                              className="px-5 py-3 bg-indigo-50 border border-indigo-200 rounded-lg text-indigo-700 text-sm hover:bg-indigo-100 transition-colors"
+                            >
+                              开始资料问答
+                            </button>
+                            <button
+                              onClick={() => {
+                                void handleGenerateRiskReport();
+                              }}
+                              className="px-5 py-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-sm hover:bg-amber-100 transition-colors"
+                            >
+                              开始生成风险报告
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {messages.map((msg, index) => (
+                      <React.Fragment key={index}>
+                        <MessageBubble message={msg} onNavigate={onNavigate} />
+                        {msg.role === 'assistant' && index === messages.length - 1 && lastIntent && !msg.data && (
+                          <div className="ml-12 mb-4">
+                            <IntentActions intent={lastIntent} onAction={handleIntentAction} />
+                          </div>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </>
+                )}
+
+                {busy && <TypingIndicator />}
+
+                {activeError && (
+                  <div className="flex justify-center mb-4">
+                    <div className="bg-red-50 text-red-600 px-4 py-2 rounded-lg text-sm">
+                      本次发送未成功：{activeError.message}
+                      <button
+                        onClick={handleSubmit}
+                        className="ml-2 underline hover:no-underline"
+                      >
+                        再试一次
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div ref={messagesEndRef} />
               </div>
-            </div>
-          )}
-          
-          <div ref={messagesEndRef} />
+            </section>
+          </div>
         </div>
       </div>
 

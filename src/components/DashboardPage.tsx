@@ -687,16 +687,32 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
               </span>
             </div>
             <div className="mt-5 space-y-3">
-              <div className="rounded-2xl border border-rose-100 bg-[linear-gradient(135deg,#fff1f2_0%,#fff7ed_100%)] p-4">
+              <button
+                type="button"
+                onClick={() => onNavigate('customers')}
+                className="block w-full rounded-2xl border border-rose-100 bg-[linear-gradient(135deg,#fff1f2_0%,#fff7ed_100%)] p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-rose-300/40"
+              >
                 <div className="text-xs font-medium text-rose-600">高风险客户预警</div>
                 <div className="mt-2 text-2xl font-semibold text-slate-800">{stats.highRiskCustomers ?? 0}</div>
                 <div className="mt-1 text-sm leading-6 text-slate-500">已生成风险报告且风险等级为高的客户会在列表和报告页以克制的预警样式提示。</div>
-              </div>
-              <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
+                <div className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-rose-700">
+                  查看高风险客户
+                  <ArrowRight size={12} />
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('data')}
+                className="block w-full rounded-2xl border border-amber-100 bg-amber-50 p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-300/40"
+              >
                 <div className="text-xs font-medium text-amber-700">待补资料提醒</div>
                 <div className="mt-2 text-2xl font-semibold text-slate-800">{stats.pendingMaterialCustomers ?? 0}</div>
                 <div className="mt-1 text-sm leading-6 text-slate-500">缺少征信、流水、纳税等关键资料的客户，建议先补件再重新生成结果。</div>
-              </div>
+                <div className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-amber-700">
+                  去资料汇总处理
+                  <ArrowRight size={12} />
+                </div>
+              </button>
             </div>
           </div>
         </div>

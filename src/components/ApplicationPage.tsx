@@ -1134,6 +1134,25 @@ const ApplicationPage: React.FC = () => {
       {/* Result Section - Requirement 7.3 */}
       {result && (
         <div ref={resultSectionRef}>
+          <div className="mb-6 rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-orange-50/60 p-6 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">结果查看区</div>
+                <div className="mt-1 text-sm leading-6 text-slate-500">
+                  右侧集中展示当前申请表结果、生成状态和结构化字段，方便你核对版本、复制内容并继续进入后续融资匹配。
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
+                  当前客户：{customerName.trim() || currentCustomerName || '未选择客户'}
+                </span>
+                <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-xs font-medium text-orange-700">
+                  当前任务：{applicationJobLabel}
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* Status Banner */}
           {/* Requirement 4.4: Indicate whether customer data was found */}
           <div

@@ -25,7 +25,7 @@ function formatLocalDateTime(value?: string | null) {
   const normalized = value.includes('T')
     ? value
     : value.includes(' ')
-      ? value.replace(' ', 'T') + 'Z'
+      ? `${value.replace(' ', 'T')}Z`
       : value;
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) {
