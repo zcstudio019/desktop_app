@@ -354,6 +354,67 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-prod.txt
 npm ci
+
+## 十、聊天异步任务直连配置
+
+当前前端默认仍然通过 Nginx 访问大部分 `/api` 接口。
+只有“创建聊天异步任务”这一条接口会单独支持直连 FastAPI 8000 端口：
+
+```env
+VITE_DIRECT_JOB_API_BASE=http://121.196.161.155:8000/api
+```
+
+说明：
+- `POST /api/chat/jobs` 会改为请求 `${VITE_DIRECT_JOB_API_BASE}/chat/jobs`
+- 其它接口仍然继续走原来的 `/api`，也就是 Nginx 反向代理链路
+- 本地开发环境下，如果未配置 `VITE_DIRECT_JOB_API_BASE`，前端会自动回退到：
+  - `http://127.0.0.1:8000/api`
+- 生产环境下，如果未配置该变量，前端会回退到当前默认直连地址：
+  - `http://121.196.161.155:8000/api`
+
+如果线上要启用这条直连，请同时确认：
+- ECS 安全组已放行 `8000`（仅当你决定让公网直接访问 8000 时）
+- 或者该地址能从浏览器侧访问到 FastAPI 进程
+- 如果不需要这条直连，也可以留空并继续只走 Nginx
+
+### 聊天异步任务直连排障
+
+如果 AI 对话里“提交资料提取任务”失败，但其它 `/api` 接口正常，请优先检查这一条直连链路：
+
+1. 浏览器 Network 中查看 `POST /api/chat/jobs`
+- 如果它实际请求到了 `http://121.196.161.155:8000/api/chat/jobs`
+- 说明前端已经走了直连链路
+
+2. 如果创建任务失败，但状态轮询接口正常
+- 这通常表示：
+  - Nginx 反代链路是通的
+  - 但浏览器无法直接访问 `8000`
+- 常见原因：
+  - ECS 安全组未放行 `8000`
+  - FastAPI 没监听 `0.0.0.0`
+  - 服务器防火墙拦截了 `8000`
+
+3. 服务器上检查 FastAPI 是否监听 `8000`
+```bash
+ss -lntp | grep 8000
+```
+
+4. ECS 本机检查接口
+```bash
+curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8000/api/chat/jobs
+```
+
+5. 公网检查 `8000` 是否可达
+- 在浏览器或本地命令行检查：
+```bash
+curl http://你的公网IP:8000/api/health
+```
+
+6. 如果你不想开放 `8000`
+- 可以去掉 `VITE_DIRECT_JOB_API_BASE`
+- 让 `POST /api/chat/jobs` 继续走 Nginx `/api`
+- 这样所有接口都只暴露 `80/443`
 ```
 
 ### 启动 / 重启

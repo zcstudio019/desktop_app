@@ -59,7 +59,25 @@ function resolveApiBase(): string {
   return '';
 }
 
+function resolveDirectJobApiBase(): string {
+  const base = import.meta.env?.VITE_DIRECT_JOB_API_BASE?.trim();
+  if (base) return base.replace(/\/+$/, '');
+
+  if (typeof window !== 'undefined' && window.location) {
+    const { hostname, port } = window.location;
+    const isLocalDevServer =
+      (hostname === '127.0.0.1' || hostname === 'localhost') && (port === '5173' || port === '5174');
+
+    if (isLocalDevServer) {
+      return 'http://127.0.0.1:8000/api';
+    }
+  }
+
+  return 'http://121.196.161.155:8000/api';
+}
+
 const API_BASE = resolveApiBase();
+const DIRECT_JOB_API_BASE = resolveDirectJobApiBase();
 
 function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem('auth_token');
@@ -197,7 +215,7 @@ export async function createChatJob(
   request: ChatRequest,
   signal?: AbortSignal
 ): Promise<ChatJobCreateResponse> {
-  const response = await fetch(`${API_BASE}/api/chat/jobs`, {
+  const response = await fetch(`${DIRECT_JOB_API_BASE}/chat/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(request),
