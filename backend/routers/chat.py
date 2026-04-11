@@ -14,6 +14,7 @@ Requirements:
 - 5.7: Return ChatResponse with message, intent, data
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -22,7 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 # Add desktop_app to path for imports
 desktop_app_path = Path(__file__).parent.parent.parent
@@ -87,6 +89,7 @@ from .chat_helpers import (
 from .chat_storage import save_to_storage
 
 logger = logging.getLogger(__name__)
+_ACTIVE_CHAT_JOB_TASKS: set[asyncio.Task[None]] = set()
 
 # Create router
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -1167,6 +1170,24 @@ async def _run_chat_extract_job(
         )
 
 
+def _launch_chat_extract_job(
+    job_id: str,
+    request_payload: dict[str, Any],
+    current_user_payload: dict[str, Any] | None,
+) -> None:
+    task = asyncio.create_task(_run_chat_extract_job(job_id, request_payload, current_user_payload))
+    _ACTIVE_CHAT_JOB_TASKS.add(task)
+
+    def _cleanup(done_task: asyncio.Task[None]) -> None:
+        _ACTIVE_CHAT_JOB_TASKS.discard(done_task)
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("[Chat Job] background task crashed job_id=%s", job_id)
+
+    task.add_done_callback(_cleanup)
+
+
 @router.post("/sessions", response_model=ChatSessionSummary)
 async def create_chat_session(
     request: ChatSessionCreateRequest,
@@ -1209,9 +1230,8 @@ async def list_chat_messages(
 @router.post("/jobs", response_model=ChatJobCreateResponse)
 async def create_chat_job(
     request: ChatRequest,
-    background_tasks: BackgroundTasks,
     current_user: dict | None = Depends(get_current_user_optional),
-) -> ChatJobCreateResponse:
+) -> JSONResponse:
     if not request.files:
         raise HTTPException(status_code=400, detail="当前任务没有可处理的文件")
     if not request.messages:
@@ -1233,8 +1253,8 @@ async def create_chat_job(
         }
     )
     logger.info("[Chat Job] created job_id=%s username=%s customer_id=%s", job_id, username, request.customerId or "")
-    background_tasks.add_task(_run_chat_extract_job, job_id, request_payload, current_user)
-    return ChatJobCreateResponse(jobId=job_id, status="pending")
+    _launch_chat_extract_job(job_id, request_payload, current_user)
+    return JSONResponse(content={"jobId": job_id, "status": "pending"})
 
 
 @router.get("/jobs/{job_id}", response_model=ChatJobStatusResponse)

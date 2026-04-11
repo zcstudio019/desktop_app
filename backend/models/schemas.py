@@ -353,7 +353,7 @@ class ChatResponse(BaseModel):
     )
 
 
-ChatJobStatusResponse.model_rebuild()
+# ChatJobStatusResponse.model_rebuild()
 
 
 class ChatSessionCreateRequest(BaseModel):
