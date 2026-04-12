@@ -39,6 +39,7 @@ from services.ocr_service import OCRService
 from services.wiki_service import WikiService, WikiServiceError
 from utils.json_parser import parse_json
 
+from backend.celery_app import TASK_QUEUE_ENABLED
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.job_display_config import (
     build_job_result_summary,
@@ -1093,7 +1094,7 @@ async def _build_chat_response_payload(
     }
 
 
-async def _run_chat_extract_job(
+async def execute_chat_extract_job(
     job_id: str,
     request_payload: dict[str, Any],
     current_user_payload: dict[str, Any] | None,
@@ -1138,6 +1139,7 @@ async def _run_chat_extract_job(
             conversation_history,
             current_user_payload,
             progress_callback=update_progress,
+            use_customer_cache=False,
         )
 
         await chat_storage_service.update_async_job(
@@ -1175,7 +1177,7 @@ def _launch_chat_extract_job(
     request_payload: dict[str, Any],
     current_user_payload: dict[str, Any] | None,
 ) -> None:
-    task = asyncio.create_task(_run_chat_extract_job(job_id, request_payload, current_user_payload))
+    task = asyncio.create_task(execute_chat_extract_job(job_id, request_payload, current_user_payload))
     _ACTIVE_CHAT_JOB_TASKS.add(task)
 
     def _cleanup(done_task: asyncio.Task[None]) -> None:
@@ -1186,6 +1188,65 @@ def _launch_chat_extract_job(
             logger.exception("[Chat Job] background task crashed job_id=%s", job_id)
 
     task.add_done_callback(_cleanup)
+
+
+async def execute_chat_extract_job_from_job(job_id: str) -> None:
+    payload = await chat_storage_service.get_async_job_execution_payload(job_id)
+    if not payload:
+        raise ValueError(f"async job {job_id} execution payload not found")
+
+    request_payload = payload.get("request") if isinstance(payload, dict) else None
+    current_user_payload = payload.get("current_user") if isinstance(payload, dict) else None
+    if not isinstance(request_payload, dict):
+        raise ValueError(f"async job {job_id} has invalid request payload")
+
+    await execute_chat_extract_job(
+        job_id,
+        request_payload,
+        current_user_payload if isinstance(current_user_payload, dict) else None,
+    )
+
+
+def _build_chat_job_execution_payload(
+    request_payload: dict[str, Any],
+    current_user_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    safe_user_payload = {
+        "username": (current_user_payload or {}).get("username") or "",
+        "role": (current_user_payload or {}).get("role") or "",
+    }
+    return {
+        "request": request_payload,
+        "current_user": safe_user_payload,
+    }
+
+
+async def _submit_chat_extract_job(
+    job_id: str,
+    request_payload: dict[str, Any],
+    current_user_payload: dict[str, Any] | None,
+) -> None:
+    if TASK_QUEUE_ENABLED:
+        from backend.tasks.chat_tasks import run_chat_extract_job_task
+
+        async_result = run_chat_extract_job_task.delay(job_id)
+        await chat_storage_service.mark_async_job_dispatched(
+            job_id,
+            async_result.id,
+            worker_name="celery",
+        )
+        logger.info(
+            "[Chat Job] dispatched to celery job_id=%s celery_task_id=%s",
+            job_id,
+            async_result.id,
+        )
+        return
+
+    logger.warning(
+        "[Chat Job] TASK_QUEUE_ENABLED is false, falling back to in-process execution job_id=%s",
+        job_id,
+    )
+    _launch_chat_extract_job(job_id, request_payload, current_user_payload)
 
 
 @router.post("/sessions", response_model=ChatSessionSummary)
@@ -1250,10 +1311,24 @@ async def create_chat_job(
             "status": "pending",
             "progress_message": "任务已创建，等待后台处理",
             "request_json": request_payload,
+            "execution_payload_json": _build_chat_job_execution_payload(request_payload, current_user),
         }
     )
     logger.info("[Chat Job] created job_id=%s username=%s customer_id=%s", job_id, username, request.customerId or "")
-    _launch_chat_extract_job(job_id, request_payload, current_user)
+    try:
+        await _submit_chat_extract_job(job_id, request_payload, current_user)
+    except Exception as exc:
+        logger.error("[Chat Job] dispatch failed job_id=%s error=%s", job_id, exc, exc_info=True)
+        await chat_storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "浠诲姟鎻愪氦澶辫触",
+                "error_message": str(exc) or "鍚庡彴浠诲姟鎻愪氦澶辫触锛岃绋嶅悗閲嶈瘯銆?",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        raise HTTPException(status_code=500, detail="璧勬枡鎻愬彇浠诲姟鎻愪氦澶辫触") from exc
     return JSONResponse(content={"jobId": job_id, "status": "pending"})
 
 
@@ -1424,6 +1499,7 @@ async def _handle_extract_intent(
     conversation_history: list[dict[str, str]],
     current_user: dict | None,
     progress_callback: Any | None = None,
+    use_customer_cache: bool = True,
 ) -> dict[str, Any]:
     """Handle extract intent - process uploaded files.
 
@@ -1442,7 +1518,7 @@ async def _handle_extract_intent(
     global _customer_name_cache
 
     explicit_customer_name, contextual_customer_name = _resolve_customer_name_for_extract(
-        user_message, conversation_history
+        user_message, conversation_history, use_customer_cache=use_customer_cache
     )
 
     response_data = await _process_chat_files(
@@ -1485,7 +1561,9 @@ async def _handle_extract_intent(
 
 
 def _resolve_customer_name_for_extract(
-    user_message: str, conversation_history: list[dict[str, str]]
+    user_message: str,
+    conversation_history: list[dict[str, str]],
+    use_customer_cache: bool = True,
 ) -> tuple[str | None, str | None]:
     """Resolve customer name for extract intent.
 
@@ -1508,7 +1586,7 @@ def _resolve_customer_name_for_extract(
         logger.info(f"[Customer Cache] Using name from conversation history: {history_name}")
         return None, history_name
 
-    if _customer_name_cache:
+    if use_customer_cache and _customer_name_cache:
         logger.info(f"[Customer Cache] Using cached name: {_customer_name_cache}")
         return None, _customer_name_cache
 

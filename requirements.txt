@@ -8,6 +8,8 @@ uvicorn>=0.27.0
 python-multipart>=0.0.6
 sqlalchemy>=2.0.0
 pymysql>=1.1.0
+celery[redis]>=5.4.0
+redis>=5.0.0
 
 # AI
 openai>=1.0.0

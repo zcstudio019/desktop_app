@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "version:auto": "node scripts/auto-bump-version.mjs",
+    "build": "npm run version:auto && tsc && vite build",
+    "build:no-bump": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",

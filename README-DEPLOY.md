@@ -432,3 +432,35 @@ sudo journalctl -u loan-assistant-api -f
 sudo tail -f /var/log/nginx/access.log
 sudo tail -f /var/log/nginx/error.log
 ```
+
+## 版本号自动升级说明
+
+当前系统版本号直接读取 [package.json](/D:/desktop_app/源码/desktop_app/package.json) 中的 `version` 字段，并在前端显示为：
+
+- `V1.0.0`
+- `V1.0.1`
+- `V1.0.2`
+- `V1.0.9`
+- `V1.1.0`
+
+默认构建命令已经接入自动升级脚本：
+
+```bash
+npm run build
+```
+
+执行时会先自动把 `package.json` 中的版本号按标准规则加一，例如：
+
+- `1.0.0 -> 1.0.1`
+- `1.0.1 -> 1.0.2`
+- `1.0.9 -> 1.1.0`
+
+如果只是本地临时构建、不希望改动版本号，请使用：
+
+```bash
+npm run build:no-bump
+```
+
+自动升级脚本位置：
+
+- [auto-bump-version.mjs](/D:/desktop_app/源码/desktop_app/scripts/auto-bump-version.mjs)

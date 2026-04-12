@@ -142,3 +142,37 @@ Windows 环境更适合：
 - Nginx
 - systemd
 - RDS
+
+## 11. 版本号自动升级
+
+当前系统版本号直接读取 [package.json](/D:/desktop_app/源码/desktop_app/package.json) 中的 `version` 字段，页面显示格式为：
+
+- `V1.0.0`
+- `V1.0.1`
+- `V1.0.2`
+- `V1.0.9`
+- `V1.1.0`
+
+在 Windows 环境下，默认构建命令现在也会自动升级版本号：
+
+```powershell
+cd D:\desktop_app\源码\desktop_app
+npm run build
+```
+
+执行时会先自动把版本按以下规则加一：
+
+- `1.0.0 -> 1.0.1`
+- `1.0.1 -> 1.0.2`
+- `1.0.9 -> 1.1.0`
+
+如果你只是本地临时构建，不想改动版本号，请使用：
+
+```powershell
+cd D:\desktop_app\源码\desktop_app
+npm run build:no-bump
+```
+
+自动升级脚本位置：
+
+- [auto-bump-version.mjs](/D:/desktop_app/源码/desktop_app/scripts/auto-bump-version.mjs)

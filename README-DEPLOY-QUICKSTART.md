@@ -1,6 +1,7 @@
 # 上线执行手册（ECS + RDS）
 
 这份手册用于当前项目的正式上线，目标环境为：
+
 - 阿里云 ECS
 - 阿里云 RDS（MySQL）
 - Nginx 提供前端静态资源
@@ -25,7 +26,7 @@ cd loan-assistant
 
 ## 3. 配置环境变量
 
-复制生产环境模板：
+复制生产模板：
 
 ```bash
 cp .env.production .env.production.local
@@ -52,9 +53,10 @@ DEEPSEEK_API_KEY=your-key
 ```
 
 说明：
-- `VITE_API_BASE` 留空时，前端其它接口默认走当前站点 `/api`
+
+- `VITE_API_BASE` 留空时，其它接口默认走当前站点 `/api`
 - `VITE_DIRECT_JOB_API_BASE` 只影响 `POST /api/chat/jobs`
-- 如果不想让浏览器直连 `8000`，可以清空 `VITE_DIRECT_JOB_API_BASE`
+- 如果不想让浏览器直连 `8000`，可清空 `VITE_DIRECT_JOB_API_BASE`
 
 ## 4. 安装依赖
 
@@ -73,6 +75,23 @@ npm ci
 cd /srv/loan-assistant
 npm run build
 ```
+
+说明：
+
+- `npm run build` 现在会自动升级系统版本号
+- 版本规则为：
+  - `1.0.0 -> 1.0.1`
+  - `1.0.1 -> 1.0.2`
+  - `1.0.9 -> 1.1.0`
+- 如果只是临时构建、不想升级版本号，请使用：
+
+```bash
+npm run build:no-bump
+```
+
+自动升级脚本位置：
+
+- [auto-bump-version.mjs](/D:/desktop_app/源码/desktop_app/scripts/auto-bump-version.mjs)
 
 ## 6. 初始化数据库
 
@@ -94,8 +113,6 @@ python -m backend.scripts.migrate_product_cache_json
 ```
 
 ## 7. 配置 systemd
-
-复制服务文件：
 
 ```bash
 sudo cp loan-assistant-api.service /etc/systemd/system/loan-assistant-api.service
@@ -124,19 +141,22 @@ sudo systemctl restart nginx
 ## 9. 阿里云安全组
 
 至少放行：
+
 - `22`
 - `80`
 - `443`
 
-如果你启用了聊天任务直连 `8000`，还要放行：
+如果启用了聊天任务直连 `8000`，还要放行：
+
 - `8000`
 
 如果不想开放 `8000`，请清空：
+
 - `VITE_DIRECT_JOB_API_BASE`
 
 ## 10. 上线后验证
 
-### 基础验证
+基础验证：
 
 ```bash
 curl http://127.0.0.1:8000/api/health
@@ -144,12 +164,12 @@ curl http://127.0.0.1/api/health
 ```
 
 浏览器访问：
+
 - `http://你的公网IP`
 - `http://你的公网IP/api/health`
 
-### 功能验证
+功能验证顺序：
 
-按这个顺序验证：
 1. 登录
 2. 工作台统计
 3. 客户列表
@@ -164,10 +184,12 @@ curl http://127.0.0.1/api/health
 
 如果 AI 对话里“资料提取任务提交失败”，优先检查：
 
-1. 浏览器 Network 中，`POST /api/chat/jobs` 是否已发往：
+1. 浏览器 Network 中，`POST /api/chat/jobs` 是否发往：
+
 - `http://121.196.161.155:8000/api/chat/jobs`
 
-2. 如果其它 `/api` 正常，但只有创建任务失败：
+2. 如果其它 `/api` 正常，只有创建任务失败：
+
 - 通常是浏览器无法直连 `8000`
 
 3. 服务器检查：
@@ -183,38 +205,39 @@ curl http://127.0.0.1:8000/api/health
 curl http://你的公网IP:8000/api/health
 ```
 
-5. 如果你不想开放 `8000`
+5. 如果不想开放 `8000`
+
 - 清空 `VITE_DIRECT_JOB_API_BASE`
-- 让创建任务继续走 Nginx `/api`
+- 让 `POST /api/chat/jobs` 继续走 Nginx `/api`
 
 ## 12. 常用命令
 
-### 拉代码
+拉代码：
 
 ```bash
 cd /srv/loan-assistant
 git pull
 ```
 
-### 重启后端
+重启后端：
 
 ```bash
 sudo systemctl restart loan-assistant-api
 ```
 
-### 重启 Nginx
+重启 Nginx：
 
 ```bash
 sudo systemctl restart nginx
 ```
 
-### 查看后端日志
+查看后端日志：
 
 ```bash
 sudo journalctl -u loan-assistant-api -f
 ```
 
-### 查看 Nginx 日志
+查看 Nginx 日志：
 
 ```bash
 sudo tail -f /var/log/nginx/error.log
@@ -223,6 +246,7 @@ sudo tail -f /var/log/nginx/error.log
 ## 13. 当前上线结论
 
 当前项目已经适合正式部署到：
+
 - 阿里云 ECS
 - 阿里云 RDS
 

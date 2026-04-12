@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from sqlalchemy import delete, desc, select, update
@@ -27,6 +28,7 @@ from backend.db_models import (
 )
 
 logger = logging.getLogger(__name__)
+JOB_PAYLOAD_PREVIEW_LIMIT = max(120, int(os.getenv("JOB_PAYLOAD_PREVIEW_LIMIT", "300")))
 
 
 class SQLAlchemyStorageService:
@@ -85,7 +87,7 @@ class SQLAlchemyStorageService:
                     messages_preview.append(
                         {
                             "role": self._truncate_text(message.get("role") or "", 20),
-                            "content": self._truncate_text(message.get("content") or "", 300),
+                            "content": self._truncate_text(message.get("content") or "", JOB_PAYLOAD_PREVIEW_LIMIT),
                         }
                     )
 
@@ -315,8 +317,11 @@ class SQLAlchemyStorageService:
             "status": row.status or "pending",
             "progress_message": row.progress_message or "",
             "request_json": self._loads(row.request_json, {}),
+            "execution_payload_json": self._loads(row.execution_payload_json, {}),
             "result_json": self._loads(row.result_json, {}),
             "error_message": row.error_message or "",
+            "celery_task_id": row.celery_task_id or "",
+            "worker_name": row.worker_name or "",
             "created_at": row.created_at.isoformat() if row.created_at else "",
             "started_at": row.started_at or "",
             "finished_at": row.finished_at or "",
@@ -846,8 +851,11 @@ class SQLAlchemyStorageService:
                 status=job_data.get("status") or "pending",
                 progress_message=job_data.get("progress_message") or "",
                 request_json=self._dumps(request_snapshot, "{}"),
+                execution_payload_json=self._dumps(job_data.get("execution_payload_json"), "{}"),
                 result_json=self._dumps(job_data.get("result_json"), "{}"),
                 error_message=job_data.get("error_message") or "",
+                celery_task_id=job_data.get("celery_task_id") or "",
+                worker_name=job_data.get("worker_name") or "",
                 started_at=job_data.get("started_at") or "",
                 finished_at=job_data.get("finished_at") or "",
             )
@@ -893,10 +901,16 @@ class SQLAlchemyStorageService:
                 row.progress_message = updates["progress_message"] or ""
             if "request_json" in updates:
                 row.request_json = self._dumps(self._build_async_job_request_snapshot({"request_json": updates.get("request_json"), "job_type": row.job_type, "customer_id": row.customer_id, "username": row.username}), "{}")
+            if "execution_payload_json" in updates:
+                row.execution_payload_json = self._dumps(updates.get("execution_payload_json"), "{}")
             if "result_json" in updates:
                 row.result_json = self._dumps(updates.get("result_json"), "{}")
             if "error_message" in updates:
                 row.error_message = updates["error_message"] or ""
+            if "celery_task_id" in updates:
+                row.celery_task_id = updates["celery_task_id"] or ""
+            if "worker_name" in updates:
+                row.worker_name = updates["worker_name"] or ""
             if "started_at" in updates:
                 row.started_at = updates["started_at"] or ""
             if "finished_at" in updates:
@@ -905,6 +919,29 @@ class SQLAlchemyStorageService:
             db.commit()
             db.refresh(row)
             return self._row_to_async_job(row)
+
+    async def get_async_job_execution_payload(self, job_id: str) -> dict[str, Any] | None:
+        with self._session_factory() as db:
+            row = db.execute(
+                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
+            ).scalar_one_or_none()
+            if not row:
+                return None
+            return self._loads(row.execution_payload_json, {})
+
+    async def mark_async_job_dispatched(
+        self,
+        job_id: str,
+        celery_task_id: str,
+        worker_name: str = "",
+    ) -> dict[str, Any] | None:
+        return await self.update_async_job(
+            job_id,
+            {
+                "celery_task_id": celery_task_id,
+                "worker_name": worker_name,
+            },
+        )
 
     async def get_product_cache_entry(self, cache_key: str) -> dict[str, Any] | None:
         with self._session_factory() as db:

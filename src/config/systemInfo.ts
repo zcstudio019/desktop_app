@@ -12,18 +12,14 @@ function formatBuildDateTime(value: Date) {
   return `${formatBuildDate(value)} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
 }
 
-function formatBuildVersionSuffix(value: Date) {
-  return `${value.getFullYear()}${pad(value.getMonth() + 1)}${pad(value.getDate())}.${pad(value.getHours())}${pad(value.getMinutes())}`;
-}
-
 const buildTime = new Date();
-const baseVersion = `V${packageJson.version}`;
+const version = `V${packageJson.version}`;
 
 export const SYSTEM_INFO = {
   name: '贷款助手',
   subtitle: '智能贷款申请管理系统',
-  baseVersion,
-  version: `${baseVersion}-${formatBuildVersionSuffix(buildTime)}`,
+  baseVersion: version,
+  version,
   releaseDate: formatBuildDate(buildTime),
   buildTime: formatBuildDateTime(buildTime),
 } as const;
