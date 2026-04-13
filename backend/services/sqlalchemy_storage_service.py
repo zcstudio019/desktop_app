@@ -927,7 +927,26 @@ class SQLAlchemyStorageService:
             ).scalar_one_or_none()
             if not row:
                 return None
-            return self._loads(row.execution_payload_json, {})
+            payload = self._loads(row.execution_payload_json, {})
+            if not isinstance(payload, dict) or not payload:
+                logger.warning(
+                    "[SQLAlchemyStorage] async job execution payload missing or empty job_id=%s",
+                    job_id,
+                )
+                return None
+            return payload
+
+    async def set_async_job_execution_payload(
+        self,
+        job_id: str,
+        execution_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return await self.update_async_job(
+            job_id,
+            {
+                "execution_payload_json": execution_payload,
+            },
+        )
 
     async def mark_async_job_dispatched(
         self,

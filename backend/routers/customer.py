@@ -200,20 +200,19 @@ def _launch_customer_risk_report_job(
 
 
 def _build_risk_report_job_execution_payload(
+    job_id: str,
     customer_id: str,
     customer_name: str,
     current_user_payload: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "request": {
-            "customerId": customer_id,
-            "customerName": customer_name,
-            "createdFrom": "risk_report_job",
-        },
-        "current_user": {
-            "username": current_user_payload.get("username") or "",
-            "role": current_user_payload.get("role") or "",
-        },
+        "jobId": job_id,
+        "jobType": "risk_report",
+        "customerId": customer_id,
+        "customerName": customer_name,
+        "username": current_user_payload.get("username") or "",
+        "role": current_user_payload.get("role") or "",
+        "createdFrom": "risk_report_job",
     }
 
 
@@ -222,19 +221,17 @@ async def execute_customer_risk_report_job_from_job(job_id: str) -> None:
     if not payload:
         raise ValueError(f"async job {job_id} execution payload not found")
 
-    request_payload = payload.get("request") if isinstance(payload, dict) else None
-    current_user_payload = payload.get("current_user") if isinstance(payload, dict) else None
-    if not isinstance(request_payload, dict):
-        raise ValueError(f"async job {job_id} has invalid risk report request payload")
-
-    customer_id = request_payload.get("customerId") or ""
+    customer_id = payload.get("customerId") if isinstance(payload, dict) else ""
     if not customer_id:
         raise ValueError(f"async job {job_id} missing customerId")
 
     await _run_customer_risk_report_job(
         job_id,
         customer_id,
-        current_user_payload if isinstance(current_user_payload, dict) else {},
+        {
+            "username": payload.get("username") if isinstance(payload, dict) else "",
+            "role": payload.get("role") if isinstance(payload, dict) else "",
+        },
     )
 
 
@@ -1011,6 +1008,19 @@ async def create_customer_risk_report_job(
         "customerId": customer_id,
         "customerName": customer.get("name") or "",
     }
+    execution_payload = _build_risk_report_job_execution_payload(
+        job_id,
+        customer_id,
+        customer.get("name") or "",
+        current_user,
+    )
+    logger.info(
+        "[Risk Job] execution payload prepared job_id=%s customer_id=%s username=%s payload_keys=%s",
+        job_id,
+        customer_id,
+        current_user.get("username") or "",
+        sorted(execution_payload.keys()),
+    )
     await storage_service.create_async_job(
         {
             "job_id": job_id,
@@ -1020,19 +1030,40 @@ async def create_customer_risk_report_job(
             "status": "pending",
             "progress_message": "任务已创建，等待后台处理",
             "request_json": request_payload,
-            "execution_payload_json": _build_risk_report_job_execution_payload(
-                customer_id,
-                customer.get("name") or "",
-                current_user,
-            ),
+            "execution_payload_json": execution_payload,
         }
     )
     logger.info(
-        "[Risk Job] created job_id=%s job_type=%s username=%s customer_id=%s",
+        "[Risk Job] created job_id=%s job_type=%s username=%s customer_id=%s request_snapshot=%s",
         job_id,
         "risk_report",
         current_user.get("username") or "",
         customer_id,
+        request_payload,
+    )
+    stored_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not stored_execution_payload:
+        logger.warning(
+            "[Risk Job] execution payload missing after create job_id=%s, retrying persistence",
+            job_id,
+        )
+        await storage_service.set_async_job_execution_payload(job_id, execution_payload)
+        stored_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not stored_execution_payload:
+        logger.error(
+            "[Risk Job] execution payload save failed job_id=%s customer_id=%s username=%s",
+            job_id,
+            customer_id,
+            current_user.get("username") or "",
+        )
+        raise HTTPException(status_code=500, detail="风险报告任务载荷保存失败")
+    logger.info(
+        "[Risk Job] execution payload saved job_id=%s customer_id=%s username=%s payload_keys=%s payload_customer_name=%s",
+        job_id,
+        customer_id,
+        current_user.get("username") or "",
+        sorted(stored_execution_payload.keys()),
+        stored_execution_payload.get("customerName") if isinstance(stored_execution_payload, dict) else "",
     )
     await _dispatch_customer_risk_report_job(
         job_id,
