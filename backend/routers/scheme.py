@@ -72,10 +72,77 @@ profile_sync_service = ProfileSyncService()
 _ACTIVE_SCHEME_JOB_TASKS: set[asyncio.Task[None]] = set()
 
 
+async def _resolve_scheme_customer_data(
+    request: SchemeMatchRequest,
+) -> tuple[dict[str, Any], str]:
+    provided_customer_data = request.customerData or {}
+    if isinstance(provided_customer_data, dict) and provided_customer_data:
+        logger.info("[Scheme Job] data_source_detected = request job_customer_id=%s", request.customerId or "")
+        return provided_customer_data, "request"
+
+    if not request.customerId:
+        raise HTTPException(status_code=400, detail="请先选择已有资料的客户。")
+
+    profile = await storage_service.get_customer_profile(request.customerId)
+    markdown_content = (profile or {}).get("markdown_content") or ""
+    if markdown_content.strip():
+        logger.info("[Scheme Job] data_source_detected = markdown customer_id=%s", request.customerId)
+        return {
+            "资料汇总": markdown_content,
+            "客户名称": request.customerName or "",
+            "资料来源": "customer_profile_markdown",
+        }, "markdown"
+
+    extraction_records = await storage_service.get_extractions_by_customer(request.customerId)
+    if extraction_records:
+        extraction_payload: dict[str, Any] = {
+            "客户名称": request.customerName or "",
+            "资料来源": "extractions",
+        }
+        for item in extraction_records:
+            extraction_type = item.get("extraction_type") or "提取结果"
+            extracted_data = item.get("extracted_data") or {}
+            if extracted_data:
+                extraction_payload[extraction_type] = extracted_data
+        logger.info("[Scheme Job] data_source_detected = extraction customer_id=%s", request.customerId)
+        return extraction_payload, "extraction"
+
+    documents = await storage_service.list_documents(request.customerId)
+    if documents:
+        logger.info("[Scheme Job] data_source_detected = document customer_id=%s", request.customerId)
+        return {
+            "客户名称": request.customerName or "",
+            "资料来源": "documents",
+            "已上传资料": [
+                {
+                    "文件名": item.get("file_name") or "",
+                    "文件类型": item.get("file_type") or "",
+                    "上传时间": item.get("upload_time") or "",
+                }
+                for item in documents
+            ],
+        }, "document"
+
+    raise HTTPException(status_code=400, detail="请先选择已有资料的客户。")
+
+
+async def _prepare_scheme_match_request(
+    request: SchemeMatchRequest,
+) -> tuple[SchemeMatchRequest, str]:
+    resolved_customer_data, data_source = await _resolve_scheme_customer_data(request)
+    prepared_request = request.model_copy(
+        update={
+            "customerData": resolved_customer_data,
+        }
+    )
+    return prepared_request, data_source
+
+
 async def _match_scheme_payload(
     request: SchemeMatchRequest,
     current_user: dict,
 ) -> dict[str, Any]:
+    request, _ = await _prepare_scheme_match_request(request)
     logger.info("Matching scheme for user=%s, credit type=%s", current_user["username"], request.creditType)
     logger.debug(f"Customer data keys: {list(request.customerData.keys())}")
 
@@ -456,6 +523,7 @@ async def create_scheme_match_job(
     request: SchemeMatchRequest,
     current_user: dict = Depends(get_current_user),
 ) -> ChatJobCreateResponse:
+    request, _ = await _prepare_scheme_match_request(request)
     job_id = uuid.uuid4().hex
     request_payload = request.model_dump()
     execution_payload = _build_scheme_match_job_execution_payload(job_id, request, current_user)

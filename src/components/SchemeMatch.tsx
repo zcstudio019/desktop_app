@@ -364,7 +364,7 @@ const SchemeMatchPage: React.FC = () => {
 
   const resolvePayload = async () => {
     if (dataSource === 'currentCustomer') {
-      if (!currentCustomerName || Object.keys(currentData).length === 0) throw new Error('请先选择已有资料的客户。');
+      if (!currentCustomerName) throw new Error('请先选择客户。');
       return { customerData: currentData, customerName: currentCustomerName, customerId: currentCustomerId };
     }
     if (dataSource === 'savedApplication') {
