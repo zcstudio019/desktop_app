@@ -11,8 +11,10 @@ from celery.signals import worker_ready
 
 CELERY_TASK_MODULES = (
     "backend.tasks.chat_tasks",
+    "backend.tasks.risk_tasks",
 )
 CHAT_EXTRACT_TASK_NAME = "backend.tasks.chat_tasks.run_chat_extract_job"
+RISK_REPORT_TASK_NAME = "backend.tasks.risk_tasks.run_risk_report_job"
 LEGACY_CHAT_EXTRACT_TASK_NAMES = (
     "backend.tasks.chat.run_chat_extract_job",
 )
@@ -70,28 +72,35 @@ def log_celery_bootstrap() -> None:
         for name in celery_app.tasks.keys()
         if not name.startswith("celery.")
     )
+    expected_tasks = (
+        CHAT_EXTRACT_TASK_NAME,
+        RISK_REPORT_TASK_NAME,
+    )
     worker_pid = os.getpid()
     legacy_registered_tasks = [
         name for name in registered_tasks if name in LEGACY_CHAT_EXTRACT_TASK_NAMES
     ]
-    expected_task_registered = CHAT_EXTRACT_TASK_NAME in registered_tasks
+    expected_task_registered = {
+        task_name: task_name in registered_tasks for task_name in expected_tasks
+    }
     logger.info(
-        "[Celery Bootstrap] pid=%s queue_enabled=%s broker=%s backend=%s expected_task=%s expected_registered=%s legacy_registered=%s registered_tasks=%s",
+        "[Celery Bootstrap] pid=%s queue_enabled=%s broker=%s backend=%s expected_tasks=%s expected_registered=%s legacy_registered=%s registered_tasks=%s",
         worker_pid,
         TASK_QUEUE_ENABLED,
         CELERY_BROKER_URL,
         CELERY_RESULT_BACKEND,
-        CHAT_EXTRACT_TASK_NAME,
+        expected_tasks,
         expected_task_registered,
         legacy_registered_tasks,
         registered_tasks,
     )
-    if not expected_task_registered:
-        logger.warning(
-            "[Celery Bootstrap] expected task missing. This worker may be running old code or started from the wrong app module. expected_task=%s pid=%s",
-            CHAT_EXTRACT_TASK_NAME,
-            worker_pid,
-        )
+    for task_name, is_registered in expected_task_registered.items():
+        if not is_registered:
+            logger.warning(
+                "[Celery Bootstrap] expected task missing. This worker may be running old code or started from the wrong app module. expected_task=%s pid=%s",
+                task_name,
+                worker_pid,
+            )
     if legacy_registered_tasks:
         logger.warning(
             "[Celery Bootstrap] legacy task names are still registered. Please stop old workers before retrying. legacy_registered=%s pid=%s",

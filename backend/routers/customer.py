@@ -9,6 +9,7 @@ Endpoints:
 - GET /api/customers - List customers with optional search filter
 """
 
+import asyncio
 import logging
 import sys
 import uuid
@@ -16,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 # Add desktop_app to path for imports
@@ -26,6 +27,7 @@ if str(desktop_app_path) not in sys.path:
 
 from services.feishu_service import FeishuService
 
+from backend.celery_app import TASK_QUEUE_ENABLED
 from backend.services import get_storage_service, supports_structured_storage  # 新增：存储服务 factory
 
 from backend.services.markdown_profile_service import (
@@ -65,6 +67,7 @@ HAS_DB_STORAGE = supports_structured_storage(storage_service)
 rag_service = RagService()
 risk_assessment_service = RiskAssessmentService(rag_service=rag_service)
 profile_sync_service = ProfileSyncService()
+_ACTIVE_RISK_JOB_TASKS: set[asyncio.Task[None]] = set()
 
 
 async def _build_customer_risk_report_payload(
@@ -174,6 +177,104 @@ async def _run_customer_risk_report_job(
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+
+
+def _launch_customer_risk_report_job(
+    job_id: str,
+    customer_id: str,
+    current_user_payload: dict[str, Any],
+) -> None:
+    task = asyncio.create_task(
+        _run_customer_risk_report_job(job_id, customer_id, current_user_payload)
+    )
+    _ACTIVE_RISK_JOB_TASKS.add(task)
+
+    def _cleanup(done_task: asyncio.Task[None]) -> None:
+        _ACTIVE_RISK_JOB_TASKS.discard(done_task)
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("[Risk Job] background task crashed job_id=%s", job_id)
+
+    task.add_done_callback(_cleanup)
+
+
+def _build_risk_report_job_execution_payload(
+    customer_id: str,
+    customer_name: str,
+    current_user_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "request": {
+            "customerId": customer_id,
+            "customerName": customer_name,
+            "createdFrom": "risk_report_job",
+        },
+        "current_user": {
+            "username": current_user_payload.get("username") or "",
+            "role": current_user_payload.get("role") or "",
+        },
+    }
+
+
+async def execute_customer_risk_report_job_from_job(job_id: str) -> None:
+    payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not payload:
+        raise ValueError(f"async job {job_id} execution payload not found")
+
+    request_payload = payload.get("request") if isinstance(payload, dict) else None
+    current_user_payload = payload.get("current_user") if isinstance(payload, dict) else None
+    if not isinstance(request_payload, dict):
+        raise ValueError(f"async job {job_id} has invalid risk report request payload")
+
+    customer_id = request_payload.get("customerId") or ""
+    if not customer_id:
+        raise ValueError(f"async job {job_id} missing customerId")
+
+    await _run_customer_risk_report_job(
+        job_id,
+        customer_id,
+        current_user_payload if isinstance(current_user_payload, dict) else {},
+    )
+
+
+async def _dispatch_customer_risk_report_job(
+    job_id: str,
+    customer_id: str,
+    current_user_payload: dict[str, Any],
+) -> None:
+    logger.info(
+        "[Risk Job] submit start job_id=%s queue_enabled=%s customer_id=%s username=%s",
+        job_id,
+        TASK_QUEUE_ENABLED,
+        customer_id,
+        current_user_payload.get("username") or "",
+    )
+    if TASK_QUEUE_ENABLED:
+        from backend.celery_app import RISK_REPORT_TASK_NAME, celery_app
+
+        async_result = celery_app.send_task(RISK_REPORT_TASK_NAME, args=[job_id])
+        await storage_service.mark_async_job_dispatched(
+            job_id,
+            async_result.id,
+            worker_name="celery",
+        )
+        logger.info(
+            "[Risk Job] dispatched to celery job_id=%s celery_task_id=%s customer_id=%s username=%s",
+            job_id,
+            async_result.id,
+            customer_id,
+            current_user_payload.get("username") or "",
+        )
+        return
+
+    logger.warning(
+        "[Risk Job] fallback to in-process execution job_id=%s customer_id=%s username=%s",
+        job_id,
+        customer_id,
+        current_user_payload.get("username") or "",
+    )
+    _launch_customer_risk_report_job(job_id, customer_id, current_user_payload)
 
 
 def _extract_text_value(field_value: Any) -> str:
@@ -895,7 +996,6 @@ async def generate_customer_risk_report(
 @router.post("/{customer_id}/risk-report/jobs", response_model=ChatJobCreateResponse)
 async def create_customer_risk_report_job(
     customer_id: str,
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ) -> ChatJobCreateResponse:
     if not HAS_DB_STORAGE:
@@ -918,11 +1018,27 @@ async def create_customer_risk_report_job(
             "customer_id": customer_id,
             "username": current_user.get("username") or "",
             "status": "pending",
-            "progress_message": "已接收任务",
+            "progress_message": "任务已创建，等待后台处理",
             "request_json": request_payload,
+            "execution_payload_json": _build_risk_report_job_execution_payload(
+                customer_id,
+                customer.get("name") or "",
+                current_user,
+            ),
         }
     )
-    background_tasks.add_task(_run_customer_risk_report_job, job_id, customer_id, current_user)
+    logger.info(
+        "[Risk Job] created job_id=%s job_type=%s username=%s customer_id=%s",
+        job_id,
+        "risk_report",
+        current_user.get("username") or "",
+        customer_id,
+    )
+    await _dispatch_customer_risk_report_job(
+        job_id,
+        customer_id,
+        current_user,
+    )
     return ChatJobCreateResponse(jobId=job_id, status="pending")
 
 

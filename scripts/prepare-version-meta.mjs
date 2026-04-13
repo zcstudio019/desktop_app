@@ -19,11 +19,13 @@ function formatDateTime(date) {
   return `${formatDate(date)} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+const packageJsonRaw = fs.readFileSync(packageJsonPath, 'utf8');
+const packageVersionMatch = packageJsonRaw.match(/"version"\s*:\s*"([^"]+)"/);
+const packageVersion = packageVersionMatch?.[1] || '1.0.0';
 const now = new Date();
 
 const versionMetaContent = `export const VERSION_META = {
-  version: "V${packageJson.version}",
+  version: "V${packageVersion}",
   releaseDate: "${formatDate(now)}",
   buildTime: "${formatDateTime(now)}",
 } as const;
