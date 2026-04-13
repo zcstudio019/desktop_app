@@ -14,6 +14,7 @@ Requirements:
 - 4.7: Return 500 for service errors
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -22,13 +23,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 # Add desktop_app to path for imports
 desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
+from backend.celery_app import TASK_QUEUE_ENABLED
 from backend.database import SessionLocal
 from backend.db_models import SavedApplicationRecord
 from backend.routers.chat_helpers import get_customer_data_local
@@ -67,6 +69,7 @@ feishu_service = FeishuService()
 storage_service = get_storage_service()
 HAS_DB_STORAGE = supports_structured_storage(storage_service)
 profile_sync_service = ProfileSyncService()
+_ACTIVE_SCHEME_JOB_TASKS: set[asyncio.Task[None]] = set()
 
 
 async def _match_scheme_payload(
@@ -150,8 +153,7 @@ async def _match_scheme_payload(
 
 async def _run_scheme_match_job(
     job_id: str,
-    request_payload: dict[str, Any],
-    current_user_payload: dict[str, Any],
+    execution_payload: dict[str, Any],
 ) -> None:
     async def update_progress(message: str) -> None:
         logger.info("[Scheme Job] progress job_id=%s stage=%s", job_id, message)
@@ -167,6 +169,16 @@ async def _run_scheme_match_job(
     )
 
     try:
+        request_payload = {
+            "customerName": execution_payload.get("customerName") or "",
+            "customerId": execution_payload.get("customerId") or "",
+            "creditType": execution_payload.get("creditType") or "",
+            "customerData": execution_payload.get("customerData") or {},
+        }
+        current_user_payload = {
+            "username": execution_payload.get("username") or "",
+            "role": execution_payload.get("role") or "",
+        }
         request = SchemeMatchRequest(**request_payload)
         await update_progress("正在读取匹配资料")
         await update_progress("正在加载产品库")
@@ -192,6 +204,7 @@ async def _run_scheme_match_job(
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        raise
     except Exception as exc:
         logger.error("[Scheme Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
         await storage_service.update_async_job(
@@ -203,6 +216,85 @@ async def _run_scheme_match_job(
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        raise
+
+
+def _build_scheme_match_job_execution_payload(
+    job_id: str,
+    request: SchemeMatchRequest,
+    current_user: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "jobId": job_id,
+        "jobType": "scheme_match",
+        "customerId": request.customerId or "",
+        "customerName": request.customerName or "",
+        "creditType": request.creditType,
+        "customerData": request.customerData,
+        "username": current_user.get("username") or "",
+        "role": current_user.get("role") or "",
+        "createdFrom": "scheme_match_job",
+    }
+
+
+async def execute_scheme_match_job_from_job(job_id: str) -> None:
+    execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not execution_payload:
+        raise ValueError(f"async job {job_id} execution payload not found")
+    await _run_scheme_match_job(job_id, execution_payload)
+
+
+def _launch_scheme_match_job(job_id: str) -> None:
+    task = asyncio.create_task(execute_scheme_match_job_from_job(job_id))
+    _ACTIVE_SCHEME_JOB_TASKS.add(task)
+
+    def _cleanup(done_task: asyncio.Task[None]) -> None:
+        _ACTIVE_SCHEME_JOB_TASKS.discard(done_task)
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("[Scheme Job] background task crashed job_id=%s", job_id)
+
+    task.add_done_callback(_cleanup)
+
+
+async def _dispatch_scheme_match_job(
+    job_id: str,
+    customer_id: str,
+    current_user_payload: dict[str, Any],
+) -> None:
+    logger.info(
+        "[Scheme Job] submit start job_id=%s queue_enabled=%s customer_id=%s username=%s",
+        job_id,
+        TASK_QUEUE_ENABLED,
+        customer_id,
+        current_user_payload.get("username") or "",
+    )
+    if TASK_QUEUE_ENABLED:
+        from backend.celery_app import SCHEME_MATCH_TASK_NAME, celery_app
+
+        async_result = celery_app.send_task(SCHEME_MATCH_TASK_NAME, args=[job_id])
+        await storage_service.mark_async_job_dispatched(
+            job_id,
+            async_result.id,
+            worker_name="celery",
+        )
+        logger.info(
+            "[Scheme Job] dispatched to celery job_id=%s celery_task_id=%s customer_id=%s username=%s",
+            job_id,
+            async_result.id,
+            customer_id,
+            current_user_payload.get("username") or "",
+        )
+        return
+
+    logger.warning(
+        "[Scheme Job] fallback to in-process execution job_id=%s customer_id=%s username=%s",
+        job_id,
+        customer_id,
+        current_user_payload.get("username") or "",
+    )
+    _launch_scheme_match_job(job_id)
 
 INVALID_CREDIT_TYPE_MESSAGE = "贷款方案类型无效，请重新选择。"
 PRODUCT_LIBRARY_FETCH_FAILED_MESSAGE = "产品库获取失败，请稍后重试。"
@@ -362,11 +454,18 @@ async def match_scheme(
 @router.post("/jobs", response_model=ChatJobCreateResponse)
 async def create_scheme_match_job(
     request: SchemeMatchRequest,
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ) -> ChatJobCreateResponse:
     job_id = uuid.uuid4().hex
     request_payload = request.model_dump()
+    execution_payload = _build_scheme_match_job_execution_payload(job_id, request, current_user)
+    logger.info(
+        "[Scheme Job] execution payload prepared job_id=%s customer_id=%s username=%s payload_keys=%s",
+        job_id,
+        request.customerId or "",
+        current_user.get("username") or "",
+        sorted(execution_payload.keys()),
+    )
     await storage_service.create_async_job(
         {
             "job_id": job_id,
@@ -376,9 +475,40 @@ async def create_scheme_match_job(
             "status": "pending",
             "progress_message": "已接收任务",
             "request_json": request_payload,
+            "execution_payload_json": execution_payload,
         }
     )
-    background_tasks.add_task(_run_scheme_match_job, job_id, request_payload, current_user)
+    logger.info(
+        "[Scheme Job] created job_id=%s job_type=%s username=%s customer_id=%s request_snapshot=%s",
+        job_id,
+        "scheme_match",
+        current_user.get("username") or "",
+        request.customerId or "",
+        {
+            "customerName": request.customerName,
+            "creditType": request.creditType,
+            "hasCustomerData": bool(request.customerData),
+        },
+    )
+    persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not persisted_execution_payload:
+        logger.warning(
+            "[Scheme Job] execution payload missing after create job_id=%s, retrying payload save",
+            job_id,
+        )
+        await storage_service.set_async_job_execution_payload(job_id, execution_payload)
+        persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not persisted_execution_payload:
+        raise HTTPException(status_code=500, detail="方案匹配任务载荷保存失败")
+    logger.info(
+        "[Scheme Job] execution payload saved job_id=%s customer_id=%s username=%s payload_keys=%s payload_customer_name=%s",
+        job_id,
+        request.customerId or "",
+        current_user.get("username") or "",
+        sorted(persisted_execution_payload.keys()),
+        persisted_execution_payload.get("customerName") or "",
+    )
+    await _dispatch_scheme_match_job(job_id, request.customerId or "", current_user)
     return ChatJobCreateResponse(jobId=job_id, status="pending")
 
 

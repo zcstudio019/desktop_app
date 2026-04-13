@@ -12,9 +12,11 @@ from celery.signals import worker_ready
 CELERY_TASK_MODULES = (
     "backend.tasks.chat_tasks",
     "backend.tasks.risk_tasks",
+    "backend.tasks.scheme_tasks",
 )
 CHAT_EXTRACT_TASK_NAME = "backend.tasks.chat_tasks.run_chat_extract_job"
 RISK_REPORT_TASK_NAME = "backend.tasks.risk_tasks.run_risk_report_job"
+SCHEME_MATCH_TASK_NAME = "backend.tasks.scheme_tasks.run_scheme_match_job"
 LEGACY_CHAT_EXTRACT_TASK_NAMES = (
     "backend.tasks.chat.run_chat_extract_job",
 )
@@ -75,6 +77,7 @@ def log_celery_bootstrap() -> None:
     expected_tasks = (
         CHAT_EXTRACT_TASK_NAME,
         RISK_REPORT_TASK_NAME,
+        SCHEME_MATCH_TASK_NAME,
     )
     worker_pid = os.getpid()
     legacy_registered_tasks = [
