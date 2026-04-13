@@ -304,7 +304,7 @@ const Header: React.FC<HeaderProps> = ({
   return (
     <>
       <header
-        className="flex h-16 items-center justify-between border-b border-slate-200 bg-white/95 px-6 backdrop-blur"
+        className="relative z-40 flex h-16 items-center justify-between border-b border-slate-200 bg-white/95 px-6 backdrop-blur"
         style={{ boxShadow: '0 1px 3px rgba(15,23,42,0.04)' }}
         data-testid="header"
       >
@@ -323,7 +323,7 @@ const Header: React.FC<HeaderProps> = ({
         <div className="flex items-center gap-4">
           <NotificationBell count={notificationCount} />
 
-          <div className="relative" ref={menuRef}>
+          <div className="relative z-50" ref={menuRef}>
             <button
               type="button"
               onClick={() => setMenuOpen((prev) => !prev)}
@@ -342,7 +342,7 @@ const Header: React.FC<HeaderProps> = ({
             </button>
 
             {menuOpen ? (
-              <div className="absolute right-0 top-[calc(100%+10px)] z-40 w-80 rounded-3xl border border-slate-200 bg-white p-4 shadow-xl">
+              <div className="absolute right-0 top-[calc(100%+10px)] z-[70] w-80 rounded-3xl border border-slate-200 bg-white p-4 shadow-xl">
                 <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-4">
                   <div className="flex items-center gap-3">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-500 text-base font-semibold text-white">

@@ -1415,6 +1415,18 @@ async def list_chat_jobs(
     ]
 
 
+@router.delete("/jobs/{job_id}")
+async def delete_chat_job(
+    job_id: str,
+    current_user: dict | None = Depends(get_current_user_optional),
+) -> dict[str, bool]:
+    username = (current_user or {}).get("username") or "anonymous"
+    deleted = await chat_storage_service.delete_async_job(job_id, username=username)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="任务不存在或已删除")
+    return {"success": True}
+
+
 # ===== Main Chat Route =====
 
 @router.post("", response_model=ChatResponse)

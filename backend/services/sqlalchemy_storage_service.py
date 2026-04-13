@@ -943,6 +943,18 @@ class SQLAlchemyStorageService:
             },
         )
 
+    async def delete_async_job(self, job_id: str, username: str | None = None) -> bool:
+        with self._session_factory() as db:
+            stmt = select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
+            if username:
+                stmt = stmt.where(AsyncJobRecord.username == username)
+            row = db.execute(stmt).scalar_one_or_none()
+            if not row:
+                return False
+            db.delete(row)
+            db.commit()
+            return True
+
     async def get_product_cache_entry(self, cache_key: str) -> dict[str, Any] | None:
         with self._session_factory() as db:
             row = db.execute(

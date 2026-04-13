@@ -19,7 +19,7 @@ import {
   FileCheck, Percent, Calendar, DollarSign, Building,
   Edit3, Save, Download, RefreshCw
 } from 'lucide-react';
-import { createChatJob, createCustomerRiskReportJob, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers } from '../services/api';
+import { createChatJob, createCustomerRiskReportJob, deleteChatJob, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers } from '../services/api';
 import {
   getFieldIcon, getSectionIcon, formatTableValue, isNestedObject, isArrayOfObjects,
   DataSectionCard, ArrayDataCard
@@ -4106,7 +4106,16 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     try {
       const jobs = await listChatJobs(8, getSignal());
       setRecentChatJobs(jobs);
-      const shouldRecoverSuccessfulJob = (!currentJob?.jobId || Boolean(chatJobPollErrorJobId)) && !chatJobSubmitError && !chatJobPolling;
+      const pendingJob = readPendingChatJob();
+      const canAutoRecoverSuccessfulJob =
+        Boolean(chatJobPollErrorJobId) ||
+        Boolean(currentCustomerId) ||
+        Boolean(pendingJob?.jobId);
+      const shouldRecoverSuccessfulJob =
+        canAutoRecoverSuccessfulJob &&
+        (!currentJob?.jobId || Boolean(chatJobPollErrorJobId)) &&
+        !chatJobSubmitError &&
+        !chatJobPolling;
       if (shouldRecoverSuccessfulJob) {
         const recoveredJob = chatJobPollErrorJobId
           ? jobs.find((job) => job.jobId === chatJobPollErrorJobId && job.status === 'success')
@@ -4128,7 +4137,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     } finally {
       setJobsLoading(false);
     }
-  }, [chatJobPollErrorJobId, chatJobPolling, chatJobSubmitError, currentJob?.jobId, getSignal, restoreCompletedJobFromStatus]);
+  }, [chatJobPollErrorJobId, chatJobPolling, chatJobSubmitError, currentCustomerId, currentJob?.jobId, getSignal, restoreCompletedJobFromStatus]);
 
   /**
    * Send message with given parameters
@@ -4939,6 +4948,24 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     });
   }, [readPendingChatJob, messages, customerOptions, setCurrentCustomer, getSignal, consumeCompletedJobResult, pollChatJob]);
 
+  const handleDeleteJob = useCallback(async (job: ChatJobSummaryResponse) => {
+    await deleteChatJob(job.jobId, getSignal());
+    if (currentJob?.jobId === job.jobId) {
+      setCurrentJob(null);
+      setChatJobResult(null);
+      setChatJobFeedback(null);
+      clearObsoletePollFailureForJob(job.jobId);
+    }
+    if (latestCompletedChatJob?.jobId === job.jobId) {
+      setLatestCompletedChatJob(null);
+    }
+    const pendingJob = readPendingChatJob();
+    if (pendingJob?.jobId === job.jobId) {
+      clearPendingChatJob();
+    }
+    await loadRecentChatJobs();
+  }, [clearObsoletePollFailureForJob, clearPendingChatJob, currentJob?.jobId, getSignal, latestCompletedChatJob?.jobId, loadRecentChatJobs, readPendingChatJob]);
+
   const handleJumpToProfile = useCallback(() => {
     if (!latestCompletedChatJob?.customerId) {
       return;
@@ -5215,6 +5242,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                         isLatestCompleted={isLatestCompleted}
                         className={isLatestCompleted ? 'ring-2 ring-emerald-100' : ''}
                         onAction={(selectedJob) => void handleOpenJob(selectedJob as ChatJobSummaryResponse)}
+                        onDelete={(selectedJob) => void handleDeleteJob(selectedJob as ChatJobSummaryResponse)}
                       />
                     );
                   })

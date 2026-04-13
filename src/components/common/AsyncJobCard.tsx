@@ -1,3 +1,4 @@
+import { Trash2 } from 'lucide-react';
 import type { ChatJobStatusResponse, ChatJobSummaryResponse } from '../../services/types';
 import {
   canContinueViewingJob,
@@ -13,6 +14,7 @@ interface AsyncJobCardProps {
   job: AsyncJobLike;
   isLatestCompleted?: boolean;
   onAction?: (job: AsyncJobLike) => void;
+  onDelete?: (job: AsyncJobLike) => void;
   actionLabelOverride?: string;
   className?: string;
   variant?: 'standard' | 'compact';
@@ -97,6 +99,7 @@ export default function AsyncJobCard({
   job,
   isLatestCompleted = false,
   onAction,
+  onDelete,
   actionLabelOverride,
   className = '',
   variant = 'standard',
@@ -108,8 +111,8 @@ export default function AsyncJobCard({
       : job.status === 'failed'
         ? '查看结果'
         : '继续查看');
-
   const isCompact = variant === 'compact';
+  const showDeleteAction = Boolean(onDelete) && (job.status === 'pending' || isRunningJobStale(job));
 
   return (
     <div
@@ -150,19 +153,34 @@ export default function AsyncJobCard({
             <div className="text-xs text-rose-600">{job.errorMessage}</div>
           ) : null}
         </div>
-        {canContinueViewingJob(job.jobType) && onAction ? (
+        {((canContinueViewingJob(job.jobType) && onAction) || showDeleteAction) ? (
           <div className={`flex shrink-0 ${isCompact ? 'justify-start lg:justify-end' : ''} gap-2`}>
-            <button
-              type="button"
-              onClick={() => onAction(job)}
-              className={`rounded-lg border ${isCompact ? 'px-2.5 py-1.5' : 'px-3 py-1.5'} text-xs font-medium transition-colors ${
-                isLatestCompleted
-                  ? 'border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                  : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
-              }`}
-            >
-              {actionLabel}
-            </button>
+            {showDeleteAction ? (
+              <button
+                type="button"
+                onClick={() => onDelete?.(job)}
+                className={`rounded-lg border border-rose-200 bg-rose-50 ${isCompact ? 'px-2.5 py-1.5' : 'px-3 py-1.5'} text-xs font-medium text-rose-700 transition-colors hover:bg-rose-100`}
+                title="删除任务"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Trash2 className="h-3.5 w-3.5" />
+                  删除
+                </span>
+              </button>
+            ) : null}
+            {canContinueViewingJob(job.jobType) && onAction ? (
+              <button
+                type="button"
+                onClick={() => onAction(job)}
+                className={`rounded-lg border ${isCompact ? 'px-2.5 py-1.5' : 'px-3 py-1.5'} text-xs font-medium transition-colors ${
+                  isLatestCompleted
+                    ? 'border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                    : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                }`}
+              >
+                {actionLabel}
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>

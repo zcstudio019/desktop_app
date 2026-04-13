@@ -248,6 +248,18 @@ export async function listChatJobs(
   return handleResponse<ChatJobSummaryResponse[]>(response);
 }
 
+export async function deleteChatJob(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<{ success: boolean }> {
+  const response = await fetch(`${API_BASE}/api/chat/jobs/${jobId}`, {
+    method: 'DELETE',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<{ success: boolean }>(response);
+}
+
 export async function clearCustomerCache(signal?: AbortSignal): Promise<{ message: string }> {
   const response = await fetch(`${API_BASE}/api/chat/clear-customer-cache`, {
     method: 'POST',

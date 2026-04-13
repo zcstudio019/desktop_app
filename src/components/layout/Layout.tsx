@@ -57,7 +57,7 @@ const Layout: React.FC<LayoutProps> = ({
 
 
         <main
-          className="flex-1 overflow-auto bg-slate-50"
+          className="relative z-0 flex-1 overflow-auto bg-slate-50"
           style={{ backgroundColor: '#F8FAFC' }}
           data-testid="content-area"
         >
