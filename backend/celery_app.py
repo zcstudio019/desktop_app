@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import os
+import logging
 
 from celery import Celery
+from celery.signals import worker_ready
+
+CELERY_TASK_MODULES = (
+    "backend.tasks.chat_tasks",
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
@@ -25,6 +33,7 @@ celery_app = Celery(
     "loan_assistant",
     broker=CELERY_BROKER_URL,
     backend=CELERY_RESULT_BACKEND,
+    include=CELERY_TASK_MODULES,
 )
 
 celery_app.conf.update(
@@ -37,6 +46,29 @@ celery_app.conf.update(
     task_ignore_result=True,
     task_soft_time_limit=CELERY_TASK_SOFT_TIME_LIMIT,
     task_time_limit=CELERY_TASK_TIME_LIMIT,
+    imports=CELERY_TASK_MODULES,
 )
 
-celery_app.autodiscover_tasks(["backend.tasks"])
+# Keep autodiscovery as a helper, but rely on explicit imports/include for stable
+# task registration in production and Windows worker startup.
+celery_app.autodiscover_tasks(["backend.tasks"], force=True)
+
+
+def log_celery_bootstrap() -> None:
+    registered_tasks = sorted(
+        name
+        for name in celery_app.tasks.keys()
+        if not name.startswith("celery.")
+    )
+    logger.info(
+        "[Celery Bootstrap] queue_enabled=%s broker=%s backend=%s registered_tasks=%s",
+        TASK_QUEUE_ENABLED,
+        CELERY_BROKER_URL,
+        CELERY_RESULT_BACKEND,
+        registered_tasks,
+    )
+
+
+@worker_ready.connect
+def _on_worker_ready(**_: object) -> None:
+    log_celery_bootstrap()

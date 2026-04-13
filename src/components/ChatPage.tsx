@@ -3839,6 +3839,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     failed: false,
   });
   const [latestCompletedChatJob, setLatestCompletedChatJob] = useState<ChatJobCompletionTarget | null>(null);
+  const [currentJob, setCurrentJob] = useState<ChatJobSummaryResponse | null>(null);
+  const [chatJobResult, setChatJobResult] = useState<Record<string, unknown> | null>(null);
   
   // Refs
   const resultTopRef = useRef<HTMLDivElement>(null);
@@ -3965,6 +3967,30 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     });
   }, []);
 
+  const buildJobSummaryFromStatus = useCallback((jobStatus: ChatJobStatusResponse): ChatJobSummaryResponse => ({
+    jobId: jobStatus.jobId,
+    jobType: jobStatus.jobType,
+    jobTypeLabel: jobStatus.jobTypeLabel,
+    customerId: jobStatus.customerId,
+    customerName: jobStatus.customerName,
+    status: jobStatus.status,
+    progressMessage: jobStatus.progressMessage,
+    errorMessage: jobStatus.errorMessage ?? null,
+    createdAt: jobStatus.createdAt,
+    startedAt: jobStatus.startedAt,
+    finishedAt: jobStatus.finishedAt,
+    targetPage: jobStatus.targetPage ?? null,
+    resultSummary: jobStatus.resultSummary ?? null,
+  }), []);
+
+  const restoreCompletedJobFromStatus = useCallback((jobStatus: ChatJobStatusResponse) => {
+    const recoveredJob = buildJobSummaryFromStatus(jobStatus);
+    setCurrentJob(recoveredJob);
+    setChatJobResult(jobStatus.result ?? null);
+    clearObsoletePollFailureForJob(recoveredJob.jobId);
+    restoreCompletedChatJobFeedback(recoveredJob);
+  }, [buildJobSummaryFromStatus, clearObsoletePollFailureForJob, restoreCompletedChatJobFeedback]);
+
   const consumeCompletedJobResult = useCallback((
     jobStatus: ChatJobStatusResponse,
     requestMessages: ChatMessageWithReasoning[],
@@ -3976,6 +4002,23 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     resetRagState();
     const result = jobStatus.result ?? null;
     const successAction = getJobSuccessAction(jobStatus.jobType, jobStatus.targetPage);
+    const completedJobSummary: ChatJobSummaryResponse = {
+      jobId: jobStatus.jobId,
+      jobType: jobStatus.jobType,
+      jobTypeLabel: jobStatus.jobTypeLabel,
+      customerId: resolvedCustomerId ?? jobStatus.customerId,
+      customerName: resolvedCustomerName ?? jobStatus.customerName,
+      status: jobStatus.status,
+      progressMessage: jobStatus.progressMessage,
+      errorMessage: jobStatus.errorMessage ?? null,
+      createdAt: jobStatus.createdAt,
+      startedAt: jobStatus.startedAt,
+      finishedAt: jobStatus.finishedAt,
+      targetPage: successAction.targetPage,
+      resultSummary: jobStatus.resultSummary ?? null,
+    };
+    setCurrentJob(completedJobSummary);
+    setChatJobResult(result);
     setLatestCompletedChatJob({
       jobId: jobStatus.jobId,
       jobType: jobStatus.jobType,
@@ -4063,11 +4106,20 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     try {
       const jobs = await listChatJobs(8, getSignal());
       setRecentChatJobs(jobs);
-      if (chatJobPollErrorJobId) {
-        const recoveredJob = jobs.find((job) => job.jobId === chatJobPollErrorJobId && job.status === 'success');
-        if (recoveredJob && !chatJobSubmitError && !chatJobPolling) {
-          clearObsoletePollFailureForJob(recoveredJob.jobId);
-          restoreCompletedChatJobFeedback(recoveredJob);
+      const shouldRecoverSuccessfulJob = (!currentJob?.jobId || Boolean(chatJobPollErrorJobId)) && !chatJobSubmitError && !chatJobPolling;
+      if (shouldRecoverSuccessfulJob) {
+        const recoveredJob = chatJobPollErrorJobId
+          ? jobs.find((job) => job.jobId === chatJobPollErrorJobId && job.status === 'success')
+          : jobs.find((job) => job.status === 'success');
+        if (recoveredJob) {
+          try {
+            const recoveredStatus = await getChatJobStatus(recoveredJob.jobId, getSignal());
+            if (recoveredStatus.status === 'success') {
+              restoreCompletedJobFromStatus(recoveredStatus);
+            }
+          } catch (recoverError) {
+            console.warn('Failed to restore completed chat job result:', recoverError);
+          }
         }
       }
     } catch (jobsError) {
@@ -4076,7 +4128,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     } finally {
       setJobsLoading(false);
     }
-  }, [chatJobPollErrorJobId, chatJobPolling, chatJobSubmitError, clearObsoletePollFailureForJob, getSignal, restoreCompletedChatJobFeedback]);
+  }, [chatJobPollErrorJobId, chatJobPolling, chatJobSubmitError, currentJob?.jobId, getSignal, restoreCompletedJobFromStatus]);
 
   /**
    * Send message with given parameters
@@ -4853,28 +4905,28 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       pendingJob?.jobId === job.jobId
         ? pendingJob.requestMessages
         : messages;
-    const successAction = getJobSuccessAction(job.jobType, job.targetPage);
 
     if (job.customerId) {
       const matchedCustomer = customerOptions.find((item) => item.record_id === job.customerId);
       setCurrentCustomer(matchedCustomer?.name ?? null, job.customerId);
     }
 
-    if (job.status === 'success' && successAction.targetPage) {
+    if (job.status === 'success') {
       const status = await getChatJobStatus(job.jobId, getSignal());
       const resolvedCustomerName = status.customerName || job.customerName || (job.customerId ? (customerOptions.find((item) => item.record_id === job.customerId)?.name ?? null) : null);
       consumeCompletedJobResult(status, requestMessages, job.customerId || null, resolvedCustomerName);
-      onNavigate?.(successAction.targetPage);
       return;
     }
 
+    setCurrentJob(job);
+    setChatJobResult(null);
     await pollChatJob(job.jobId, requestMessages, {
       startedAt: new Date(job.startedAt || job.createdAt || new Date().toISOString()).getTime(),
       restored: true,
       customerId: job.customerId || null,
       customerName: job.customerName || (job.customerId ? (customerOptions.find((item) => item.record_id === job.customerId)?.name ?? null) : null),
     });
-  }, [readPendingChatJob, messages, customerOptions, setCurrentCustomer, getSignal, consumeCompletedJobResult, onNavigate, pollChatJob]);
+  }, [readPendingChatJob, messages, customerOptions, setCurrentCustomer, getSignal, consumeCompletedJobResult, pollChatJob]);
 
   const handleJumpToProfile = useCallback(() => {
     if (!latestCompletedChatJob?.customerId) {
@@ -4896,8 +4948,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   const groupedDisplayedChatJobs = useMemo(() => {
     const sortJobsForSidebar = (jobs: ChatJobSummaryResponse[]) => {
       const sorted = [...jobs].sort((a, b) => {
-        const aIsCurrent = latestCompletedChatJob?.jobId === a.jobId ? 1 : 0;
-        const bIsCurrent = latestCompletedChatJob?.jobId === b.jobId ? 1 : 0;
+        const aIsCurrent = currentJob?.jobId === a.jobId ? 1 : 0;
+        const bIsCurrent = currentJob?.jobId === b.jobId ? 1 : 0;
         if (aIsCurrent !== bIsCurrent) {
           return bIsCurrent - aIsCurrent;
         }
@@ -4939,7 +4991,86 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         countTone: 'bg-emerald-100 text-emerald-700',
       },
     ].filter((group) => group.jobs.length > 0);
-  }, [displayedChatJobs, latestCompletedChatJob?.jobId]);
+  }, [currentJob?.jobId, displayedChatJobs]);
+
+  const recoveredResultView = useMemo(() => {
+    if (!currentJob || !chatJobResult) {
+      return null;
+    }
+
+    if (currentJob.jobType === 'chat_extract') {
+      const response = chatJobResult as unknown as ChatResponse;
+      return (
+        <MessageBubble
+          message={{
+            role: 'assistant',
+            content: response.message || '资料提取已完成。',
+            reasoning: response.reasoning,
+            intent: response.intent,
+            data: response.data,
+          }}
+          onNavigate={onNavigate}
+        />
+      );
+    }
+
+    if (currentJob.jobType === 'risk_report') {
+      const response = chatJobResult as unknown as CustomerRiskReportResponse;
+      return (
+        <StructuredDataCard
+          data={{
+            ...(response.report_json as unknown as Record<string, unknown>),
+            generated_at: response.generated_at,
+            profile_version: response.profile_version,
+            profile_updated_at: response.profile_updated_at,
+            previous_report: response.previous_report,
+          }}
+          onNavigate={onNavigate}
+        />
+      );
+    }
+
+    if (currentJob.jobType === 'application_generate') {
+      const response = chatJobResult as unknown as import('../services/types').ApplicationResponse;
+      return (
+        <ApplicationResultCard
+          data={{
+            customerFound: response.customerFound,
+            customerName: currentJob.customerName || undefined,
+            applicationData: response.applicationData,
+            applicationContent: response.applicationContent,
+            warnings: response.warnings,
+            metadata: response.metadata,
+          }}
+          onNavigate={onNavigate}
+        />
+      );
+    }
+
+    if (currentJob.jobType === 'scheme_match') {
+      const response = chatJobResult as unknown as import('../services/types').SchemeMatchResponse & {
+        creditType?: string;
+        matchingData?: MatchingResultCardProps['data']['matchingData'];
+        needsInput?: boolean;
+        requiredFields?: string[];
+      };
+      return (
+        <MatchingResultCard
+          data={{
+            customerName: currentJob.customerName || undefined,
+            creditType: response.creditType,
+            matchingData: response.matchingData,
+            matchResult: response.matchResult,
+            needsInput: response.needsInput,
+            requiredFields: response.requiredFields,
+          }}
+          onNavigate={onNavigate}
+        />
+      );
+    }
+
+    return null;
+  }, [chatJobResult, currentJob, onNavigate]);
 
   const toggleJobGroup = useCallback((groupKey: string) => {
     setCollapsedJobGroups((prev) => ({
@@ -5065,7 +5196,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                   group.jobs.map((job) => {
                     const isLatestCompleted =
                       job.status === 'success' &&
-                      latestCompletedChatJob?.jobId === job.jobId;
+                      currentJob?.jobId === job.jobId;
                     return (
                       <AsyncJobCard
                         key={job.jobId}
@@ -5324,16 +5455,18 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                   <div className="flex flex-wrap gap-2 pt-1">
                     <span className="inline-flex rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700">
                       当前客户：{formatCustomerContextLabel(
-                        latestCompletedChatJob?.customerId ?? currentCustomerId ?? null,
-                        latestCompletedChatJob?.customerName ?? currentCustomerName ?? null
+                        currentJob?.customerId ?? latestCompletedChatJob?.customerId ?? currentCustomerId ?? null,
+                        currentJob?.customerName ?? latestCompletedChatJob?.customerName ?? currentCustomerName ?? null
                       )}
                     </span>
                     <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
-                      当前任务：{latestCompletedChatJob ? getJobTypeLabel(latestCompletedChatJob.jobType) : '聊天结果'}
+                      当前任务：{currentJob ? getJobTypeLabel(currentJob.jobType) : latestCompletedChatJob ? getJobTypeLabel(latestCompletedChatJob.jobType) : '聊天结果'}
                     </span>
                   </div>
                 </div>
-                {messages.length === 0 ? (
+                {recoveredResultView ? (
+                  recoveredResultView
+                ) : messages.length === 0 ? (
                   <>
                     {displayedChatJobs.length > 0 ? (
                       <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 px-6 py-8 text-center">

@@ -1226,6 +1226,13 @@ async def _submit_chat_extract_job(
     request_payload: dict[str, Any],
     current_user_payload: dict[str, Any] | None,
 ) -> None:
+    logger.info(
+        "[Chat Job] submit start job_id=%s queue_enabled=%s customer_id=%s username=%s",
+        job_id,
+        TASK_QUEUE_ENABLED,
+        request_payload.get("customerId") or "",
+        (current_user_payload or {}).get("username") or "",
+    )
     if TASK_QUEUE_ENABLED:
         from backend.tasks.chat_tasks import run_chat_extract_job_task
 
@@ -1236,15 +1243,19 @@ async def _submit_chat_extract_job(
             worker_name="celery",
         )
         logger.info(
-            "[Chat Job] dispatched to celery job_id=%s celery_task_id=%s",
+            "[Chat Job] dispatched to celery job_id=%s celery_task_id=%s customer_id=%s username=%s",
             job_id,
             async_result.id,
+            request_payload.get("customerId") or "",
+            (current_user_payload or {}).get("username") or "",
         )
         return
 
     logger.warning(
-        "[Chat Job] TASK_QUEUE_ENABLED is false, falling back to in-process execution job_id=%s",
+        "[Chat Job] fallback to in-process execution job_id=%s customer_id=%s username=%s",
         job_id,
+        request_payload.get("customerId") or "",
+        (current_user_payload or {}).get("username") or "",
     )
     _launch_chat_extract_job(job_id, request_payload, current_user_payload)
 
@@ -1314,7 +1325,15 @@ async def create_chat_job(
             "execution_payload_json": _build_chat_job_execution_payload(request_payload, current_user),
         }
     )
-    logger.info("[Chat Job] created job_id=%s username=%s customer_id=%s", job_id, username, request.customerId or "")
+    logger.info(
+        "[Chat Job] created job_id=%s job_type=%s username=%s customer_id=%s file_count=%s message_count=%s",
+        job_id,
+        "chat_extract",
+        username,
+        request.customerId or "",
+        len(request.files or []),
+        len(request.messages or []),
+    )
     try:
         await _submit_chat_extract_job(job_id, request_payload, current_user)
     except Exception as exc:
