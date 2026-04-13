@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from backend.celery_app import celery_app
+from backend.celery_app import CHAT_EXTRACT_TASK_NAME, celery_app
 
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="backend.tasks.chat_tasks.run_chat_extract_job")
+@celery_app.task(name=CHAT_EXTRACT_TASK_NAME)
 def run_chat_extract_job_task(job_id: str) -> dict[str, str]:
     """Run a chat extraction job by job_id."""
     task_id = getattr(run_chat_extract_job_task.request, "id", "") or ""

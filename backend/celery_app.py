@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import os
 import logging
+import importlib
 
 from celery import Celery
 from celery.signals import worker_ready
 
 CELERY_TASK_MODULES = (
     "backend.tasks.chat_tasks",
+)
+CHAT_EXTRACT_TASK_NAME = "backend.tasks.chat_tasks.run_chat_extract_job"
+LEGACY_CHAT_EXTRACT_TASK_NAMES = (
+    "backend.tasks.chat.run_chat_extract_job",
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +58,11 @@ celery_app.conf.update(
 # task registration in production and Windows worker startup.
 celery_app.autodiscover_tasks(["backend.tasks"], force=True)
 
+# Explicitly import task modules so worker registration does not depend on
+# autodiscovery quirks across Windows / different startup commands.
+for module_name in CELERY_TASK_MODULES:
+    importlib.import_module(module_name)
+
 
 def log_celery_bootstrap() -> None:
     registered_tasks = sorted(
@@ -60,13 +70,34 @@ def log_celery_bootstrap() -> None:
         for name in celery_app.tasks.keys()
         if not name.startswith("celery.")
     )
+    worker_pid = os.getpid()
+    legacy_registered_tasks = [
+        name for name in registered_tasks if name in LEGACY_CHAT_EXTRACT_TASK_NAMES
+    ]
+    expected_task_registered = CHAT_EXTRACT_TASK_NAME in registered_tasks
     logger.info(
-        "[Celery Bootstrap] queue_enabled=%s broker=%s backend=%s registered_tasks=%s",
+        "[Celery Bootstrap] pid=%s queue_enabled=%s broker=%s backend=%s expected_task=%s expected_registered=%s legacy_registered=%s registered_tasks=%s",
+        worker_pid,
         TASK_QUEUE_ENABLED,
         CELERY_BROKER_URL,
         CELERY_RESULT_BACKEND,
+        CHAT_EXTRACT_TASK_NAME,
+        expected_task_registered,
+        legacy_registered_tasks,
         registered_tasks,
     )
+    if not expected_task_registered:
+        logger.warning(
+            "[Celery Bootstrap] expected task missing. This worker may be running old code or started from the wrong app module. expected_task=%s pid=%s",
+            CHAT_EXTRACT_TASK_NAME,
+            worker_pid,
+        )
+    if legacy_registered_tasks:
+        logger.warning(
+            "[Celery Bootstrap] legacy task names are still registered. Please stop old workers before retrying. legacy_registered=%s pid=%s",
+            legacy_registered_tasks,
+            worker_pid,
+        )
 
 
 @worker_ready.connect

@@ -3804,7 +3804,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   const { loading, error, execute, reset: resetChatRequestState } = useLoading<ChatResponse>();
   const { loading: ragLoading, error: ragError, execute: executeRag, reset: resetRagState } = useLoading<CustomerRagChatResponse>();
   const { getSignal } = useAbortController();
-  const { addChatMessage, state, setApplicationResult, setChatTaskStatus, setCurrentCustomer, setSchemeResult, recordSystemActivity } = useApp();
+  const { addChatMessage, clearChatHistory, state, setApplicationResult, setChatTaskStatus, setCurrentCustomer, setSchemeResult, recordSystemActivity } = useApp();
   const currentCustomerId = state.extraction.currentCustomerId;
   const currentCustomerName = state.extraction.currentCustomer;
   const [chatJobPolling, setChatJobPolling] = useState(false);
@@ -4881,13 +4881,24 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     } catch (err) {
       console.error('Failed to clear customer cache:', err);
     }
-    // Reset conversation
+    clearPendingChatJob();
+    clearAsyncChatJobErrors();
+    setChatJobFeedback(null);
+    setRiskFeedback(null);
+    setLatestCompletedChatJob(null);
+    setCurrentJob(null);
+    setChatJobResult(null);
+    setChatJobPolling(false);
+    setApplicationResult(null);
+    setSchemeResult(null);
+    setChatTaskStatus('idle', null, null);
+    clearChatHistory();
     setMessages([]);
     setInputValue('');
     setAttachedFiles([]);
     setLastIntent(null);
     setCurrentCustomer(null, null);
-  }, [setCurrentCustomer]);
+  }, [clearAsyncChatJobErrors, clearChatHistory, clearPendingChatJob, setApplicationResult, setChatTaskStatus, setCurrentCustomer, setSchemeResult]);
 
   const handleCustomerChange = useCallback((customerId: string) => {
     if (!customerId) {

@@ -1234,9 +1234,9 @@ async def _submit_chat_extract_job(
         (current_user_payload or {}).get("username") or "",
     )
     if TASK_QUEUE_ENABLED:
-        from backend.tasks.chat_tasks import run_chat_extract_job_task
+        from backend.celery_app import CHAT_EXTRACT_TASK_NAME, celery_app
 
-        async_result = run_chat_extract_job_task.delay(job_id)
+        async_result = celery_app.send_task(CHAT_EXTRACT_TASK_NAME, args=[job_id])
         await chat_storage_service.mark_async_job_dispatched(
             job_id,
             async_result.id,
