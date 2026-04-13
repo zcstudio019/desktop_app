@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from typing import Any
 
 from sqlalchemy import delete, desc, select, update
@@ -655,8 +656,15 @@ class SQLAlchemyStorageService:
 
     async def save_customer_risk_report(self, report_data: dict) -> dict:
         with self._session_factory() as db:
+            report_id = report_data.get("report_id") or uuid.uuid4().hex
+            logger.info(
+                "[SQLAlchemyStorage] saving customer risk report report_id=%s customer_id=%s generated_at=%s",
+                report_id,
+                report_data.get("customer_id") or "",
+                report_data.get("generated_at") or "",
+            )
             row = CustomerRiskReport(
-                report_id=report_data["report_id"],
+                report_id=report_id,
                 customer_id=report_data["customer_id"],
                 profile_version=int(report_data.get("profile_version") or 1),
                 profile_updated_at=report_data.get("profile_updated_at") or "",

@@ -83,6 +83,7 @@ async def _build_customer_risk_report_payload(
     result = await risk_assessment_service.generate_report(storage_service, customer_id)
     await storage_service.save_customer_risk_report(
         {
+            "report_id": uuid.uuid4().hex,
             "customer_id": customer_id,
             "generated_at": result.get("generated_at") or "",
             "profile_version": result.get("profile_version") or 1,
@@ -166,6 +167,7 @@ async def _run_customer_risk_report_job(
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        raise
     except Exception as exc:
         logger.error("[Risk Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
         await storage_service.update_async_job(
@@ -177,6 +179,7 @@ async def _run_customer_risk_report_job(
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        raise
 
 
 def _launch_customer_risk_report_job(
