@@ -40,6 +40,7 @@ import type {
   ChatMessage,
   ChatFile,
   ChatIntentAsyncJob,
+  ChatSessionSummary,
   ChatJobSummaryResponse,
   ChatJobStatusResponse,
   ChatResponse,
@@ -154,6 +155,29 @@ function extractAsyncJobFromChatData(data: Record<string, unknown> | null | unde
     customerId: typeof job.customerId === 'string' ? job.customerId : null,
     customerName: typeof job.customerName === 'string' ? job.customerName : null,
     targetPage: typeof job.targetPage === 'string' ? job.targetPage : null,
+  };
+}
+
+function extractChatSessionSummary(data: Record<string, unknown> | null | undefined): ChatSessionSummary | null {
+  if (!data || typeof data !== 'object') {
+    return null;
+  }
+  const candidate = data.chatSession;
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+  const session = candidate as Record<string, unknown>;
+  if (typeof session.sessionId !== 'string' || !session.sessionId.trim()) {
+    return null;
+  }
+  return {
+    sessionId: session.sessionId,
+    title: typeof session.title === 'string' ? session.title : '',
+    customerId: typeof session.customerId === 'string' ? session.customerId : null,
+    customerName: typeof session.customerName === 'string' ? session.customerName : null,
+    lastMessagePreview: typeof session.lastMessagePreview === 'string' ? session.lastMessagePreview : null,
+    createdAt: typeof session.createdAt === 'string' ? session.createdAt : '',
+    updatedAt: typeof session.updatedAt === 'string' ? session.updatedAt : '',
   };
 }
 
@@ -3548,6 +3572,18 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isTyping, onNavi
           )}
           {/* Text content */}
           {text && <div className="whitespace-pre-wrap">{text}</div>}
+          {message.deliveryStatus && message.deliveryStatus !== 'sent' ? (
+            <div className="mt-2 flex items-center justify-end gap-2 text-[11px] text-white/80">
+              <span>
+                {message.deliveryStatus === 'pending' ? '发送中...' : '发送失败'}
+              </span>
+              {message.deliveryStatus === 'failed' && message.deliveryError ? (
+                <span className="max-w-[16rem] truncate text-white/70" title={message.deliveryError}>
+                  {message.deliveryError}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -3751,6 +3787,7 @@ interface ChatPageProps {
 
 const CHAT_JOB_STORAGE_KEY = 'loan-assistant-chat-job';
 const CHAT_JOB_COMPLETED_STORAGE_KEY = 'loan-assistant-chat-job-completed';
+const CHAT_SESSION_STORAGE_KEY = 'loan-assistant-chat-session-id';
 const CHAT_JOB_POLL_INTERVAL_MS = 2000;
 const CHAT_JOB_MAX_POLL_MS = 5 * 60 * 1000;
 const CHAT_JOB_MAX_FAILURES = 3;
@@ -3762,6 +3799,7 @@ interface PendingChatJobState {
   customerName: string | null;
   createdAt: string;
   requestMessages: ChatMessageWithReasoning[];
+  sessionId?: string | null;
 }
 
 interface ChatJobCompletionTarget {
@@ -3858,6 +3896,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     success: true,
     failed: false,
   });
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
   const [latestCompletedChatJob, setLatestCompletedChatJob] = useState<ChatJobCompletionTarget | null>(null);
   const [currentJob, setCurrentJob] = useState<ChatJobSummaryResponse | null>(null);
   const [chatJobResult, setChatJobResult] = useState<Record<string, unknown> | null>(null);
@@ -3909,6 +3948,44 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       return null;
     }
   }, []);
+
+  const persistChatSessionId = useCallback((sessionId: string | null) => {
+    try {
+      if (sessionId) {
+        window.localStorage.setItem(CHAT_SESSION_STORAGE_KEY, sessionId);
+      } else {
+        window.localStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
+      }
+    } catch (storageError) {
+      console.warn('Failed to persist chat session id:', storageError);
+    }
+  }, []);
+
+  const readChatSessionId = useCallback((): string | null => {
+    try {
+      return window.localStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+    } catch (storageError) {
+      console.warn('Failed to read chat session id:', storageError);
+      return null;
+    }
+  }, []);
+
+  const updateLocalMessageStatus = useCallback(
+    (clientMessageId: string, status: NonNullable<ChatMessage['deliveryStatus']>, deliveryError?: string | null) => {
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.clientMessageId === clientMessageId
+            ? {
+                ...message,
+                deliveryStatus: status,
+                deliveryError: status === 'failed' ? deliveryError || '发送失败，请稍后重试。' : null,
+              }
+            : message,
+        ),
+      );
+    },
+    [],
+  );
 
   const clearAsyncChatJobErrors = useCallback(() => {
     setChatJobSubmitError(null);
@@ -4269,9 +4346,13 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     mergeDecisions?: Record<string, string>,
   ) => {
     // Create user message
-    const userMessage: ChatMessage = {
+    const clientMessageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const userMessage: ChatMessageWithReasoning = {
       role: 'user',
       content: messageContent,
+      clientMessageId,
+      deliveryStatus: 'pending',
+      deliveryError: null,
     };
 
     // Update local state immediately
@@ -4290,12 +4371,14 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           {
             messages: newMessages,
             files: chatFiles,
+            sessionId: chatSessionId,
             customerId: currentCustomerId,
             customerName: currentCustomerName,
             mergeDecisions,
           },
           getSignal(),
         );
+        updateLocalMessageStatus(clientMessageId, 'sent');
         setChatJobSubmitError(null);
         setChatJobPollError(null);
         persistPendingChatJob({
@@ -4304,12 +4387,14 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           customerName: currentCustomerName,
           createdAt: new Date().toISOString(),
           requestMessages: newMessages,
+          sessionId: chatSessionId,
         });
         void loadRecentChatJobs();
         setChatTaskStatus('idle', null, null);
         await pollChatJob(job.jobId, newMessages, { startedAt: Date.now() });
       } catch (jobError) {
         console.error('Failed to create chat job:', jobError);
+        updateLocalMessageStatus(clientMessageId, 'failed', jobError instanceof Error ? jobError.message : '本次提取任务未能成功提交。');
         clearPendingChatJob();
         const submitMessage = jobError instanceof Error ? jobError.message : '本次提取任务未能成功提交。';
         setChatJobSubmitError(submitMessage);
@@ -4332,6 +4417,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         {
           messages: newMessages,
           files: chatFiles || undefined,
+          sessionId: chatSessionId,
           customerId: currentCustomerId,
           customerName: currentCustomerName,
           mergeDecisions,
@@ -4341,6 +4427,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     });
 
     if (response) {
+      updateLocalMessageStatus(clientMessageId, 'sent');
+      const persistedSession = extractChatSessionSummary(response.data);
+      if (persistedSession?.sessionId) {
+        setChatSessionId(persistedSession.sessionId);
+        persistChatSessionId(persistedSession.sessionId);
+      }
       // Check if any file has similarCustomers (needs merge decision)
       const filesWithSimilar: Array<{
         customerName?: string;
@@ -4386,6 +4478,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           customerName: asyncJob.customerName ?? currentCustomerName,
           createdAt: new Date().toISOString(),
           requestMessages: [...newMessages, assistantMessage],
+          sessionId: persistedSession?.sessionId ?? chatSessionId,
         });
         void loadRecentChatJobs();
         setChatTaskStatus('idle', null, null);
@@ -4423,11 +4516,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       const isAbortError = execError?.name === 'AbortError';
       if (!isAbortError) {
         // Real failure, reset status
+        updateLocalMessageStatus(clientMessageId, 'failed', execError?.message || '本次发送未成功。');
         setChatTaskStatus('idle', null, null);
       }
       // If aborted, keep 'sending' status for recovery
     }
-  }, [execute, getSignal, addChatMessage, currentCustomerId, currentCustomerName, recordSystemActivity, setChatTaskStatus, pollChatJob, persistPendingChatJob, clearPendingChatJob, loadRecentChatJobs, clearAsyncChatJobErrors, resetChatRequestState, resetRagState]);
+  }, [execute, getSignal, addChatMessage, chatSessionId, currentCustomerId, currentCustomerName, recordSystemActivity, setChatTaskStatus, pollChatJob, persistPendingChatJob, clearPendingChatJob, loadRecentChatJobs, clearAsyncChatJobErrors, resetChatRequestState, resetRagState, persistChatSessionId, updateLocalMessageStatus]);
 
   async function pollChatJob(
     jobId: string,
@@ -4738,6 +4832,11 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     if (hasCheckedRecoveryRef.current) {
       return; // 已经检查过恢复，不再重复
     }
+
+    const persistedSessionId = readChatSessionId();
+    if (persistedSessionId) {
+      setChatSessionId(persistedSessionId);
+    }
     
     // 恢复消息历史
     if (state.chat.messages.length > 0) {
@@ -4766,6 +4865,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       }
       if (state.chat.messages.length === 0 && pendingJob.requestMessages.length > 0) {
         setMessages(pendingJob.requestMessages);
+      }
+      if (pendingJob.sessionId) {
+        setChatSessionId(pendingJob.sessionId);
+        persistChatSessionId(pendingJob.sessionId);
       }
       setTimeout(() => {
         void pollChatJob(pendingJob.jobId, pendingJob.requestMessages, {
@@ -5034,13 +5137,15 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     setApplicationResult(null);
     setSchemeResult(null);
     setChatTaskStatus('idle', null, null);
+    setChatSessionId(null);
+    persistChatSessionId(null);
     clearChatHistory();
     setMessages([]);
     setInputValue('');
     setAttachedFiles([]);
     setLastIntent(null);
     setCurrentCustomer(null, null);
-  }, [clearAsyncChatJobErrors, clearChatHistory, clearPendingChatJob, setApplicationResult, setChatTaskStatus, setCurrentCustomer, setSchemeResult]);
+  }, [clearAsyncChatJobErrors, clearChatHistory, clearPendingChatJob, persistChatSessionId, setApplicationResult, setChatTaskStatus, setCurrentCustomer, setSchemeResult]);
 
   const handleCustomerChange = useCallback((customerId: string) => {
     if (!customerId) {
@@ -5639,7 +5744,31 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                   </div>
                 </div>
                 {recoveredResultView ? (
-                  recoveredResultView
+                  <div className="space-y-6">
+                    {recoveredResultView}
+                    {messages.length > 0 ? (
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/40 p-4">
+                        <div className="mb-3 flex items-center gap-2 border-b border-slate-100 pb-3">
+                          <span className="inline-flex rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                            聊天记录
+                          </span>
+                          <div className="text-sm font-semibold text-slate-800">本轮对话</div>
+                        </div>
+                        <div className="space-y-0">
+                          {messages.map((msg, index) => (
+                            <React.Fragment key={msg.clientMessageId || `${msg.role}-${index}`}>
+                              <MessageBubble message={msg} onNavigate={onNavigate} />
+                              {msg.role === 'assistant' && index === messages.length - 1 && lastIntent && !msg.data && (
+                                <div className="ml-12 mb-4">
+                                  <IntentActions intent={lastIntent} onAction={handleIntentAction} />
+                                </div>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 ) : messages.length === 0 ? (
                   <>
                     {displayedChatJobs.length > 0 ? (
@@ -5709,7 +5838,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                 ) : (
                   <>
                     {messages.map((msg, index) => (
-                      <React.Fragment key={index}>
+                      <React.Fragment key={msg.clientMessageId || index}>
                         <MessageBubble message={msg} onNavigate={onNavigate} />
                         {msg.role === 'assistant' && index === messages.length - 1 && lastIntent && !msg.data && (
                           <div className="ml-12 mb-4">

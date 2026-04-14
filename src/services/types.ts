@@ -146,6 +146,12 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   /** Message content */
   content: string;
+  /** Client-side message id for optimistic rendering */
+  clientMessageId?: string;
+  /** Local delivery status for optimistic rendering */
+  deliveryStatus?: 'pending' | 'sent' | 'failed';
+  /** Optional local delivery error */
+  deliveryError?: string | null;
 }
 
 /**
@@ -199,6 +205,16 @@ export interface ChatResponse {
   data: Record<string, unknown> | null;
   /** AI reasoning/thinking process (from DeepSeek thinking feature) */
   reasoning?: string | null;
+}
+
+export interface ChatSessionSummary {
+  sessionId: string;
+  title?: string;
+  customerId?: string | null;
+  customerName?: string | null;
+  lastMessagePreview?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ChatJobCreateResponse {
