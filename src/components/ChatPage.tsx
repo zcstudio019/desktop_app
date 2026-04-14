@@ -39,6 +39,7 @@ import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessF
 import type {
   ChatMessage,
   ChatFile,
+  ChatIntentAsyncJob,
   ChatJobSummaryResponse,
   ChatJobStatusResponse,
   ChatResponse,
@@ -108,6 +109,52 @@ function formatCustomerContextLabel(customerId: string | null, customerName: str
     return '未选择客户';
   }
   return stripInternalId(customerId);
+}
+
+function buildSubmittedJobFeedback(
+  jobType: 'chat_extract' | 'scheme_match',
+  description?: string | null,
+): {
+  tone: 'processing';
+  title: string;
+  description: string;
+  persistenceHint: string;
+  nextStep: string;
+} {
+  const isSchemeMatch = jobType === 'scheme_match';
+  return {
+    tone: 'processing',
+    title: isSchemeMatch ? '方案匹配任务已提交' : '资料提取任务已提交',
+    description:
+      description?.trim() ||
+      (isSchemeMatch
+        ? '系统已接收本次方案匹配任务，正在后台排队处理。'
+        : '系统已接收本次资料提取任务，正在后台排队处理。'),
+    persistenceHint: '主流程已进入后台处理，页面会自动轮询状态。',
+    nextStep: isSchemeMatch ? '请稍候，完成后会自动展示匹配结果。' : '请稍候，完成后会自动展示提取结果。',
+  };
+}
+
+function extractAsyncJobFromChatData(data: Record<string, unknown> | null | undefined): ChatIntentAsyncJob | null {
+  if (!data || typeof data !== 'object') {
+    return null;
+  }
+  const candidate = data.asyncJob;
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+  const job = candidate as Record<string, unknown>;
+  if (typeof job.jobId !== 'string' || !job.jobId.trim()) {
+    return null;
+  }
+  return {
+    jobId: job.jobId,
+    status: typeof job.status === 'string' ? job.status : 'pending',
+    jobType: typeof job.jobType === 'string' ? job.jobType : null,
+    customerId: typeof job.customerId === 'string' ? job.customerId : null,
+    customerName: typeof job.customerName === 'string' ? job.customerName : null,
+    targetPage: typeof job.targetPage === 'string' ? job.targetPage : null,
+  };
 }
 
 function formatLocalDateTime(value?: string | null): string {
@@ -4125,6 +4172,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       const response = result as unknown as import('../services/types').SchemeMatchResponse & { creditType?: string };
       setSchemeResult({
         result: response.matchResult,
+        matchingData: response.matchingData ?? null,
         lastCreditType: response.creditType ?? null,
         customerId: resolvedCustomerId,
         customerName: resolvedCustomerName,
@@ -4133,10 +4181,29 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         staleReason: '',
         staleAt: '',
       });
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: `已完成当前客户的方案匹配，可继续查看推荐方案、准备材料和审批流程。`,
+        intent: 'matching',
+        data: {
+          action: 'matching',
+          customerFound: true,
+          customerName: resolvedCustomerName,
+          creditType: response.creditType ?? null,
+          matchingData: response.matchingData ?? null,
+          matchResult: response.matchResult,
+        },
+      };
+      setMessages((prev) => {
+        const baseMessages = prev.length > 0 ? prev : requestMessages;
+        return [...baseMessages, assistantMessage];
+      });
+      addChatMessage(assistantMessage);
+      setLastIntent('matching');
     }
 
     markChatJobCompleted(normalizedStatus.jobId);
-  }, [addChatMessage, clearAsyncChatJobErrors, markChatJobCompleted, resetChatRequestState, resetRagState, setApplicationResult, setSchemeResult, syncRecentJobFromStatus]);
+  }, [addChatMessage, clearAsyncChatJobErrors, markChatJobCompleted, resetChatRequestState, resetRagState, setApplicationResult, setLastIntent, setSchemeResult, syncRecentJobFromStatus]);
 
   const loadRecentChatJobs = useCallback(async () => {
     setJobsLoading(true);
@@ -4216,13 +4283,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       resetChatRequestState();
       resetRagState();
       clearAsyncChatJobErrors();
-      setChatJobFeedback({
-        tone: 'processing',
-        title: '资料提取任务已提交',
-        description: '系统已接收本次资料提取任务，正在后台排队处理。',
-        persistenceHint: '主流程已进入后台处理，页面会自动轮询状态。',
-        nextStep: '请稍候，完成后会自动展示提取结果。',
-      });
+      setChatJobFeedback(buildSubmittedJobFeedback('chat_extract'));
 
       try {
         const job = await createChatJob(
@@ -4311,6 +4372,30 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       setMessages(prev => [...prev, assistantMessage]);
       addChatMessage(assistantMessage);
       setLastIntent(response.intent);
+      const asyncJob = extractAsyncJobFromChatData(response.data);
+      if (response.intent === 'matching' && asyncJob) {
+        resetChatRequestState();
+        resetRagState();
+        clearAsyncChatJobErrors();
+        setChatJobFeedback(buildSubmittedJobFeedback('scheme_match', response.message));
+        setChatJobSubmitError(null);
+        setChatJobPollError(null);
+        persistPendingChatJob({
+          jobId: asyncJob.jobId,
+          customerId: asyncJob.customerId ?? currentCustomerId,
+          customerName: asyncJob.customerName ?? currentCustomerName,
+          createdAt: new Date().toISOString(),
+          requestMessages: [...newMessages, assistantMessage],
+        });
+        void loadRecentChatJobs();
+        setChatTaskStatus('idle', null, null);
+        await pollChatJob(asyncJob.jobId, [...newMessages, assistantMessage], {
+          startedAt: Date.now(),
+          customerId: asyncJob.customerId ?? currentCustomerId,
+          customerName: asyncJob.customerName ?? currentCustomerName,
+        });
+        return;
+      }
       if (response.intent === 'application') {
         recordSystemActivity({
           type: 'application',
@@ -4451,9 +4536,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         }
 
         if (status.status === 'success' && status.result) {
-          if (status.jobType === 'chat_extract') {
-            clearPendingChatJob();
-          }
+          clearPendingChatJob();
           setChatJobSubmitError(null);
           setChatJobPollError(null);
           setChatJobPollErrorJobId(null);
@@ -4513,9 +4596,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           return;
         }
 
-        if (status.jobType === 'chat_extract') {
-          clearPendingChatJob();
-        }
+        clearPendingChatJob();
         setChatJobSubmitError(null);
         setChatJobPollError(null);
         setChatJobPollErrorJobId(null);

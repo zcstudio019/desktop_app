@@ -61,6 +61,7 @@ from ..models.schemas import (
     ChatResponse,
     ChatSessionCreateRequest,
     ChatSessionSummary,
+    SchemeMatchRequest,
 )
 from ..services.activity_service import add_activity, update_customer_status
 from .chat_extraction import (
@@ -567,6 +568,7 @@ async def handle_matching_intent(
     conversation_history: list[dict[str, str]],
     selected_customer_id: str | None = None,
     selected_customer_name: str | None = None,
+    current_user: dict | None = None,
 ) -> dict[str, Any]:
     """Handle matching intent - get customer data and match schemes.
 
@@ -603,33 +605,62 @@ async def handle_matching_intent(
 
     logger.info(f"Matching scheme for customer: {customer_name}, credit_type: {credit_type}")
 
+    request_customer_data: dict[str, Any] = {}
     use_app = is_application_based_matching(message)
-    found, customer_data, loan_override, error_msg = await _fetch_customer_data(customer_name, use_app)
 
-    if loan_override:
-        loan_type = loan_override
-        credit_type = _CREDIT_TYPE_MAP.get(loan_type, "enterprise_credit")
-
-    if not found:
-        action = "matching"
-        return {"message": error_msg, "data": {"action": action, "customerFound": False, "customerName": customer_name}}
+    if selected_customer_id:
+        app_found, app_data, app_loan_type = await get_latest_application_for_customer(customer_name)
+        if app_found and app_data:
+            request_customer_data = app_data
+            if app_loan_type:
+                loan_type = app_loan_type
+                credit_type = _CREDIT_TYPE_MAP.get(loan_type, "enterprise_credit")
+    else:
+        found, customer_data, loan_override, error_msg = await _fetch_customer_data(customer_name, use_app)
+        if loan_override:
+            loan_type = loan_override
+            credit_type = _CREDIT_TYPE_MAP.get(loan_type, "enterprise_credit")
+        if not found:
+            action = "matching"
+            return {"message": error_msg, "data": {"action": action, "customerFound": False, "customerName": customer_name}}
+        request_customer_data = customer_data
 
     try:
-        return await _execute_scheme_matching(customer_name, customer_data, credit_type)
-    except WikiServiceError as e:
-        logger.error(f"Wiki service error: {e}")
+        from backend.routers.scheme import _create_scheme_match_job
+
+        scheme_request = SchemeMatchRequest(
+            customerData=request_customer_data or {},
+            customerId=selected_customer_id,
+            customerName=customer_name,
+            creditType=credit_type,
+        )
+        job = await _create_scheme_match_job(scheme_request, current_user or {})
         return {
-            "message": MATCHING_SERVICE_UNAVAILABLE_MESSAGE,
-            "data": {"action": "matching", "error": "wiki_service_error"},
+            "message": f"已为客户“{customer_name}”创建方案匹配任务，系统正在后台处理中。",
+            "data": {
+                "action": "matching",
+                "queued": True,
+                "customerFound": True,
+                "customerName": customer_name,
+                "creditType": credit_type,
+                "asyncJob": {
+                    "jobId": job.jobId,
+                    "status": job.status,
+                    "jobType": "scheme_match",
+                    "customerId": selected_customer_id,
+                    "customerName": customer_name,
+                    "targetPage": "matching",
+                },
+            },
         }
-    except AIServiceError as e:
-        logger.error(f"AI service error: {e}")
+    except HTTPException as e:
+        logger.error(f"Scheme job creation error: {e.detail}")
         return {
-            "message": MATCHING_SERVICE_UNAVAILABLE_MESSAGE,
-            "data": {"action": "matching", "error": "ai_service_error"},
+            "message": str(e.detail) or MATCHING_SERVICE_UNAVAILABLE_MESSAGE,
+            "data": {"action": "matching", "error": "scheme_job_create_failed"},
         }
     except Exception as e:
-        logger.error(f"Unexpected error matching schemes: {e}")
+        logger.error(f"Unexpected error creating scheme job: {e}")
         return {
             "message": MATCHING_SERVICE_UNAVAILABLE_MESSAGE,
             "data": {"action": "matching", "error": "unexpected_error"},
@@ -1518,6 +1549,7 @@ async def _dispatch_intent(
             conversation_history,
             selected_customer_id=request.customerId,
             selected_customer_name=request.customerName,
+            current_user=current_user,
         )
     else:
         msg, reasoning = generate_chat_response(user_message, conversation_history)

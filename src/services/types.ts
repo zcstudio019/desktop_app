@@ -206,6 +206,15 @@ export interface ChatJobCreateResponse {
   status: 'pending' | 'running' | 'success' | 'failed' | string;
 }
 
+export interface ChatIntentAsyncJob {
+  jobId: string;
+  status: 'pending' | 'running' | 'success' | 'failed' | string;
+  jobType?: string | null;
+  customerId?: string | null;
+  customerName?: string | null;
+  targetPage?: string | null;
+}
+
 export interface ChatJobSummaryResponse {
   jobId: string;
   jobType: string;

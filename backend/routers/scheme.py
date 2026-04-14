@@ -518,66 +518,73 @@ def get_products_by_credit_type(credit_type: str) -> str:
         )
 
 
+async def _create_scheme_match_job(
+    request: SchemeMatchRequest,
+    current_user: dict,
+) -> ChatJobCreateResponse:
+    request, _ = await _prepare_scheme_match_request(request)
+    job_id = uuid.uuid4().hex
+    request_payload = request.model_dump()
+    execution_payload = _build_scheme_match_job_execution_payload(job_id, request, current_user)
+    logger.info(
+        "[Scheme Job] execution payload prepared job_id=%s customer_id=%s username=%s payload_keys=%s",
+        job_id,
+        request.customerId or "",
+        current_user.get("username") or "",
+        sorted(execution_payload.keys()),
+    )
+    await storage_service.create_async_job(
+        {
+            "job_id": job_id,
+            "job_type": "scheme_match",
+            "customer_id": request.customerId or "",
+            "username": current_user.get("username") or "",
+            "status": "pending",
+            "progress_message": "processing",
+            "request_json": request_payload,
+            "execution_payload_json": execution_payload,
+        }
+    )
+    logger.info(
+        "[Scheme Job] created job_id=%s job_type=%s username=%s customer_id=%s request_snapshot=%s",
+        job_id,
+        "scheme_match",
+        current_user.get("username") or "",
+        request.customerId or "",
+        {
+            "customerName": request.customerName,
+            "creditType": request.creditType,
+            "hasCustomerData": bool(request.customerData),
+        },
+    )
+    persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not persisted_execution_payload:
+        logger.warning(
+            "[Scheme Job] execution payload missing after create job_id=%s, retrying payload save",
+            job_id,
+        )
+        await storage_service.set_async_job_execution_payload(job_id, execution_payload)
+        persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not persisted_execution_payload:
+        raise HTTPException(status_code=500, detail="方案匹配任务载荷保存失败")
+    logger.info(
+        "[Scheme Job] execution payload saved job_id=%s customer_id=%s username=%s payload_keys=%s payload_customer_name=%s",
+        job_id,
+        request.customerId or "",
+        current_user.get("username") or "",
+        sorted(persisted_execution_payload.keys()),
+        persisted_execution_payload.get("customerName") or "",
+    )
+    await _dispatch_scheme_match_job(job_id, request.customerId or "", current_user)
+    return ChatJobCreateResponse(jobId=job_id, status="pending")
+
+
 async def _create_scheme_match_job_safe(
     request: SchemeMatchRequest,
     current_user: dict,
 ) -> ChatJobCreateResponse | JSONResponse:
     try:
-        request, _ = await _prepare_scheme_match_request(request)
-        job_id = uuid.uuid4().hex
-        request_payload = request.model_dump()
-        execution_payload = _build_scheme_match_job_execution_payload(job_id, request, current_user)
-        logger.info(
-            "[Scheme Job] execution payload prepared job_id=%s customer_id=%s username=%s payload_keys=%s",
-            job_id,
-            request.customerId or "",
-            current_user.get("username") or "",
-            sorted(execution_payload.keys()),
-        )
-        await storage_service.create_async_job(
-            {
-                "job_id": job_id,
-                "job_type": "scheme_match",
-                "customer_id": request.customerId or "",
-                "username": current_user.get("username") or "",
-                "status": "pending",
-                "progress_message": "processing",
-                "request_json": request_payload,
-                "execution_payload_json": execution_payload,
-            }
-        )
-        logger.info(
-            "[Scheme Job] created job_id=%s job_type=%s username=%s customer_id=%s request_snapshot=%s",
-            job_id,
-            "scheme_match",
-            current_user.get("username") or "",
-            request.customerId or "",
-            {
-                "customerName": request.customerName,
-                "creditType": request.creditType,
-                "hasCustomerData": bool(request.customerData),
-            },
-        )
-        persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
-        if not persisted_execution_payload:
-            logger.warning(
-                "[Scheme Job] execution payload missing after create job_id=%s, retrying payload save",
-                job_id,
-            )
-            await storage_service.set_async_job_execution_payload(job_id, execution_payload)
-            persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
-        if not persisted_execution_payload:
-            raise HTTPException(status_code=500, detail="方案匹配任务载荷保存失败")
-        logger.info(
-            "[Scheme Job] execution payload saved job_id=%s customer_id=%s username=%s payload_keys=%s payload_customer_name=%s",
-            job_id,
-            request.customerId or "",
-            current_user.get("username") or "",
-            sorted(persisted_execution_payload.keys()),
-            persisted_execution_payload.get("customerName") or "",
-        )
-        await _dispatch_scheme_match_job(job_id, request.customerId or "", current_user)
-        return ChatJobCreateResponse(jobId=job_id, status="pending")
+        return await _create_scheme_match_job(request, current_user)
     except HTTPException as exc:
         logger.exception("error detail")
         return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
@@ -617,61 +624,6 @@ async def create_scheme_match_job(
     current_user: dict = Depends(get_current_user),
 ) -> ChatJobCreateResponse:
     return await _create_scheme_match_job_safe(request, current_user)
-    request, _ = await _prepare_scheme_match_request(request)
-    job_id = uuid.uuid4().hex
-    request_payload = request.model_dump()
-    execution_payload = _build_scheme_match_job_execution_payload(job_id, request, current_user)
-    logger.info(
-        "[Scheme Job] execution payload prepared job_id=%s customer_id=%s username=%s payload_keys=%s",
-        job_id,
-        request.customerId or "",
-        current_user.get("username") or "",
-        sorted(execution_payload.keys()),
-    )
-    await storage_service.create_async_job(
-        {
-            "job_id": job_id,
-            "job_type": "scheme_match",
-            "customer_id": request.customerId or "",
-            "username": current_user.get("username") or "",
-            "status": "pending",
-            "progress_message": "已接收任务",
-            "request_json": request_payload,
-            "execution_payload_json": execution_payload,
-        }
-    )
-    logger.info(
-        "[Scheme Job] created job_id=%s job_type=%s username=%s customer_id=%s request_snapshot=%s",
-        job_id,
-        "scheme_match",
-        current_user.get("username") or "",
-        request.customerId or "",
-        {
-            "customerName": request.customerName,
-            "creditType": request.creditType,
-            "hasCustomerData": bool(request.customerData),
-        },
-    )
-    persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
-    if not persisted_execution_payload:
-        logger.warning(
-            "[Scheme Job] execution payload missing after create job_id=%s, retrying payload save",
-            job_id,
-        )
-        await storage_service.set_async_job_execution_payload(job_id, execution_payload)
-        persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
-    if not persisted_execution_payload:
-        raise HTTPException(status_code=500, detail="方案匹配任务载荷保存失败")
-    logger.info(
-        "[Scheme Job] execution payload saved job_id=%s customer_id=%s username=%s payload_keys=%s payload_customer_name=%s",
-        job_id,
-        request.customerId or "",
-        current_user.get("username") or "",
-        sorted(persisted_execution_payload.keys()),
-        persisted_execution_payload.get("customerName") or "",
-    )
-    await _dispatch_scheme_match_job(job_id, request.customerId or "", current_user)
-    return ChatJobCreateResponse(jobId=job_id, status="pending")
 
 
 # =============================================================================
