@@ -9,6 +9,7 @@ import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from backend.database import SessionLocal
 from backend.db_models import UserAccount
@@ -293,14 +294,21 @@ async def forgot_password(request: ForgotPasswordRequest) -> dict:
 
 @router.get("/me", response_model=UserInfo)
 async def get_me(current_user: dict = Depends(get_current_user)) -> UserInfo:
-    with SessionLocal() as db:
-        user = db.query(UserAccount).filter(UserAccount.username == current_user["username"]).first()
-        if not user:
-            raise HTTPException(status_code=404, detail=USER_NOT_FOUND_MESSAGE)
-        if not user.last_login_at and current_user.get("token_iat"):
-            user.last_login_at = datetime.fromtimestamp(float(current_user["token_iat"]), tz=timezone.utc).isoformat()
-            db.commit()
-        return _row_to_user_info(user)
+    try:
+        with SessionLocal() as db:
+            user = db.query(UserAccount).filter(UserAccount.username == current_user["username"]).first()
+            if not user:
+                raise HTTPException(status_code=404, detail=USER_NOT_FOUND_MESSAGE)
+            if not user.last_login_at and current_user.get("token_iat"):
+                user.last_login_at = datetime.fromtimestamp(float(current_user["token_iat"]), tz=timezone.utc).isoformat()
+                db.commit()
+            return _row_to_user_info(user)
+    except HTTPException as exc:
+        logger.exception("/api/auth/me returned HTTPException")
+        return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+    except Exception as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @router.put("/me", response_model=UserInfo)

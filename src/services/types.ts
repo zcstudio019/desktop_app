@@ -130,6 +130,8 @@ export interface SchemeMatchRequest {
 export interface SchemeMatchResponse {
   /** Matching result in formatted text */
   matchResult: string;
+  /** Structured matching result for card rendering */
+  matchingData?: Record<string, unknown> | null;
 }
 
 // ============================================

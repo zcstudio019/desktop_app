@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 # Add desktop_app to path for imports
 desktop_app_path = Path(__file__).parent.parent.parent
@@ -33,7 +34,7 @@ if str(desktop_app_path) not in sys.path:
 from backend.celery_app import TASK_QUEUE_ENABLED
 from backend.database import SessionLocal
 from backend.db_models import SavedApplicationRecord
-from backend.routers.chat_helpers import get_customer_data_local
+from backend.routers.chat_helpers import convert_matching_result_to_json, get_customer_data_local
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.activity_service import add_activity, update_customer_status
 from backend.services.product_cache_service import get_cache_content, save_cache_map
@@ -157,9 +158,15 @@ async def _match_scheme_payload(
             raise HTTPException(status_code=500, detail=PRODUCT_LIBRARY_EMPTY_MESSAGE)
         logger.info(f"Retrieved product library, length: {len(products)} characters")
     except ValueError as e:
+        logger.exception("error detail")
         raise HTTPException(status_code=400, detail=INVALID_CREDIT_TYPE_MESSAGE) from e
     except WikiServiceError as e:
-        logger.error(f"Unexpected error retrieving products: {e}")
+        logger.exception("error detail")
+        raise HTTPException(status_code=500, detail=PRODUCT_LIBRARY_FETCH_FAILED_MESSAGE) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("error detail")
         raise HTTPException(status_code=500, detail=PRODUCT_LIBRARY_FETCH_FAILED_MESSAGE) from e
 
     try:
@@ -210,8 +217,16 @@ async def _match_scheme_payload(
     if request.customerName:
         update_customer_status(request.customerName, has_matching=True)
 
+    matching_data = convert_matching_result_to_json(
+        match_result,
+        request.customerName or "",
+        request.creditType,
+        products,
+    )
+
     return {
         "matchResult": match_result,
+        "matchingData": matching_data,
         "customerId": request.customerId or "",
         "customerName": request.customerName or "",
         "creditType": request.creditType,
@@ -503,6 +518,74 @@ def get_products_by_credit_type(credit_type: str) -> str:
         )
 
 
+async def _create_scheme_match_job_safe(
+    request: SchemeMatchRequest,
+    current_user: dict,
+) -> ChatJobCreateResponse | JSONResponse:
+    try:
+        request, _ = await _prepare_scheme_match_request(request)
+        job_id = uuid.uuid4().hex
+        request_payload = request.model_dump()
+        execution_payload = _build_scheme_match_job_execution_payload(job_id, request, current_user)
+        logger.info(
+            "[Scheme Job] execution payload prepared job_id=%s customer_id=%s username=%s payload_keys=%s",
+            job_id,
+            request.customerId or "",
+            current_user.get("username") or "",
+            sorted(execution_payload.keys()),
+        )
+        await storage_service.create_async_job(
+            {
+                "job_id": job_id,
+                "job_type": "scheme_match",
+                "customer_id": request.customerId or "",
+                "username": current_user.get("username") or "",
+                "status": "pending",
+                "progress_message": "processing",
+                "request_json": request_payload,
+                "execution_payload_json": execution_payload,
+            }
+        )
+        logger.info(
+            "[Scheme Job] created job_id=%s job_type=%s username=%s customer_id=%s request_snapshot=%s",
+            job_id,
+            "scheme_match",
+            current_user.get("username") or "",
+            request.customerId or "",
+            {
+                "customerName": request.customerName,
+                "creditType": request.creditType,
+                "hasCustomerData": bool(request.customerData),
+            },
+        )
+        persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+        if not persisted_execution_payload:
+            logger.warning(
+                "[Scheme Job] execution payload missing after create job_id=%s, retrying payload save",
+                job_id,
+            )
+            await storage_service.set_async_job_execution_payload(job_id, execution_payload)
+            persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+        if not persisted_execution_payload:
+            raise HTTPException(status_code=500, detail="方案匹配任务载荷保存失败")
+        logger.info(
+            "[Scheme Job] execution payload saved job_id=%s customer_id=%s username=%s payload_keys=%s payload_customer_name=%s",
+            job_id,
+            request.customerId or "",
+            current_user.get("username") or "",
+            sorted(persisted_execution_payload.keys()),
+            persisted_execution_payload.get("customerName") or "",
+        )
+        await _dispatch_scheme_match_job(job_id, request.customerId or "", current_user)
+        return ChatJobCreateResponse(jobId=job_id, status="pending")
+    except HTTPException as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+    except Exception as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
 @router.post("/match", response_model=SchemeMatchResponse)
 async def match_scheme(
     request: SchemeMatchRequest,
@@ -514,8 +597,18 @@ async def match_scheme(
     Legacy synchronous entry kept for compatibility.
     New heavy matching flows should prefer /scheme/jobs.
     """
-    payload = await _match_scheme_payload(request, current_user)
-    return SchemeMatchResponse(matchResult=payload["matchResult"])
+    try:
+        payload = await _match_scheme_payload(request, current_user)
+        return SchemeMatchResponse(
+            matchResult=payload["matchResult"],
+            matchingData=payload.get("matchingData"),
+        )
+    except HTTPException as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+    except Exception as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @router.post("/jobs", response_model=ChatJobCreateResponse)
@@ -523,6 +616,7 @@ async def create_scheme_match_job(
     request: SchemeMatchRequest,
     current_user: dict = Depends(get_current_user),
 ) -> ChatJobCreateResponse:
+    return await _create_scheme_match_job_safe(request, current_user)
     request, _ = await _prepare_scheme_match_request(request)
     job_id = uuid.uuid4().hex
     request_payload = request.model_dump()

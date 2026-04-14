@@ -95,6 +95,24 @@ function getStatusTone(job: AsyncJobLike) {
   }
 }
 
+function normalizeCustomerLabel(customerName?: string | null, customerId?: string | null) {
+  const stripInternalId = (value: string) =>
+    value
+      .replace(/\s*\((enterprise|personal)_[^)]+\)\s*/gi, '')
+      .replace(/\b(enterprise|personal)_/gi, '')
+      .trim();
+
+  if (customerName && customerName.trim()) {
+    return stripInternalId(customerName);
+  }
+
+  if (customerId && customerId.trim()) {
+    return stripInternalId(customerId);
+  }
+
+  return '未选择客户';
+}
+
 export default function AsyncJobCard({
   job,
   isLatestCompleted = false,
@@ -104,7 +122,7 @@ export default function AsyncJobCard({
   className = '',
   variant = 'standard',
 }: AsyncJobCardProps) {
-  const customerLabel = job.customerName || job.customerId || '未选择客户';
+  const customerLabel = normalizeCustomerLabel(job.customerName, job.customerId);
   const actionLabel = actionLabelOverride
     || (job.status === 'success'
       ? (isLatestCompleted ? '查看当前结果' : getJobSuccessAction(job.jobType, job.targetPage).actionLabel)
@@ -112,7 +130,7 @@ export default function AsyncJobCard({
         ? '查看结果'
         : '继续查看');
   const isCompact = variant === 'compact';
-  const showDeleteAction = Boolean(onDelete) && (job.status === 'pending' || isRunningJobStale(job));
+  const showDeleteAction = Boolean(onDelete) && (job.status === 'pending' || job.status === 'failed' || isRunningJobStale(job));
 
   return (
     <div
@@ -139,7 +157,6 @@ export default function AsyncJobCard({
           </div>
           <div className="text-xs text-slate-500">
             关联客户：{customerLabel}
-            {job.customerId && job.customerName ? ` (${job.customerId})` : ''}
           </div>
           <div className={`${isCompact ? 'text-xs leading-6' : 'text-sm'} text-slate-700`}>
             {getJobResultSummary(job.jobType, 'result' in job ? job.result : undefined, job.customerName, job.resultSummary) || getReadableJobProgress(job, isRunningJobStale(job))}

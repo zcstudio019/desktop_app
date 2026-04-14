@@ -338,6 +338,7 @@ class SchemeMatchResponse(BaseModel):
     """Response model for scheme matching."""
 
     matchResult: str = Field(..., description="Matching result in Markdown format")
+    matchingData: dict[str, Any] | None = Field(default=None, description="Structured matching result data")
 
 
 class ChatResponse(BaseModel):

@@ -58,13 +58,19 @@ type DashboardQuickLink = {
 };
 
 function formatDashboardCustomerLabel(customerName?: string | null, customerId?: string | null): string {
+  const stripInternalId = (value: string) =>
+    value
+      .replace(/\s*\((enterprise|personal)_[^)]+\)\s*/gi, '')
+      .replace(/\b(enterprise|personal)_/gi, '')
+      .trim();
+
   if (customerName && customerName.trim()) {
-    return customerName.trim();
+    return stripInternalId(customerName);
   }
   if (!customerId) {
     return '';
   }
-  return customerId.replace(/^(enterprise_|personal_)/, '');
+  return stripInternalId(customerId);
 }
 
 function formatLocalDateTime(value?: string | null): string {

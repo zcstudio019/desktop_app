@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # Add desktop_app to path for imports
@@ -94,11 +95,110 @@ def count_products(content: str) -> int:
     return max(1, len(lines) // 10) if lines else 0
 
 
+# ==================== Safe Route Helpers ====================
+
+
+async def _get_cache_status_safe() -> CacheStatusResponse | JSONResponse:
+    try:
+        logger.info("Get wiki cache status")
+
+        cache = get_cache_map()
+
+        if not cache or (not cache.get("enterprise") and not cache.get("personal")):
+            return CacheStatusResponse(cached=False, lastUpdated=None, enterpriseProductCount=0, personalProductCount=0)
+
+        enterprise_content = cache.get("enterprise") or ""
+        personal_content = cache.get("personal") or ""
+        last_updated = cache.get("lastUpdated") or ""
+
+        return CacheStatusResponse(
+            cached=True,
+            lastUpdated=last_updated,
+            enterpriseProductCount=count_products(enterprise_content),
+            personalProductCount=count_products(personal_content),
+        )
+    except HTTPException as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+    except Exception as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+async def _get_cache_safe() -> CacheContentResponse | JSONResponse:
+    try:
+        logger.info("Get wiki cache content")
+
+        cache = get_cache_map()
+
+        if not cache or (not cache.get("enterprise") and not cache.get("personal")):
+            logger.warning("Wiki cache not found, returning 404")
+            raise HTTPException(status_code=404, detail="产品库缓存不存在，请先刷新缓存")
+
+        enterprise = cache.get("enterprise") or ""
+        personal = cache.get("personal") or ""
+        last_updated = cache.get("lastUpdated") or ""
+
+        if not enterprise and not personal:
+            logger.warning("Wiki cache content is empty")
+            raise HTTPException(status_code=404, detail="产品库缓存内容为空，请刷新缓存")
+
+        return CacheContentResponse(enterprise=enterprise, personal=personal, lastUpdated=last_updated)
+    except HTTPException as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+    except Exception as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+async def _refresh_cache_safe() -> RefreshResponse | JSONResponse:
+    try:
+        logger.info("Refresh wiki cache")
+
+        enterprise_products = wiki_service.get_enterprise_products()
+        personal_products = wiki_service.get_personal_products()
+
+        if enterprise_products is None:
+            enterprise_products = ""
+            logger.warning("Enterprise products returned None, falling back to empty string")
+
+        if personal_products is None:
+            personal_products = ""
+            logger.warning("Personal products returned None, falling back to empty string")
+
+        last_updated = save_cache(enterprise_products, personal_products)
+        enterprise_len = len(enterprise_products)
+        personal_len = len(personal_products)
+
+        logger.info(
+            "Wiki cache refresh succeeded, enterprise_len=%s personal_len=%s",
+            enterprise_len,
+            personal_len,
+        )
+
+        return RefreshResponse(
+            success=True,
+            message=f"产品库缓存刷新成功（企业: {enterprise_len} 字符, 个人: {personal_len} 字符）",
+            lastUpdated=last_updated,
+        )
+    except WikiServiceError as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+    except HTTPException as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+    except Exception as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
 # ==================== Endpoints ====================
 
 
 @router.get("/cache-status", response_model=CacheStatusResponse)
 async def get_cache_status(_current_user: dict = Depends(get_current_user)) -> CacheStatusResponse:
+    return await _get_cache_status_safe()
     """
     获取缓存状态
 
@@ -131,6 +231,7 @@ async def get_cache_status(_current_user: dict = Depends(get_current_user)) -> C
 
 @router.get("/cache", response_model=CacheContentResponse)
 async def get_cache(_current_user: dict = Depends(get_current_user)) -> CacheContentResponse:
+    return await _get_cache_safe()
     """
     获取缓存的产品库内容
 
@@ -165,6 +266,7 @@ async def get_cache(_current_user: dict = Depends(get_current_user)) -> CacheCon
 
 @router.post("/refresh", response_model=RefreshResponse)
 async def refresh_cache(_current_user: dict = Depends(require_admin)) -> RefreshResponse:
+    return await _refresh_cache_safe()
     """
     从飞书刷新产品库缓存
 

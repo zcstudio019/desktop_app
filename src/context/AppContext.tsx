@@ -60,6 +60,7 @@ export interface ApplicationResult {
 
 export interface SchemeResult {
   result: string | null;
+  matchingData?: Record<string, unknown> | null;
   lastCreditType: string | null;
   customerId?: string | null;
   customerName?: string | null;
