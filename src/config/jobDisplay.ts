@@ -16,7 +16,10 @@ type JobDisplayConfig = {
     success: string;
     failed: string;
   };
-  resultSummary: (result: Record<string, unknown> | null | undefined, customerName?: string | null) => string | null;
+  resultSummary: (
+    result: Record<string, unknown> | null | undefined,
+    customerName?: string | null,
+  ) => string | null;
   supportsContinueView: boolean;
   supportsViewResult: boolean;
   supportsDirectNavigate: boolean;
@@ -67,10 +70,15 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
       failed: '风险报告失败',
     },
     resultSummary: (result, customerName) => {
-      const overall = (result?.report_json as Record<string, unknown> | undefined)?.overall_assessment as Record<string, unknown> | undefined;
+      const overall = (result?.report_json as Record<string, unknown> | undefined)?.overall_assessment as Record<
+        string,
+        unknown
+      > | undefined;
       const score = overall?.total_score;
       const label = (customerName || '').trim() || '当前客户';
-      return score != null ? `${label}风险报告已生成，综合评分 ${String(score)} 分。` : `${label}风险报告已生成。`;
+      return score != null
+        ? `${label}风险报告已生成，综合评分 ${String(score)} 分。`
+        : `${label}风险报告已生成。`;
     },
     supportsContinueView: true,
     supportsViewResult: true,
@@ -87,7 +95,7 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
       success: '方案匹配已完成',
       failed: '方案匹配失败',
     },
-    resultSummary: (_, customerName) => `${(customerName || '').trim() || '当前客户'}的融资方案匹配结果已生成。`,
+    resultSummary: (_result, customerName) => `${(customerName || '').trim() || '当前客户'}的融资方案匹配结果已生成。`,
     supportsContinueView: true,
     supportsViewResult: true,
     supportsDirectNavigate: true,
@@ -103,7 +111,7 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
       success: '申请表生成已完成',
       failed: '申请表生成失败',
     },
-    resultSummary: (_, customerName) => `${(customerName || '').trim() || '当前客户'}的申请表已生成。`,
+    resultSummary: (_result, customerName) => `${(customerName || '').trim() || '当前客户'}的申请表已生成。`,
     supportsContinueView: true,
     supportsViewResult: true,
     supportsDirectNavigate: true,
@@ -169,6 +177,63 @@ export function canViewJobResult(jobType?: string | null) {
 
 export function canDirectNavigateForJob(jobType?: string | null) {
   return getJobDisplayConfig(jobType).supportsDirectNavigate;
+}
+
+export function hasUsableJobResult(jobType: string, result: Record<string, unknown> | null | undefined) {
+  if (!result || typeof result !== 'object') {
+    return false;
+  }
+
+  if (jobType === 'scheme_match') {
+    return typeof (result as { matchResult?: unknown }).matchResult === 'string'
+      && ((result as { matchResult?: string }).matchResult || '').trim().length > 0;
+  }
+
+  if (jobType === 'application_generate') {
+    return typeof (result as { applicationContent?: unknown }).applicationContent === 'string'
+      && ((result as { applicationContent?: string }).applicationContent || '').trim().length > 0;
+  }
+
+  if (jobType === 'risk_report') {
+    return Boolean((result as { report_json?: unknown }).report_json);
+  }
+
+  if (jobType === 'chat_extract') {
+    return typeof (result as { message?: unknown }).message === 'string'
+      || Boolean((result as { data?: unknown }).data);
+  }
+
+  return Object.keys(result).length > 0;
+}
+
+export function normalizeJobStatusResponse(jobStatus: ChatJobStatusResponse): ChatJobStatusResponse {
+  const shouldPromoteToSuccess = hasUsableJobResult(jobStatus.jobType, jobStatus.result) && jobStatus.status !== 'success';
+  if (!shouldPromoteToSuccess) {
+    return jobStatus;
+  }
+
+  return {
+    ...jobStatus,
+    status: 'success',
+    errorMessage: null,
+    progressMessage: jobStatus.progressMessage || getJobStatusText(jobStatus.jobType, 'success'),
+  };
+}
+
+export function normalizeJobSummaryWithResult(
+  job: ChatJobSummaryResponse,
+  result: Record<string, unknown> | null | undefined,
+): ChatJobSummaryResponse {
+  if (!hasUsableJobResult(job.jobType, result) || job.status === 'success') {
+    return job;
+  }
+
+  return {
+    ...job,
+    status: 'success',
+    errorMessage: null,
+    progressMessage: job.progressMessage || getJobStatusText(job.jobType, 'success'),
+  };
 }
 
 export function getReadableJobProgress(

@@ -13,6 +13,7 @@ Requirements:
 - 3.6: Return 500 for service errors
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -22,7 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 # Add desktop_app to path for imports
 desktop_app_path = Path(__file__).parent.parent.parent
@@ -30,6 +32,7 @@ if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
 from prompts import get_cached_prompts, load_prompts
+from backend.celery_app import TASK_QUEUE_ENABLED
 from backend.routers.chat_helpers import get_customer_data_local
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.activity_service import add_activity, update_customer_status
@@ -53,6 +56,24 @@ ai_service = AIService()
 storage_service = get_storage_service()
 HAS_DB_STORAGE = supports_structured_storage(storage_service)
 profile_sync_service = ProfileSyncService()
+_ACTIVE_APPLICATION_JOB_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _build_application_generate_job_execution_payload(
+    job_id: str,
+    request: ApplicationRequest,
+    current_user: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "jobId": job_id,
+        "jobType": "application_generate",
+        "customerId": request.customerId or "",
+        "customerName": request.customerName or "",
+        "loanType": request.loanType,
+        "username": current_user.get("username") or "",
+        "role": current_user.get("role") or "",
+        "createdFrom": "application_generate_job",
+    }
 
 
 async def _run_application_generate_job(
@@ -100,6 +121,7 @@ async def _run_application_generate_job(
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        raise
     except Exception as exc:
         logger.error("[Application Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
         await storage_service.update_async_job(
@@ -111,6 +133,77 @@ async def _run_application_generate_job(
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        raise
+
+
+async def execute_application_generate_job_from_job(job_id: str) -> None:
+    execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not execution_payload:
+        raise ValueError(f"async job {job_id} execution payload not found")
+
+    request_payload = {
+        "customerName": execution_payload.get("customerName") or "",
+        "customerId": execution_payload.get("customerId") or "",
+        "loanType": execution_payload.get("loanType") or "enterprise",
+    }
+    current_user_payload = {
+        "username": execution_payload.get("username") or "",
+        "role": execution_payload.get("role") or "",
+    }
+    await _run_application_generate_job(job_id, request_payload, current_user_payload)
+
+
+def _launch_application_generate_job(job_id: str) -> None:
+    task = asyncio.create_task(execute_application_generate_job_from_job(job_id))
+    _ACTIVE_APPLICATION_JOB_TASKS.add(task)
+
+    def _cleanup(done_task: asyncio.Task[None]) -> None:
+        _ACTIVE_APPLICATION_JOB_TASKS.discard(done_task)
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("[Application Job] background task crashed job_id=%s", job_id)
+
+    task.add_done_callback(_cleanup)
+
+
+async def _dispatch_application_generate_job(
+    job_id: str,
+    customer_id: str,
+    current_user_payload: dict[str, Any],
+) -> None:
+    logger.info(
+        "[Application Job] submit start job_id=%s queue_enabled=%s customer_id=%s username=%s",
+        job_id,
+        TASK_QUEUE_ENABLED,
+        customer_id,
+        current_user_payload.get("username") or "",
+    )
+    if TASK_QUEUE_ENABLED:
+        from backend.celery_app import APPLICATION_GENERATE_TASK_NAME, celery_app
+
+        async_result = celery_app.send_task(APPLICATION_GENERATE_TASK_NAME, args=[job_id])
+        await storage_service.mark_async_job_dispatched(
+            job_id,
+            async_result.id,
+            worker_name="celery",
+        )
+        logger.info(
+            "[Application Job] dispatched to celery job_id=%s celery_task_id=%s customer_id=%s username=%s",
+            job_id,
+            async_result.id,
+            customer_id,
+            current_user_payload.get("username") or "",
+        )
+        return
+
+    logger.warning(
+        "[Application Job] fallback to in-process execution job_id=%s customer_id=%s username=%s",
+        job_id,
+        customer_id,
+        current_user_payload.get("username") or "",
+    )
+    _launch_application_generate_job(job_id)
 
 INVALID_LOAN_TYPE_MESSAGE = "贷款类型无效，请选择企业贷款或个人贷款。"
 CUSTOMER_DATA_SEARCH_FAILED_MESSAGE = "客户资料查询失败，请稍后重试。"
@@ -1202,14 +1295,20 @@ async def generate_application(
     )
 
 
-@router.post("/jobs", response_model=ChatJobCreateResponse)
-async def create_application_job(
+async def _create_application_job(
     request: ApplicationRequest,
-    background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict,
 ) -> ChatJobCreateResponse:
     job_id = uuid.uuid4().hex
     request_payload = request.model_dump()
+    execution_payload = _build_application_generate_job_execution_payload(job_id, request, current_user)
+    logger.info(
+        "[Application Job] execution payload prepared job_id=%s customer_id=%s username=%s payload_keys=%s",
+        job_id,
+        request.customerId or "",
+        current_user.get("username") or "",
+        sorted(execution_payload.keys()),
+    )
     await storage_service.create_async_job(
         {
             "job_id": job_id,
@@ -1219,7 +1318,59 @@ async def create_application_job(
             "status": "pending",
             "progress_message": "已接收任务",
             "request_json": request_payload,
+            "execution_payload_json": execution_payload,
         }
     )
-    background_tasks.add_task(_run_application_generate_job, job_id, request_payload, current_user)
+    logger.info(
+        "[Application Job] created job_id=%s job_type=%s username=%s customer_id=%s request_snapshot=%s",
+        job_id,
+        "application_generate",
+        current_user.get("username") or "",
+        request.customerId or "",
+        {
+            "customerName": request.customerName,
+            "loanType": request.loanType,
+        },
+    )
+    persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not persisted_execution_payload:
+        logger.warning(
+            "[Application Job] execution payload missing after create job_id=%s, retrying payload save",
+            job_id,
+        )
+        await storage_service.set_async_job_execution_payload(job_id, execution_payload)
+        persisted_execution_payload = await storage_service.get_async_job_execution_payload(job_id)
+    if not persisted_execution_payload:
+        raise HTTPException(status_code=500, detail="申请表生成任务载荷保存失败")
+    logger.info(
+        "[Application Job] execution payload saved job_id=%s customer_id=%s username=%s payload_keys=%s payload_customer_name=%s",
+        job_id,
+        request.customerId or "",
+        current_user.get("username") or "",
+        sorted(persisted_execution_payload.keys()),
+        persisted_execution_payload.get("customerName") or "",
+    )
+    await _dispatch_application_generate_job(job_id, request.customerId or "", current_user)
     return ChatJobCreateResponse(jobId=job_id, status="pending")
+
+
+async def _create_application_job_safe(
+    request: ApplicationRequest,
+    current_user: dict,
+) -> ChatJobCreateResponse | JSONResponse:
+    try:
+        return await _create_application_job(request, current_user)
+    except HTTPException as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+    except Exception as exc:
+        logger.exception("error detail")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+@router.post("/jobs", response_model=ChatJobCreateResponse)
+async def create_application_job(
+    request: ApplicationRequest,
+    current_user: dict = Depends(get_current_user),
+) -> ChatJobCreateResponse:
+    return await _create_application_job_safe(request, current_user)

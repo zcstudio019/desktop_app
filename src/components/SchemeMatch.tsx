@@ -7,7 +7,13 @@ import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
 import AsyncJobCard from './common/AsyncJobCard';
 import SchemeMatchingResultCard from './common/SchemeMatchingResultCard';
-import { getJobStatusText, getJobTypeLabel } from '../config/jobDisplay';
+import {
+  getJobResultSummary,
+  getJobStatusText,
+  getJobTypeLabel,
+  hasUsableJobResult,
+  normalizeJobStatusResponse,
+} from '../config/jobDisplay';
 
 type CreditType = 'personal' | 'enterprise_credit' | 'enterprise_mortgage';
 type DataSource = 'currentCustomer' | 'savedApplication' | 'manual' | 'searchCustomer';
@@ -105,6 +111,72 @@ const SchemeMatchPage: React.FC = () => {
   const schemeJobLabel = getJobTypeLabel('scheme_match');
   const currentResultTaskLabel = activeJobCard ? getJobTypeLabel(activeJobCard.jobType, activeJobCard.jobTypeLabel) : schemeJobLabel;
 
+  const buildSchemeJobSummaryFromStatus = useCallback((
+    status: ChatJobStatusResponse,
+    fallbackCustomerName?: string | null,
+  ): ChatJobSummaryResponse => ({
+    jobId: status.jobId,
+    jobType: status.jobType,
+    jobTypeLabel: status.jobTypeLabel,
+    customerId: status.customerId,
+    customerName: status.customerName || fallbackCustomerName || '',
+    status: status.status,
+    progressMessage: status.progressMessage,
+    errorMessage: status.errorMessage ?? null,
+    createdAt: status.createdAt,
+    startedAt: status.startedAt,
+    finishedAt: status.finishedAt,
+    targetPage: status.targetPage ?? null,
+    resultSummary: status.resultSummary ?? getJobResultSummary(status.jobType, status.result, status.customerName || fallbackCustomerName),
+  }), []);
+
+  const restoreSchemeJobFromStatus = useCallback((
+    status: ChatJobStatusResponse,
+    type: CreditType,
+    fallbackCustomerName?: string | null,
+    fallbackCustomerId?: string | null,
+  ) => {
+    const normalizedStatus = normalizeJobStatusResponse(status);
+    const response = normalizedStatus.result as unknown as {
+      matchResult: string;
+      matchingData?: Record<string, unknown> | null;
+      creditType?: string;
+      customerName?: string;
+      customerId?: string;
+    } | null;
+    const resolvedCustomerName = response?.customerName || normalizedStatus.customerName || fallbackCustomerName || currentCustomerName || null;
+    const resolvedCustomerId = response?.customerId || normalizedStatus.customerId || fallbackCustomerId || currentCustomerId || null;
+
+    setActiveJobCard({
+      ...buildSchemeJobSummaryFromStatus(normalizedStatus, resolvedCustomerName),
+      status: 'success',
+      errorMessage: null,
+      progressMessage: normalizedStatus.progressMessage || getJobStatusText('scheme_match', 'success'),
+    });
+    setError(null);
+    setActionError(null);
+
+    if (response) {
+      setSchemeResult({
+        result: response.matchResult,
+        matchingData: response.matchingData || null,
+        lastCreditType: (response.creditType as CreditType | undefined) ?? type,
+        customerId: resolvedCustomerId,
+        customerName: resolvedCustomerName,
+        matchedAt: normalizedStatus.finishedAt || new Date().toISOString(),
+        stale: false,
+        staleReason: '',
+        staleAt: '',
+      });
+    }
+
+    setSchemeTaskStatus('done', null);
+    window.setTimeout(() => {
+      basisRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 0);
+    return normalizedStatus;
+  }, [buildSchemeJobSummaryFromStatus, currentCustomerId, currentCustomerName, setSchemeResult, setSchemeTaskStatus]);
+
   useEffect(() => {
     let mounted = true;
     Promise.all([listCustomers(undefined, getSignal()), listSavedApplications(getSignal())])
@@ -151,22 +223,8 @@ const SchemeMatchPage: React.FC = () => {
 
         let status: ChatJobStatusResponse;
         try {
-          status = await getChatJobStatus(jobId, getSignal());
-          setActiveJobCard({
-            jobId: status.jobId,
-            jobType: status.jobType,
-            jobTypeLabel: status.jobTypeLabel,
-            customerId: status.customerId,
-            customerName: status.customerName || customerName || '',
-            status: status.status,
-            progressMessage: status.progressMessage,
-            errorMessage: status.errorMessage,
-            createdAt: status.createdAt,
-            startedAt: status.startedAt,
-            finishedAt: status.finishedAt,
-            targetPage: status.targetPage,
-            resultSummary: status.resultSummary,
-          });
+          status = normalizeJobStatusResponse(await getChatJobStatus(jobId, getSignal()));
+          setActiveJobCard(buildSchemeJobSummaryFromStatus(status, customerName));
         } catch (issue) {
           failureCount += 1;
           if (failureCount >= 3) {
@@ -187,24 +245,11 @@ const SchemeMatchPage: React.FC = () => {
           continue;
         }
 
-        if (status.status === 'success' && status.result) {
-          const response = status.result as unknown as { matchResult: string; matchingData?: Record<string, unknown> | null; creditType?: string; customerName?: string; customerId?: string };
-          const resolvedCustomerName = response.customerName || customerName || currentCustomerName || null;
-          const resolvedCustomerId = response.customerId || customerId || currentCustomerId || null;
-          setSchemeResult({
-            result: response.matchResult,
-            matchingData: response.matchingData || null,
-            lastCreditType: (response.creditType as CreditType | undefined) ?? type,
-            customerId: resolvedCustomerId,
-            customerName: resolvedCustomerName,
-            matchedAt: status.finishedAt || new Date().toISOString(),
-            stale: false,
-            staleReason: '',
-            staleAt: '',
-          });
-          setSchemeTaskStatus('done', null);
-          setError(null);
-          setActionError(null);
+        if (status.status === 'success' && hasUsableJobResult(status.jobType, status.result)) {
+          const normalizedStatus = restoreSchemeJobFromStatus(status, type, customerName, customerId);
+          const response = normalizedStatus.result as unknown as { customerName?: string; customerId?: string } | null;
+          const resolvedCustomerName = response?.customerName || normalizedStatus.customerName || customerName || currentCustomerName || null;
+          const resolvedCustomerId = response?.customerId || normalizedStatus.customerId || customerId || currentCustomerId || null;
           recordSystemActivity({
             type: 'matching',
             title: getJobStatusText('scheme_match', 'success'),
@@ -226,7 +271,7 @@ const SchemeMatchPage: React.FC = () => {
       setJobPolling(false);
       stopPollingRef.current = false;
     }
-  }, [currentCustomerId, currentCustomerName, getSignal, recordSystemActivity, setSchemeResult, setSchemeTaskStatus]);
+  }, [buildSchemeJobSummaryFromStatus, currentCustomerId, currentCustomerName, getSignal, recordSystemActivity, restoreSchemeJobFromStatus, setSchemeTaskStatus]);
 
   const doMatch = useCallback(async (type: CreditType, customerData: Record<string, unknown>, customerName?: string | null, customerId?: string | null) => {
     const request: SchemeMatchRequest = {
@@ -271,19 +316,43 @@ const SchemeMatchPage: React.FC = () => {
   }, [currentCustomerId, currentCustomerName, getSignal, pollSchemeJob, setSchemeTaskStatus]);
 
   const handleOpenCurrentSchemeJob = useCallback((job: ChatJobSummaryResponse) => {
-    if (job.status === 'success') {
-      basisRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      return;
-    }
-    if (!jobPolling) {
-      void pollSchemeJob(
-        job.jobId,
-        creditType,
-        job.customerName || currentCustomerName || undefined,
-        job.customerId || currentCustomerId || undefined,
-      );
-    }
-  }, [creditType, currentCustomerId, currentCustomerName, jobPolling, pollSchemeJob]);
+    void (async () => {
+      try {
+        const status = normalizeJobStatusResponse(await getChatJobStatus(job.jobId, getSignal()));
+        if (status.status === 'success' && hasUsableJobResult(status.jobType, status.result)) {
+          restoreSchemeJobFromStatus(
+            status,
+            creditType,
+            job.customerName || currentCustomerName || undefined,
+            job.customerId || currentCustomerId || undefined,
+          );
+          return;
+        }
+
+        setActiveJobCard(buildSchemeJobSummaryFromStatus(status, job.customerName || currentCustomerName || undefined));
+
+        if (status.status === 'failed') {
+          const message = status.errorMessage || getJobStatusText(status.jobType, 'failed');
+          setActionError(message);
+          setError(new Error(message));
+          return;
+        }
+
+        if (!jobPolling) {
+          await pollSchemeJob(
+            status.jobId,
+            creditType,
+            status.customerName || job.customerName || currentCustomerName || undefined,
+            status.customerId || job.customerId || currentCustomerId || undefined,
+          );
+        }
+      } catch (issue) {
+        const nextError = issue instanceof Error ? issue : new Error('方案匹配任务状态恢复失败');
+        setActionError(nextError.message);
+        setError(nextError);
+      }
+    })();
+  }, [buildSchemeJobSummaryFromStatus, creditType, currentCustomerId, currentCustomerName, getSignal, jobPolling, pollSchemeJob, restoreSchemeJobFromStatus]);
 
   matchRef.current = doMatch;
 
@@ -299,6 +368,31 @@ const SchemeMatchPage: React.FC = () => {
     });
   }, [state.tasks.scheme]);
 
+  useEffect(() => {
+    if (!activeResult || !activeJobCard || activeJobCard.jobType !== 'scheme_match') {
+      return;
+    }
+    if (!hasUsableJobResult('scheme_match', {
+      matchResult: activeResult,
+      matchingData: schemeResult?.matchingData,
+    })) {
+      return;
+    }
+    if (activeJobCard.status === 'success' && !activeJobCard.errorMessage) {
+      return;
+    }
+    setActiveJobCard((prev) => prev ? {
+      ...prev,
+      status: 'success',
+      errorMessage: null,
+      progressMessage: prev.progressMessage || getJobStatusText('scheme_match', 'success'),
+      resultSummary: prev.resultSummary || getJobResultSummary('scheme_match', {
+        matchResult: activeResult,
+        matchingData: schemeResult?.matchingData,
+      }, prev.customerName),
+    } : prev);
+  }, [activeJobCard, activeResult, schemeResult?.matchingData]);
+
   const feedback = useMemo(() => {
     let tone: ProcessFeedbackTone = 'idle';
     let title = '等待开始方案匹配';
@@ -312,6 +406,15 @@ const SchemeMatchPage: React.FC = () => {
       description = '系统正在读取资料并与产品规则进行比对。';
       persistenceHint = jobPolling ? '任务处理中，现有资料与旧结果仍会保留。' : '任务已提交，现有资料与旧结果仍会保留。';
       nextStep = '请稍候，完成后可直接查看结果与依据。';
+    } else if (activeJobCard?.status === 'success' && hasUsableJobResult('scheme_match', {
+      matchResult: activeResult,
+      matchingData: schemeResult?.matchingData,
+    })) {
+      tone = 'success';
+      title = getJobStatusText('scheme_match', 'success');
+      description = '当前客户的匹配结果已生成，可继续查看、复制或下载。';
+      persistenceHint = '结果已同步到当前客户上下文，可用于后续风险评估。';
+      nextStep = '如客户资料更新，建议重新匹配保持结果最新。';
     } else if (error || actionError) {
       tone = activeResult ? 'partial' : 'error';
       title = activeResult ? '本次匹配失败，但上一版结果仍可查看' : getJobStatusText('scheme_match', 'failed');
@@ -332,7 +435,7 @@ const SchemeMatchPage: React.FC = () => {
       nextStep = '如客户资料更新，建议重新匹配保持结果最新。';
     }
     return { tone, title, description, persistenceHint, nextStep };
-  }, [actionError, activeResult, error, loading, jobPolling, schemeResult?.stale, schemeResult?.staleReason]);
+  }, [actionError, activeJobCard?.status, activeResult, error, loading, jobPolling, schemeResult?.matchingData, schemeResult?.stale, schemeResult?.staleReason]);
 
   const selectedApplication = applications.find((item) => item.id === selectedApplicationId) || null;
 

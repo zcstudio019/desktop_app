@@ -31,6 +31,8 @@ import {
   getJobSuccessAction,
   getJobTypeLabel,
   getReadableJobProgress,
+  hasUsableJobResult,
+  normalizeJobStatusResponse,
 } from '../config/jobDisplay';
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
@@ -4080,44 +4082,6 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     resultSummary: jobStatus.resultSummary ?? null,
   }), []);
 
-  const hasUsableJobResult = useCallback((jobType: string, result: Record<string, unknown> | null | undefined) => {
-    if (!result || typeof result !== 'object') {
-      return false;
-    }
-
-    if (jobType === 'scheme_match') {
-      return typeof (result as { matchResult?: unknown }).matchResult === 'string' && ((result as { matchResult?: string }).matchResult || '').trim().length > 0;
-    }
-
-    if (jobType === 'application_generate') {
-      return typeof (result as { applicationContent?: unknown }).applicationContent === 'string' && ((result as { applicationContent?: string }).applicationContent || '').trim().length > 0;
-    }
-
-    if (jobType === 'risk_report') {
-      return Boolean((result as { report_json?: unknown }).report_json);
-    }
-
-    if (jobType === 'chat_extract') {
-      return typeof (result as { message?: unknown }).message === 'string' || Boolean((result as { data?: unknown }).data);
-    }
-
-    return Object.keys(result).length > 0;
-  }, []);
-
-  const normalizeJobStatusResponse = useCallback((jobStatus: ChatJobStatusResponse): ChatJobStatusResponse => {
-    const shouldPromoteToSuccess = hasUsableJobResult(jobStatus.jobType, jobStatus.result) && jobStatus.status !== 'success';
-    if (!shouldPromoteToSuccess) {
-      return jobStatus;
-    }
-
-    return {
-      ...jobStatus,
-      status: 'success',
-      errorMessage: null,
-      progressMessage: jobStatus.progressMessage || '处理完成',
-    };
-  }, [hasUsableJobResult]);
-
   const syncRecentJobFromStatus = useCallback((jobStatus: ChatJobStatusResponse) => {
     const normalizedStatus = normalizeJobStatusResponse(jobStatus);
     const nextSummary = buildJobSummaryFromStatus(normalizedStatus);
@@ -4140,7 +4104,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       return found ? updated : [nextSummary, ...updated];
     });
     return normalizedStatus;
-  }, [buildJobSummaryFromStatus, normalizeJobStatusResponse]);
+  }, [buildJobSummaryFromStatus]);
 
   const restoreCompletedJobFromStatus = useCallback((jobStatus: ChatJobStatusResponse) => {
     const normalizedStatus = syncRecentJobFromStatus(jobStatus);

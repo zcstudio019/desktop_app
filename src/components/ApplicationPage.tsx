@@ -22,7 +22,13 @@ import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
 import AsyncJobCard from './common/AsyncJobCard';
-import { getJobStatusText, getJobTypeLabel } from '../config/jobDisplay';
+import {
+  getJobResultSummary,
+  getJobStatusText,
+  getJobTypeLabel,
+  hasUsableJobResult,
+  normalizeJobStatusResponse,
+} from '../config/jobDisplay';
 
 /**
  * Loan type options
@@ -486,6 +492,67 @@ const ApplicationPage: React.FC = () => {
     const currentCustomerName = state.extraction.currentCustomer;
     const currentCustomerId = state.extraction.currentCustomerId;
 
+    const buildApplicationJobSummaryFromStatus = useCallback((
+      status: ChatJobStatusResponse,
+      fallbackCustomerName?: string | null,
+    ): ChatJobSummaryResponse => ({
+      jobId: status.jobId,
+      jobType: status.jobType,
+      jobTypeLabel: status.jobTypeLabel,
+      customerId: status.customerId,
+      customerName: status.customerName || fallbackCustomerName || '',
+      status: status.status,
+      progressMessage: status.progressMessage,
+      errorMessage: status.errorMessage ?? null,
+      createdAt: status.createdAt,
+      startedAt: status.startedAt,
+      finishedAt: status.finishedAt,
+      targetPage: status.targetPage ?? null,
+      resultSummary: status.resultSummary ?? getJobResultSummary(status.jobType, status.result, status.customerName || fallbackCustomerName),
+    }), []);
+
+    const restoreApplicationJobFromStatus = useCallback((
+      status: ChatJobStatusResponse,
+      fallbackCustomerName?: string | null,
+    ) => {
+      const normalizedStatus = normalizeJobStatusResponse(status);
+      const response = normalizedStatus.result as unknown as ApplicationResponse | null;
+      const resolvedCustomerName =
+        normalizedStatus.customerName || fallbackCustomerName || customerName.trim() || currentCustomerName || '当前客户';
+
+      setActiveJobCard({
+        ...buildApplicationJobSummaryFromStatus(normalizedStatus, resolvedCustomerName),
+        status: 'success',
+        errorMessage: null,
+        progressMessage: normalizedStatus.progressMessage || getJobStatusText('application_generate', 'success'),
+      });
+      setJobError(null);
+      setError(null);
+
+      if (response) {
+        setResult(response);
+        if (response.applicationData) {
+          setEditedData(response.applicationData);
+        }
+        setApplicationResult(
+          {
+            content: response.applicationContent,
+            customerFound: response.customerFound,
+            warnings: response.warnings,
+            applicationData: response.applicationData,
+            metadata: response.metadata,
+          },
+          resolvedCustomerName,
+        );
+      }
+
+      setApplicationTaskStatus('done', null);
+      window.setTimeout(() => {
+        resultSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 0);
+      return normalizedStatus;
+    }, [buildApplicationJobSummaryFromStatus, currentCustomerName, customerName, setApplicationResult, setApplicationTaskStatus]);
+
     const pollApplicationJob = useCallback(async (jobId: string, customerName: string) => {
       const startedAt = Date.now();
       let failureCount = 0;
@@ -509,22 +576,8 @@ const ApplicationPage: React.FC = () => {
 
           let status: ChatJobStatusResponse | null = null;
           try {
-            status = await getChatJobStatus(jobId, getSignal());
-            setActiveJobCard({
-              jobId: status.jobId,
-              jobType: status.jobType,
-              jobTypeLabel: status.jobTypeLabel,
-              customerId: status.customerId,
-              customerName: status.customerName || customerName,
-              status: status.status,
-              progressMessage: status.progressMessage,
-              errorMessage: status.errorMessage,
-              createdAt: status.createdAt,
-              startedAt: status.startedAt,
-              finishedAt: status.finishedAt,
-              targetPage: status.targetPage,
-              resultSummary: status.resultSummary,
-            });
+            status = normalizeJobStatusResponse(await getChatJobStatus(jobId, getSignal()));
+            setActiveJobCard(buildApplicationJobSummaryFromStatus(status, customerName));
           } catch (issue) {
             failureCount += 1;
             if (failureCount >= 3) {
@@ -545,24 +598,8 @@ const ApplicationPage: React.FC = () => {
             continue;
           }
 
-          if (status.status === 'success' && status.result) {
-            const response = status.result as unknown as ApplicationResponse;
-            setResult(response);
-            setError(null);
-            if (response.applicationData) {
-              setEditedData(response.applicationData);
-            }
-            setApplicationResult(
-              {
-                content: response.applicationContent,
-                customerFound: response.customerFound,
-                warnings: response.warnings,
-                applicationData: response.applicationData,
-                metadata: response.metadata,
-              },
-              customerName,
-            );
-            setApplicationTaskStatus('done', null);
+          if (status.status === 'success' && hasUsableJobResult(status.jobType, status.result)) {
+            restoreApplicationJobFromStatus(status, customerName);
             return;
           }
 
@@ -576,7 +613,7 @@ const ApplicationPage: React.FC = () => {
         setJobPolling(false);
         stopPollingRef.current = false;
       }
-    }, [getSignal, setApplicationResult, setApplicationTaskStatus]);
+    }, [buildApplicationJobSummaryFromStatus, getSignal, restoreApplicationJobFromStatus, setApplicationTaskStatus]);
 
     /**
      * Generate application with given parameters
@@ -645,6 +682,28 @@ const ApplicationPage: React.FC = () => {
     }
 
   }, [state.application.lastCustomer, state.application.result]);
+
+  useEffect(() => {
+    if (!result || !activeJobCard || activeJobCard.jobType !== 'application_generate') {
+      return;
+    }
+    const normalized = hasUsableJobResult('application_generate', {
+      applicationContent: result.applicationContent,
+      applicationData: result.applicationData,
+    });
+    if (!normalized || (activeJobCard.status === 'success' && !activeJobCard.errorMessage)) {
+      return;
+    }
+    setActiveJobCard((prev) => prev ? {
+      ...prev,
+      status: 'success',
+      errorMessage: null,
+      progressMessage: prev.progressMessage || getJobStatusText('application_generate', 'success'),
+      resultSummary: prev.resultSummary || getJobResultSummary('application_generate', {
+        applicationContent: result.applicationContent,
+      }, prev.customerName),
+    } : prev);
+  }, [activeJobCard, result]);
 
   /**
    * Handle form submission
@@ -797,6 +856,8 @@ const ApplicationPage: React.FC = () => {
     setResult(null);
     setEditMode(false);
     setEditedData({});
+    setActiveJobCard(null);
+    setJobError(null);
     setApplicationResult(null);
     setApplicationTaskStatus('idle', null);
     reset();
@@ -814,14 +875,33 @@ const ApplicationPage: React.FC = () => {
   const hasStructuredData = Object.keys(displayData).length > 0;
   const applicationJobLabel = getJobTypeLabel('application_generate');
   const handleOpenCurrentApplicationJob = useCallback((job: ChatJobSummaryResponse) => {
-    if (job.status === 'success') {
-      resultSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      return;
-    }
-    if (!jobPolling && job.customerName) {
-      void pollApplicationJob(job.jobId, job.customerName);
-    }
-  }, [jobPolling, pollApplicationJob]);
+    void (async () => {
+      try {
+        const status = normalizeJobStatusResponse(await getChatJobStatus(job.jobId, getSignal()));
+        if (status.status === 'success' && hasUsableJobResult(status.jobType, status.result)) {
+          restoreApplicationJobFromStatus(status, job.customerName);
+          return;
+        }
+
+        setActiveJobCard(buildApplicationJobSummaryFromStatus(status, job.customerName));
+
+        if (status.status === 'failed') {
+          const message = status.errorMessage || getJobStatusText(status.jobType, 'failed');
+          setJobError(message);
+          setError(new Error(message));
+          return;
+        }
+
+        if (!jobPolling && (status.customerName || job.customerName)) {
+          await pollApplicationJob(status.jobId, status.customerName || job.customerName);
+        }
+      } catch (issue) {
+        const nextError = issue instanceof Error ? issue : new Error('申请表任务状态恢复失败');
+        setJobError(nextError.message);
+        setError(nextError);
+      }
+    })();
+  }, [buildApplicationJobSummaryFromStatus, getSignal, jobPolling, pollApplicationJob, restoreApplicationJobFromStatus]);
 
   const applicationFeedback = useMemo<{
     tone: ProcessFeedbackTone;
@@ -831,6 +911,12 @@ const ApplicationPage: React.FC = () => {
     nextStep?: string;
   }>(() => {
     const isGenerating = loading || jobPolling;
+    const hasSuccessfulResult = Boolean(
+      result && hasUsableJobResult('application_generate', {
+        applicationContent: result.applicationContent,
+        applicationData: result.applicationData,
+      }),
+    );
 
     if (isGenerating) {
       return {
@@ -839,6 +925,16 @@ const ApplicationPage: React.FC = () => {
         description: '系统正在后台读取客户资料、资料汇总和申请表模板，请稍候。',
         persistenceHint: jobPolling ? '任务处理中' : '任务已提交',
         nextStep: '稍候片刻，生成完成后可直接查看、复制或下载申请表。',
+      };
+    }
+
+    if (activeJobCard?.status === 'success' && hasSuccessfulResult) {
+      return {
+        tone: 'success',
+        title: getJobStatusText('application_generate', 'success'),
+        description: '当前申请表已生成，可继续查看、复制、编辑或导出。',
+        persistenceHint: '结果已同步到当前页面，可继续用于后续方案匹配。',
+        nextStep: '如客户资料更新，建议重新生成申请表保持最新。',
       };
     }
 
@@ -895,7 +991,7 @@ const ApplicationPage: React.FC = () => {
       persistenceHint: '待开始',
       nextStep: customerName.trim() ? '点击开始生成申请表即可进入下一步。' : '先填写客户名称，再开始生成申请表。',
     };
-  }, [customerName, error, jobError, loading, jobPolling, result, saveSuccess]);
+  }, [activeJobCard?.status, customerName, error, jobError, loading, jobPolling, result, saveSuccess]);
 
   return (
     <div data-testid="application-page" className="min-h-screen bg-slate-50 p-6">
