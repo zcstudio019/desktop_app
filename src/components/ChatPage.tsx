@@ -115,7 +115,7 @@ function formatCustomerContextLabel(customerId: string | null, customerName: str
 }
 
 function buildSubmittedJobFeedback(
-  jobType: 'chat_extract' | 'scheme_match',
+  jobType: 'chat_extract' | 'scheme_match' | 'application_generate',
   description?: string | null,
 ): {
   tone: 'processing';
@@ -125,16 +125,23 @@ function buildSubmittedJobFeedback(
   nextStep: string;
 } {
   const isSchemeMatch = jobType === 'scheme_match';
+  const isApplication = jobType === 'application_generate';
   return {
     tone: 'processing',
-    title: isSchemeMatch ? '方案匹配任务已提交' : '资料提取任务已提交',
+    title: isSchemeMatch ? '方案匹配任务已提交' : isApplication ? '申请表生成任务已提交' : '资料提取任务已提交',
     description:
       description?.trim() ||
       (isSchemeMatch
         ? '系统已接收本次方案匹配任务，正在后台排队处理。'
+        : isApplication
+          ? '系统已接收本次申请表生成任务，正在后台排队处理。'
         : '系统已接收本次资料提取任务，正在后台排队处理。'),
     persistenceHint: '主流程已进入后台处理，页面会自动轮询状态。',
-    nextStep: isSchemeMatch ? '请稍候，完成后会自动展示匹配结果。' : '请稍候，完成后会自动展示提取结果。',
+    nextStep: isSchemeMatch
+      ? '请稍候，完成后会自动展示匹配结果。'
+      : isApplication
+        ? '请稍候，完成后会自动展示申请表结果。'
+        : '请稍候，完成后会自动展示提取结果。',
   };
 }
 
@@ -4207,6 +4214,26 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         },
         resolvedCustomerName ?? undefined,
       );
+      const assistantMessage: ChatMessageWithReasoning = {
+        role: 'assistant',
+        content: '已生成当前客户的申请表，可继续查看结构化字段、复制内容或下载文稿。',
+        intent: 'application',
+        data: {
+          action: 'application',
+          customerFound: response.customerFound,
+          customerName: resolvedCustomerName,
+          applicationData: response.applicationData,
+          applicationContent: response.applicationContent,
+          warnings: response.warnings,
+          metadata: response.metadata,
+        },
+      };
+      setMessages((prev) => {
+        const baseMessages = prev.length > 0 ? prev : requestMessages;
+        return [...baseMessages, assistantMessage];
+      });
+      addChatMessage(assistantMessage);
+      setLastIntent('application');
     }
 
     if (normalizedStatus.jobType === 'scheme_match' && result) {
@@ -4434,6 +4461,30 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         resetRagState();
         clearAsyncChatJobErrors();
         setChatJobFeedback(buildSubmittedJobFeedback('scheme_match', response.message));
+        setChatJobSubmitError(null);
+        setChatJobPollError(null);
+        persistPendingChatJob({
+          jobId: asyncJob.jobId,
+          customerId: asyncJob.customerId ?? currentCustomerId,
+          customerName: asyncJob.customerName ?? currentCustomerName,
+          createdAt: new Date().toISOString(),
+          requestMessages: [...newMessages, assistantMessage],
+          sessionId: persistedSession?.sessionId ?? chatSessionId,
+        });
+        void loadRecentChatJobs();
+        setChatTaskStatus('idle', null, null);
+        await pollChatJob(asyncJob.jobId, [...newMessages, assistantMessage], {
+          startedAt: Date.now(),
+          customerId: asyncJob.customerId ?? currentCustomerId,
+          customerName: asyncJob.customerName ?? currentCustomerName,
+        });
+        return;
+      }
+      if (response.intent === 'application' && asyncJob) {
+        resetChatRequestState();
+        resetRagState();
+        clearAsyncChatJobErrors();
+        setChatJobFeedback(buildSubmittedJobFeedback('application_generate', response.message));
         setChatJobSubmitError(null);
         setChatJobPollError(null);
         persistPendingChatJob({

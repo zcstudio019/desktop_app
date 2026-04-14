@@ -53,6 +53,7 @@ from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
 
 from ..middleware.auth import get_current_user_optional
 from ..models.schemas import (
+    ApplicationRequest,
     ChatMessageRecordResponse,
     ChatJobCreateResponse,
     ChatJobSummaryResponse,
@@ -746,8 +747,9 @@ async def handle_application_intent(
     conversation_history: list[dict[str, str]],
     selected_customer_id: str | None = None,
     selected_customer_name: str | None = None,
+    current_user: dict | None = None,
 ) -> dict[str, Any]:
-    """Handle application intent - search customer and generate application.
+    """Handle application intent - create async application generation job.
 
     Args:
         message: The user's message
@@ -781,21 +783,39 @@ async def handle_application_intent(
             "data": {"action": "application", "needsInput": True, "requiredFields": ["customerName"]},
         }
 
-    logger.info(f"Generating application for customer: {customer_name}, type: {loan_type}")
-
-    customer_found, customer_data = await _fetch_application_customer_data(customer_name)
-    if customer_found is None:
-        # Error case - customer_data contains error message
-        return customer_data
-
     try:
-        return await _generate_application(
-            customer_name,
-            customer_data,
-            customer_found,
-            loan_type,
-            selected_customer_id=selected_customer_id,
+        from backend.routers.application import _create_application_job
+
+        application_request = ApplicationRequest(
+            customerName=customer_name,
+            customerId=selected_customer_id,
+            loanType=loan_type,
         )
+        job = await _create_application_job(application_request, current_user or {})
+        return {
+            "message": f"已为客户“{customer_name}”创建申请表生成任务，系统正在后台处理中。",
+            "data": {
+                "action": "application",
+                "queued": True,
+                "customerFound": True,
+                "customerName": customer_name,
+                "loanType": loan_type,
+                "asyncJob": {
+                    "jobId": job.jobId,
+                    "status": job.status,
+                    "jobType": "application_generate",
+                    "customerId": selected_customer_id,
+                    "customerName": customer_name,
+                    "targetPage": "application",
+                },
+            },
+        }
+    except HTTPException as e:
+        logger.error(f"Application job creation error: {e.detail}")
+        return {
+            "message": str(e.detail) or APPLICATION_GENERATION_FAILED_MESSAGE,
+            "data": {"action": "application", "error": "application_job_create_failed"},
+        }
     except AIServiceError as e:
         logger.error(f"AI service error: {e}")
         return {
@@ -1539,6 +1559,7 @@ async def _dispatch_intent(
             conversation_history,
             selected_customer_id=request.customerId,
             selected_customer_name=request.customerName,
+            current_user=current_user,
         )
     elif intent == "matching":
         if is_instant_matching_request(user_message):
