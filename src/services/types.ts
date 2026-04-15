@@ -219,12 +219,12 @@ export interface ChatSessionSummary {
 
 export interface ChatJobCreateResponse {
   jobId: string;
-  status: 'pending' | 'running' | 'success' | 'failed' | string;
+  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | string;
 }
 
 export interface ChatIntentAsyncJob {
   jobId: string;
-  status: 'pending' | 'running' | 'success' | 'failed' | string;
+  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | string;
   jobType?: string | null;
   customerId?: string | null;
   customerName?: string | null;
@@ -237,7 +237,7 @@ export interface ChatJobSummaryResponse {
   jobTypeLabel?: string;
   customerId: string;
   customerName: string;
-  status: 'pending' | 'running' | 'success' | 'failed' | string;
+  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | string;
   progressMessage: string;
   errorMessage?: string | null;
   createdAt: string;
@@ -253,7 +253,7 @@ export interface ChatJobStatusResponse {
   jobTypeLabel?: string;
   customerId: string;
   customerName: string;
-  status: 'pending' | 'running' | 'success' | 'failed' | string;
+  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | string;
   progressMessage: string;
   result: Record<string, unknown> | null;
   errorMessage?: string | null;

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, desc, select, update
@@ -30,6 +31,7 @@ from backend.db_models import (
 
 logger = logging.getLogger(__name__)
 JOB_PAYLOAD_PREVIEW_LIMIT = max(120, int(os.getenv("JOB_PAYLOAD_PREVIEW_LIMIT", "300")))
+JOB_STALE_TIMEOUT_SECONDS = max(300, int(os.getenv("JOB_STALE_TIMEOUT_SECONDS", "900")))
 
 
 class SQLAlchemyStorageService:
@@ -164,6 +166,58 @@ class SQLAlchemyStorageService:
                     return customer_row.name
 
         return ""
+
+    def _parse_job_time(self, value: str | None) -> datetime | None:
+        if not value:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        try:
+            if normalized.endswith("Z"):
+                normalized = normalized.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def _mark_stale_async_job_row(self, row: AsyncJobRecord, reason: str) -> bool:
+        if row.status not in {"running", "retrying"}:
+            return False
+        if row.finished_at:
+            return False
+        row.status = "failed"
+        row.progress_message = "任务执行超时"
+        row.error_message = reason
+        row.finished_at = datetime.now(timezone.utc).isoformat()
+        return True
+
+    def _reconcile_async_job_row(self, row: AsyncJobRecord) -> bool:
+        if row.status not in {"running", "retrying"}:
+            return False
+        started_at = self._parse_job_time(row.started_at) or (
+            row.created_at.replace(tzinfo=timezone.utc) if row.created_at else None
+        )
+        if started_at is None:
+            return False
+        elapsed_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        if elapsed_seconds <= JOB_STALE_TIMEOUT_SECONDS:
+            return False
+        reason = (
+            f"任务执行超时，已运行超过 {JOB_STALE_TIMEOUT_SECONDS} 秒，请稍后重试。"
+            if row.status == "running"
+            else f"任务重试超时，已运行超过 {JOB_STALE_TIMEOUT_SECONDS} 秒，请稍后重试。"
+        )
+        logger.warning(
+            "[SQLAlchemyStorage] reconcile stale async job job_id=%s status=%s started_at=%s timeout_seconds=%s",
+            row.job_id,
+            row.status,
+            row.started_at or (row.created_at.isoformat() if row.created_at else ""),
+            JOB_STALE_TIMEOUT_SECONDS,
+        )
+        return self._mark_stale_async_job_row(row, reason)
 
     def _row_to_customer(self, row: Customer) -> dict[str, Any]:
         return {
@@ -877,6 +931,9 @@ class SQLAlchemyStorageService:
             row = db.execute(
                 select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
             ).scalar_one_or_none()
+            if row and self._reconcile_async_job_row(row):
+                db.commit()
+                db.refresh(row)
             return self._row_to_async_job(row) if row else None
 
     async def list_async_jobs(self, username: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -887,6 +944,13 @@ class SQLAlchemyStorageService:
                 .order_by(desc(AsyncJobRecord.created_at))
                 .limit(limit)
             ).scalars().all()
+            stale_updated = False
+            for row in rows:
+                stale_updated = self._reconcile_async_job_row(row) or stale_updated
+            if stale_updated:
+                db.commit()
+                for row in rows:
+                    db.refresh(row)
             return [self._row_to_async_job(row) for row in rows]
 
     async def update_async_job(self, job_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:

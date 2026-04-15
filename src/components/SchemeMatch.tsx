@@ -240,7 +240,7 @@ const SchemeMatchPage: React.FC = () => {
 
         failureCount = 0;
 
-        if (status.status === 'pending' || status.status === 'running') {
+        if (status.status === 'pending' || status.status === 'running' || status.status === 'retrying') {
           await new Promise((resolve) => window.setTimeout(resolve, 2000));
           continue;
         }

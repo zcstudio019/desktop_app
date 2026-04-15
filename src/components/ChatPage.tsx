@@ -4631,9 +4631,9 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           return;
         }
 
-        if (status.status === 'pending' || status.status === 'running') {
+        if (status.status === 'pending' || status.status === 'running' || status.status === 'retrying') {
           setChatJobFeedback({
-            tone: 'processing',
+            tone: status.status === 'retrying' ? 'partial' : 'processing',
             title: options?.restored ? `已恢复${getJobTypeLabel(status.jobType, status.jobTypeLabel)}` : `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}处理中`,
             description: getReadableChatJobProgress(status),
             persistenceHint: '主流程已进入后台处理，本页会自动轮询最新结果。',

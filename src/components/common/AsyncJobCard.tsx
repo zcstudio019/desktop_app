@@ -45,7 +45,7 @@ function formatLocalDateTime(value?: string | null) {
 }
 
 function isRunningJobStale(job: Pick<AsyncJobLike, 'status' | 'startedAt' | 'createdAt'>): boolean {
-  if (job.status !== 'running') {
+  if (job.status !== 'running' && job.status !== 'retrying') {
     return false;
   }
   const startedAt = job.startedAt || job.createdAt;
@@ -68,6 +68,8 @@ function getStatusLabel(job: AsyncJobLike) {
       return '排队中';
     case 'running':
       return '处理中';
+    case 'retrying':
+      return '重试中';
     case 'success':
       return '已完成';
     case 'failed':
@@ -86,6 +88,8 @@ function getStatusTone(job: AsyncJobLike) {
       return 'border-slate-200 bg-slate-50 text-slate-600';
     case 'running':
       return 'border-blue-200 bg-blue-50 text-blue-700';
+    case 'retrying':
+      return 'border-violet-200 bg-violet-50 text-violet-700';
     case 'success':
       return 'border-emerald-200 bg-emerald-50 text-emerald-700';
     case 'failed':

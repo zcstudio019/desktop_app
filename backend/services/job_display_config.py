@@ -11,6 +11,7 @@ JOB_DISPLAY_CONFIG: dict[str, dict[str, Any]] = {
         "defaultStatusText": {
             "pending": "已接收文件",
             "running": "正在提取结构化内容",
+            "retrying": "外部服务波动，系统正在自动重试",
             "success": "资料提取已完成",
             "failed": "资料提取失败",
         },
@@ -25,6 +26,7 @@ JOB_DISPLAY_CONFIG: dict[str, dict[str, Any]] = {
         "defaultStatusText": {
             "pending": "已提交风险报告任务",
             "running": "正在生成风险报告",
+            "retrying": "风险报告生成暂时受阻，系统正在自动重试",
             "success": "风险报告已完成",
             "failed": "风险报告失败",
         },
@@ -39,6 +41,7 @@ JOB_DISPLAY_CONFIG: dict[str, dict[str, Any]] = {
         "defaultStatusText": {
             "pending": "已提交方案匹配任务",
             "running": "正在生成融资方案匹配结果",
+            "retrying": "方案匹配暂时受阻，系统正在自动重试",
             "success": "方案匹配已完成",
             "failed": "方案匹配失败",
         },
@@ -53,6 +56,7 @@ JOB_DISPLAY_CONFIG: dict[str, dict[str, Any]] = {
         "defaultStatusText": {
             "pending": "已提交申请表生成任务",
             "running": "正在生成申请表",
+            "retrying": "申请表生成暂时受阻，系统正在自动重试",
             "success": "申请表生成已完成",
             "failed": "申请表生成失败",
         },
@@ -69,6 +73,7 @@ DEFAULT_JOB_DISPLAY_CONFIG: dict[str, Any] = {
     "defaultStatusText": {
         "pending": "任务已提交",
         "running": "正在处理任务",
+        "retrying": "任务暂时受阻，系统正在自动重试",
         "success": "任务已完成",
         "failed": "任务失败",
     },
@@ -98,10 +103,14 @@ def get_job_status_text(job_type: str | None, status: str | None) -> str:
     status_text = (config.get("defaultStatusText") or {}).get(status or "")
     if status_text:
         return str(status_text)
-    return str((DEFAULT_JOB_DISPLAY_CONFIG.get("defaultStatusText") or {}).get(status or "", "任务处理中"))
+    return str((DEFAULT_JOB_DISPLAY_CONFIG.get("defaultStatusText") or {}).get(status or "", "正在处理任务"))
 
 
-def build_job_result_summary(job_type: str | None, result_payload: dict[str, Any] | None, customer_name: str | None) -> str | None:
+def build_job_result_summary(
+    job_type: str | None,
+    result_payload: dict[str, Any] | None,
+    customer_name: str | None,
+) -> str | None:
     if not result_payload:
         return None
 

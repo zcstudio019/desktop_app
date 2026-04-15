@@ -1,0 +1,30 @@
+[Unit]
+Description=Loan Assistant FastAPI Web
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=loanassistant
+Group=loanassistant
+WorkingDirectory=/opt/loan-assistant/app
+EnvironmentFile=/etc/loan-assistant/env/loan-assistant.env
+RuntimeDirectory=loan-assistant
+RuntimeDirectoryMode=0755
+ExecStart=/opt/loan-assistant/app/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers ${WEB_CONCURRENCY}
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/loan-assistant/app /opt/loan-assistant/logs /opt/loan-assistant/run
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loan-assistant-web
+
+[Install]
+WantedBy=multi-user.target

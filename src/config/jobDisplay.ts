@@ -6,16 +6,19 @@ export type SupportedJobType =
   | 'scheme_match'
   | 'application_generate';
 
+type JobStatusText = {
+  pending: string;
+  running: string;
+  retrying: string;
+  success: string;
+  failed: string;
+};
+
 type JobDisplayConfig = {
   jobType: SupportedJobType;
   jobTypeLabel: string;
   targetPage: string | null;
-  defaultStatusText: {
-    pending: string;
-    running: string;
-    success: string;
-    failed: string;
-  };
+  defaultStatusText: JobStatusText;
   resultSummary: (
     result: Record<string, unknown> | null | undefined,
     customerName?: string | null,
@@ -32,6 +35,7 @@ const DEFAULT_JOB_DISPLAY_CONFIG = {
   defaultStatusText: {
     pending: '任务已提交',
     running: '正在处理任务',
+    retrying: '系统正在自动重试',
     success: '任务已完成',
     failed: '任务失败',
   },
@@ -50,6 +54,7 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
     defaultStatusText: {
       pending: '已接收文件',
       running: '正在提取结构化内容',
+      retrying: '资料提取暂时受阻，系统正在自动重试',
       success: '资料提取已完成',
       failed: '资料提取失败',
     },
@@ -66,6 +71,7 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
     defaultStatusText: {
       pending: '已提交风险报告任务',
       running: '正在生成风险报告',
+      retrying: '风险报告生成暂时受阻，系统正在自动重试',
       success: '风险报告已完成',
       failed: '风险报告失败',
     },
@@ -92,6 +98,7 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
     defaultStatusText: {
       pending: '已提交方案匹配任务',
       running: '正在生成融资方案匹配结果',
+      retrying: '方案匹配暂时受阻，系统正在自动重试',
       success: '方案匹配已完成',
       failed: '方案匹配失败',
     },
@@ -108,6 +115,7 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
     defaultStatusText: {
       pending: '已提交申请表生成任务',
       running: '正在生成申请表',
+      retrying: '申请表生成暂时受阻，系统正在自动重试',
       success: '申请表生成已完成',
       failed: '申请表生成失败',
     },
@@ -150,9 +158,9 @@ export function getJobSuccessAction(jobType?: string | null, targetPage?: string
 export function getJobStatusText(jobType?: string | null, status?: string | null) {
   const config = getJobDisplayConfig(jobType);
   if (status && status in config.defaultStatusText) {
-    return config.defaultStatusText[status as keyof typeof config.defaultStatusText];
+    return config.defaultStatusText[status as keyof JobStatusText];
   }
-  return '正在处理任务';
+  return DEFAULT_JOB_DISPLAY_CONFIG.defaultStatusText.running;
 }
 
 export function getJobResultSummary(
@@ -248,6 +256,9 @@ export function getReadableJobProgress(
   }
   if (job.status === 'failed') {
     return job.errorMessage || getJobStatusText(job.jobType, 'failed');
+  }
+  if (job.status === 'retrying') {
+    return job.progressMessage || getJobStatusText(job.jobType, 'retrying');
   }
   if (job.status === 'pending') {
     return getJobStatusText(job.jobType, 'pending');
