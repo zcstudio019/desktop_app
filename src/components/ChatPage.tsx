@@ -145,6 +145,18 @@ function buildSubmittedJobFeedback(
   };
 }
 
+function buildJobSuccessFeedback(job: Pick<ChatJobSummaryResponse, 'jobType' | 'jobTypeLabel' | 'customerName' | 'resultSummary'>) {
+  return {
+    tone: 'success' as const,
+    title: `${getJobTypeLabel(job.jobType, job.jobTypeLabel)}已完成`,
+    description: getJobResultSummary(job.jobType, undefined, job.customerName, job.resultSummary) || '处理完成',
+    persistenceHint: '主流程已生成成功。',
+    nextStep: job.jobType === 'chat_extract'
+      ? '建议继续核对提取结果，并前往资料汇总查看最新变化。'
+      : '可继续查看结果，或跳转到对应业务页面处理。',
+  };
+}
+
 function extractAsyncJobFromChatData(data: Record<string, unknown> | null | undefined): ChatIntentAsyncJob | null {
   if (!data || typeof data !== 'object') {
     return null;
@@ -4062,15 +4074,14 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       targetPage: successAction.targetPage,
       actionLabel: successAction.actionLabel,
     });
-    setChatJobFeedback({
-      tone: 'success',
-      title: `${getJobTypeLabel(job.jobType, job.jobTypeLabel)}已完成`,
-      description: getJobResultSummary(job.jobType, undefined, job.customerName, job.resultSummary) || getReadableChatJobProgress(job),
-      persistenceHint: '主流程已生成成功。',
-      nextStep: job.jobType === 'chat_extract'
-        ? '建议继续核对提取结果，并前往资料汇总查看最新变化。'
-        : '可继续查看结果，或跳转到对应业务页面处理。',
-    });
+    const successFeedback = buildJobSuccessFeedback(job);
+    if (job.jobType === 'risk_report') {
+      setRiskFeedback(successFeedback);
+      setChatJobFeedback(null);
+      return;
+    }
+    setRiskFeedback(null);
+    setChatJobFeedback(successFeedback);
   }, []);
 
   const buildJobSummaryFromStatus = useCallback((jobStatus: ChatJobStatusResponse): ChatJobSummaryResponse => ({
@@ -4151,13 +4162,9 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     };
     setCurrentJob(completedJobSummary);
     setChatJobResult(result);
-    setLatestCompletedChatJob({
-      jobId: normalizedStatus.jobId,
-      jobType: normalizedStatus.jobType,
-      customerId: resolvedCustomerId,
-      customerName: resolvedCustomerName,
+    restoreCompletedChatJobFeedback({
+      ...completedJobSummary,
       targetPage: successAction.targetPage,
-      actionLabel: successAction.actionLabel,
     });
 
     if (completedChatJobIdsRef.current.has(normalizedStatus.jobId)) {
@@ -4271,7 +4278,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     }
 
     markChatJobCompleted(normalizedStatus.jobId);
-  }, [addChatMessage, clearAsyncChatJobErrors, markChatJobCompleted, resetChatRequestState, resetRagState, setApplicationResult, setLastIntent, setSchemeResult, syncRecentJobFromStatus]);
+  }, [addChatMessage, clearAsyncChatJobErrors, markChatJobCompleted, resetChatRequestState, resetRagState, restoreCompletedChatJobFeedback, setApplicationResult, setLastIntent, setSchemeResult, syncRecentJobFromStatus]);
 
   const loadRecentChatJobs = useCallback(async () => {
     setJobsLoading(true);
@@ -4620,25 +4627,37 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           clearPendingChatJob();
           setChatJobPollError(null);
           setChatJobPollErrorJobId(null);
-          setChatJobFeedback({
+          const staleFeedback = {
             tone: 'partial',
             title: '任务可能已中断',
             description: '这条任务已运行较长时间，系统判断它可能没有继续推进。',
             persistenceHint: '后台任务可能已中断，当前页面已停止自动轮询。',
             nextStep: '建议重新提交一次资料提取任务。',
-          });
+          } as const;
+          if (status.jobType === 'risk_report') {
+            setRiskFeedback(staleFeedback);
+            setChatJobFeedback(null);
+          } else {
+            setChatJobFeedback(staleFeedback);
+          }
           setChatTaskStatus('idle', null, null);
           return;
         }
 
         if (status.status === 'pending' || status.status === 'running' || status.status === 'retrying') {
-          setChatJobFeedback({
+          const processingFeedback = {
             tone: status.status === 'retrying' ? 'partial' : 'processing',
             title: options?.restored ? `已恢复${getJobTypeLabel(status.jobType, status.jobTypeLabel)}` : `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}处理中`,
             description: getReadableChatJobProgress(status),
             persistenceHint: '主流程已进入后台处理，本页会自动轮询最新结果。',
             nextStep: '请稍候，完成后会自动展示结果或提供对应业务页跳转。',
-          });
+          } as const;
+          if (status.jobType === 'risk_report') {
+            setRiskFeedback(processingFeedback);
+            setChatJobFeedback(null);
+          } else {
+            setChatJobFeedback(processingFeedback);
+          }
           await waitForNextPoll();
           status = await fetchJobStatus();
           continue;
@@ -4657,13 +4676,20 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
             currentCustomerName ||
             null;
           consumeCompletedJobResult(status, requestMessages, resolvedCustomerId ?? null, resolvedCustomerName);
-          setChatJobFeedback({
-            tone: 'success',
+          const successFeedback = {
+            tone: 'success' as const,
             title: `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}已完成`,
             description: getJobResultSummary(status.jobType, status.result as Record<string, unknown> | null | undefined, status.customerName, status.resultSummary) || getReadableChatJobProgress(status),
             persistenceHint: '主流程已生成成功。',
             nextStep: status.jobType === 'chat_extract' ? '建议继续核对提取结果，并前往资料汇总查看最新变化。' : '可继续查看结果，或跳转到对应业务页面处理。',
-          });
+          };
+          if (status.jobType === 'risk_report') {
+            setRiskFeedback(successFeedback);
+            setChatJobFeedback(null);
+          } else {
+            setRiskFeedback(null);
+            setChatJobFeedback(successFeedback);
+          }
           recordSystemActivity(
             status.jobType === 'risk_report'
               ? {
@@ -4709,13 +4735,19 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         setChatJobSubmitError(null);
         setChatJobPollError(null);
         setChatJobPollErrorJobId(null);
-        setChatJobFeedback({
+        const failedFeedback = {
           tone: 'error',
           title: `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}失败`,
           description: status.errorMessage || '本次任务未成功完成。',
           persistenceHint: '主流程未成功完成。',
           nextStep: '请检查当前资料或网络状态后重试，必要时缩小单次处理范围。',
-        });
+        } as const;
+        if (status.jobType === 'risk_report') {
+          setRiskFeedback(failedFeedback);
+          setChatJobFeedback(null);
+        } else {
+          setChatJobFeedback(failedFeedback);
+        }
         setChatTaskStatus('idle', null, null);
         if (status.jobType === 'chat_extract') {
           setMessages(requestMessages);
