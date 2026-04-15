@@ -1,0 +1,15 @@
+[Unit]
+Description=Loan Assistant Celery Chat Worker
+After=network.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+User=root
+WorkingDirectory=/root/desktop_app
+EnvironmentFile=/root/desktop_app/.env
+ExecStart=/root/desktop_app/venv/bin/celery -A backend.celery_app.celery_app worker -l info -Q chat --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=30 -n chat@%h
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

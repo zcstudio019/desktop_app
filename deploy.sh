@@ -1,40 +1,55 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/srv/loan-assistant/current}"
-VENV_DIR="${VENV_DIR:-$APP_DIR/.venv}"
+APP_DIR="${APP_DIR:-/root/desktop_app}"
+VENV_DIR="${VENV_DIR:-$APP_DIR/venv}"
 
-echo "==> Deploying loan assistant from ${APP_DIR}"
+echo "========== 进入项目目录 =========="
 cd "$APP_DIR"
 
-if [ ! -f ".env.production" ]; then
-  echo "ERROR: .env.production not found in ${APP_DIR}"
-  exit 1
-fi
+echo "========== 拉取最新代码 =========="
+git pull
 
-python3 -m venv "$VENV_DIR"
+echo "========== 准备 Python 虚拟环境 =========="
+if [ ! -d "$VENV_DIR" ]; then
+  python3 -m venv "$VENV_DIR"
+fi
 source "$VENV_DIR/bin/activate"
 
+echo "========== 安装后端依赖 =========="
 pip install --upgrade pip
 pip install -r requirements-prod.txt
 
 if command -v npm >/dev/null 2>&1; then
-  npm ci
+  echo "========== 安装前端依赖 =========="
+  npm install --legacy-peer-deps
+  echo "========== 构建前端 =========="
   npm run build
 else
   echo "WARNING: npm not found, skipped frontend build."
 fi
 
-set -a
-source .env.production
-set +a
+if [ -f "$APP_DIR/.env" ]; then
+  echo "========== 加载环境变量 =========="
+  set -a
+  source "$APP_DIR/.env"
+  set +a
+fi
 
+echo "========== 初始化数据库 =========="
 python -m backend.init_db
 
-sudo systemctl daemon-reload
-sudo systemctl enable loan-assistant-api
-sudo systemctl restart loan-assistant-api
-sudo nginx -t
-sudo systemctl restart nginx
+echo "========== 重启后端服务 =========="
+systemctl restart loan-assistant-api
 
-echo "==> Deploy completed"
+echo "========== 重启 Chat Celery 服务 =========="
+systemctl restart loan-assistant-celery-chat
+
+echo "========== 重启 Heavy Celery 服务 =========="
+systemctl restart loan-assistant-celery-heavy
+
+echo "========== 检查并重启 Nginx =========="
+nginx -t
+systemctl restart nginx
+
+echo "========== 部署完成 =========="

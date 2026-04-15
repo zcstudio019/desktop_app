@@ -251,9 +251,9 @@ async def _dispatch_customer_risk_report_job(
         current_user_payload.get("username") or "",
     )
     if TASK_QUEUE_ENABLED:
-        from backend.celery_app import RISK_REPORT_TASK_NAME, celery_app
+        from backend.celery_app import HEAVY_QUEUE_NAME, RISK_REPORT_TASK_NAME, celery_app
 
-        async_result = celery_app.send_task(RISK_REPORT_TASK_NAME, args=[job_id])
+        async_result = celery_app.send_task(RISK_REPORT_TASK_NAME, args=[job_id], queue=HEAVY_QUEUE_NAME)
         await storage_service.mark_async_job_dispatched(
             job_id,
             async_result.id,
