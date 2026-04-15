@@ -60,4 +60,16 @@ echo "========== 检查并重启 Nginx =========="
 nginx -t
 systemctl restart nginx
 
+echo "========== 部署后版本自检 =========="
+PACKAGE_VERSION="$(grep -oP '\"version\":\\s*\"\\K[^\"]+' "$APP_DIR/package.json" | head -n 1 || true)"
+echo "package.json version: ${PACKAGE_VERSION:-unknown}"
+
+ASSET_PATH="$(curl -s http://127.0.0.1/ | grep -o 'assets/index-[^"]*\.js' | head -n 1 || true)"
+echo "served asset: ${ASSET_PATH:-not-found}"
+
+if [ -n "${ASSET_PATH:-}" ]; then
+  SERVED_VERSION="$(curl -s "http://127.0.0.1/${ASSET_PATH}" | grep -o 'V1\.0\.[0-9]\+' | head -n 1 || true)"
+  echo "served frontend version: ${SERVED_VERSION:-not-found}"
+fi
+
 echo "========== 部署完成 =========="
