@@ -6,6 +6,7 @@ from sqlalchemy import inspect, text
 
 from .database import Base, engine
 from . import db_models  # noqa: F401  # Import models so metadata is populated.
+from .routers.auth import ensure_default_admin_exists_only_for_empty_db
 
 
 def _mysql_column_exists(connection, table_name: str, column_name: str) -> bool:
@@ -62,6 +63,7 @@ def init_database() -> None:
                 )
             )
             connection.commit()
+    ensure_default_admin_exists_only_for_empty_db()
 
 
 if __name__ == "__main__":

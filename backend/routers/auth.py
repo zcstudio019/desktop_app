@@ -8,7 +8,7 @@ import os
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from backend.database import SessionLocal
@@ -55,22 +55,12 @@ SECURITY_QUESTION_SET_SUCCESS_MESSAGE = "密保问题已设置"
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-def _get_admin_credential(env_var: str, default_desc: str) -> str:
-    value = (os.getenv(env_var) or "").strip()
-    if value:
-        return value
-    if env_var == "ADMIN_USERNAME":
-        value = f"admin_{secrets.token_hex(8)}"
-    elif env_var == "ADMIN_PASSWORD":
-        value = secrets.token_urlsafe(16)
-    else:
-        value = secrets.token_hex(16)
-    logger.warning("%s: %s not set, generated secure fallback", default_desc, env_var)
-    return value
-
-
-ADMIN_USERNAME = _get_admin_credential("ADMIN_USERNAME", "Admin username")
-ADMIN_PASSWORD = _get_admin_credential("ADMIN_PASSWORD", "Admin password")
+def _get_admin_bootstrap_config() -> tuple[str, str, str]:
+    return (
+        (os.getenv("ADMIN_USERNAME") or "").strip(),
+        (os.getenv("ADMIN_PASSWORD") or "").strip(),
+        (os.getenv("ADMIN_SALT") or "").strip(),
+    )
 
 
 def _hash_password_legacy(password: str, salt: str) -> str:
@@ -114,8 +104,8 @@ def _row_to_user_info(row: UserAccount) -> UserInfo:
     )
 
 
-def _set_password_fields(row: UserAccount, password: str) -> None:
-    salt = secrets.token_hex(16)
+def _set_password_fields(row: UserAccount, password: str, *, salt_override: str | None = None) -> None:
+    salt = (salt_override or "").strip() or secrets.token_hex(16)
     row.salt = salt
     row.password_algo = PASSWORD_ALGO
     row.password_iterations = PASSWORD_ITERATIONS
@@ -152,23 +142,29 @@ def _count_admin_users(db) -> int:
     return db.query(UserAccount).filter(UserAccount.role == "admin").count()
 
 
-def _ensure_seed_admin_account() -> None:
+def ensure_default_admin_exists_only_for_empty_db() -> bool:
+    admin_username, admin_password, admin_salt = _get_admin_bootstrap_config()
     with SessionLocal() as db:
-        existing = db.query(UserAccount).filter(UserAccount.username == ADMIN_USERNAME).first()
-        if existing:
-            return
+        user_count = db.query(UserAccount).count()
+        if user_count > 0:
+            logger.info("[Auth Bootstrap] skipped default admin creation: users already exist")
+            return False
+        if not admin_username or not admin_password:
+            logger.warning(
+                "[Auth Bootstrap] skipped default admin creation: missing ADMIN_USERNAME or ADMIN_PASSWORD",
+            )
+            return False
 
         admin = UserAccount(
-            username=ADMIN_USERNAME,
+            username=admin_username,
             role="admin",
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        _set_password_fields(admin, ADMIN_PASSWORD)
+        _set_password_fields(admin, admin_password, salt_override=admin_salt or None)
         db.add(admin)
         db.commit()
-        logger.info("Seeded admin account '%s' into SQLAlchemy storage", ADMIN_USERNAME)
-
-_ensure_seed_admin_account()
+        logger.info("[Auth Bootstrap] created default admin: %s", admin_username)
+        return True
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -293,19 +289,29 @@ async def forgot_password(request: ForgotPasswordRequest) -> dict:
 
 
 @router.get("/me", response_model=UserInfo)
-async def get_me(current_user: dict = Depends(get_current_user)) -> UserInfo:
+async def get_me(authorization: str = Header(None)) -> UserInfo:
     try:
+        if not authorization:
+            logger.warning("[Auth] /me unauthorized: missing token")
+            return JSONResponse(status_code=401, content={"error": "未提供认证令牌"})
+        try:
+            current_user = await get_current_user(authorization)
+        except HTTPException as exc:
+            logger.warning("[Auth] /me unauthorized: invalid token")
+            return JSONResponse(status_code=401, content={"error": str(exc.detail)})
+
         with SessionLocal() as db:
             user = db.query(UserAccount).filter(UserAccount.username == current_user["username"]).first()
             if not user:
-                raise HTTPException(status_code=404, detail=USER_NOT_FOUND_MESSAGE)
+                logger.warning("[Auth] /me unauthorized: user not found")
+                return JSONResponse(status_code=401, content={"error": USER_NOT_FOUND_MESSAGE})
             if not user.last_login_at and current_user.get("token_iat"):
                 user.last_login_at = datetime.fromtimestamp(float(current_user["token_iat"]), tz=timezone.utc).isoformat()
                 db.commit()
             return _row_to_user_info(user)
     except HTTPException as exc:
-        logger.exception("/api/auth/me returned HTTPException")
-        return JSONResponse(status_code=exc.status_code, content={"error": str(exc.detail)})
+        logger.warning("[Auth] /me unauthorized: invalid token")
+        return JSONResponse(status_code=401, content={"error": str(exc.detail)})
     except Exception as exc:
         logger.exception("error detail")
         return JSONResponse(status_code=500, content={"error": str(exc)})
