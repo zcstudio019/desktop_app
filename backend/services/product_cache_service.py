@@ -22,6 +22,18 @@ def _ensure_tables() -> None:
     Base.metadata.create_all(bind=engine, tables=[ProductCacheEntry.__table__], checkfirst=True)
     _TABLES_READY = True
 
+
+def _select_first_with_warning(db, stmt, *, table_name: str, customer_id: str = ""):
+    rows = db.execute(stmt.limit(2)).scalars().all()
+    if len(rows) > 1:
+        logger.warning(
+            "[ProductCacheService] duplicate rows detected table=%s customer_id=%s row_count=%s",
+            table_name,
+            customer_id or "",
+            len(rows),
+        )
+    return rows[0] if rows else None
+
 def get_cache_map() -> dict[str, str]:
     _ensure_tables()
     with SessionLocal() as db:
@@ -54,7 +66,11 @@ def save_cache_map(enterprise: str, personal: str, enterprise_mortgage: str | No
     }
     with SessionLocal() as db:
         for cache_key, content in payload.items():
-            row = db.execute(select(ProductCacheEntry).where(ProductCacheEntry.cache_key == cache_key)).scalar_one_or_none()
+            row = _select_first_with_warning(
+                db,
+                select(ProductCacheEntry).where(ProductCacheEntry.cache_key == cache_key),
+                table_name="product_cache_entries",
+            )
             if row:
                 row.content = content
                 row.last_updated = last_updated
@@ -78,7 +94,11 @@ def save_cache_entry(cache_key: str, content: str, source: str = "wiki_refresh")
     if cache_key == "enterprise":
         cache_key = "enterprise_credit"
     with SessionLocal() as db:
-        row = db.execute(select(ProductCacheEntry).where(ProductCacheEntry.cache_key == cache_key)).scalar_one_or_none()
+        row = _select_first_with_warning(
+            db,
+            select(ProductCacheEntry).where(ProductCacheEntry.cache_key == cache_key),
+            table_name="product_cache_entries",
+        )
         if row:
             row.content = content or ""
             row.last_updated = last_updated

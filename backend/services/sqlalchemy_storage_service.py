@@ -159,9 +159,12 @@ class SQLAlchemyStorageService:
         customer_id = row.customer_id or ""
         if customer_id:
             with self._session_factory() as lookup_db:
-                customer_row = lookup_db.execute(
-                    select(Customer).where(Customer.customer_id == customer_id)
-                ).scalar_one_or_none()
+                customer_row = self._select_first_with_warning(
+                    lookup_db,
+                    select(Customer).where(Customer.customer_id == customer_id),
+                    table_name="customers",
+                    customer_id=customer_id,
+                )
                 if customer_row and customer_row.name:
                     return customer_row.name
 
@@ -218,6 +221,24 @@ class SQLAlchemyStorageService:
             JOB_STALE_TIMEOUT_SECONDS,
         )
         return self._mark_stale_async_job_row(row, reason)
+
+    def _select_first_with_warning(
+        self,
+        db: Any,
+        stmt: Any,
+        *,
+        table_name: str,
+        customer_id: str = "",
+    ) -> Any:
+        rows = db.execute(stmt.limit(2)).scalars().all()
+        if len(rows) > 1:
+            logger.warning(
+                "[SQLAlchemyStorage] duplicate rows detected table=%s customer_id=%s row_count=%s",
+                table_name,
+                customer_id or "",
+                len(rows),
+            )
+        return rows[0] if rows else None
 
     def _row_to_customer(self, row: Customer) -> dict[str, Any]:
         return {
@@ -392,12 +413,22 @@ class SQLAlchemyStorageService:
 
     async def get_customer(self, customer_id: str) -> dict | None:
         with self._session_factory() as db:
-            row = db.execute(select(Customer).where(Customer.customer_id == customer_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(Customer).where(Customer.customer_id == customer_id),
+                table_name="customers",
+                customer_id=customer_id,
+            )
             return self._row_to_customer(row) if row else None
 
     async def update_customer(self, customer_id: str, updates: dict[str, Any]) -> bool:
         with self._session_factory() as db:
-            row = db.execute(select(Customer).where(Customer.customer_id == customer_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(Customer).where(Customer.customer_id == customer_id),
+                table_name="customers",
+                customer_id=customer_id,
+            )
             if not row:
                 return False
             for key, value in updates.items():
@@ -414,7 +445,12 @@ class SQLAlchemyStorageService:
     async def delete_customer(self, customer_id: str) -> bool:
         with self._session_factory() as db:
             try:
-                row = db.execute(select(Customer).where(Customer.customer_id == customer_id)).scalar_one_or_none()
+                row = self._select_first_with_warning(
+                    db,
+                    select(Customer).where(Customer.customer_id == customer_id),
+                    table_name="customers",
+                    customer_id=customer_id,
+                )
                 if not row:
                     return False
 
@@ -532,7 +568,11 @@ class SQLAlchemyStorageService:
 
     async def get_document(self, doc_id: str) -> dict | None:
         with self._session_factory() as db:
-            row = db.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(Document).where(Document.doc_id == doc_id),
+                table_name="documents",
+            )
             return self._row_to_document(row) if row else None
 
     async def list_documents(self, customer_id: str) -> list[dict]:
@@ -545,7 +585,11 @@ class SQLAlchemyStorageService:
     async def delete_document(self, doc_id: str) -> bool:
         with self._session_factory() as db:
             try:
-                row = db.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
+                row = self._select_first_with_warning(
+                    db,
+                    select(Document).where(Document.doc_id == doc_id),
+                    table_name="documents",
+                )
                 if not row:
                     return False
 
@@ -588,7 +632,11 @@ class SQLAlchemyStorageService:
 
     async def get_extraction(self, extraction_id: str) -> dict | None:
         with self._session_factory() as db:
-            row = db.execute(select(Extraction).where(Extraction.extraction_id == extraction_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(Extraction).where(Extraction.extraction_id == extraction_id),
+                table_name="extractions",
+            )
             return self._row_to_extraction(row) if row else None
 
     async def get_extractions_by_customer(self, customer_id: str) -> list[dict]:
@@ -605,7 +653,11 @@ class SQLAlchemyStorageService:
 
     async def update_extraction(self, extraction_id: str, field: str, value: str) -> bool:
         with self._session_factory() as db:
-            row = db.execute(select(Extraction).where(Extraction.extraction_id == extraction_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(Extraction).where(Extraction.extraction_id == extraction_id),
+                table_name="extractions",
+            )
             if not row:
                 return False
             data = self._loads(row.extracted_data, {})
@@ -616,12 +668,22 @@ class SQLAlchemyStorageService:
 
     async def get_customer_profile(self, customer_id: str) -> dict | None:
         with self._session_factory() as db:
-            row = db.execute(select(CustomerProfile).where(CustomerProfile.customer_id == customer_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(CustomerProfile).where(CustomerProfile.customer_id == customer_id),
+                table_name="customer_profiles",
+                customer_id=customer_id,
+            )
             return self._row_to_profile(row) if row else None
 
     async def upsert_customer_profile(self, profile_data: dict) -> dict:
         with self._session_factory() as db:
-            row = db.execute(select(CustomerProfile).where(CustomerProfile.customer_id == profile_data["customer_id"])).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(CustomerProfile).where(CustomerProfile.customer_id == profile_data["customer_id"]),
+                table_name="customer_profiles",
+                customer_id=profile_data["customer_id"],
+            )
             if row:
                 row.title = profile_data.get("title") or row.title
                 row.markdown_content = profile_data.get("markdown_content") or ""
@@ -648,7 +710,12 @@ class SQLAlchemyStorageService:
 
     async def delete_customer_profile(self, customer_id: str) -> bool:
         with self._session_factory() as db:
-            row = db.execute(select(CustomerProfile).where(CustomerProfile.customer_id == customer_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(CustomerProfile).where(CustomerProfile.customer_id == customer_id),
+                table_name="customer_profiles",
+                customer_id=customer_id,
+            )
             if not row:
                 return False
             db.delete(row)
@@ -672,11 +739,14 @@ class SQLAlchemyStorageService:
 
     async def get_latest_scheme_snapshot(self, customer_id: str) -> dict | None:
         with self._session_factory() as db:
-            row = db.execute(
+            row = self._select_first_with_warning(
+                db,
                 select(CustomerSchemeSnapshot)
                 .where(CustomerSchemeSnapshot.customer_id == customer_id)
-                .order_by(desc(CustomerSchemeSnapshot.updated_at), desc(CustomerSchemeSnapshot.id))
-            ).scalar_one_or_none()
+                .order_by(desc(CustomerSchemeSnapshot.updated_at), desc(CustomerSchemeSnapshot.id)),
+                table_name="customer_scheme_snapshots",
+                customer_id=customer_id,
+            )
             return self._row_to_scheme_snapshot(row) if row else None
 
     async def replace_customer_chunks(self, customer_id: str, chunks: list[dict]) -> None:
@@ -777,16 +847,20 @@ class SQLAlchemyStorageService:
 
     async def get_saved_application(self, application_id: str) -> dict[str, Any] | None:
         with self._session_factory() as db:
-            row = db.execute(
-                select(SavedApplicationRecord).where(SavedApplicationRecord.application_id == application_id)
-            ).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(SavedApplicationRecord).where(SavedApplicationRecord.application_id == application_id),
+                table_name="saved_application_records",
+            )
             return self._row_to_application(row) if row else None
 
     async def delete_saved_application(self, application_id: str) -> bool:
         with self._session_factory() as db:
-            row = db.execute(
-                select(SavedApplicationRecord).where(SavedApplicationRecord.application_id == application_id)
-            ).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(SavedApplicationRecord).where(SavedApplicationRecord.application_id == application_id),
+                table_name="saved_application_records",
+            )
             if not row:
                 return False
             db.delete(row)
@@ -836,7 +910,11 @@ class SQLAlchemyStorageService:
 
     async def get_chat_session(self, session_id: str) -> dict[str, Any] | None:
         with self._session_factory() as db:
-            row = db.execute(select(ChatSession).where(ChatSession.session_id == session_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(ChatSession).where(ChatSession.session_id == session_id),
+                table_name="chat_sessions",
+            )
             return self._row_to_chat_session(row) if row else None
 
     async def list_chat_sessions(
@@ -862,9 +940,11 @@ class SQLAlchemyStorageService:
             )
             db.add(row)
 
-            session_row = db.execute(
-                select(ChatSession).where(ChatSession.session_id == message_data["session_id"])
-            ).scalar_one_or_none()
+            session_row = self._select_first_with_warning(
+                db,
+                select(ChatSession).where(ChatSession.session_id == message_data["session_id"]),
+                table_name="chat_sessions",
+            )
             if session_row:
                 preview = (message_data.get("content") or "").strip()
                 session_row.last_message_preview = preview[:500]
@@ -883,9 +963,11 @@ class SQLAlchemyStorageService:
 
     async def upsert_product_cache_entry(self, cache_data: dict[str, Any]) -> dict[str, Any]:
         with self._session_factory() as db:
-            row = db.execute(
-                select(ProductCacheEntry).where(ProductCacheEntry.cache_key == cache_data["cache_key"])
-            ).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(ProductCacheEntry).where(ProductCacheEntry.cache_key == cache_data["cache_key"]),
+                table_name="product_cache_entries",
+            )
             if row:
                 row.content = cache_data.get("content") or ""
                 row.last_updated = cache_data.get("last_updated") or row.last_updated or ""
@@ -928,9 +1010,11 @@ class SQLAlchemyStorageService:
 
     async def get_async_job(self, job_id: str) -> dict[str, Any] | None:
         with self._session_factory() as db:
-            row = db.execute(
-                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
-            ).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id),
+                table_name="async_jobs",
+            )
             if row and self._reconcile_async_job_row(row):
                 db.commit()
                 db.refresh(row)
@@ -955,9 +1039,11 @@ class SQLAlchemyStorageService:
 
     async def update_async_job(self, job_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         with self._session_factory() as db:
-            row = db.execute(
-                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
-            ).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id),
+                table_name="async_jobs",
+            )
             if not row:
                 return None
 
@@ -994,9 +1080,11 @@ class SQLAlchemyStorageService:
 
     async def get_async_job_execution_payload(self, job_id: str) -> dict[str, Any] | None:
         with self._session_factory() as db:
-            row = db.execute(
-                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
-            ).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id),
+                table_name="async_jobs",
+            )
             if not row:
                 return None
             payload = self._loads(row.execution_payload_json, {})
@@ -1039,7 +1127,11 @@ class SQLAlchemyStorageService:
             stmt = select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id)
             if username:
                 stmt = stmt.where(AsyncJobRecord.username == username)
-            row = db.execute(stmt).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                stmt,
+                table_name="async_jobs",
+            )
             if not row:
                 return False
             db.delete(row)
@@ -1048,9 +1140,11 @@ class SQLAlchemyStorageService:
 
     async def get_product_cache_entry(self, cache_key: str) -> dict[str, Any] | None:
         with self._session_factory() as db:
-            row = db.execute(
-                select(ProductCacheEntry).where(ProductCacheEntry.cache_key == cache_key)
-            ).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(ProductCacheEntry).where(ProductCacheEntry.cache_key == cache_key),
+                table_name="product_cache_entries",
+            )
             return self._row_to_product_cache(row) if row else None
 
     async def list_product_cache_entries(self) -> list[dict[str, Any]]:
@@ -1078,7 +1172,11 @@ class SQLAlchemyStorageService:
 
     async def update_table_field(self, field_id: str, field_name: str) -> bool:
         with self._session_factory() as db:
-            row = db.execute(select(TableField).where(TableField.field_id == field_id)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(TableField).where(TableField.field_id == field_id),
+                table_name="table_fields",
+            )
             if not row:
                 return False
             row.field_name = field_name
@@ -1087,7 +1185,11 @@ class SQLAlchemyStorageService:
 
     async def get_field_by_doc_type(self, doc_type: str) -> dict | None:
         with self._session_factory() as db:
-            row = db.execute(select(TableField).where(TableField.doc_type == doc_type).limit(1)).scalar_one_or_none()
+            row = self._select_first_with_warning(
+                db,
+                select(TableField).where(TableField.doc_type == doc_type),
+                table_name="table_fields",
+            )
             if not row:
                 return None
             return {
