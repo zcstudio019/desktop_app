@@ -3,6 +3,8 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/root/desktop_app}"
 VENV_DIR="${VENV_DIR:-$APP_DIR/venv}"
+FRONTEND_DIST_DIR="${FRONTEND_DIST_DIR:-$APP_DIR/dist}"
+NGINX_WEB_DIR="${NGINX_WEB_DIR:-/var/www/desktop_app}"
 
 echo "========== 进入项目目录 =========="
 cd "$APP_DIR"
@@ -25,6 +27,12 @@ if command -v npm >/dev/null 2>&1; then
   npm install --legacy-peer-deps
   echo "========== 构建前端 =========="
   npm run build
+
+  echo "========== 发布前端到 Nginx 目录 =========="
+  mkdir -p "$NGINX_WEB_DIR"
+  rm -rf "$NGINX_WEB_DIR"/*
+  cp -r "$FRONTEND_DIST_DIR"/. "$NGINX_WEB_DIR"/
+  chmod -R 755 "$NGINX_WEB_DIR"
 else
   echo "WARNING: npm not found, skipped frontend build."
 fi
