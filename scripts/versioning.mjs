@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 export const projectRoot = path.resolve(__dirname, '..');
 export const packageJsonPath = path.resolve(projectRoot, 'package.json');
 export const versionMetaPath = path.resolve(projectRoot, 'src', 'generated', 'version.ts');
+export const versionHistoryPath = path.resolve(projectRoot, 'logs', 'version-history.log');
 
 function pad(value) {
   return String(value).padStart(2, '0');
@@ -71,6 +72,12 @@ export function writeVersionMeta(version, now = new Date()) {
   fs.writeFileSync(versionMetaPath, versionMetaContent, 'utf8');
 }
 
+export function appendVersionHistory(currentVersion, nextVersion, now = new Date()) {
+  const historyLine = `[${formatDateTime(now)}] ${currentVersion} -> ${nextVersion}\n`;
+  fs.mkdirSync(path.dirname(versionHistoryPath), { recursive: true });
+  fs.appendFileSync(versionHistoryPath, historyLine, 'utf8');
+}
+
 export function prepareVersionMeta() {
   const version = getCurrentVersion();
   writeVersionMeta(version);
@@ -78,10 +85,12 @@ export function prepareVersionMeta() {
 }
 
 export function bumpVersion() {
+  const now = new Date();
   const currentVersion = getCurrentVersion();
   const nextVersion = incrementVersion(currentVersion);
   writePackageVersion(nextVersion);
-  writeVersionMeta(nextVersion);
+  writeVersionMeta(nextVersion, now);
+  appendVersionHistory(currentVersion, nextVersion, now);
   return {
     currentVersion,
     nextVersion,

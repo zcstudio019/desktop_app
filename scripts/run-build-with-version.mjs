@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 
-import { bumpVersion } from './versioning.mjs';
+import { bumpVersion, versionHistoryPath } from './versioning.mjs';
 
 function runStep(command, args) {
   const result = spawnSync(command, args, {
@@ -15,6 +15,7 @@ function runStep(command, args) {
 
 const { currentVersion, nextVersion } = bumpVersion();
 console.log(`[build-version] ${currentVersion} -> ${nextVersion}`);
+console.log(`[build-version] history written to ${versionHistoryPath}`);
 
 runStep('npx', ['tsc']);
 runStep('npx', ['vite', 'build']);
