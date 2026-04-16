@@ -75,9 +75,21 @@ export interface SchemeResult {
  */
 export interface ChatMessage {
   /** Role of the message sender */
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   /** Message content */
   content: string;
+  /** Weak task association for task-aware conversation rendering */
+  relatedJobId?: string | null;
+  /** Semantic message category */
+  messageType?: 'text' | 'task_result' | 'task_feedback' | 'error';
+  /** Created time for ordering/recovery */
+  createdAt?: string;
+  /** Optimistic rendering status */
+  deliveryStatus?: 'pending' | 'sent' | 'failed';
+  /** Delivery error for optimistic rendering */
+  deliveryError?: string | null;
+  /** Client-side message id */
+  clientMessageId?: string;
 }
 
 /**

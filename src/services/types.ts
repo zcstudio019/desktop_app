@@ -143,9 +143,15 @@ export interface SchemeMatchResponse {
  */
 export interface ChatMessage {
   /** Role of the message sender */
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   /** Message content */
   content: string;
+  /** Weak task association for timeline/result linking */
+  relatedJobId?: string | null;
+  /** Semantic message category */
+  messageType?: 'text' | 'task_result' | 'task_feedback' | 'error';
+  /** Client-side created time */
+  createdAt?: string;
   /** Client-side message id for optimistic rendering */
   clientMessageId?: string;
   /** Local delivery status for optimistic rendering */
@@ -219,12 +225,12 @@ export interface ChatSessionSummary {
 
 export interface ChatJobCreateResponse {
   jobId: string;
-  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | string;
+  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | 'timeout' | 'interrupted' | string;
 }
 
 export interface ChatIntentAsyncJob {
   jobId: string;
-  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | string;
+  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | 'timeout' | 'interrupted' | string;
   jobType?: string | null;
   customerId?: string | null;
   customerName?: string | null;
@@ -237,7 +243,7 @@ export interface ChatJobSummaryResponse {
   jobTypeLabel?: string;
   customerId: string;
   customerName: string;
-  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | string;
+  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | 'timeout' | 'interrupted' | string;
   progressMessage: string;
   errorMessage?: string | null;
   createdAt: string;
@@ -253,7 +259,7 @@ export interface ChatJobStatusResponse {
   jobTypeLabel?: string;
   customerId: string;
   customerName: string;
-  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | string;
+  status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | 'timeout' | 'interrupted' | string;
   progressMessage: string;
   result: Record<string, unknown> | null;
   errorMessage?: string | null;

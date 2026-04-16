@@ -12,6 +12,8 @@ type JobStatusText = {
   retrying: string;
   success: string;
   failed: string;
+  timeout?: string;
+  interrupted?: string;
 };
 
 type JobDisplayConfig = {
@@ -29,7 +31,7 @@ type JobDisplayConfig = {
   successActionLabel: string;
 };
 
-const DEFAULT_JOB_DISPLAY_CONFIG = {
+const DEFAULT_JOB_DISPLAY_CONFIG: Omit<JobDisplayConfig, 'jobType'> = {
   jobTypeLabel: '处理任务',
   targetPage: null,
   defaultStatusText: {
@@ -38,13 +40,15 @@ const DEFAULT_JOB_DISPLAY_CONFIG = {
     retrying: '系统正在自动重试',
     success: '任务已完成',
     failed: '任务失败',
+    timeout: '任务执行超时',
+    interrupted: '任务可能已中断',
   },
   resultSummary: () => null,
   supportsContinueView: true,
   supportsViewResult: true,
   supportsDirectNavigate: false,
   successActionLabel: '查看结果',
-} satisfies Omit<JobDisplayConfig, 'jobType'>;
+};
 
 export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
   chat_extract: {
@@ -57,12 +61,14 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
       retrying: '资料提取暂时受阻，系统正在自动重试',
       success: '资料提取已完成',
       failed: '资料提取失败',
+      timeout: '资料提取超时',
+      interrupted: '资料提取可能已中断',
     },
     resultSummary: () => '资料提取已完成，可查看提取结果并同步到资料汇总。',
     supportsContinueView: true,
     supportsViewResult: true,
     supportsDirectNavigate: true,
-    successActionLabel: '直接跳资料汇总',
+    successActionLabel: '直接跳转资料汇总',
   },
   risk_report: {
     jobType: 'risk_report',
@@ -70,16 +76,17 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
     targetPage: 'chat',
     defaultStatusText: {
       pending: '已提交风险报告任务',
-      running: '正在生成风险报告',
+      running: '正在生成风险评估报告',
       retrying: '风险报告生成暂时受阻，系统正在自动重试',
       success: '风险报告已完成',
       failed: '风险报告失败',
+      timeout: '风险报告生成超时',
+      interrupted: '风险报告生成可能已中断',
     },
     resultSummary: (result, customerName) => {
-      const overall = (result?.report_json as Record<string, unknown> | undefined)?.overall_assessment as Record<
-        string,
-        unknown
-      > | undefined;
+      const overall = (result?.report_json as Record<string, unknown> | undefined)?.overall_assessment as
+        | Record<string, unknown>
+        | undefined;
       const score = overall?.total_score;
       const label = (customerName || '').trim() || '当前客户';
       return score != null
@@ -101,6 +108,8 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
       retrying: '方案匹配暂时受阻，系统正在自动重试',
       success: '方案匹配已完成',
       failed: '方案匹配失败',
+      timeout: '方案匹配超时',
+      interrupted: '方案匹配可能已中断',
     },
     resultSummary: (_result, customerName) => `${(customerName || '').trim() || '当前客户'}的融资方案匹配结果已生成。`,
     supportsContinueView: true,
@@ -118,6 +127,8 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
       retrying: '申请表生成暂时受阻，系统正在自动重试',
       success: '申请表生成已完成',
       failed: '申请表生成失败',
+      timeout: '申请表生成超时',
+      interrupted: '申请表生成可能已中断',
     },
     resultSummary: (_result, customerName) => `${(customerName || '').trim() || '当前客户'}的申请表已生成。`,
     supportsContinueView: true,
@@ -157,8 +168,14 @@ export function getJobSuccessAction(jobType?: string | null, targetPage?: string
 
 export function getJobStatusText(jobType?: string | null, status?: string | null) {
   const config = getJobDisplayConfig(jobType);
+  if (status === 'timeout') {
+    return config.defaultStatusText.timeout || DEFAULT_JOB_DISPLAY_CONFIG.defaultStatusText.timeout || '任务执行超时';
+  }
+  if (status === 'interrupted') {
+    return config.defaultStatusText.interrupted || DEFAULT_JOB_DISPLAY_CONFIG.defaultStatusText.interrupted || '任务可能已中断';
+  }
   if (status && status in config.defaultStatusText) {
-    return config.defaultStatusText[status as keyof JobStatusText];
+    return config.defaultStatusText[status as keyof JobStatusText] || DEFAULT_JOB_DISPLAY_CONFIG.defaultStatusText.running;
   }
   return DEFAULT_JOB_DISPLAY_CONFIG.defaultStatusText.running;
 }
@@ -256,6 +273,12 @@ export function getReadableJobProgress(
   }
   if (job.status === 'failed') {
     return job.errorMessage || getJobStatusText(job.jobType, 'failed');
+  }
+  if (job.status === 'timeout') {
+    return job.errorMessage || getJobStatusText(job.jobType, 'timeout');
+  }
+  if (job.status === 'interrupted') {
+    return job.errorMessage || getJobStatusText(job.jobType, 'interrupted');
   }
   if (job.status === 'retrying') {
     return job.progressMessage || getJobStatusText(job.jobType, 'retrying');
