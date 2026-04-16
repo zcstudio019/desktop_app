@@ -64,16 +64,18 @@ function resolveDirectJobApiBase(): string {
   if (base) return base.replace(/\/+$/, '');
 
   if (typeof window !== 'undefined' && window.location) {
-    const { hostname, port } = window.location;
+    const { hostname, port, origin } = window.location;
     const isLocalDevServer =
       (hostname === '127.0.0.1' || hostname === 'localhost') && (port === '5173' || port === '5174');
 
     if (isLocalDevServer) {
       return 'http://127.0.0.1:8000/api';
     }
+
+    return `${origin.replace(/\/+$/, '')}/api`;
   }
 
-  return 'http://121.196.161.155:8000/api';
+  return '/api';
 }
 
 const API_BASE = resolveApiBase();
