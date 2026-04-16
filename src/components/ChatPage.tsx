@@ -4363,6 +4363,14 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       return;
     }
 
+    const appendConversationResultMessage = (assistantMessage: ChatMessageWithReasoning) => {
+      setMessages((prev) => {
+        const baseMessages = prev.length > 0 ? prev : requestMessages;
+        return [...baseMessages, assistantMessage];
+      });
+      addChatMessage(assistantMessage);
+    };
+
     if (normalizedStatus.jobType === 'chat_extract' && result) {
       const response = result as unknown as ChatResponse;
       const assistantMessage: ChatMessageWithReasoning = {
@@ -4375,9 +4383,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         messageType: 'task_result',
         createdAt: new Date().toISOString(),
       };
-      const baseMessages = messages.length > 0 ? messages : requestMessages;
-      setMessages([...baseMessages, assistantMessage]);
-      addChatMessage(assistantMessage);
+      appendConversationResultMessage(assistantMessage);
       setLastIntent(response.intent);
     }
 
@@ -4398,9 +4404,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         messageType: 'task_result',
         createdAt: new Date().toISOString(),
       };
-      const baseMessages = messages.length > 0 ? messages : requestMessages;
-      setMessages([...baseMessages, assistantMessage]);
-      addChatMessage(assistantMessage);
+      appendConversationResultMessage(assistantMessage);
     }
 
     if (normalizedStatus.jobType === 'application_generate' && result) {
@@ -4432,9 +4436,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         messageType: 'task_result',
         createdAt: new Date().toISOString(),
       };
-      const baseMessages = messages.length > 0 ? messages : requestMessages;
-      setMessages([...baseMessages, assistantMessage]);
-      addChatMessage(assistantMessage);
+      appendConversationResultMessage(assistantMessage);
       setLastIntent('application');
     }
 
@@ -4467,14 +4469,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         messageType: 'task_result',
         createdAt: new Date().toISOString(),
       };
-      const baseMessages = messages.length > 0 ? messages : requestMessages;
-      setMessages([...baseMessages, assistantMessage]);
-      addChatMessage(assistantMessage);
+      appendConversationResultMessage(assistantMessage);
       setLastIntent('matching');
     }
 
     markChatJobCompleted(normalizedStatus.jobId);
-  }, [addChatMessage, clearActiveResultView, clearAsyncChatJobErrors, markChatJobCompleted, markRequestMessagesDelivered, messages, reconcileMessageStateByJob, resetChatRequestState, resetRagState, restoreCompletedChatJobFeedback, setApplicationResult, setLastIntent, setSchemeResult, syncRecentJobFromStatus]);
+  }, [addChatMessage, clearActiveResultView, clearAsyncChatJobErrors, markChatJobCompleted, markRequestMessagesDelivered, reconcileMessageStateByJob, resetChatRequestState, resetRagState, restoreCompletedChatJobFeedback, setApplicationResult, setLastIntent, setSchemeResult, syncRecentJobFromStatus]);
 
   const loadRecentChatJobs = useCallback(async () => {
     setJobsLoading(true);
