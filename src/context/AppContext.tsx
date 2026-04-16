@@ -86,6 +86,8 @@ export interface ChatMessage {
   createdAt?: string;
   /** Optimistic rendering status */
   deliveryStatus?: 'pending' | 'sent' | 'failed';
+  /** Task-aware message lifecycle status */
+  status?: 'sending' | 'sent' | 'processing' | 'success' | 'failed';
   /** Delivery error for optimistic rendering */
   deliveryError?: string | null;
   /** Client-side message id */

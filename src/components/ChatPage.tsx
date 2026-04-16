@@ -3558,6 +3558,22 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isTyping, onNavi
   const { text, files } = parseFileInfoFromContent(message.content);
   
   if (message.role === 'user') {
+    const messageState = message.status
+      ?? (message.deliveryStatus === 'pending'
+        ? 'sending'
+        : message.deliveryStatus === 'failed'
+          ? 'failed'
+          : message.deliveryStatus === 'sent'
+            ? 'sent'
+            : undefined);
+    const userMessageStateLabel = messageState === 'sending'
+      ? '发送中...'
+      : messageState === 'processing'
+        ? '处理中...'
+        : messageState === 'failed'
+          ? '发送失败'
+          : null;
+
     return (
       <div 
         className="flex justify-end mb-4"
@@ -3580,12 +3596,10 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isTyping, onNavi
           )}
           {/* Text content */}
           {text && <div className="whitespace-pre-wrap">{text}</div>}
-          {message.deliveryStatus && message.deliveryStatus !== 'sent' ? (
+          {userMessageStateLabel ? (
             <div className="mt-2 flex items-center justify-end gap-2 text-[11px] text-white/80">
-              <span>
-                {message.deliveryStatus === 'pending' ? '发送中...' : '发送失败'}
-              </span>
-              {message.deliveryStatus === 'failed' && message.deliveryError ? (
+              <span>{userMessageStateLabel}</span>
+              {messageState === 'failed' && message.deliveryError ? (
                 <span className="max-w-[16rem] truncate text-white/70" title={message.deliveryError}>
                   {message.deliveryError}
                 </span>
@@ -4002,7 +4016,85 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
             ? {
                 ...message,
                 deliveryStatus: status,
+                status:
+                  status === 'pending'
+                    ? 'sending'
+                    : status === 'failed'
+                      ? 'failed'
+                      : message.status === 'processing'
+                        ? 'processing'
+                        : 'sent',
                 deliveryError: status === 'failed' ? deliveryError || '发送失败，请稍后重试。' : null,
+              }
+            : message,
+        ),
+      );
+    },
+    [],
+  );
+
+  const markRequestMessagesDelivered = useCallback(
+    (
+      requestMessages: ChatMessageWithReasoning[],
+      status: NonNullable<ChatMessage['deliveryStatus']>,
+      deliveryError?: string | null,
+    ) => {
+      requestMessages.forEach((message) => {
+        if (message.role === 'user' && message.clientMessageId) {
+          updateLocalMessageStatus(message.clientMessageId, status, deliveryError);
+        }
+      });
+    },
+    [updateLocalMessageStatus],
+  );
+
+  const reconcileMessageStateByJob = useCallback(
+    (
+      jobId: string,
+      nextStatus: Extract<NonNullable<ChatMessage['status']>, 'processing' | 'success' | 'failed'>,
+      deliveryError?: string | null,
+    ) => {
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.relatedJobId === jobId
+            ? {
+                ...message,
+                status: nextStatus,
+                deliveryStatus: nextStatus === 'failed' ? 'failed' : 'sent',
+                deliveryError: nextStatus === 'failed' ? deliveryError || '任务执行失败，请稍后重试。' : null,
+              }
+            : message,
+        ),
+      );
+    },
+    [],
+  );
+
+  const attachJobToRequestMessages = useCallback(
+    (
+      requestMessages: ChatMessageWithReasoning[],
+      jobId: string,
+      nextStatus: Extract<NonNullable<ChatMessage['status']>, 'processing' | 'success' | 'failed'> = 'processing',
+    ) => {
+      const requestMessageIds = new Set(
+        requestMessages
+          .filter((message) => message.role === 'user' && message.clientMessageId)
+          .map((message) => message.clientMessageId as string),
+      );
+
+      if (requestMessageIds.size === 0) {
+        return;
+      }
+
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.clientMessageId && requestMessageIds.has(message.clientMessageId)
+            ? {
+                ...message,
+                relatedJobId: jobId,
+                status: nextStatus,
+                deliveryStatus: nextStatus === 'failed' ? 'failed' : 'sent',
+                deliveryError: nextStatus === 'failed' ? '任务执行失败，请稍后重试。' : null,
               }
             : message,
         ),
@@ -4143,6 +4235,61 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     resultSummary: jobStatus.resultSummary ?? null,
   }), []);
 
+  const reconcileResultPanelByJob = useCallback(
+    (
+      job: ChatJobStatusResponse,
+      options?: {
+        source?: TaskViewSource;
+        activateResultView?: boolean;
+      },
+    ) => {
+      const nextSource = options?.source ?? 'none';
+      const shouldShowManualResult = options?.activateResultView || nextSource === 'manual';
+      const normalizedJob = buildJobSummaryFromStatus(normalizeJobStatusResponse(job));
+
+      if (job.status === 'success' && job.result) {
+        if (shouldShowManualResult) {
+          setActiveJobId(job.jobId);
+          setActiveJobSource('manual');
+          setCurrentRunningJobId(null);
+          setCurrentJob(normalizedJob);
+          setResultPanelMode('task_result');
+          setActiveResultJobId(job.jobId);
+          setActiveResultData(job.result as Record<string, unknown>);
+        } else if (nextSource === 'auto') {
+          clearActiveResultView();
+        }
+        return;
+      }
+
+      if (job.status === 'failed' || job.status === 'timeout' || job.status === 'interrupted') {
+        if (activeJobId === job.jobId || shouldShowManualResult || nextSource === 'auto') {
+          setActiveJobId(job.jobId);
+          setActiveJobSource(nextSource === 'none' ? 'auto' : nextSource);
+          setCurrentRunningJobId(null);
+          setCurrentJob(normalizedJob);
+          setResultPanelMode('error');
+          setActiveResultJobId(job.jobId);
+          setActiveResultData(null);
+        }
+        return;
+      }
+
+      if (job.status === 'pending' || job.status === 'running' || job.status === 'retrying') {
+        if (activeJobId === job.jobId || nextSource !== 'none') {
+          setActiveJobId(job.jobId);
+          setActiveJobSource(nextSource);
+          setCurrentRunningJobId(job.jobId);
+          setCurrentJob(normalizedJob);
+          setResultPanelMode('loading');
+          setActiveResultJobId(job.jobId);
+          setActiveResultData(null);
+        }
+      }
+    },
+    [activeJobId, buildJobSummaryFromStatus, clearActiveResultView],
+  );
+
   const syncRecentJobFromStatus = useCallback((jobStatus: ChatJobStatusResponse) => {
     const normalizedStatus = normalizeJobStatusResponse(jobStatus);
     const nextSummary = buildJobSummaryFromStatus(normalizedStatus);
@@ -4172,12 +4319,13 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     requestMessages: ChatMessageWithReasoning[],
     resolvedCustomerId: string | null,
     resolvedCustomerName: string | null,
-    options?: { activateResultView?: boolean },
+    options?: { activateResultView?: boolean; resultSource?: TaskViewSource },
   ) => {
     const normalizedStatus = syncRecentJobFromStatus(jobStatus);
     clearAsyncChatJobErrors();
     resetChatRequestState();
     resetRagState();
+    markRequestMessagesDelivered(requestMessages, 'sent');
     const result = normalizedStatus.result ?? null;
     const completedJobSummary: ChatJobSummaryResponse = {
       jobId: normalizedStatus.jobId,
@@ -4194,7 +4342,9 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       targetPage: normalizedStatus.targetPage ?? getJobSuccessAction(normalizedStatus.jobType).targetPage,
       resultSummary: normalizedStatus.resultSummary ?? null,
     };
-    if (options?.activateResultView) {
+    const effectiveResultSource = options?.resultSource ?? (options?.activateResultView ? 'manual' : 'none');
+
+    if (options?.activateResultView || effectiveResultSource === 'manual') {
       setActiveJobId(normalizedStatus.jobId);
       setActiveJobSource('manual');
       setCurrentJob(completedJobSummary);
@@ -4202,9 +4352,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       setResultPanelMode('task_result');
       setActiveResultJobId(normalizedStatus.jobId);
       setActiveResultData(result);
-    } else if (activeJobSource === 'auto' && activeJobId === normalizedStatus.jobId) {
+    } else if (effectiveResultSource === 'auto') {
       clearActiveResultView();
     }
+    reconcileMessageStateByJob(normalizedStatus.jobId, 'success');
     restoreCompletedChatJobFeedback(completedJobSummary, options);
 
     const shouldInsertConversationResult = !options?.activateResultView;
@@ -4323,7 +4474,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     }
 
     markChatJobCompleted(normalizedStatus.jobId);
-  }, [activeJobId, activeJobSource, addChatMessage, clearActiveResultView, clearAsyncChatJobErrors, markChatJobCompleted, messages, resetChatRequestState, resetRagState, restoreCompletedChatJobFeedback, setApplicationResult, setLastIntent, setSchemeResult, syncRecentJobFromStatus]);
+  }, [addChatMessage, clearActiveResultView, clearAsyncChatJobErrors, markChatJobCompleted, markRequestMessagesDelivered, messages, reconcileMessageStateByJob, resetChatRequestState, resetRagState, restoreCompletedChatJobFeedback, setApplicationResult, setLastIntent, setSchemeResult, syncRecentJobFromStatus]);
 
   const loadRecentChatJobs = useCallback(async () => {
     setJobsLoading(true);
@@ -4363,6 +4514,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       messageType: 'text',
       createdAt: new Date().toISOString(),
       clientMessageId,
+      status: 'sending',
       deliveryStatus: 'pending',
       deliveryError: null,
     };
@@ -4392,6 +4544,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           getSignal(),
         );
         updateLocalMessageStatus(clientMessageId, 'sent');
+        attachJobToRequestMessages(newMessages, job.jobId, 'processing');
         setChatJobSubmitError(null);
         setChatJobPollError(null);
         persistPendingChatJob({
@@ -4411,7 +4564,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         });
         void loadRecentChatJobs();
         setChatTaskStatus('idle', null, null);
-        await pollChatJob(job.jobId, newMessages, { startedAt: Date.now() });
+        await pollChatJob(job.jobId, newMessages, { startedAt: Date.now(), resultSource: 'auto' });
       } catch (jobError) {
         console.error('Failed to create chat job:', jobError);
         updateLocalMessageStatus(clientMessageId, 'failed', jobError instanceof Error ? jobError.message : '本次提取任务未能成功提交。');
@@ -4474,6 +4627,9 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       }
 
       const asyncJob = extractAsyncJobFromChatData(response.data);
+      if (asyncJob?.jobId) {
+        attachJobToRequestMessages(newMessages, asyncJob.jobId, 'processing');
+      }
 
       // Add assistant response with reasoning, intent, and data
       const assistantMessage: ChatMessageWithReasoning = {
@@ -4518,6 +4674,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           startedAt: Date.now(),
           customerId: asyncJob.customerId ?? currentCustomerId,
           customerName: asyncJob.customerName ?? currentCustomerName,
+          resultSource: 'auto',
         });
         return;
       }
@@ -4550,6 +4707,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           startedAt: Date.now(),
           customerId: asyncJob.customerId ?? currentCustomerId,
           customerName: asyncJob.customerName ?? currentCustomerName,
+          resultSource: 'auto',
         });
         return;
       }
@@ -4590,7 +4748,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   async function pollChatJob(
     jobId: string,
     requestMessages: ChatMessageWithReasoning[],
-    options?: { startedAt?: number; restored?: boolean; customerId?: string | null; customerName?: string | null; activateResultView?: boolean },
+    options?: { startedAt?: number; restored?: boolean; customerId?: string | null; customerName?: string | null; activateResultView?: boolean; resultSource?: TaskViewSource },
   ) {
     const startedAt = options?.startedAt ?? Date.now();
     chatJobFailureCountRef.current = 0;
@@ -4671,10 +4829,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         if (isRunningJobStale(status)) {
           clearPendingChatJob();
           setCurrentRunningJobId(null);
-          if (activeJobId === jobId) {
-            setCurrentJob(buildJobSummaryFromStatus(status));
-            setResultPanelMode('loading');
-          }
+          reconcileMessageStateByJob(jobId, 'failed', '任务执行超时或已中断，请重新发起。');
+          reconcileResultPanelByJob({ ...status, status: 'interrupted' }, { source: options?.resultSource ?? 'auto', activateResultView: options?.activateResultView });
           setChatJobPollError(null);
           setChatJobPollErrorJobId(null);
           const staleFeedback = {
@@ -4695,11 +4851,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         }
 
         if (status.status === 'pending' || status.status === 'running' || status.status === 'retrying') {
-          setCurrentRunningJobId(jobId);
-          if (activeJobId === jobId) {
-            setCurrentJob(buildJobSummaryFromStatus(status));
-            setResultPanelMode('loading');
-          }
+          reconcileMessageStateByJob(jobId, 'processing');
+          reconcileResultPanelByJob(status, { source: options?.resultSource ?? 'auto', activateResultView: options?.activateResultView });
           const processingFeedback = {
             tone: status.status === 'retrying' ? 'partial' : 'processing',
             title: options?.restored ? `已恢复${getJobTypeLabel(status.jobType, status.jobTypeLabel)}` : `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}处理中`,
@@ -4733,6 +4886,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
             null;
           consumeCompletedJobResult(status, requestMessages, resolvedCustomerId ?? null, resolvedCustomerName, {
             activateResultView: Boolean(options?.activateResultView),
+            resultSource: options?.resultSource ?? (options?.activateResultView ? 'manual' : 'auto'),
           });
           setRiskFeedback(null);
           setChatJobFeedback(null);
@@ -4782,11 +4936,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         setChatJobSubmitError(null);
         setChatJobPollError(null);
         setChatJobPollErrorJobId(null);
-        if (activeJobId === jobId) {
-          setCurrentJob(buildJobSummaryFromStatus(status));
-          setResultPanelMode('loading');
-          setActiveResultData(null);
-        }
+        reconcileMessageStateByJob(jobId, 'failed', status.errorMessage || '本次任务未成功完成。');
+        reconcileResultPanelByJob(status, { source: options?.resultSource ?? 'auto', activateResultView: options?.activateResultView });
         const failedFeedback = {
           tone: 'error',
           title: `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}失败`,
@@ -4826,11 +4977,15 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       return;
     }
 
+    const clientMessageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const userMessage: ChatMessage = {
       role: 'user',
       content: question,
       messageType: 'text',
       createdAt: new Date().toISOString(),
+      clientMessageId,
+      status: 'sending',
+      deliveryStatus: 'pending',
     };
 
     const newMessages = [...currentMessages, userMessage];
@@ -4842,6 +4997,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     });
 
     if (response) {
+      updateLocalMessageStatus(clientMessageId, 'sent');
       const assistantMessage: ChatMessageWithReasoning = {
         role: 'assistant',
         content: response.answer,
@@ -4855,6 +5011,13 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       };
       setMessages((prev) => [...prev, assistantMessage]);
       addChatMessage(assistantMessage);
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.clientMessageId === clientMessageId
+            ? { ...message, status: 'success', deliveryStatus: 'sent', deliveryError: null }
+            : message,
+        ),
+      );
       recordSystemActivity({
         type: 'rag',
         title: '资料问答已完成',
@@ -4865,9 +5028,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       });
       setChatTaskStatus('done', null, null);
     } else {
+      updateLocalMessageStatus(clientMessageId, 'failed', '资料问答未成功完成。');
       setChatTaskStatus('idle', null, null);
     }
-  }, [addChatMessage, currentCustomerId, currentCustomerName, executeRag, getSignal, recordSystemActivity, setChatTaskStatus]);
+  }, [addChatMessage, currentCustomerId, currentCustomerName, executeRag, getSignal, recordSystemActivity, setChatTaskStatus, updateLocalMessageStatus]);
 
   const handleGenerateRiskReport = useCallback(async () => {
     if (!currentCustomerId) {
@@ -4894,6 +5058,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       content: '请基于当前客户资料生成风险评估报告。',
       messageType: 'text',
       createdAt: new Date().toISOString(),
+      clientMessageId: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      status: 'sending',
+      deliveryStatus: 'pending',
+      deliveryError: null,
     };
 
     const newMessages = [...messages, userMessage];
@@ -4903,6 +5071,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
 
     try {
       const job = await createCustomerRiskReportJob(currentCustomerId, getSignal());
+      updateLocalMessageStatus(userMessage.clientMessageId!, 'sent');
+      attachJobToRequestMessages(newMessages, job.jobId, 'processing');
       activateTaskView(job.jobId, 'risk_report', {
         customerId: currentCustomerId,
         customerName: currentCustomerName,
@@ -4915,8 +5085,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         startedAt: Date.now(),
         customerId: currentCustomerId,
         customerName: currentCustomerName,
+        resultSource: 'auto',
       });
     } catch (jobError) {
+      updateLocalMessageStatus(userMessage.clientMessageId!, 'failed', jobError instanceof Error ? jobError.message : '本次风险评估任务未能成功提交。');
       setRiskFeedback({
         tone: 'error',
         title: '风险评估报告提交失败',
@@ -4926,7 +5098,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       });
       setChatTaskStatus('idle', null, null);
     }
-  }, [addChatMessage, currentCustomerId, currentCustomerName, getSignal, loadRecentChatJobs, messages, pollChatJob, setChatTaskStatus, clearActiveResultView, activateTaskView]);
+  }, [addChatMessage, currentCustomerId, currentCustomerName, getSignal, loadRecentChatJobs, messages, pollChatJob, setChatTaskStatus, clearActiveResultView, activateTaskView, attachJobToRequestMessages, updateLocalMessageStatus]);
 
   // Keep ref updated with latest function
   useEffect(() => {
@@ -4994,6 +5166,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         void pollChatJob(pendingJob.jobId, pendingJob.requestMessages, {
           startedAt: pendingStartedAt,
           restored: true,
+          resultSource: 'auto',
         });
         isRecoveringRef.current = false;
       }, 100);
@@ -5300,6 +5473,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       const resolvedCustomerName = status.customerName || job.customerName || (job.customerId ? (customerOptions.find((item) => item.record_id === job.customerId)?.name ?? null) : null);
       consumeCompletedJobResult(normalizedStatus, requestMessages, job.customerId || null, resolvedCustomerName, {
         activateResultView: true,
+        resultSource: 'manual',
       });
       return;
     }
@@ -5321,6 +5495,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       customerId: normalizedStatus.customerId || null,
       customerName: normalizedStatus.customerName || (job.customerId ? (customerOptions.find((item) => item.record_id === job.customerId)?.name ?? null) : null),
       activateResultView: true,
+      resultSource: 'manual',
     });
   }, [readPendingChatJob, messages, customerOptions, setCurrentCustomer, getSignal, syncRecentJobFromStatus, consumeCompletedJobResult, buildJobSummaryFromStatus, pollChatJob]);
 
@@ -6040,6 +6215,13 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                 {resultLayer.resultPanelMode === 'task_result' && recoveredResultView ? (
                   <div className="space-y-6">
                     {recoveredResultView}
+                  </div>
+                ) : resultLayer.resultPanelMode === 'error' && currentJob ? (
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50/70 px-6 py-8 text-center">
+                    <div className="text-sm font-semibold text-rose-700">当前任务未成功完成</div>
+                    <div className="mt-2 text-xs leading-6 text-rose-600">
+                      {currentJob.errorMessage || '请查看顶部提示后重试，或切换到其他历史任务查看结果。'}
+                    </div>
                   </div>
                 ) : resultLayer.resultPanelMode === 'loading' && activeTaskStateView ? (
                   activeTaskStateView

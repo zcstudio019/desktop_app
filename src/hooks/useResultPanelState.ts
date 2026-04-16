@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { ChatJobSummaryResponse } from '../services/types';
 
-export type ResultPanelMode = 'empty' | 'loading' | 'task_result';
+export type ResultPanelMode = 'empty' | 'loading' | 'task_result' | 'error';
 
 export function useResultPanelState() {
   const [currentJob, setCurrentJob] = useState<ChatJobSummaryResponse | null>(null);

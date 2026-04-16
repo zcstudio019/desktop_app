@@ -156,6 +156,8 @@ export interface ChatMessage {
   clientMessageId?: string;
   /** Local delivery status for optimistic rendering */
   deliveryStatus?: 'pending' | 'sent' | 'failed';
+  /** Task-aware message lifecycle status */
+  status?: 'sending' | 'sent' | 'processing' | 'success' | 'failed';
   /** Optional local delivery error */
   deliveryError?: string | null;
 }

@@ -25,7 +25,7 @@ export function useConversationState<T extends ChatMessage>({
     () =>
       [...messages]
         .reverse()
-        .find((message) => message.role === 'user' && message.deliveryStatus === 'pending')
+        .find((message) => message.role === 'user' && (message.deliveryStatus === 'pending' || message.status === 'sending'))
         ?.clientMessageId ?? null,
     [messages],
   );
