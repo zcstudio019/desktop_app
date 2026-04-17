@@ -2,6 +2,7 @@ import { AlertCircle, CheckCircle2, Clock3, FileText, Loader2, RefreshCw, Send, 
 import type { ChatJobStatusResponse, ChatJobSummaryResponse } from '../../services/types';
 import {
   canContinueViewingJob,
+  formatJobErrorMessage,
   getJobResultSummary,
   getJobSuccessAction,
   getJobTypeLabel,
@@ -270,7 +271,7 @@ export default function AsyncJobCard({
             {job.finishedAt ? <span>完成时间：{formatLocalDateTime(job.finishedAt)}</span> : null}
           </div>
           {job.errorMessage ? (
-            <div className="text-xs text-rose-600">{job.errorMessage}</div>
+            <div className="text-xs text-rose-600">{formatJobErrorMessage(job.jobType, job.errorMessage)}</div>
           ) : null}
         </div>
         {((canContinueViewingJob(job.jobType) && onAction) || showDeleteAction) ? (

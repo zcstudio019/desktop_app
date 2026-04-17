@@ -24,12 +24,22 @@ def init_database() -> None:
         connection.execute(text("SELECT 1"))
         dialect = engine.dialect.name.lower()
         if dialect == "mysql":
+            database_name = (getattr(engine.url, "database", None) or "").strip()
+            if database_name:
+                connection.execute(
+                    text(
+                        f"ALTER DATABASE `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                    )
+                )
             if not _mysql_column_exists(connection, "async_jobs", "execution_payload_json"):
                 connection.execute(
                     text(
                         """
                         ALTER TABLE async_jobs
-                        ADD COLUMN execution_payload_json LONGTEXT NULL
+                        ADD COLUMN execution_payload_json LONGTEXT
+                        CHARACTER SET utf8mb4
+                        COLLATE utf8mb4_unicode_ci
+                        NULL
                         """
                     )
                 )
@@ -55,10 +65,18 @@ def init_database() -> None:
                 text(
                     """
                     ALTER TABLE async_jobs
-                    MODIFY COLUMN request_json LONGTEXT NULL,
-                    MODIFY COLUMN execution_payload_json LONGTEXT NULL,
-                    MODIFY COLUMN result_json LONGTEXT NULL,
-                    MODIFY COLUMN error_message LONGTEXT NULL
+                    CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    ALTER TABLE async_jobs
+                    MODIFY COLUMN request_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+                    MODIFY COLUMN execution_payload_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+                    MODIFY COLUMN result_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+                    MODIFY COLUMN error_message LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL
                     """
                 )
             )

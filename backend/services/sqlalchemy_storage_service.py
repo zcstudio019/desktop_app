@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, desc, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DataError, SQLAlchemyError
 
 from backend.database import Base, SessionLocal, engine
 from backend.db_models import (
@@ -34,6 +34,68 @@ JOB_PAYLOAD_PREVIEW_LIMIT = max(120, int(os.getenv("JOB_PAYLOAD_PREVIEW_LIMIT", 
 JOB_STALE_TIMEOUT_SECONDS = max(300, int(os.getenv("JOB_STALE_TIMEOUT_SECONDS", "900")))
 
 
+def sanitize_async_job_error_message(error_message: str | None) -> str:
+    raw_message = (error_message or "").strip()
+    if not raw_message:
+        return ""
+
+    lowered = raw_message.lower()
+
+    if "incorrect string value" in lowered or "pymysql.err.dataerror" in lowered:
+        return "任务结果保存失败，可能包含当前数据库暂不支持的特殊字符。请联系管理员检查数据库字符集后重试。"
+
+    if "duplicate entry" in lowered:
+        return "任务保存失败，检测到重复记录，请刷新后重试。"
+
+    if "lock wait timeout" in lowered or "deadlock" in lowered:
+        return "任务保存失败，数据库当前较忙，请稍后重试。"
+
+    if "redis" in lowered or "broker" in lowered or "connection refused" in lowered:
+        return "后台任务服务暂时不可用，请稍后重试。"
+
+    if "invalid token" in lowered or "unauthorized" in lowered:
+        return "当前登录状态已失效，请重新登录后重试。"
+
+    if "timeout" in lowered:
+        return "任务执行超时，请稍后重试。"
+
+    if "interrupted" in lowered or "stale" in lowered:
+        return "任务可能已中断，请重新提交。"
+
+    return raw_message
+
+
+def normalize_async_job_error_message(error_message: str | None) -> str:
+    raw_message = (error_message or "").strip()
+    if not raw_message:
+        return ""
+
+    lowered = raw_message.lower()
+
+    if "incorrect string value" in lowered or "pymysql.err.dataerror" in lowered:
+        return "任务结果保存失败，可能包含当前数据库暂不支持的特殊字符。请联系管理员检查数据库字符集后重试。"
+
+    if "duplicate entry" in lowered:
+        return "任务保存失败，检测到重复记录，请刷新后重试。"
+
+    if "lock wait timeout" in lowered or "deadlock" in lowered:
+        return "任务保存失败，数据库当前较忙，请稍后重试。"
+
+    if "redis" in lowered or "broker" in lowered or "connection refused" in lowered:
+        return "后台任务服务暂时不可用，请稍后重试。"
+
+    if "invalid token" in lowered or "unauthorized" in lowered:
+        return "当前登录状态已失效，请重新登录后重试。"
+
+    if "timeout" in lowered:
+        return "任务执行超时，请稍后重试。"
+
+    if "interrupted" in lowered or "stale" in lowered:
+        return "任务可能已中断，请重新提交。"
+
+    return raw_message
+
+
 class SQLAlchemyStorageService:
     """Storage service backed by SQLAlchemy models for MySQL/RDS usage."""
 
@@ -49,6 +111,91 @@ class SQLAlchemyStorageService:
             ],
             checkfirst=True,
         )
+
+    def _sanitize_text_for_mysql(
+        self,
+        text: str,
+        *,
+        strip_non_bmp: bool = False,
+    ) -> tuple[str, bool]:
+        if not text:
+            return text, False
+
+        replaced = False
+        cleaned_chars: list[str] = []
+        for char in text:
+            code_point = ord(char)
+            if char == "\x00" or 0xD800 <= code_point <= 0xDFFF:
+                cleaned_chars.append("\uFFFD")
+                replaced = True
+                continue
+            if strip_non_bmp and code_point > 0xFFFF:
+                cleaned_chars.append("\uFFFD")
+                replaced = True
+                continue
+            cleaned_chars.append(char)
+        return "".join(cleaned_chars), replaced
+
+    def _sanitize_value_for_mysql(
+        self,
+        value: Any,
+        *,
+        strip_non_bmp: bool = False,
+    ) -> tuple[Any, bool]:
+        replaced = False
+
+        if isinstance(value, str):
+            cleaned, replaced = self._sanitize_text_for_mysql(value, strip_non_bmp=strip_non_bmp)
+            return cleaned, replaced
+
+        if isinstance(value, list):
+            items: list[Any] = []
+            for item in value:
+                cleaned_item, item_replaced = self._sanitize_value_for_mysql(item, strip_non_bmp=strip_non_bmp)
+                replaced = replaced or item_replaced
+                items.append(cleaned_item)
+            return items, replaced
+
+        if isinstance(value, dict):
+            sanitized: dict[str, Any] = {}
+            for key, item in value.items():
+                cleaned_key, key_replaced = self._sanitize_text_for_mysql(str(key), strip_non_bmp=strip_non_bmp)
+                cleaned_item, item_replaced = self._sanitize_value_for_mysql(item, strip_non_bmp=strip_non_bmp)
+                replaced = replaced or key_replaced or item_replaced
+                sanitized[cleaned_key] = cleaned_item
+            return sanitized, replaced
+
+        return value, False
+
+    def _dump_json_for_async_job(
+        self,
+        field_name: str,
+        value: Any,
+        default: str = "{}",
+        *,
+        strip_non_bmp: bool = False,
+    ) -> str:
+        if value is None:
+            return default
+
+        sanitized_value, replaced = self._sanitize_value_for_mysql(value, strip_non_bmp=strip_non_bmp)
+        if isinstance(sanitized_value, str):
+            dumped = sanitized_value
+            original_length = len(str(value))
+        else:
+            dumped = json.dumps(sanitized_value, ensure_ascii=False)
+            original_length = len(json.dumps(value, ensure_ascii=False, default=str))
+
+        if replaced or len(dumped) != original_length:
+            logger.warning(
+                "[SQLAlchemyStorage] sanitized async job json field=%s original_len=%s sanitized_len=%s replaced=%s strip_non_bmp=%s",
+                field_name,
+                original_length,
+                len(dumped),
+                replaced,
+                strip_non_bmp,
+            )
+        return dumped
 
     def _dumps(self, value: Any, default: str = "{}") -> str:
         if value is None:
@@ -395,7 +542,7 @@ class SQLAlchemyStorageService:
             "request_json": self._loads(row.request_json, {}),
             "execution_payload_json": self._loads(row.execution_payload_json, {}),
             "result_json": self._loads(row.result_json, {}),
-            "error_message": row.error_message or "",
+            "error_message": normalize_async_job_error_message(row.error_message),
             "celery_task_id": row.celery_task_id or "",
             "worker_name": row.worker_name or "",
             "created_at": row.created_at.isoformat() if row.created_at else "",
@@ -994,10 +1141,10 @@ class SQLAlchemyStorageService:
                 username=job_data.get("username") or "",
                 status=job_data.get("status") or "pending",
                 progress_message=job_data.get("progress_message") or "",
-                request_json=self._dumps(request_snapshot, "{}"),
-                execution_payload_json=self._dumps(job_data.get("execution_payload_json"), "{}"),
-                result_json=self._dumps(job_data.get("result_json"), "{}"),
-                error_message=job_data.get("error_message") or "",
+                request_json=self._dump_json_for_async_job("request_json", request_snapshot, "{}"),
+                execution_payload_json=self._dump_json_for_async_job("execution_payload_json", job_data.get("execution_payload_json"), "{}"),
+                result_json=self._dump_json_for_async_job("result_json", job_data.get("result_json"), "{}"),
+                error_message=normalize_async_job_error_message(job_data.get("error_message") or ""),
                 celery_task_id=job_data.get("celery_task_id") or "",
                 worker_name=job_data.get("worker_name") or "",
                 started_at=job_data.get("started_at") or "",
@@ -1058,13 +1205,25 @@ class SQLAlchemyStorageService:
             if "progress_message" in updates:
                 row.progress_message = updates["progress_message"] or ""
             if "request_json" in updates:
-                row.request_json = self._dumps(self._build_async_job_request_snapshot({"request_json": updates.get("request_json"), "job_type": row.job_type, "customer_id": row.customer_id, "username": row.username}), "{}")
+                request_snapshot = self._build_async_job_request_snapshot(
+                    {
+                        "request_json": updates.get("request_json"),
+                        "job_type": row.job_type,
+                        "customer_id": row.customer_id,
+                        "username": row.username,
+                    }
+                )
+                row.request_json = self._dump_json_for_async_job("request_json", request_snapshot, "{}")
             if "execution_payload_json" in updates:
-                row.execution_payload_json = self._dumps(updates.get("execution_payload_json"), "{}")
+                row.execution_payload_json = self._dump_json_for_async_job(
+                    "execution_payload_json",
+                    updates.get("execution_payload_json"),
+                    "{}",
+                )
             if "result_json" in updates:
-                row.result_json = self._dumps(updates.get("result_json"), "{}")
+                row.result_json = self._dump_json_for_async_job("result_json", updates.get("result_json"), "{}")
             if "error_message" in updates:
-                row.error_message = updates["error_message"] or ""
+                row.error_message = normalize_async_job_error_message(updates["error_message"])
             if "celery_task_id" in updates:
                 row.celery_task_id = updates["celery_task_id"] or ""
             if "worker_name" in updates:
@@ -1074,7 +1233,59 @@ class SQLAlchemyStorageService:
             if "finished_at" in updates:
                 row.finished_at = updates["finished_at"] or ""
 
-            db.commit()
+            try:
+                db.commit()
+            except DataError as exc:
+                db.rollback()
+                logger.exception(
+                    "[SQLAlchemyStorage] async job update failed job_id=%s status=%s has_result_json=%s error=%s",
+                    job_id,
+                    updates.get("status") or row.status,
+                    "result_json" in updates,
+                    exc,
+                )
+                if "result_json" in updates:
+                    fallback_error = normalize_async_job_error_message(str(exc))
+                    row = self._select_first_with_warning(
+                        db,
+                        select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id),
+                        table_name="async_jobs",
+                    )
+                    if not row:
+                        raise
+
+                    row.status = "failed"
+                    row.progress_message = "任务结果保存失败"
+                    row.error_message = fallback_error
+                    row.finished_at = updates.get("finished_at") or datetime.now(timezone.utc).isoformat()
+                    row.result_json = self._dump_json_for_async_job(
+                        "result_json",
+                        updates.get("result_json"),
+                        "{}",
+                        strip_non_bmp=True,
+                    )
+                    try:
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        row = self._select_first_with_warning(
+                            db,
+                            select(AsyncJobRecord).where(AsyncJobRecord.job_id == job_id),
+                            table_name="async_jobs",
+                        )
+                        if row:
+                            row.status = "failed"
+                            row.progress_message = "任务结果保存失败"
+                            row.error_message = fallback_error
+                            row.finished_at = datetime.now(timezone.utc).isoformat()
+                            row.result_json = "{}"
+                            db.commit()
+                            db.refresh(row)
+                            return self._row_to_async_job(row)
+                        raise
+                else:
+                    raise
+
             db.refresh(row)
             return self._row_to_async_job(row)
 

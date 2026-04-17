@@ -156,6 +156,10 @@ class ProductCacheEntry(Base):
 
 class AsyncJobRecord(Base):
     __tablename__ = "async_jobs"
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_unicode_ci",
+    }
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_id = Column(String(64), unique=True, nullable=False, index=True)

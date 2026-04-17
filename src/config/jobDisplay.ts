@@ -204,6 +204,45 @@ export function canDirectNavigateForJob(jobType?: string | null) {
   return getJobDisplayConfig(jobType).supportsDirectNavigate;
 }
 
+export function formatJobErrorMessage(jobType?: string | null, errorMessage?: string | null) {
+  const rawMessage = (errorMessage || '').trim();
+  if (!rawMessage) {
+    return getJobStatusText(jobType, 'failed');
+  }
+
+  const normalized = rawMessage.toLowerCase();
+
+  if (normalized.includes('incorrect string value') || normalized.includes('pymysql.err.dataerror')) {
+    return '任务结果保存失败，可能包含当前数据库暂不支持的特殊字符。请联系管理员检查数据库字符集后重试。';
+  }
+
+  if (normalized.includes('duplicate entry')) {
+    return '任务保存失败，检测到重复记录，请刷新后重试。';
+  }
+
+  if (normalized.includes('lock wait timeout') || normalized.includes('deadlock')) {
+    return '任务保存失败，数据库当前较忙，请稍后重试。';
+  }
+
+  if (normalized.includes('timeout')) {
+    return getJobStatusText(jobType, 'timeout');
+  }
+
+  if (normalized.includes('interrupted') || normalized.includes('stale')) {
+    return getJobStatusText(jobType, 'interrupted');
+  }
+
+  if (normalized.includes('connection refused') || normalized.includes('redis') || normalized.includes('broker')) {
+    return '后台任务服务暂时不可用，请稍后重试。';
+  }
+
+  if (normalized.includes('invalid token') || normalized.includes('unauthorized')) {
+    return '当前登录状态已失效，请重新登录后重试。';
+  }
+
+  return rawMessage;
+}
+
 export function hasUsableJobResult(jobType: string, result: Record<string, unknown> | null | undefined) {
   if (!result || typeof result !== 'object') {
     return false;
@@ -272,13 +311,13 @@ export function getReadableJobProgress(
     return getJobStatusText(job.jobType, 'success');
   }
   if (job.status === 'failed') {
-    return job.errorMessage || getJobStatusText(job.jobType, 'failed');
+    return formatJobErrorMessage(job.jobType, job.errorMessage);
   }
   if (job.status === 'timeout') {
-    return job.errorMessage || getJobStatusText(job.jobType, 'timeout');
+    return formatJobErrorMessage(job.jobType, job.errorMessage || getJobStatusText(job.jobType, 'timeout'));
   }
   if (job.status === 'interrupted') {
-    return job.errorMessage || getJobStatusText(job.jobType, 'interrupted');
+    return formatJobErrorMessage(job.jobType, job.errorMessage || getJobStatusText(job.jobType, 'interrupted'));
   }
   if (job.status === 'retrying') {
     return job.progressMessage || getJobStatusText(job.jobType, 'retrying');

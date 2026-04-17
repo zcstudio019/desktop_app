@@ -27,6 +27,7 @@ import {
 import AsyncJobCard from './common/AsyncJobCard';
 import SchemeMatchingResultCard from './common/SchemeMatchingResultCard';
 import {
+  formatJobErrorMessage,
   getJobSuccessAction,
   getJobTypeLabel,
   getReadableJobProgress,
@@ -1989,6 +1990,24 @@ function parseMarkdownToSchemes(markdown: string): ParsedMatchingResult | null {
     return null;
   }
 }
+
+function formatFinancingNeedLabel(value: string | null | undefined): string {
+  switch ((value || '').toLowerCase()) {
+    case 'enterprise':
+      return '企业贷款';
+    case 'personal':
+      return '个人贷款';
+    case 'enterprise_credit':
+      return '企业信用贷款';
+    case 'enterprise_mortgage':
+      return '企业抵押贷款';
+    case 'mortgage':
+    case 'mortgage_loan':
+      return '抵押类融资';
+    default:
+      return value || '待补充';
+  }
+}
 void parseMarkdownToSchemes;
 
 /**
@@ -2796,7 +2815,7 @@ const RiskReportCard: React.FC<{ report: CustomerRiskReportCardData }> = ({ repo
       '',
       '## 客户概况',
       `- 所属行业：${summary.industry || '待补充'}`,
-      `- 融资需求：${summary.financing_need || '待补充'}`,
+      `- 融资需求：${formatFinancingNeedLabel(summary.financing_need)}`,
       `- 缺失资料：${summary.data_completeness?.missing_items?.length ? summary.data_completeness.missing_items.join('、') : '无'}`,
       '',
       '## 综合结论',
@@ -2861,7 +2880,7 @@ const RiskReportCard: React.FC<{ report: CustomerRiskReportCardData }> = ({ repo
       `资料完整度：${formatCompletenessStatus(summary.data_completeness?.status)}`,
       `综合结论：${assessment.conclusion || '暂无结论'}`,
       '',
-      `客户概况：所属行业 ${summary.industry || '待补充'}；融资需求 ${summary.financing_need || '待补充'}；缺失资料 ${summary.data_completeness?.missing_items?.length ? summary.data_completeness.missing_items.join('、') : '无'}`,
+      `客户概况：所属行业 ${summary.industry || '待补充'}；融资需求 ${formatFinancingNeedLabel(summary.financing_need)}；缺失资料 ${summary.data_completeness?.missing_items?.length ? summary.data_completeness.missing_items.join('、') : '无'}`,
       '',
       '风险维度评估：',
       ...dimensions.map((item) => `- ${formatRiskDimensionLabel(item.dimension)}：${item.score}/20，${formatRiskLevelLabel(item.risk_level)}，${item.summary || '暂无说明'}`),
@@ -3194,7 +3213,7 @@ const RiskReportCard: React.FC<{ report: CustomerRiskReportCardData }> = ({ repo
             <div className="text-sm font-semibold text-slate-800">客户概况</div>
             <div className="mt-3 space-y-2 text-sm text-slate-600">
               <div>所属行业：{summary.industry || '待补充'}</div>
-              <div>融资需求：{summary.financing_need || '待补充'}</div>
+              <div>融资需求：{formatFinancingNeedLabel(summary.financing_need)}</div>
               <div>资料版本：{profileVersion ? `V${profileVersion}` : '版本待确认'}</div>
               <div>
                 缺失资料：
@@ -4936,12 +4955,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         setChatJobSubmitError(null);
         setChatJobPollError(null);
         setChatJobPollErrorJobId(null);
-        reconcileMessageStateByJob(jobId, 'failed', status.errorMessage || '本次任务未成功完成。');
-        reconcileResultPanelByJob(status, { source: options?.resultSource ?? 'auto', activateResultView: options?.activateResultView });
+          reconcileMessageStateByJob(jobId, 'failed', formatJobErrorMessage(status.jobType, status.errorMessage || '本次任务未成功完成。'));
+          reconcileResultPanelByJob(status, { source: options?.resultSource ?? 'auto', activateResultView: options?.activateResultView });
         const failedFeedback = {
           tone: 'error',
           title: `${getJobTypeLabel(status.jobType, status.jobTypeLabel)}失败`,
-          description: status.errorMessage || '本次任务未成功完成。',
+          description: formatJobErrorMessage(status.jobType, status.errorMessage || '本次任务未成功完成。'),
           persistenceHint: '主流程未成功完成。',
           nextStep: '请检查当前资料或网络状态后重试，必要时缩小单次处理范围。',
         } as const;
@@ -6220,7 +6239,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                   <div className="rounded-2xl border border-rose-200 bg-rose-50/70 px-6 py-8 text-center">
                     <div className="text-sm font-semibold text-rose-700">当前任务未成功完成</div>
                     <div className="mt-2 text-xs leading-6 text-rose-600">
-                      {currentJob.errorMessage || '请查看顶部提示后重试，或切换到其他历史任务查看结果。'}
+                      {formatJobErrorMessage(currentJob.jobType, currentJob.errorMessage || '请查看顶部提示后重试，或切换到其他历史任务查看结果。')}
                     </div>
                   </div>
                 ) : resultLayer.resultPanelMode === 'loading' && activeTaskStateView ? (
