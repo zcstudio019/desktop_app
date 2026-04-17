@@ -141,6 +141,44 @@ function normalizeFieldLabel(value: string): string {
   return map[value] || value;
 }
 
+function normalizeEditableValue(value: string | undefined | null): string {
+  return (value ?? '').replace(/\r\n/g, '\n');
+}
+
+function isFieldModified(originalValue: string | undefined | null, currentValue: string | undefined | null): boolean {
+  return normalizeEditableValue(originalValue) !== normalizeEditableValue(currentValue);
+}
+
+function buildFieldDiffPreview(originalValue: string, currentValue: string): {
+  removed: string;
+  added: string;
+} {
+  const before = normalizeEditableValue(originalValue);
+  const after = normalizeEditableValue(currentValue);
+  if (before === after) {
+    return { removed: '', added: '' };
+  }
+
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  return {
+    removed: before.slice(prefix, before.length - suffix),
+    added: after.slice(prefix, after.length - suffix),
+  };
+}
+
 function buildApplicationFormHtml(
   customerName: string,
   loanType: LoanType,
@@ -355,6 +393,7 @@ function buildApplicationFormHtml(
 interface EditableDataSectionCardProps {
   title: string;
   data: Record<string, string>;
+  originalData: Record<string, string>;
   editMode: boolean;
   onFieldChange: (sectionTitle: string, fieldName: string, value: string) => void;
 }
@@ -368,6 +407,7 @@ interface EditableDataSectionCardProps {
 const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({ 
   title, 
   data, 
+  originalData,
   editMode, 
   onFieldChange 
 }) => {
@@ -407,32 +447,78 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
             <table className="w-full text-sm">
               <tbody>
                 {entries.map(([key, value], idx) => (
+                  (() => {
+                    const originalValue = originalData[key] ?? '';
+                    const modified = isFieldModified(originalValue, value);
+                    const cleared = normalizeEditableValue(originalValue) !== '' && normalizeEditableValue(value) === '';
+                    const diffPreview = buildFieldDiffPreview(originalValue, value);
+
+                    return (
                   <tr 
                     key={key} 
-                    className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
+                    className={`${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'} ${modified ? 'ring-1 ring-emerald-200/70' : ''}`}
                   >
                     <td className="px-3 py-2 text-gray-500 font-medium w-1/3 border-r border-gray-100">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-gray-400">{getFieldIcon(key)}</span>
                         <span className="truncate">{normalizeFieldLabel(key)}</span>
+                        {editMode && modified ? (
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                              cleared
+                                ? 'bg-rose-100 text-rose-700'
+                                : 'bg-amber-100 text-amber-700'
+                            }`}
+                          >
+                            {cleared ? '已清空' : '已修改'}
+                          </span>
+                        ) : null}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-gray-800">
-                      {editMode ? (
-                        <input
-                          type="text"
-                          value={value}
-                          onChange={(e) => onFieldChange(title, key, e.target.value)}
-                          className="w-full px-2 py-1 border border-blue-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
-                          data-testid={`edit-field-${title}-${key}`}
-                        />
-                      ) : (
-                        <span className="break-words" title={value}>
-                          {value || '-'}
-                        </span>
-                      )}
+                      <div className="space-y-2">
+                        {editMode ? (
+                          <input
+                            type="text"
+                            value={value}
+                            onChange={(e) => onFieldChange(title, key, e.target.value)}
+                            className={`w-full px-2 py-1 border rounded text-sm focus:outline-none focus:ring-2 ${
+                              modified
+                                ? 'border-amber-300 bg-amber-50/50 focus:ring-amber-100'
+                                : 'border-blue-300 focus:ring-blue-200'
+                            }`}
+                            data-testid={`edit-field-${title}-${key}`}
+                          />
+                        ) : (
+                          <span className="break-words" title={value}>
+                            {value || '-'}
+                          </span>
+                        )}
+                        {editMode && modified ? (
+                          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-2.5 py-2 text-xs leading-5 text-slate-600">
+                            <div>原值：{originalValue || '（空）'}</div>
+                            <div>当前：{value || '（空）'}</div>
+                            {diffPreview.removed || diffPreview.added ? (
+                              <div className="mt-1 flex flex-wrap gap-2">
+                                {diffPreview.removed ? (
+                                  <span className="rounded bg-rose-50 px-2 py-0.5 text-rose-700 line-through">
+                                    删除：{diffPreview.removed}
+                                  </span>
+                                ) : null}
+                                {diffPreview.added ? (
+                                  <span className="rounded bg-emerald-50 px-2 py-0.5 text-emerald-700">
+                                    新增：{diffPreview.added}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
+                    );
+                  })()
                 ))}
               </tbody>
             </table>
@@ -478,6 +564,7 @@ const ApplicationPage: React.FC = () => {
   // Edit mode state
   const [editMode, setEditMode] = useState<boolean>(false);
   const [editedData, setEditedData] = useState<Record<string, Record<string, string>>>({});
+  const [originalValues, setOriginalValues] = useState<Record<string, Record<string, string>>>({});
   
   // Save to cache state
     const [saving, setSaving] = useState<boolean>(false);
@@ -533,6 +620,7 @@ const ApplicationPage: React.FC = () => {
         setResult(response);
         if (response.applicationData) {
           setEditedData(response.applicationData);
+          setOriginalValues(response.applicationData);
         }
         setApplicationResult(
           {
@@ -675,6 +763,7 @@ const ApplicationPage: React.FC = () => {
       // Also restore editedData so it's ready if user enters edit mode
       if (state.application.result.applicationData) {
         setEditedData(state.application.result.applicationData);
+        setOriginalValues(state.application.result.applicationData);
       }
     }
     if (state.application.lastCustomer) {
@@ -682,6 +771,12 @@ const ApplicationPage: React.FC = () => {
     }
 
   }, [state.application.lastCustomer, state.application.result]);
+
+  useEffect(() => {
+    if (!editMode && result?.applicationData) {
+      setOriginalValues(result.applicationData);
+    }
+  }, [editMode, result]);
 
   useEffect(() => {
     if (!result || !activeJobCard || activeJobCard.jobType !== 'application_generate') {
@@ -764,6 +859,7 @@ const ApplicationPage: React.FC = () => {
     if (!editMode && result?.applicationData) {
       // Entering edit mode - initialize editedData from result
       setEditedData(result.applicationData);
+      setOriginalValues(result.applicationData);
     }
     setEditMode(!editMode);
   };
@@ -793,6 +889,7 @@ const ApplicationPage: React.FC = () => {
           applicationData: dataToSave,
         };
         setResult(updatedResult);
+        setOriginalValues(dataToSave);
         setApplicationResult(
           {
             content: updatedResult.applicationContent,
@@ -856,6 +953,7 @@ const ApplicationPage: React.FC = () => {
     setResult(null);
     setEditMode(false);
     setEditedData({});
+    setOriginalValues({});
     setActiveJobCard(null);
     setJobError(null);
     setApplicationResult(null);
@@ -872,6 +970,44 @@ const ApplicationPage: React.FC = () => {
 
   // Determine which data to display (edited or original)
   const displayData = editMode ? editedData : (result?.applicationData || {});
+  const modifiedFields = useMemo(() => {
+    if (!editMode) {
+      return [] as Array<{
+        sectionName: string;
+        fieldName: string;
+        originalValue: string;
+        currentValue: string;
+        cleared: boolean;
+      }>;
+    }
+
+    const sectionNames = new Set([
+      ...Object.keys(originalValues || {}),
+      ...Object.keys(editedData || {}),
+    ]);
+
+    return Array.from(sectionNames).flatMap((sectionName) => {
+      const originalSection = originalValues[sectionName] || {};
+      const currentSection = editedData[sectionName] || {};
+      const fieldNames = new Set([
+        ...Object.keys(originalSection),
+        ...Object.keys(currentSection),
+      ]);
+
+      return Array.from(fieldNames)
+        .filter((fieldName) => isFieldModified(originalSection[fieldName], currentSection[fieldName]))
+        .map((fieldName) => ({
+          sectionName,
+          fieldName,
+          originalValue: originalSection[fieldName] ?? '',
+          currentValue: currentSection[fieldName] ?? '',
+          cleared:
+            normalizeEditableValue(originalSection[fieldName]) !== '' &&
+            normalizeEditableValue(currentSection[fieldName]) === '',
+        }));
+    });
+  }, [editMode, editedData, originalValues]);
+  const modifiedFieldCount = modifiedFields.length;
   const hasStructuredData = Object.keys(displayData).length > 0;
   const applicationJobLabel = getJobTypeLabel('application_generate');
   const handleOpenCurrentApplicationJob = useCallback((job: ChatJobSummaryResponse) => {
@@ -1245,6 +1381,11 @@ const ApplicationPage: React.FC = () => {
                 <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-xs font-medium text-orange-700">
                   当前任务：{applicationJobLabel}
                 </span>
+                {editMode ? (
+                  <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
+                    已修改 {modifiedFieldCount} 个字段
+                  </span>
+                ) : null}
               </div>
             </div>
           </div>
@@ -1334,11 +1475,13 @@ const ApplicationPage: React.FC = () => {
                     <button
                       data-testid="save-button"
                       onClick={saveEditedData}
-                      disabled={saving}
+                      disabled={saving || modifiedFieldCount === 0}
                       className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors shadow-md ${
                         saveSuccess 
                           ? 'bg-green-500 text-white' 
-                          : 'bg-green-500 text-white hover:bg-green-600'
+                          : modifiedFieldCount === 0
+                            ? 'bg-slate-300 text-white'
+                            : 'bg-green-500 text-white hover:bg-green-600'
                       }`}
                       style={{ borderRadius: '8px' }}
                     >
@@ -1351,6 +1494,11 @@ const ApplicationPage: React.FC = () => {
                         <>
                           <CheckCircle className="w-4 h-4" />
                           已保存
+                        </>
+                      ) : modifiedFieldCount === 0 ? (
+                        <>
+                          <Save className="w-4 h-4" />
+                          未修改内容
                         </>
                       ) : (
                         <>
@@ -1372,11 +1520,13 @@ const ApplicationPage: React.FC = () => {
                       <button
                         data-testid="save-to-cache-button"
                         onClick={saveEditedData}
-                        disabled={saving}
+                        disabled={saving || modifiedFieldCount === 0}
                         className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-medium transition-colors shadow-md ${
                           saveSuccess 
                             ? 'bg-green-500 text-white' 
-                            : 'bg-orange-500 text-white hover:bg-orange-600'
+                            : modifiedFieldCount === 0
+                              ? 'bg-slate-300 text-white'
+                              : 'bg-orange-500 text-white hover:bg-orange-600'
                         }`}
                       >
                         {saving ? (
@@ -1388,6 +1538,11 @@ const ApplicationPage: React.FC = () => {
                           <>
                             <CheckCircle className="w-4 h-4" />
                             已保存
+                          </>
+                        ) : modifiedFieldCount === 0 ? (
+                          <>
+                            <Save className="w-4 h-4" />
+                            未修改内容
                           </>
                         ) : (
                           <>
@@ -1439,6 +1594,56 @@ const ApplicationPage: React.FC = () => {
               </div>
             </div>
 
+            {editMode ? (
+              <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-amber-900">本次修改摘要</div>
+                    <div className="mt-1 text-xs leading-5 text-amber-700">
+                      当前已修改 {modifiedFieldCount} 个字段。保存前这里会持续展示原值与当前值，方便你确认改动。
+                    </div>
+                  </div>
+                  <div className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-700 shadow-sm">
+                    {modifiedFieldCount === 0 ? '未修改内容' : `待保存 ${modifiedFieldCount} 项`}
+                  </div>
+                </div>
+                <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+                  {modifiedFieldCount === 0 ? (
+                    <div className="rounded-xl border border-dashed border-amber-200 bg-white/80 px-3 py-3 text-sm text-slate-500">
+                      当前没有检测到字段变更。修改任意字段后，这里会立即出现摘要。
+                    </div>
+                  ) : (
+                    modifiedFields.map((item) => (
+                      <div key={`${item.sectionName}-${item.fieldName}`} className="rounded-xl border border-white/80 bg-white/90 px-3 py-3 text-sm shadow-sm">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold text-slate-800">{normalizeSectionTitle(item.sectionName)}</span>
+                          <span className="text-slate-300">/</span>
+                          <span className="font-medium text-slate-600">{normalizeFieldLabel(item.fieldName)}</span>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                              item.cleared ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
+                            }`}
+                          >
+                            {item.cleared ? '已清空' : '已修改'}
+                          </span>
+                        </div>
+                        <div className="mt-2 grid gap-2 text-xs leading-5 text-slate-600 md:grid-cols-2">
+                          <div className="rounded-lg bg-slate-50 px-2.5 py-2">
+                            <div className="font-medium text-slate-500">原值</div>
+                            <div className="mt-1 break-words">{item.originalValue || '（空）'}</div>
+                          </div>
+                          <div className="rounded-lg bg-emerald-50/60 px-2.5 py-2">
+                            <div className="font-medium text-emerald-700">当前值</div>
+                            <div className="mt-1 break-words text-slate-700">{item.currentValue || '（空）'}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : null}
+
             {/* Content Display */}
             {hasStructuredData ? (
               // Render as grouped cards using EditableDataSectionCard
@@ -1450,6 +1655,7 @@ const ApplicationPage: React.FC = () => {
                         key={sectionName} 
                         title={sectionName} 
                         data={sectionData as Record<string, string>}
+                        originalData={originalValues[sectionName] || {}}
                         editMode={editMode}
                         onFieldChange={handleFieldChange}
                       />
