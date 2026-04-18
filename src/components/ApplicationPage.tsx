@@ -22,7 +22,7 @@ import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
 import AsyncJobCard from './common/AsyncJobCard';
-import FieldDiffPreview from './FieldDiffPreview';
+import FieldDiffReview from './FieldDiffReview';
 import {
   getJobResultSummary,
   getJobStatusText,
@@ -148,6 +148,29 @@ function normalizeEditableValue(value: string | undefined | null): string {
 
 function isFieldModified(originalValue: string | undefined | null, currentValue: string | undefined | null): boolean {
   return normalizeEditableValue(originalValue) !== normalizeEditableValue(currentValue);
+}
+
+function areSectionMapsEqual(
+  left: Record<string, Record<string, string>>,
+  right: Record<string, Record<string, string>>,
+): boolean {
+  const sectionNames = new Set([
+    ...Object.keys(left || {}),
+    ...Object.keys(right || {}),
+  ]);
+
+  return Array.from(sectionNames).every((sectionName) => {
+    const leftSection = left[sectionName] || {};
+    const rightSection = right[sectionName] || {};
+    const fieldNames = new Set([
+      ...Object.keys(leftSection),
+      ...Object.keys(rightSection),
+    ]);
+
+    return Array.from(fieldNames).every((fieldName) => (
+      normalizeEditableValue(leftSection[fieldName]) === normalizeEditableValue(rightSection[fieldName])
+    ));
+  });
 }
 
 function buildApplicationFormHtml(
@@ -364,7 +387,8 @@ function buildApplicationFormHtml(
 interface EditableDataSectionCardProps {
   title: string;
   data: Record<string, string>;
-  originalData: Record<string, string>;
+  currentSavedData: Record<string, string>;
+  previousSavedData: Record<string, string>;
   editMode: boolean;
   onFieldChange: (sectionTitle: string, fieldName: string, value: string) => void;
 }
@@ -378,7 +402,8 @@ interface EditableDataSectionCardProps {
 const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({ 
   title, 
   data, 
-  originalData,
+  currentSavedData,
+  previousSavedData,
   editMode, 
   onFieldChange 
 }) => {
@@ -419,9 +444,11 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
               <tbody>
                 {entries.map(([key, value], idx) => (
                   (() => {
-                    const originalValue = originalData[key] ?? '';
-                    const modified = isFieldModified(originalValue, value);
-                    const cleared = normalizeEditableValue(originalValue) !== '' && normalizeEditableValue(value) === '';
+                    const currentSavedValue = currentSavedData[key] ?? '';
+                    const previousSavedValue = previousSavedData[key] ?? '';
+                    const modified = isFieldModified(currentSavedValue, value);
+                    const cleared = normalizeEditableValue(currentSavedValue) !== '' && normalizeEditableValue(value) === '';
+                    const hasPreviousSavedDiff = isFieldModified(previousSavedValue, currentSavedValue);
 
                     return (
                   <tr 
@@ -466,10 +493,33 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
                         )}
                         {editMode && modified ? (
                           <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-2.5 py-2 text-xs leading-5 text-slate-600">
-                            <div>原值：{originalValue || '（空）'}</div>
+                            <div>原值：{currentSavedValue || '（空）'}</div>
                             <div>当前：{value || '（空）'}</div>
-                            <FieldDiffPreview originalValue={originalValue} currentValue={value} />
                           </div>
+                        ) : null}
+                        {editMode && modified ? (
+                          <FieldDiffReview
+                            title="本次编辑差异"
+                            badgeLabel="编辑中"
+                            originalValue={currentSavedValue}
+                            currentValue={value}
+                          />
+                        ) : null}
+                        {editMode && hasPreviousSavedDiff ? (
+                          <FieldDiffReview
+                            title="相对上一版本差异"
+                            badgeLabel="已保存"
+                            originalValue={previousSavedValue}
+                            currentValue={currentSavedValue}
+                          />
+                        ) : null}
+                        {!editMode && hasPreviousSavedDiff ? (
+                          <FieldDiffReview
+                            title="相对上一版本差异"
+                            badgeLabel="已保存"
+                            originalValue={previousSavedValue}
+                            currentValue={currentSavedValue}
+                          />
                         ) : null}
                       </div>
                     </td>
@@ -521,7 +571,8 @@ const ApplicationPage: React.FC = () => {
   // Edit mode state
   const [editMode, setEditMode] = useState<boolean>(false);
   const [editedData, setEditedData] = useState<Record<string, Record<string, string>>>({});
-  const [originalValues, setOriginalValues] = useState<Record<string, Record<string, string>>>({});
+  const [currentSavedValues, setCurrentSavedValues] = useState<Record<string, Record<string, string>>>({});
+  const [previousSavedValues, setPreviousSavedValues] = useState<Record<string, Record<string, string>>>({});
   
   // Save to cache state
     const [saving, setSaving] = useState<boolean>(false);
@@ -577,7 +628,7 @@ const ApplicationPage: React.FC = () => {
         setResult(response);
         if (response.applicationData) {
           setEditedData(response.applicationData);
-          setOriginalValues(response.applicationData);
+          setCurrentSavedValues(response.applicationData);
         }
         setApplicationResult(
           {
@@ -720,7 +771,7 @@ const ApplicationPage: React.FC = () => {
       // Also restore editedData so it's ready if user enters edit mode
       if (state.application.result.applicationData) {
         setEditedData(state.application.result.applicationData);
-        setOriginalValues(state.application.result.applicationData);
+        setCurrentSavedValues(state.application.result.applicationData);
       }
     }
     if (state.application.lastCustomer) {
@@ -731,7 +782,7 @@ const ApplicationPage: React.FC = () => {
 
   useEffect(() => {
     if (!editMode && result?.applicationData) {
-      setOriginalValues(result.applicationData);
+      setCurrentSavedValues(result.applicationData);
     }
   }, [editMode, result]);
 
@@ -813,10 +864,11 @@ const ApplicationPage: React.FC = () => {
    * Toggle edit mode
    */
   const toggleEditMode = () => {
-    if (!editMode && result?.applicationData) {
-      // Entering edit mode - initialize editedData from result
-      setEditedData(result.applicationData);
-      setOriginalValues(result.applicationData);
+    if (!editMode) {
+      const nextEditingData = Object.keys(currentSavedValues).length > 0
+        ? currentSavedValues
+        : (result?.applicationData || {});
+      setEditedData(nextEditingData);
     }
     setEditMode(!editMode);
   };
@@ -846,7 +898,11 @@ const ApplicationPage: React.FC = () => {
           applicationData: dataToSave,
         };
         setResult(updatedResult);
-        setOriginalValues(dataToSave);
+        if (!areSectionMapsEqual(currentSavedValues, dataToSave)) {
+          setPreviousSavedValues(currentSavedValues);
+        }
+        setCurrentSavedValues(dataToSave);
+        setEditedData(dataToSave);
         setApplicationResult(
           {
             content: updatedResult.applicationContent,
@@ -910,7 +966,8 @@ const ApplicationPage: React.FC = () => {
     setResult(null);
     setEditMode(false);
     setEditedData({});
-    setOriginalValues({});
+    setCurrentSavedValues({});
+    setPreviousSavedValues({});
     setActiveJobCard(null);
     setJobError(null);
     setApplicationResult(null);
@@ -926,7 +983,9 @@ const ApplicationPage: React.FC = () => {
   };
 
   // Determine which data to display (edited or original)
-  const displayData = editMode ? editedData : (result?.applicationData || {});
+  const displayData = editMode
+    ? editedData
+    : (Object.keys(currentSavedValues).length > 0 ? currentSavedValues : (result?.applicationData || {}));
   const modifiedFields = useMemo(() => {
     if (!editMode) {
       return [] as Array<{
@@ -939,12 +998,12 @@ const ApplicationPage: React.FC = () => {
     }
 
     const sectionNames = new Set([
-      ...Object.keys(originalValues || {}),
+      ...Object.keys(currentSavedValues || {}),
       ...Object.keys(editedData || {}),
     ]);
 
     return Array.from(sectionNames).flatMap((sectionName) => {
-      const originalSection = originalValues[sectionName] || {};
+      const originalSection = currentSavedValues[sectionName] || {};
       const currentSection = editedData[sectionName] || {};
       const fieldNames = new Set([
         ...Object.keys(originalSection),
@@ -963,7 +1022,7 @@ const ApplicationPage: React.FC = () => {
             normalizeEditableValue(currentSection[fieldName]) === '',
         }));
     });
-  }, [editMode, editedData, originalValues]);
+  }, [currentSavedValues, editMode, editedData]);
   const modifiedFieldCount = modifiedFields.length;
   const hasStructuredData = Object.keys(displayData).length > 0;
   const applicationJobLabel = getJobTypeLabel('application_generate');
@@ -1612,7 +1671,8 @@ const ApplicationPage: React.FC = () => {
                         key={sectionName} 
                         title={sectionName} 
                         data={sectionData as Record<string, string>}
-                        originalData={originalValues[sectionName] || {}}
+                        currentSavedData={currentSavedValues[sectionName] || {}}
+                        previousSavedData={previousSavedValues[sectionName] || {}}
                         editMode={editMode}
                         onFieldChange={handleFieldChange}
                       />

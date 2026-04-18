@@ -5,7 +5,7 @@ type DiffSegment = {
   value: string;
 };
 
-interface FieldDiffPreviewProps {
+export interface FieldDiffPreviewProps {
   originalValue: string | undefined | null;
   currentValue: string | undefined | null;
 }
@@ -95,7 +95,7 @@ const FieldDiffPreview: React.FC<FieldDiffPreviewProps> = ({
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
-      <div className="mb-1 text-[11px] font-semibold tracking-wide text-slate-500">实时差异预览</div>
+      <div className="mb-1 text-[11px] font-semibold tracking-wide text-slate-500">字符级差异预览</div>
       <div className="whitespace-pre-wrap break-words leading-6">
         {diffSegments.map((segment, index) => {
           if (segment.type === 'equal') {
