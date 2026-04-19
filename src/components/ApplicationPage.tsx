@@ -597,12 +597,8 @@ const ApplicationPage: React.FC = () => {
     const currentCustomerName = state.extraction.currentCustomer;
     const currentCustomerId = state.extraction.currentCustomerId;
     const activeApplicationEntityKey = useMemo(
-      () => [
-        currentCustomerId || '',
-        customerName.trim() || state.application.lastCustomer || currentCustomerName || '',
-        loanType,
-      ].join('::'),
-      [currentCustomerId, currentCustomerName, customerName, loanType, state.application.lastCustomer],
+      () => currentCustomerId || state.application.lastCustomer || currentCustomerName || '',
+      [currentCustomerId, currentCustomerName, state.application.lastCustomer],
     );
     const lastDiffEntityKeyRef = useRef<string | null>(null);
 
@@ -1004,7 +1000,6 @@ const ApplicationPage: React.FC = () => {
     setEditMode(false);
     setEditedData({});
     setCurrentSavedValues({});
-    setPreviousSavedValues({});
     setActiveJobCard(null);
     setJobError(null);
     setApplicationResult(null);
