@@ -22,7 +22,7 @@ import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
 import AsyncJobCard from './common/AsyncJobCard';
-import FieldDiffReview from './FieldDiffReview';
+import FieldDiffPreview from './FieldDiffPreview';
 import {
   getJobResultSummary,
   getJobStatusText,
@@ -501,35 +501,72 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
                             {value || '-'}
                           </span>
                         )}
-                        {editMode && modified ? (
-                          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-2.5 py-2 text-xs leading-5 text-slate-600">
-                            <div>原值：{currentSavedValue || '（空）'}</div>
-                            <div>当前：{value || '（空）'}</div>
+                        {editMode ? (
+                          <div className="space-y-2">
+                            <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-xs leading-5 text-slate-700">
+                              <div className="mb-1 font-semibold text-red-700">Diff 调试信息</div>
+                              <div>previousSavedValue：{previousSavedValue || '（空）'}</div>
+                              <div>currentSavedValue：{currentSavedValue || '（空）'}</div>
+                              <div>currentEditingValue：{value || '（空）'}</div>
+                              <div>hasPreviousSavedDiff：{String(hasPreviousSavedDiff)}</div>
+                              <div>modified：{String(modified)}</div>
+                            </div>
+
+                            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
+                              <div className="mb-2 flex flex-wrap items-center gap-2">
+                                <span className="text-[11px] font-semibold tracking-wide text-slate-700">相对上一版本差异（调试）</span>
+                                <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                                  previousSavedValue vs currentSavedValue
+                                </span>
+                              </div>
+                              <div className="space-y-1 text-xs leading-5 text-slate-600">
+                                <div>previousSavedValue：{previousSavedValue || '（空）'}</div>
+                                <div>currentSavedValue：{currentSavedValue || '（空）'}</div>
+                              </div>
+                              {hasPreviousSavedDiff ? (
+                                <div className="mt-2">
+                                  <FieldDiffPreview originalValue={previousSavedValue} currentValue={currentSavedValue} />
+                                </div>
+                              ) : (
+                                <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
+                                  previousSavedValue 与 currentSavedValue 相同，因此没有上一版本差异。
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50/70 px-2.5 py-2">
+                              <div className="mb-2 flex flex-wrap items-center gap-2">
+                                <span className="text-[11px] font-semibold tracking-wide text-amber-800">本次编辑差异（调试）</span>
+                                <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                                  currentSavedValue vs currentEditingValue
+                                </span>
+                              </div>
+                              <div className="space-y-1 text-xs leading-5 text-slate-600">
+                                <div>currentSavedValue：{currentSavedValue || '（空）'}</div>
+                                <div>currentEditingValue：{value || '（空）'}</div>
+                                <div>modified：{String(modified)}</div>
+                              </div>
+                              {modified ? (
+                                <div className="mt-2">
+                                  <FieldDiffPreview originalValue={currentSavedValue} currentValue={value} />
+                                </div>
+                              ) : (
+                                <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
+                                  本次编辑暂无差异。
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        ) : null}
-                        {editMode && modified ? (
-                          <FieldDiffReview
-                            title="本次编辑差异"
-                            badgeLabel="编辑中"
-                            originalValue={currentSavedValue}
-                            currentValue={value}
-                          />
-                        ) : null}
-                        {editMode && hasPreviousSavedDiff ? (
-                          <FieldDiffReview
-                            title="相对上一版本差异"
-                            badgeLabel="已保存"
-                            originalValue={previousSavedValue}
-                            currentValue={currentSavedValue}
-                          />
-                        ) : null}
-                        {!editMode && hasPreviousSavedDiff ? (
-                          <FieldDiffReview
-                            title="相对上一版本差异"
-                            badgeLabel="已保存"
-                            originalValue={previousSavedValue}
-                            currentValue={currentSavedValue}
-                          />
+                        ) : hasPreviousSavedDiff ? (
+                          <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
+                            <div className="mb-2 flex flex-wrap items-center gap-2">
+                              <span className="text-[11px] font-semibold tracking-wide text-slate-700">相对上一版本差异</span>
+                              <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                                previousSavedValue vs currentSavedValue
+                              </span>
+                            </div>
+                            <FieldDiffPreview originalValue={previousSavedValue} currentValue={currentSavedValue} />
+                          </div>
                         ) : null}
                       </div>
                     </td>
