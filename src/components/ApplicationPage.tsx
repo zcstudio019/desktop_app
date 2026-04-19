@@ -173,6 +173,15 @@ function areSectionMapsEqual(
   });
 }
 
+function cloneSectionMaps(source: Record<string, Record<string, string>>): Record<string, Record<string, string>> {
+  return Object.fromEntries(
+    Object.entries(source || {}).map(([sectionName, sectionData]) => [
+      sectionName,
+      { ...(sectionData || {}) },
+    ]),
+  );
+}
+
 function buildApplicationFormHtml(
   customerName: string,
   loanType: LoanType,
@@ -445,10 +454,11 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
                 {entries.map(([key, value], idx) => (
                   (() => {
                     const currentSavedValue = currentSavedData[key] ?? '';
-                    const previousSavedValue = previousSavedData[key] ?? '';
+                    const hasPreviousSavedValue = Object.prototype.hasOwnProperty.call(previousSavedData, key);
+                    const previousSavedValue = hasPreviousSavedValue ? (previousSavedData[key] ?? '') : '';
                     const modified = isFieldModified(currentSavedValue, value);
                     const cleared = normalizeEditableValue(currentSavedValue) !== '' && normalizeEditableValue(value) === '';
-                    const hasPreviousSavedDiff = isFieldModified(previousSavedValue, currentSavedValue);
+                    const hasPreviousSavedDiff = hasPreviousSavedValue && isFieldModified(previousSavedValue, currentSavedValue);
 
                     return (
                   <tr 
@@ -627,8 +637,9 @@ const ApplicationPage: React.FC = () => {
       if (response) {
         setResult(response);
         if (response.applicationData) {
-          setEditedData(response.applicationData);
-          setCurrentSavedValues(response.applicationData);
+          const nextSavedData = cloneSectionMaps(response.applicationData);
+          setEditedData(nextSavedData);
+          setCurrentSavedValues(nextSavedData);
         }
         setApplicationResult(
           {
@@ -770,8 +781,9 @@ const ApplicationPage: React.FC = () => {
       });
       // Also restore editedData so it's ready if user enters edit mode
       if (state.application.result.applicationData) {
-        setEditedData(state.application.result.applicationData);
-        setCurrentSavedValues(state.application.result.applicationData);
+        const nextSavedData = cloneSectionMaps(state.application.result.applicationData);
+        setEditedData(nextSavedData);
+        setCurrentSavedValues(nextSavedData);
       }
     }
     if (state.application.lastCustomer) {
@@ -782,7 +794,7 @@ const ApplicationPage: React.FC = () => {
 
   useEffect(() => {
     if (!editMode && result?.applicationData) {
-      setCurrentSavedValues(result.applicationData);
+      setCurrentSavedValues(cloneSectionMaps(result.applicationData));
     }
   }, [editMode, result]);
 
@@ -865,9 +877,11 @@ const ApplicationPage: React.FC = () => {
    */
   const toggleEditMode = () => {
     if (!editMode) {
-      const nextEditingData = Object.keys(currentSavedValues).length > 0
-        ? currentSavedValues
-        : (result?.applicationData || {});
+      const nextEditingData = cloneSectionMaps(
+        Object.keys(currentSavedValues).length > 0
+          ? currentSavedValues
+          : (result?.applicationData || {}),
+      );
       setEditedData(nextEditingData);
     }
     setEditMode(!editMode);
@@ -893,22 +907,24 @@ const ApplicationPage: React.FC = () => {
       });
 
       if (result) {
+        const previousSnapshot = cloneSectionMaps(currentSavedValues);
+        const nextSavedSnapshot = cloneSectionMaps(dataToSave);
         const updatedResult = {
           ...result,
-          applicationData: dataToSave,
+          applicationData: nextSavedSnapshot,
         };
         setResult(updatedResult);
-        if (!areSectionMapsEqual(currentSavedValues, dataToSave)) {
-          setPreviousSavedValues(currentSavedValues);
+        if (!areSectionMapsEqual(previousSnapshot, nextSavedSnapshot)) {
+          setPreviousSavedValues(previousSnapshot);
         }
-        setCurrentSavedValues(dataToSave);
-        setEditedData(dataToSave);
+        setCurrentSavedValues(nextSavedSnapshot);
+        setEditedData(nextSavedSnapshot);
         setApplicationResult(
           {
             content: updatedResult.applicationContent,
             customerFound: updatedResult.customerFound,
             warnings: updatedResult.warnings,
-            applicationData: dataToSave,
+            applicationData: nextSavedSnapshot,
             metadata: updatedResult.metadata,
           },
           safeCustomerName
