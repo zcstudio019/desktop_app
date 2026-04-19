@@ -596,6 +596,15 @@ const ApplicationPage: React.FC = () => {
 
     const currentCustomerName = state.extraction.currentCustomer;
     const currentCustomerId = state.extraction.currentCustomerId;
+    const activeApplicationEntityKey = useMemo(
+      () => [
+        currentCustomerId || '',
+        customerName.trim() || state.application.lastCustomer || currentCustomerName || '',
+        loanType,
+      ].join('::'),
+      [currentCustomerId, currentCustomerName, customerName, loanType, state.application.lastCustomer],
+    );
+    const lastDiffEntityKeyRef = useRef<string | null>(null);
 
     const buildApplicationJobSummaryFromStatus = useCallback((
       status: ChatJobStatusResponse,
@@ -769,6 +778,18 @@ const ApplicationPage: React.FC = () => {
   }, [currentCustomerId, getSignal, pollApplicationJob, setApplicationTaskStatus]);
 
   // Sync with context on mount and handle task recovery
+  useEffect(() => {
+    if (lastDiffEntityKeyRef.current === null) {
+      lastDiffEntityKeyRef.current = activeApplicationEntityKey;
+      return;
+    }
+
+    if (lastDiffEntityKeyRef.current !== activeApplicationEntityKey) {
+      setPreviousSavedValues({});
+      lastDiffEntityKeyRef.current = activeApplicationEntityKey;
+    }
+  }, [activeApplicationEntityKey]);
+
   useEffect(() => {
     // Restore previous result if available
     if (state.application.result) {
