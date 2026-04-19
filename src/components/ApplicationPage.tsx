@@ -597,8 +597,8 @@ const ApplicationPage: React.FC = () => {
     const currentCustomerName = state.extraction.currentCustomer;
     const currentCustomerId = state.extraction.currentCustomerId;
     const activeApplicationEntityKey = useMemo(
-      () => currentCustomerId || state.application.lastCustomer || currentCustomerName || '',
-      [currentCustomerId, currentCustomerName, state.application.lastCustomer],
+      () => currentCustomerId || '',
+      [currentCustomerId],
     );
     const lastDiffEntityKeyRef = useRef<string | null>(null);
 
@@ -775,15 +775,19 @@ const ApplicationPage: React.FC = () => {
 
   // Sync with context on mount and handle task recovery
   useEffect(() => {
-    if (lastDiffEntityKeyRef.current === null) {
-      lastDiffEntityKeyRef.current = activeApplicationEntityKey;
-      return;
+    console.log('[ENTITY KEY]', {
+      prev: lastDiffEntityKeyRef.current,
+      next: activeApplicationEntityKey,
+    });
+
+    if (
+      lastDiffEntityKeyRef.current &&
+      lastDiffEntityKeyRef.current !== activeApplicationEntityKey
+    ) {
+      setPreviousSavedValues({});
     }
 
-    if (lastDiffEntityKeyRef.current !== activeApplicationEntityKey) {
-      setPreviousSavedValues({});
-      lastDiffEntityKeyRef.current = activeApplicationEntityKey;
-    }
+    lastDiffEntityKeyRef.current = activeApplicationEntityKey;
   }, [activeApplicationEntityKey]);
 
   useEffect(() => {
@@ -899,6 +903,8 @@ const ApplicationPage: React.FC = () => {
           ? currentSavedValues
           : (result?.applicationData || {}),
       );
+      console.log('[EDIT] previousSavedValues', previousSavedValues);
+      console.log('[EDIT] currentSavedValues', currentSavedValues);
       setEditedData(nextEditingData);
     }
     setEditMode(!editMode);
@@ -926,6 +932,8 @@ const ApplicationPage: React.FC = () => {
       if (result) {
         const previousSnapshot = cloneSectionMaps(currentSavedValues);
         const nextSavedSnapshot = cloneSectionMaps(dataToSave);
+        console.log('[SAVE] previousSnapshot', previousSnapshot);
+        console.log('[SAVE] nextSavedSnapshot', nextSavedSnapshot);
         const updatedResult = {
           ...result,
           applicationData: nextSavedSnapshot,
