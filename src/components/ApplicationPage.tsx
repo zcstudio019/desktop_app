@@ -503,6 +503,12 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
                         )}
                         {editMode ? (
                           <div className="space-y-2">
+                            <div
+                              data-testid={`debug-field-branch-${title}-${key}`}
+                              className="rounded border-2 border-fuchsia-400 bg-fuchsia-50 px-2.5 py-2 text-xs font-bold text-fuchsia-700"
+                            >
+                              DEBUG FIELD BRANCH ACTIVE
+                            </div>
                             <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-xs leading-5 text-slate-700">
                               <div className="mb-1 font-semibold text-red-700">Diff 调试信息</div>
                               <div>previousSavedValue：{previousSavedValue || '（空）'}</div>
@@ -510,6 +516,11 @@ const EditableDataSectionCard: React.FC<EditableDataSectionCardProps> = ({
                               <div>currentEditingValue：{value || '（空）'}</div>
                               <div>hasPreviousSavedDiff：{String(hasPreviousSavedDiff)}</div>
                               <div>modified：{String(modified)}</div>
+                              <div>previousSavedValue = {previousSavedValue || '(empty)'}</div>
+                              <div>currentSavedValue = {currentSavedValue || '(empty)'}</div>
+                              <div>currentEditingValue = {value || '(empty)'}</div>
+                              <div>hasPreviousSavedDiff = {String(hasPreviousSavedDiff)}</div>
+                              <div>modified = {String(modified)}</div>
                             </div>
 
                             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
