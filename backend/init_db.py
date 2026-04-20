@@ -61,6 +61,33 @@ def init_database() -> None:
                         """
                     )
                 )
+            if not _mysql_column_exists(connection, "saved_applications", "version_group_id"):
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE saved_applications
+                        ADD COLUMN version_group_id VARCHAR(64) NULL
+                        """
+                    )
+                )
+            if not _mysql_column_exists(connection, "saved_applications", "previous_application_id"):
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE saved_applications
+                        ADD COLUMN previous_application_id VARCHAR(64) NULL
+                        """
+                    )
+                )
+            if not _mysql_column_exists(connection, "saved_applications", "version_no"):
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE saved_applications
+                        ADD COLUMN version_no INT NOT NULL DEFAULT 1
+                        """
+                    )
+                )
             connection.execute(
                 text(
                     """

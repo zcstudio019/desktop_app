@@ -184,6 +184,9 @@ class SavedApplicationRecord(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     application_id = Column(String(64), unique=True, nullable=False, index=True)
+    version_group_id = Column(String(64), default="", index=True)
+    previous_application_id = Column(String(64), default="", index=True)
+    version_no = Column(Integer, default=1, nullable=False)
     customer_name = Column(String(255), nullable=False, default="")
     customer_id = Column(String(64), default="", index=True)
     loan_type = Column(String(50), default="enterprise")

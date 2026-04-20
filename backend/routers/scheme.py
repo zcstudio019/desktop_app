@@ -659,6 +659,9 @@ def load_application_cache() -> list:
                 applications.append(
                     {
                         "id": row.application_id,
+                        "versionGroupId": getattr(row, "version_group_id", "") or "",
+                        "previousApplicationId": getattr(row, "previous_application_id", "") or "",
+                        "versionNo": getattr(row, "version_no", 1) or 1,
                         "customerName": row.customer_name or "",
                         "customerId": row.customer_id or "",
                         "loanType": row.loan_type or "enterprise",
@@ -689,6 +692,9 @@ def save_application_cache(applications: list) -> None:
                 db.add(
                     SavedApplicationRecord(
                         application_id=app.get("id") or str(uuid.uuid4()),
+                        version_group_id=app.get("versionGroupId") or "",
+                        previous_application_id=app.get("previousApplicationId") or "",
+                        version_no=int(app.get("versionNo") or 1),
                         customer_name=app.get("customerName") or "",
                         customer_id=app.get("customerId") or "",
                         loan_type=app.get("loanType") or "enterprise",
@@ -731,7 +737,34 @@ async def list_saved_applications(current_user: dict = Depends(get_current_user)
     logger.info("获取已保存的申请表列表")
 
     try:
-        applications = await storage_service.list_saved_applications()
+        applications = await storage_service.list_saved_applications(request.customerId or None)
+        accessible_applications = [app for app in applications if _can_access_application(app, current_user)]
+        previous_application: dict[str, Any] | None = None
+
+        if request.baseApplicationId:
+            matched_previous = await storage_service.get_saved_application(request.baseApplicationId)
+            if matched_previous and _can_access_application(matched_previous, current_user):
+                previous_application = matched_previous
+        elif request.versionGroupId:
+            previous_application = next(
+                (
+                    app for app in accessible_applications
+                    if (app.get("versionGroupId") or "") == request.versionGroupId
+                ),
+                None,
+            )
+        else:
+            for app in accessible_applications:
+                same_owner = (app.get("ownerUsername") or "") == (current_user.get("username") or "")
+                same_loan_type = (app.get("loanType") or "enterprise") == request.loanType
+                if request.customerId:
+                    same_customer = (app.get("customerId") or "") == request.customerId
+                else:
+                    same_customer = (app.get("customerName") or "") == request.customerName
+
+                if same_owner and same_loan_type and same_customer and not app.get("stale"):
+                    previous_application = app
+                    break
 
         # 转换为列表项格式（不含完整 applicationData）
         result = []
@@ -741,6 +774,9 @@ async def list_saved_applications(current_user: dict = Depends(get_current_user)
             result.append(
                 SavedApplicationListItem(
                     id=app.get("id") or "",
+                    versionGroupId=app.get("versionGroupId") or "",
+                    previousApplicationId=app.get("previousApplicationId") or "",
+                    versionNo=int(app.get("versionNo") or 1),
                     customerName=app.get("customerName") or "",
                     customerId=app.get("customerId"),
                     loanType=app.get("loanType") or "",
@@ -786,9 +822,20 @@ async def save_application(
                 profile_version = int(profile.get("version") or 1)
                 profile_updated_at = profile.get("updated_at") or ""
 
+        version_group_id = (
+            (request.versionGroupId or "").strip()
+            or (previous_application or {}).get("versionGroupId")
+            or str(uuid.uuid4())
+        )
+        previous_application_id = (previous_application or {}).get("id") or ""
+        version_no = int((previous_application or {}).get("versionNo") or 0) + 1 if previous_application else 1
+
         # 创建新申请表记录
         new_application = {
             "id": app_id,
+            "versionGroupId": version_group_id,
+            "previousApplicationId": previous_application_id,
+            "versionNo": version_no,
             "customerName": request.customerName,
             "customerId": request.customerId,
             "loanType": request.loanType,
@@ -802,8 +849,7 @@ async def save_application(
         }
 
         # 添加到列表（新记录在前）
-        applications.insert(0, new_application)
-        # saved via SQLAlchemy storage
+        saved_application = await storage_service.save_application_record(new_application)
 
         # 保存到缓存
         # SQLAlchemy delete already persisted
@@ -828,6 +874,8 @@ async def save_application(
             description="系统已保存申请表，并同步更新资料汇总与问答索引。",
             metadata={
                 "applicationId": app_id,
+                "versionGroupId": version_group_id,
+                "versionNo": version_no,
                 "loanType": request.loanType,
                 "savedAt": saved_at,
             },
@@ -835,12 +883,15 @@ async def save_application(
         update_customer_status(request.customerName, has_application=True)
 
         return SavedApplication(
-            id=app_id,
-            customerName=request.customerName,
-            customerId=request.customerId,
-            loanType=request.loanType,
-            applicationData=request.applicationData,
-            savedAt=saved_at,
+            id=saved_application.get("id") or app_id,
+            versionGroupId=saved_application.get("versionGroupId") or version_group_id,
+            previousApplicationId=saved_application.get("previousApplicationId") or previous_application_id,
+            versionNo=int(saved_application.get("versionNo") or version_no),
+            customerName=saved_application.get("customerName") or request.customerName,
+            customerId=saved_application.get("customerId") or request.customerId,
+            loanType=saved_application.get("loanType") or request.loanType,
+            applicationData=saved_application.get("applicationData") or request.applicationData,
+            savedAt=saved_application.get("savedAt") or saved_at,
         )
 
     except Exception as e:
@@ -876,6 +927,9 @@ async def get_application(
                     break
                 return SavedApplication(
                     id=app.get("id") or "",
+                    versionGroupId=app.get("versionGroupId") or "",
+                    previousApplicationId=app.get("previousApplicationId") or "",
+                    versionNo=int(app.get("versionNo") or 1),
                     customerName=app.get("customerName") or "",
                     customerId=app.get("customerId"),
                     loanType=app.get("loanType") or "",

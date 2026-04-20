@@ -63,12 +63,17 @@ class SaveApplicationRequest(BaseModel):
     customerId: str | None = Field(default=None, description="Stable customer ID")
     loanType: str = Field(..., description="Loan type: 'enterprise' or 'personal'")
     applicationData: dict[str, Any] = Field(..., description="Application data to save")
+    baseApplicationId: str | None = Field(default=None, description="Current saved application ID used as the new version base")
+    versionGroupId: str | None = Field(default=None, description="Stable version group ID for this application history")
 
 
 class SavedApplication(BaseModel):
     """Model for a saved application."""
 
     id: str = Field(..., description="Unique application ID")
+    versionGroupId: str = Field(default="", description="Stable version group ID")
+    previousApplicationId: str = Field(default="", description="Previous saved application ID")
+    versionNo: int = Field(default=1, description="Monotonic version number within the version group")
     customerName: str = Field(..., description="Customer name")
     customerId: str | None = Field(default=None, description="Stable customer ID")
     loanType: str = Field(..., description="Loan type")
@@ -80,6 +85,9 @@ class SavedApplicationListItem(BaseModel):
     """Model for application list item (without full data)."""
 
     id: str = Field(..., description="Unique application ID")
+    versionGroupId: str = Field(default="", description="Stable version group ID")
+    previousApplicationId: str = Field(default="", description="Previous saved application ID")
+    versionNo: int = Field(default=1, description="Monotonic version number within the version group")
     customerName: str = Field(..., description="Customer name")
     customerId: str | None = Field(default=None, description="Stable customer ID")
     loanType: str = Field(..., description="Loan type")

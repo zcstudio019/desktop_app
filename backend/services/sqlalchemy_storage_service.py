@@ -484,6 +484,9 @@ class SQLAlchemyStorageService:
     def _row_to_application(self, row: SavedApplicationRecord) -> dict[str, Any]:
         return {
             "id": row.application_id,
+            "versionGroupId": row.version_group_id or "",
+            "previousApplicationId": row.previous_application_id or "",
+            "versionNo": row.version_no or 1,
             "customerName": row.customer_name or "",
             "customerId": row.customer_id or "",
             "loanType": row.loan_type or "enterprise",
@@ -966,6 +969,9 @@ class SQLAlchemyStorageService:
         with self._session_factory() as db:
             row = SavedApplicationRecord(
                 application_id=application_data["id"],
+                version_group_id=application_data.get("versionGroupId") or "",
+                previous_application_id=application_data.get("previousApplicationId") or "",
+                version_no=int(application_data.get("versionNo") or 1),
                 customer_name=application_data.get("customerName") or "",
                 customer_id=application_data.get("customerId") or "",
                 loan_type=application_data.get("loanType") or "enterprise",

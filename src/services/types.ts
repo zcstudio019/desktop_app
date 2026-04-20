@@ -103,6 +103,10 @@ export interface ApplicationResponse {
     stale?: boolean;
     stale_reason?: string;
     stale_at?: string;
+    saved_application_id?: string;
+    previous_application_id?: string;
+    saved_application_version_group_id?: string;
+    saved_application_version_no?: number;
   };
 }
 
@@ -146,6 +150,12 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   /** Message content */
   content: string;
+  /** Optional reasoning for assistant responses */
+  reasoning?: string | null;
+  /** Intent for structured task messages */
+  intent?: 'extract' | 'application' | 'matching' | 'chat' | null;
+  /** Structured payload associated with the message */
+  data?: Record<string, unknown> | null;
   /** Weak task association for timeline/result linking */
   relatedJobId?: string | null;
   /** Semantic message category */

@@ -19,7 +19,7 @@ import {
   FileCheck, Percent, Calendar, DollarSign, Building,
   Edit3, Save, Download, RefreshCw
 } from 'lucide-react';
-import { createChatJob, createCustomerRiskReportJob, deleteChatJob, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers } from '../services/api';
+import { createChatJob, createCustomerRiskReportJob, deleteChatJob, getApplication, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers, saveApplication } from '../services/api';
 import {
   getFieldIcon, getSectionIcon, formatTableValue, isNestedObject, isArrayOfObjects,
   DataSectionCard, ArrayDataCard
@@ -942,6 +942,11 @@ const MatchingGuideCard: React.FC<MatchingGuideCardProps> = ({ data: _data, onNa
 // ============================================
 
 interface ApplicationResultCardProps {
+  relatedJobId?: string | null;
+  onPersistMessageData?: (
+    relatedJobId: string,
+    nextData: ApplicationResultCardProps['data'],
+  ) => void;
   data: {
     customerFound?: boolean;
     customerName?: string;
@@ -958,6 +963,10 @@ interface ApplicationResultCardProps {
       stale?: boolean;
       stale_reason?: string;
       stale_at?: string;
+      saved_application_id?: string;
+      previous_application_id?: string;
+      saved_application_version_group_id?: string;
+      saved_application_version_no?: number;
     };
     needsInput?: boolean;
     requiredFields?: string[];
@@ -1118,8 +1127,8 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                             />
                             {hasPreviousSavedDiff ? (
                               <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <div className="flex flex-wrap items-center gap-2">
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                  <div className="flex min-w-0 flex-wrap items-center gap-2">
                                     <span className="inline-flex h-2 w-2 rounded-full bg-amber-400" aria-hidden="true" />
                                     <span className="text-[11px] font-semibold tracking-wide text-slate-700">上一版变更记录</span>
                                     <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
@@ -1129,7 +1138,7 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                                   <button
                                     type="button"
                                     onClick={() => setExpandedHistoryDiffKey((prev) => (prev === rowKey ? null : rowKey))}
-                                    className="text-[11px] font-medium text-slate-600 transition hover:text-slate-800"
+                                    className="inline-flex w-fit items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
                                   >
                                     {showHistoryDiff ? '收起上一版差异' : '查看上一版差异'}
                                   </button>
@@ -1145,11 +1154,35 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                                 )}
                               </div>
                             ) : null}
-                            <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50/70 px-2.5 py-2">
-                              <div className="mb-2 flex flex-wrap items-center gap-2">
-                                <span className="text-[11px] font-semibold tracking-wide text-amber-800">本次编辑差异</span>
-                                <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500">
-                                  编辑中
+                            <div
+                              className={`rounded-lg border border-dashed px-2.5 py-2 ${
+                                modified
+                                  ? 'border-amber-300 bg-amber-50/70'
+                                  : 'border-slate-300 bg-slate-50'
+                              }`}
+                            >
+                              <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
+                                <span
+                                  className={`inline-flex h-2 w-2 rounded-full ${
+                                    modified ? 'bg-emerald-500' : 'bg-slate-300'
+                                  }`}
+                                  aria-hidden="true"
+                                />
+                                <span
+                                  className={`text-[11px] font-semibold tracking-wide ${
+                                    modified ? 'text-amber-800' : 'text-slate-700'
+                                  }`}
+                                >
+                                  本次编辑差异
+                                </span>
+                                <span
+                                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                    modified
+                                      ? 'bg-emerald-100 text-emerald-700'
+                                      : 'bg-white text-slate-500'
+                                  }`}
+                                >
+                                  {modified ? '已检测到本次修改' : '编辑中'}
                                 </span>
                               </div>
                               {modified ? (
@@ -1223,14 +1256,24 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
  * - Falls back to Markdown rendering if only applicationContent is available
  * Shows customer info and warnings if any.
  */
-const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onNavigate }) => {
-  const { state } = useApp();
+const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
+  data,
+  relatedJobId,
+  onNavigate,
+  onPersistMessageData,
+}) => {
+  const { state, setApplicationResult, updateChatMessagesByJob } = useApp();
   const [isExpanded, setIsExpanded] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [editedData, setEditedData] = useState<Record<string, Record<string, unknown>>>({});
   // currentSavedData 持久化当前已保存版本，previousSavedData 保留上一保存版本
   const [savedData, setSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [previousSavedData, setPreviousSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
+  const [savedApplicationId, setSavedApplicationId] = useState('');
+  const [savedPreviousApplicationId, setSavedPreviousApplicationId] = useState('');
+  const [savedVersionGroupId, setSavedVersionGroupId] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [saveEditError, setSaveEditError] = useState<string | null>(null);
   
   /**
    * Handle field change in edit mode
@@ -1280,11 +1323,43 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
   const applicationStatusBadge = sameCustomerStale
     ? { label: '待刷新', className: 'border-amber-200 bg-amber-50 text-amber-700' }
     : { label: '最新可用', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' };
+  const stableCustomerId = data.metadata?.customer_id || state.extraction.currentCustomerId || null;
   
   const currentSavedData = savedData || data.applicationData || {};
   const displayData = editMode && Object.keys(editedData).length > 0
     ? editedData
     : currentSavedData;
+
+  useEffect(() => {
+    setSavedApplicationId(data.metadata?.saved_application_id || '');
+    setSavedPreviousApplicationId(data.metadata?.previous_application_id || '');
+    setSavedVersionGroupId(data.metadata?.saved_application_version_group_id || '');
+  }, [
+    data.metadata?.previous_application_id,
+    data.metadata?.saved_application_id,
+    data.metadata?.saved_application_version_group_id,
+  ]);
+
+  useEffect(() => {
+    if (!savedPreviousApplicationId) {
+      return;
+    }
+
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const previousApplication = await getApplication(savedPreviousApplicationId, controller.signal);
+        setPreviousSavedData(cloneChatApplicationData(previousApplication.applicationData as Record<string, Record<string, unknown>>));
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          return;
+        }
+        console.warn('Failed to load previous application version for chat card', error);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [savedPreviousApplicationId]);
   
   /**
    * Toggle edit mode - 进入编辑时优先从 savedData 初始化，其次从原始数据
@@ -1302,17 +1377,75 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
   /**
    * Save edited data - 持久化到 savedData，退出编辑后仍显示最新内容
    */
-  const saveEditedData = () => {
-    if (Object.keys(editedData).length > 0) {
+  const saveEditedData = async () => {
+    if (Object.keys(editedData).length === 0) {
+      setEditMode(false);
+      return;
+    }
+
+    setSavingEdit(true);
+    setSaveEditError(null);
+    try {
       const currentSnapshot = cloneChatApplicationData(currentSavedData);
       const nextSavedSnapshot = cloneChatApplicationData(editedData);
+      const safeCustomerName = (data.customerName || state.extraction.currentCustomer || '').trim() || '未命名客户';
+      const savedApplication = await saveApplication({
+        customerName: safeCustomerName,
+        customerId: stableCustomerId,
+        loanType: data.loanType === 'personal' ? 'personal' : 'enterprise',
+        applicationData: nextSavedSnapshot,
+        baseApplicationId: savedApplicationId || undefined,
+        versionGroupId: savedVersionGroupId || undefined,
+      });
+
       if (Object.keys(currentSnapshot).length > 0) {
         setPreviousSavedData(currentSnapshot);
       }
+      setSavedApplicationId(savedApplication.id);
+      setSavedPreviousApplicationId(savedApplication.previousApplicationId || '');
+      setSavedVersionGroupId(savedApplication.versionGroupId || '');
       setSavedData(nextSavedSnapshot);
       setEditedData(nextSavedSnapshot);
+      const nextMetadata: NonNullable<ApplicationResultCardProps['data']['metadata']> = {
+        ...(data.metadata || {}),
+        customer_id: stableCustomerId || data.metadata?.customer_id,
+        saved_application_id: savedApplication.id,
+        previous_application_id: savedApplication.previousApplicationId || '',
+        saved_application_version_group_id: savedApplication.versionGroupId || '',
+        saved_application_version_no: savedApplication.versionNo,
+      };
+      const nextCardData: ApplicationResultCardProps['data'] = {
+        ...data,
+        applicationData: nextSavedSnapshot,
+        metadata: nextMetadata,
+      };
+      setApplicationResult(
+        {
+          content: data.applicationContent || state.application.result?.content || '',
+          customerFound: data.customerFound ?? true,
+          warnings: data.warnings || [],
+          applicationData: nextSavedSnapshot as Record<string, Record<string, string>>,
+          metadata: nextMetadata,
+        },
+        data.customerName || state.application.lastCustomer || undefined,
+      );
+      if (relatedJobId) {
+        if (onPersistMessageData) {
+          onPersistMessageData(relatedJobId, nextCardData);
+        } else {
+          updateChatMessagesByJob(relatedJobId, {
+            data: nextCardData as Record<string, unknown>,
+            intent: 'application',
+            messageType: 'task_result',
+          });
+        }
+      }
+      setEditMode(false);
+    } catch (error) {
+      setSaveEditError(error instanceof Error ? error.message : '申请表保存失败，请稍后重试。');
+    } finally {
+      setSavingEdit(false);
     }
-    setEditMode(false);
   };
   
   /**
@@ -1398,11 +1531,12 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
               editMode ? (
                 <button
                   onClick={saveEditedData}
-                  className="flex items-center gap-1 px-2.5 py-1.5 bg-green-500 text-white text-xs font-medium hover:bg-green-600 transition-colors rounded-lg"
+                  disabled={savingEdit}
+                  className="flex items-center gap-1 rounded-lg bg-green-500 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-600 disabled:cursor-not-allowed disabled:opacity-70"
                   data-testid="save-button"
                 >
                   <Save className="w-3.5 h-3.5" />
-                  保存
+                  {savingEdit ? '保存中' : '保存'}
                 </button>
               ) : (
                 <button
@@ -1452,6 +1586,12 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
           ))}
         </div>
       )}
+
+      {saveEditError ? (
+        <div className="border-b border-rose-100 bg-rose-50/80 px-4 py-3 text-sm text-rose-700">
+          {saveEditError}
+        </div>
+      ) : null}
 
       <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
         <div className="grid gap-3 md:grid-cols-3">
@@ -2729,6 +2869,11 @@ const MatchingResultCard: React.FC<MatchingResultCardProps> = ({ data, onNavigat
 interface StructuredDataCardProps {
   intent?: ChatResponse['intent'] | null;
   data: Record<string, unknown> | null;
+  relatedJobId?: string | null;
+  onPersistApplicationMessageData?: (
+    relatedJobId: string,
+    nextData: ApplicationResultCardProps['data'],
+  ) => void;
   onNavigate?: (page: string) => void;
 }
 
@@ -3461,7 +3606,13 @@ const RiskReportCard: React.FC<{ report: CustomerRiskReportCardData }> = ({ repo
  * 
  * Renders the appropriate data card based on intent type.
  */
-const StructuredDataCard: React.FC<StructuredDataCardProps> = ({ intent, data, onNavigate }) => {
+const StructuredDataCard: React.FC<StructuredDataCardProps> = ({
+  intent,
+  data,
+  onNavigate,
+  relatedJobId,
+  onPersistApplicationMessageData,
+}) => {
   if (!data) return null;
 
   let sectionTitle = '结构化结果';
@@ -3511,7 +3662,14 @@ const StructuredDataCard: React.FC<StructuredDataCardProps> = ({ intent, data, o
       sectionTone = 'border-orange-200 bg-orange-50/80 text-orange-800';
       // Check if we have application data (JSON or Markdown)
       if (data.applicationData || data.applicationContent) {
-        content = <ApplicationResultCard data={data as ApplicationResultCardProps['data']} onNavigate={onNavigate} />;
+        content = (
+          <ApplicationResultCard
+            data={data as ApplicationResultCardProps['data']}
+            relatedJobId={relatedJobId}
+            onNavigate={onNavigate}
+            onPersistMessageData={onPersistApplicationMessageData}
+          />
+        );
         break;
       }
       content = <ApplicationGuideCard data={data as { action?: string; requiredFields?: string[] }} onNavigate={onNavigate} />;
@@ -3641,6 +3799,10 @@ interface MessageBubbleProps {
   message: ChatMessageWithReasoning;
   isTyping?: boolean;
   onNavigate?: (page: string) => void;
+  onPersistApplicationMessageData?: (
+    relatedJobId: string,
+    nextData: ApplicationResultCardProps['data'],
+  ) => void;
 }
 
 /**
@@ -3656,7 +3818,12 @@ interface MessageBubbleProps {
  * Property 7: Message Bubble Styling Based on Role
  * Validates: Requirements 5.2, 5.3
  */
-const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isTyping, onNavigate }) => {
+const MessageBubble: React.FC<MessageBubbleProps> = ({
+  message,
+  isTyping,
+  onNavigate,
+  onPersistApplicationMessageData,
+}) => {
   const { text, files } = parseFileInfoFromContent(message.content);
   
   if (message.role === 'user') {
@@ -3764,6 +3931,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isTyping, onNavi
           <StructuredDataCard 
             intent={message.intent} 
             data={message.data} 
+            relatedJobId={message.relatedJobId}
+            onPersistApplicationMessageData={onPersistApplicationMessageData}
             onNavigate={onNavigate}
           />
         )}
@@ -3976,7 +4145,17 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
   const { loading, error, execute, reset: resetChatRequestState } = useLoading<ChatResponse>();
   const { loading: ragLoading, error: ragError, execute: executeRag, reset: resetRagState } = useLoading<CustomerRagChatResponse>();
   const { getSignal } = useAbortController();
-  const { addChatMessage, clearChatHistory, state, setApplicationResult, setChatTaskStatus, setCurrentCustomer, setSchemeResult, recordSystemActivity } = useApp();
+  const {
+    addChatMessage,
+    clearChatHistory,
+    state,
+    setApplicationResult,
+    setChatTaskStatus,
+    setCurrentCustomer,
+    setSchemeResult,
+    recordSystemActivity,
+    updateChatMessagesByJob,
+  } = useApp();
   const currentCustomerId = state.extraction.currentCustomerId;
   const currentCustomerName = state.extraction.currentCustomer;
   const [chatJobPolling, setChatJobPolling] = useState(false);
@@ -4040,6 +4219,63 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     setActiveResultData,
     resultLayer,
   } = useResultPanelState();
+
+  const patchApplicationMessageData = useCallback(
+    (jobId: string, nextData: ApplicationResultCardProps['data']) => {
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.relatedJobId === jobId
+            ? {
+                ...message,
+                intent: 'application',
+                messageType: 'task_result',
+                data: nextData as Record<string, unknown>,
+              }
+            : message,
+        ),
+      );
+      updateChatMessagesByJob(jobId, {
+        intent: 'application',
+        messageType: 'task_result',
+        data: nextData as Record<string, unknown>,
+      });
+    },
+    [setMessages, updateChatMessagesByJob],
+  );
+
+  const restoreApplicationContextFromMessages = useCallback(
+    (restoredMessages: ChatMessageWithReasoning[]) => {
+      const latestApplicationMessage = [...restoredMessages]
+        .reverse()
+        .find(
+          (message) =>
+            message.intent === 'application' &&
+            message.data &&
+            typeof message.data === 'object' &&
+            (
+              'applicationData' in message.data ||
+              'applicationContent' in message.data
+            ),
+        );
+
+      if (!latestApplicationMessage?.data) {
+        return;
+      }
+
+      const applicationData = latestApplicationMessage.data as ApplicationResultCardProps['data'];
+      setApplicationResult(
+        {
+          content: applicationData.applicationContent || '',
+          customerFound: applicationData.customerFound ?? true,
+          warnings: applicationData.warnings || [],
+          applicationData: (applicationData.applicationData || undefined) as Record<string, Record<string, string>> | undefined,
+          metadata: applicationData.metadata,
+        },
+        applicationData.customerName || undefined,
+      );
+    },
+    [setApplicationResult],
+  );
   
   // Refs
   const resultTopRef = useRef<HTMLDivElement>(null);
@@ -5228,6 +5464,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     // 恢复消息历史
     if (state.chat.messages.length > 0) {
       setMessages(state.chat.messages);
+      restoreApplicationContextFromMessages(state.chat.messages as ChatMessageWithReasoning[]);
     }
 
     const pendingJob = readPendingChatJob();
@@ -5690,6 +5927,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
             intent: response.intent,
             data: response.data,
           }}
+          onPersistApplicationMessageData={patchApplicationMessageData}
           onNavigate={onNavigate}
         />
       );
@@ -5723,6 +5961,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
             warnings: response.warnings,
             metadata: response.metadata,
           }}
+          relatedJobId={currentJob.jobId}
+          onPersistMessageData={patchApplicationMessageData}
           onNavigate={onNavigate}
         />
       );
@@ -6422,7 +6662,11 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                   <>
                     {conversationLayer.messages.map((msg, index) => (
                       <React.Fragment key={msg.clientMessageId || msg.createdAt || index}>
-                        <MessageBubble message={msg} onNavigate={onNavigate} />
+                        <MessageBubble
+                          message={msg}
+                          onNavigate={onNavigate}
+                          onPersistApplicationMessageData={patchApplicationMessageData}
+                        />
                         {msg.role === 'assistant' && index === conversationLayer.messages.length - 1 && lastIntent && !msg.data && (
                           <div className="ml-12 mb-4">
                             <IntentActions intent={lastIntent} onAction={handleIntentAction} />

@@ -395,6 +395,9 @@ export async function refreshWikiCache(signal?: AbortSignal): Promise<WikiRefres
 
 export interface SavedApplicationListItem {
   id: string;
+  versionGroupId?: string;
+  previousApplicationId?: string;
+  versionNo?: number;
   customerName: string;
   customerId?: string | null;
   loanType: string;
@@ -410,6 +413,8 @@ export interface SaveApplicationRequest {
   customerId?: string | null;
   loanType: string;
   applicationData: Record<string, unknown>;
+  baseApplicationId?: string;
+  versionGroupId?: string;
 }
 
 /**

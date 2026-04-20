@@ -55,6 +55,10 @@ export interface ApplicationResult {
     stale?: boolean;
     stale_reason?: string;
     stale_at?: string;
+    saved_application_id?: string;
+    previous_application_id?: string;
+    saved_application_version_group_id?: string;
+    saved_application_version_no?: number;
   };
 }
 
@@ -78,6 +82,12 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   /** Message content */
   content: string;
+  /** AI reasoning/thinking process */
+  reasoning?: string | null;
+  /** Detected intent for structured task messages */
+  intent?: 'extract' | 'application' | 'matching' | 'chat' | null;
+  /** Structured payload rendered below the message */
+  data?: Record<string, unknown> | null;
   /** Weak task association for task-aware conversation rendering */
   relatedJobId?: string | null;
   /** Semantic message category */
@@ -198,6 +208,7 @@ export type AppAction =
   | { type: 'SET_APPLICATION'; payload: ApplicationResult | null; customer?: string }
   | { type: 'SET_SCHEME'; payload: SchemeResult | null }
   | { type: 'ADD_CHAT_MESSAGE'; payload: ChatMessage }
+  | { type: 'UPDATE_CHAT_MESSAGES_BY_JOB'; payload: { jobId: string; patch: Partial<ChatMessage> } }
   | { type: 'CLEAR_CHAT' }
   | { type: 'SET_UPLOAD_TASK'; payload: { status: TaskStates['upload']['status']; queue: UploadQueueItem[] } }
   | { type: 'SET_APPLICATION_TASK'; payload: { status: TaskStates['application']['status']; params: TaskStates['application']['params'] } }
@@ -226,6 +237,8 @@ export interface AppContextValue {
   setSchemeResult: (result: SchemeResult | null) => void;
   /** Add a chat message to history */
   addChatMessage: (message: ChatMessage) => void;
+  /** Patch chat messages associated with a job */
+  updateChatMessagesByJob: (jobId: string, patch: Partial<ChatMessage>) => void;
   /** Clear all chat history */
   clearChatHistory: () => void;
   /** Set upload task status */
@@ -319,6 +332,9 @@ function buildInitialState(initialStateOverride?: AppState): AppState {
       ...initialState.extraction,
       currentCustomer: persisted.extraction?.currentCustomer ?? initialState.extraction.currentCustomer,
       currentCustomerId: persisted.extraction?.currentCustomerId ?? initialState.extraction.currentCustomerId,
+    },
+    chat: {
+      messages: persisted.chat?.messages ?? initialState.chat.messages,
     },
     system: {
       recentActivities: persisted.system?.recentActivities ?? initialState.system.recentActivities,
@@ -417,6 +433,22 @@ function appReducer(state: AppState, action: AppAction): AppState {
         chat: {
           ...state.chat,
           messages: [...state.chat.messages, action.payload],
+        },
+      };
+
+    case 'UPDATE_CHAT_MESSAGES_BY_JOB':
+      return {
+        ...state,
+        chat: {
+          ...state.chat,
+          messages: state.chat.messages.map((message) =>
+            message.relatedJobId === action.payload.jobId
+              ? {
+                  ...message,
+                  ...action.payload.patch,
+                }
+              : message,
+          ),
         },
       };
 
@@ -590,6 +622,15 @@ export function AppProvider({ children, initialStateOverride }: AppProviderProps
   }, []);
 
   /**
+   * Patch chat messages associated with a job
+   * @param jobId - Related async job id
+   * @param patch - Partial message updates to apply
+   */
+  const updateChatMessagesByJob = useCallback((jobId: string, patch: Partial<ChatMessage>): void => {
+    dispatch({ type: 'UPDATE_CHAT_MESSAGES_BY_JOB', payload: { jobId, patch } });
+  }, []);
+
+  /**
    * Clear all chat history
    */
   const clearChatHistory = useCallback((): void => {
@@ -663,12 +704,20 @@ export function AppProvider({ children, initialStateOverride }: AppProviderProps
           currentCustomer: state.extraction.currentCustomer,
           currentCustomerId: state.extraction.currentCustomerId,
         },
+        chat: {
+          messages: state.chat.messages,
+        },
         system: {
           recentActivities: state.system.recentActivities,
         },
       }),
     );
-  }, [state.extraction.currentCustomer, state.extraction.currentCustomerId, state.system.recentActivities]);
+  }, [
+    state.chat.messages,
+    state.extraction.currentCustomer,
+    state.extraction.currentCustomerId,
+    state.system.recentActivities,
+  ]);
 
   const contextValue: AppContextValue = useMemo(() => ({
     state,
@@ -679,6 +728,7 @@ export function AppProvider({ children, initialStateOverride }: AppProviderProps
     setApplicationResult,
     setSchemeResult,
     addChatMessage,
+    updateChatMessagesByJob,
     clearChatHistory,
     setUploadTaskStatus,
     setApplicationTaskStatus,
@@ -694,6 +744,7 @@ export function AppProvider({ children, initialStateOverride }: AppProviderProps
     setApplicationResult,
     setSchemeResult,
     addChatMessage,
+    updateChatMessagesByJob,
     clearChatHistory,
     setUploadTaskStatus,
     setApplicationTaskStatus,

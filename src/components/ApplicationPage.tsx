@@ -16,7 +16,7 @@ import {
   Building2, CreditCard, Banknote, Calendar, DollarSign, Building, 
   BadgeCheck, FileCheck, FileSpreadsheet, Copy
 } from 'lucide-react';
-import { createApplicationJob, getChatJobStatus, saveApplication } from '../services/api';
+import { createApplicationJob, getApplication, getChatJobStatus, saveApplication } from '../services/api';
 import type { ApplicationResponse, ChatJobStatusResponse, ChatJobSummaryResponse } from '../services/types';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
@@ -631,6 +631,9 @@ const ApplicationPage: React.FC = () => {
   const [editedData, setEditedData] = useState<Record<string, Record<string, string>>>({});
   const [currentSavedValues, setCurrentSavedValues] = useState<Record<string, Record<string, string>>>({});
   const [previousSavedValues, setPreviousSavedValues] = useState<Record<string, Record<string, string>>>({});
+  const [savedApplicationId, setSavedApplicationId] = useState<string>('');
+  const [savedPreviousApplicationId, setSavedPreviousApplicationId] = useState<string>('');
+  const [savedVersionGroupId, setSavedVersionGroupId] = useState<string>('');
   
   // Save to cache state
     const [saving, setSaving] = useState<boolean>(false);
@@ -833,6 +836,9 @@ const ApplicationPage: React.FC = () => {
       lastDiffEntityKeyRef.current !== activeApplicationEntityKey
     ) {
       setPreviousSavedValues({});
+      setSavedApplicationId('');
+      setSavedPreviousApplicationId('');
+      setSavedVersionGroupId('');
     }
 
     lastDiffEntityKeyRef.current = activeApplicationEntityKey;
@@ -854,6 +860,9 @@ const ApplicationPage: React.FC = () => {
         setEditedData(nextSavedData);
         setCurrentSavedValues(nextSavedData);
       }
+      setSavedApplicationId(state.application.result.metadata?.saved_application_id || '');
+      setSavedPreviousApplicationId(state.application.result.metadata?.previous_application_id || '');
+      setSavedVersionGroupId(state.application.result.metadata?.saved_application_version_group_id || '');
     }
     if (state.application.lastCustomer) {
       setCustomerName(state.application.lastCustomer);
@@ -866,6 +875,28 @@ const ApplicationPage: React.FC = () => {
       setCurrentSavedValues(cloneSectionMaps(result.applicationData));
     }
   }, [editMode, result]);
+
+  useEffect(() => {
+    if (!savedPreviousApplicationId) {
+      return;
+    }
+
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const previousApplication = await getApplication(savedPreviousApplicationId, controller.signal);
+        const previousData = cloneSectionMaps((previousApplication.applicationData || {}) as Record<string, Record<string, string>>);
+        setPreviousSavedValues(previousData);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          return;
+        }
+        console.warn('Failed to load previous saved application version', error);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [savedPreviousApplicationId]);
 
   useEffect(() => {
     if (!result || !activeJobCard || activeJobCard.jobType !== 'application_generate') {
@@ -906,6 +937,9 @@ const ApplicationPage: React.FC = () => {
     // Reset edit mode when generating new application
     setEditMode(false);
     setEditedData({});
+    setSavedApplicationId('');
+    setSavedPreviousApplicationId('');
+    setSavedVersionGroupId('');
     
     // Save task state before starting (for recovery on page switch)
     setApplicationTaskStatus('generating', { customerName: trimmedName, loanType });
@@ -971,11 +1005,17 @@ const ApplicationPage: React.FC = () => {
     try {
       const safeCustomerName = customerName.trim() || '未命名客户';
 
-      await saveApplication({
+      const savedApplication = await saveApplication({
         customerName: safeCustomerName,
+        customerId: currentCustomerId,
         loanType,
         applicationData: dataToSave,
+        baseApplicationId: savedApplicationId || undefined,
+        versionGroupId: savedVersionGroupId || undefined,
       });
+      setSavedApplicationId(savedApplication.id);
+      setSavedPreviousApplicationId(savedApplication.previousApplicationId || '');
+      setSavedVersionGroupId(savedApplication.versionGroupId || '');
 
       if (result) {
         const previousSnapshot = cloneSectionMaps(currentSavedValues);
@@ -985,6 +1025,13 @@ const ApplicationPage: React.FC = () => {
         const updatedResult = {
           ...result,
           applicationData: nextSavedSnapshot,
+          metadata: {
+            ...(result.metadata || {}),
+            saved_application_id: savedApplication.id,
+            previous_application_id: savedApplication.previousApplicationId || '',
+            saved_application_version_group_id: savedApplication.versionGroupId || '',
+            saved_application_version_no: savedApplication.versionNo || 1,
+          },
         };
         setResult(updatedResult);
         if (!areSectionMapsEqual(previousSnapshot, nextSavedSnapshot)) {
