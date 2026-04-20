@@ -17,11 +17,11 @@ import {
   FileSpreadsheet, Image, File, ChevronDown, ChevronRight, Clock3,
   User, Building2, CreditCard, Banknote, AlertCircle, CheckCircle2,
   FileCheck, Percent, Calendar, DollarSign, Building,
-  Edit3, Save, Download, RefreshCw
+  RefreshCw
 } from 'lucide-react';
-import { createChatJob, createCustomerRiskReportJob, deleteChatJob, getApplication, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers, saveApplication } from '../services/api';
+import { createChatJob, createCustomerRiskReportJob, deleteChatJob, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers } from '../services/api';
 import {
-  getFieldIcon, getSectionIcon, formatTableValue, isNestedObject, isArrayOfObjects,
+  formatTableValue, isNestedObject, isArrayOfObjects,
   DataSectionCard, ArrayDataCard
 } from './DataDisplayComponents';
 import AsyncJobCard from './common/AsyncJobCard';
@@ -38,7 +38,11 @@ import { useAbortController, useConversationState, useLoading, useResultPanelSta
 import type { TaskViewSource } from '../hooks';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
-import FieldDiffPreview from './FieldDiffPreview';
+import {
+  ApplicationGuideCard,
+  ApplicationResultCard,
+  type ApplicationResultCardData,
+} from './ApplicationResultCard';
 import type {
   ChatMessage,
   ChatFile,
@@ -113,17 +117,6 @@ function formatCustomerContextLabel(customerId: string | null, customerName: str
     return '未选择客户';
   }
   return stripInternalId(customerId);
-}
-
-function cloneChatApplicationData(
-  source: Record<string, Record<string, unknown>> | null | undefined,
-): Record<string, Record<string, unknown>> {
-  return Object.fromEntries(
-    Object.entries(source || {}).map(([sectionName, sectionData]) => [
-      sectionName,
-      { ...(sectionData || {}) },
-    ]),
-  );
 }
 
 function buildSubmittedJobFeedback(
@@ -344,195 +337,6 @@ function getRiskBarTone(level: string | null | undefined): string {
     default:
       return 'bg-slate-400';
   }
-}
-
-function buildApplicationFormHtml(
-  customerName: string,
-  loanType: string,
-  applicationData: Record<string, Record<string, unknown>>
-): string {
-  const safeCustomerName = customerName.trim() || '未命名';
-  const loanTypeLabel = loanType === 'personal' ? '个人贷款' : '企业贷款';
-  const exportedAt = new Date().toLocaleString('zh-CN', { hour12: false });
-
-  const sectionsHtml = Object.entries(applicationData)
-    .map(([sectionName, sectionData]) => {
-      const rows = Object.entries(sectionData)
-        .map(([fieldName, value]) => {
-          const renderedValue = escapeHtml(String(value ?? '-').trim() || '-').replace(/\r?\n/g, '<br />');
-          return `
-            <tr>
-              <th>${escapeHtml(fieldName)}</th>
-              <td>${renderedValue}</td>
-            </tr>
-          `;
-        })
-        .join('');
-
-      return `
-        <section class="section-card">
-          <div class="section-header">
-            <div class="section-title">${escapeHtml(sectionName)}</div>
-            <div class="section-count">${Object.keys(sectionData).length} 项</div>
-          </div>
-          <div class="table-shell">
-            <table>
-              <tbody>
-                ${rows}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      `;
-    })
-    .join('');
-
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>贷款申请表 - ${escapeHtml(safeCustomerName)}</title>
-    <style>
-      :root {
-        color-scheme: light;
-        --bg: #f8fafc;
-        --card: #ffffff;
-        --border: #e2e8f0;
-        --text: #0f172a;
-        --muted: #64748b;
-        --header: #eff6ff;
-        --header-border: #bfdbfe;
-        --chip: #dbeafe;
-        --chip-text: #1d4ed8;
-      }
-
-      * { box-sizing: border-box; }
-
-      body {
-        margin: 0;
-        font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
-        background: var(--bg);
-        color: var(--text);
-      }
-
-      main {
-        max-width: 1080px;
-        margin: 0 auto;
-        padding: 32px 24px 48px;
-      }
-
-      .hero {
-        background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
-        border: 1px solid var(--header-border);
-        border-radius: 24px;
-        padding: 28px;
-        margin-bottom: 24px;
-      }
-
-      h1 {
-        margin: 0 0 12px;
-        font-size: 32px;
-        line-height: 1.2;
-      }
-
-      .hero-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      .hero-chip {
-        display: inline-flex;
-        align-items: center;
-        padding: 6px 12px;
-        border-radius: 999px;
-        background: var(--chip);
-        color: var(--chip-text);
-        font-weight: 600;
-      }
-
-      .section-card {
-        background: var(--card);
-        border: 1px solid var(--border);
-        border-radius: 20px;
-        overflow: hidden;
-        margin-bottom: 20px;
-        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
-      }
-
-      .section-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 12px;
-        padding: 18px 20px;
-        background: var(--header);
-        border-bottom: 1px solid var(--header-border);
-      }
-
-      .section-title {
-        font-size: 20px;
-        font-weight: 700;
-      }
-
-      .section-count {
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      .table-shell {
-        padding: 20px;
-      }
-
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        table-layout: fixed;
-      }
-
-      th,
-      td {
-        border: 1px solid var(--border);
-        padding: 12px 14px;
-        text-align: left;
-        vertical-align: top;
-        word-break: break-word;
-      }
-
-      th {
-        width: 32%;
-        background: #f8fafc;
-        color: var(--muted);
-        font-weight: 600;
-      }
-
-      @media print {
-        body { background: #fff; }
-        main { padding: 0; }
-        .hero,
-        .section-card {
-          box-shadow: none;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <section class="hero">
-        <h1>贷款申请表</h1>
-        <div class="hero-meta">
-          <span class="hero-chip">${escapeHtml(safeCustomerName)}</span>
-          <span>贷款类型：${escapeHtml(loanTypeLabel)}</span>
-          <span>导出时间：${escapeHtml(exportedAt)}</span>
-        </div>
-      </section>
-      ${sectionsHtml}
-    </main>
-  </body>
-</html>`;
 }
 
 // ============================================
@@ -804,72 +608,6 @@ const ExtractionResultCard: React.FC<ExtractionResultCardProps> = ({ files }) =>
 };
 
 // ============================================
-// Application Guide Card Component
-// ============================================
-
-interface ApplicationGuideCardProps {
-  data: {
-    action?: string;
-    requiredFields?: string[];
-  };
-  onNavigate?: (page: string) => void;
-}
-
-/**
- * ApplicationGuideCard Component
- * 
- * Displays guidance for application generation with required fields.
- */
-const ApplicationGuideCard: React.FC<ApplicationGuideCardProps> = ({ data, onNavigate }) => {
-  const fieldLabels: Record<string, string> = {
-    customerName: '客户名称',
-    loanType: '贷款类型',
-  };
-  
-  return (
-    <div 
-      className="mt-3 bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm"
-      data-testid="application-guide-card"
-    >
-      <div className="px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-gray-100">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center">
-            <ClipboardList className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="font-medium text-gray-800 text-sm">申请表生成</div>
-            <div className="text-xs text-gray-500 mt-0.5">请提供以下信息</div>
-          </div>
-        </div>
-      </div>
-      
-      <div className="px-4 py-3">
-        <div className="space-y-2">
-          {data.requiredFields?.map((field) => (
-            <div key={field} className="flex items-center gap-2 text-sm">
-              <div className="w-5 h-5 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-xs">
-                {data.requiredFields?.indexOf(field) !== undefined ? data.requiredFields.indexOf(field) + 1 : '•'}
-              </div>
-              <span className="text-gray-700">{fieldLabels[field] || field}</span>
-            </div>
-          ))}
-        </div>
-        
-        {onNavigate && (
-          <button
-            onClick={() => onNavigate('application')}
-            className="mt-4 w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
-          >
-            <ClipboardList className="w-4 h-4" />
-            前往申请表生成
-          </button>
-        )}
-      </div>
-    </div>
-  );
-};
-
-// ============================================
 // Matching Guide Card Component
 // ============================================
 
@@ -933,741 +671,6 @@ const MatchingGuideCard: React.FC<MatchingGuideCardProps> = ({ data: _data, onNa
           </button>
         )}
       </div>
-    </div>
-  );
-};
-
-// ============================================
-// Application Result Card Component
-// ============================================
-
-interface ApplicationResultCardProps {
-  relatedJobId?: string | null;
-  onPersistMessageData?: (
-    relatedJobId: string,
-    nextData: ApplicationResultCardProps['data'],
-  ) => void;
-  data: {
-    customerFound?: boolean;
-    customerName?: string;
-    loanType?: string;
-    applicationData?: Record<string, Record<string, unknown>>;  // JSON structured data
-    applicationContent?: string;  // Markdown fallback
-    warnings?: string[];
-    metadata?: {
-      generated_at?: string;
-      customer_id?: string;
-      profile_version?: number;
-      profile_updated_at?: string;
-      data_sources?: string[];
-      stale?: boolean;
-      stale_reason?: string;
-      stale_at?: string;
-      saved_application_id?: string;
-      previous_application_id?: string;
-      saved_application_version_group_id?: string;
-      saved_application_version_no?: number;
-    };
-    needsInput?: boolean;
-    requiredFields?: string[];
-  };
-  onNavigate?: (page: string) => void;
-}
-
-function buildChatApplicationFieldSource(fieldName: string, value: unknown, metadata?: ApplicationResultCardProps['data']['metadata']) {
-  const text = String(value ?? '').trim();
-  const profileVersion = metadata?.profile_version ? `资料汇总 V${metadata.profile_version}` : '当前资料汇总';
-  const profileTime = metadata?.profile_updated_at
-    ? `，最近更新于 ${formatLocalDateTime(metadata.profile_updated_at)}`
-    : '';
-
-  if (!text || text === '-' || /待补充|无/.test(text)) {
-    return {
-      label: '待补字段',
-      detail: `当前客户资料中未找到可直接引用的内容，建议补充材料后重新生成。本次判断基于 ${profileVersion}${profileTime}。`,
-    };
-  }
-
-  if (/经营地址|注册地址|经营状态|统一社会信用代码|行业类型|成立时间/.test(fieldName)) {
-    return {
-      label: '企业征信 / 资料汇总',
-      detail: `主要来自企业征信报告基本信息和资料汇总，本次生成基于 ${profileVersion}${profileTime}。`,
-    };
-  }
-
-  if (/纳税|开票|营收|利润|财务|流水|收入|回款/.test(fieldName)) {
-    return {
-      label: '财务 / 纳税 / 流水资料',
-      detail: `主要来自财务数据、纳税资料、银行流水和经营类报告，本次生成基于 ${profileVersion}${profileTime}。`,
-    };
-  }
-
-  if (/征信|负债|逾期|担保|诉讼|信用卡|隐形负债/.test(fieldName)) {
-    return {
-      label: '征信 / 负债资料',
-      detail: `主要来自企业征信、个人征信、公共记录和负债资料；如字段可计算，系统会自动综合推导。本次生成基于 ${profileVersion}${profileTime}。`,
-    };
-  }
-
-  if (/抵押|资产|存货|固定资产|净资产/.test(fieldName)) {
-    return {
-      label: '资产 / 抵押材料',
-      detail: `主要来自抵押物资料、资产清单和补充材料，本次生成基于 ${profileVersion}${profileTime}。`,
-    };
-  }
-
-  return {
-    label: '资料汇总 / 结构化提取',
-    detail: `系统综合读取资料汇总与结构化提取结果生成该字段，本次依据为 ${profileVersion}${profileTime}。`,
-  };
-}
-
-/**
- * EditableDataSectionCardChat Component
- * 
- * Renders a section with title and data table for ChatPage.
- * In edit mode, field values become editable inputs.
- */
-interface EditableDataSectionCardChatProps {
-  title: string;
-  data: Record<string, unknown>;
-  editMode: boolean;
-  onFieldChange: (sectionTitle: string, fieldName: string, value: string) => void;
-  metadata?: ApplicationResultCardProps['data']['metadata'];
-  currentSavedData?: Record<string, unknown>;
-  previousSavedData?: Record<string, unknown> | null;
-}
-
-const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = ({ 
-  title, 
-  data, 
-  editMode, 
-  onFieldChange,
-  metadata,
-  currentSavedData = {},
-  previousSavedData = null,
-}) => {
-  const [isExpanded, setIsExpanded] = useState(true);
-  const [expandedSourceKey, setExpandedSourceKey] = useState<string | null>(null);
-  const [expandedHistoryDiffKey, setExpandedHistoryDiffKey] = useState<string | null>(null);
-  const entries = Object.entries(data).filter(
-    ([, value]) => typeof value !== 'object' || value === null
-  );
-  const nestedEntries = Object.entries(data).filter(
-    ([, value]) => typeof value === 'object' && value !== null && !Array.isArray(value)
-  );
-  
-  if (entries.length === 0 && nestedEntries.length === 0) return null;
-  
-  return (
-    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-      {/* Section Header */}
-      <div 
-        className="px-3 py-2 bg-gradient-to-r from-slate-50 to-gray-50 border-b border-gray-100 cursor-pointer"
-        onClick={() => setIsExpanded(!isExpanded)}
-      >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-md flex items-center justify-center bg-blue-100 text-blue-600">
-              {getSectionIcon(title)}
-            </div>
-            <span className="font-medium text-gray-700 text-sm">{title}</span>
-            <span className="text-xs text-gray-400">({entries.length} 项)</span>
-          </div>
-          {isExpanded ? (
-            <ChevronDown className="w-4 h-4 text-gray-400" />
-          ) : (
-            <ChevronRight className="w-4 h-4 text-gray-400" />
-          )}
-        </div>
-      </div>
-      
-      {/* Section Content */}
-      {isExpanded && (
-        <div className="p-3 space-y-3">
-          {/* Simple key-value pairs */}
-          {entries.length > 0 && (
-            <div className="overflow-hidden rounded-lg border border-gray-200">
-              <table className="w-full text-sm">
-                <tbody>
-                  {entries.map(([key, value], idx) => {
-                    const sourceInfo = buildChatApplicationFieldSource(key, value, metadata);
-                    const rowKey = `${title}-${key}`;
-                    const showSourceDetail = expandedSourceKey === rowKey;
-                    const showHistoryDiff = expandedHistoryDiffKey === rowKey;
-                    const previousSavedValue = String(previousSavedData?.[key] ?? '');
-                    const currentSavedValue = String(currentSavedData?.[key] ?? value ?? '');
-                    const currentEditingValue = String(value ?? '');
-                    const hasPreviousSavedDiff = previousSavedValue !== '' && previousSavedValue !== currentSavedValue;
-                    const modified = currentSavedValue !== currentEditingValue;
-                    return (
-                    <tr 
-                      key={key} 
-                      className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
-                    >
-                      <td className="px-3 py-2 text-gray-500 font-medium w-1/3 border-r border-gray-100">
-                        <div className="flex items-center gap-2">
-                          <span className="text-gray-400">{getFieldIcon(key)}</span>
-                          <span className="truncate">{key}</span>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-gray-800">
-                        {editMode ? (
-                          <div className="space-y-2">
-                            <input
-                              type="text"
-                              value={currentEditingValue}
-                              onChange={(e) => onFieldChange(title, key, e.target.value)}
-                              className={`w-full rounded border px-2 py-1 text-sm focus:outline-none focus:ring-2 ${
-                                modified
-                                  ? 'border-amber-300 bg-amber-50/50 focus:ring-amber-100'
-                                  : 'border-blue-300 focus:ring-blue-200'
-                              }`}
-                              data-testid={`edit-field-${title}-${key}`}
-                            />
-                            {hasPreviousSavedDiff ? (
-                              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
-                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                                    <span className="inline-flex h-2 w-2 rounded-full bg-amber-400" aria-hidden="true" />
-                                    <span className="text-[11px] font-semibold tracking-wide text-slate-700">上一版变更记录</span>
-                                    <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                                      检测到历史差异
-                                    </span>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => setExpandedHistoryDiffKey((prev) => (prev === rowKey ? null : rowKey))}
-                                    className="inline-flex w-fit items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
-                                  >
-                                    {showHistoryDiff ? '收起上一版差异' : '查看上一版差异'}
-                                  </button>
-                                </div>
-                                {showHistoryDiff ? (
-                                  <div className="mt-2">
-                                    <FieldDiffPreview originalValue={previousSavedValue} currentValue={currentSavedValue} />
-                                  </div>
-                                ) : (
-                                  <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
-                                    已检测到上一保存版本差异，点击“查看上一版差异”可展开详情。
-                                  </div>
-                                )}
-                              </div>
-                            ) : null}
-                            <div
-                              className={`rounded-lg border border-dashed px-2.5 py-2 ${
-                                modified
-                                  ? 'border-amber-300 bg-amber-50/70'
-                                  : 'border-slate-300 bg-slate-50'
-                              }`}
-                            >
-                              <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
-                                <span
-                                  className={`inline-flex h-2 w-2 rounded-full ${
-                                    modified ? 'bg-emerald-500' : 'bg-slate-300'
-                                  }`}
-                                  aria-hidden="true"
-                                />
-                                <span
-                                  className={`text-[11px] font-semibold tracking-wide ${
-                                    modified ? 'text-amber-800' : 'text-slate-700'
-                                  }`}
-                                >
-                                  本次编辑差异
-                                </span>
-                                <span
-                                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                                    modified
-                                      ? 'bg-emerald-100 text-emerald-700'
-                                      : 'bg-white text-slate-500'
-                                  }`}
-                                >
-                                  {modified ? '已检测到本次修改' : '编辑中'}
-                                </span>
-                              </div>
-                              {modified ? (
-                                <div className="mt-2">
-                                  <FieldDiffPreview originalValue={currentSavedValue} currentValue={currentEditingValue} />
-                                </div>
-                              ) : (
-                                <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
-                                  本次编辑暂无差异。
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ) : (
-                          <div>
-                            <div className="break-words" title={String(value ?? '')}>
-                              {formatTableValue(value)}
-                            </div>
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
-                                来源：{sourceInfo.label}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setExpandedSourceKey((prev) => (prev === rowKey ? null : rowKey))}
-                                className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
-                              >
-                                {showSourceDetail ? '收起来源' : '查看来源'}
-                              </button>
-                            </div>
-                            {showSourceDetail && (
-                              <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
-                                {sourceInfo.detail}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-          
-          {/* Nested objects as sub-cards */}
-          {nestedEntries.map(([key, value]) => (
-            <EditableDataSectionCardChat 
-              key={key} 
-              title={key} 
-              data={value as Record<string, unknown>}
-              editMode={editMode}
-              onFieldChange={onFieldChange}
-              metadata={metadata}
-              currentSavedData={(currentSavedData?.[key] as Record<string, unknown>) || {}}
-              previousSavedData={(previousSavedData?.[key] as Record<string, unknown>) || null}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-/**
- * ApplicationResultCard Component
- * 
- * Displays generated application form content.
- * - If applicationData (JSON) is available, renders as grouped cards with edit support
- * - Falls back to Markdown rendering if only applicationContent is available
- * Shows customer info and warnings if any.
- */
-const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
-  data,
-  relatedJobId,
-  onNavigate,
-  onPersistMessageData,
-}) => {
-  const { state, setApplicationResult, updateChatMessagesByJob } = useApp();
-  const [isExpanded, setIsExpanded] = useState(true);
-  const [editMode, setEditMode] = useState(false);
-  const [editedData, setEditedData] = useState<Record<string, Record<string, unknown>>>({});
-  // currentSavedData 持久化当前已保存版本，previousSavedData 保留上一保存版本
-  const [savedData, setSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
-  const [previousSavedData, setPreviousSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
-  const [savedApplicationId, setSavedApplicationId] = useState('');
-  const [savedPreviousApplicationId, setSavedPreviousApplicationId] = useState('');
-  const [savedVersionGroupId, setSavedVersionGroupId] = useState('');
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [saveEditError, setSaveEditError] = useState<string | null>(null);
-  
-  /**
-   * Handle field change in edit mode
-   * 使用 useCallback 避免闭包陷阱（踩坑点 #31）
-   * Note: Must be declared before any early returns to satisfy rules-of-hooks
-   */
-  const handleFieldChange = useCallback((sectionTitle: string, fieldName: string, value: string) => {
-    setEditedData(prev => ({
-      ...prev,
-      [sectionTitle]: {
-        ...(prev[sectionTitle] || {}),
-        [fieldName]: value,
-      },
-    }));
-  }, []);
-  
-  // If needs input, show the guide card instead
-  if (data.needsInput) {
-    return <ApplicationGuideCard data={data} onNavigate={onNavigate} />;
-  }
-  
-  // If no application data at all, show guide card
-  if (!data.applicationData && !data.applicationContent) {
-    return <ApplicationGuideCard data={data} onNavigate={onNavigate} />;
-  }
-  
-  const loanTypeLabel = data.loanType === 'personal' ? '个人贷款' : '企业贷款';
-  const hasStructuredData = data.applicationData && Object.keys(data.applicationData).length > 0;
-  const profileVersionLabel = data.metadata?.profile_version ? `V${data.metadata.profile_version}` : '版本待确认';
-  const profileUpdatedAtLabel = data.metadata?.profile_updated_at
-    ? formatLocalDateTime(data.metadata.profile_updated_at)
-    : '未记录';
-  const generatedAtLabel = data.metadata?.generated_at
-    ? formatLocalDateTime(data.metadata.generated_at)
-    : '刚刚生成';
-  const currentApplicationMetadata = state.application.result?.metadata;
-  const sameCustomerStale =
-    Boolean(currentApplicationMetadata?.stale) &&
-    Boolean(currentApplicationMetadata?.customer_id) &&
-    currentApplicationMetadata?.customer_id === data.metadata?.customer_id;
-  const staleReason = currentApplicationMetadata?.stale_reason || data.metadata?.stale_reason || '客户资料已更新，请重新生成申请表。';
-  const staleAtLabel = currentApplicationMetadata?.stale_at
-    ? formatLocalDateTime(currentApplicationMetadata.stale_at)
-    : data.metadata?.stale_at
-      ? formatLocalDateTime(data.metadata.stale_at)
-      : '';
-  const applicationStatusBadge = sameCustomerStale
-    ? { label: '待刷新', className: 'border-amber-200 bg-amber-50 text-amber-700' }
-    : { label: '最新可用', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' };
-  const stableCustomerId = data.metadata?.customer_id || state.extraction.currentCustomerId || null;
-  
-  const currentSavedData = savedData || data.applicationData || {};
-  const displayData = editMode && Object.keys(editedData).length > 0
-    ? editedData
-    : currentSavedData;
-
-  useEffect(() => {
-    setSavedApplicationId(data.metadata?.saved_application_id || '');
-    setSavedPreviousApplicationId(data.metadata?.previous_application_id || '');
-    setSavedVersionGroupId(data.metadata?.saved_application_version_group_id || '');
-  }, [
-    data.metadata?.previous_application_id,
-    data.metadata?.saved_application_id,
-    data.metadata?.saved_application_version_group_id,
-  ]);
-
-  useEffect(() => {
-    if (!savedPreviousApplicationId) {
-      return;
-    }
-
-    const controller = new AbortController();
-    void (async () => {
-      try {
-        const previousApplication = await getApplication(savedPreviousApplicationId, controller.signal);
-        setPreviousSavedData(cloneChatApplicationData(previousApplication.applicationData as Record<string, Record<string, unknown>>));
-      } catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') {
-          return;
-        }
-        console.warn('Failed to load previous application version for chat card', error);
-      }
-    })();
-
-    return () => controller.abort();
-  }, [savedPreviousApplicationId]);
-  
-  /**
-   * Toggle edit mode - 进入编辑时优先从 savedData 初始化，其次从原始数据
-   */
-  const toggleEditMode = () => {
-    if (!editMode) {
-      const baseData = cloneChatApplicationData(currentSavedData);
-      if (Object.keys(baseData).length > 0) {
-        setEditedData(baseData);
-      }
-    }
-    setEditMode(!editMode);
-  };
-  
-  /**
-   * Save edited data - 持久化到 savedData，退出编辑后仍显示最新内容
-   */
-  const saveEditedData = async () => {
-    if (Object.keys(editedData).length === 0) {
-      setEditMode(false);
-      return;
-    }
-
-    setSavingEdit(true);
-    setSaveEditError(null);
-    try {
-      const currentSnapshot = cloneChatApplicationData(currentSavedData);
-      const nextSavedSnapshot = cloneChatApplicationData(editedData);
-      const safeCustomerName = (data.customerName || state.extraction.currentCustomer || '').trim() || '未命名客户';
-      const savedApplication = await saveApplication({
-        customerName: safeCustomerName,
-        customerId: stableCustomerId,
-        loanType: data.loanType === 'personal' ? 'personal' : 'enterprise',
-        applicationData: nextSavedSnapshot,
-        baseApplicationId: savedApplicationId || undefined,
-        versionGroupId: savedVersionGroupId || undefined,
-      });
-
-      if (Object.keys(currentSnapshot).length > 0) {
-        setPreviousSavedData(currentSnapshot);
-      }
-      setSavedApplicationId(savedApplication.id);
-      setSavedPreviousApplicationId(savedApplication.previousApplicationId || '');
-      setSavedVersionGroupId(savedApplication.versionGroupId || '');
-      setSavedData(nextSavedSnapshot);
-      setEditedData(nextSavedSnapshot);
-      const nextMetadata: NonNullable<ApplicationResultCardProps['data']['metadata']> = {
-        ...(data.metadata || {}),
-        customer_id: stableCustomerId || data.metadata?.customer_id,
-        saved_application_id: savedApplication.id,
-        previous_application_id: savedApplication.previousApplicationId || '',
-        saved_application_version_group_id: savedApplication.versionGroupId || '',
-        saved_application_version_no: savedApplication.versionNo,
-      };
-      const nextCardData: ApplicationResultCardProps['data'] = {
-        ...data,
-        applicationData: nextSavedSnapshot,
-        metadata: nextMetadata,
-      };
-      setApplicationResult(
-        {
-          content: data.applicationContent || state.application.result?.content || '',
-          customerFound: data.customerFound ?? true,
-          warnings: data.warnings || [],
-          applicationData: nextSavedSnapshot as Record<string, Record<string, string>>,
-          metadata: nextMetadata,
-        },
-        data.customerName || state.application.lastCustomer || undefined,
-      );
-      if (relatedJobId) {
-        if (onPersistMessageData) {
-          onPersistMessageData(relatedJobId, nextCardData);
-        } else {
-          updateChatMessagesByJob(relatedJobId, {
-            data: nextCardData as Record<string, unknown>,
-            intent: 'application',
-            messageType: 'task_result',
-          });
-        }
-      }
-      setEditMode(false);
-    } catch (error) {
-      setSaveEditError(error instanceof Error ? error.message : '申请表保存失败，请稍后重试。');
-    } finally {
-      setSavingEdit(false);
-    }
-  };
-  
-  /**
-   * Download application as .json file
-   */
-  const downloadJSON = () => {
-    const dataToDownload = savedData || (Object.keys(editedData).length > 0 ? editedData : data.applicationData);
-    if (!dataToDownload || Object.keys(dataToDownload).length === 0) return;
-
-    const jsonContent = JSON.stringify(dataToDownload, null, 2);
-    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `贷款申请表_${data.customerName || '未命名'}_${new Date().toISOString().split('T')[0]}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  void downloadJSON;
-
-  const downloadFormHtml = () => {
-    const dataToDownload = savedData || (Object.keys(editedData).length > 0 ? editedData : data.applicationData);
-    if (!dataToDownload || Object.keys(dataToDownload).length === 0) return;
-
-    const htmlContent = buildApplicationFormHtml(
-      data.customerName || '',
-      data.loanType || 'enterprise',
-      dataToDownload
-    );
-    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    createDownloadLink(
-      blob,
-      `贷款申请表_${data.customerName || '未命名'}_${new Date().toISOString().split('T')[0]}.html`
-    );
-  };
-  
-  return (
-    <div 
-      className="mt-3 bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm"
-      data-testid="application-result-card"
-    >
-      {/* Header */}
-      <div className="px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-gray-100">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-              data.customerFound ? 'bg-green-100 text-green-600' : 'bg-amber-100 text-amber-600'
-            }`}>
-              {data.customerFound ? (
-                <CheckCircle2 className="w-5 h-5" />
-              ) : (
-                <ClipboardList className="w-5 h-5" />
-              )}
-            </div>
-            <div>
-              <div className="font-medium text-gray-800 text-sm">
-                {data.customerFound ? '申请表已生成' : '空白申请表模板'}
-                <span className={`ml-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${applicationStatusBadge.className}`}>
-                  {applicationStatusBadge.label}
-                </span>
-                {editMode && (
-                  <span className="ml-2 text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded">编辑中</span>
-                )}
-              </div>
-              <div className="text-xs text-gray-500 mt-0.5">
-                {data.customerName && `客户：${data.customerName}`}
-                {data.customerName && ' · '}
-                {loanTypeLabel}
-              </div>
-              <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                <span>生成时间：{generatedAtLabel}</span>
-                <span>资料汇总版本：{profileVersionLabel}</span>
-                <span>资料更新时间：{profileUpdatedAtLabel}</span>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* Edit/Save Button */}
-            {hasStructuredData && (
-              editMode ? (
-                <button
-                  onClick={saveEditedData}
-                  disabled={savingEdit}
-                  className="flex items-center gap-1 rounded-lg bg-green-500 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-600 disabled:cursor-not-allowed disabled:opacity-70"
-                  data-testid="save-button"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  {savingEdit ? '保存中' : '保存'}
-                </button>
-              ) : (
-                <button
-                  onClick={toggleEditMode}
-                  className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-100 text-gray-700 text-xs font-medium hover:bg-gray-200 transition-colors rounded-lg"
-                  data-testid="edit-button"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  编辑
-                </button>
-              )
-            )}
-            {/* Download form button */}
-            {hasStructuredData && (
-              <button
-                onClick={downloadFormHtml}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-purple-500 text-white text-xs font-medium hover:bg-purple-600 transition-colors rounded-lg"
-                data-testid="download-form-button"
-              >
-                <Download className="w-3.5 h-3.5" />
-                下载表单
-              </button>
-            )}
-            {/* Expand/Collapse Button */}
-            <button
-              onClick={() => setIsExpanded(!isExpanded)}
-              className="p-1.5 hover:bg-amber-100 rounded-lg transition-colors"
-            >
-              {isExpanded ? (
-                <ChevronDown className="w-4 h-4 text-gray-500" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-gray-500" />
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
-      
-      {/* Warnings */}
-      {data.warnings && data.warnings.length > 0 && (
-        <div className="px-4 py-2 bg-yellow-50 border-b border-yellow-100">
-          {data.warnings.map((warning, index) => (
-            <div key={index} className="flex items-center gap-2 text-xs text-yellow-700">
-              <AlertCircle className="w-3.5 h-3.5" />
-              <span>{warning}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {saveEditError ? (
-        <div className="border-b border-rose-100 bg-rose-50/80 px-4 py-3 text-sm text-rose-700">
-          {saveEditError}
-        </div>
-      ) : null}
-
-      <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-lg bg-white px-3 py-2">
-            <div className="text-[11px] text-slate-500">生成时间</div>
-            <div className="mt-1 text-sm font-semibold text-slate-800">{generatedAtLabel}</div>
-          </div>
-          <div className="rounded-lg bg-white px-3 py-2">
-            <div className="text-[11px] text-slate-500">资料汇总版本</div>
-            <div className="mt-1 text-sm font-semibold text-slate-800">{profileVersionLabel}</div>
-          </div>
-          <div className="rounded-lg bg-white px-3 py-2">
-            <div className="text-[11px] text-slate-500">资料汇总更新时间</div>
-            <div className="mt-1 text-sm font-semibold text-slate-800">{profileUpdatedAtLabel}</div>
-          </div>
-        </div>
-      </div>
-
-      {sameCustomerStale && (
-        <div className="border-b border-amber-100 bg-amber-50/80 px-4 py-4">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-amber-900">这份申请表已被新上传资料覆盖</div>
-              <div className="mt-1 text-sm text-amber-800">{staleReason}</div>
-              <div className="mt-1 text-xs text-amber-700">
-                {staleAtLabel ? `失效时间：${staleAtLabel}` : '请重新生成后再用于方案匹配或后续沟通。'}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => onNavigate?.('application')}
-              className="inline-flex items-center justify-center rounded-xl bg-amber-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
-            >
-              去申请表页重新生成
-            </button>
-          </div>
-        </div>
-      )}
-      
-      {/* Content */}
-      {isExpanded && (
-        <div className="p-4">
-          {hasStructuredData ? (
-            // Render as grouped cards using EditableDataSectionCardChat
-            <div className="space-y-4" data-testid="application-structured-data">
-              {Object.entries(displayData).map(([sectionName, sectionData]) => {
-                if (typeof sectionData === 'object' && sectionData !== null && !Array.isArray(sectionData)) {
-                  return (
-                      <EditableDataSectionCardChat 
-                        key={sectionName} 
-                        title={sectionName} 
-                        data={sectionData as Record<string, unknown>}
-                        editMode={editMode}
-                        onFieldChange={handleFieldChange}
-                        metadata={data.metadata}
-                        currentSavedData={(savedData?.[sectionName] as Record<string, unknown>) || (data.applicationData?.[sectionName] as Record<string, unknown>) || {}}
-                        previousSavedData={(previousSavedData?.[sectionName] as Record<string, unknown>) || null}
-                      />
-                  );
-                }
-                return null;
-              })}
-            </div>
-          ) : (
-            // Fallback to Markdown rendering
-            <div 
-              className="prose prose-sm max-w-none text-gray-700 overflow-x-auto prose-table:border-collapse prose-th:border prose-th:border-gray-300 prose-th:bg-gray-100 prose-th:px-3 prose-th:py-2 prose-td:border prose-td:border-gray-300 prose-td:px-3 prose-td:py-2"
-              data-testid="application-markdown-content"
-            >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {data.applicationContent || ''}
-              </ReactMarkdown>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 };
@@ -2872,7 +1875,12 @@ interface StructuredDataCardProps {
   relatedJobId?: string | null;
   onPersistApplicationMessageData?: (
     relatedJobId: string,
-    nextData: ApplicationResultCardProps['data'],
+    nextData: ApplicationResultCardData,
+  ) => void;
+  previousApplicationCache?: Record<string, Record<string, Record<string, unknown>>>;
+  onCachePreviousApplication?: (
+    applicationId: string,
+    applicationData: Record<string, Record<string, unknown>>,
   ) => void;
   onNavigate?: (page: string) => void;
 }
@@ -3612,6 +2620,8 @@ const StructuredDataCard: React.FC<StructuredDataCardProps> = ({
   onNavigate,
   relatedJobId,
   onPersistApplicationMessageData,
+  previousApplicationCache,
+  onCachePreviousApplication,
 }) => {
   if (!data) return null;
 
@@ -3664,10 +2674,12 @@ const StructuredDataCard: React.FC<StructuredDataCardProps> = ({
       if (data.applicationData || data.applicationContent) {
         content = (
           <ApplicationResultCard
-            data={data as ApplicationResultCardProps['data']}
+            data={data as ApplicationResultCardData}
             relatedJobId={relatedJobId}
             onNavigate={onNavigate}
             onPersistMessageData={onPersistApplicationMessageData}
+            previousApplicationCache={previousApplicationCache}
+            onCachePreviousApplication={onCachePreviousApplication}
           />
         );
         break;
@@ -3801,7 +2813,12 @@ interface MessageBubbleProps {
   onNavigate?: (page: string) => void;
   onPersistApplicationMessageData?: (
     relatedJobId: string,
-    nextData: ApplicationResultCardProps['data'],
+    nextData: ApplicationResultCardData,
+  ) => void;
+  previousApplicationCache?: Record<string, Record<string, Record<string, unknown>>>;
+  onCachePreviousApplication?: (
+    applicationId: string,
+    applicationData: Record<string, Record<string, unknown>>,
   ) => void;
 }
 
@@ -3823,6 +2840,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
   isTyping,
   onNavigate,
   onPersistApplicationMessageData,
+  previousApplicationCache,
+  onCachePreviousApplication,
 }) => {
   const { text, files } = parseFileInfoFromContent(message.content);
   
@@ -3928,11 +2947,13 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         </div>
         {/* Structured Data Card - shown below message based on intent */}
         {message.data && (
-          <StructuredDataCard 
-            intent={message.intent} 
-            data={message.data} 
+          <StructuredDataCard
+            intent={message.intent}
+            data={message.data}
             relatedJobId={message.relatedJobId}
             onPersistApplicationMessageData={onPersistApplicationMessageData}
+            previousApplicationCache={previousApplicationCache}
+            onCachePreviousApplication={onCachePreviousApplication}
             onNavigate={onNavigate}
           />
         )}
@@ -4219,9 +3240,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     setActiveResultData,
     resultLayer,
   } = useResultPanelState();
+  const [previousApplicationCache, setPreviousApplicationCache] = useState<
+    Record<string, Record<string, Record<string, unknown>>>
+  >({});
 
   const patchApplicationMessageData = useCallback(
-    (jobId: string, nextData: ApplicationResultCardProps['data']) => {
+    (jobId: string, nextData: ApplicationResultCardData) => {
       setMessages((prev) =>
         prev.map((message) =>
           message.relatedJobId === jobId
@@ -4243,6 +3267,29 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     [setMessages, updateChatMessagesByJob],
   );
 
+  const cachePreviousApplication = useCallback(
+    (applicationId: string, applicationData: Record<string, Record<string, unknown>>) => {
+      if (!applicationId) {
+        return;
+      }
+      setPreviousApplicationCache((prev) => {
+        if (prev[applicationId]) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [applicationId]: Object.fromEntries(
+            Object.entries(applicationData).map(([sectionName, sectionData]) => [
+              sectionName,
+              { ...(sectionData || {}) },
+            ]),
+          ),
+        };
+      });
+    },
+    [],
+  );
+
   const restoreApplicationContextFromMessages = useCallback(
     (restoredMessages: ChatMessageWithReasoning[]) => {
       const latestApplicationMessage = [...restoredMessages]
@@ -4262,7 +3309,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         return;
       }
 
-      const applicationData = latestApplicationMessage.data as ApplicationResultCardProps['data'];
+      const applicationData = latestApplicationMessage.data as ApplicationResultCardData;
       setApplicationResult(
         {
           content: applicationData.applicationContent || '',
@@ -5928,6 +4975,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
             data: response.data,
           }}
           onPersistApplicationMessageData={patchApplicationMessageData}
+          previousApplicationCache={previousApplicationCache}
+          onCachePreviousApplication={cachePreviousApplication}
           onNavigate={onNavigate}
         />
       );
@@ -5964,6 +5013,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
           relatedJobId={currentJob.jobId}
           onPersistMessageData={patchApplicationMessageData}
           onNavigate={onNavigate}
+          previousApplicationCache={previousApplicationCache}
+          onCachePreviousApplication={cachePreviousApplication}
         />
       );
     }
@@ -6666,6 +5717,8 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
                           message={msg}
                           onNavigate={onNavigate}
                           onPersistApplicationMessageData={patchApplicationMessageData}
+                          previousApplicationCache={previousApplicationCache}
+                          onCachePreviousApplication={cachePreviousApplication}
                         />
                         {msg.role === 'assistant' && index === conversationLayer.messages.length - 1 && lastIntent && !msg.data && (
                           <div className="ml-12 mb-4">
