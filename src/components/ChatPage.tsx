@@ -115,6 +115,17 @@ function formatCustomerContextLabel(customerId: string | null, customerName: str
   return stripInternalId(customerId);
 }
 
+function cloneChatApplicationData(
+  source: Record<string, Record<string, unknown>> | null | undefined,
+): Record<string, Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.entries(source || {}).map(([sectionName, sectionData]) => [
+      sectionName,
+      { ...(sectionData || {}) },
+    ]),
+  );
+}
+
 function buildSubmittedJobFeedback(
   jobType: 'chat_extract' | 'scheme_match' | 'application_generate',
   description?: string | null,
@@ -1029,6 +1040,7 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [expandedSourceKey, setExpandedSourceKey] = useState<string | null>(null);
+  const [expandedHistoryDiffKey, setExpandedHistoryDiffKey] = useState<string | null>(null);
   const entries = Object.entries(data).filter(
     ([, value]) => typeof value !== 'object' || value === null
   );
@@ -1073,6 +1085,7 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                     const sourceInfo = buildChatApplicationFieldSource(key, value, metadata);
                     const rowKey = `${title}-${key}`;
                     const showSourceDetail = expandedSourceKey === rowKey;
+                    const showHistoryDiff = expandedHistoryDiffKey === rowKey;
                     const previousSavedValue = String(previousSavedData?.[key] ?? '');
                     const currentSavedValue = String(currentSavedData?.[key] ?? value ?? '');
                     const currentEditingValue = String(value ?? '');
@@ -1096,45 +1109,48 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                               type="text"
                               value={currentEditingValue}
                               onChange={(e) => onFieldChange(title, key, e.target.value)}
-                              className="w-full px-2 py-1 border border-blue-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                              className={`w-full rounded border px-2 py-1 text-sm focus:outline-none focus:ring-2 ${
+                                modified
+                                  ? 'border-amber-300 bg-amber-50/50 focus:ring-amber-100'
+                                  : 'border-blue-300 focus:ring-blue-200'
+                              }`}
                               data-testid={`edit-field-${title}-${key}`}
                             />
-                            <div
-                              data-testid={`debug-field-branch-${title}-${key}`}
-                              className="rounded border-2 border-fuchsia-400 bg-fuchsia-50 px-2.5 py-2 text-xs font-bold text-fuchsia-700"
-                            >
-                              调试字段分支已命中
-                            </div>
-                            <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-xs leading-5 text-slate-700">
-                              <div className="mb-1 font-semibold text-red-700">Diff 调试信息</div>
-                              <div>上一保存版本值 = {previousSavedValue || '（空）'}</div>
-                              <div>当前保存版本值 = {currentSavedValue || '（空）'}</div>
-                              <div>当前编辑中的值 = {currentEditingValue || '（空）'}</div>
-                              <div>是否存在上一版本差异 = {hasPreviousSavedDiff ? '是' : '否'}</div>
-                              <div>本次编辑是否已修改 = {modified ? '是' : '否'}</div>
-                            </div>
-                            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
-                              <div className="mb-2 text-[11px] font-semibold tracking-wide text-slate-700">相对上一版本差异（调试）</div>
-                              <div className="space-y-1 text-xs leading-5 text-slate-600">
-                                <div>上一保存版本值 = {previousSavedValue || '（空）'}</div>
-                                <div>当前保存版本值 = {currentSavedValue || '（空）'}</div>
+                            {hasPreviousSavedDiff ? (
+                              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="inline-flex h-2 w-2 rounded-full bg-amber-400" aria-hidden="true" />
+                                    <span className="text-[11px] font-semibold tracking-wide text-slate-700">上一版变更记录</span>
+                                    <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                                      检测到历史差异
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedHistoryDiffKey((prev) => (prev === rowKey ? null : rowKey))}
+                                    className="text-[11px] font-medium text-slate-600 transition hover:text-slate-800"
+                                  >
+                                    {showHistoryDiff ? '收起上一版差异' : '查看上一版差异'}
+                                  </button>
+                                </div>
+                                {showHistoryDiff ? (
+                                  <div className="mt-2">
+                                    <FieldDiffPreview originalValue={previousSavedValue} currentValue={currentSavedValue} />
+                                  </div>
+                                ) : (
+                                  <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
+                                    已检测到上一保存版本差异，点击“查看上一版差异”可展开详情。
+                                  </div>
+                                )}
                               </div>
-                              {hasPreviousSavedDiff ? (
-                                <div className="mt-2">
-                                  <FieldDiffPreview originalValue={previousSavedValue} currentValue={currentSavedValue} />
-                                </div>
-                              ) : (
-                                <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
-                                  上一保存版本值与当前保存版本值相同，因此没有上一版本差异。
-                                </div>
-                              )}
-                            </div>
+                            ) : null}
                             <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50/70 px-2.5 py-2">
-                              <div className="mb-2 text-[11px] font-semibold tracking-wide text-amber-800">本次编辑差异（调试）</div>
-                              <div className="space-y-1 text-xs leading-5 text-slate-600">
-                                <div>当前保存版本值 = {currentSavedValue || '（空）'}</div>
-                                <div>当前编辑中的值 = {currentEditingValue || '（空）'}</div>
-                                <div>本次编辑是否已修改 = {modified ? '是' : '否'}</div>
+                              <div className="mb-2 flex flex-wrap items-center gap-2">
+                                <span className="text-[11px] font-semibold tracking-wide text-amber-800">本次编辑差异</span>
+                                <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                                  编辑中
+                                </span>
                               </div>
                               {modified ? (
                                 <div className="mt-2">
@@ -1212,7 +1228,7 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
   const [isExpanded, setIsExpanded] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [editedData, setEditedData] = useState<Record<string, Record<string, unknown>>>({});
-  // savedData 持久化已保存的编辑内容，退出编辑后仍显示最新数据
+  // currentSavedData 持久化当前已保存版本，previousSavedData 保留上一保存版本
   const [savedData, setSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [previousSavedData, setPreviousSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
   
@@ -1265,21 +1281,18 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
     ? { label: '待刷新', className: 'border-amber-200 bg-amber-50 text-amber-700' }
     : { label: '最新可用', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' };
   
-  // Determine which data to display: savedData > editMode editedData > original
-  const displayData = savedData
-    ? savedData
-    : (editMode && Object.keys(editedData).length > 0
-      ? editedData
-      : (data.applicationData || {}));
+  const currentSavedData = savedData || data.applicationData || {};
+  const displayData = editMode && Object.keys(editedData).length > 0
+    ? editedData
+    : currentSavedData;
   
   /**
    * Toggle edit mode - 进入编辑时优先从 savedData 初始化，其次从原始数据
    */
   const toggleEditMode = () => {
     if (!editMode) {
-      // Entering edit mode - initialize from savedData or original data
-      const baseData = savedData || data.applicationData;
-      if (baseData) {
+      const baseData = cloneChatApplicationData(currentSavedData);
+      if (Object.keys(baseData).length > 0) {
         setEditedData(baseData);
       }
     }
@@ -1291,11 +1304,13 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
    */
   const saveEditedData = () => {
     if (Object.keys(editedData).length > 0) {
-      const currentSnapshot = savedData || data.applicationData || null;
-      if (currentSnapshot) {
-        setPreviousSavedData(JSON.parse(JSON.stringify(currentSnapshot)));
+      const currentSnapshot = cloneChatApplicationData(currentSavedData);
+      const nextSavedSnapshot = cloneChatApplicationData(editedData);
+      if (Object.keys(currentSnapshot).length > 0) {
+        setPreviousSavedData(currentSnapshot);
       }
-      setSavedData(editedData);
+      setSavedData(nextSavedSnapshot);
+      setEditedData(nextSavedSnapshot);
     }
     setEditMode(false);
   };
