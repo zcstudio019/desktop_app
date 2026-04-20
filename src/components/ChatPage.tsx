@@ -38,6 +38,7 @@ import { useAbortController, useConversationState, useLoading, useResultPanelSta
 import type { TaskViewSource } from '../hooks';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
+import FieldDiffPreview from './FieldDiffPreview';
 import type {
   ChatMessage,
   ChatFile,
@@ -1013,6 +1014,8 @@ interface EditableDataSectionCardChatProps {
   editMode: boolean;
   onFieldChange: (sectionTitle: string, fieldName: string, value: string) => void;
   metadata?: ApplicationResultCardProps['data']['metadata'];
+  currentSavedData?: Record<string, unknown>;
+  previousSavedData?: Record<string, unknown> | null;
 }
 
 const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = ({ 
@@ -1021,6 +1024,8 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
   editMode, 
   onFieldChange,
   metadata,
+  currentSavedData = {},
+  previousSavedData = null,
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [expandedSourceKey, setExpandedSourceKey] = useState<string | null>(null);
@@ -1068,6 +1073,11 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                     const sourceInfo = buildChatApplicationFieldSource(key, value, metadata);
                     const rowKey = `${title}-${key}`;
                     const showSourceDetail = expandedSourceKey === rowKey;
+                    const previousSavedValue = String(previousSavedData?.[key] ?? '');
+                    const currentSavedValue = String(currentSavedData?.[key] ?? value ?? '');
+                    const currentEditingValue = String(value ?? '');
+                    const hasPreviousSavedDiff = previousSavedValue !== '' && previousSavedValue !== currentSavedValue;
+                    const modified = currentSavedValue !== currentEditingValue;
                     return (
                     <tr 
                       key={key} 
@@ -1081,13 +1091,62 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                       </td>
                       <td className="px-3 py-2 text-gray-800">
                         {editMode ? (
-                          <input
-                            type="text"
-                            value={String(value ?? '')}
-                            onChange={(e) => onFieldChange(title, key, e.target.value)}
-                            className="w-full px-2 py-1 border border-blue-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
-                            data-testid={`edit-field-${title}-${key}`}
-                          />
+                          <div className="space-y-2">
+                            <input
+                              type="text"
+                              value={currentEditingValue}
+                              onChange={(e) => onFieldChange(title, key, e.target.value)}
+                              className="w-full px-2 py-1 border border-blue-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                              data-testid={`edit-field-${title}-${key}`}
+                            />
+                            <div
+                              data-testid={`debug-field-branch-${title}-${key}`}
+                              className="rounded border-2 border-fuchsia-400 bg-fuchsia-50 px-2.5 py-2 text-xs font-bold text-fuchsia-700"
+                            >
+                              DEBUG FIELD BRANCH ACTIVE
+                            </div>
+                            <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-xs leading-5 text-slate-700">
+                              <div className="mb-1 font-semibold text-red-700">Diff 调试信息</div>
+                              <div>previousSavedValue = {previousSavedValue || '(empty)'}</div>
+                              <div>currentSavedValue = {currentSavedValue || '(empty)'}</div>
+                              <div>currentEditingValue = {currentEditingValue || '(empty)'}</div>
+                              <div>hasPreviousSavedDiff = {String(hasPreviousSavedDiff)}</div>
+                              <div>modified = {String(modified)}</div>
+                            </div>
+                            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
+                              <div className="mb-2 text-[11px] font-semibold tracking-wide text-slate-700">相对上一版本差异（调试）</div>
+                              <div className="space-y-1 text-xs leading-5 text-slate-600">
+                                <div>previousSavedValue = {previousSavedValue || '(empty)'}</div>
+                                <div>currentSavedValue = {currentSavedValue || '(empty)'}</div>
+                              </div>
+                              {hasPreviousSavedDiff ? (
+                                <div className="mt-2">
+                                  <FieldDiffPreview originalValue={previousSavedValue} currentValue={currentSavedValue} />
+                                </div>
+                              ) : (
+                                <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
+                                  previousSavedValue 与 currentSavedValue 相同，因此没有上一版本差异。
+                                </div>
+                              )}
+                            </div>
+                            <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50/70 px-2.5 py-2">
+                              <div className="mb-2 text-[11px] font-semibold tracking-wide text-amber-800">本次编辑差异（调试）</div>
+                              <div className="space-y-1 text-xs leading-5 text-slate-600">
+                                <div>currentSavedValue = {currentSavedValue || '(empty)'}</div>
+                                <div>currentEditingValue = {currentEditingValue || '(empty)'}</div>
+                                <div>modified = {String(modified)}</div>
+                              </div>
+                              {modified ? (
+                                <div className="mt-2">
+                                  <FieldDiffPreview originalValue={currentSavedValue} currentValue={currentEditingValue} />
+                                </div>
+                              ) : (
+                                <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
+                                  本次编辑暂无差异。
+                                </div>
+                              )}
+                            </div>
+                          </div>
                         ) : (
                           <div>
                             <div className="break-words" title={String(value ?? '')}>
@@ -1130,6 +1189,8 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
               editMode={editMode}
               onFieldChange={onFieldChange}
               metadata={metadata}
+              currentSavedData={(currentSavedData?.[key] as Record<string, unknown>) || {}}
+              previousSavedData={(previousSavedData?.[key] as Record<string, unknown>) || null}
             />
           ))}
         </div>
@@ -1153,6 +1214,7 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
   const [editedData, setEditedData] = useState<Record<string, Record<string, unknown>>>({});
   // savedData 持久化已保存的编辑内容，退出编辑后仍显示最新数据
   const [savedData, setSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
+  const [previousSavedData, setPreviousSavedData] = useState<Record<string, Record<string, unknown>> | null>(null);
   
   /**
    * Handle field change in edit mode
@@ -1229,6 +1291,10 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
    */
   const saveEditedData = () => {
     if (Object.keys(editedData).length > 0) {
+      const currentSnapshot = savedData || data.applicationData || null;
+      if (currentSnapshot) {
+        setPreviousSavedData(JSON.parse(JSON.stringify(currentSnapshot)));
+      }
       setSavedData(editedData);
     }
     setEditMode(false);
@@ -1419,14 +1485,16 @@ const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({ data, onN
               {Object.entries(displayData).map(([sectionName, sectionData]) => {
                 if (typeof sectionData === 'object' && sectionData !== null && !Array.isArray(sectionData)) {
                   return (
-                    <EditableDataSectionCardChat 
-                      key={sectionName} 
-                      title={sectionName} 
-                      data={sectionData as Record<string, unknown>}
-                      editMode={editMode}
-                      onFieldChange={handleFieldChange}
-                      metadata={data.metadata}
-                    />
+                      <EditableDataSectionCardChat 
+                        key={sectionName} 
+                        title={sectionName} 
+                        data={sectionData as Record<string, unknown>}
+                        editMode={editMode}
+                        onFieldChange={handleFieldChange}
+                        metadata={data.metadata}
+                        currentSavedData={(savedData?.[sectionName] as Record<string, unknown>) || (data.applicationData?.[sectionName] as Record<string, unknown>) || {}}
+                        previousSavedData={(previousSavedData?.[sectionName] as Record<string, unknown>) || null}
+                      />
                   );
                 }
                 return null;
