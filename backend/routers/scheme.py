@@ -729,44 +729,12 @@ def _can_access_application(app: dict, current_user: dict) -> bool:
 
 @router.get("/applications", response_model=list[SavedApplicationListItem])
 async def list_saved_applications(current_user: dict = Depends(get_current_user)) -> list[SavedApplicationListItem]:
-    """获取所有已保存的申请表列表
-
-    Returns:
-        List[SavedApplicationListItem]: 申请表列表（不含完整数据）
-    """
-    logger.info("获取已保存的申请表列表")
+    """??????????????"""
+    logger.info("???????????")
 
     try:
         applications = await storage_service.list_saved_applications()
-        accessible_applications = [app for app in applications if _can_access_application(app, current_user)]
-        previous_application: dict[str, Any] | None = None
 
-        if request.baseApplicationId:
-            matched_previous = await storage_service.get_saved_application(request.baseApplicationId)
-            if matched_previous and _can_access_application(matched_previous, current_user):
-                previous_application = matched_previous
-        elif request.versionGroupId:
-            previous_application = next(
-                (
-                    app for app in accessible_applications
-                    if (app.get("versionGroupId") or "") == request.versionGroupId
-                ),
-                None,
-            )
-        else:
-            for app in accessible_applications:
-                same_owner = (app.get("ownerUsername") or "") == (current_user.get("username") or "")
-                same_loan_type = (app.get("loanType") or "enterprise") == request.loanType
-                if request.customerId:
-                    same_customer = (app.get("customerId") or "") == request.customerId
-                else:
-                    same_customer = (app.get("customerName") or "") == request.customerName
-
-                if same_owner and same_loan_type and same_customer and not app.get("stale"):
-                    previous_application = app
-                    break
-
-        # 转换为列表项格式（不含完整 applicationData）
         result = []
         for app in applications:
             if not _can_access_application(app, current_user):
@@ -784,11 +752,11 @@ async def list_saved_applications(current_user: dict = Depends(get_current_user)
                 )
             )
 
-        logger.info(f"返回 {len(result)} 条申请表记录")
+        logger.info("?? %s ??????", len(result))
         return result
 
     except Exception as e:
-        logger.error(f"获取申请表列表失败: {e}")
+        logger.error("?????????: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=APPLICATION_LIST_FAILED_MESSAGE) from e
 
 
@@ -797,21 +765,40 @@ async def save_application(
     request: SaveApplicationRequest,
     current_user: dict = Depends(get_current_user),
 ) -> SavedApplication:
-    """保存申请表到本地缓存
-
-    Args:
-        request: SaveApplicationRequest 包含 customerName, loanType, applicationData
-
-    Returns:
-        SavedApplication: 保存后的申请表（含生成的 ID 和时间戳）
-    """
-    logger.info(f"保存申请表: {request.customerName}")
+    """?????????????????"""
+    logger.info("????? customer=%s customer_id=%s", request.customerName, request.customerId)
 
     try:
-        # 加载现有缓存
         applications = await storage_service.list_saved_applications()
+        accessible_applications = [app for app in applications if _can_access_application(app, current_user)]
+        previous_application: dict[str, Any] | None = None
 
-        # 生成唯一 ID 和时间戳
+        if request.baseApplicationId:
+            matched_previous = await storage_service.get_saved_application(request.baseApplicationId)
+            if matched_previous and _can_access_application(matched_previous, current_user):
+                previous_application = matched_previous
+        elif request.versionGroupId:
+            previous_application = next(
+                (
+                    app
+                    for app in accessible_applications
+                    if (app.get("versionGroupId") or "") == request.versionGroupId
+                ),
+                None,
+            )
+        else:
+            for app in accessible_applications:
+                same_owner = (app.get("ownerUsername") or "") == (current_user.get("username") or "")
+                same_loan_type = (app.get("loanType") or "enterprise") == request.loanType
+                same_customer = (
+                    (app.get("customerId") or "") == request.customerId
+                    if request.customerId
+                    else (app.get("customerName") or "") == request.customerName
+                )
+                if same_owner and same_loan_type and same_customer and not app.get("stale"):
+                    previous_application = app
+                    break
+
         app_id = str(uuid.uuid4())
         saved_at = datetime.now(tz=timezone.utc).isoformat()
         profile_version = 1
@@ -830,7 +817,6 @@ async def save_application(
         previous_application_id = (previous_application or {}).get("id") or ""
         version_no = int((previous_application or {}).get("versionNo") or 0) + 1 if previous_application else 1
 
-        # 创建新申请表记录
         new_application = {
             "id": app_id,
             "versionGroupId": version_group_id,
@@ -848,11 +834,7 @@ async def save_application(
             "profile_updated_at": profile_updated_at,
         }
 
-        # 添加到列表（新记录在前）
         saved_application = await storage_service.save_application_record(new_application)
-
-        # 保存到缓存
-        # SQLAlchemy delete already persisted
 
         if request.customerId:
             await profile_sync_service.refresh_profile_and_index(
@@ -862,16 +844,14 @@ async def save_application(
                 refresh_profile=True,
             )
 
-        logger.info(f"申请表保存成功: {app_id}")
-
         add_activity(
             activity_type="application",
             customer=request.customerName,
             customer_id=request.customerId,
             username=current_user.get("username") or "",
             status="completed",
-            title="申请表已保存",
-            description="系统已保存申请表，并同步更新资料汇总与问答索引。",
+            title="??????",
+            description="????????????????????????",
             metadata={
                 "applicationId": app_id,
                 "versionGroupId": version_group_id,
@@ -895,7 +875,7 @@ async def save_application(
         )
 
     except Exception as e:
-        logger.error(f"保存申请表失败: {e}")
+        logger.error("???????: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=APPLICATION_SAVE_FAILED_MESSAGE) from e
 
 

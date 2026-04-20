@@ -6,9 +6,16 @@ import os
 import logging
 import importlib
 
-from celery import Celery
-from kombu import Queue
-from celery.signals import worker_ready
+try:
+    from celery import Celery
+    from kombu import Queue
+    from celery.signals import worker_ready
+    CELERY_IMPORT_ERROR: Exception | None = None
+except ModuleNotFoundError as exc:  # pragma: no cover - local fallback for stripped Python envs
+    Celery = None  # type: ignore[assignment]
+    Queue = None  # type: ignore[assignment]
+    worker_ready = None  # type: ignore[assignment]
+    CELERY_IMPORT_ERROR = exc
 
 from backend.services.worker_health_service import collect_worker_health
 
@@ -70,53 +77,67 @@ CELERY_RETRY_JITTER = _as_bool(os.getenv("CELERY_RETRY_JITTER"), default=True)
 WORKER_HEALTHCHECK_ENABLED = _as_bool(os.getenv("WORKER_HEALTHCHECK_ENABLED"), default=True)
 JOB_STALE_TIMEOUT_SECONDS = int(os.getenv("JOB_STALE_TIMEOUT_SECONDS", "900"))
 
+if Celery is None:
+    TASK_QUEUE_ENABLED = False
+    celery_app = None
+    logger.warning(
+        "[Celery Bootstrap] celery dependency is unavailable, falling back to synchronous mode. error=%s",
+        CELERY_IMPORT_ERROR,
+    )
+else:
+    celery_app = Celery(
+        "loan_assistant",
+        broker=CELERY_BROKER_URL,
+        backend=CELERY_RESULT_BACKEND,
+        include=CELERY_TASK_MODULES,
+    )
 
-celery_app = Celery(
-    "loan_assistant",
-    broker=CELERY_BROKER_URL,
-    backend=CELERY_RESULT_BACKEND,
-    include=CELERY_TASK_MODULES,
-)
+    celery_app.conf.update(
+        task_serializer="json",
+        accept_content=["json"],
+        result_serializer="json",
+        timezone="Asia/Shanghai",
+        enable_utc=False,
+        task_track_started=True,
+        task_ignore_result=True,
+        task_acks_late=True,
+        task_reject_on_worker_lost=True,
+        worker_prefetch_multiplier=1,
+        broker_connection_retry_on_startup=True,
+        task_soft_time_limit=CELERY_TASK_SOFT_TIME_LIMIT,
+        task_time_limit=CELERY_TASK_TIME_LIMIT,
+        imports=CELERY_TASK_MODULES,
+        task_default_queue=HEAVY_QUEUE_NAME,
+        task_queues=(
+            Queue(CHAT_QUEUE_NAME),
+            Queue(HEAVY_QUEUE_NAME),
+        ),
+        task_routes={
+            CHAT_EXTRACT_TASK_NAME: {"queue": CHAT_QUEUE_NAME},
+            RISK_REPORT_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
+            SCHEME_MATCH_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
+            APPLICATION_GENERATE_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
+        },
+    )
 
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="Asia/Shanghai",
-    enable_utc=False,
-    task_track_started=True,
-    task_ignore_result=True,
-    task_acks_late=True,
-    task_reject_on_worker_lost=True,
-    worker_prefetch_multiplier=1,
-    broker_connection_retry_on_startup=True,
-    task_soft_time_limit=CELERY_TASK_SOFT_TIME_LIMIT,
-    task_time_limit=CELERY_TASK_TIME_LIMIT,
-    imports=CELERY_TASK_MODULES,
-    task_default_queue=HEAVY_QUEUE_NAME,
-    task_queues=(
-        Queue(CHAT_QUEUE_NAME),
-        Queue(HEAVY_QUEUE_NAME),
-    ),
-    task_routes={
-        CHAT_EXTRACT_TASK_NAME: {"queue": CHAT_QUEUE_NAME},
-        RISK_REPORT_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
-        SCHEME_MATCH_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
-        APPLICATION_GENERATE_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
-    },
-)
+    # Keep autodiscovery as a helper, but rely on explicit imports/include for stable
+    # task registration in production and Windows worker startup.
+    celery_app.autodiscover_tasks(["backend.tasks"], force=True)
 
-# Keep autodiscovery as a helper, but rely on explicit imports/include for stable
-# task registration in production and Windows worker startup.
-celery_app.autodiscover_tasks(["backend.tasks"], force=True)
-
-# Explicitly import task modules so worker registration does not depend on
-# autodiscovery quirks across Windows / different startup commands.
-for module_name in CELERY_TASK_MODULES:
-    importlib.import_module(module_name)
+    # Explicitly import task modules so worker registration does not depend on
+    # autodiscovery quirks across Windows / different startup commands.
+    for module_name in CELERY_TASK_MODULES:
+        importlib.import_module(module_name)
 
 
 def log_celery_bootstrap() -> None:
+    if celery_app is None:
+        logger.warning(
+            "[Celery Bootstrap] skipped worker bootstrap because celery is unavailable. queue_enabled=%s error=%s",
+            TASK_QUEUE_ENABLED,
+            CELERY_IMPORT_ERROR,
+        )
+        return
     registered_tasks = sorted(
         name
         for name in celery_app.tasks.keys()
@@ -188,6 +209,7 @@ def log_celery_bootstrap() -> None:
             logger.warning("[Worker Health] missing task %s", task_name)
 
 
-@worker_ready.connect
-def _on_worker_ready(**_: object) -> None:
-    log_celery_bootstrap()
+if worker_ready is not None:
+    @worker_ready.connect
+    def _on_worker_ready(**_: object) -> None:
+        log_celery_bootstrap()
