@@ -1103,21 +1103,21 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                               data-testid={`debug-field-branch-${title}-${key}`}
                               className="rounded border-2 border-fuchsia-400 bg-fuchsia-50 px-2.5 py-2 text-xs font-bold text-fuchsia-700"
                             >
-                              DEBUG FIELD BRANCH ACTIVE
+                              调试字段分支已命中
                             </div>
                             <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-xs leading-5 text-slate-700">
                               <div className="mb-1 font-semibold text-red-700">Diff 调试信息</div>
-                              <div>previousSavedValue = {previousSavedValue || '(empty)'}</div>
-                              <div>currentSavedValue = {currentSavedValue || '(empty)'}</div>
-                              <div>currentEditingValue = {currentEditingValue || '(empty)'}</div>
-                              <div>hasPreviousSavedDiff = {String(hasPreviousSavedDiff)}</div>
-                              <div>modified = {String(modified)}</div>
+                              <div>上一保存版本值 = {previousSavedValue || '（空）'}</div>
+                              <div>当前保存版本值 = {currentSavedValue || '（空）'}</div>
+                              <div>当前编辑中的值 = {currentEditingValue || '（空）'}</div>
+                              <div>是否存在上一版本差异 = {hasPreviousSavedDiff ? '是' : '否'}</div>
+                              <div>本次编辑是否已修改 = {modified ? '是' : '否'}</div>
                             </div>
                             <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2">
                               <div className="mb-2 text-[11px] font-semibold tracking-wide text-slate-700">相对上一版本差异（调试）</div>
                               <div className="space-y-1 text-xs leading-5 text-slate-600">
-                                <div>previousSavedValue = {previousSavedValue || '(empty)'}</div>
-                                <div>currentSavedValue = {currentSavedValue || '(empty)'}</div>
+                                <div>上一保存版本值 = {previousSavedValue || '（空）'}</div>
+                                <div>当前保存版本值 = {currentSavedValue || '（空）'}</div>
                               </div>
                               {hasPreviousSavedDiff ? (
                                 <div className="mt-2">
@@ -1125,16 +1125,16 @@ const EditableDataSectionCardChat: React.FC<EditableDataSectionCardChatProps> = 
                                 </div>
                               ) : (
                                 <div className="mt-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500">
-                                  previousSavedValue 与 currentSavedValue 相同，因此没有上一版本差异。
+                                  上一保存版本值与当前保存版本值相同，因此没有上一版本差异。
                                 </div>
                               )}
                             </div>
                             <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50/70 px-2.5 py-2">
                               <div className="mb-2 text-[11px] font-semibold tracking-wide text-amber-800">本次编辑差异（调试）</div>
                               <div className="space-y-1 text-xs leading-5 text-slate-600">
-                                <div>currentSavedValue = {currentSavedValue || '(empty)'}</div>
-                                <div>currentEditingValue = {currentEditingValue || '(empty)'}</div>
-                                <div>modified = {String(modified)}</div>
+                                <div>当前保存版本值 = {currentSavedValue || '（空）'}</div>
+                                <div>当前编辑中的值 = {currentEditingValue || '（空）'}</div>
+                                <div>本次编辑是否已修改 = {modified ? '是' : '否'}</div>
                               </div>
                               {modified ? (
                                 <div className="mt-2">
