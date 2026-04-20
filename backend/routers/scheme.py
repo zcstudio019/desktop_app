@@ -737,7 +737,7 @@ async def list_saved_applications(current_user: dict = Depends(get_current_user)
     logger.info("获取已保存的申请表列表")
 
     try:
-        applications = await storage_service.list_saved_applications(request.customerId or None)
+        applications = await storage_service.list_saved_applications()
         accessible_applications = [app for app in applications if _can_access_application(app, current_user)]
         previous_application: dict[str, Any] | None = None
 
