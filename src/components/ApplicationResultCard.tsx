@@ -518,7 +518,7 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
     if (editMode) return;
     setSavedData(initialApplicationData);
     setEditedData(initialApplicationData);
-  }, [editMode, initialApplicationData]);
+  }, [initialApplicationData]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !diffScopeKey) return;
