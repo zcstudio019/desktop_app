@@ -112,6 +112,11 @@ def normalize_amount(value: Any) -> str:
     return text
 
 
+def only_digits(value: str) -> str:
+    """Keep only digits, commonly used for bank account numbers and serial-like identifiers."""
+    return "".join(ch for ch in normalize_text(value) if ch.isdigit())
+
+
 def is_likely_account_field(field_name: str) -> bool:
     normalized = normalize_text(field_name)
     return any(keyword in normalized for keyword in ACCOUNT_FIELD_KEYWORDS)
@@ -259,4 +264,3 @@ def rows_to_text(rows: list[dict[str, Any]], *, max_rows: int = 120) -> str:
         if parts:
             lines.append(" | ".join(parts))
     return "\n".join(lines)
-
