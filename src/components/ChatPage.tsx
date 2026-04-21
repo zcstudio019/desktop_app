@@ -3263,8 +3263,27 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         messageType: 'task_result',
         data: nextData as Record<string, unknown>,
       });
+      setActiveResultData((prev) => {
+        if (
+          !prev ||
+          !currentJob ||
+          currentJob.jobId !== jobId ||
+          currentJob.jobType !== 'application_generate'
+        ) {
+          return prev;
+        }
+
+        return {
+          ...(prev as Record<string, unknown>),
+          customerFound: nextData.customerFound,
+          applicationData: nextData.applicationData,
+          applicationContent: nextData.applicationContent,
+          warnings: nextData.warnings,
+          metadata: nextData.metadata,
+        };
+      });
     },
-    [setMessages, updateChatMessagesByJob],
+    [currentJob, setActiveResultData, setMessages, updateChatMessagesByJob],
   );
 
   const cachePreviousApplication = useCallback(
@@ -3290,8 +3309,60 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
     [],
   );
 
+  const hydrateApplicationCacheFromMessages = useCallback(
+    (restoredMessages: ChatMessageWithReasoning[]) => {
+      const cacheEntries = restoredMessages
+        .filter(
+          (message) =>
+            message.intent === 'application' &&
+            message.data &&
+            typeof message.data === 'object' &&
+            'applicationData' in message.data &&
+            'metadata' in message.data,
+        )
+        .map((message) => message.data as ApplicationResultCardData)
+        .filter(
+          (applicationData) =>
+            Boolean(
+              applicationData.metadata?.saved_application_id &&
+              applicationData.applicationData &&
+              Object.keys(applicationData.applicationData).length > 0,
+            ),
+        );
+
+      if (cacheEntries.length === 0) {
+        return;
+      }
+
+      setPreviousApplicationCache((prev) => {
+        const nextCache = { ...prev };
+        let changed = false;
+
+        cacheEntries.forEach((applicationData) => {
+          const savedApplicationId = applicationData.metadata?.saved_application_id;
+          if (!savedApplicationId || nextCache[savedApplicationId]) {
+            return;
+          }
+
+          nextCache[savedApplicationId] = Object.fromEntries(
+            Object.entries(applicationData.applicationData || {}).map(([sectionName, sectionData]) => [
+              sectionName,
+              { ...(sectionData || {}) },
+            ]),
+          );
+          changed = true;
+        });
+
+        return changed ? nextCache : prev;
+      });
+    },
+    [],
+  );
+
   const restoreApplicationContextFromMessages = useCallback(
     (restoredMessages: ChatMessageWithReasoning[]) => {
+      hydrateApplicationCacheFromMessages(restoredMessages);
+
       const latestApplicationMessage = [...restoredMessages]
         .reverse()
         .find(
@@ -3310,6 +3381,10 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
       }
 
       const applicationData = latestApplicationMessage.data as ApplicationResultCardData;
+      setCurrentCustomer(
+        applicationData.customerName || null,
+        applicationData.metadata?.customer_id || null,
+      );
       setApplicationResult(
         {
           content: applicationData.applicationContent || '',
@@ -3321,7 +3396,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ onNavigate }) => {
         applicationData.customerName || undefined,
       );
     },
-    [setApplicationResult],
+    [hydrateApplicationCacheFromMessages, setApplicationResult, setCurrentCustomer],
   );
   
   // Refs

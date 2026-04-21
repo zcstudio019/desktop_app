@@ -374,6 +374,8 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
   });
   const [activeDiffRowKey, setActiveDiffRowKey] = useState<string | null>(null);
   const [pendingScrollRowKey, setPendingScrollRowKey] = useState<string | null>(null);
+  const [lastEditedRowKey, setLastEditedRowKey] = useState<string | null>(null);
+  const [postSaveHighlightRowKey, setPostSaveHighlightRowKey] = useState<string | null>(null);
   const [diffCatalogFilter, setDiffCatalogFilter] = useState<ApplicationDiffCatalogFilterMode>('all');
   const [isDiffCatalogOpen, setIsDiffCatalogOpen] = useState(false);
 
@@ -601,8 +603,26 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
   }, [pendingScrollRowKey]);
 
   useEffect(() => {
+    if (!editMode && postSaveHighlightRowKey) {
+      return;
+    }
     setActiveDiffRowKey(null);
-  }, [diffFilter, editMode, savedApplicationId]);
+  }, [diffFilter, editMode, postSaveHighlightRowKey, savedApplicationId]);
+
+  useEffect(() => {
+    if (!postSaveHighlightRowKey || editMode || typeof window === 'undefined') {
+      return;
+    }
+
+    setActiveDiffRowKey(postSaveHighlightRowKey);
+
+    const timer = window.setTimeout(() => {
+      setActiveDiffRowKey((prev) => (prev === postSaveHighlightRowKey ? null : prev));
+      setPostSaveHighlightRowKey(null);
+    }, 5000);
+
+    return () => window.clearTimeout(timer);
+  }, [editMode, postSaveHighlightRowKey]);
 
   useEffect(() => {
     setDiffCatalogFilter('all');
@@ -643,6 +663,7 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
   }, [onCachePreviousApplication, previousApplicationCache, savedPreviousApplicationId]);
 
   const handleFieldChange = useCallback((sectionTitle: string, fieldName: string, value: string) => {
+    const rowKey = `${sectionTitle}::${fieldName}`;
     setEditedData((prev) => ({
       ...prev,
       [sectionTitle]: {
@@ -650,6 +671,8 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
         [fieldName]: value,
       },
     }));
+    setLastEditedRowKey(rowKey);
+    setActiveDiffRowKey(rowKey);
     setSaveEditNotice(null);
     setSaveEditError(null);
   }, []);
@@ -768,6 +791,11 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
       const versionLabel = response.versionNo
         ? APPLICATION_RESULT_COPY.saveVersionWithNo(response.versionNo)
         : APPLICATION_RESULT_COPY.saveVersionGeneric;
+      if (lastEditedRowKey) {
+        setSectionBulkAction((prev) => ({ mode: 'expand', token: prev.token + 1 }));
+        setPendingScrollRowKey(lastEditedRowKey);
+        setPostSaveHighlightRowKey(lastEditedRowKey);
+      }
       setSaveEditNotice(
         `${versionLabel} ${
           response.previousApplicationId
@@ -797,6 +825,7 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
     stableCustomerId,
     stableCustomerName,
     updateChatMessagesByJob,
+    lastEditedRowKey,
   ]);
 
   useEffect(() => {

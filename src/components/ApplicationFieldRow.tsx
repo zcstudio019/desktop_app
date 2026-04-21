@@ -124,7 +124,7 @@ const ApplicationFieldRow: React.FC<ApplicationFieldRowProps> = ({
 
             <div
               className={`rounded-lg border border-dashed px-2.5 py-2 ${
-                modified ? 'border-amber-300 bg-amber-50/70' : 'border-slate-300 bg-slate-50'
+                modified ? 'border-emerald-300 bg-emerald-50/70' : 'border-slate-300 bg-slate-50'
               }`}
             >
               <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
@@ -134,7 +134,7 @@ const ApplicationFieldRow: React.FC<ApplicationFieldRowProps> = ({
                 />
                 <span
                   className={`text-[11px] font-semibold tracking-wide ${
-                    modified ? 'text-amber-800' : 'text-slate-700'
+                    modified ? 'text-emerald-800' : 'text-slate-700'
                   }`}
                 >
                   {APPLICATION_DIFF_COPY.currentSectionTitle}
