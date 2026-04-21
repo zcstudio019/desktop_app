@@ -68,7 +68,7 @@ const FILE_TYPES: FileTypeConfig[] = [
   { 
     id: 'enterprise_credit', 
     name: '企业征信', 
-    formats: 'PDF', 
+    formats: 'PDF / 图片', 
     color: 'text-blue-600',
     bgColor: 'bg-blue-50',
     icon: Building2,
@@ -77,7 +77,7 @@ const FILE_TYPES: FileTypeConfig[] = [
   { 
     id: 'personal_credit', 
     name: '个人征信', 
-    formats: 'PDF', 
+    formats: 'PDF / 图片', 
     color: 'text-green-600',
     bgColor: 'bg-green-50',
     icon: User,
@@ -86,7 +86,7 @@ const FILE_TYPES: FileTypeConfig[] = [
   { 
     id: 'enterprise_flow', 
     name: '企业流水', 
-    formats: 'PDF/Excel', 
+    formats: 'PDF / XLSX', 
     color: 'text-purple-600',
     bgColor: 'bg-purple-50',
     icon: Landmark,
@@ -95,7 +95,7 @@ const FILE_TYPES: FileTypeConfig[] = [
   { 
     id: 'personal_flow', 
     name: '个人流水', 
-    formats: 'PDF/Excel', 
+    formats: 'PDF / XLSX', 
     color: 'text-amber-600',
     bgColor: 'bg-amber-50',
     icon: Wallet,
@@ -104,7 +104,7 @@ const FILE_TYPES: FileTypeConfig[] = [
   { 
     id: 'financial_data', 
     name: '财务数据', 
-    formats: 'PDF/Excel', 
+    formats: 'PDF / XLSX', 
     color: 'text-red-600',
     bgColor: 'bg-red-50',
     icon: BarChart3,
@@ -113,7 +113,7 @@ const FILE_TYPES: FileTypeConfig[] = [
   { 
     id: 'collateral', 
     name: '抵押物信息', 
-    formats: '图片', 
+    formats: 'PDF / 图片', 
     color: 'text-cyan-600',
     bgColor: 'bg-cyan-50',
     icon: Home,
@@ -122,7 +122,7 @@ const FILE_TYPES: FileTypeConfig[] = [
   { 
     id: 'jellyfish_report', 
     name: '水母报告', 
-    formats: 'PDF/图片', 
+    formats: 'PDF / 图片', 
     color: 'text-indigo-600',
     bgColor: 'bg-indigo-50',
     icon: FileSearch,
@@ -131,15 +131,112 @@ const FILE_TYPES: FileTypeConfig[] = [
   { 
     id: 'personal_tax', 
     name: '个人纳税/公积金', 
-    formats: 'PDF/Excel', 
+    formats: 'PDF / XLSX', 
     color: 'text-teal-600',
     bgColor: 'bg-teal-50',
     icon: Receipt,
     acceptedExtensions: ['.xlsx', '.xls', '.pdf'] 
   },
+  {
+    id: 'contract',
+    name: '合同',
+    formats: 'PDF / DOCX',
+    color: 'text-slate-700',
+    bgColor: 'bg-slate-50',
+    icon: FileText,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'id_card',
+    name: '身份证',
+    formats: 'PDF / DOCX',
+    color: 'text-rose-600',
+    bgColor: 'bg-rose-50',
+    icon: User,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'marriage_cert',
+    name: '结婚证',
+    formats: 'PDF / DOCX',
+    color: 'text-pink-600',
+    bgColor: 'bg-pink-50',
+    icon: User,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'hukou',
+    name: '户口本',
+    formats: 'PDF / DOCX',
+    color: 'text-orange-600',
+    bgColor: 'bg-orange-50',
+    icon: Home,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'property_report',
+    name: '产调',
+    formats: 'PDF / DOCX',
+    color: 'text-cyan-700',
+    bgColor: 'bg-cyan-50',
+    icon: Home,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'business_license',
+    name: '营业执照正副本',
+    formats: 'PDF / DOCX',
+    color: 'text-sky-700',
+    bgColor: 'bg-sky-50',
+    icon: Building2,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'account_license',
+    name: '开户许可证',
+    formats: 'PDF / DOCX',
+    color: 'text-violet-700',
+    bgColor: 'bg-violet-50',
+    icon: Landmark,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'special_license',
+    name: '特别许可证',
+    formats: 'PDF / DOCX',
+    color: 'text-fuchsia-700',
+    bgColor: 'bg-fuchsia-50',
+    icon: FileSearch,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'company_articles',
+    name: '公司章程',
+    formats: 'PDF / DOCX',
+    color: 'text-indigo-700',
+    bgColor: 'bg-indigo-50',
+    icon: FileText,
+    acceptedExtensions: ['.pdf', '.docx'],
+  },
+  {
+    id: 'bank_statement',
+    name: '银行对账单',
+    formats: 'PDF / XLSX',
+    color: 'text-emerald-700',
+    bgColor: 'bg-emerald-50',
+    icon: Landmark,
+    acceptedExtensions: ['.pdf', '.xlsx', '.xls'],
+  },
+  {
+    id: 'bank_statement_detail',
+    name: '银行对账明细',
+    formats: 'PDF / XLSX',
+    color: 'text-lime-700',
+    bgColor: 'bg-lime-50',
+    icon: Landmark,
+    acceptedExtensions: ['.pdf', '.xlsx', '.xls'],
+  },
 ];
-
-const ALL_ACCEPTED_EXTENSIONS = ['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 // ============================================
@@ -161,6 +258,7 @@ function getFileTypeDisplay(filename: string): string {
   const ext = getFileExtension(filename);
   const typeMap: Record<string, string> = { 
     '.pdf': 'PDF', 
+    '.docx': 'DOCX',
     '.xlsx': 'XLS', 
     '.xls': 'XLS', 
     '.jpg': 'JPG', 
@@ -174,6 +272,7 @@ function getFileTypeColor(filename: string): string {
   const ext = getFileExtension(filename);
   const colorMap: Record<string, string> = {
     '.pdf': 'bg-blue-100 text-blue-600',
+    '.docx': 'bg-violet-100 text-violet-600',
     '.xlsx': 'bg-emerald-100 text-emerald-600',
     '.xls': 'bg-emerald-100 text-emerald-600',
     '.jpg': 'bg-amber-100 text-amber-600',
@@ -209,10 +308,10 @@ function formatCustomerOptionLabel(customerId: string | null | undefined, custom
   return customerId.replace(/^(enterprise_|personal_)/, '');
 }
 
-function validateFile(file: File): { valid: boolean; error?: string } {
+function validateFile(file: File, acceptedExtensions: string[]): { valid: boolean; error?: string } {
   const ext = getFileExtension(file.name);
-  if (!ALL_ACCEPTED_EXTENSIONS.includes(ext)) {
-    return { valid: false, error: `不支持的文件格式: ${ext}` };
+  if (!acceptedExtensions.includes(ext)) {
+    return { valid: false, error: `当前资料类型不支持 ${ext} 文件` };
   }
   if (file.size > MAX_FILE_SIZE) {
     return { valid: false, error: `文件过大: ${formatFileSize(file.size)}。最大支持 50MB` };
@@ -423,6 +522,11 @@ const UploadPage: React.FC = () => {
       nextStep: '请检查文件格式或网络状态后重新上传。',
     };
   }, [error?.message, isProcessing, uploadQueue]);
+
+  const selectedFileTypeConfig = useMemo(
+    () => FILE_TYPES.find((item) => item.id === selectedDocumentType) ?? FILE_TYPES[0],
+    [selectedDocumentType]
+  );
 
   // Update task status in context when queue changes
   useEffect(() => {
@@ -648,7 +752,7 @@ const UploadPage: React.FC = () => {
     const fileArray = Array.from(files);
     const newItems: QueueItem[] = [];
     for (const file of fileArray) {
-      const validation = validateFile(file);
+      const validation = validateFile(file, selectedFileTypeConfig.acceptedExtensions);
       if (!validation.valid) {
         newItems.push({
           id: generateId(),
@@ -676,7 +780,7 @@ const UploadPage: React.FC = () => {
       const currentCustomerName = customerName; // Capture the latest value before scheduling.
       setTimeout(() => processQueue(pendingNewItems, currentCustomerName), 100);
     }
-  }, [selectedDocumentType, processQueue, customerName]);
+  }, [selectedDocumentType, selectedFileTypeConfig.acceptedExtensions, processQueue, customerName]);
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -847,7 +951,7 @@ const UploadPage: React.FC = () => {
         ref={fileInputRef}
         type="file"
         multiple
-        accept={ALL_ACCEPTED_EXTENSIONS.join(',')}
+        accept={selectedFileTypeConfig.acceptedExtensions.join(',')}
         onChange={handleFileSelect}
         className="hidden"
       />
@@ -858,7 +962,7 @@ const UploadPage: React.FC = () => {
           <FileText className="w-4 h-4 text-blue-500" />
           支持的文件类型
         </div>
-        <div data-testid="file-types-grid" className="grid grid-cols-4 gap-3">
+        <div data-testid="file-types-grid" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
           {FILE_TYPES.map((config) => (
             <FileTypeCard key={config.id} config={config} />
           ))}
@@ -885,7 +989,7 @@ const UploadPage: React.FC = () => {
           {isDragOver ? '松开鼠标上传文件' : '拖拽文件到此处，或点击上传'}
         </div>
         <div className="text-gray-400 text-sm">
-          支持 PDF、Excel、图片格式，单个文件最大 50MB
+          当前支持 {selectedFileTypeConfig.formats}，单个文件最大 50MB
         </div>
       </div>
 

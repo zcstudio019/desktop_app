@@ -20,6 +20,7 @@ if str(desktop_app_path) not in sys.path:
 from config import DATA_TYPE_CONFIG
 from services.feishu_service import FeishuService, FeishuServiceError
 
+from backend.document_types import get_document_storage_label
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.profile_sync_service import ProfileSyncService
 
@@ -73,6 +74,21 @@ FRONTEND_TO_BACKEND_TYPE = {
     "jellyfish_report": "水母报告提取",
     "personal_tax": "个人收入纳税/公积金",
 }
+FRONTEND_TO_BACKEND_TYPE.update(
+    {
+        "contract": "合同",
+        "id_card": "身份证",
+        "marriage_cert": "结婚证",
+        "hukou": "户口本",
+        "property_report": "产调",
+        "business_license": "营业执照",
+        "account_license": "开户许可证",
+        "special_license": "特别许可证",
+        "company_articles": "公司章程",
+        "bank_statement": "银行对账单",
+        "bank_statement_detail": "银行对账明细",
+    }
+)
 
 
 def dict_to_markdown(data: dict | list | Any, level: int = 0) -> str:
@@ -112,22 +128,13 @@ async def _save_request(
     current_user: dict | None,
 ) -> FeishuSaveResponse:
     """Handle storage save for both local-first and legacy Feishu routes."""
-    backend_type = FRONTEND_TO_BACKEND_TYPE.get(request.documentType) or request.documentType
+    backend_type = FRONTEND_TO_BACKEND_TYPE.get(request.documentType) or get_document_storage_label(request.documentType) or request.documentType
     logger.info(
         "Saving document - endpoint=%s, documentType=%s, customerName=%s",
         "db" if HAS_DB_STORAGE else "feishu",
         backend_type,
         request.customerName or "(empty)",
     )
-
-    config = DATA_TYPE_CONFIG.get(backend_type)
-    if not config:
-        return FeishuSaveResponse(
-            success=False,
-            recordId=None,
-            isNew=False,
-            error=UNKNOWN_DOCUMENT_TYPE_MESSAGE,
-        )
 
     if HAS_DB_STORAGE:
         from .chat_storage import _determine_customer_id, _resolve_customer_target, _save_to_local_storage
@@ -173,6 +180,15 @@ async def _save_request(
         except Exception as e:
             logger.error(f"Unexpected error during local save: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=LOCAL_SAVE_FAILED_MESSAGE) from e
+
+    config = DATA_TYPE_CONFIG.get(backend_type)
+    if not config:
+        return FeishuSaveResponse(
+            success=False,
+            recordId=None,
+            isNew=False,
+            error=DOCUMENT_TYPE_CONFIG_MISSING_MESSAGE,
+        )
 
     feishu_field = config.get("feishu_field")
     if not feishu_field:

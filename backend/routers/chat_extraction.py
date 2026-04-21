@@ -11,11 +11,11 @@ import logging
 import re
 from typing import Any
 
-from prompts import get_prompt_for_type, load_prompts
 from services.ai_service import AIService, AIServiceError
 from services.file_service import FileService
 from services.ocr_service import OCRService, OCRServiceError
-from utils.json_parser import parse_json
+from backend.document_types import get_document_storage_label
+from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
 
 from ..models.schemas import ChatFile
 from .chat_helpers import extract_customer_name, extract_customer_name_from_text
@@ -95,8 +95,8 @@ def _extract_by_type(file_bytes: bytes, file_type: str, filename: str) -> str:
     elif file_type == "image":
         compressed = _file_service.compress_image(file_bytes)
         return _ocr_service.recognize_image(compressed)
-    elif file_type == "excel":
-        return _file_service.read_excel(file_bytes)
+    elif file_type in {"excel", "word"}:
+        return _file_service.extract_text(file_bytes, file_type, filename=filename)
     return ""
 
 
@@ -181,6 +181,16 @@ def _truncate_ai_input(text_content: str, filename: str) -> str:
         MAX_AI_INPUT_CHARS,
     )
     return text_content[:MAX_AI_INPUT_CHARS]
+
+
+def _classify_and_extract_data_v2(text_content: str) -> tuple[str, dict]:
+    """Normalized extractor supporting new upload document types."""
+    document_type_code = detect_document_type_code(text_content, ai_service=_ai_service)
+    content = build_structured_extraction(text_content, document_type_code, ai_service=_ai_service)
+    return (get_document_storage_label(document_type_code), content)
+
+
+classify_and_extract_data = _classify_and_extract_data_v2
 
 
 def extract_single_chat_file(

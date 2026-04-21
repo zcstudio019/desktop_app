@@ -223,6 +223,19 @@ class FileService:
             return "\n".join(paragraphs)
         except Exception as e:
             return f"[Word 读取失败: {str(e)}]"
+
+    @staticmethod
+    def extract_text(file_bytes: bytes, file_type: str, *, filename: str = "") -> str:
+        """统一的文本提取入口，供 PDF / DOCX / XLSX 等文件复用。"""
+        if file_type == "pdf":
+            return FileService.read_pdf_text(file_bytes)
+        if file_type == "excel":
+            return FileService.read_excel(file_bytes)
+        if file_type == "word":
+            return FileService.read_word(file_bytes)
+        if file_type == "image":
+            return ""
+        raise ValueError(f"Unsupported file type for text extraction: {file_type} ({filename})")
     
     @staticmethod
     def image_to_bytes(uploaded_file) -> bytes:
