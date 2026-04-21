@@ -99,6 +99,10 @@ const ApplicationFieldRow: React.FC<ApplicationFieldRowProps> = ({
                   <button
                     type="button"
                     onClick={onToggleHistoryDiff}
+                    aria-expanded={showHistoryDiff}
+                    title={showHistoryDiff
+                      ? APPLICATION_DIFF_COPY.historyCollapseButton
+                      : APPLICATION_DIFF_COPY.historyExpandButton}
                     className="inline-flex w-fit items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
                   >
                     {showHistoryDiff
@@ -169,6 +173,10 @@ const ApplicationFieldRow: React.FC<ApplicationFieldRowProps> = ({
               <button
                 type="button"
                 onClick={onToggleSourceDetail}
+                aria-expanded={showSourceDetail}
+                title={showSourceDetail
+                  ? APPLICATION_DIFF_COPY.collapseSourceButton
+                  : APPLICATION_DIFF_COPY.viewSourceButton}
                 className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
               >
                 {showSourceDetail

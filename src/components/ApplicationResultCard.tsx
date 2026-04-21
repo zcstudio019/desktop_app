@@ -799,13 +799,50 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
     updateChatMessagesByJob,
   ]);
 
+  useEffect(() => {
+    if (!editMode || typeof window === 'undefined') {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTypingTarget =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        if (!savingEdit && hasUnsavedChanges) {
+          void saveEditedData();
+        }
+        return;
+      }
+
+      if (event.key === 'Escape' && !savingEdit) {
+        if (isTypingTarget) {
+          const input = target as HTMLInputElement | HTMLTextAreaElement;
+          if (typeof input.value === 'string' && input.value.length > 0) {
+            return;
+          }
+        }
+        event.preventDefault();
+        toggleEditMode();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [editMode, hasUnsavedChanges, saveEditedData, savingEdit, toggleEditMode]);
+
   const downloadFormHtml = useCallback(() => {
-    const html = buildApplicationFormHtml(stableCustomerName, data.loanType || 'enterprise', currentSavedData);
+    const exportData = editMode ? editedData : currentSavedData;
+    const html = buildApplicationFormHtml(stableCustomerName, data.loanType || 'enterprise', exportData);
     createDownloadLink(
       new Blob([html], { type: 'text/html;charset=utf-8' }),
       `${APPLICATION_RESULT_COPY.downloadFilePrefix}-${stableCustomerName || APPLICATION_RESULT_COPY.unnamedCustomer}.html`,
     );
-  }, [currentSavedData, data.loanType, stableCustomerName]);
+  }, [currentSavedData, data.loanType, editMode, editedData, stableCustomerName]);
 
   if (data.needsInput || (!hasStructuredData && !data.applicationContent)) {
     return <ApplicationGuideCard data={data} onNavigate={onNavigate} />;
@@ -844,6 +881,7 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
                   <button
                     onClick={saveEditedData}
                     disabled={savingEdit || !hasUnsavedChanges}
+                    title={APPLICATION_RESULT_COPY.saveButtonShortcutHint}
                     className="flex items-center gap-1 rounded-lg bg-green-500 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:hover:bg-slate-300"
                     data-testid="save-button"
                   >
@@ -857,6 +895,7 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
                   <button
                     onClick={toggleEditMode}
                     disabled={savingEdit}
+                    title={APPLICATION_RESULT_COPY.cancelEditShortcutHint}
                     className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="cancel-edit-button"
                   >
@@ -880,15 +919,21 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
               <button
                 onClick={downloadFormHtml}
                 disabled={savingEdit}
+                title={editMode ? APPLICATION_RESULT_COPY.downloadDraftButton : APPLICATION_RESULT_COPY.downloadButton}
                 className="flex items-center gap-1 rounded-lg bg-purple-500 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-purple-600 disabled:cursor-not-allowed disabled:opacity-50"
                 data-testid="download-form-button"
               >
                 <Download className="h-3.5 w-3.5" />
-                {APPLICATION_RESULT_COPY.downloadButton}
+                {editMode
+                  ? APPLICATION_RESULT_COPY.downloadDraftButton
+                  : APPLICATION_RESULT_COPY.downloadButton}
               </button>
             ) : null}
             <button
               onClick={() => setIsExpanded((prev) => !prev)}
+              type="button"
+              aria-label={isExpanded ? APPLICATION_RESULT_COPY.collapseCardButton : APPLICATION_RESULT_COPY.expandCardButton}
+              title={isExpanded ? APPLICATION_RESULT_COPY.collapseCardButton : APPLICATION_RESULT_COPY.expandCardButton}
               className="rounded-lg p-1.5 transition-colors hover:bg-amber-100"
             >
               {isExpanded ? <ChevronDown className="h-4 w-4 text-gray-500" /> : <ChevronRight className="h-4 w-4 text-gray-500" />}
@@ -920,11 +965,16 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
         <div className="border-b border-slate-100 bg-white px-4 py-3">
           <div className="space-y-3">
             <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-              <div className="text-sm text-slate-600">
-                {APPLICATION_RESULT_COPY.editSummaryPrefix}
-                <span className="ml-2 text-xs text-slate-500">
-                  {APPLICATION_RESULT_COPY.editSummaryStats(diffStats.current, diffStats.history, diffStats.total)}
-                </span>
+              <div className="flex flex-col gap-1">
+                <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
+                  <span className="font-medium text-slate-700">{APPLICATION_RESULT_COPY.editSummaryPrefix}</span>
+                  <span className="text-xs text-slate-500">
+                    {APPLICATION_RESULT_COPY.editSummaryStats(diffStats.current, diffStats.history, diffStats.total)}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  {APPLICATION_RESULT_COPY.editSummaryShortcutHint}
+                </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {hasUnsavedChanges ? (
@@ -978,24 +1028,26 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <div className="text-[11px] font-semibold tracking-wide text-slate-500">{APPLICATION_RESULT_COPY.bulkActionsTitle}</div>
+              <div className="rounded-xl border border-dashed border-slate-200 bg-white p-3">
+                <div className="text-[11px] font-semibold tracking-wide text-slate-400">{APPLICATION_RESULT_COPY.bulkActionsTitle}</div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {hasHistoryDiffs ? (
                     <>
                       <button
                         type="button"
                         onClick={() => setHistoryDiffBulkAction((prev) => ({ mode: 'expand', token: prev.token + 1 }))}
-                        className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
+                        className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
                       >
-                        {APPLICATION_RESULT_COPY.expandAllHistory}
+                        <span className="hidden 2xl:inline">{APPLICATION_RESULT_COPY.expandAllHistory}</span>
+                        <span className="2xl:hidden">展开历史差异</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => setHistoryDiffBulkAction((prev) => ({ mode: 'collapse', token: prev.token + 1 }))}
-                        className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
+                        className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
                       >
-                        {APPLICATION_RESULT_COPY.collapseAllHistory}
+                        <span className="hidden 2xl:inline">{APPLICATION_RESULT_COPY.collapseAllHistory}</span>
+                        <span className="2xl:hidden">收起历史差异</span>
                       </button>
                     </>
                   ) : (
@@ -1006,16 +1058,18 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
                   <button
                     type="button"
                     onClick={() => setSectionBulkAction((prev) => ({ mode: 'expand', token: prev.token + 1 }))}
-                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
+                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
                   >
-                    {APPLICATION_RESULT_COPY.expandAllSections}
+                    <span className="hidden 2xl:inline">{APPLICATION_RESULT_COPY.expandAllSections}</span>
+                    <span className="2xl:hidden">展开分组</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setSectionBulkAction((prev) => ({ mode: 'collapse', token: prev.token + 1 }))}
-                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
+                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
                   >
-                    {APPLICATION_RESULT_COPY.collapseAllSections}
+                    <span className="hidden 2xl:inline">{APPLICATION_RESULT_COPY.collapseAllSections}</span>
+                    <span className="2xl:hidden">收起分组</span>
                   </button>
                 </div>
               </div>
@@ -1030,14 +1084,16 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
                         onClick={() => navigateDiffField('prev')}
                         className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
                       >
-                        {APPLICATION_RESULT_COPY.previousDiffField}
+                        <span className="hidden xl:inline">{APPLICATION_RESULT_COPY.previousDiffField}</span>
+                        <span className="xl:hidden">上一个</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => navigateDiffField('next')}
                         className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-800"
                       >
-                        {APPLICATION_RESULT_COPY.nextDiffField}
+                        <span className="hidden xl:inline">{APPLICATION_RESULT_COPY.nextDiffField}</span>
+                        <span className="xl:hidden">下一个</span>
                       </button>
                     </>
                   ) : (
@@ -1073,7 +1129,7 @@ export const ApplicationResultCard: React.FC<ApplicationResultCardProps> = ({
       {isExpanded ? (
         <div className="p-4">
           {hasStructuredData ? (
-            <div className={`grid gap-4 ${editMode && diffTargets.length > 0 && isDiffCatalogOpen ? '2xl:grid-cols-[minmax(0,1fr)_22rem]' : ''}`}>
+            <div className={`grid gap-4 ${editMode && diffTargets.length > 0 && isDiffCatalogOpen ? '2xl:grid-cols-[minmax(0,1fr)_20rem] 3xl:grid-cols-[minmax(0,1fr)_22rem]' : ''}`}>
               <div className="space-y-4">
                 {Object.entries(displayData).map(([sectionName, sectionData]) => (
                   <ApplicationSectionCard
