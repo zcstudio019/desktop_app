@@ -69,6 +69,57 @@ def _format_value(value: Any) -> str:
     return str(value)
 
 
+STRUCTURED_FIELD_LABELS: dict[str, str] = {
+    "account_name": "账户名称",
+    "account_number": "账号",
+    "bank_name": "银行名称",
+    "bank_branch": "开户支行",
+    "license_number": "核准号",
+    "account_type": "账户性质",
+    "open_date": "开户日期",
+    "company_name": "公司名称",
+    "credit_code": "统一社会信用代码",
+    "legal_person": "法定代表人",
+    "registered_capital": "注册资本",
+    "establish_date": "成立日期",
+    "business_scope": "经营范围",
+    "address": "地址",
+    "company_type": "类型",
+    "document_type_code": "资料类型编码",
+    "document_type_name": "资料类型名称",
+    "storage_label": "资料归类",
+    "currency": "币种",
+    "start_date": "开始日期",
+    "end_date": "结束日期",
+    "opening_balance": "期初余额",
+    "closing_balance": "期末余额",
+    "total_income": "总收入",
+    "total_expense": "总支出",
+    "transaction_count": "交易笔数",
+    "monthly_avg_income": "月均收入",
+    "monthly_avg_expense": "月均支出",
+    "top_inflows": "大额流入",
+    "top_outflows": "大额流出",
+    "top_transactions": "大额交易",
+    "frequent_counterparties": "高频对手方",
+    "abnormal_summary": "异常摘要",
+    "summary": "摘要",
+    "shareholders": "股东信息",
+    "management_structure": "治理结构",
+    "source_type": "来源类型",
+}
+
+
+def _format_field_label(key: str) -> str:
+    normalized = str(key or "").strip()
+    if not normalized:
+        return "未命名字段"
+    return STRUCTURED_FIELD_LABELS.get(
+        normalized,
+        normalized.replace("_", " ").strip(),
+    )
+
+
 async def _build_document_sections(storage_service: Any, customer_id: str) -> tuple[list[str], list[dict[str, Any]]]:
     extractions = await storage_service.get_extractions_by_customer(customer_id)
     sections: list[str] = []
@@ -86,7 +137,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
         lines = [f"- 来源类型：{extraction_type}"]
         if isinstance(extracted_data, dict):
             for key, value in extracted_data.items():
-                lines.append(f"- {key}：{_format_value(value)}")
+                lines.append(f"- {_format_field_label(key)}：{_format_value(value)}")
         sections.append(_markdown_section(extraction_type, lines))
     return sections, source_documents
 
