@@ -89,19 +89,21 @@ def _ocr_pdf_pages(file_bytes: bytes) -> str:
     return "\n\n".join(ocr_results)
 
 
-def _extract_text_from_file(file_bytes: bytes, file_type: str, filename: str) -> str:
+def _extract_content_from_file(file_bytes: bytes, file_type: str, filename: str) -> tuple[str, list[dict]]:
     try:
         if file_type == "pdf":
-            text_content = file_service.extract_text(file_bytes, file_type, filename=filename)
+            extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
+            text_content = extracted.get("text", "")
             if not file_service.is_pdf_text_valid(text_content):
                 logger.info("PDF text extraction invalid for %s, falling back to OCR", filename)
                 text_content = _ocr_pdf_pages(file_bytes)
-            return text_content
+            return text_content, []
         if file_type == "image":
             compressed = file_service.compress_image(file_bytes)
-            return ocr_service.recognize_image(compressed)
+            return ocr_service.recognize_image(compressed), []
         if file_type in {"excel", "word"}:
-            return file_service.extract_text(file_bytes, file_type, filename=filename)
+            extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
+            return extracted.get("text", ""), extracted.get("rows", [])
         raise HTTPException(status_code=400, detail=UNSUPPORTED_FILE_TYPE_MESSAGE)
     except OCRServiceError as exc:
         logger.error("OCR service error while processing %s: %s", filename, exc)
@@ -113,20 +115,25 @@ def _extract_text_from_file(file_bytes: bytes, file_type: str, filename: str) ->
         raise HTTPException(status_code=500, detail=FILE_PROCESS_FAILED_MESSAGE) from exc
 
 
-def _resolve_document_type_code(text_content: str, explicit_type: str | None) -> str:
+def _resolve_document_type_code(text_content: str, explicit_type: str | None, rows: list[dict]) -> str:
     normalized = normalize_document_type_code(explicit_type)
     if normalized:
         return normalized
     try:
-        return detect_document_type_code(text_content, explicit_type, ai_service=ai_service)
+        return detect_document_type_code(text_content, explicit_type, rows=rows, ai_service=ai_service)
     except AIServiceError as exc:
         logger.error("AI classification error: %s", exc)
         raise HTTPException(status_code=500, detail=AI_CLASSIFICATION_FAILED_MESSAGE) from exc
 
 
-def _extract_structured_data(text_content: str, document_type_code: str) -> FileProcessResponse:
+def _extract_structured_data(text_content: str, document_type_code: str, rows: list[dict]) -> FileProcessResponse:
     try:
-        content = build_structured_extraction(text_content, document_type_code, ai_service=ai_service)
+        content = build_structured_extraction(
+            text_content,
+            document_type_code,
+            rows=rows,
+            ai_service=ai_service,
+        )
         customer_name = extract_customer_name_from_content(content)
         return FileProcessResponse(
             documentType=document_type_code,
@@ -160,15 +167,15 @@ async def process_file(
     )
 
     file_bytes, file_type = await _validate_and_read_file(file)
-    text_content = _extract_text_from_file(file_bytes, file_type, file.filename or "")
+    text_content, rows = _extract_content_from_file(file_bytes, file_type, file.filename or "")
     if not text_content or not text_content.strip():
         raise HTTPException(status_code=400, detail=NO_TEXT_EXTRACTED_MESSAGE)
 
-    document_type_code = _resolve_document_type_code(text_content, documentType)
+    document_type_code = _resolve_document_type_code(text_content, documentType, rows)
     logger.info(
         "Resolved document type for %s: %s (%s)",
         file.filename,
         document_type_code,
         get_document_display_name(document_type_code),
     )
-    return _extract_structured_data(text_content, document_type_code)
+    return _extract_structured_data(text_content, document_type_code, rows)

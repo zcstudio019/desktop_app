@@ -55,7 +55,7 @@ def init_services(ai_service: AIService, file_service: FileService, ocr_service:
     _ocr_service = ocr_service
 
 
-def extract_text_from_chat_file(chat_file: ChatFile) -> tuple[str, str]:
+def extract_text_from_chat_file(chat_file: ChatFile) -> tuple[str, str, list[dict[str, Any]]]:
     """Extract text content from a chat file.
 
     Args:
@@ -69,17 +69,17 @@ def extract_text_from_chat_file(chat_file: ChatFile) -> tuple[str, str]:
     """
     file_bytes = base64.b64decode(chat_file.content)
     if not file_bytes:
-        return ("", "empty")
+        return ("", "empty", [])
 
     file_type = _file_service.get_file_type(chat_file.name)
     if file_type == "unknown":
-        return ("", "unknown")
+        return ("", "unknown", [])
 
-    text_content = _extract_by_type(file_bytes, file_type, chat_file.name)
-    return (text_content, file_type)
+    text_content, rows = _extract_by_type(file_bytes, file_type, chat_file.name)
+    return (text_content, file_type, rows)
 
 
-def _extract_by_type(file_bytes: bytes, file_type: str, filename: str) -> str:
+def _extract_by_type(file_bytes: bytes, file_type: str, filename: str) -> tuple[str, list[dict[str, Any]]]:
     """Extract text from file bytes based on file type.
 
     Args:
@@ -91,13 +91,14 @@ def _extract_by_type(file_bytes: bytes, file_type: str, filename: str) -> str:
         Extracted text content
     """
     if file_type == "pdf":
-        return _extract_pdf_text(file_bytes, filename)
+        return _extract_pdf_text(file_bytes, filename), []
     elif file_type == "image":
         compressed = _file_service.compress_image(file_bytes)
-        return _ocr_service.recognize_image(compressed)
+        return _ocr_service.recognize_image(compressed), []
     elif file_type in {"excel", "word"}:
-        return _file_service.extract_text(file_bytes, file_type, filename=filename)
-    return ""
+        extracted = _file_service.extract_content(file_bytes, file_type, filename=filename)
+        return extracted.get("text", ""), extracted.get("rows", [])
+    return "", []
 
 
 def _extract_pdf_text(file_bytes: bytes, filename: str) -> str:
@@ -183,10 +184,15 @@ def _truncate_ai_input(text_content: str, filename: str) -> str:
     return text_content[:MAX_AI_INPUT_CHARS]
 
 
-def _classify_and_extract_data_v2(text_content: str) -> tuple[str, dict]:
+def _classify_and_extract_data_v2(text_content: str, rows: list[dict[str, Any]] | None = None) -> tuple[str, dict]:
     """Normalized extractor supporting new upload document types."""
-    document_type_code = detect_document_type_code(text_content, ai_service=_ai_service)
-    content = build_structured_extraction(text_content, document_type_code, ai_service=_ai_service)
+    document_type_code = detect_document_type_code(text_content, rows=rows or [], ai_service=_ai_service)
+    content = build_structured_extraction(
+        text_content,
+        document_type_code,
+        rows=rows or [],
+        ai_service=_ai_service,
+    )
     return (get_document_storage_label(document_type_code), content)
 
 
@@ -212,7 +218,7 @@ def extract_single_chat_file(
         OCRServiceError: If OCR processing fails
         AIServiceError: If AI processing fails
     """
-    text_content, file_type = extract_text_from_chat_file(chat_file)
+    text_content, file_type, rows = extract_text_from_chat_file(chat_file)
 
     if file_type == "empty":
         return {"filename": chat_file.name, "error": "Empty file content"}
@@ -222,7 +228,7 @@ def extract_single_chat_file(
         return {"filename": chat_file.name, "error": "No text content extracted"}
 
     ai_ready_text = _truncate_ai_input(text_content, chat_file.name)
-    document_type, content = classify_and_extract_data(ai_ready_text)
+    document_type, content = classify_and_extract_data(ai_ready_text, rows)
 
     ai_extracted_name = extract_customer_name(content)
     text_extracted_name = None if ai_extracted_name else extract_customer_name_from_text(text_content)

@@ -2,12 +2,13 @@
 import io
 import warnings
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 import fitz  # pymupdf
 from docx import Document
 from openpyxl import load_workbook
 from PIL import Image
+from backend.services.extraction_utils import read_excel_as_rows, rows_to_text
 
 with warnings.catch_warnings():
     warnings.filterwarnings(
@@ -219,23 +220,43 @@ class FileService:
         """读取 Word 文档"""
         try:
             doc = Document(io.BytesIO(file_bytes))
-            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-            return "\n".join(paragraphs)
+            paragraphs = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
+            tables: list[str] = []
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [cell.text.strip() for cell in row.cells if cell.text and cell.text.strip()]
+                    if cells:
+                        tables.append(" | ".join(cells))
+            return "\n".join(paragraphs + tables)
         except Exception as e:
             return f"[Word 读取失败: {str(e)}]"
 
     @staticmethod
+    def read_excel_rows(file_bytes: bytes) -> list[dict[str, str]]:
+        """Read Excel rows without flattening table structure."""
+        try:
+            return read_excel_as_rows(file_bytes)
+        except Exception:
+            return []
+
+    @staticmethod
+    def extract_content(file_bytes: bytes, file_type: str, *, filename: str = "") -> dict[str, Any]:
+        """Unified extraction entry returning text and optional row data."""
+        if file_type == "pdf":
+            return {"text": FileService.read_pdf_text(file_bytes), "rows": []}
+        if file_type == "excel":
+            rows = FileService.read_excel_rows(file_bytes)
+            return {"text": rows_to_text(rows), "rows": rows}
+        if file_type == "word":
+            return {"text": FileService.read_word(file_bytes), "rows": []}
+        if file_type == "image":
+            return {"text": "", "rows": []}
+        raise ValueError(f"Unsupported file type for content extraction: {file_type} ({filename})")
+
+    @staticmethod
     def extract_text(file_bytes: bytes, file_type: str, *, filename: str = "") -> str:
         """统一的文本提取入口，供 PDF / DOCX / XLSX 等文件复用。"""
-        if file_type == "pdf":
-            return FileService.read_pdf_text(file_bytes)
-        if file_type == "excel":
-            return FileService.read_excel(file_bytes)
-        if file_type == "word":
-            return FileService.read_word(file_bytes)
-        if file_type == "image":
-            return ""
-        raise ValueError(f"Unsupported file type for text extraction: {file_type} ({filename})")
+        return FileService.extract_content(file_bytes, file_type, filename=filename).get("text", "")
     
     @staticmethod
     def image_to_bytes(uploaded_file) -> bytes:
