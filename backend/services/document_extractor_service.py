@@ -1486,6 +1486,23 @@ def _pick_registration_authority_candidate(candidates: list[tuple[str, int]]) ->
     return sorted(cleaned, key=lambda item: (item[1] + len(item[0]), len(item[0])), reverse=True)[0][0]
 
 
+def _infer_registration_authority_from_business_address(text: str) -> str:
+    address = clean_address(
+        _label_value_cn(
+            text or "",
+            ["\u4f4f\u6240", "\u5730\u5740", "\u8425\u4e1a\u573a\u6240", "\u7ecf\u8425\u573a\u6240"],
+            ["\u7ecf\u8425\u8303\u56f4", "\u7c7b\u578b", "\u6cd5\u5b9a\u4ee3\u8868\u4eba", "\u767b\u8bb0\u673a\u5173"],
+            max_length=260,
+            allow_multiline=True,
+        )
+    )
+    source = address or (text or "")
+    municipality_match = re.search(r"(\u4e0a\u6d77\u5e02|\u5317\u4eac\u5e02|\u5929\u6d25\u5e02|\u91cd\u5e86\u5e02)([\u4e00-\u9fff]{1,12}[\u533a\u53bf])", source)
+    if municipality_match:
+        return f"{municipality_match.group(1)}{municipality_match.group(2)}\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40"
+    return ""
+
+
 def _extract_registration_authority_cn(text: str) -> str:
     source = text or ""
     explicit_patterns = (
@@ -1541,6 +1558,14 @@ def _extract_registration_authority_cn(text: str) -> str:
         logger.info("[business_license] registration_authority candidate=%s", picked)
         logger.info("[business_license] final registration_authority=%s", picked)
     else:
+        inferred = _infer_registration_authority_from_business_address(source)
+        if inferred and registration_date:
+            logger.warning(
+                "[business_license] final registration_authority=%s inferred_from_address because seal OCR had no authority candidate, registration_date=%s",
+                inferred,
+                registration_date,
+            )
+            return inferred
         logger.warning(
             "[business_license] registration_authority extraction failed: no authority candidate matched, registration_date=%s, bottom_text=%s",
             registration_date or "",

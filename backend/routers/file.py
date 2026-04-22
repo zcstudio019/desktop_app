@@ -12,7 +12,7 @@ from io import BytesIO
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 
 desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
@@ -100,14 +100,47 @@ def _crop_image_region(image_bytes: bytes, box: tuple[int, int, int, int]) -> by
         return output.getvalue()
 
 
+def _image_to_jpeg_bytes(image: Image.Image) -> bytes:
+    output = BytesIO()
+    image.convert("RGB").save(output, format="JPEG", quality=95)
+    return output.getvalue()
+
+
+def _build_seal_ocr_variants(region_bytes: bytes) -> list[tuple[str, bytes]]:
+    with Image.open(BytesIO(region_bytes)) as image:
+        rgb = image.convert("RGB")
+        grayscale = ImageOps.grayscale(rgb)
+        high_contrast = ImageEnhance.Contrast(grayscale).enhance(2.8)
+
+        red_mask = Image.new("L", rgb.size, 255)
+        source_pixels = rgb.load()
+        target_pixels = red_mask.load()
+        width, height = rgb.size
+        for y in range(height):
+            for x in range(width):
+                red, green, blue = source_pixels[x, y]
+                # Red stamp text is often ignored by normal OCR; convert red-dominant pixels to black.
+                if red >= 120 and red > green * 1.18 and red > blue * 1.18:
+                    target_pixels[x, y] = 0
+
+        red_mask = ImageEnhance.Contrast(red_mask).enhance(2.5)
+        return [
+            ("original", _image_to_jpeg_bytes(rgb)),
+            ("gray_high_contrast", _image_to_jpeg_bytes(high_contrast)),
+            ("red_stamp_mask", _image_to_jpeg_bytes(red_mask)),
+        ]
+
+
 def _business_license_seal_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[int, int, int, int]]]:
     with Image.open(BytesIO(image_bytes)) as image:
         width, height = image.size
     return [
+        ("bottom_full_45", (0, max(0, int(height * 0.55)), width, height)),
         ("bottom_full_35", (0, max(0, int(height * 0.65)), width, height)),
         ("bottom_full_25", (0, max(0, int(height * 0.75)), width, height)),
         ("bottom_left_middle_35", (0, max(0, int(height * 0.65)), max(1, int(width * 0.72)), height)),
         ("bottom_center_35", (max(0, int(width * 0.12)), max(0, int(height * 0.62)), min(width, int(width * 0.88)), height)),
+        ("bottom_right_35", (max(0, int(width * 0.35)), max(0, int(height * 0.65)), width, height)),
     ]
 
 
@@ -131,11 +164,17 @@ def _ocr_business_license_seal_region(file_bytes: bytes, file_type: str, filenam
             logger.info("[business_license] seal crop box=%s region=%s filename=%s", box, region_name, filename)
             try:
                 seal_region = _crop_image_region(source_image, box)
-                compressed = file_service.compress_image(seal_region)
-                seal_text = ocr_service.recognize_image(compressed).strip()
-                logger.info("[business_license] seal_region_ocr_text region=%s text=%s", region_name, seal_text[:1000] or "(empty)")
-                if seal_text:
-                    ocr_parts.append(f"--- Seal Region {region_name} box={box} ---\n{seal_text}")
+                for variant_name, variant_bytes in _build_seal_ocr_variants(seal_region):
+                    compressed = file_service.compress_image(variant_bytes)
+                    seal_text = ocr_service.recognize_image(compressed).strip()
+                    logger.info(
+                        "[business_license] seal_region_ocr_text region=%s variant=%s text=%s",
+                        region_name,
+                        variant_name,
+                        seal_text[:1000] or "(empty)",
+                    )
+                    if seal_text:
+                        ocr_parts.append(f"--- Seal Region {region_name} variant={variant_name} box={box} ---\n{seal_text}")
             except OCRServiceError as exc:
                 logger.warning("[business_license] seal region OCR failed region=%s filename=%s error=%s", region_name, filename, exc)
             except Exception as exc:  # pragma: no cover - best-effort per crop
