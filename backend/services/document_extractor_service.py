@@ -1310,6 +1310,146 @@ def clean_address(value: str) -> str:
     return cleaned
 
 
+def _remove_business_license_bottom_noise(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", normalize_text(value)).strip("：:;；，,。 ")
+    for marker in (
+        "\u767b\u8bb0\u673a\u5173",
+        "\u767b\u8bb0\u673a\u6784",
+        "\u53d1\u7167\u673a\u5173",
+        "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40",
+        "\u884c\u653f\u5ba1\u6279\u5c40",
+        "\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40",
+        "\u56fd\u5bb6\u4f01\u4e1a\u4fe1\u7528\u4fe1\u606f\u516c\u793a\u7cfb\u7edf",
+        "\u56fd\u5bb6\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u603b\u5c40\u76d1\u5236",
+        "http",
+        "www",
+    ):
+        idx = cleaned.find(marker)
+        if idx > 0:
+            if marker in ("\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40", "\u884c\u653f\u5ba1\u6279\u5c40", "\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40"):
+                sentence_boundary = max(cleaned.rfind(boundary, 0, idx) for boundary in ("。", "；", ";"))
+                if sentence_boundary >= 0:
+                    cleaned = cleaned[: sentence_boundary + 1].strip("：:;；，,。 ")
+                    continue
+            cleaned = cleaned[:idx].strip("：:;；，,。 ")
+    return cleaned
+
+
+def _looks_like_address_tail(value: str) -> bool:
+    cleaned = re.sub(r"\s+", "", normalize_text(value))
+    if not cleaned or len(cleaned) > 80:
+        return False
+    if any(marker in cleaned for marker in ("\u4e00\u822c\u9879\u76ee", "\u8bb8\u53ef\u9879\u76ee", "\u6280\u672f\u670d\u52a1", "\u6280\u672f\u5f00\u53d1")):
+        return False
+    return bool(
+        re.search(
+            r"(?:^\u53f7|^\u5ba4|^\u697c|^\u5e62|^\u680b|^\u5355\u5143|[0-9\uff10-\uff19\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+(?:\u53f7|\u5ba4|\u697c|\u5e62|\u680b|\u5355\u5143)|[A-Za-z\uff21-\uff3a]\u533a)",
+            cleaned,
+        )
+    )
+
+
+def _split_address_tail_from_scope(raw_scope: str) -> tuple[str, str]:
+    cleaned = _remove_business_license_bottom_noise(raw_scope)
+    if not cleaned:
+        return "", ""
+    marker_positions = [
+        idx
+        for marker in ("\u4e00\u822c\u9879\u76ee", "\u8bb8\u53ef\u9879\u76ee", "\u7ecf\u8425\u9879\u76ee")
+        for idx in [cleaned.find(marker)]
+        if idx > 0
+    ]
+    if not marker_positions:
+        return "", cleaned
+    start = min(marker_positions)
+    prefix = cleaned[:start].strip("：:;；，,。 ")
+    scope = cleaned[start:].strip("：:;；，,。 ")
+    if _looks_like_address_tail(prefix):
+        return prefix, scope
+    return "", cleaned
+
+
+def _extract_business_license_address_and_scope(text: str) -> tuple[str, str]:
+    raw_address = _label_value_cn(
+        text,
+        ["\u4f4f\u6240", "\u5730\u5740", "\u8425\u4e1a\u573a\u6240", "\u7ecf\u8425\u573a\u6240"],
+        [
+            "\u7c7b\u578b",
+            "\u6cd5\u5b9a\u4ee3\u8868\u4eba",
+            "\u6ce8\u518c\u8d44\u672c",
+            "\u6210\u7acb\u65e5\u671f",
+            "\u7ecf\u8425\u8303\u56f4",
+            "\u767b\u8bb0\u673a\u5173",
+            "\u767b\u8bb0\u673a\u6784",
+            "\u53d1\u7167\u673a\u5173",
+        ],
+        max_length=360,
+        allow_multiline=True,
+    )
+    raw_scope = _label_value_cn(
+        text,
+        ["\u7ecf\u8425\u8303\u56f4", "\u7ecf\u8425\u9879\u76ee", "\u4e00\u822c\u9879\u76ee", "\u8bb8\u53ef\u9879\u76ee"],
+        [
+            "\u767b\u8bb0\u673a\u5173",
+            "\u767b\u8bb0\u673a\u6784",
+            "\u53d1\u7167\u673a\u5173",
+            "\u56fd\u5bb6\u4f01\u4e1a\u4fe1\u7528\u4fe1\u606f\u516c\u793a\u7cfb\u7edf",
+            "\u56fd\u5bb6\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u603b\u5c40\u76d1\u5236",
+        ],
+        max_length=900,
+        allow_multiline=True,
+    )
+    address_tail, scope_body = _split_address_tail_from_scope(raw_scope)
+    address = clean_address(_remove_business_license_bottom_noise(raw_address))
+    if address_tail and address_tail not in address:
+        address = clean_address(f"{address}{address_tail}")
+    business_scope = clean_business_scope(_remove_business_license_bottom_noise(scope_body or raw_scope))
+    return address, business_scope
+
+
+def _clean_registration_authority(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", normalize_text(value)).strip("：:;；，,。 ")
+    cleaned = re.sub(r"(?:19|20)\d{2}\s*\u5e74\s*\d{1,2}\s*\u6708\s*\d{1,2}\s*\u65e5", "", cleaned).strip("：:;；，,。 ")
+    for marker in ("\u767b\u8bb0\u673a\u5173", "\u767b\u8bb0\u673a\u6784", "\u53d1\u7167\u673a\u5173"):
+        cleaned = cleaned.replace(marker, "").strip("：:;；，,。 ")
+    if not cleaned or re.fullmatch(r"[\d\s./\-\u5e74\u6708\u65e5]+", cleaned):
+        return ""
+    if any(noise in cleaned for noise in ("\u56fd\u5bb6\u4f01\u4e1a\u4fe1\u7528\u4fe1\u606f\u516c\u793a\u7cfb\u7edf", "\u56fd\u5bb6\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u603b\u5c40\u76d1\u5236", "http", "www")):
+        return ""
+    return cleaned
+
+
+def _extract_registration_authority_cn(text: str) -> str:
+    source = text or ""
+    labeled = _label_value_cn(
+        source,
+        ["\u767b\u8bb0\u673a\u5173", "\u767b\u8bb0\u673a\u6784", "\u53d1\u7167\u673a\u5173"],
+        [
+            "\u6210\u7acb\u65e5\u671f",
+            "\u7b7e\u53d1\u65e5\u671f",
+            "\u53d1\u7167\u65e5\u671f",
+            "\u56fd\u5bb6\u4f01\u4e1a\u4fe1\u7528\u4fe1\u606f\u516c\u793a\u7cfb\u7edf",
+            "\u56fd\u5bb6\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u603b\u5c40\u76d1\u5236",
+        ],
+        max_length=140,
+        allow_multiline=False,
+    )
+    cleaned = _clean_registration_authority(labeled)
+    if cleaned:
+        return cleaned
+    authority_keywords = (
+        "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40",
+        "\u884c\u653f\u5ba1\u6279\u5c40",
+        "\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40",
+    )
+    for line in reversed([line.strip() for line in source.splitlines() if line.strip()]):
+        if any(keyword in line for keyword in authority_keywords):
+            cleaned = _clean_registration_authority(line)
+            if cleaned and any(keyword in cleaned for keyword in authority_keywords):
+                return cleaned
+    return ""
+
+
 def split_bank_name_and_branch(value: str) -> tuple[str, str]:
     cleaned = re.sub(r"\s+", " ", normalize_text(value)).strip("：:;；，,。 ")
     if not cleaned:
@@ -1358,13 +1498,12 @@ def extract_business_license(text: str) -> dict[str, Any]:
         "\u5730\u5740",
         "\u7ecf\u8425\u8303\u56f4",
         "\u7c7b\u578b",
+        "\u767b\u8bb0\u673a\u5173",
+        "\u767b\u8bb0\u673a\u6784",
+        "\u53d1\u7167\u673a\u5173",
     ]
-    business_scope = clean_business_scope(
-        _label_value_cn(text, ["\u7ecf\u8425\u8303\u56f4"], ["\u4f4f\u6240", "\u5730\u5740", "\u7c7b\u578b", "\u6cd5\u5b9a\u4ee3\u8868\u4eba"], max_length=800, allow_multiline=True)
-    )
-    address = clean_address(
-        _label_value_cn(text, ["\u4f4f\u6240", "\u5730\u5740", "\u8425\u4e1a\u573a\u6240"], ["\u7ecf\u8425\u8303\u56f4", "\u7c7b\u578b", "\u6cd5\u5b9a\u4ee3\u8868\u4eba"], max_length=260, allow_multiline=True)
-    )
+    address, business_scope = _extract_business_license_address_and_scope(text)
+    registration_authority = _extract_registration_authority_cn(text)
     return {
         "company_name": _pick_first_nonempty(
             _label_value_cn(text, ["\u540d\u79f0", "\u4f01\u4e1a\u540d\u79f0", "\u516c\u53f8\u540d\u79f0", "\u5e02\u573a\u4e3b\u4f53\u540d\u79f0"], stop_labels, max_length=180),
@@ -1383,6 +1522,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
         "business_scope": business_scope if len(business_scope) >= 4 else "",
         "address": address if len(address) >= 4 else "",
         "company_type": _label_value_cn(text, ["\u7c7b\u578b", "\u4e3b\u4f53\u7c7b\u578b"], ["\u6cd5\u5b9a\u4ee3\u8868\u4eba", "\u6ce8\u518c\u8d44\u672c", "\u6210\u7acb\u65e5\u671f", "\u7ecf\u8425\u8303\u56f4"], max_length=80),
+        "registration_authority": registration_authority or "\u6682\u65e0",
     }
 
 
@@ -2707,13 +2847,12 @@ def extract_business_license(text: str) -> dict[str, Any]:
         "\u5730\u5740",
         "\u7ecf\u8425\u8303\u56f4",
         "\u7c7b\u578b",
+        "\u767b\u8bb0\u673a\u5173",
+        "\u767b\u8bb0\u673a\u6784",
+        "\u53d1\u7167\u673a\u5173",
     ]
-    business_scope = clean_business_scope(
-        _label_value_cn(text, ["\u7ecf\u8425\u8303\u56f4"], ["\u4f4f\u6240", "\u5730\u5740", "\u7c7b\u578b", "\u6cd5\u5b9a\u4ee3\u8868\u4eba"], max_length=800, allow_multiline=True)
-    )
-    address = clean_address(
-        _label_value_cn(text, ["\u4f4f\u6240", "\u5730\u5740", "\u8425\u4e1a\u573a\u6240"], ["\u7ecf\u8425\u8303\u56f4", "\u7c7b\u578b", "\u6cd5\u5b9a\u4ee3\u8868\u4eba"], max_length=260, allow_multiline=True)
-    )
+    address, business_scope = _extract_business_license_address_and_scope(text)
+    registration_authority = _extract_registration_authority_cn(text)
     return {
         "company_name": _pick_first_nonempty(
             _label_value_cn(text, ["\u540d\u79f0", "\u4f01\u4e1a\u540d\u79f0", "\u516c\u53f8\u540d\u79f0", "\u5e02\u573a\u4e3b\u4f53\u540d\u79f0"], stop_labels, max_length=180),
@@ -2732,6 +2871,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
         "business_scope": business_scope if len(business_scope) >= 4 else "",
         "address": address if len(address) >= 4 else "",
         "company_type": _label_value_cn(text, ["\u7c7b\u578b", "\u4e3b\u4f53\u7c7b\u578b"], ["\u6cd5\u5b9a\u4ee3\u8868\u4eba", "\u6ce8\u518c\u8d44\u672c", "\u6210\u7acb\u65e5\u671f", "\u7ecf\u8425\u8303\u56f4"], max_length=80),
+        "registration_authority": registration_authority or "\u6682\u65e0",
     }
 
 
