@@ -91,37 +91,60 @@ def _ocr_pdf_pages(file_bytes: bytes) -> str:
     return "\n\n".join(ocr_results)
 
 
-def _crop_bottom_region(image_bytes: bytes, ratio: float = 0.35) -> bytes:
+def _crop_image_region(image_bytes: bytes, box: tuple[int, int, int, int]) -> bytes:
     with Image.open(BytesIO(image_bytes)) as image:
         image = image.convert("RGB")
-        width, height = image.size
-        top = max(0, int(height * (1 - ratio)))
-        cropped = image.crop((0, top, width, height))
+        cropped = image.crop(box)
         output = BytesIO()
         cropped.save(output, format="JPEG", quality=95)
         return output.getvalue()
 
 
+def _business_license_seal_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[int, int, int, int]]]:
+    with Image.open(BytesIO(image_bytes)) as image:
+        width, height = image.size
+    return [
+        ("bottom_full_35", (0, max(0, int(height * 0.65)), width, height)),
+        ("bottom_full_25", (0, max(0, int(height * 0.75)), width, height)),
+        ("bottom_left_middle_35", (0, max(0, int(height * 0.65)), max(1, int(width * 0.72)), height)),
+        ("bottom_center_35", (max(0, int(width * 0.12)), max(0, int(height * 0.62)), min(width, int(width * 0.88)), height)),
+    ]
+
+
 def _ocr_business_license_seal_region(file_bytes: bytes, file_type: str, filename: str) -> str:
+    logger.info("[business_license] start seal-region extraction filename=%s file_type=%s", filename, file_type)
     try:
         if file_type == "pdf":
             images = file_service.pdf_to_images(file_bytes)
             if not images:
+                logger.warning("[business_license] seal-region extraction skipped: no rendered PDF images filename=%s", filename)
                 return ""
             source_image = images[0]
         elif file_type == "image":
             source_image = file_bytes
         else:
+            logger.info("[business_license] seal-region extraction skipped: unsupported file_type=%s filename=%s", file_type, filename)
             return ""
 
-        seal_region = _crop_bottom_region(source_image)
-        compressed = file_service.compress_image(seal_region)
-        seal_text = ocr_service.recognize_image(compressed).strip()
-        if seal_text:
-            logger.info("[business_license] seal_region_ocr_text=%s", seal_text[:500])
-        else:
-            logger.warning("[business_license] seal_region_ocr_text empty for %s", filename)
-        return seal_text
+        ocr_parts: list[str] = []
+        for region_name, box in _business_license_seal_crop_boxes(source_image):
+            logger.info("[business_license] seal crop box=%s region=%s filename=%s", box, region_name, filename)
+            try:
+                seal_region = _crop_image_region(source_image, box)
+                compressed = file_service.compress_image(seal_region)
+                seal_text = ocr_service.recognize_image(compressed).strip()
+                logger.info("[business_license] seal_region_ocr_text region=%s text=%s", region_name, seal_text[:1000] or "(empty)")
+                if seal_text:
+                    ocr_parts.append(f"--- Seal Region {region_name} box={box} ---\n{seal_text}")
+            except OCRServiceError as exc:
+                logger.warning("[business_license] seal region OCR failed region=%s filename=%s error=%s", region_name, filename, exc)
+            except Exception as exc:  # pragma: no cover - best-effort per crop
+                logger.warning("[business_license] seal region crop/OCR failed region=%s filename=%s error=%s", region_name, filename, exc)
+
+        if not ocr_parts:
+            logger.warning("[business_license] registration_authority extraction failed: seal-region OCR produced no text filename=%s", filename)
+            return ""
+        return "\n\n".join(ocr_parts)
     except OCRServiceError as exc:
         logger.warning("[business_license] seal region OCR failed for %s: %s", filename, exc)
         return ""

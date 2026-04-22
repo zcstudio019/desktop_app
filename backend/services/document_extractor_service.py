@@ -1480,6 +1480,7 @@ def _pick_registration_authority_candidate(candidates: list[tuple[str, int]]) ->
         if not any(suffix in value for suffix in _BUSINESS_LICENSE_AUTHORITY_SUFFIXES):
             continue
         cleaned.append((value, score))
+    logger.info("[business_license] registration_authority_candidates=%s", cleaned)
     if not cleaned:
         return ""
     return sorted(cleaned, key=lambda item: (item[1] + len(item[0]), len(item[0])), reverse=True)[0][0]
@@ -1498,6 +1499,7 @@ def _extract_registration_authority_cn(text: str) -> str:
             cleaned = _clean_registration_authority(match.group(1))
             if cleaned:
                 logger.info("[business_license] registration_authority candidate=%s", cleaned)
+                logger.info("[business_license] final registration_authority=%s", cleaned)
                 return cleaned
 
     labeled = _label_value_cn(
@@ -1516,6 +1518,7 @@ def _extract_registration_authority_cn(text: str) -> str:
     cleaned = _clean_registration_authority(labeled)
     if cleaned:
         logger.info("[business_license] registration_authority candidate=%s", cleaned)
+        logger.info("[business_license] final registration_authority=%s", cleaned)
         return cleaned
 
     candidates: list[tuple[str, int]] = []
@@ -1536,6 +1539,13 @@ def _extract_registration_authority_cn(text: str) -> str:
     picked = _pick_registration_authority_candidate(candidates)
     if picked:
         logger.info("[business_license] registration_authority candidate=%s", picked)
+        logger.info("[business_license] final registration_authority=%s", picked)
+    else:
+        logger.warning(
+            "[business_license] registration_authority extraction failed: no authority candidate matched, registration_date=%s, bottom_text=%s",
+            registration_date or "",
+            "\n".join(bottom_lines)[-1000:],
+        )
     return picked
 
 
