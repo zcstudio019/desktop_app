@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 import sys
+from io import BytesIO
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from PIL import Image
 
 desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
@@ -87,6 +89,45 @@ def _ocr_pdf_pages(file_bytes: bytes) -> str:
             logger.warning("OCR failed for page %s: %s", index, exc)
             ocr_results.append(f"--- Page {index} ---\n{OCR_PAGE_FAILED_PLACEHOLDER}")
     return "\n\n".join(ocr_results)
+
+
+def _crop_bottom_region(image_bytes: bytes, ratio: float = 0.35) -> bytes:
+    with Image.open(BytesIO(image_bytes)) as image:
+        image = image.convert("RGB")
+        width, height = image.size
+        top = max(0, int(height * (1 - ratio)))
+        cropped = image.crop((0, top, width, height))
+        output = BytesIO()
+        cropped.save(output, format="JPEG", quality=95)
+        return output.getvalue()
+
+
+def _ocr_business_license_seal_region(file_bytes: bytes, file_type: str, filename: str) -> str:
+    try:
+        if file_type == "pdf":
+            images = file_service.pdf_to_images(file_bytes)
+            if not images:
+                return ""
+            source_image = images[0]
+        elif file_type == "image":
+            source_image = file_bytes
+        else:
+            return ""
+
+        seal_region = _crop_bottom_region(source_image)
+        compressed = file_service.compress_image(seal_region)
+        seal_text = ocr_service.recognize_image(compressed).strip()
+        if seal_text:
+            logger.info("[business_license] seal_region_ocr_text=%s", seal_text[:500])
+        else:
+            logger.warning("[business_license] seal_region_ocr_text empty for %s", filename)
+        return seal_text
+    except OCRServiceError as exc:
+        logger.warning("[business_license] seal region OCR failed for %s: %s", filename, exc)
+        return ""
+    except Exception as exc:  # pragma: no cover - best-effort OCR fallback
+        logger.warning("[business_license] seal region crop/OCR failed for %s: %s", filename, exc)
+        return ""
 
 
 def _extract_content_from_file(file_bytes: bytes, file_type: str, filename: str) -> tuple[str, list[dict]]:
@@ -178,4 +219,8 @@ async def process_file(
         document_type_code,
         get_document_display_name(document_type_code),
     )
+    if document_type_code == "business_license":
+        seal_region_text = _ocr_business_license_seal_region(file_bytes, file_type, file.filename or "")
+        if seal_region_text:
+            text_content = f"{text_content}\n\n--- Business License Seal Region OCR ---\n{seal_region_text}"
     return _extract_structured_data(text_content, document_type_code, rows)

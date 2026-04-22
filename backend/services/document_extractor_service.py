@@ -1497,6 +1497,7 @@ def _extract_registration_authority_cn(text: str) -> str:
         if match:
             cleaned = _clean_registration_authority(match.group(1))
             if cleaned:
+                logger.info("[business_license] registration_authority candidate=%s", cleaned)
                 return cleaned
 
     labeled = _label_value_cn(
@@ -1514,6 +1515,7 @@ def _extract_registration_authority_cn(text: str) -> str:
     )
     cleaned = _clean_registration_authority(labeled)
     if cleaned:
+        logger.info("[business_license] registration_authority candidate=%s", cleaned)
         return cleaned
 
     candidates: list[tuple[str, int]] = []
@@ -1531,7 +1533,10 @@ def _extract_registration_authority_cn(text: str) -> str:
     bottom_text = "\n".join(bottom_lines)
     candidates.extend((candidate, 10) for candidate in _extract_authority_candidates_from_text(bottom_text))
     candidates.extend((candidate, 1) for candidate in _extract_authority_candidates_from_text(source))
-    return _pick_registration_authority_candidate(candidates)
+    picked = _pick_registration_authority_candidate(candidates)
+    if picked:
+        logger.info("[business_license] registration_authority candidate=%s", picked)
+    return picked
 
 
 def _extract_registration_date_cn(text: str) -> str:
@@ -1544,6 +1549,7 @@ def _extract_registration_date_cn(text: str) -> str:
         "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40",
         "\u884c\u653f\u5ba1\u6279\u5c40",
         "\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40",
+        "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u6240",
     )
 
     for marker in authority_markers:
