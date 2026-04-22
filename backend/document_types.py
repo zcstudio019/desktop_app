@@ -158,7 +158,7 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         storage_label="公司章程",
         formats=("pdf", "docx"),
         aliases=("公司章程", "章程"),
-        store_original=False,
+        store_original=True,
         store_markdown=True,
     ),
     DocumentTypeDefinition(
@@ -167,7 +167,7 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         storage_label="银行对账单",
         formats=("pdf", "xlsx"),
         aliases=("银行对账单", "对账单", "银行账单"),
-        store_original=False,
+        store_original=True,
         store_markdown=True,
     ),
     DocumentTypeDefinition(
@@ -176,7 +176,7 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         storage_label="银行对账明细",
         formats=("pdf", "xlsx"),
         aliases=("银行对账明细", "对账明细", "银行明细"),
-        store_original=False,
+        store_original=True,
         store_markdown=True,
     ),
 )

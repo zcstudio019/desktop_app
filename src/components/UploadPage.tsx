@@ -247,7 +247,7 @@ const FILE_TYPES: FileTypeConfig[] = [
     bgColor: 'bg-indigo-50',
     icon: FileText,
     acceptedExtensions: ['.pdf', '.docx'],
-    storeOriginal: false,
+    storeOriginal: true,
   },
   {
     id: 'bank_statement',
@@ -257,7 +257,7 @@ const FILE_TYPES: FileTypeConfig[] = [
     bgColor: 'bg-emerald-50',
     icon: Landmark,
     acceptedExtensions: ['.pdf', '.xlsx', '.xls'],
-    storeOriginal: false,
+    storeOriginal: true,
   },
   {
     id: 'bank_statement_detail',
@@ -267,7 +267,7 @@ const FILE_TYPES: FileTypeConfig[] = [
     bgColor: 'bg-lime-50',
     icon: Landmark,
     acceptedExtensions: ['.pdf', '.xlsx', '.xls'],
-    storeOriginal: false,
+    storeOriginal: true,
   },
 ];
 const MAX_FILE_SIZE = 50 * 1024 * 1024;

@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -1313,6 +1314,7 @@ async def download_document_original(
         logger.warning("document download missing path doc_id=%s", doc_id)
         raise HTTPException(status_code=409, detail=DOCUMENT_FILE_MISSING_MESSAGE)
 
+    logger.info("document download ready doc_id=%s path=%s", doc_id, absolute_path)
     return FileResponse(path=absolute_path, filename=document.get("file_name") or absolute_path.name)
 
 
@@ -1343,11 +1345,14 @@ async def preview_document_original(
         ".jpeg": "image/jpeg",
     }
     media_type = media_type_map.get(absolute_path.suffix.lower())
+    file_name = document.get("file_name") or absolute_path.name
+    encoded_file_name = quote(file_name)
+    logger.info("document preview ready doc_id=%s path=%s media_type=%s", doc_id, absolute_path, media_type)
     return FileResponse(
         path=absolute_path,
-        filename=document.get("file_name") or absolute_path.name,
+        filename=file_name,
         media_type=media_type,
-        headers={"Content-Disposition": f'inline; filename="{document.get("file_name") or absolute_path.name}"'},
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{encoded_file_name}"},
     )
 
 

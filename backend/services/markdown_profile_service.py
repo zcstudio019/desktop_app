@@ -165,42 +165,73 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
     sections: list[str] = []
     source_documents: list[dict[str, Any]] = []
     for extraction in extractions:
+        extraction_id = extraction.get('extraction_id') or ''
         extraction_type = extraction.get('extraction_type') or '\u672a\u547d\u540d\u8d44\u6599'
-        extracted_data = extraction.get('extracted_data') or {}
-        type_name = get_document_display_name(extraction_type)
-        document = None
-        doc_id = extraction.get('doc_id')
-        if doc_id:
+        try:
+            section, source_document = await _build_single_document_section(storage_service, customer_id, extraction)
+            sections.append(section)
+            source_documents.append(source_document)
+        except Exception as exc:
+            logger.warning(
+                "profile_markdown extraction_section_failed customer_id=%s extraction_id=%s document_type=%s error=%s",
+                customer_id,
+                extraction_id,
+                extraction_type,
+                exc,
+                exc_info=True,
+            )
+            sections.append(
+                _markdown_section(
+                    get_document_display_name(extraction_type),
+                    [
+                        f'- \u8d44\u6599\u7c7b\u578b\uff1a{get_document_display_name(extraction_type)}',
+                        f'- \u63d0\u793a\uff1a\u8be5\u8d44\u6599\u90e8\u5206\u5b57\u6bb5\u6574\u7406\u5931\u8d25\uff0c\u5176\u4ed6\u8d44\u6599\u5df2\u7ee7\u7eed\u751f\u6210\u3002',
+                    ],
+                )
+            )
+    return sections, source_documents
+
+
+async def _build_single_document_section(
+    storage_service: Any,
+    customer_id: str,
+    extraction: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    extraction_type = extraction.get('extraction_type') or '\u672a\u547d\u540d\u8d44\u6599'
+    extracted_data = extraction.get('extracted_data') or {}
+    type_name = get_document_display_name(extraction_type)
+    document = None
+    doc_id = extraction.get('doc_id')
+    if doc_id:
+        try:
+            document = await storage_service.get_document(doc_id)
+        except Exception as exc:
+            logger.warning("profile_markdown document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
+    file_name = (document or {}).get('file_name') or '\u6682\u65e0'
+    file_path = (document or {}).get('file_path') or ''
+    store_original = should_store_original(extraction_type)
+    if store_original:
+        original_status = '\u53ef\u67e5\u770b' if file_path else '\u539f\u4ef6\u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u5df2\u4e0d\u53ef\u7528'
+    else:
+        original_status = '\u672a\u4fdd\u7559\u539f\u4ef6\uff0c\u4ec5\u4fdd\u7559\u63d0\u53d6\u7ed3\u679c'
+    source_document = {
+        'source_type': extraction_type,
+        'source_type_name': type_name,
+        'extraction_id': extraction.get('extraction_id'),
+        'doc_id': doc_id,
+        'file_name': file_name,
+        'original_status': original_status,
+        'original_available': bool(store_original and file_path),
+    }
+    lines = [f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}']
+    lines.append(f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}')
+    lines.append(f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}')
+    if isinstance(extracted_data, dict):
+        display_type_name = extracted_data.get('document_type_name') or extracted_data.get('storage_label')
+        if display_type_name:
+            lines.append(f'- \u8d44\u6599\u7c7b\u578b\uff1a{display_type_name}')
+        for key, value in extracted_data.items():
             try:
-                document = await storage_service.get_document(doc_id)
-            except Exception as exc:
-                logger.warning("profile_markdown document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
-        file_name = (document or {}).get('file_name') or '\u6682\u65e0'
-        file_path = (document or {}).get('file_path') or ''
-        store_original = should_store_original(extraction_type)
-        if store_original:
-            original_status = '\u53ef\u67e5\u770b' if file_path else '\u539f\u4ef6\u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u5df2\u4e0d\u53ef\u7528'
-        else:
-            original_status = '\u672a\u4fdd\u7559\u539f\u4ef6\uff0c\u4ec5\u4fdd\u7559\u63d0\u53d6\u7ed3\u679c'
-        source_documents.append(
-            {
-                'source_type': extraction_type,
-                'source_type_name': type_name,
-                'extraction_id': extraction.get('extraction_id'),
-                'doc_id': doc_id,
-                'file_name': file_name,
-                'original_status': original_status,
-                'original_available': bool(store_original and file_path),
-            }
-        )
-        lines = [f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}']
-        lines.append(f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}')
-        lines.append(f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}')
-        if isinstance(extracted_data, dict):
-            display_type_name = extracted_data.get('document_type_name') or extracted_data.get('storage_label')
-            if display_type_name:
-                lines.append(f'- \u8d44\u6599\u7c7b\u578b\uff1a{display_type_name}')
-            for key, value in extracted_data.items():
                 if key in HIDDEN_STRUCTURED_FIELDS:
                     continue
                 if key == 'document_type_name' and display_type_name:
@@ -208,8 +239,15 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 if key == 'storage_label' and display_type_name:
                     continue
                 lines.append(f'- {_format_field_label(key)}\uff1a{_format_value(key, value)}')
-        sections.append(_markdown_section(type_name, lines))
-    return sections, source_documents
+            except Exception as exc:
+                logger.warning(
+                    "profile_markdown field_failed customer_id=%s document_type=%s field=%s error=%s",
+                    customer_id,
+                    extraction_type,
+                    key,
+                    exc,
+                )
+    return _markdown_section(type_name, lines), source_document
 
 
 async def _build_application_section(storage_service: Any, customer_id: str) -> tuple[str, dict[str, Any]]:
@@ -260,10 +298,24 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
         raise ValueError('customer not found')
 
     customer_name = customer.get('name') or ''
-    doc_sections, source_documents = await _build_document_sections(storage_service, customer_id)
-    application_section, application_snapshot = await _build_application_section(storage_service, customer_id)
-    scheme_snapshot = await storage_service.get_latest_scheme_snapshot(customer_id)
-    scheme_section, scheme_meta = _build_scheme_section(scheme_snapshot)
+    try:
+        doc_sections, source_documents = await _build_document_sections(storage_service, customer_id)
+    except Exception as exc:
+        logger.warning("profile_markdown documents_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+        doc_sections, source_documents = [
+            _markdown_section('\u5df2\u89e3\u6790\u8d44\u6599', ['- \u8d44\u6599\u6bb5\u843d\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u67e5\u770b\u6765\u6e90\u6587\u6863\u5217\u8868\u6216\u91cd\u65b0\u4e0a\u4f20\u3002'])
+        ], []
+    try:
+        application_section, application_snapshot = await _build_application_section(storage_service, customer_id)
+    except Exception as exc:
+        logger.warning("profile_markdown application_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+        application_section, application_snapshot = _markdown_section('\u7533\u8bf7\u8868\u6458\u8981', ['- \u7533\u8bf7\u8868\u6458\u8981\u6682\u65f6\u65e0\u6cd5\u751f\u6210']), {'error': str(exc)}
+    try:
+        scheme_snapshot = await storage_service.get_latest_scheme_snapshot(customer_id)
+        scheme_section, scheme_meta = _build_scheme_section(scheme_snapshot)
+    except Exception as exc:
+        logger.warning("profile_markdown scheme_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+        scheme_section, scheme_meta = _markdown_section('\u65b9\u6848\u5339\u914d\u6458\u8981', ['- \u65b9\u6848\u5339\u914d\u6458\u8981\u6682\u65f6\u65e0\u6cd5\u751f\u6210']), {'error': str(exc)}
 
     customer_display_name = customer_name or '\u6682\u65e0'
     uploader = customer.get('uploader') or '\u6682\u65e0'

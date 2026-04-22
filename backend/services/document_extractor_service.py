@@ -210,6 +210,29 @@ def _clean_field_value(value: str) -> str:
     return cleaned
 
 
+def extract_company_articles_registered_capital(text: str) -> str:
+    """Extract registered capital from company articles without defaulting to 0."""
+    source = normalize_text(text)
+    if not source:
+        return ""
+    patterns = (
+        r"(?:公司)?注册资本\s*[:：]?\s*(人民币\s*[0-9,]+(?:\.\d+)?\s*(?:万元|元|亿元))",
+        r"(?:公司)?注册资本\s*为\s*(人民币\s*[0-9,]+(?:\.\d+)?\s*(?:万元|元|亿元))",
+        r"注册资本(?:总额)?\s*[:：]?\s*(人民币\s*[0-9,]+(?:\.\d+)?\s*(?:万元|元|亿元))",
+        r"(?:公司)?注册资本\s*[:：]?\s*([0-9,]+(?:\.\d+)?\s*(?:万元|元|亿元))",
+        r"(?:公司)?注册资本\s*为\s*([0-9,]+(?:\.\d+)?\s*(?:万元|元|亿元))",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, source)
+        if not match:
+            continue
+        value = re.sub(r"\s+", "", match.group(1))
+        if value and value != "0":
+            return value
+    fallback = _registered_capital_cn(source)
+    return "" if fallback == "0" else fallback
+
+
 def clean_business_scope(value: str) -> str:
     return _clean_scope_or_address(value, stop_words=("住所", "地址", "类型", "法定代表人", "统一社会信用代码", "成立日期"))
 
@@ -312,7 +335,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
         ),
         "credit_code": _find_first_match(text, UNIFIED_CODE_PATTERN),
         "legal_person": _extract_label_value(text, ("法定代表人", "法人", "负责人"), stop_labels=stop_labels),
-        "registered_capital": _money_after_labels(text, ("注册资本", "注册资金")),
+        "registered_capital": extract_company_articles_registered_capital(text),
         "establish_date": _pick_first_nonempty(
             _extract_label_value(text, ("成立日期", "注册日期", "营业期限自"), stop_labels=stop_labels),
             _find_first_date(text),
@@ -371,7 +394,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
-        "registered_capital": _money_after_labels(text, ("注册资本", "注册资金")),
+        "registered_capital": extract_company_articles_registered_capital(text),
         "legal_person": _find_after_labels(text, ("法定代表人", "执行董事", "董事长")),
         "shareholders": shareholder_sentences[:5],
         "business_scope": _find_after_labels(text, ("经营范围",)),
@@ -1661,7 +1684,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
         ),
         "credit_code": _find_first_match(text, UNIFIED_CODE_PATTERN),
         "legal_person": _extract_label_value(text, ("法定代表人", "法人", "负责人"), stop_labels=stop_labels),
-        "registered_capital": _money_after_labels(text, ("注册资本", "注册资金")),
+        "registered_capital": extract_company_articles_registered_capital(text),
         "establish_date": _pick_first_nonempty(
             _extract_label_value(text, ("成立日期", "注册日期", "营业期限自"), stop_labels=stop_labels),
             _find_first_date(text),
@@ -1720,7 +1743,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
-        "registered_capital": _money_after_labels(text, ("注册资本", "注册资金")),
+        "registered_capital": extract_company_articles_registered_capital(text),
         "legal_person": _find_after_labels(text, ("法定代表人", "执行董事", "董事长")),
         "shareholders": shareholder_sentences[:5],
         "business_scope": _find_after_labels(text, ("经营范围",)),
