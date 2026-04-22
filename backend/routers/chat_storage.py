@@ -325,11 +325,22 @@ async def _save_doc_and_extraction(
     document_type_code = _normalize_storage_document_type(document_type)
     definition = get_document_type_definition(document_type_code)
     store_original = definition.store_original if definition else should_store_original(document_type_code)
+    file_bytes_size = len(file_bytes) if file_bytes else 0
     logger.info(
-        "[Local Save] document_type_code=%s store_original=%s",
+        "[Local Save] document_type_code=%s store_original=%s file_bytes_present=%s file_bytes_size=%s",
         document_type_code,
         store_original,
+        bool(file_bytes),
+        file_bytes_size,
     )
+    if store_original and not file_bytes:
+        logger.error(
+            "[Local Save] save stage missing file bytes, document_type_code=%s file_name=%s",
+            document_type_code,
+            chat_file_name,
+        )
+        raise RuntimeError(f"原件应保存但 file_bytes 缺失: {document_type_code} / {chat_file_name}")
+
     file_path, file_size = _save_file_to_disk(
         customer_id,
         chat_file_name,

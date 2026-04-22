@@ -144,7 +144,19 @@ async def _save_request(
     if HAS_DB_STORAGE:
         from .chat_storage import _determine_customer_id, _resolve_customer_target, _save_to_local_storage
 
-        file_bytes = base64.b64decode(request.fileContent) if request.fileContent else None
+        try:
+            file_bytes = base64.b64decode(request.fileContent, validate=True) if request.fileContent else None
+        except Exception as exc:
+            logger.error("[Save API] invalid fileContent for %s: %s", request.fileName or backend_type, exc)
+            raise HTTPException(status_code=400, detail="原始文件内容无效，请重新上传。") from exc
+
+        logger.info(
+            "[Save API] received file bytes: %s, size=%s, document_type=%s, file_name=%s",
+            "yes" if file_bytes else "no",
+            len(file_bytes) if file_bytes else 0,
+            backend_type,
+            request.fileName or "(empty)",
+        )
         try:
             resolved_customer_id = None
             if request.customerName:
@@ -175,6 +187,14 @@ async def _save_request(
             document_id = save_result[5] if len(save_result) > 5 else None
             original_available = bool(save_result[6]) if len(save_result) > 6 else False
             final_customer_id = request.customerId or saved_customer_id or resolved_customer_id
+            if not success:
+                logger.error(
+                    "[Save API] local save failed document_type=%s file_name=%s error=%s",
+                    backend_type,
+                    request.fileName or "(empty)",
+                    error_msg,
+                )
+                raise HTTPException(status_code=500, detail=_sanitize_storage_error(error_msg) or LOCAL_SAVE_FAILED_MESSAGE)
             if success and final_customer_id:
                 await profile_sync_service.handle_document_saved(storage_service, final_customer_id)
             return FeishuSaveResponse(
@@ -186,6 +206,8 @@ async def _save_request(
                 isNew=is_new,
                 error=_sanitize_storage_error(error_msg),
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error during local save: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=LOCAL_SAVE_FAILED_MESSAGE) from e

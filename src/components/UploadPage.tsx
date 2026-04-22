@@ -363,6 +363,19 @@ function validateFile(file: File, acceptedExtensions: string[]): { valid: boolea
   return { valid: true };
 }
 
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取原始文件内容失败，请重新选择文件后再试。'));
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const [, base64 = result] = result.split(',');
+      resolve(base64);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // ============================================
 // Sub-Components
 // ============================================
@@ -684,12 +697,14 @@ const UploadPage: React.FC = () => {
       if (!finalCustomerName) {
         throw new Error('未识别到客户名称，请先补充客户名称后再保存。');
       }
+      const fileContent = await readFileAsBase64(item.file);
       const storageResult = await saveToStorage({
         documentType: processResult.documentType,
         customerName: finalCustomerName,
         customerId: activeCustomerId,
         content: processResult.content,
         fileName: item.file.name,
+        fileContent,
       }, signal);
 
       const extractionResult: ExtractionResult = {
