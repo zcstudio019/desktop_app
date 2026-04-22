@@ -1419,6 +1419,72 @@ def _clean_registration_authority(value: str) -> str:
     return cleaned
 
 
+_BUSINESS_LICENSE_AUTHORITY_SUFFIXES = (
+    "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40",
+    "\u884c\u653f\u5ba1\u6279\u5c40",
+    "\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40",
+    "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u6240",
+)
+
+
+def _extract_authority_candidates_from_text(value: str) -> list[str]:
+    source = normalize_text(value)
+    if not source:
+        return []
+    source = re.sub(r"(?:19|20)\d{2}\s*\u5e74\s*\d{1,2}\s*\u6708\s*\d{1,2}\s*\u65e5", "", source)
+    source = re.sub(r"\s+", "", source)
+    for marker in ("\u767b\u8bb0\u673a\u5173", "\u767b\u8bb0\u673a\u6784", "\u53d1\u7167\u673a\u5173", "\u5370\u7ae0"):
+        source = source.replace(marker, "")
+    if any(noise in source for noise in ("\u56fd\u5bb6\u4f01\u4e1a\u4fe1\u7528\u4fe1\u606f\u516c\u793a\u7cfb\u7edf", "\u56fd\u5bb6\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u603b\u5c40\u76d1\u5236", "http", "www")):
+        return []
+
+    suffix_pattern = "|".join(re.escape(suffix) for suffix in _BUSINESS_LICENSE_AUTHORITY_SUFFIXES)
+    candidates: list[str] = []
+    for match in re.finditer(rf"([\u4e00-\u9fff]{{0,40}}(?:{suffix_pattern}))", source):
+        candidate = match.group(1)
+        starts = [
+            candidate.rfind(prefix)
+            for prefix in (
+                "\u4e0a\u6d77\u5e02",
+                "\u5317\u4eac\u5e02",
+                "\u5929\u6d25\u5e02",
+                "\u91cd\u5e86\u5e02",
+                "\u5e7f\u4e1c\u7701",
+                "\u6c5f\u82cf\u7701",
+                "\u6d59\u6c5f\u7701",
+                "\u5c71\u4e1c\u7701",
+                "\u56db\u5ddd\u7701",
+                "\u6cb3\u5357\u7701",
+                "\u6cb3\u5317\u7701",
+                "\u6e56\u5357\u7701",
+                "\u6e56\u5317\u7701",
+                "\u5b89\u5fbd\u7701",
+                "\u798f\u5efa\u7701",
+            )
+        ]
+        start = max(starts)
+        if start > 0:
+            candidate = candidate[start:]
+        cleaned = _clean_registration_authority(candidate)
+        if cleaned:
+            candidates.append(cleaned)
+    return candidates
+
+
+def _pick_registration_authority_candidate(candidates: list[tuple[str, int]]) -> str:
+    cleaned: list[tuple[str, int]] = []
+    for candidate, score in candidates:
+        value = _clean_registration_authority(candidate)
+        if not value:
+            continue
+        if not any(suffix in value for suffix in _BUSINESS_LICENSE_AUTHORITY_SUFFIXES):
+            continue
+        cleaned.append((value, score))
+    if not cleaned:
+        return ""
+    return sorted(cleaned, key=lambda item: (item[1] + len(item[0]), len(item[0])), reverse=True)[0][0]
+
+
 def _extract_registration_authority_cn(text: str) -> str:
     source = text or ""
     explicit_patterns = (
@@ -1450,28 +1516,22 @@ def _extract_registration_authority_cn(text: str) -> str:
     if cleaned:
         return cleaned
 
-    authority_candidates = [
-        _clean_registration_authority(match.group(1))
-        for match in re.finditer(
-            r"([^\n]{2,30}(?:\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40|\u884c\u653f\u5ba1\u6279\u5c40|\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40))",
-            source,
-        )
-    ]
-    authority_candidates = [candidate for candidate in authority_candidates if candidate]
-    if authority_candidates:
-        return max(authority_candidates, key=len)
+    candidates: list[tuple[str, int]] = []
+    lines = [line.strip() for line in source.splitlines() if line.strip()]
+    bottom_lines = lines[-20:]
+    registration_date = _extract_registration_date_cn(source)
+    for idx, line in enumerate(bottom_lines):
+        window = "\n".join(bottom_lines[max(0, idx - 1) : min(len(bottom_lines), idx + 2)])
+        score = 20
+        if registration_date and registration_date in window:
+            score += 40
+        score += idx
+        candidates.extend((candidate, score) for candidate in _extract_authority_candidates_from_text(window))
 
-    authority_keywords = (
-        "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40",
-        "\u884c\u653f\u5ba1\u6279\u5c40",
-        "\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40",
-    )
-    for line in reversed([line.strip() for line in source.splitlines() if line.strip()]):
-        if any(keyword in line for keyword in authority_keywords):
-            cleaned = _clean_registration_authority(line)
-            if cleaned and any(keyword in cleaned for keyword in authority_keywords):
-                return cleaned
-    return ""
+    bottom_text = "\n".join(bottom_lines)
+    candidates.extend((candidate, 10) for candidate in _extract_authority_candidates_from_text(bottom_text))
+    candidates.extend((candidate, 1) for candidate in _extract_authority_candidates_from_text(source))
+    return _pick_registration_authority_candidate(candidates)
 
 
 def _extract_registration_date_cn(text: str) -> str:
