@@ -1945,8 +1945,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
         ) : loadingProfile ? (
           <div className="flex flex-1 items-center justify-center text-sm text-slate-400">加载资料汇总中...</div>
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-2">
-            <section className="flex min-h-0 flex-col border-r border-slate-200 bg-white">
+          <div className="grid grid-cols-1 xl:grid-cols-2">
+            <section className="flex flex-col border-b border-slate-200 bg-white xl:border-b-0 xl:border-r">
               <div className="border-b border-slate-200 px-5 py-3">
                 <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700">
                   <FileText className="h-4 w-4" />
@@ -1957,11 +1957,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                 <textarea
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
-                  className="min-h-0 flex-1 resize-none border-0 p-5 font-mono text-sm leading-6 text-slate-700 outline-none"
+                  className="min-h-[520px] resize-y border-0 p-5 font-mono text-sm leading-6 text-slate-700 outline-none"
                   placeholder="请输入资料汇总内容，支持标题、分段等格式"
                 />
               ) : (
-                <div className="min-h-0 flex-1 overflow-auto p-5">
+                <div className="overflow-visible p-5">
                   <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
                     {draft || '暂无内容'}
                   </pre>
@@ -1969,14 +1969,14 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               )}
             </section>
 
-            <section className="flex min-h-0 flex-col bg-[radial-gradient(circle_at_top,_rgba(148,163,184,0.14),_transparent_45%),linear-gradient(180deg,#f8fafc_0%,#f1f5f9_100%)]">
+            <section className="flex flex-col bg-[radial-gradient(circle_at_top,_rgba(148,163,184,0.14),_transparent_45%),linear-gradient(180deg,#f8fafc_0%,#f1f5f9_100%)]">
               <div className="border-b border-slate-200 px-5 py-3">
                 <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700">
                   <Eye className="h-4 w-4" />
                   阅读预览
                 </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
+              <div className="overflow-visible px-6 py-6">
                 <article className="prose prose-slate max-w-none rounded-[28px] border border-white/80 bg-white/95 p-7 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft || '暂无内容'}</ReactMarkdown>
                 </article>

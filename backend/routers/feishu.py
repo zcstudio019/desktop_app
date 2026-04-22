@@ -20,7 +20,7 @@ if str(desktop_app_path) not in sys.path:
 from config import DATA_TYPE_CONFIG
 from services.feishu_service import FeishuService, FeishuServiceError
 
-from backend.document_types import get_document_storage_label
+from backend.document_types import get_document_storage_label, normalize_document_type_code
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.profile_sync_service import ProfileSyncService
 
@@ -128,7 +128,12 @@ async def _save_request(
     current_user: dict | None,
 ) -> FeishuSaveResponse:
     """Handle storage save for both local-first and legacy Feishu routes."""
-    backend_type = FRONTEND_TO_BACKEND_TYPE.get(request.documentType) or get_document_storage_label(request.documentType) or request.documentType
+    document_type_code = normalize_document_type_code(request.documentType) or request.documentType
+    backend_type = (
+        document_type_code
+        if HAS_DB_STORAGE
+        else FRONTEND_TO_BACKEND_TYPE.get(request.documentType) or get_document_storage_label(request.documentType) or request.documentType
+    )
     logger.info(
         "Saving document - endpoint=%s, documentType=%s, customerName=%s",
         "db" if HAS_DB_STORAGE else "feishu",

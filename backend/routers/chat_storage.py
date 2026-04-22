@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from backend.document_types import get_document_type_definition, should_store_original
+from backend.document_types import get_document_type_definition, normalize_document_type_code, should_store_original
 from config import DATA_TYPE_CONFIG, STORE_ORIGINAL_UPLOAD_FILES
 
 from .feishu import dict_to_markdown
@@ -32,6 +32,61 @@ MISSING_CUSTOMER_NAME_MESSAGE = "已提取但未保存：缺少客户名称。�
 LOCAL_SAVE_FAILED_MESSAGE = "已提取但未保存：本地保存失败，请稍后重试。"
 LEGACY_SAVE_FAILED_MESSAGE = "资料保存失败，请稍后重试。"
 DOCUMENT_TYPE_CONFIG_MISSING_MESSAGE = "资料类型配置缺失，请联系管理员检查配置。"
+
+_PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
+    "personal_credit",
+    "personal_flow",
+    "personal_tax",
+    "id_card",
+    "hukou",
+    "marriage_cert",
+    "vehicle_license",
+})
+
+_DOCUMENT_TYPE_CODE_FALLBACKS = {
+    "营业执照": "business_license",
+    "营业执照正本": "business_license",
+    "营业执照副本": "business_license",
+    "营业执照正副本": "business_license",
+    "开户许可证": "account_license",
+    "开户许可证书": "account_license",
+    "基本账户开户许可证": "account_license",
+    "身份证": "id_card",
+    "居民身份证": "id_card",
+    "户口本": "hukou",
+    "户籍证明": "hukou",
+    "结婚证": "marriage_cert",
+    "婚姻登记证": "marriage_cert",
+    "产调": "property_report",
+    "房产证": "property_report",
+    "房产证 / 产调": "property_report",
+    "房产证/产调": "property_report",
+    "行驶证": "vehicle_license",
+    "机动车行驶证": "vehicle_license",
+    "特别许可证": "special_license",
+    "特殊许可证": "special_license",
+    "公司章程": "company_articles",
+    "银行对账单": "bank_statement",
+    "银行对账明细": "bank_statement_detail",
+}
+
+
+def _normalize_storage_document_type(document_type: str | None) -> str:
+    """Normalize incoming document type aliases/display names to canonical codes."""
+    raw_value = str(document_type or "").strip()
+    normalized = normalize_document_type_code(raw_value)
+    if normalized:
+        if normalized != raw_value:
+            logger.info("[Local Save] normalized document_type=%s -> %s", raw_value, normalized)
+        return normalized
+
+    fallback = _DOCUMENT_TYPE_CODE_FALLBACKS.get(raw_value)
+    if fallback:
+        logger.info("[Local Save] normalized document_type=%s -> %s", raw_value, fallback)
+        return fallback
+
+    logger.warning("[Local Save] could not normalize document_type=%s, using raw value", raw_value)
+    return raw_value
 
 
 async def save_to_storage(
@@ -86,7 +141,8 @@ async def save_to_storage(
 
 def _determine_customer_id(customer_name: str, document_type: str) -> tuple[str, str]:
     """Determine customer_id with type prefix based on document type."""
-    customer_type = "personal" if document_type in _PERSONAL_DOC_TYPES else "enterprise"
+    document_type_code = _normalize_storage_document_type(document_type)
+    customer_type = "personal" if document_type_code in _PERSONAL_DOCUMENT_TYPE_CODES or document_type in _PERSONAL_DOC_TYPES else "enterprise"
     customer_id = f"{customer_type}_{customer_name}"
     return customer_id, customer_type
 
@@ -221,13 +277,15 @@ def _save_file_to_disk(
     file_name: str,
     file_bytes: bytes | None,
     document_type: str,
+    *,
+    store_original: bool,
 ) -> tuple[str, int]:
     """Persist the original uploaded file according to the document policy."""
     if not file_bytes:
         return ("", 0)
 
     file_size = len(file_bytes)
-    if not should_store_original(document_type):
+    if not store_original:
         logger.info(
             "[Local Save] Skipped raw file persistence by document policy document_type=%s file_name=%s",
             document_type,
@@ -248,6 +306,7 @@ def _save_file_to_disk(
     target_path = _LOCAL_UPLOAD_ROOT / safe_customer_dir / safe_name
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_bytes(file_bytes)
+    logger.info("[Local Save] Saved original file: %s", target_path)
     return (relative_path.as_posix(), file_size)
 
 
@@ -263,21 +322,43 @@ async def _save_doc_and_extraction(
     doc_id = str(uuid.uuid4())
     extraction_id = str(uuid.uuid4())
 
-    definition = get_document_type_definition(document_type)
-    file_path, file_size = _save_file_to_disk(customer_id, chat_file_name, file_bytes, document_type)
+    document_type_code = _normalize_storage_document_type(document_type)
+    definition = get_document_type_definition(document_type_code)
+    store_original = definition.store_original if definition else should_store_original(document_type_code)
+    logger.info(
+        "[Local Save] document_type_code=%s store_original=%s",
+        document_type_code,
+        store_original,
+    )
+    file_path, file_size = _save_file_to_disk(
+        customer_id,
+        chat_file_name,
+        file_bytes,
+        document_type_code,
+        store_original=store_original,
+    )
+    if store_original and not file_path:
+        logger.error(
+            "[Local Save] expected original file to be saved but file_path is empty, document_type_code=%s file_name=%s file_bytes_present=%s",
+            document_type_code,
+            chat_file_name,
+            bool(file_bytes),
+        )
+        raise RuntimeError(f"原件应保存但 file_path 为空: {document_type_code} / {chat_file_name}")
+
     doc_data = {
         "doc_id": doc_id,
         "customer_id": customer_id,
         "file_name": chat_file_name,
         "file_path": file_path,
-        "file_type": document_type,
+        "file_type": document_type_code,
         "file_size": file_size,
     }
     await storage_service.save_document(doc_data)
     logger.info(
         "[Local Save] Saved document metadata: %s (store_original=%s, file_path=%s)",
         doc_id,
-        definition.store_original if definition else True,
+        store_original,
         file_path or "(empty)",
     )
 
@@ -286,7 +367,7 @@ async def _save_doc_and_extraction(
         "extraction_id": extraction_id,
         "doc_id": doc_id,
         "customer_id": customer_id,
-        "extraction_type": document_type,
+        "extraction_type": document_type_code,
         "extracted_data": content,
         "confidence": confidence,
     }
@@ -307,11 +388,12 @@ async def _replace_existing_documents_of_same_type(
     document type should replace earlier uploads. This keeps summary views and
     downstream application generation aligned with the newest material.
     """
+    document_type_code = _normalize_storage_document_type(document_type)
     existing_documents = await storage_service.list_documents(customer_id)
     replaced_count = 0
 
     for document in existing_documents:
-        if (document.get("file_type") or "") != document_type:
+        if _normalize_storage_document_type(document.get("file_type") or "") != document_type_code:
             continue
         doc_id = document.get("doc_id")
         if not doc_id:
@@ -322,7 +404,7 @@ async def _replace_existing_documents_of_same_type(
             logger.error(
                 "[Local Save] Failed to replace existing document customer_id=%s document_type=%s old_doc_id=%s error=%s",
                 customer_id,
-                document_type,
+                document_type_code,
                 doc_id,
                 exc,
                 exc_info=True,
@@ -333,7 +415,7 @@ async def _replace_existing_documents_of_same_type(
             logger.warning(
                 "[Local Save] Existing document disappeared during replacement customer_id=%s document_type=%s old_doc_id=%s",
                 customer_id,
-                document_type,
+                document_type_code,
                 doc_id,
             )
             raise RuntimeError(f"替换旧资料失败，未找到旧文档：{doc_id}")
@@ -345,7 +427,7 @@ async def _replace_existing_documents_of_same_type(
             "[Local Save] Replaced %s existing document(s) for customer=%s, type=%s",
             replaced_count,
             customer_id,
-            document_type,
+            document_type_code,
         )
 
 
@@ -364,18 +446,20 @@ async def _save_to_local_storage(
         logger.warning("[Local Save] Missing customer name for %s", chat_file_name)
         return (False, None, MISSING_CUSTOMER_NAME_MESSAGE, [], None, None, False)
 
+    document_type_code = _normalize_storage_document_type(document_type)
+
     try:
         if target_customer_id:
             await _replace_existing_documents_of_same_type(
                 storage_service,
                 target_customer_id,
-                document_type,
+                document_type_code,
             )
             extraction_id, doc_id, original_available = await _save_doc_and_extraction(
                 storage_service,
                 target_customer_id,
                 chat_file_name,
-                document_type,
+                document_type_code,
                 content,
                 file_bytes=file_bytes,
             )
@@ -385,19 +469,19 @@ async def _save_to_local_storage(
         customer_id, customer_type = await _resolve_customer_target(
             storage_service,
             customer_name,
-            document_type,
+            document_type_code,
         )
         await _ensure_customer_exists(storage_service, customer_id, customer_name, customer_type, current_user)
         await _replace_existing_documents_of_same_type(
             storage_service,
             customer_id,
-            document_type,
+            document_type_code,
         )
         extraction_id, doc_id, original_available = await _save_doc_and_extraction(
             storage_service,
             customer_id,
             chat_file_name,
-            document_type,
+            document_type_code,
             content,
             file_bytes=file_bytes,
         )
