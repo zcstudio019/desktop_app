@@ -104,6 +104,8 @@ const SchemeMatchPage: React.FC = () => {
 
   const currentCustomerName = state.extraction.currentCustomer;
   const currentCustomerId = state.extraction.currentCustomerId;
+  const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const customerIdFromUrl = urlParams.get('customer_id') || '';
   const currentResults = currentCustomerName ? state.extraction.customerDataMap[currentCustomerName] || [] : [];
   const currentData = useMemo(() => mergeResults(currentResults), [currentResults]);
   const schemeResult = state.scheme.result;
@@ -194,6 +196,30 @@ const SchemeMatchPage: React.FC = () => {
       mounted = false;
     };
   }, [getSignal]);
+
+  useEffect(() => {
+    if (!customerIdFromUrl) {
+      return;
+    }
+
+    const targetCustomer = customers.find((item) => item.record_id === customerIdFromUrl);
+    const nextCustomerName = targetCustomer?.name || currentCustomerName || '';
+    const contextAlreadyBound =
+      currentCustomerId === customerIdFromUrl &&
+      (!targetCustomer || currentCustomerName === targetCustomer.name);
+
+    if (!contextAlreadyBound) {
+      setCurrentCustomer(nextCustomerName || null, customerIdFromUrl);
+    }
+
+    setDataSource('currentCustomer');
+  }, [
+    customerIdFromUrl,
+    customers,
+    currentCustomerId,
+    currentCustomerName,
+    setCurrentCustomer,
+  ]);
 
   const pollSchemeJob = useCallback(async (
     jobId: string,

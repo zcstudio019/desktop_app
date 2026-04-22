@@ -1,4 +1,4 @@
-"""Canonical document-type registry used by upload/extraction flows."""
+"""Canonical document-type registry used by upload/extraction/storage flows."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ class DocumentTypeDefinition:
     formats: tuple[str, ...]
     aliases: tuple[str, ...]
     customer_scope: str = "enterprise"
+    store_original: bool = True
+    store_markdown: bool = True
 
 
 DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
@@ -70,9 +72,9 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
     DocumentTypeDefinition(
         code="personal_tax",
         name="个人纳税/公积金",
-        storage_label="个人收入纳税/公积金",
+        storage_label="个人纳税/公积金提取",
         formats=("pdf", "xlsx", "image"),
-        aliases=("个人纳税", "公积金", "个人收入纳税/公积金"),
+        aliases=("个人纳税", "公积金", "个人纳税/公积金"),
         customer_scope="personal",
     ),
     DocumentTypeDefinition(
@@ -89,6 +91,7 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         formats=("pdf", "docx", "image"),
         aliases=("身份证", "居民身份证"),
         customer_scope="personal",
+        store_original=True,
     ),
     DocumentTypeDefinition(
         code="marriage_cert",
@@ -97,6 +100,7 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         formats=("pdf", "docx", "image"),
         aliases=("结婚证", "婚姻登记证"),
         customer_scope="personal",
+        store_original=True,
     ),
     DocumentTypeDefinition(
         code="hukou",
@@ -105,13 +109,24 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         formats=("pdf", "docx", "image"),
         aliases=("户口本", "户籍证明"),
         customer_scope="personal",
+        store_original=True,
     ),
     DocumentTypeDefinition(
         code="property_report",
         name="产调",
         storage_label="产调",
-        formats=("pdf", "docx"),
+        formats=("pdf", "docx", "image"),
         aliases=("产调", "不动产登记信息", "不动产产调", "房产调查"),
+        store_original=True,
+    ),
+    DocumentTypeDefinition(
+        code="vehicle_license",
+        name="行驶证",
+        storage_label="行驶证",
+        formats=("pdf", "docx", "image"),
+        aliases=("行驶证", "机动车行驶证"),
+        customer_scope="personal",
+        store_original=True,
     ),
     DocumentTypeDefinition(
         code="business_license",
@@ -119,20 +134,23 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         storage_label="营业执照",
         formats=("pdf", "docx", "image"),
         aliases=("营业执照", "营业执照正副本", "营业执照副本"),
+        store_original=True,
     ),
     DocumentTypeDefinition(
         code="account_license",
         name="开户许可证",
         storage_label="开户许可证",
         formats=("pdf", "docx", "image"),
-        aliases=("开户许可证", "开户许可证明"),
+        aliases=("开户许可证", "开户许可证书"),
+        store_original=True,
     ),
     DocumentTypeDefinition(
         code="special_license",
-        name="特别许可证",
-        storage_label="特别许可证",
+        name="特殊许可证",
+        storage_label="特殊许可证",
         formats=("pdf", "docx", "image"),
-        aliases=("特别许可证", "专项许可证", "经营许可证", "行业许可证"),
+        aliases=("特殊许可证", "专项许可证", "经营许可证", "行业许可证"),
+        store_original=True,
     ),
     DocumentTypeDefinition(
         code="company_articles",
@@ -140,6 +158,8 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         storage_label="公司章程",
         formats=("pdf", "docx"),
         aliases=("公司章程", "章程"),
+        store_original=False,
+        store_markdown=True,
     ),
     DocumentTypeDefinition(
         code="bank_statement",
@@ -147,6 +167,8 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         storage_label="银行对账单",
         formats=("pdf", "xlsx"),
         aliases=("银行对账单", "对账单", "银行账单"),
+        store_original=False,
+        store_markdown=True,
     ),
     DocumentTypeDefinition(
         code="bank_statement_detail",
@@ -154,6 +176,8 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         storage_label="银行对账明细",
         formats=("pdf", "xlsx"),
         aliases=("银行对账明细", "对账明细", "银行明细"),
+        store_original=False,
+        store_markdown=True,
     ),
 )
 
@@ -196,3 +220,16 @@ def get_document_display_name(value: str | None) -> str:
         return str(value or "").strip()
     return definition.name
 
+
+def should_store_original(value: str | None) -> bool:
+    definition = get_document_type_definition(value)
+    if not definition:
+        return True
+    return definition.store_original
+
+
+def should_store_markdown(value: str | None) -> bool:
+    definition = get_document_type_definition(value)
+    if not definition:
+        return True
+    return definition.store_markdown

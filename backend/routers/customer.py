@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # Add desktop_app to path for imports
@@ -28,6 +29,7 @@ if str(desktop_app_path) not in sys.path:
 from services.feishu_service import FeishuService
 
 from backend.celery_app import TASK_QUEUE_ENABLED
+from backend.document_types import get_document_display_name, get_document_type_definition, should_store_original
 from backend.services import get_storage_service, supports_structured_storage  # 新增：存储服务 factory
 
 from backend.services.markdown_profile_service import (
@@ -43,6 +45,7 @@ from backend.services.risk_assessment_service import RiskAssessmentService
 from ..middleware.auth import get_current_user
 from ..models.schemas import (
     ChatJobCreateResponse,
+    CustomerDocumentListItem,
     CustomerRiskReportResponse,
     CustomerRiskReportHistoryItem,
     CustomerRiskReportHistoryResponse,
@@ -58,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/customers", tags=["Customers"])
+documents_router = APIRouter(prefix="/documents", tags=["Documents"])
 
 # Initialize service
 feishu_service = FeishuService()
@@ -68,6 +72,9 @@ rag_service = RagService()
 risk_assessment_service = RiskAssessmentService(rag_service=rag_service)
 profile_sync_service = ProfileSyncService()
 _ACTIVE_RISK_JOB_TASKS: set[asyncio.Task[None]] = set()
+_DOCUMENT_ROOT = Path(__file__).parent.parent.parent / "data"
+DOCUMENT_NOT_RETAINED_MESSAGE = "该资料未保存原件，仅保留提取结果和资料汇总"
+DOCUMENT_FILE_MISSING_MESSAGE = "原件文件不存在或已不可用"
 
 
 async def _build_customer_risk_report_payload(
@@ -325,6 +332,47 @@ def _can_access_local_customer(customer: dict[str, Any], current_user: dict) -> 
 def _ensure_local_customer_access(customer: dict[str, Any], current_user: dict) -> None:
     if not _can_access_local_customer(customer, current_user):
         raise HTTPException(status_code=403, detail="无权查看该客户记录")
+
+
+def _resolve_document_absolute_path(file_path: str | None) -> Path | None:
+    normalized = str(file_path or "").strip().replace("\\", "/")
+    if not normalized:
+        return None
+    path = Path(normalized)
+    if path.is_absolute():
+        return path
+    return _DOCUMENT_ROOT / path
+
+
+def _build_document_original_status(document: dict[str, Any]) -> tuple[bool, str]:
+    file_type = document.get("file_type") or ""
+    if not should_store_original(file_type):
+        return False, DOCUMENT_NOT_RETAINED_MESSAGE
+
+    absolute_path = _resolve_document_absolute_path(document.get("file_path"))
+    if not absolute_path:
+        return False, DOCUMENT_FILE_MISSING_MESSAGE
+    if not absolute_path.exists() or not absolute_path.is_file():
+        return False, DOCUMENT_FILE_MISSING_MESSAGE
+    return True, "可查看原件"
+
+
+async def _load_accessible_document(doc_id: str, current_user: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        document = await storage_service.get_document(doc_id)
+    except Exception as exc:
+        logger.error("Failed to load document metadata %s: %s", doc_id, exc)
+        raise HTTPException(status_code=500, detail="获取资料详情失败") from exc
+
+    if not document:
+        raise HTTPException(status_code=404, detail="未找到该资料记录")
+
+    customer_id = document.get("customer_id") or ""
+    customer = await storage_service.get_customer(customer_id) if customer_id else None
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该资料所属客户")
+    _ensure_local_customer_access(customer, current_user)
+    return document, customer
 
 
 @router.get("", response_model=list[CustomerListItem])
@@ -1167,6 +1215,140 @@ async def get_customer_extractions(
         ExtractionGroup(extraction_type=ext_type, items=items)
         for ext_type, items in groups.items()
     ]
+
+
+@router.get("/{customer_id}/documents", response_model=list[CustomerDocumentListItem])
+async def get_customer_documents(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> list[CustomerDocumentListItem]:
+    """Return customer documents with original-retention status for UI lists."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    _ensure_local_customer_access(customer, current_user)
+
+    try:
+        documents = await storage_service.list_documents(customer_id)
+    except Exception as exc:
+        logger.error("Failed to load documents for customer %s: %s", customer_id, exc)
+        raise HTTPException(status_code=500, detail="获取客户资料列表失败") from exc
+
+    latest_seen_types: set[str] = set()
+    items: list[CustomerDocumentListItem] = []
+
+    for document in documents:
+        file_type = str(document.get("file_type") or "")
+        original_available, original_status = _build_document_original_status(document)
+        definition = get_document_type_definition(file_type)
+        is_latest = file_type not in latest_seen_types
+        latest_seen_types.add(file_type)
+
+        items.append(
+            CustomerDocumentListItem(
+                doc_id=document.get("doc_id") or "",
+                customer_id=document.get("customer_id") or customer_id,
+                file_name=document.get("file_name") or "",
+                file_type=file_type,
+                file_type_name=get_document_display_name(file_type),
+                file_size=document.get("file_size") or 0,
+                upload_time=document.get("upload_time") or "",
+                original_available=original_available,
+                original_status=original_status,
+                store_original=definition.store_original if definition else True,
+                is_latest=is_latest,
+            )
+        )
+
+    return items
+
+
+@documents_router.get("/{doc_id}")
+async def get_document_detail(
+    doc_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return document metadata plus original-retention status."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+
+    document, customer = await _load_accessible_document(doc_id, current_user)
+    original_available, original_status = _build_document_original_status(document)
+    definition = get_document_type_definition(document.get("file_type"))
+    return {
+        "doc_id": document.get("doc_id") or "",
+        "customer_id": document.get("customer_id") or "",
+        "customer_name": customer.get("name") or "",
+        "file_name": document.get("file_name") or "",
+        "file_type": document.get("file_type") or "",
+        "file_type_name": get_document_display_name(document.get("file_type")),
+        "file_size": document.get("file_size") or 0,
+        "upload_time": document.get("upload_time") or "",
+        "original_available": original_available,
+        "original_status": original_status,
+        "store_original": definition.store_original if definition else True,
+    }
+
+
+@documents_router.get("/{doc_id}/download")
+async def download_document_original(
+    doc_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Download the retained original file for one document."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+
+    document, _customer = await _load_accessible_document(doc_id, current_user)
+    original_available, original_status = _build_document_original_status(document)
+    if not original_available:
+        logger.warning("document download blocked doc_id=%s reason=%s", doc_id, original_status)
+        raise HTTPException(status_code=409, detail=original_status)
+
+    absolute_path = _resolve_document_absolute_path(document.get("file_path"))
+    if not absolute_path:
+        logger.warning("document download missing path doc_id=%s", doc_id)
+        raise HTTPException(status_code=409, detail=DOCUMENT_FILE_MISSING_MESSAGE)
+
+    return FileResponse(path=absolute_path, filename=document.get("file_name") or absolute_path.name)
+
+
+@documents_router.get("/{doc_id}/preview")
+async def preview_document_original(
+    doc_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Preview the retained original file inline when possible."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+
+    document, _customer = await _load_accessible_document(doc_id, current_user)
+    original_available, original_status = _build_document_original_status(document)
+    if not original_available:
+        logger.warning("document preview blocked doc_id=%s reason=%s", doc_id, original_status)
+        raise HTTPException(status_code=409, detail=original_status)
+
+    absolute_path = _resolve_document_absolute_path(document.get("file_path"))
+    if not absolute_path:
+        logger.warning("document preview missing path doc_id=%s", doc_id)
+        raise HTTPException(status_code=409, detail=DOCUMENT_FILE_MISSING_MESSAGE)
+
+    media_type_map = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }
+    media_type = media_type_map.get(absolute_path.suffix.lower())
+    return FileResponse(
+        path=absolute_path,
+        filename=document.get("file_name") or absolute_path.name,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{document.get("file_name") or absolute_path.name}"'},
+    )
 
 
 @router.patch("/{customer_id}/fields")

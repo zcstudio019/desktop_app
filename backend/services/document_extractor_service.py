@@ -3473,3 +3473,310 @@ def extract_bank_statement_pdf_fields(text: str) -> dict[str, Any]:
         "top_inflows": [],
         "top_outflows": [],
     }
+
+# === Final bank_statement PDF accuracy overrides ===
+def _header_search_region(lines: list[str], limit: int = 24) -> list[str]:
+    return [str(line or '').strip() for line in lines[:limit] if str(line or '').strip()]
+
+
+def _contains_transaction_row(line: str) -> bool:
+    source = str(line or '')
+    return bool(re.search(r'(\u5bf9\u624b|\u6458\u8981|\u4ea4\u6613|\u501f\u65b9|\u8d37\u65b9|\u4f59\u989d|\u8bb0\u8d26\u65e5\u671f|\u4ea4\u6613\u65e5\u671f)', source))
+
+
+def _clean_account_name_candidate(value: str) -> str:
+    candidate = str(value or '').strip()
+    if not candidate:
+        return ''
+    candidate = re.sub(r'\d{4,}', ' ', candidate)
+    candidate = re.sub(r'[+-]?\d[\d,]*(?:\.\d+)?', ' ', candidate)
+    candidate = re.sub(r'(\u4eba\u6c11\u5e01|CNY|USD|HKD|EUR)', ' ', candidate, flags=re.I)
+    candidate = re.sub(r'(\u5f00\u6237\u884c|\u5f00\u6237\u94f6\u884c|\u8d26\u53f7|\u8d26\u6237\u53f7\u7801|\u8d26\u6237\u540d\u79f0|\u8d26\u6237\u540d|\u6237\u540d|\u5e01\u79cd|\u501f\u65b9\u603b\u91d1\u989d|\u8d37\u65b9\u603b\u91d1\u989d)', ' ', candidate)
+    candidate = re.sub(r'\s+', ' ', candidate).strip('\uff1a:;\uff1b\uff0c,\u3002 ')
+    if re.search(r'\d', candidate):
+        return ''
+    if len(candidate) < 4:
+        return ''
+    return candidate
+
+
+def _extract_company_name_from_line(line: str) -> str:
+    source = str(line or '')
+    patterns = [
+        r'([\u4e00-\u9fffA-Za-z\uff08\uff09()\u00b7]{2,80}?\u6709\u9650\u516c\u53f8)',
+        r'([\u4e00-\u9fffA-Za-z\uff08\uff09()\u00b7]{2,80}?\u6709\u9650\u8d23\u4efb\u516c\u53f8)',
+        r'([\u4e00-\u9fffA-Za-z\uff08\uff09()\u00b7]{2,80}?\u80a1\u4efd\u6709\u9650\u516c\u53f8)',
+    ]
+    candidates: list[str] = []
+    for pattern in patterns:
+        candidates.extend(re.findall(pattern, source))
+    cleaned = [_clean_account_name_candidate(candidate) for candidate in candidates]
+    cleaned = [candidate for candidate in cleaned if candidate and not _contains_transaction_row(candidate)]
+    return max(cleaned, key=len) if cleaned else ''
+
+
+def _extract_bank_name_from_line(line: str) -> str:
+    source = str(line or '')
+    patterns = [
+        r'([\u4e00-\u9fffA-Za-z]{2,50}?\u94f6\u884c[\u4e00-\u9fffA-Za-z]{0,40}?(?:\u652f\u884c|\u5206\u884c|\u8425\u4e1a\u90e8|\u8425\u4e1a\u5ba4|\u5206\u7406\u5904))',
+        r'([\u4e00-\u9fffA-Za-z]{2,50}?\u94f6\u884c[\u4e00-\u9fffA-Za-z]{0,40})',
+    ]
+    candidates: list[str] = []
+    for pattern in patterns:
+        candidates.extend(re.findall(pattern, source))
+    cleaned_candidates: list[str] = []
+    for candidate in candidates:
+        cleaned = str(candidate or '').strip('\uff1a:;\uff1b\uff0c,\u3002 ')
+        cleaned = re.split(r'(\d{8,}|\u4eba\u6c11\u5e01|CNY|USD|HKD|EUR)', cleaned, maxsplit=1, flags=re.I)[0].strip()
+        if cleaned:
+            cleaned_candidates.append(cleaned)
+    if not cleaned_candidates:
+        return ''
+    branch_candidates = [item for item in cleaned_candidates if re.search(r'(\u652f\u884c|\u5206\u884c|\u8425\u4e1a\u90e8|\u8425\u4e1a\u5ba4|\u5206\u7406\u5904)', item)]
+    return max(branch_candidates or cleaned_candidates, key=len)
+
+
+def _extract_currency_from_text(value: str) -> str:
+    text = str(value or '')
+    upper_text = text.upper()
+    if '\u4eba\u6c11\u5e01' in text or 'CNY' in upper_text or 'RMB' in upper_text:
+        return '\u4eba\u6c11\u5e01'
+    if 'USD' in upper_text:
+        return 'USD'
+    if 'HKD' in upper_text:
+        return 'HKD'
+    if 'EUR' in upper_text:
+        return 'EUR'
+    return ''
+
+
+def _extract_date_range_from_text(text: str) -> tuple[str, str]:
+    source = str(text or '')
+    match = re.search(r'(\d{4}[-/\.]\d{2}[-/\.]\d{2}).{0,5}(\d{4}[-/\.]\d{2}[-/\.]\d{2})', source)
+    if not match:
+        return '', ''
+    return _normalize_date(match.group(1)), _normalize_date(match.group(2))
+
+
+def _extract_longest_company_name(text: str) -> str:
+    source = str(text or '')
+    patterns = [
+        r'([\u4e00-\u9fffA-Za-z\uff08\uff09()\u00b7]{2,80}?\u6709\u9650\u516c\u53f8)',
+        r'([\u4e00-\u9fffA-Za-z\uff08\uff09()\u00b7]{2,80}?\u6709\u9650\u8d23\u4efb\u516c\u53f8)',
+        r'([\u4e00-\u9fffA-Za-z\uff08\uff09()\u00b7]{2,80}?\u80a1\u4efd\u6709\u9650\u516c\u53f8)',
+    ]
+    candidates: list[str] = []
+    for pattern in patterns:
+        candidates.extend(re.findall(pattern, source))
+    cleaned = [_clean_account_name_candidate(candidate) for candidate in candidates]
+    cleaned = [candidate for candidate in cleaned if candidate]
+    return max(cleaned, key=len) if cleaned else ''
+
+
+def _extract_longest_bank_name(text: str) -> str:
+    source = str(text or '')
+    lines = [str(line or '').strip() for line in source.splitlines() if str(line or '').strip()]
+    candidates = [_extract_bank_name_from_line(line) for line in lines if '\u94f6\u884c' in line]
+    candidates = [candidate for candidate in candidates if candidate]
+    return max(candidates, key=len) if candidates else ''
+
+
+def _find_longest_digits(text: str, min_length: int = 10) -> str:
+    candidates = re.findall(r'\d{%d,}' % min_length, str(text or ''))
+    return max(candidates, key=len) if candidates else ''
+
+
+def _extract_full_amount_after_label(text: str, labels: tuple[str, ...]) -> str:
+    source = str(text or '')
+    lines = [str(line or '').strip() for line in source.splitlines() if str(line or '').strip()]
+    escaped_labels = [re.escape(label) for label in labels if label]
+    if not escaped_labels:
+        return ''
+    joined = '|'.join(escaped_labels)
+    inline_pattern = re.compile(rf'(?:{joined})\s*[\uff1a: ]?\s*([+-]?\d[\d,]*(?:\.\d{{1,2}})?)')
+    multiline_pattern = re.compile(rf'(?:{joined}).{{0,20}}?([+-]?\d[\d,]*(?:\.\d{{1,2}})?)')
+    for line in lines:
+        if not any(label in line for label in labels):
+            continue
+        match = inline_pattern.search(line) or multiline_pattern.search(line)
+        if match:
+            value = normalize_amount(match.group(1))
+            if value:
+                return value
+    source_match = multiline_pattern.search(source)
+    if source_match:
+        value = normalize_amount(source_match.group(1))
+        if value:
+            return value
+    return ''
+
+
+def _extract_count_after_label(text: str, labels: tuple[str, ...]) -> str:
+    source = str(text or '')
+    lines = [str(line or '').strip() for line in source.splitlines() if str(line or '').strip()]
+    escaped_labels = [re.escape(label) for label in labels if label]
+    if not escaped_labels:
+        return ''
+    joined = '|'.join(escaped_labels)
+    inline_pattern = re.compile(rf'(?:{joined})\s*[\uff1a: ]?\s*(\d{{1,8}})')
+    multiline_pattern = re.compile(rf'(?:{joined}).{{0,12}}?(\d{{1,8}})')
+    for line in lines:
+        if not any(label in line for label in labels):
+            continue
+        match = inline_pattern.search(line) or multiline_pattern.search(line)
+        if match:
+            return only_digits(match.group(1))
+    source_match = multiline_pattern.search(source)
+    return only_digits(source_match.group(1)) if source_match else ''
+
+
+def _months_between(start_date: str, end_date: str) -> int:
+    try:
+        start = datetime.strptime(_normalize_date(start_date), '%Y-%m-%d')
+        end = datetime.strptime(_normalize_date(end_date), '%Y-%m-%d')
+    except Exception:
+        return 0
+    months = (end.year - start.year) * 12 + (end.month - start.month) + 1
+    return months if months > 0 else 0
+
+
+def _format_decimal_string(value: Decimal) -> str:
+    quantized = value.quantize(Decimal('0.01'))
+    return format(quantized, 'f')
+
+
+def _safe_decimal(value: str) -> Decimal | None:
+    try:
+        text = normalize_amount(value)
+        return Decimal(text) if text else None
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _split_header_line(line: str) -> dict[str, str]:
+    source = str(line or '').strip()
+    if not source:
+        return {'account_number': '', 'account_name': '', 'bank_name': '', 'currency': ''}
+
+    digit_matches = re.findall(r'\d{8,}', source)
+    account_number = digit_matches[0] if digit_matches else ''
+    currency = _extract_currency_from_text(source)
+
+    bank_name = ''
+    for label in ('\u5f00\u6237\u94f6\u884c', '\u5f00\u6237\u884c'):
+        if label in source:
+            after = source.split(label, 1)[-1]
+            bank_name = _extract_bank_name_from_line(after)
+            if bank_name:
+                break
+    bank_name = bank_name or _extract_bank_name_from_line(source)
+
+    account_name = ''
+    for label in ('\u6237\u540d', '\u8d26\u6237\u540d\u79f0', '\u8d26\u6237\u540d'):
+        if label in source:
+            after = source.split(label, 1)[-1]
+            account_name = _extract_company_name_from_line(after) or _clean_account_name_candidate(after)
+            if account_name:
+                break
+    account_name = account_name or _extract_company_name_from_line(source)
+
+    return {
+        'account_number': account_number,
+        'account_name': account_name,
+        'bank_name': bank_name,
+        'currency': currency,
+    }
+
+
+def extract_bank_statement_pdf_fields(text: str) -> dict[str, Any]:
+    source = str(text or '')
+    lines = [str(line or '').strip() for line in source.splitlines() if str(line or '').strip()]
+    header_lines = _header_search_region(lines)
+    header_text = '\n'.join(header_lines)
+
+    def _safe_field(field_name: str, extractor: Callable[[], str]) -> str:
+        try:
+            value = str(extractor() or '').strip()
+            if not value:
+                logger.warning('bank_statement pdf field missing: %s', field_name)
+            return value
+        except Exception as exc:
+            logger.warning('bank_statement pdf field parse fallback: %s (%s)', field_name, exc)
+            return ''
+
+    def _find_header_line(labels: list[str]) -> str:
+        for line in header_lines:
+            if any(label in line for label in labels):
+                return line
+        return ''
+
+    header_candidates = [
+        _find_header_line(['\u9009\u62e9\u8d26\u53f7', '\u8d26\u53f7']),
+        _find_header_line(['\u6237\u540d', '\u8d26\u6237\u540d\u79f0', '\u8d26\u6237\u540d']),
+        _find_header_line(['\u5f00\u6237\u884c', '\u5f00\u6237\u94f6\u884c']),
+        _find_header_line(['\u5e01\u79cd']),
+    ]
+    header_candidates = [line for line in header_candidates if line]
+    merged_header = ' '.join(dict.fromkeys(header_candidates)) if header_candidates else header_text or source[:500]
+    split_result = _split_header_line(merged_header)
+
+    start_date, end_date = _extract_date_range_from_text(header_text or source)
+
+    account_number = _safe_field('account_number', lambda: split_result['account_number'] or _find_longest_digits(merged_header or header_text or source, min_length=10))
+    account_name = _safe_field('account_name', lambda: split_result['account_name'] or _extract_longest_company_name(header_text or merged_header or source[:500]))
+    bank_name = _safe_field('bank_name', lambda: split_result['bank_name'] or _extract_longest_bank_name(header_text or merged_header or source[:500]))
+    currency = _safe_field('currency', lambda: split_result['currency'] or _extract_currency_from_text(header_text or merged_header or source[:300]))
+
+    opening_balance = _safe_field(
+        'opening_balance',
+        lambda: _extract_full_amount_after_label(header_text or source, ('\u671f\u521d\u4f59\u989d', '\u4e0a\u671f\u4f59\u989d', '\u8d77\u59cb\u4f59\u989d'))
+        or _extract_full_amount_after_label(source, ('\u671f\u521d\u4f59\u989d', '\u4e0a\u671f\u4f59\u989d', '\u8d77\u59cb\u4f59\u989d')),
+    )
+    closing_balance = _safe_field(
+        'closing_balance',
+        lambda: _extract_full_amount_after_label(header_text or source, ('\u671f\u672b\u4f59\u989d', '\u5f53\u524d\u4f59\u989d', '\u8d26\u6237\u4f59\u989d'))
+        or _extract_full_amount_after_label(source, ('\u671f\u672b\u4f59\u989d', '\u5f53\u524d\u4f59\u989d', '\u8d26\u6237\u4f59\u989d')),
+    )
+    total_income = _safe_field(
+        'total_income',
+        lambda: _extract_full_amount_after_label(header_text or source, ('\u8d37\u65b9\u603b\u91d1\u989d', '\u6536\u5165\u5408\u8ba1', '\u603b\u6536\u5165'))
+        or _extract_full_amount_after_label(source, ('\u8d37\u65b9\u603b\u91d1\u989d', '\u6536\u5165\u5408\u8ba1', '\u603b\u6536\u5165')),
+    )
+    total_expense = _safe_field(
+        'total_expense',
+        lambda: _extract_full_amount_after_label(header_text or source, ('\u501f\u65b9\u603b\u91d1\u989d', '\u652f\u51fa\u5408\u8ba1', '\u603b\u652f\u51fa'))
+        or _extract_full_amount_after_label(source, ('\u501f\u65b9\u603b\u91d1\u989d', '\u652f\u51fa\u5408\u8ba1', '\u603b\u652f\u51fa')),
+    )
+    transaction_count = _safe_field(
+        'transaction_count',
+        lambda: _extract_count_after_label(header_text or source, ('\u603b\u7b14\u6570', '\u4ea4\u6613\u7b14\u6570', '\u660e\u7ec6\u7b14\u6570', '\u53d1\u751f\u7b14\u6570'))
+        or only_digits(_find_line_value_by_labels(lines, ['\u603b\u7b14\u6570', '\u4ea4\u6613\u7b14\u6570', '\u660e\u7ec6\u7b14\u6570'])),
+    )
+
+    monthly_avg_income = ''
+    monthly_avg_expense = ''
+    month_count = _months_between(start_date, end_date)
+    total_income_decimal = _safe_decimal(total_income)
+    total_expense_decimal = _safe_decimal(total_expense)
+    if month_count and total_income_decimal is not None:
+        monthly_avg_income = _format_decimal_string(total_income_decimal / Decimal(month_count))
+    if month_count and total_expense_decimal is not None:
+        monthly_avg_expense = _format_decimal_string(total_expense_decimal / Decimal(month_count))
+
+    return {
+        'account_name': account_name,
+        'account_number': account_number,
+        'bank_name': bank_name,
+        'currency': currency,
+        'start_date': start_date or _safe_field('start_date', lambda: _find_first_date(source)),
+        'end_date': end_date or _safe_field('end_date', lambda: _find_last_date(source)),
+        'opening_balance': opening_balance,
+        'closing_balance': closing_balance,
+        'total_income': total_income,
+        'total_expense': total_expense,
+        'monthly_avg_income': monthly_avg_income,
+        'monthly_avg_expense': monthly_avg_expense,
+        'transaction_count': transaction_count,
+        'top_inflows': [],
+        'top_outflows': [],
+    }

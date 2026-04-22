@@ -53,12 +53,44 @@ export interface StorageSaveResponse {
   success: boolean;
   /** Record ID if saved successfully */
   recordId: string | null;
+  /** Backing document ID for original preview/download */
+  documentId?: string | null;
   /** Stable customer context ID for later profile/RAG/report operations */
   customerId?: string | null;
+  /** Whether the original file was retained */
+  originalAvailable?: boolean;
   /** Whether a new record was created (vs updated) */
   isNew: boolean;
   /** Error message if save failed */
   error: string | null;
+}
+
+export interface DocumentDetailResponse {
+  doc_id: string;
+  customer_id: string;
+  customer_name: string;
+  file_name: string;
+  file_type: string;
+  file_type_name: string;
+  file_size: number;
+  upload_time: string;
+  original_available: boolean;
+  original_status: string;
+  store_original: boolean;
+}
+
+export interface CustomerDocumentListItem {
+  doc_id: string;
+  customer_id: string;
+  file_name: string;
+  file_type: string;
+  file_type_name: string;
+  file_size: number;
+  upload_time: string;
+  original_available: boolean;
+  original_status: string;
+  store_original: boolean;
+  is_latest: boolean;
 }
 
 // Legacy aliases kept for compatibility with existing imports.

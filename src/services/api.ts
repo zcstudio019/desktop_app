@@ -13,6 +13,8 @@ import type {
   ChatJobStatusResponse,
   ChatResponse,
   CustomerDetail,
+  CustomerDocumentListItem,
+  DocumentDetailResponse,
   CustomerListItem,
   CustomerProfileMarkdownResponse,
   CustomerRagChatRequest,
@@ -147,6 +149,66 @@ export async function saveToStorage(
 
 // Legacy alias kept for compatibility with existing imports.
 export const saveToFeishu = saveToStorage;
+
+export async function getDocumentDetail(
+  documentId: string,
+  signal?: AbortSignal
+): Promise<DocumentDetailResponse> {
+  const response = await fetch(`${API_BASE}/api/documents/${documentId}`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<DocumentDetailResponse>(response);
+}
+
+async function fetchDocumentBlob(
+  documentId: string,
+  mode: 'download' | 'preview',
+  signal?: AbortSignal
+): Promise<{ blob: Blob; fileName: string }> {
+  const response = await fetch(`${API_BASE}/api/documents/${documentId}/${mode}`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+
+  if (!response.ok) {
+    let errorMessage = 'Request failed';
+    try {
+      const errorBody = await response.json();
+      errorMessage = errorBody.error || errorBody.detail || errorBody.message || errorMessage;
+    } catch {
+      errorMessage = response.statusText || errorMessage;
+    }
+    throw new ApiError(response.status, errorMessage);
+  }
+
+  const contentDisposition = response.headers.get('Content-Disposition') || '';
+  const match = /filename="?([^"]+)"?/i.exec(contentDisposition);
+  const fileName = match?.[1] || 'document';
+  const blob = await response.blob();
+  return { blob, fileName };
+}
+
+export async function downloadDocumentOriginal(documentId: string, signal?: AbortSignal): Promise<void> {
+  const { blob, fileName } = await fetchDocumentBlob(documentId, 'download', signal);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+export async function previewDocumentOriginal(documentId: string, signal?: AbortSignal): Promise<void> {
+  const { blob } = await fetchDocumentBlob(documentId, 'preview', signal);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener,noreferrer');
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
 export async function generateApplication(
   request: ApplicationRequest,
@@ -729,6 +791,18 @@ export async function getCustomerExtractions(
     signal,
   });
   return handleResponse<ExtractionGroup[]>(response);
+}
+
+export async function getCustomerDocuments(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<CustomerDocumentListItem[]> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/documents`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<CustomerDocumentListItem[]>(response);
 }
 
 export async function updateExtractionField(

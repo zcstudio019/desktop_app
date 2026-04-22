@@ -18,7 +18,7 @@ import {
   FileText, Upload, Check, X, Loader2, AlertCircle,
   Building2, User, Landmark, Wallet, BarChart3, Home, FileSearch, Receipt
 } from 'lucide-react';
-import { listCustomers, processFile, saveToStorage } from '../services/api';
+import { downloadDocumentOriginal, listCustomers, previewDocumentOriginal, processFile, saveToStorage } from '../services/api';
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp, type ExtractionResult, type UploadQueueItem } from '../context/AppContext';
@@ -37,6 +37,7 @@ interface FileTypeConfig {
   bgColor: string;
   icon: React.ComponentType<{ className?: string }>;
   acceptedExtensions: string[];
+  storeOriginal: boolean;
 }
 
 interface QueueItem {
@@ -58,6 +59,9 @@ interface UploadedFile {
   color: string;
   documentType: string;
   result: ExtractionResult;
+  documentId?: string | null;
+  originalAvailable: boolean;
+  originalStatus: string;
 }
 
 // ============================================
@@ -72,7 +76,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     color: 'text-blue-600',
     bgColor: 'bg-blue-50',
     icon: Building2,
-    acceptedExtensions: ['.pdf', '.jpg', '.jpeg', '.png'] 
+    acceptedExtensions: ['.pdf', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   { 
     id: 'personal_credit', 
@@ -81,7 +86,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     color: 'text-green-600',
     bgColor: 'bg-green-50',
     icon: User,
-    acceptedExtensions: ['.pdf', '.jpg', '.jpeg', '.png'] 
+    acceptedExtensions: ['.pdf', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   { 
     id: 'enterprise_flow', 
@@ -90,7 +96,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     color: 'text-purple-600',
     bgColor: 'bg-purple-50',
     icon: Landmark,
-    acceptedExtensions: ['.xlsx', '.xls', '.pdf'] 
+    acceptedExtensions: ['.xlsx', '.xls', '.pdf'],
+    storeOriginal: true,
   },
   { 
     id: 'personal_flow', 
@@ -99,7 +106,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     color: 'text-amber-600',
     bgColor: 'bg-amber-50',
     icon: Wallet,
-    acceptedExtensions: ['.xlsx', '.xls', '.pdf'] 
+    acceptedExtensions: ['.xlsx', '.xls', '.pdf'],
+    storeOriginal: true,
   },
   { 
     id: 'financial_data', 
@@ -108,7 +116,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     color: 'text-red-600',
     bgColor: 'bg-red-50',
     icon: BarChart3,
-    acceptedExtensions: ['.xlsx', '.xls', '.pdf'] 
+    acceptedExtensions: ['.xlsx', '.xls', '.pdf'],
+    storeOriginal: true,
   },
   { 
     id: 'collateral', 
@@ -117,7 +126,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     color: 'text-cyan-600',
     bgColor: 'bg-cyan-50',
     icon: Home,
-    acceptedExtensions: ['.jpg', '.jpeg', '.png', '.pdf'] 
+    acceptedExtensions: ['.jpg', '.jpeg', '.png', '.pdf'],
+    storeOriginal: true,
   },
   { 
     id: 'jellyfish_report', 
@@ -126,7 +136,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     color: 'text-indigo-600',
     bgColor: 'bg-indigo-50',
     icon: FileSearch,
-    acceptedExtensions: ['.pdf', '.jpg', '.jpeg', '.png'] 
+    acceptedExtensions: ['.pdf', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   { 
     id: 'personal_tax', 
@@ -135,7 +146,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     color: 'text-teal-600',
     bgColor: 'bg-teal-50',
     icon: Receipt,
-    acceptedExtensions: ['.xlsx', '.xls', '.pdf'] 
+    acceptedExtensions: ['.xlsx', '.xls', '.pdf'],
+    storeOriginal: true,
   },
   {
     id: 'contract',
@@ -145,69 +157,87 @@ const FILE_TYPES: FileTypeConfig[] = [
     bgColor: 'bg-slate-50',
     icon: FileText,
     acceptedExtensions: ['.pdf', '.docx'],
+    storeOriginal: true,
   },
   {
     id: 'id_card',
     name: '身份证',
-    formats: 'PDF / DOCX',
+    formats: 'PDF / DOCX / 图片',
     color: 'text-rose-600',
     bgColor: 'bg-rose-50',
     icon: User,
-    acceptedExtensions: ['.pdf', '.docx'],
+    acceptedExtensions: ['.pdf', '.docx', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   {
     id: 'marriage_cert',
     name: '结婚证',
-    formats: 'PDF / DOCX',
+    formats: 'PDF / DOCX / 图片',
     color: 'text-pink-600',
     bgColor: 'bg-pink-50',
     icon: User,
-    acceptedExtensions: ['.pdf', '.docx'],
+    acceptedExtensions: ['.pdf', '.docx', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   {
     id: 'hukou',
     name: '户口本',
-    formats: 'PDF / DOCX',
+    formats: 'PDF / DOCX / 图片',
     color: 'text-orange-600',
     bgColor: 'bg-orange-50',
     icon: Home,
-    acceptedExtensions: ['.pdf', '.docx'],
+    acceptedExtensions: ['.pdf', '.docx', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   {
     id: 'property_report',
     name: '产调',
-    formats: 'PDF / DOCX',
+    formats: 'PDF / DOCX / 图片',
     color: 'text-cyan-700',
     bgColor: 'bg-cyan-50',
     icon: Home,
-    acceptedExtensions: ['.pdf', '.docx'],
+    acceptedExtensions: ['.pdf', '.docx', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
+  },
+  {
+    id: 'vehicle_license',
+    name: '行驶证',
+    formats: 'PDF / DOCX / 图片',
+    color: 'text-stone-700',
+    bgColor: 'bg-stone-50',
+    icon: FileSearch,
+    acceptedExtensions: ['.pdf', '.docx', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   {
     id: 'business_license',
     name: '营业执照正副本',
-    formats: 'PDF / DOCX',
+    formats: 'PDF / DOCX / 图片',
     color: 'text-sky-700',
     bgColor: 'bg-sky-50',
     icon: Building2,
-    acceptedExtensions: ['.pdf', '.docx'],
+    acceptedExtensions: ['.pdf', '.docx', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   {
     id: 'account_license',
     name: '开户许可证',
-    formats: 'PDF / DOCX',
+    formats: 'PDF / DOCX / 图片',
     color: 'text-violet-700',
     bgColor: 'bg-violet-50',
     icon: Landmark,
-    acceptedExtensions: ['.pdf', '.docx'],
+    acceptedExtensions: ['.pdf', '.docx', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   {
     id: 'special_license',
     name: '特别许可证',
-    formats: 'PDF / DOCX',
+    formats: 'PDF / DOCX / 图片',
     color: 'text-fuchsia-700',
     bgColor: 'bg-fuchsia-50',
     icon: FileSearch,
-    acceptedExtensions: ['.pdf', '.docx'],
+    acceptedExtensions: ['.pdf', '.docx', '.jpg', '.jpeg', '.png'],
+    storeOriginal: true,
   },
   {
     id: 'company_articles',
@@ -217,6 +247,7 @@ const FILE_TYPES: FileTypeConfig[] = [
     bgColor: 'bg-indigo-50',
     icon: FileText,
     acceptedExtensions: ['.pdf', '.docx'],
+    storeOriginal: false,
   },
   {
     id: 'bank_statement',
@@ -226,6 +257,7 @@ const FILE_TYPES: FileTypeConfig[] = [
     bgColor: 'bg-emerald-50',
     icon: Landmark,
     acceptedExtensions: ['.pdf', '.xlsx', '.xls'],
+    storeOriginal: false,
   },
   {
     id: 'bank_statement_detail',
@@ -235,6 +267,7 @@ const FILE_TYPES: FileTypeConfig[] = [
     bgColor: 'bg-lime-50',
     icon: Landmark,
     acceptedExtensions: ['.pdf', '.xlsx', '.xls'],
+    storeOriginal: false,
   },
 ];
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -287,6 +320,17 @@ function getFileTypeIcon(documentType: string): React.ComponentType<{ className?
   return config?.icon || FileText;
 }
 
+function getOriginalPolicyLabel(documentType: string): string {
+  const config = FILE_TYPES.find(t => t.id === documentType);
+  return config?.storeOriginal ? '可查看原件' : '仅保留提取结果';
+}
+
+function getDocumentTypeDisplayName(documentType: string): string {
+  const normalized = documentType.trim();
+  const config = FILE_TYPES.find((item) => item.id === normalized || item.name === normalized);
+  return config?.name || normalized;
+}
+
 function formatRelativeTime(date: Date): string {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -326,14 +370,17 @@ function validateFile(file: File, acceptedExtensions: string[]): { valid: boolea
 /** File Type Card - displays supported file type info */
 interface FileTypeCardProps {
   config: FileTypeConfig;
+  highlighted?: boolean;
 }
 
-const FileTypeCard: React.FC<FileTypeCardProps> = ({ config }) => {
+const FileTypeCard: React.FC<FileTypeCardProps> = ({ config, highlighted = false }) => {
   const IconComponent = config.icon;
   return (
     <div 
       data-testid={`file-type-${config.id}`}
-      className={`flex items-center gap-3 p-3 rounded-lg ${config.bgColor} transition-all hover:shadow-sm`}
+      className={`flex items-center gap-3 p-3 rounded-lg ${config.bgColor} transition-all hover:shadow-sm ${
+        highlighted ? 'ring-2 ring-amber-300 shadow-sm shadow-amber-100' : ''
+      }`}
     >
       <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${config.bgColor}`}>
         <IconComponent className={`w-5 h-5 ${config.color}`} />
@@ -341,6 +388,9 @@ const FileTypeCard: React.FC<FileTypeCardProps> = ({ config }) => {
       <div className="flex flex-col">
         <span className={`text-sm font-medium ${config.color}`}>{config.name}</span>
         <span className="text-xs text-gray-500">{config.formats}</span>
+        <span className={`mt-1 text-[11px] font-medium ${config.storeOriginal ? 'text-emerald-600' : 'text-amber-600'}`}>
+          {config.storeOriginal ? '保存原件，可预览/下载' : '仅保留提取结果'}
+        </span>
       </div>
     </div>
   );
@@ -465,6 +515,24 @@ const UploadPage: React.FC = () => {
   const processingRef = useRef(false);
   // Ref to track if recovery is in progress
   const isRecoveringRef = useRef(false);
+
+  const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const customerIdFromUrl = urlParams.get('customer_id') || '';
+  const missingTypes = useMemo(() => {
+    const missingParam = urlParams.get('missing') || '';
+    return missingParam
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }, [urlParams]);
+  const highlightedMissingTypeIds = useMemo(
+    () => new Set(missingTypes.filter((type) => FILE_TYPES.some((config) => config.id === type))),
+    [missingTypes],
+  );
+  const missingTypeDisplayNames = useMemo(
+    () => missingTypes.map((type) => getDocumentTypeDisplayName(type)),
+    [missingTypes],
+  );
 
   const isProcessing = useMemo(
     () => uploadQueue.some((item) => item.status === 'pending' || item.status === 'processing'),
@@ -631,6 +699,8 @@ const UploadPage: React.FC = () => {
         savedToFeishu: storageResult.success,
         recordId: storageResult.recordId,
         customerId: storageResult.customerId ?? null,
+        documentId: storageResult.documentId ?? null,
+        originalAvailable: storageResult.originalAvailable ?? false,
       };
 
       // Use addCustomerData to group by customer name
@@ -649,6 +719,9 @@ const UploadPage: React.FC = () => {
         color: getFileTypeColor(item.file.name),
         documentType: processResult.documentType,
         result: extractionResult,
+        documentId: storageResult.documentId ?? null,
+        originalAvailable: storageResult.originalAvailable ?? false,
+        originalStatus: storageResult.originalAvailable ? '可查看原件' : getOriginalPolicyLabel(processResult.documentType),
       };
       setUploadedFiles((prev) => [uploadedFile, ...prev]);
       if (
@@ -826,6 +899,27 @@ const UploadPage: React.FC = () => {
     setCustomerName(nextName);
   }, [customerOptions, setCurrentCustomer]);
 
+  useEffect(() => {
+    if (!customerIdFromUrl) {
+      return;
+    }
+
+    const targetCustomer = customerOptions.find((item) => item.record_id === customerIdFromUrl);
+    const contextAlreadyBound =
+      state.extraction.currentCustomerId === customerIdFromUrl &&
+      (!targetCustomer || state.extraction.currentCustomer === targetCustomer.name);
+
+    if (!contextAlreadyBound) {
+      handleCustomerSelect(customerIdFromUrl);
+    }
+  }, [
+    customerIdFromUrl,
+    customerOptions,
+    handleCustomerSelect,
+    state.extraction.currentCustomer,
+    state.extraction.currentCustomerId,
+  ]);
+
   const handleCancelUpload = useCallback(() => {
     abort();
     setUploadQueue((prev) => prev.map((item) => 
@@ -849,6 +943,32 @@ const UploadPage: React.FC = () => {
     void result;
     alert('资料已提取完成。可前往“资料汇总”或“客户管理”查看整理后的内容。');
   }, []);
+
+  const handlePreviewOriginal = useCallback(async (file: UploadedFile) => {
+    if (!file.documentId || !file.originalAvailable) {
+      alert('该资料未保存原件，仅保留提取结果和资料汇总。');
+      return;
+    }
+    try {
+      await previewDocumentOriginal(file.documentId, getSignal());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '原件预览失败';
+      alert(message);
+    }
+  }, [getSignal]);
+
+  const handleDownloadOriginal = useCallback(async (file: UploadedFile) => {
+    if (!file.documentId || !file.originalAvailable) {
+      alert('该资料未保存原件，仅保留提取结果和资料汇总。');
+      return;
+    }
+    try {
+      await downloadDocumentOriginal(file.documentId, getSignal());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '原件下载失败';
+      alert(message);
+    }
+  }, [getSignal]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-6">
@@ -907,6 +1027,15 @@ const UploadPage: React.FC = () => {
         </div>
       </div>
 
+      {missingTypeDisplayNames.length > 0 && (
+        <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800 shadow-sm">
+          <div className="font-semibold">建议优先补充资料</div>
+          <div className="mt-1 leading-6">
+            建议优先补充：{missingTypeDisplayNames.join('、')}。下方对应资料类型已高亮，选择文件后会自动并入当前客户。
+          </div>
+        </div>
+      )}
+
       <div className="mb-6 grid gap-4 md:grid-cols-3">
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="text-xs text-slate-500">当前客户上下文</div>
@@ -964,7 +1093,7 @@ const UploadPage: React.FC = () => {
         </div>
         <div data-testid="file-types-grid" className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
           {FILE_TYPES.map((config) => (
-            <FileTypeCard key={config.id} config={config} />
+            <FileTypeCard key={config.id} config={config} highlighted={highlightedMissingTypeIds.has(config.id)} />
           ))}
         </div>
       </div>
@@ -1060,9 +1189,33 @@ const UploadPage: React.FC = () => {
                           </span>
                         )}
                       </span>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 font-medium ${file.originalAvailable ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                          {file.originalStatus}
+                        </span>
+                        {!file.originalAvailable ? (
+                          <span className="text-slate-500">仅保留提取结果和资料汇总，不提供原件下载。</span>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                   <div className="flex gap-2">
+                    {file.originalAvailable ? (
+                      <>
+                        <button
+                          onClick={() => void handlePreviewOriginal(file)}
+                          className="px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-blue-600 text-xs hover:bg-blue-50 transition-colors"
+                        >
+                          查看原件
+                        </button>
+                        <button
+                          onClick={() => void handleDownloadOriginal(file)}
+                          className="px-3 py-1.5 bg-white border border-emerald-200 rounded-lg text-emerald-600 text-xs hover:bg-emerald-50 transition-colors"
+                        >
+                          下载原件
+                        </button>
+                      </>
+                    ) : null}
                     <button
                       onClick={() => viewResult(file.result)}
                       className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-gray-500 text-xs hover:bg-gray-50 transition-colors"

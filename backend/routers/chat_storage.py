@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.document_types import get_document_type_definition, should_store_original
 from config import DATA_TYPE_CONFIG, STORE_ORIGINAL_UPLOAD_FILES
 
 from .feishu import dict_to_markdown
@@ -215,15 +216,31 @@ async def _ensure_customer_exists(
             logger.warning("[Local Save] Failed to update upload_time: %s", exc)
 
 
-def _save_file_to_disk(customer_id: str, file_name: str, file_bytes: bytes | None) -> tuple[str, int]:
-    """Persist the original uploaded file only when raw-file storage is enabled."""
+def _save_file_to_disk(
+    customer_id: str,
+    file_name: str,
+    file_bytes: bytes | None,
+    document_type: str,
+) -> tuple[str, int]:
+    """Persist the original uploaded file according to the document policy."""
     if not file_bytes:
         return ("", 0)
 
     file_size = len(file_bytes)
-    if not STORE_ORIGINAL_UPLOAD_FILES:
-        logger.info("[Local Save] Skipped raw file persistence for %s", file_name)
+    if not should_store_original(document_type):
+        logger.info(
+            "[Local Save] Skipped raw file persistence by document policy document_type=%s file_name=%s",
+            document_type,
+            file_name,
+        )
         return ("", file_size)
+
+    if not STORE_ORIGINAL_UPLOAD_FILES:
+        logger.warning(
+            "[Local Save] STORE_ORIGINAL_UPLOAD_FILES is disabled, but document policy requires raw persistence; continuing to store file document_type=%s file_name=%s",
+            document_type,
+            file_name,
+        )
 
     safe_name = Path(file_name or "uploaded_file").name
     safe_customer_dir = hashlib.sha1(customer_id.encode("utf-8")).hexdigest()[:16]
@@ -241,12 +258,13 @@ async def _save_doc_and_extraction(
     document_type: str,
     content: dict,
     file_bytes: bytes | None = None,
-) -> str:
+) -> tuple[str, str, bool]:
     """Save document metadata and extraction result to local storage."""
     doc_id = str(uuid.uuid4())
     extraction_id = str(uuid.uuid4())
 
-    file_path, file_size = _save_file_to_disk(customer_id, chat_file_name, file_bytes)
+    definition = get_document_type_definition(document_type)
+    file_path, file_size = _save_file_to_disk(customer_id, chat_file_name, file_bytes, document_type)
     doc_data = {
         "doc_id": doc_id,
         "customer_id": customer_id,
@@ -256,7 +274,12 @@ async def _save_doc_and_extraction(
         "file_size": file_size,
     }
     await storage_service.save_document(doc_data)
-    logger.info("[Local Save] Saved document: %s", doc_id)
+    logger.info(
+        "[Local Save] Saved document metadata: %s (store_original=%s, file_path=%s)",
+        doc_id,
+        definition.store_original if definition else True,
+        file_path or "(empty)",
+    )
 
     confidence = content.get("confidence", 0.0) if isinstance(content.get("confidence"), (int, float)) else 0.0
     extraction_data = {
@@ -270,7 +293,7 @@ async def _save_doc_and_extraction(
     await storage_service.save_extraction(extraction_data)
     logger.info("[Local Save] Saved extraction: %s", extraction_id)
 
-    return extraction_id
+    return extraction_id, doc_id, bool(file_path)
 
 
 async def _replace_existing_documents_of_same_type(
@@ -335,11 +358,11 @@ async def _save_to_local_storage(
     storage_service: Any,
     target_customer_id: str | None = None,
     file_bytes: bytes | None = None,
-) -> tuple[bool, str | None, str | None, list[dict], str | None]:
+) -> tuple[bool, str | None, str | None, list[dict], str | None, str | None, bool]:
     """Save extracted data to local SQLite database."""
     if not customer_name:
         logger.warning("[Local Save] Missing customer name for %s", chat_file_name)
-        return (False, None, MISSING_CUSTOMER_NAME_MESSAGE, [], None)
+        return (False, None, MISSING_CUSTOMER_NAME_MESSAGE, [], None, None, False)
 
     try:
         if target_customer_id:
@@ -348,7 +371,7 @@ async def _save_to_local_storage(
                 target_customer_id,
                 document_type,
             )
-            extraction_id = await _save_doc_and_extraction(
+            extraction_id, doc_id, original_available = await _save_doc_and_extraction(
                 storage_service,
                 target_customer_id,
                 chat_file_name,
@@ -357,7 +380,7 @@ async def _save_to_local_storage(
                 file_bytes=file_bytes,
             )
             logger.info("[Local Save] MERGED into %s: %s", target_customer_id, chat_file_name)
-            return (True, extraction_id, None, [], target_customer_id)
+            return (True, extraction_id, None, [], target_customer_id, doc_id, original_available)
 
         customer_id, customer_type = await _resolve_customer_target(
             storage_service,
@@ -370,7 +393,7 @@ async def _save_to_local_storage(
             customer_id,
             document_type,
         )
-        extraction_id = await _save_doc_and_extraction(
+        extraction_id, doc_id, original_available = await _save_doc_and_extraction(
             storage_service,
             customer_id,
             chat_file_name,
@@ -379,12 +402,12 @@ async def _save_to_local_storage(
             file_bytes=file_bytes,
         )
         logger.info("[Local Save] SUCCESS: %s -> extraction_id=%s", chat_file_name, extraction_id)
-        return (True, extraction_id, None, [], customer_id)
+        return (True, extraction_id, None, [], customer_id, doc_id, original_available)
     except Exception as exc:
         logger.error("[Local Save] Error for %s: %s", chat_file_name, exc, exc_info=True)
         if "替换旧资料失败" in str(exc):
             return (False, None, "替换旧资料失败，请稍后重试。", [], None)
-        return (False, None, LOCAL_SAVE_FAILED_MESSAGE, [], None)
+        return (False, None, LOCAL_SAVE_FAILED_MESSAGE, [], None, None, False)
 
 
 def _save_to_feishu_legacy(

@@ -325,7 +325,9 @@ class FeishuSaveResponse(BaseModel):
 
     success: bool = Field(..., description="Whether the operation succeeded")
     recordId: str | None = Field(default=None, description="Feishu record ID")
+    documentId: str | None = Field(default=None, description="Stored document ID for original preview/download")
     customerId: str | None = Field(default=None, description="Stable customer ID for local storage context")
+    originalAvailable: bool = Field(default=False, description="Whether the original file is retained for preview/download")
     isNew: bool = Field(..., description="True if a new record was created")
     error: str | None = Field(default=None, description="Error message if operation failed")
 
@@ -580,6 +582,22 @@ class CustomerDetail(BaseModel):
     uploader: str = Field(default="", description="Uploader username")
     upload_time: str = Field(default="", description="Upload time")
     fields: dict[str, Any] = Field(default_factory=dict, description="All Feishu fields as key-value pairs (can be nested objects)")
+
+
+class CustomerDocumentListItem(BaseModel):
+    """Customer document metadata for document status lists."""
+
+    doc_id: str = Field(..., description="Unique document ID")
+    customer_id: str = Field(default="", description="Customer ID")
+    file_name: str = Field(default="", description="Original file name")
+    file_type: str = Field(default="", description="Technical document type code")
+    file_type_name: str = Field(default="", description="Localized document type name")
+    file_size: int = Field(default=0, description="File size in bytes")
+    upload_time: str = Field(default="", description="Document upload time")
+    original_available: bool = Field(default=False, description="Whether the original file can be previewed/downloaded")
+    original_status: str = Field(default="", description="Human-readable original retention status")
+    store_original: bool = Field(default=True, description="Whether this type should retain originals by policy")
+    is_latest: bool = Field(default=False, description="Whether this document is the latest version within its type")
 
 
 class CustomerProfileMarkdownResponse(BaseModel):

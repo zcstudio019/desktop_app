@@ -31,6 +31,10 @@ export interface ExtractionResult {
   recordId: string | null;
   /** Stable customer ID for customer-scoped features */
   customerId?: string | null;
+  /** Backing document ID for original preview/download */
+  documentId?: string | null;
+  /** Whether the original file is retained */
+  originalAvailable?: boolean;
 }
 
 /**

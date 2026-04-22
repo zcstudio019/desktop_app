@@ -72,6 +72,7 @@ app.include_router(dashboard.router, prefix="/api")
 app.include_router(wiki.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(customer.router, prefix="/api")
+app.include_router(customer.documents_router, prefix="/api")
 
 static_dir = PROJECT_ROOT / "dist"
 

@@ -16,8 +16,8 @@ import {
   Building2, CreditCard, Banknote, Calendar, DollarSign, Building, 
   BadgeCheck, FileCheck, FileSpreadsheet, Copy
 } from 'lucide-react';
-import { createApplicationJob, getApplication, getChatJobStatus, saveApplication } from '../services/api';
-import type { ApplicationResponse, ChatJobStatusResponse, ChatJobSummaryResponse } from '../services/types';
+import { createApplicationJob, getApplication, getChatJobStatus, listCustomers, saveApplication } from '../services/api';
+import type { ApplicationResponse, ChatJobStatusResponse, ChatJobSummaryResponse, CustomerListItem } from '../services/types';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
@@ -621,10 +621,11 @@ const ApplicationPage: React.FC = () => {
   const reset = useCallback(() => setError(null), []);
 
   // Global state
-  const { state, setApplicationResult, setApplicationTaskStatus } = useApp();
+  const { state, setApplicationResult, setApplicationTaskStatus, setCurrentCustomer } = useApp();
 
   // Local result state (synced with context)
   const [result, setResult] = useState<ApplicationResponse | null>(null);
+  const [customers, setCustomers] = useState<CustomerListItem[]>([]);
   
   // Edit mode state
   const [editMode, setEditMode] = useState<boolean>(false);
@@ -647,6 +648,8 @@ const ApplicationPage: React.FC = () => {
 
     const currentCustomerName = state.extraction.currentCustomer;
     const currentCustomerId = state.extraction.currentCustomerId;
+    const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
+    const customerIdFromUrl = urlParams.get('customer_id') || '';
     const activeApplicationEntityKey = useMemo(
       () => currentCustomerId || '',
       [currentCustomerId],
@@ -823,6 +826,57 @@ const ApplicationPage: React.FC = () => {
       setLoading(false);
     }
   }, [currentCustomerId, getSignal, pollApplicationJob, setApplicationTaskStatus]);
+
+  useEffect(() => {
+    if (!customerIdFromUrl) {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const items = await listCustomers(undefined, getSignal());
+        if (!cancelled) {
+          setCustomers(items);
+        }
+      } catch (issue) {
+        if (!cancelled && !(issue instanceof Error && issue.name === 'AbortError')) {
+          console.warn('申请表页加载客户列表失败，暂时仅绑定 URL 中的客户 ID。', issue);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [customerIdFromUrl, getSignal]);
+
+  useEffect(() => {
+    if (!customerIdFromUrl) {
+      return;
+    }
+
+    const targetCustomer = customers.find((item) => item.record_id === customerIdFromUrl);
+    const nextCustomerName = targetCustomer?.name || currentCustomerName || '';
+    const contextAlreadyBound =
+      currentCustomerId === customerIdFromUrl &&
+      (!targetCustomer || currentCustomerName === targetCustomer.name);
+
+    if (!contextAlreadyBound) {
+      setCurrentCustomer(nextCustomerName || null, customerIdFromUrl);
+    }
+
+    if (nextCustomerName && customerName.trim() !== nextCustomerName) {
+      setCustomerName(nextCustomerName);
+    }
+  }, [
+    customerIdFromUrl,
+    customers,
+    currentCustomerId,
+    currentCustomerName,
+    customerName,
+    setCurrentCustomer,
+  ]);
 
   // Sync with context on mount and handle task recovery
   useEffect(() => {

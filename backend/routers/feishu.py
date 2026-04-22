@@ -167,13 +167,17 @@ async def _save_request(
             record_id = save_result[1] if len(save_result) > 1 else None
             error_msg = save_result[2] if len(save_result) > 2 else None
             saved_customer_id = save_result[4] if len(save_result) > 4 else None
+            document_id = save_result[5] if len(save_result) > 5 else None
+            original_available = bool(save_result[6]) if len(save_result) > 6 else False
             final_customer_id = request.customerId or saved_customer_id or resolved_customer_id
             if success and final_customer_id:
                 await profile_sync_service.handle_document_saved(storage_service, final_customer_id)
             return FeishuSaveResponse(
                 success=success,
                 recordId=record_id,
+                documentId=document_id,
                 customerId=final_customer_id,
+                originalAvailable=original_available,
                 isNew=is_new,
                 error=_sanitize_storage_error(error_msg),
             )
@@ -186,7 +190,9 @@ async def _save_request(
         return FeishuSaveResponse(
             success=False,
             recordId=None,
+            documentId=None,
             isNew=False,
+            originalAvailable=False,
             error=DOCUMENT_TYPE_CONFIG_MISSING_MESSAGE,
         )
 
@@ -195,7 +201,9 @@ async def _save_request(
         return FeishuSaveResponse(
             success=False,
             recordId=None,
+            documentId=None,
             isNew=False,
+            originalAvailable=False,
             error=DOCUMENT_TYPE_CONFIG_MISSING_MESSAGE,
         )
 
@@ -215,7 +223,9 @@ async def _save_request(
     return FeishuSaveResponse(
         success=result.get("success", False),
         recordId=result.get("record_id"),
+        documentId=None,
         customerId=None,
+        originalAvailable=False,
         isNew=not result.get("is_update", False),
         error=_sanitize_storage_error(result.get("error_message")),
     )
