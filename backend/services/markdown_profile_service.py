@@ -65,6 +65,8 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'business_scope': '\u7ecf\u8425\u8303\u56f4',
     'address': '\u5730\u5740',
     'company_type': '\u7c7b\u578b',
+    'registration_authority': '\u767b\u8bb0\u673a\u5173',
+    'registration_date': '\u767b\u8bb0\u673a\u5173\u65e5\u671f',
     'document_type_name': '\u8d44\u6599\u7c7b\u578b',
     'storage_label': '\u8d44\u6599\u5f52\u7c7b',
     'currency': '\u5e01\u79cd',
@@ -88,7 +90,7 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'source_type': '\u6765\u6e90\u7c7b\u578b',
 }
 
-HIDDEN_STRUCTURED_FIELDS = {'document_type_code'}
+HIDDEN_STRUCTURED_FIELDS = {'document_type_code', 'document_type_name', 'storage_label'}
 
 
 def get_risk_report_schema_template() -> dict[str, Any]:
@@ -227,16 +229,9 @@ async def _build_single_document_section(
     lines.append(f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}')
     lines.append(f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}')
     if isinstance(extracted_data, dict):
-        display_type_name = extracted_data.get('document_type_name') or extracted_data.get('storage_label')
-        if display_type_name:
-            lines.append(f'- \u8d44\u6599\u7c7b\u578b\uff1a{display_type_name}')
         for key, value in extracted_data.items():
             try:
                 if key in HIDDEN_STRUCTURED_FIELDS:
-                    continue
-                if key == 'document_type_name' and display_type_name:
-                    continue
-                if key == 'storage_label' and display_type_name:
                     continue
                 lines.append(f'- {_format_field_label(key)}\uff1a{_format_value(key, value)}')
             except Exception as exc:

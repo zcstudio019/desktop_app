@@ -1421,6 +1421,18 @@ def _clean_registration_authority(value: str) -> str:
 
 def _extract_registration_authority_cn(text: str) -> str:
     source = text or ""
+    explicit_patterns = (
+        re.compile(r"\u767b\u8bb0\u673a\u5173\s*[:：]?\s*([^\n]+)"),
+        re.compile(r"\u767b\u8bb0\u673a\u6784\s*[:：]?\s*([^\n]+)"),
+        re.compile(r"\u53d1\u7167\u673a\u5173\s*[:：]?\s*([^\n]+)"),
+    )
+    for pattern in explicit_patterns:
+        match = pattern.search(source)
+        if match:
+            cleaned = _clean_registration_authority(match.group(1))
+            if cleaned:
+                return cleaned
+
     labeled = _label_value_cn(
         source,
         ["\u767b\u8bb0\u673a\u5173", "\u767b\u8bb0\u673a\u6784", "\u53d1\u7167\u673a\u5173"],
@@ -1437,6 +1449,18 @@ def _extract_registration_authority_cn(text: str) -> str:
     cleaned = _clean_registration_authority(labeled)
     if cleaned:
         return cleaned
+
+    authority_candidates = [
+        _clean_registration_authority(match.group(1))
+        for match in re.finditer(
+            r"([^\n]{2,30}(?:\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40|\u884c\u653f\u5ba1\u6279\u5c40|\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40))",
+            source,
+        )
+    ]
+    authority_candidates = [candidate for candidate in authority_candidates if candidate]
+    if authority_candidates:
+        return max(authority_candidates, key=len)
+
     authority_keywords = (
         "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40",
         "\u884c\u653f\u5ba1\u6279\u5c40",
@@ -1447,6 +1471,47 @@ def _extract_registration_authority_cn(text: str) -> str:
             cleaned = _clean_registration_authority(line)
             if cleaned and any(keyword in cleaned for keyword in authority_keywords):
                 return cleaned
+    return ""
+
+
+def _extract_registration_date_cn(text: str) -> str:
+    source = text or ""
+    date_pattern = r"(?:19|20)\d{2}\s*\u5e74\s*\d{1,2}\s*\u6708\s*\d{1,2}\s*\u65e5"
+    authority_markers = (
+        "\u767b\u8bb0\u673a\u5173",
+        "\u767b\u8bb0\u673a\u6784",
+        "\u53d1\u7167\u673a\u5173",
+        "\u5e02\u573a\u76d1\u7763\u7ba1\u7406\u5c40",
+        "\u884c\u653f\u5ba1\u6279\u5c40",
+        "\u5de5\u5546\u884c\u653f\u7ba1\u7406\u5c40",
+    )
+
+    for marker in authority_markers:
+        idx = source.find(marker)
+        if idx < 0:
+            continue
+        window = source[idx : idx + 240]
+        matches = re.findall(date_pattern, window)
+        if matches:
+            return re.sub(r"\s+", "", matches[-1])
+
+    lines = [line.strip() for line in source.splitlines() if line.strip()]
+    bottom_text = "\n".join(lines[-8:])
+    bottom_dates = re.findall(date_pattern, bottom_text)
+    if not bottom_dates:
+        return ""
+
+    establish_date = _label_value_cn(
+        source,
+        ["\u6210\u7acb\u65e5\u671f", "\u6ce8\u518c\u65e5\u671f"],
+        ["\u4f4f\u6240", "\u5730\u5740", "\u7ecf\u8425\u8303\u56f4", "\u767b\u8bb0\u673a\u5173"],
+        max_length=80,
+    )
+    normalized_establish = re.sub(r"\s+", "", establish_date)
+    for candidate in reversed(bottom_dates):
+        cleaned = re.sub(r"\s+", "", candidate)
+        if cleaned and cleaned != normalized_establish:
+            return cleaned
     return ""
 
 
@@ -1504,6 +1569,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
     ]
     address, business_scope = _extract_business_license_address_and_scope(text)
     registration_authority = _extract_registration_authority_cn(text)
+    registration_date = _extract_registration_date_cn(text)
     return {
         "company_name": _pick_first_nonempty(
             _label_value_cn(text, ["\u540d\u79f0", "\u4f01\u4e1a\u540d\u79f0", "\u516c\u53f8\u540d\u79f0", "\u5e02\u573a\u4e3b\u4f53\u540d\u79f0"], stop_labels, max_length=180),
@@ -1522,7 +1588,8 @@ def extract_business_license(text: str) -> dict[str, Any]:
         "business_scope": business_scope if len(business_scope) >= 4 else "",
         "address": address if len(address) >= 4 else "",
         "company_type": _label_value_cn(text, ["\u7c7b\u578b", "\u4e3b\u4f53\u7c7b\u578b"], ["\u6cd5\u5b9a\u4ee3\u8868\u4eba", "\u6ce8\u518c\u8d44\u672c", "\u6210\u7acb\u65e5\u671f", "\u7ecf\u8425\u8303\u56f4"], max_length=80),
-        "registration_authority": registration_authority or "\u6682\u65e0",
+        "registration_authority": registration_authority,
+        "registration_date": registration_date,
     }
 
 
@@ -2853,6 +2920,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
     ]
     address, business_scope = _extract_business_license_address_and_scope(text)
     registration_authority = _extract_registration_authority_cn(text)
+    registration_date = _extract_registration_date_cn(text)
     return {
         "company_name": _pick_first_nonempty(
             _label_value_cn(text, ["\u540d\u79f0", "\u4f01\u4e1a\u540d\u79f0", "\u516c\u53f8\u540d\u79f0", "\u5e02\u573a\u4e3b\u4f53\u540d\u79f0"], stop_labels, max_length=180),
@@ -2871,7 +2939,8 @@ def extract_business_license(text: str) -> dict[str, Any]:
         "business_scope": business_scope if len(business_scope) >= 4 else "",
         "address": address if len(address) >= 4 else "",
         "company_type": _label_value_cn(text, ["\u7c7b\u578b", "\u4e3b\u4f53\u7c7b\u578b"], ["\u6cd5\u5b9a\u4ee3\u8868\u4eba", "\u6ce8\u518c\u8d44\u672c", "\u6210\u7acb\u65e5\u671f", "\u7ecf\u8425\u8303\u56f4"], max_length=80),
-        "registration_authority": registration_authority or "\u6682\u65e0",
+        "registration_authority": registration_authority,
+        "registration_date": registration_date,
     }
 
 
