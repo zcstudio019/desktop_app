@@ -263,6 +263,9 @@ def extract_company_articles_legal_person(text: str) -> str:
         "报酬",
         "及其报酬",
         "其报酬",
+        "公司类型",
+        "公司股东",
+        "决定聘任",
         "签字",
         "签章",
         "盖章",
@@ -335,151 +338,48 @@ def extract_company_articles_legal_person(text: str) -> str:
 
 def extract_company_articles_legal_person_v2(text: str) -> str:
     source = text or ""
-    invalid_fragments = (
-        "担任", "组成", "任命", "选举", "产生", "负责", "行使", "职权", "执行", "设", "由", "为公司",
-    )
-    invalid_exact_values = {
-        "姓名或者名称",
-        "姓名或名称",
-        "姓名名称",
-        "信息",
-        "资料",
-        "说明",
-        "无",
-        "暂无",
-        "待定",
-        "空白",
-        "填写",
-        "填报",
-        "填入",
-        "未填写",
-        "未填报",
-        "未填入",
-        "职务",
-        "董事",
-        "报酬",
-        "及其报酬",
-        "其报酬",
-        "签字",
-        "签章",
-        "盖章",
-        "股东",
-        "法定代表人",
-        "的法定代表人",
-        "执行董事",
-        "的执行董事",
-        "董事长",
-        "的董事长",
-        "负责人",
-        "的负责人",
-        "姓名",
-        "名称",
-    }
-
-    def _clean_candidate(value: str) -> str:
-        cleaned = normalize_text(value)
-        cleaned = re.sub(r"^[：:\-\—()\[\]（）\s]+", "", cleaned)
-        cleaned = re.sub(r"^(?:为|由)+", "", cleaned)
-        cleaned = re.sub(r"\s+", "", cleaned).strip("：:;；，,。.")
-        return cleaned
-
-    def _is_valid_candidate(value: str) -> bool:
-        candidate = _clean_candidate(value)
-        if not candidate:
-            return False
-        if candidate in invalid_exact_values:
-            return False
-        if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人")):
-            return False
-        if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会")):
-            return False
-        if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人")):
-            return False
-        if any(fragment in candidate for fragment in invalid_fragments):
-            return False
-        if any(keyword in candidate for keyword in ("姓名或者名称", "姓名或名称", "股东姓名", "股东名称", "出资方式", "出资额", "出资日期")):
-            return False
-        return bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,6}", candidate))
-
     label_patterns = (
-        re.compile(r"法定代表人(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
-        re.compile(r"执行董事(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
-        re.compile(r"董事长(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
-        re.compile(r"执行董事、法定代表人(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"法定代表人(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{2,6})"),
+        re.compile(r"执行董事、法定代表人(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{2,6})"),
+        re.compile(r"董事长、法定代表人(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{2,6})"),
     )
     sentence_patterns = (
-        re.compile(
-            r"(?:由)?([\u4e00-\u9fffA-Za-z·]{2,20})\s*担任(?:公司)?(?:执行董事|董事长)"
-            r"(?:（法定代表人）|\(法定代表人\)|、法定代表人)?"
-        ),
-        re.compile(
-            r"(?:执行董事|董事长)\s*(?:（法定代表人）|\(法定代表人\)|、法定代表人)?"
-            r"\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"
-        ),
-        re.compile(r"法定代表人(?:由|为)?\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
-        re.compile(r"([\u4e00-\u9fffA-Za-z·]{2,20})\s*为(?:公司)?法定代表人"),
-        re.compile(r"选举\s*([\u4e00-\u9fffA-Za-z·]{2,20})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
-        re.compile(r"(?:执行董事|董事长)\s*由\s*([\u4e00-\u9fffA-Za-z·]{2,20})\s*担任"),
-        re.compile(r"任命\s*([\u4e00-\u9fffA-Za-z·]{2,20})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
-        re.compile(r"([\u4e00-\u9fffA-Za-z·]{2,20})\s*任(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
+        re.compile(r"法定代表人由\s*([\u4e00-\u9fff·]{2,6})\s*担任"),
+        re.compile(r"由\s*([\u4e00-\u9fff·]{2,6})\s*担任(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\)|、法定代表人)"),
+        re.compile(r"选举\s*([\u4e00-\u9fff·]{2,6})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
+        re.compile(r"任命\s*([\u4e00-\u9fff·]{2,6})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
+        re.compile(r"([\u4e00-\u9fff·]{2,6})\s*为(?:公司)?法定代表人"),
     )
 
-    nearby_name_patterns = (
-        re.compile(r"(?:法定代表人|执行董事|董事长)[^。\n：:]{0,20}?([\u4e00-\u9fff]{2,4})"),
-        re.compile(r"([\u4e00-\u9fff]{2,4})[^。\n]{0,12}?(?:法定代表人|执行董事|董事长)"),
-    )
+    for pattern in label_patterns:
+        match = pattern.search(source)
+        if not match:
+            continue
+        candidate = _clean_company_articles_person_candidate(match.group(1))
+        if _is_valid_company_articles_person_candidate(candidate):
+            return candidate
 
     for raw_line in source.splitlines():
         line = normalize_text(raw_line)
         if not line:
             continue
-        if not any(label in line for label in ("法定代表人", "执行董事", "董事长")):
+        if not any(keyword in line for keyword in ("法定代表人", "执行董事", "董事长")):
             continue
-
-        for pattern in label_patterns:
-            match = pattern.search(line)
-            if not match:
-                continue
-            candidate = _clean_candidate(match.group(1))
-            if _is_valid_candidate(candidate):
-                return candidate
-
         for pattern in sentence_patterns:
             match = pattern.search(line)
             if not match:
                 continue
-            candidate = _clean_candidate(match.group(1))
-            if _is_valid_candidate(candidate):
+            candidate = _clean_company_articles_person_candidate(match.group(1))
+            if _is_valid_company_articles_person_candidate(candidate):
                 return candidate
 
-    for pattern in label_patterns + sentence_patterns:
+    for pattern in sentence_patterns:
         match = pattern.search(source)
         if not match:
             continue
-        candidate = _clean_candidate(match.group(1))
-        if _is_valid_candidate(candidate):
+        candidate = _clean_company_articles_person_candidate(match.group(1))
+        if _is_valid_company_articles_person_candidate(candidate):
             return candidate
-
-    keyword_positions: list[int] = []
-    for keyword in ("法定代表人", "执行董事", "董事长"):
-        start = 0
-        while True:
-            idx = source.find(keyword, start)
-            if idx < 0:
-                break
-            keyword_positions.append(idx)
-            start = idx + len(keyword)
-    for idx in keyword_positions:
-        window_start = max(0, idx - 24)
-        window_end = min(len(source), idx + 36)
-        window_text = source[window_start:window_end]
-        for pattern in nearby_name_patterns:
-            match = pattern.search(window_text)
-            if not match:
-                continue
-            candidate = _clean_candidate(match.group(1))
-            if _is_valid_candidate(candidate):
-                return candidate
 
     return ""
 
@@ -505,6 +405,7 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         "一人", "一名", "一位",
         "签字", "签章", "盖章",
         "职务", "董事", "报酬", "及其报酬", "其报酬",
+        "公司类型", "公司股东", "决定聘任",
         "股东", "法定代表人", "的法定代表人",
         "执行董事", "的执行董事",
         "董事长", "的董事长",
@@ -537,21 +438,16 @@ def _extract_company_articles_role_name(
     title_group = "|".join(re.escape(item) for item in titles)
     label_group = "|".join(re.escape(item) for item in labels)
     label_patterns = (
-        re.compile(rf"(?:{label_group})(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{{2,20}})"),
+        re.compile(rf"(?:{label_group})(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{{2,6}})"),
     )
     sentence_patterns = (
-        re.compile(rf"(?:由)?([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*担任(?:公司)?(?:{title_group})"),
-        re.compile(rf"(?:{title_group})\s*由\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*担任"),
-        re.compile(rf"(?:设|选举设|公司设|公司不设(?:董事会|监事会)，设)(?:{title_group})[^\u3002\n，,；;]{{0,8}}?[，,、]?\s*由\s*([\u4e00-\u9fff·]{{2,6}})\s*(?:担任|兼任|出任)"),
-        re.compile(rf"选举\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
-        re.compile(rf"任命\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
-        re.compile(rf"聘任\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
-        re.compile(rf"([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*任(?:公司)?(?:{title_group})"),
-        re.compile(rf"([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
-    )
-    nearby_patterns = (
-        re.compile(rf"(?:{title_group})[^\u3002\n\uff1a:]{{0,20}}?([\u4e00-\u9fff]{{2,4}})"),
-        re.compile(rf"([\u4e00-\u9fff]{{2,4}})[^\u3002\n]{{0,12}}?(?:{title_group})"),
+        re.compile(rf"由\s*([\u4e00-\u9fff·]{{2,6}})\s*担任(?:公司)?(?:{title_group})"),
+        re.compile(rf"(?:{title_group})\s*由\s*([\u4e00-\u9fff·]{{2,6}})\s*担任"),
+        re.compile(rf"(?:设|公司设|公司不设(?:董事会|监事会)，设)(?:{title_group})[^\u3002\n，,；;]{{0,10}}?[，,、]?\s*由\s*([\u4e00-\u9fff·]{{2,6}})\s*(?:担任|兼任|出任)"),
+        re.compile(rf"选举\s*([\u4e00-\u9fff·]{{2,6}})\s*为(?:公司)?(?:{title_group})"),
+        re.compile(rf"任命\s*([\u4e00-\u9fff·]{{2,6}})\s*为(?:公司)?(?:{title_group})"),
+        re.compile(rf"聘任\s*([\u4e00-\u9fff·]{{2,6}})\s*为(?:公司)?(?:{title_group})"),
+        re.compile(rf"([\u4e00-\u9fff·]{{2,6}})\s*任(?:公司)?(?:{title_group})"),
     )
 
     for raw_line in source.splitlines():
@@ -575,25 +471,6 @@ def _extract_company_articles_role_name(
         candidate = _clean_company_articles_person_candidate(match.group(1))
         if _is_valid_company_articles_person_candidate(candidate):
             return candidate
-
-    positions: list[int] = []
-    for label in labels:
-        start = 0
-        while True:
-            idx = source.find(label, start)
-            if idx < 0:
-                break
-            positions.append(idx)
-            start = idx + len(label)
-    for idx in positions:
-        window_text = source[max(0, idx - 24): min(len(source), idx + 36)]
-        for pattern in nearby_patterns:
-            match = pattern.search(window_text)
-            if not match:
-                continue
-            candidate = _clean_company_articles_person_candidate(match.group(1))
-            if _is_valid_company_articles_person_candidate(candidate):
-                return candidate
     return ""
 
 
