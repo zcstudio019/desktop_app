@@ -338,6 +338,10 @@ def extract_company_articles_legal_person(text: str) -> str:
 
 def extract_company_articles_legal_person_v2(text: str) -> str:
     source = text or ""
+    change_table_value = extract_company_articles_legal_person_from_change_table(source)
+    if change_table_value:
+        return change_table_value
+
     label_patterns = (
         re.compile(r"法定代表人(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{2,6})"),
         re.compile(r"执行董事、法定代表人(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{2,6})"),
@@ -381,6 +385,39 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         if _is_valid_company_articles_person_candidate(candidate):
             return candidate
 
+    return ""
+
+
+def extract_company_articles_legal_person_from_change_table(text: str) -> str:
+    """Extract legal representative from registration notice change tables."""
+    source = text or ""
+    if not any(keyword in source for keyword in ("登记通知书", "登记变更事项", "变更后事项", "法定代表人")):
+        return ""
+
+    lines = [_clean_line(line) for line in source.splitlines() if _clean_line(line)]
+    for index, line in enumerate(lines):
+        if "法定代表人" not in line:
+            continue
+        context_lines = [line]
+        for next_line in lines[index + 1 : index + 3]:
+            if any(stop_word in next_line for stop_word in ("股东", "发起人", "合伙人", "投资人", "住所", "经营范围")):
+                break
+            context_lines.append(next_line)
+        context = " ".join(context_lines)
+        candidates = [
+            _clean_company_articles_person_candidate(item)
+            for item in re.findall(r"[\u4e00-\u9fff·]{2,6}", context)
+        ]
+        candidates = [
+            item
+            for item in candidates
+            if _is_valid_company_articles_person_candidate(item)
+            and item not in {"原登记事项", "登记变更", "变更事项", "变更后事", "法定代表"}
+        ]
+        if not candidates:
+            continue
+        # In the registration change table the last valid name in the row/context is the changed-to value.
+        return candidates[-1]
     return ""
 
 

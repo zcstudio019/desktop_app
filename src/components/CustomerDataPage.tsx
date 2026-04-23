@@ -1219,13 +1219,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     [documents, extractionGroups]
   );
   const companyArticlesRoleItems = useMemo(
-    () => [
-      { label: '法定代表人', value: companyArticlesInsight?.legalPerson || '' },
-      { label: '执行董事', value: companyArticlesInsight?.executiveDirector || '' },
-      { label: '董事长', value: companyArticlesInsight?.chairman || '' },
-      { label: '经理', value: companyArticlesInsight?.manager || '' },
-      { label: '监事', value: companyArticlesInsight?.supervisor || '' },
-    ].filter((item) => item.value && item.value !== '暂无'),
+    () => {
+      const items = [
+        { label: '法定代表人', value: companyArticlesInsight?.legalPerson || '暂无' },
+        { label: '执行董事', value: companyArticlesInsight?.executiveDirector || '' },
+        { label: '董事长', value: companyArticlesInsight?.chairman || '' },
+        { label: '经理', value: companyArticlesInsight?.manager || '' },
+        { label: '监事', value: companyArticlesInsight?.supervisor || '' },
+      ];
+      return items.filter((item) => item.label === '法定代表人' || (item.value && item.value !== '暂无'));
+    },
     [companyArticlesInsight]
   );
   const companyArticlesShareholderViews = useMemo(

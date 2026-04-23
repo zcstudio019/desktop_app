@@ -113,7 +113,6 @@ HIDDEN_STRUCTURED_FIELDS = {
     'management_role_evidence_lines',
 }
 OPTIONAL_COMPANY_ARTICLES_FIELDS = {
-    'legal_person',
     'executive_director',
     'chairman',
     'manager',
