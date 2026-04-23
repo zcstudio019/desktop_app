@@ -889,13 +889,33 @@ function sortDocumentsWithinGroup(items: CustomerDocumentListItem[]): CustomerDo
 }
 
 function sanitizeProfileMarkdown(markdown: string): string {
+  const invalidLegalPersonValues = [
+    '姓名或者名称',
+    '姓名或名称',
+    '姓名名称',
+    '姓名',
+    '名称',
+    '股东',
+    '法定代表人',
+    '执行董事',
+    '董事长',
+    '负责人',
+    '事)担任。',
+  ];
+
+  const sanitizedLegalPersonMarkdown = invalidLegalPersonValues.reduce((current, value) => (
+    current.replace(new RegExp(`(- 法定代表人：)\\s*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm'), '$1暂无')
+  ), markdown);
+
   return markdown
+    ? sanitizedLegalPersonMarkdown
     .replace(/^>.*customer_id=.*$/gm, '')
     .replace(/^- 客户ID：.*$/gm, '')
     .replace(/(- 客户类型：)\s*enterprise\b/g, '$1企业')
     .replace(/(- 客户类型：)\s*personal\b/g, '$1个人')
     .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .trim()
+    : '';
 }
 
 function formatProfileDateTime(value?: string | null): string {

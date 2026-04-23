@@ -215,6 +215,33 @@ def _format_count_for_markdown(value: Any) -> str:
     return f'{digits} \u7b14'
 
 
+def _is_invalid_legal_person_value(value: Any) -> bool:
+    text = str(value or '').strip()
+    if not text:
+        return True
+    invalid_values = {
+        '姓名或者名称',
+        '姓名或名称',
+        '姓名名称',
+        '姓名',
+        '名称',
+        '股东',
+        '法定代表人',
+        '执行董事',
+        '董事长',
+        '负责人',
+        '事)担任。',
+    }
+    if text in invalid_values:
+        return True
+    invalid_fragments = ('担任', '组成', '任命', '选举', '产生', '负责', '行使', '职权', '为公司')
+    if any(fragment in text for fragment in invalid_fragments):
+        return True
+    if any(keyword in text for keyword in ('姓名或者名称', '姓名或名称', '股东姓名', '股东名称', '出资方式', '出资额', '出资日期')):
+        return True
+    return False
+
+
 def _format_value(key: str, value: Any) -> str:
     if value is None or value == '':
         return '\u6682\u65e0'
@@ -234,6 +261,8 @@ def _format_value(key: str, value: Any) -> str:
         return _format_amount_for_markdown(value)
     if key in COUNT_FIELDS:
         return _format_count_for_markdown(value)
+    if key == 'legal_person' and _is_invalid_legal_person_value(value):
+        return '\u6682\u65e0'
     return str(value)
 
 

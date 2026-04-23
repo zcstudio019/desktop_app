@@ -297,6 +297,95 @@ def extract_company_articles_legal_person(text: str) -> str:
     return ""
 
 
+def extract_company_articles_legal_person_v2(text: str) -> str:
+    source = text or ""
+    invalid_fragments = (
+        "担任", "组成", "任命", "选举", "产生", "负责", "行使", "职权", "执行", "设", "由", "为公司",
+    )
+    invalid_exact_values = {
+        "姓名或者名称",
+        "姓名或名称",
+        "姓名名称",
+        "股东",
+        "法定代表人",
+        "执行董事",
+        "董事长",
+        "负责人",
+        "姓名",
+        "名称",
+    }
+
+    def _clean_candidate(value: str) -> str:
+        cleaned = normalize_text(value)
+        cleaned = re.sub(r"^[：:\-\—()\[\]（）\s]+", "", cleaned)
+        cleaned = re.sub(r"\s+", "", cleaned).strip("：:;；，,。.")
+        return cleaned
+
+    def _is_valid_candidate(value: str) -> bool:
+        candidate = _clean_candidate(value)
+        if not candidate:
+            return False
+        if candidate in invalid_exact_values:
+            return False
+        if any(fragment in candidate for fragment in invalid_fragments):
+            return False
+        if any(keyword in candidate for keyword in ("姓名或者名称", "姓名或名称", "股东姓名", "股东名称", "出资方式", "出资额", "出资日期")):
+            return False
+        return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,20}", candidate))
+
+    label_patterns = (
+        re.compile(r"法定代表人\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"执行董事\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"董事长\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"执行董事、法定代表人\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
+    )
+    sentence_patterns = (
+        re.compile(
+            r"(?:由)?([\u4e00-\u9fffA-Za-z·]{2,20})\s*担任(?:公司)?(?:执行董事|董事长)"
+            r"(?:（法定代表人）|\(法定代表人\)|、法定代表人)?"
+        ),
+        re.compile(
+            r"(?:执行董事|董事长)\s*(?:（法定代表人）|\(法定代表人\)|、法定代表人)?"
+            r"\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"
+        ),
+        re.compile(r"法定代表人(?:由|为)?\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"([\u4e00-\u9fffA-Za-z·]{2,20})\s*为(?:公司)?法定代表人"),
+    )
+
+    for raw_line in source.splitlines():
+        line = normalize_text(raw_line)
+        if not line:
+            continue
+        if not any(label in line for label in ("法定代表人", "执行董事", "董事长")):
+            continue
+
+        for pattern in label_patterns:
+            match = pattern.search(line)
+            if not match:
+                continue
+            candidate = _clean_candidate(match.group(1))
+            if _is_valid_candidate(candidate):
+                return candidate
+
+        for pattern in sentence_patterns:
+            match = pattern.search(line)
+            if not match:
+                continue
+            candidate = _clean_candidate(match.group(1))
+            if _is_valid_candidate(candidate):
+                return candidate
+
+    for pattern in label_patterns + sentence_patterns:
+        match = pattern.search(source)
+        if not match:
+            continue
+        candidate = _clean_candidate(match.group(1))
+        if _is_valid_candidate(candidate):
+            return candidate
+
+    return ""
+
+
 def clean_business_scope(value: str) -> str:
     return _clean_scope_or_address(value, stop_words=("住所", "地址", "类型", "法定代表人", "统一社会信用代码", "成立日期"))
 
@@ -464,7 +553,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
         "registered_capital": registered_capital,
-        "legal_person": extract_company_articles_legal_person(text),
+        "legal_person": extract_company_articles_legal_person_v2(text),
         "shareholders": shareholders,
         "shareholder_count": str(len(shareholders)) if shareholders else "",
         "equity_structure_summary": equity_structure_summary,
@@ -2657,7 +2746,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
         "registered_capital": registered_capital,
-        "legal_person": extract_company_articles_legal_person(text),
+        "legal_person": extract_company_articles_legal_person_v2(text),
         "shareholders": shareholders,
         "shareholder_count": str(len(shareholders)) if shareholders else "",
         "equity_structure_summary": equity_structure_summary,
