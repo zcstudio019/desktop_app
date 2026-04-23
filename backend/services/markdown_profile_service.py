@@ -241,6 +241,11 @@ def _is_invalid_legal_person_value(value: Any) -> bool:
         '未填写',
         '未填报',
         '未填入',
+        '职务',
+        '董事',
+        '报酬',
+        '及其报酬',
+        '其报酬',
         '签字',
         '签章',
         '盖章',
@@ -261,6 +266,8 @@ def _is_invalid_legal_person_value(value: Any) -> bool:
         return True
     if any(title_fragment in text for title_fragment in ('法定代表', '执行董事', '董事长', '负责人')):
         return True
+    if any(fragment in text for fragment in ('职务', '报酬', '董事', '监事会')):
+        return True
     if text.startswith('的') and any(title in text for title in ('法定代表人', '执行董事', '董事长', '负责人')):
         return True
     invalid_fragments = ('担任', '组成', '任命', '选举', '产生', '负责', '行使', '职权', '为公司')
@@ -269,6 +276,10 @@ def _is_invalid_legal_person_value(value: Any) -> bool:
     if any(keyword in text for keyword in ('姓名或者名称', '姓名或名称', '股东姓名', '股东名称', '出资方式', '出资额', '出资日期')):
         return True
     return False
+
+
+def _is_invalid_management_role_value(value: Any) -> bool:
+    return _is_invalid_legal_person_value(value)
 
 
 def _format_value(key: str, value: Any) -> str:
@@ -290,7 +301,7 @@ def _format_value(key: str, value: Any) -> str:
         return _format_amount_for_markdown(value)
     if key in COUNT_FIELDS:
         return _format_count_for_markdown(value)
-    if key == 'legal_person' and _is_invalid_legal_person_value(value):
+    if key in {'legal_person', 'executive_director', 'chairman', 'manager', 'supervisor'} and _is_invalid_management_role_value(value):
         return '\u6682\u65e0'
     return str(value)
 

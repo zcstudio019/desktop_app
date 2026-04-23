@@ -90,6 +90,12 @@ interface FieldConsistencyResult {
 interface CompanyArticlesInsight {
   companyName: string;
   registeredCapital: string;
+  legalPerson: string;
+  executiveDirector: string;
+  chairman: string;
+  manager: string;
+  supervisor: string;
+  managementRolesSummary: string;
   shareholderCount: string;
   equityStructureSummary: string;
   shareholders: Array<Record<string, unknown>>;
@@ -493,6 +499,12 @@ function buildCompanyArticlesInsight(
   return {
     companyName: stringifyExtractionValue(extractedData.company_name),
     registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
+    legalPerson: stringifyExtractionValue(extractedData.legal_person),
+    executiveDirector: stringifyExtractionValue(extractedData.executive_director),
+    chairman: stringifyExtractionValue(extractedData.chairman),
+    manager: stringifyExtractionValue(extractedData.manager),
+    supervisor: stringifyExtractionValue(extractedData.supervisor),
+    managementRolesSummary: stringifyExtractionValue(extractedData.management_roles_summary),
     shareholderCount: stringifyExtractionValue(extractedData.shareholder_count),
     equityStructureSummary: stringifyExtractionValue(extractedData.equity_structure_summary),
     shareholders: toRecordList(extractedData.shareholders),
@@ -906,6 +918,11 @@ function sanitizeProfileMarkdown(markdown: string): string {
     '未填写',
     '未填报',
     '未填入',
+    '职务',
+    '董事',
+    '报酬',
+    '及其报酬',
+    '其报酬',
     '签字',
     '签章',
     '盖章',
@@ -923,12 +940,15 @@ function sanitizeProfileMarkdown(markdown: string): string {
     '事)担任。',
   ];
 
-  const sanitizedLegalPersonMarkdown = invalidLegalPersonValues.reduce((current, value) => (
-    current.replace(new RegExp(`(- 法定代表人：)\\s*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm'), '$1暂无')
+  const roleLabels = ['法定代表人', '执行董事', '董事长', '经理', '监事'];
+  const sanitizedRoleMarkdown = roleLabels.reduce((roleCurrent, roleLabel) => (
+    invalidLegalPersonValues.reduce((current, value) => (
+      current.replace(new RegExp(`(- ${roleLabel}：)\\s*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm'), '$1暂无')
+    ), roleCurrent)
   ), markdown);
 
   return markdown
-    ? sanitizedLegalPersonMarkdown
+    ? sanitizedRoleMarkdown
     .replace(/^>.*customer_id=.*$/gm, '')
     .replace(/^- 客户ID：.*$/gm, '')
     .replace(/(- 客户类型：)\s*enterprise\b/g, '$1企业')
@@ -1764,6 +1784,34 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     <div>
                       <div className="text-xs font-medium text-slate-500">注册资本</div>
                       <div className="mt-1 text-slate-700">{companyArticlesInsight.registeredCapital || '暂无'}</div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div>
+                        <div className="text-xs font-medium text-slate-500">法定代表人</div>
+                        <div className="mt-1 text-slate-700">{companyArticlesInsight.legalPerson || '暂无'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-slate-500">执行董事</div>
+                        <div className="mt-1 text-slate-700">{companyArticlesInsight.executiveDirector || '暂无'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-slate-500">董事长</div>
+                        <div className="mt-1 text-slate-700">{companyArticlesInsight.chairman || '暂无'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-slate-500">经理</div>
+                        <div className="mt-1 text-slate-700">{companyArticlesInsight.manager || '暂无'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-slate-500">监事</div>
+                        <div className="mt-1 text-slate-700">{companyArticlesInsight.supervisor || '暂无'}</div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">任职信息摘要</div>
+                      <div className="mt-1 text-slate-700">
+                        {companyArticlesInsight.managementRolesSummary || '暂未提取到明确任职信息'}
+                      </div>
                     </div>
                     <div>
                       <div className="text-xs font-medium text-slate-500">股权结构摘要</div>

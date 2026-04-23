@@ -255,6 +255,14 @@ def extract_company_articles_legal_person(text: str) -> str:
         "未填写",
         "未填报",
         "未填入",
+        "一人",
+        "一名",
+        "一位",
+        "职务",
+        "董事",
+        "报酬",
+        "及其报酬",
+        "其报酬",
         "签字",
         "签章",
         "盖章",
@@ -285,13 +293,17 @@ def extract_company_articles_legal_person(text: str) -> str:
             return False
         if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人")):
             return False
+        if candidate in {"一人", "一名", "一位"}:
+            return False
+        if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会")):
+            return False
         if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人")):
             return False
         if any(fragment in candidate for fragment in invalid_fragments):
             return False
         if any(keyword in candidate for keyword in ("姓名或者名称", "姓名或名称", "股东姓名", "股东名称", "出资方式", "出资额", "出资日期")):
             return False
-        return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,20}", candidate))
+        return bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,6}", candidate))
 
     for raw_line in source.splitlines():
         line = normalize_text(raw_line)
@@ -343,6 +355,11 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         "未填写",
         "未填报",
         "未填入",
+        "职务",
+        "董事",
+        "报酬",
+        "及其报酬",
+        "其报酬",
         "签字",
         "签章",
         "盖章",
@@ -374,13 +391,15 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
             return False
         if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人")):
             return False
+        if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会")):
+            return False
         if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人")):
             return False
         if any(fragment in candidate for fragment in invalid_fragments):
             return False
         if any(keyword in candidate for keyword in ("姓名或者名称", "姓名或名称", "股东姓名", "股东名称", "出资方式", "出资额", "出资日期")):
             return False
-        return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,20}", candidate))
+        return bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,6}", candidate))
 
     label_patterns = (
         re.compile(r"法定代表人(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
@@ -483,7 +502,9 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         "无", "暂无", "待定", "空白",
         "填写", "填报", "填入",
         "未填写", "未填报", "未填入",
+        "一人", "一名", "一位",
         "签字", "签章", "盖章",
+        "职务", "董事", "报酬", "及其报酬", "其报酬",
         "股东", "法定代表人", "的法定代表人",
         "执行董事", "的执行董事",
         "董事长", "的董事长",
@@ -495,13 +516,15 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         return False
     if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人", "经理", "监事")):
         return False
+    if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会")):
+        return False
     if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人", "经理", "监事")):
         return False
     if any(fragment in candidate for fragment in ("担任", "组成", "任命", "选举", "产生", "负责", "行使", "职权", "执行", "设", "由", "为公司")):
         return False
     if any(keyword in candidate for keyword in ("姓名或者名称", "姓名或名称", "股东姓名", "股东名称", "出资方式", "出资额", "出资日期")):
         return False
-    return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,20}", candidate))
+    return bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,6}", candidate))
 
 
 def _extract_company_articles_role_name(
@@ -519,6 +542,7 @@ def _extract_company_articles_role_name(
     sentence_patterns = (
         re.compile(rf"(?:由)?([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*担任(?:公司)?(?:{title_group})"),
         re.compile(rf"(?:{title_group})\s*由\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*担任"),
+        re.compile(rf"(?:设|选举设|公司设|公司不设(?:董事会|监事会)，设)(?:{title_group})[^\u3002\n，,；;]{{0,8}}?[，,、]?\s*由\s*([\u4e00-\u9fff·]{{2,6}})\s*(?:担任|兼任|出任)"),
         re.compile(rf"选举\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
         re.compile(rf"任命\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
         re.compile(rf"聘任\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
@@ -595,8 +619,43 @@ def extract_company_articles_management_roles(text: str) -> dict[str, str]:
         titles=("监事", "监事会主席"),
     )
     legal_person = extract_company_articles_legal_person_v2(text)
+    if legal_person and not _is_valid_company_articles_person_candidate(legal_person):
+        legal_person = ""
+
+    source = text or ""
+
+    executive_director_as_legal_person = bool(re.search(r"法定代表人由执行董事担任", source))
+    chairman_as_legal_person = bool(re.search(r"法定代表人由董事长担任", source))
+
+    manager_by_executive_director = bool(
+        re.search(r"(?:经理由执行董事兼任|执行董事兼任经理|由执行董事兼任经理)", source)
+    )
+    manager_by_chairman = bool(
+        re.search(r"(?:经理由董事长兼任|董事长兼任经理|由董事长兼任经理)", source)
+    )
+    supervisor_by_shareholder_match = re.search(
+        r"监事由([\u4e00-\u9fff·]{2,6})担任",
+        source,
+    )
+
     if not legal_person:
-        legal_person = executive_director or chairman
+        if executive_director_as_legal_person and executive_director:
+            legal_person = executive_director
+        elif chairman_as_legal_person and chairman:
+            legal_person = chairman
+        else:
+            legal_person = executive_director or chairman
+
+    if not manager:
+        if manager_by_executive_director and executive_director:
+            manager = executive_director
+        elif manager_by_chairman and chairman:
+            manager = chairman
+
+    if not supervisor and supervisor_by_shareholder_match:
+        supervisor_candidate = _clean_company_articles_person_candidate(supervisor_by_shareholder_match.group(1))
+        if _is_valid_company_articles_person_candidate(supervisor_candidate):
+            supervisor = supervisor_candidate
 
     summary_parts = []
     for label, value in (
