@@ -1616,6 +1616,37 @@ def _extract_registration_date_cn(text: str) -> str:
     return ""
 
 
+def _extract_business_license_certificate_number(text: str) -> str:
+    source = text or ""
+    labels = (
+        "\u8bc1\u7167\u7f16\u53f7",
+        "\u6267\u7167\u7f16\u53f7",
+        "\u8425\u4e1a\u6267\u7167\u7f16\u53f7",
+        "\u8bc1\u4e66\u7f16\u53f7",
+    )
+    for label in labels:
+        pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*([0-9A-Z\s\-]{{8,40}})", re.IGNORECASE)
+        match = pattern.search(source)
+        if match:
+            value = re.sub(r"[\s\-]+", "", match.group(1)).strip()
+            if value:
+                return value
+    labeled = _label_value_cn(
+        source,
+        list(labels),
+        [
+            "\u540d\u79f0",
+            "\u7edf\u4e00\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801",
+            "\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801",
+            "\u6cd5\u5b9a\u4ee3\u8868\u4eba",
+            "\u7ecf\u8425\u8303\u56f4",
+        ],
+        max_length=80,
+    )
+    value = re.sub(r"[^0-9A-Za-z]+", "", labeled)
+    return value if len(value) >= 8 else ""
+
+
 def split_bank_name_and_branch(value: str) -> tuple[str, str]:
     cleaned = re.sub(r"\s+", " ", normalize_text(value)).strip("：:;；，,。 ")
     if not cleaned:
@@ -1669,6 +1700,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
         "\u53d1\u7167\u673a\u5173",
     ]
     address, business_scope = _extract_business_license_address_and_scope(text)
+    certificate_number = _extract_business_license_certificate_number(text)
     registration_authority = _extract_registration_authority_cn(text)
     registration_date = _extract_registration_date_cn(text)
     return {
@@ -1680,6 +1712,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
             _find_first_match(text, UNIFIED_CODE_PATTERN),
             _label_value_cn(text, ["\u7edf\u4e00\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801", "\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801"], stop_labels, max_length=60),
         ),
+        "certificate_number": certificate_number,
         "legal_person": _label_value_cn(text, ["\u6cd5\u5b9a\u4ee3\u8868\u4eba", "\u6cd5\u4eba", "\u8d1f\u8d23\u4eba"], stop_labels, max_length=60),
         "registered_capital": _registered_capital_cn(text),
         "establish_date": _pick_first_nonempty(
@@ -1702,6 +1735,7 @@ def extract_account_license(text: str) -> dict[str, Any]:
         "\u5f00\u6237\u94f6\u884c\u673a\u6784",
         "\u6838\u51c6\u53f7",
         "\u8bb8\u53ef\u8bc1\u53f7",
+        "\u57fa\u672c\u5b58\u6b3e\u8d26\u6237\u7f16\u53f7",
         "\u8d26\u6237\u6027\u8d28",
         "\u8d26\u6237\u7c7b\u578b",
         "\u5f00\u6237\u65e5\u671f",
@@ -1709,6 +1743,8 @@ def extract_account_license(text: str) -> dict[str, Any]:
         "\u5b58\u6b3e\u4eba\u540d\u79f0",
         "\u8d26\u6237\u540d\u79f0",
         "\u6237\u540d",
+        "\u6cd5\u5b9a\u4ee3\u8868\u4eba",
+        "\u5355\u4f4d\u8d1f\u8d23\u4eba",
         "\u5e01\u79cd",
     ]
     bank_full = _pick_first_nonempty(
@@ -1726,6 +1762,13 @@ def extract_account_license(text: str) -> dict[str, Any]:
         ) or _v2_extract_account_number(text),
         "bank_name": bank_name,
         "bank_branch": _pick_first_nonempty(bank_branch, _label_value_cn(text, ["\u5f00\u6237\u673a\u6784", "\u5f00\u6237\u94f6\u884c\u673a\u6784", "\u5f00\u6237\u7f51\u70b9"], stop_labels, max_length=120)),
+        "legal_person": _pick_first_nonempty(
+            _label_value_cn(text, ["\u6cd5\u5b9a\u4ee3\u8868\u4eba", "\u6cd5\u4eba"], stop_labels, max_length=80),
+            _label_value_cn(text, ["\u5355\u4f4d\u8d1f\u8d23\u4eba"], stop_labels, max_length=80),
+        ),
+        "basic_deposit_account_number": _v2_only_digits(
+            _label_value_cn(text, ["\u57fa\u672c\u5b58\u6b3e\u8d26\u6237\u7f16\u53f7"], stop_labels, max_length=120)
+        ),
         "license_number": _label_value_cn(text, ["\u6838\u51c6\u53f7", "\u8bb8\u53ef\u8bc1\u53f7", "\u8bb8\u53ef\u8bc1\u7f16\u53f7"], stop_labels, max_length=80),
         "account_type": _label_value_cn(text, ["\u8d26\u6237\u6027\u8d28", "\u8d26\u6237\u7c7b\u578b"], stop_labels, max_length=80),
         "open_date": _pick_first_nonempty(_label_value_cn(text, ["\u5f00\u6237\u65e5\u671f", "\u5f00\u7acb\u65e5\u671f"], stop_labels, max_length=60), _find_first_date(text)),
@@ -3020,6 +3063,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
         "\u53d1\u7167\u673a\u5173",
     ]
     address, business_scope = _extract_business_license_address_and_scope(text)
+    certificate_number = _extract_business_license_certificate_number(text)
     registration_authority = _extract_registration_authority_cn(text)
     registration_date = _extract_registration_date_cn(text)
     return {
@@ -3031,6 +3075,7 @@ def extract_business_license(text: str) -> dict[str, Any]:
             _find_first_match(text, UNIFIED_CODE_PATTERN),
             _label_value_cn(text, ["\u7edf\u4e00\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801", "\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801"], stop_labels, max_length=60),
         ),
+        "certificate_number": certificate_number,
         "legal_person": _label_value_cn(text, ["\u6cd5\u5b9a\u4ee3\u8868\u4eba", "\u6cd5\u4eba", "\u8d1f\u8d23\u4eba"], stop_labels, max_length=60),
         "registered_capital": _registered_capital_cn(text),
         "establish_date": _pick_first_nonempty(
@@ -3053,6 +3098,7 @@ def extract_account_license(text: str) -> dict[str, Any]:
         "\u5f00\u6237\u94f6\u884c\u673a\u6784",
         "\u6838\u51c6\u53f7",
         "\u8bb8\u53ef\u8bc1\u53f7",
+        "\u57fa\u672c\u5b58\u6b3e\u8d26\u6237\u7f16\u53f7",
         "\u8d26\u6237\u6027\u8d28",
         "\u8d26\u6237\u7c7b\u578b",
         "\u5f00\u6237\u65e5\u671f",
@@ -3060,6 +3106,8 @@ def extract_account_license(text: str) -> dict[str, Any]:
         "\u5b58\u6b3e\u4eba\u540d\u79f0",
         "\u8d26\u6237\u540d\u79f0",
         "\u6237\u540d",
+        "\u6cd5\u5b9a\u4ee3\u8868\u4eba",
+        "\u5355\u4f4d\u8d1f\u8d23\u4eba",
         "\u5e01\u79cd",
     ]
     bank_full = _pick_first_nonempty(
@@ -3067,6 +3115,14 @@ def extract_account_license(text: str) -> dict[str, Any]:
         _label_value_cn(text, ["\u5f00\u6237\u673a\u6784", "\u5f00\u6237\u94f6\u884c\u673a\u6784"], stop_labels, max_length=180),
     )
     bank_name, bank_branch = split_bank_name_and_branch(bank_full)
+    legal_person_match = re.search(
+        r"\u6cd5\u5b9a\u4ee3\u8868\u4eba(?:\uff08\u5355\u4f4d\u8d1f\u8d23\u4eba\uff09)?\s*[:\uff1a]?\s*([^\n]+)",
+        text or "",
+    )
+    basic_deposit_account_match = re.search(
+        r"\u57fa\u672c\u5b58\u6b3e\u8d26\u6237\u7f16\u53f7\s*[:\uff1a]?\s*([A-Za-z0-9\s\-]{6,40})",
+        text or "",
+    )
     return {
         "account_name": _label_value_cn(text, ["\u8d26\u6237\u540d\u79f0", "\u5b58\u6b3e\u4eba\u540d\u79f0", "\u6237\u540d"], stop_labels, max_length=120),
         "account_number": _v2_only_digits(
@@ -3077,6 +3133,8 @@ def extract_account_license(text: str) -> dict[str, Any]:
         ) or _v2_extract_account_number(text),
         "bank_name": bank_name,
         "bank_branch": _pick_first_nonempty(bank_branch, _label_value_cn(text, ["\u5f00\u6237\u673a\u6784", "\u5f00\u6237\u94f6\u884c\u673a\u6784", "\u5f00\u6237\u7f51\u70b9"], stop_labels, max_length=120)),
+        "legal_person": _clean_line(legal_person_match.group(1)) if legal_person_match else "",
+        "basic_deposit_account_number": re.sub(r"[\s\-]+", "", basic_deposit_account_match.group(1)) if basic_deposit_account_match else "",
         "license_number": _label_value_cn(text, ["\u6838\u51c6\u53f7", "\u8bb8\u53ef\u8bc1\u53f7", "\u8bb8\u53ef\u8bc1\u7f16\u53f7"], stop_labels, max_length=80),
         "account_type": _label_value_cn(text, ["\u8d26\u6237\u6027\u8d28", "\u8d26\u6237\u7c7b\u578b"], stop_labels, max_length=80),
         "open_date": _pick_first_nonempty(_label_value_cn(text, ["\u5f00\u6237\u65e5\u671f", "\u5f00\u7acb\u65e5\u671f"], stop_labels, max_length=60), _find_first_date(text)),

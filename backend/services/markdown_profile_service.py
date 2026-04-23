@@ -55,10 +55,12 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'bank_name': '\u94f6\u884c\u540d\u79f0',
     'bank_branch': '\u5f00\u6237\u652f\u884c',
     'license_number': '\u6838\u51c6\u53f7',
+    'basic_deposit_account_number': '\u57fa\u672c\u5b58\u6b3e\u8d26\u6237\u7f16\u53f7',
     'account_type': '\u8d26\u6237\u6027\u8d28',
     'open_date': '\u5f00\u6237\u65e5\u671f',
     'company_name': '\u516c\u53f8\u540d\u79f0',
     'credit_code': '\u7edf\u4e00\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801',
+    'certificate_number': '\u8bc1\u7167\u7f16\u53f7',
     'legal_person': '\u6cd5\u5b9a\u4ee3\u8868\u4eba',
     'registered_capital': '\u6ce8\u518c\u8d44\u672c',
     'establish_date': '\u6210\u7acb\u65e5\u671f',
@@ -90,7 +92,7 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'source_type': '\u6765\u6e90\u7c7b\u578b',
 }
 
-HIDDEN_STRUCTURED_FIELDS = {'document_type_code', 'document_type_name', 'storage_label'}
+HIDDEN_STRUCTURED_FIELDS = {'document_type_code', 'document_type_name', 'storage_label', 'source_type', 'source_type_name'}
 
 
 def get_risk_report_schema_template() -> dict[str, Any]:
