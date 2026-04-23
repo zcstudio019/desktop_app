@@ -242,6 +242,9 @@ def extract_company_articles_legal_person(text: str) -> str:
         "姓名或者名称",
         "姓名或名称",
         "姓名名称",
+        "签字",
+        "签章",
+        "盖章",
         "股东",
         "法定代表人",
         "执行董事",
@@ -306,6 +309,9 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         "姓名或者名称",
         "姓名或名称",
         "姓名名称",
+        "签字",
+        "签章",
+        "盖章",
         "股东",
         "法定代表人",
         "执行董事",
@@ -318,6 +324,7 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
     def _clean_candidate(value: str) -> str:
         cleaned = normalize_text(value)
         cleaned = re.sub(r"^[：:\-\—()\[\]（）\s]+", "", cleaned)
+        cleaned = re.sub(r"^(?:为|由)+", "", cleaned)
         cleaned = re.sub(r"\s+", "", cleaned).strip("：:;；，,。.")
         return cleaned
 
@@ -350,6 +357,15 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         ),
         re.compile(r"法定代表人(?:由|为)?\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
         re.compile(r"([\u4e00-\u9fffA-Za-z·]{2,20})\s*为(?:公司)?法定代表人"),
+        re.compile(r"选举\s*([\u4e00-\u9fffA-Za-z·]{2,20})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
+        re.compile(r"(?:执行董事|董事长)\s*由\s*([\u4e00-\u9fffA-Za-z·]{2,20})\s*担任"),
+        re.compile(r"任命\s*([\u4e00-\u9fffA-Za-z·]{2,20})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
+        re.compile(r"([\u4e00-\u9fffA-Za-z·]{2,20})\s*任(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
+    )
+
+    nearby_name_patterns = (
+        re.compile(r"(?:法定代表人|执行董事|董事长)[^。\n：:]{0,20}?([\u4e00-\u9fff]{2,4})"),
+        re.compile(r"([\u4e00-\u9fff]{2,4})[^。\n]{0,12}?(?:法定代表人|执行董事|董事长)"),
     )
 
     for raw_line in source.splitlines():
@@ -382,6 +398,27 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         candidate = _clean_candidate(match.group(1))
         if _is_valid_candidate(candidate):
             return candidate
+
+    keyword_positions: list[int] = []
+    for keyword in ("法定代表人", "执行董事", "董事长"):
+        start = 0
+        while True:
+            idx = source.find(keyword, start)
+            if idx < 0:
+                break
+            keyword_positions.append(idx)
+            start = idx + len(keyword)
+    for idx in keyword_positions:
+        window_start = max(0, idx - 24)
+        window_end = min(len(source), idx + 36)
+        window_text = source[window_start:window_end]
+        for pattern in nearby_name_patterns:
+            match = pattern.search(window_text)
+            if not match:
+                continue
+            candidate = _clean_candidate(match.group(1))
+            if _is_valid_candidate(candidate):
+                return candidate
 
     return ""
 
