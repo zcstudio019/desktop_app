@@ -920,13 +920,19 @@ function sanitizeProfileMarkdown(markdown: string): string {
     '未填入',
     '职务',
     '董事',
-    '报酬',
-    '及其报酬',
-    '其报酬',
-    '公司类型',
-    '公司股东',
-    '决定聘任',
-    '签字',
+      '报酬',
+      '及其报酬',
+      '其报酬',
+      '公司类型',
+      '公司股东',
+      '决定聘任',
+      '印章',
+      '用章',
+      '动用',
+      '使用',
+      '制度',
+      '印鉴',
+      '签字',
     '签章',
     '盖章',
     '姓名',
@@ -943,16 +949,22 @@ function sanitizeProfileMarkdown(markdown: string): string {
     '事)担任。',
   ];
 
-  const roleLabels = ['法定代表人', '执行董事', '董事长', '经理', '监事'];
-  const sanitizedRoleMarkdown = roleLabels.reduce((roleCurrent, roleLabel) => (
-    invalidLegalPersonValues.reduce((current, value) => (
-      current.replace(new RegExp(`(- ${roleLabel}：)\\s*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm'), '$1暂无')
-    ), roleCurrent)
-  ), markdown);
+    const roleLabels = ['法定代表人', '执行董事', '董事长', '经理', '监事'];
+    const sanitizedRoleMarkdown = roleLabels.reduce((roleCurrent, roleLabel) => (
+      invalidLegalPersonValues.reduce((current, value) => (
+        current.replace(new RegExp(`(- ${roleLabel}：)\\s*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm'), '$1暂无')
+      ), roleCurrent)
+    ), markdown);
+    const sanitizedRoleFragmentMarkdown = roleLabels.reduce((current, roleLabel) => (
+      current.replace(
+        new RegExp(`(- ${roleLabel}：)[^\\n]*(制度|印章|用章|动用|使用|印鉴)[^\\n]*`, 'g'),
+        '$1暂无'
+      )
+    ), sanitizedRoleMarkdown);
 
-  return markdown
-    ? sanitizedRoleMarkdown
-    .replace(/^>.*customer_id=.*$/gm, '')
+    return markdown
+      ? sanitizedRoleFragmentMarkdown
+      .replace(/^>.*customer_id=.*$/gm, '')
     .replace(/^- 客户ID：.*$/gm, '')
     .replace(/(- 客户类型：)\s*enterprise\b/g, '$1企业')
     .replace(/(- 客户类型：)\s*personal\b/g, '$1个人')

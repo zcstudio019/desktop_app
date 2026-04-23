@@ -443,6 +443,7 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         "签字", "签章", "盖章",
         "职务", "董事", "报酬", "及其报酬", "其报酬",
         "公司类型", "公司股东", "决定聘任",
+        "印章", "用章", "动用", "使用", "制度", "印鉴",
         "股东", "法定代表人", "的法定代表人",
         "执行董事", "的执行董事",
         "董事长", "的董事长",
@@ -454,7 +455,7 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         return False
     if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人", "经理", "监事")):
         return False
-    if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会")):
+    if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会", "制度", "印章", "用章", "动用", "使用", "印鉴")):
         return False
     if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人", "经理", "监事")):
         return False
