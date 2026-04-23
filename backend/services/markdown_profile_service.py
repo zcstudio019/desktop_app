@@ -104,7 +104,22 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'source_type': '\u6765\u6e90\u7c7b\u578b',
 }
 
-HIDDEN_STRUCTURED_FIELDS = {'document_type_code', 'document_type_name', 'storage_label', 'source_type', 'source_type_name'}
+HIDDEN_STRUCTURED_FIELDS = {
+    'document_type_code',
+    'document_type_name',
+    'storage_label',
+    'source_type',
+    'source_type_name',
+    'management_role_evidence_lines',
+}
+OPTIONAL_COMPANY_ARTICLES_FIELDS = {
+    'legal_person',
+    'executive_director',
+    'chairman',
+    'manager',
+    'supervisor',
+    'management_roles_summary',
+}
 
 
 def get_risk_report_schema_template() -> dict[str, Any]:
@@ -387,7 +402,10 @@ async def _build_single_document_section(
             try:
                 if key in HIDDEN_STRUCTURED_FIELDS:
                     continue
-                lines.append(f'- {_format_field_label(key)}\uff1a{_format_value(key, value)}')
+                formatted_value = _format_value(key, value)
+                if extraction_type == 'company_articles' and key in OPTIONAL_COMPANY_ARTICLES_FIELDS and formatted_value == '\u6682\u65e0':
+                    continue
+                lines.append(f'- {_format_field_label(key)}\uff1a{formatted_value}')
             except Exception as exc:
                 logger.warning(
                     "profile_markdown field_failed customer_id=%s document_type=%s field=%s error=%s",

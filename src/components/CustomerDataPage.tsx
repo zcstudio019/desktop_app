@@ -1218,6 +1218,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     () => buildCompanyArticlesInsight(documents, extractionGroups),
     [documents, extractionGroups]
   );
+  const companyArticlesRoleItems = useMemo(
+    () => [
+      { label: '法定代表人', value: companyArticlesInsight?.legalPerson || '' },
+      { label: '执行董事', value: companyArticlesInsight?.executiveDirector || '' },
+      { label: '董事长', value: companyArticlesInsight?.chairman || '' },
+      { label: '经理', value: companyArticlesInsight?.manager || '' },
+      { label: '监事', value: companyArticlesInsight?.supervisor || '' },
+    ].filter((item) => item.value && item.value !== '暂无'),
+    [companyArticlesInsight]
+  );
   const companyArticlesShareholderViews = useMemo(
     () => buildCompanyArticlesShareholderViews(companyArticlesInsight?.shareholders || []),
     [companyArticlesInsight]
@@ -1788,34 +1798,26 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                       <div className="text-xs font-medium text-slate-500">注册资本</div>
                       <div className="mt-1 text-slate-700">{companyArticlesInsight.registeredCapital || '暂无'}</div>
                     </div>
-                    <div className="grid gap-3 md:grid-cols-2">
+                    {companyArticlesRoleItems.length > 0 ? (
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {companyArticlesRoleItems.map((item) => (
+                          <div key={item.label}>
+                            <div className="text-xs font-medium text-slate-500">{item.label}</div>
+                            <div className="mt-1 text-slate-700">{item.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-600">
+                        章程未明确列出具体任职姓名。
+                      </div>
+                    )}
+                    {companyArticlesInsight.managementRolesSummary && companyArticlesInsight.managementRolesSummary !== '暂无' ? (
                       <div>
-                        <div className="text-xs font-medium text-slate-500">法定代表人</div>
-                        <div className="mt-1 text-slate-700">{companyArticlesInsight.legalPerson || '暂无'}</div>
+                        <div className="text-xs font-medium text-slate-500">任职信息摘要</div>
+                        <div className="mt-1 text-slate-700">{companyArticlesInsight.managementRolesSummary}</div>
                       </div>
-                      <div>
-                        <div className="text-xs font-medium text-slate-500">执行董事</div>
-                        <div className="mt-1 text-slate-700">{companyArticlesInsight.executiveDirector || '暂无'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs font-medium text-slate-500">董事长</div>
-                        <div className="mt-1 text-slate-700">{companyArticlesInsight.chairman || '暂无'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs font-medium text-slate-500">经理</div>
-                        <div className="mt-1 text-slate-700">{companyArticlesInsight.manager || '暂无'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs font-medium text-slate-500">监事</div>
-                        <div className="mt-1 text-slate-700">{companyArticlesInsight.supervisor || '暂无'}</div>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs font-medium text-slate-500">任职信息摘要</div>
-                      <div className="mt-1 text-slate-700">
-                        {companyArticlesInsight.managementRolesSummary || '暂未提取到明确任职信息'}
-                      </div>
-                    </div>
+                    ) : null}
                     <div>
                       <div className="text-xs font-medium text-slate-500">股权结构摘要</div>
                       <div className="mt-1 text-slate-700">

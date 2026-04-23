@@ -555,6 +555,38 @@ def extract_company_articles_management_roles(text: str) -> dict[str, str]:
     }
 
 
+def extract_company_articles_role_evidence_lines(text: str) -> list[str]:
+    """Collect source lines related to role names for troubleshooting OCR wording."""
+    keywords = (
+        "法定代表人",
+        "执行董事",
+        "董事长",
+        "经理",
+        "总经理",
+        "监事",
+        "担任",
+        "聘任",
+        "任命",
+        "选举",
+    )
+    evidence: list[str] = []
+    seen: set[str] = set()
+    for raw_line in (text or "").splitlines():
+        line = _clean_line(raw_line)
+        if not line:
+            continue
+        if not any(keyword in line for keyword in keywords):
+            continue
+        clipped = line[:180]
+        if clipped in seen:
+            continue
+        seen.add(clipped)
+        evidence.append(clipped)
+        if len(evidence) >= 12:
+            break
+    return evidence
+
+
 def clean_business_scope(value: str) -> str:
     return _clean_scope_or_address(value, stop_words=("住所", "地址", "类型", "法定代表人", "统一社会信用代码", "成立日期"))
 
@@ -719,6 +751,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
     equity_ratios = _build_equity_ratios(shareholders)
     financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details = _extract_financing_rules_from_articles(text)
     management_roles = extract_company_articles_management_roles(text)
+    management_role_evidence_lines = extract_company_articles_role_evidence_lines(text)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
@@ -740,6 +773,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
         "address": _find_after_labels(text, ("住所", "公司住所", "地址")),
         "management_structure": "；".join(_extract_keyword_sentences(text, ("董事会", "监事", "经理", "治理结构"))[:3]),
         "management_roles_summary": management_roles.get("management_roles_summary", ""),
+        "management_role_evidence_lines": management_role_evidence_lines,
         "summary": summary,
     }
 
@@ -2918,6 +2952,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
     equity_ratios = _build_equity_ratios(shareholders)
     financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details = _extract_financing_rules_from_articles(text)
     management_roles = extract_company_articles_management_roles(text)
+    management_role_evidence_lines = extract_company_articles_role_evidence_lines(text)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
@@ -2939,6 +2974,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
         "address": _find_after_labels(text, ("住所", "公司住所", "地址")),
         "management_structure": "；".join(_extract_keyword_sentences(text, ("董事会", "监事", "经理", "治理结构"))[:3]),
         "management_roles_summary": management_roles.get("management_roles_summary", ""),
+        "management_role_evidence_lines": management_role_evidence_lines,
         "summary": summary,
     }
 
