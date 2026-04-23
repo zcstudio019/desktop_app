@@ -44,15 +44,18 @@ build/
 # Ruff cache
 .ruff_cache/
 
-node_modules/
-dist/
+# Python
 .venv/
 __pycache__/
 *.pyc
 
+#Env
 .env
 .env.*
 !.env.example
+
+# Data
+data/
 
 data/*.db
 backend/data/*.db
