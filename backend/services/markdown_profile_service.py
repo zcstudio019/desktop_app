@@ -67,6 +67,11 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'business_scope': '\u7ecf\u8425\u8303\u56f4',
     'address': '\u5730\u5740',
     'company_type': '\u7c7b\u578b',
+    'equity_structure_summary': '\u80a1\u6743\u7ed3\u6784',
+    'equity_ratios': '\u80a1\u6743\u5360\u6bd4',
+    'financing_approval_rule': '\u878d\u8d44/\u8d37\u6b3e\u5ba1\u6279\u89c4\u5219',
+    'financing_approval_threshold': '\u878d\u8d44\u8868\u51b3\u95e8\u69db',
+    'major_decision_rules': '\u91cd\u5927\u4e8b\u9879\u89c4\u5219',
     'registration_authority': '\u767b\u8bb0\u673a\u5173',
     'registration_date': '\u767b\u8bb0\u673a\u5173\u65e5\u671f',
     'document_type_name': '\u8d44\u6599\u7c7b\u578b',
@@ -88,7 +93,9 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'abnormal_summary': '\u5f02\u5e38\u6458\u8981',
     'summary': '\u6458\u8981',
     'shareholders': '\u80a1\u4e1c\u4fe1\u606f',
+    'shareholder_count': '\u80a1\u4e1c\u6570\u91cf',
     'management_structure': '\u6cbb\u7406\u7ed3\u6784',
+    'major_decision_rule_details': '\u91cd\u5927\u4e8b\u9879\u89c4\u5219\u660e\u7ec6',
     'source_type': '\u6765\u6e90\u7c7b\u578b',
 }
 
@@ -133,6 +140,71 @@ def _format_list_for_markdown(value: list[Any]) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
+def _format_shareholders_for_markdown(value: list[Any]) -> str:
+    if not value:
+        return '\u6682\u65e0'
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            lines.append(f"  - {item}")
+            continue
+        parts = [
+            str(item.get('name') or '').strip(),
+            str(item.get('capital_contribution') or '').strip(),
+            str(item.get('contribution_method') or '').strip(),
+            str(item.get('contribution_date') or '').strip(),
+            str(item.get('equity_ratio') or '').strip(),
+        ]
+        parts = [part for part in parts if part]
+        if parts:
+            lines.append(f"  - {'｜'.join(parts)}")
+    return '\n' + '\n'.join(lines) if lines else '\u6682\u65e0'
+
+
+def _format_equity_ratios_for_markdown(value: list[Any]) -> str:
+    if not value:
+        return '\u6682\u65e0'
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            name = str(item.get('name') or '').strip()
+            ratio = str(item.get('equity_ratio') or '').strip()
+            if name and ratio:
+                parts.append(f"{name} {ratio}")
+        elif item:
+            parts.append(str(item))
+    return '；'.join(parts) if parts else '\u6682\u65e0'
+
+
+def _format_rule_list_for_markdown(value: list[Any]) -> str:
+    if not value:
+        return '\u6682\u65e0'
+    lines = [f"  - {str(item).strip()}" for item in value if str(item).strip()]
+    return '\n' + '\n'.join(lines) if lines else '\u6682\u65e0'
+
+
+def _format_rule_detail_list_for_markdown(value: list[Any]) -> str:
+    if not value:
+        return '\u6682\u65e0'
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            text = str(item).strip()
+            if text:
+                lines.append(f"  - {text}")
+            continue
+        topic = str(item.get('topic') or '').strip()
+        rule = str(item.get('rule') or '').strip()
+        threshold = str(item.get('threshold') or '').strip()
+        parts = [part for part in (topic, rule) if part]
+        text = '｜'.join(parts)
+        if threshold:
+            text = f"{text}｜门槛：{threshold}" if text else f"门槛：{threshold}"
+        if text:
+            lines.append(f"  - {text}")
+    return '\n' + '\n'.join(lines) if lines else '\u6682\u65e0'
+
+
 def _format_count_for_markdown(value: Any) -> str:
     text = str(value or '').strip()
     if not text:
@@ -147,6 +219,14 @@ def _format_value(key: str, value: Any) -> str:
     if value is None or value == '':
         return '\u6682\u65e0'
     if isinstance(value, list):
+        if key == 'shareholders':
+            return _format_shareholders_for_markdown(value)
+        if key == 'equity_ratios':
+            return _format_equity_ratios_for_markdown(value)
+        if key == 'major_decision_rules':
+            return _format_rule_list_for_markdown(value)
+        if key == 'major_decision_rule_details':
+            return _format_rule_detail_list_for_markdown(value)
         return _format_list_for_markdown(value)
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False, indent=2)

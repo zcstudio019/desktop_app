@@ -391,12 +391,24 @@ def extract_account_license(text: str) -> dict[str, Any]:
 
 def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[str, Any]:
     shareholder_sentences = _extract_keyword_sentences(text, ("股东", "出资", "持股"))
+    registered_capital = extract_company_articles_registered_capital(text)
+    shareholders = _extract_shareholders_from_articles(text, registered_capital)
+    equity_structure_summary = _build_equity_structure_summary(shareholders)
+    equity_ratios = _build_equity_ratios(shareholders)
+    financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details = _extract_financing_rules_from_articles(text)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
-        "registered_capital": extract_company_articles_registered_capital(text),
+        "registered_capital": registered_capital,
         "legal_person": _find_after_labels(text, ("法定代表人", "执行董事", "董事长")),
-        "shareholders": shareholder_sentences[:5],
+        "shareholders": shareholders,
+        "shareholder_count": str(len(shareholders)) if shareholders else "",
+        "equity_structure_summary": equity_structure_summary,
+        "equity_ratios": equity_ratios,
+        "financing_approval_rule": financing_approval_rule,
+        "financing_approval_threshold": financing_approval_threshold,
+        "major_decision_rules": major_decision_rules,
+        "major_decision_rule_details": major_decision_rule_details,
         "business_scope": _find_after_labels(text, ("经营范围",)),
         "address": _find_after_labels(text, ("住所", "公司住所", "地址")),
         "management_structure": "；".join(_extract_keyword_sentences(text, ("董事会", "监事", "经理", "治理结构"))[:3]),
@@ -1238,6 +1250,487 @@ def _build_summary(text: str, shareholder_sentences: list[str], ai_service: Any 
         summary_parts.append(shareholder_sentences[0])
     summary_parts.append(_clean_line(text[:180]))
     return "；".join(part for part in summary_parts if part)[:240]
+
+
+def _parse_amount_to_wanyuan(value: str) -> Decimal | None:
+    cleaned = normalize_text(value)
+    if not cleaned:
+        return None
+    cleaned = cleaned.replace("人民币", "").replace(",", "").replace(" ", "")
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)(亿元|万元|元)", cleaned)
+    if not match:
+        return None
+    amount = Decimal(match.group(1))
+    unit = match.group(2)
+    if unit == "亿元":
+        return amount * Decimal("10000")
+    if unit == "万元":
+        return amount
+    return amount / Decimal("10000")
+
+
+def _format_ratio(percent: Decimal) -> str:
+    quantized = percent.quantize(Decimal("0.01"))
+    text = format(quantized, "f").rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
+def _clean_shareholder_candidate_line(line: str) -> str:
+    cleaned = _clean_line(line)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"^\s*[0-9]+\s*[、.．)\]]\s*", "", cleaned)
+    cleaned = re.sub(r"^\s*第[一二三四五六七八九十0-9]+[条项款]\s*", "", cleaned)
+    cleaned = cleaned.strip("：:|丨")
+    if cleaned in {"股东", "股东名册", "出资方式", "出资额", "出资日期", "姓名或者名称"}:
+        return ""
+    if any(keyword in cleaned for keyword in ("注册资本", "公司章程", "公司名称", "法定代表人", "经营范围", "住所", "地址")):
+        return ""
+    return cleaned
+
+
+def _has_shareholder_amount(text: str) -> bool:
+    return bool(re.search(r"[0-9]+(?:\.[0-9]+)?\s*(?:亿元|万元|元)", text or ""))
+
+
+def _has_shareholder_date(text: str) -> bool:
+    return bool(re.search(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", text or ""))
+
+
+def _looks_like_shareholder_name_line(line: str) -> bool:
+    source = normalize_text(line)
+    if not source:
+        return False
+    if _has_shareholder_amount(source) or _has_shareholder_date(source):
+        return False
+    if any(keyword in source for keyword in ("股东会", "董事会", "监事", "利润分配", "对外融资", "银行贷款", "对外担保", "重大事项", "修改章程")):
+        return False
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9（）()·]{2,40}", source))
+
+
+def _looks_like_shareholder_header_line(line: str) -> bool:
+    source = normalize_text(line)
+    if not source:
+        return False
+    header_tokens = (
+        "姓名", "名称", "股东", "出资", "认缴", "实缴", "方式", "金额", "出资额", "日期", "时间"
+    )
+    hit_count = sum(1 for token in header_tokens if token in source)
+    return hit_count >= 2
+
+
+def _is_shareholder_noise_line(line: str) -> bool:
+    source = normalize_text(line)
+    if not source:
+        return True
+    if re.fullmatch(r"第?\s*[0-9]+\s*页", source):
+        return True
+    if re.fullmatch(r"[0-9/\\-]{1,20}", source):
+        return True
+    if any(token in source for token in ("公司章程", "有限责任公司章程", "股份有限公司章程", "第 页", "共 页")):
+        return True
+    return False
+
+
+def _is_shareholder_section_stop_line(line: str) -> bool:
+    source = normalize_text(line)
+    if not source:
+        return False
+    stop_tokens = (
+        "股东会", "董事会", "监事", "利润分配", "对外融资", "银行贷款", "对外担保",
+        "重大事项", "修改章程", "股权转让", "增资", "减资", "议事规则",
+    )
+    return any(token in source for token in stop_tokens)
+
+
+def _collect_shareholder_candidate_rows(lines: list[str]) -> list[str]:
+    capture = False
+    candidate_rows: list[str] = []
+    header_seen = False
+    blank_tolerance = 0
+    for raw_line in lines:
+        line = _clean_line(raw_line)
+        if not line:
+            if capture:
+                blank_tolerance += 1
+            continue
+        if _is_shareholder_noise_line(line):
+            continue
+        if _looks_like_shareholder_header_line(line):
+            capture = True
+            header_seen = True
+            blank_tolerance = 0
+            continue
+        if capture:
+            if _looks_like_shareholder_header_line(line):
+                blank_tolerance = 0
+                continue
+            if _is_shareholder_section_stop_line(line):
+                break
+            cleaned_line = _clean_shareholder_candidate_line(line)
+            if cleaned_line:
+                candidate_rows.append(cleaned_line)
+                blank_tolerance = 0
+                continue
+            if blank_tolerance >= 3 and candidate_rows:
+                break
+
+    if candidate_rows:
+        return candidate_rows
+
+    if header_seen:
+        return []
+
+    dense_rows: list[str] = []
+    for line in lines:
+        if _is_shareholder_noise_line(line):
+            continue
+        cleaned_line = _clean_shareholder_candidate_line(line)
+        if not cleaned_line or _is_shareholder_section_stop_line(cleaned_line):
+            continue
+        if _has_shareholder_amount(cleaned_line) or _has_shareholder_date(cleaned_line):
+            dense_rows.append(cleaned_line)
+            continue
+        if any(keyword in cleaned_line for keyword in ("货币", "实物", "知识产权", "土地使用权", "股权", "债权", "技术", "现金")):
+            dense_rows.append(cleaned_line)
+            continue
+        if _looks_like_shareholder_name_line(cleaned_line):
+            dense_rows.append(cleaned_line)
+    return dense_rows
+
+
+def _group_shareholder_candidate_rows(candidate_rows: list[str]) -> list[str]:
+    cleaned_rows = [_clean_shareholder_candidate_line(item) for item in candidate_rows]
+    cleaned_rows = [item for item in cleaned_rows if item]
+    if not cleaned_rows:
+        return []
+
+    groups: list[str] = []
+    current: list[str] = []
+    total = len(cleaned_rows)
+
+    for idx, line in enumerate(cleaned_rows):
+        next_line = cleaned_rows[idx + 1] if idx + 1 < total else ""
+        if current and _looks_like_shareholder_name_line(line) and _has_shareholder_amount(" ".join(current)):
+            groups.append(" ".join(current))
+            current = [line]
+            continue
+
+        current.append(line)
+        joined = " ".join(current)
+        should_flush = False
+        if _has_shareholder_amount(joined):
+            if _has_shareholder_date(joined):
+                should_flush = True
+            elif next_line and _looks_like_shareholder_name_line(next_line):
+                should_flush = True
+            elif idx == total - 1:
+                should_flush = True
+        elif idx == total - 1 and current:
+            should_flush = True
+
+        if should_flush:
+            groups.append(joined)
+            current = []
+
+    if current:
+        groups.append(" ".join(current))
+
+    return groups
+
+
+def _extract_shareholders_from_articles(text: str, registered_capital: str) -> list[dict[str, str]]:
+    source = text or ""
+    lines = [_clean_line(line) for line in source.splitlines() if _clean_line(line)]
+    shareholder_section_markers = (
+        "股东的姓名或者名称",
+        "股东姓名或者名称",
+        "股东名称",
+        "股东名册",
+        "出资方式",
+        "出资额",
+        "出资日期",
+    )
+    candidate_rows = _collect_shareholder_candidate_rows(lines)
+
+    if not candidate_rows:
+        candidate_rows = [line for line in lines if ("出资" in line or "股东" in line) and re.search(r"[0-9]+(?:\.[0-9]+)?\s*(?:亿元|万元|元)", line)]
+
+    candidate_rows = _group_shareholder_candidate_rows(candidate_rows) or candidate_rows
+
+    method_keywords = ("货币", "实物", "知识产权", "土地使用权", "股权", "债权", "技术", "现金")
+    seen_names: set[str] = set()
+    shareholders: list[dict[str, str]] = []
+    for idx, line in enumerate(candidate_rows):
+        current_line = line
+        next_line = candidate_rows[idx + 1] if idx + 1 < len(candidate_rows) else ""
+        parse_source = current_line
+        amount_match = re.search(r"([0-9]+(?:\.[0-9]+)?\s*(?:亿元|万元|元))", parse_source)
+        if not amount_match and next_line:
+            parse_source = f"{current_line} {next_line}"
+            amount_match = re.search(r"([0-9]+(?:\.[0-9]+)?\s*(?:亿元|万元|元))", parse_source)
+        if not amount_match:
+            continue
+        name_candidate = re.sub(r"([0-9]+(?:\.[0-9]+)?\s*(?:亿元|万元|元))", " ", parse_source)
+        name_candidate = re.sub(r"(货币|实物|知识产权|土地使用权|股权|债权|技术|现金)", " ", name_candidate)
+        name_candidate = re.sub(r"(股东|姓名或者名称|出资方式|出资额|出资日期|出资时间|认缴|实缴|如下|各股东)", " ", name_candidate)
+        name_candidate = re.sub(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", " ", name_candidate)
+        name_parts = re.findall(r"[\u4e00-\u9fffA-Za-z0-9（）()·]{2,40}(?:有限公司|有限责任公司|股份有限公司|合伙企业|中心|工作室)?|[\u4e00-\u9fff]{2,8}", name_candidate)
+        name_parts = [part for part in name_parts if part and part not in {"公司章程", "有限责任公司", "股东"}]
+        if not name_parts:
+            continue
+        name = max(name_parts, key=len).strip("：:;；，,。 ")
+        if not name or name in seen_names:
+            continue
+        seen_names.add(name)
+        contribution_method = next((keyword for keyword in method_keywords if keyword in parse_source), "")
+        contribution_date_match = re.search(r"((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", parse_source)
+        shareholders.append(
+            {
+                "name": name,
+                "capital_contribution": re.sub(r"\s+", "", amount_match.group(1)),
+                "contribution_method": contribution_method,
+                "contribution_date": contribution_date_match.group(1) if contribution_date_match else "",
+                "equity_ratio": "",
+            }
+        )
+
+    if len(shareholders) < 2:
+        section_text = " ".join(candidate_rows) or source
+        tuple_pattern = re.compile(
+            r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,30})\s+"
+            r"(货币|实物|知识产权|土地使用权|股权|债权|技术|现金)?\s*"
+            r"([0-9]+(?:\.[0-9]+)?\s*(?:亿元|万元|元))\s*"
+            r"((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)?"
+        )
+        for match in tuple_pattern.finditer(section_text):
+            name = match.group(1).strip("：:;；，,。 ")
+            if not name or name in seen_names or name in {"股东", "公司章程", "姓名或者名称"}:
+                continue
+            seen_names.add(name)
+            shareholders.append(
+                {
+                    "name": name,
+                    "capital_contribution": re.sub(r"\s+", "", match.group(3)),
+                    "contribution_method": match.group(2) or "",
+                    "contribution_date": match.group(4) or "",
+                    "equity_ratio": "",
+                }
+            )
+
+    shareholders = _merge_shareholders_from_articles(shareholders, candidate_rows, method_keywords)
+
+    total_capital = _parse_amount_to_wanyuan(registered_capital)
+    if total_capital and total_capital > 0:
+        for item in shareholders:
+            contribution = _parse_amount_to_wanyuan(item.get("capital_contribution", ""))
+            if contribution is None:
+                continue
+            percent = contribution * Decimal("100") / total_capital
+            item["equity_ratio"] = _format_ratio(percent)
+    return shareholders
+
+
+def _build_equity_structure_summary(shareholders: list[dict[str, str]]) -> str:
+    parts: list[str] = []
+    for item in shareholders:
+        name = item.get("name", "")
+        contribution = item.get("capital_contribution", "")
+        ratio = item.get("equity_ratio", "")
+        method = item.get("contribution_method", "")
+        segment = f"{name}：出资{contribution}" if name and contribution else ""
+        if ratio:
+            segment = f"{segment}，占股{ratio}" if segment else f"{name}：{ratio}"
+        if method:
+            segment = f"{segment}，{method}出资" if segment else f"{name}：{method}出资"
+        if segment:
+            parts.append(segment)
+    return "；".join(parts)
+
+
+def _extract_financing_threshold(sentence: str) -> str:
+    source = normalize_text(sentence)
+    if not source:
+        return ""
+    if "全体股东一致同意" in source or "一致同意" in source:
+        return "全体一致"
+    if "三分之二" in source or "2/3" in source:
+        return "66.67%"
+    if "四分之三" in source or "3/4" in source:
+        return "75%"
+    if any(keyword in source for keyword in ("过半数", "半数以上", "二分之一以上")):
+        return "50%+"
+    return ""
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        cleaned = _clean_line(value)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
+
+
+def _normalize_shareholder_name(name: str) -> str:
+    cleaned = normalize_text(name)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"(股东|姓名或者名称|姓名|名称|如下|出资方式|出资额|出资日期)", " ", cleaned)
+    cleaned = re.sub(r"\s+", "", cleaned).strip("：:;；，,。.")
+    return cleaned
+
+
+def _merge_shareholders_from_articles(
+    shareholders: list[dict[str, str]],
+    candidate_rows: list[str],
+    method_keywords: tuple[str, ...],
+) -> list[dict[str, str]]:
+    merged: dict[str, dict[str, str]] = {}
+    ordered_names: list[str] = []
+    initial_names: list[str] = []
+
+    def _ensure_item(name: str) -> dict[str, str]:
+        normalized_name = _normalize_shareholder_name(name)
+        item = merged.get(normalized_name)
+        if item is None:
+            item = {
+                "name": normalized_name,
+                "capital_contribution": "",
+                "contribution_method": "",
+                "contribution_date": "",
+                "equity_ratio": "",
+            }
+            merged[normalized_name] = item
+        return item
+
+    for item in shareholders:
+        name = _normalize_shareholder_name(item.get("name", ""))
+        if not name:
+            continue
+        target = _ensure_item(name)
+        if name not in initial_names:
+            initial_names.append(name)
+        for key in ("capital_contribution", "contribution_method", "contribution_date", "equity_ratio"):
+            if not target.get(key) and item.get(key):
+                target[key] = item[key]
+
+    known_names = [item["name"] for item in merged.values() if item.get("name")]
+    current_name = ""
+    for raw_line in candidate_rows:
+        line = normalize_text(raw_line)
+        if not line:
+            continue
+        matched_name = next((name for name in known_names if name and name in line), "")
+        if matched_name:
+            current_name = matched_name
+            if matched_name not in ordered_names:
+                ordered_names.append(matched_name)
+        if not current_name:
+            name_match = re.search(r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,40}(?:有限公司|有限责任公司|股份有限公司|合伙企业|中心|工作室|[\u4e00-\u9fff]{2,8}))", line)
+            candidate_name = _normalize_shareholder_name(name_match.group(1)) if name_match else ""
+            if candidate_name and candidate_name not in {"公司章程", "股东"}:
+                current_name = candidate_name
+                _ensure_item(current_name)
+                if current_name not in known_names:
+                    known_names.append(current_name)
+                if current_name not in ordered_names:
+                    ordered_names.append(current_name)
+        if not current_name:
+            continue
+        target = _ensure_item(current_name)
+        if not target.get("capital_contribution"):
+            amount_match = re.search(r"([0-9]+(?:\.[0-9]+)?\s*(?:亿元|万元|元))", line)
+            if amount_match:
+                target["capital_contribution"] = re.sub(r"\s+", "", amount_match.group(1))
+        if not target.get("contribution_method"):
+            method = next((keyword for keyword in method_keywords if keyword in line), "")
+            if method:
+                target["contribution_method"] = method
+        if not target.get("contribution_date"):
+            date_match = re.search(r"((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", line)
+            if date_match:
+                target["contribution_date"] = date_match.group(1)
+
+    final_order = ordered_names + [name for name in initial_names if name not in ordered_names]
+    result = [merged[name] for name in final_order if name in merged and merged[name].get("name") and merged[name].get("capital_contribution")]
+    return result or [item for item in merged.values() if item.get("name") and item.get("capital_contribution")]
+
+
+def _extract_financing_rules_from_articles(text: str) -> tuple[str, str, list[str], list[dict[str, str]]]:
+    rules: list[str] = []
+    financing_rule = ""
+    financing_threshold = ""
+    detail_rows: list[dict[str, str]] = []
+    topic_keywords = {
+        "对外融资": ("对外融资", "融资"),
+        "银行贷款": ("银行贷款", "贷款", "借款"),
+        "对外担保": ("对外担保", "担保"),
+        "增资/减资": ("增资", "减资"),
+        "股权转让": ("股权转让",),
+        "修改章程": ("修改章程",),
+        "重大事项": ("重大事项", "股东会决议", "表决权"),
+    }
+    matched_sentences = _extract_keyword_sentences(
+        text,
+        ("对外融资", "融资", "银行贷款", "贷款", "借款", "对外担保", "担保", "重大事项", "股东会决议", "表决权", "增资", "减资", "股权转让", "修改章程"),
+    )
+    for sentence in matched_sentences:
+        cleaned = _clean_line(sentence)
+        if not cleaned:
+            continue
+        threshold = _extract_financing_threshold(cleaned)
+        matched_topics = [
+            topic_name
+            for topic_name, keywords in topic_keywords.items()
+            if any(keyword in cleaned for keyword in keywords)
+        ] or ["重大事项"]
+        for topic in matched_topics:
+            rules.append(f"{topic}：{cleaned}")
+            detail_rows.append(
+                {
+                    "topic": topic,
+                    "rule": cleaned,
+                    "threshold": threshold,
+                }
+            )
+        if not financing_rule and any(keyword in cleaned for keyword in ("对外融资", "融资", "银行贷款", "贷款", "借款", "对外担保", "担保")):
+            financing_rule = cleaned
+            financing_threshold = threshold
+        if not financing_threshold:
+            financing_threshold = threshold
+    if not financing_rule and rules:
+        financing_rule = rules[0]
+    deduped_details: list[dict[str, str]] = []
+    seen_detail_keys: set[tuple[str, str]] = set()
+    for item in detail_rows:
+        topic = _clean_line(item.get("topic", ""))
+        rule = _clean_line(item.get("rule", ""))
+        if not topic or not rule:
+            continue
+        dedupe_key = (topic, rule)
+        if dedupe_key in seen_detail_keys:
+            continue
+        seen_detail_keys.add(dedupe_key)
+        deduped_details.append(
+            {
+                "topic": topic,
+                "rule": rule,
+                "threshold": item.get("threshold", ""),
+            }
+        )
+    return financing_rule, financing_threshold, _dedupe_preserve_order(rules)[:6], deduped_details[:8]
+
+
+def _build_equity_ratios(shareholders: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        {"name": item.get("name", ""), "equity_ratio": item.get("equity_ratio", "")}
+        for item in shareholders
+        if item.get("name") and item.get("equity_ratio")
+    ]
 
 
 def _find_last_date(text: str) -> str:
@@ -2091,12 +2584,24 @@ def extract_account_license(text: str) -> dict[str, Any]:
 
 def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[str, Any]:
     shareholder_sentences = _extract_keyword_sentences(text, ("股东", "出资", "持股"))
+    registered_capital = extract_company_articles_registered_capital(text)
+    shareholders = _extract_shareholders_from_articles(text, registered_capital)
+    equity_structure_summary = _build_equity_structure_summary(shareholders)
+    equity_ratios = _build_equity_ratios(shareholders)
+    financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details = _extract_financing_rules_from_articles(text)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
-        "registered_capital": extract_company_articles_registered_capital(text),
+        "registered_capital": registered_capital,
         "legal_person": _find_after_labels(text, ("法定代表人", "执行董事", "董事长")),
-        "shareholders": shareholder_sentences[:5],
+        "shareholders": shareholders,
+        "shareholder_count": str(len(shareholders)) if shareholders else "",
+        "equity_structure_summary": equity_structure_summary,
+        "equity_ratios": equity_ratios,
+        "financing_approval_rule": financing_approval_rule,
+        "financing_approval_threshold": financing_approval_threshold,
+        "major_decision_rules": major_decision_rules,
+        "major_decision_rule_details": major_decision_rule_details,
         "business_scope": _find_after_labels(text, ("经营范围",)),
         "address": _find_after_labels(text, ("住所", "公司住所", "地址")),
         "management_structure": "；".join(_extract_keyword_sentences(text, ("董事会", "监事", "经理", "治理结构"))[:3]),

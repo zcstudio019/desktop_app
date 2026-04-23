@@ -87,6 +87,44 @@ interface FieldConsistencyResult {
   comparedSources: FieldConsistencySourceValue[];
 }
 
+interface CompanyArticlesInsight {
+  companyName: string;
+  registeredCapital: string;
+  shareholderCount: string;
+  equityStructureSummary: string;
+  shareholders: Array<Record<string, unknown>>;
+  financingApprovalRule: string;
+  financingApprovalThreshold: string;
+  majorDecisionRuleDetails: Array<Record<string, unknown>>;
+  document?: CustomerDocumentListItem;
+}
+
+interface CompanyArticlesShareholderView {
+  name: string;
+  contribution: string;
+  method: string;
+  date: string;
+  ratio: string;
+  ratioNumber: number | null;
+  isPrimary: boolean;
+}
+
+interface CompanyArticlesRuleDetailView {
+  topic: string;
+  rule: string;
+  threshold: string;
+}
+
+interface CompanyArticlesControlSummary {
+  label: string;
+  description: string;
+}
+
+interface CompanyArticlesRuleGroupView {
+  topic: string;
+  items: CompanyArticlesRuleDetailView[];
+}
+
 const DOCUMENT_GROUPS = {
   enterprise: {
     title: '企业主体资料',
@@ -431,6 +469,164 @@ function buildFieldConsistencyResults(
       comparedSources: nonEmptySources,
     };
   }).filter(Boolean) as FieldConsistencyResult[];
+}
+
+function toRecordList(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+}
+
+function buildCompanyArticlesInsight(
+  documents: CustomerDocumentListItem[],
+  extractionGroups: ExtractionGroup[],
+): CompanyArticlesInsight | null {
+  const latestItem = getExtractionItemsByType(extractionGroups, 'company_articles')[0];
+  if (!latestItem) {
+    return null;
+  }
+
+  const extractedData = (latestItem.extracted_data || {}) as Record<string, unknown>;
+  const document = getDocumentsByType(documents, 'company_articles')[0];
+
+  return {
+    companyName: stringifyExtractionValue(extractedData.company_name),
+    registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
+    shareholderCount: stringifyExtractionValue(extractedData.shareholder_count),
+    equityStructureSummary: stringifyExtractionValue(extractedData.equity_structure_summary),
+    shareholders: toRecordList(extractedData.shareholders),
+    financingApprovalRule: stringifyExtractionValue(extractedData.financing_approval_rule),
+    financingApprovalThreshold: stringifyExtractionValue(extractedData.financing_approval_threshold),
+    majorDecisionRuleDetails: toRecordList(extractedData.major_decision_rule_details),
+    document,
+  };
+}
+
+function parseRatioNumber(value: string): number | null {
+  const match = String(value || '').match(/(\d+(?:\.\d+)?)/);
+  if (!match) {
+    return null;
+  }
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildCompanyArticlesShareholderViews(shareholders: Array<Record<string, unknown>>): CompanyArticlesShareholderView[] {
+  const items = shareholders.map((shareholder) => {
+    const ratio = stringifyExtractionValue(shareholder.equity_ratio);
+    return {
+      name: stringifyExtractionValue(shareholder.name),
+      contribution: stringifyExtractionValue(shareholder.capital_contribution),
+      method: stringifyExtractionValue(shareholder.contribution_method),
+      date: stringifyExtractionValue(shareholder.contribution_date),
+      ratio,
+      ratioNumber: parseRatioNumber(ratio),
+      isPrimary: false,
+    };
+  });
+
+  const sorted = [...items].sort((a, b) => {
+    const aRatio = a.ratioNumber ?? -1;
+    const bRatio = b.ratioNumber ?? -1;
+    if (aRatio !== bRatio) {
+      return bRatio - aRatio;
+    }
+    return a.name.localeCompare(b.name, 'zh-CN');
+  });
+
+  const maxRatio = sorted.reduce<number | null>((current, item) => {
+    if (item.ratioNumber === null) {
+      return current;
+    }
+    if (current === null || item.ratioNumber > current) {
+      return item.ratioNumber;
+    }
+    return current;
+  }, null);
+
+  return sorted.map((item) => ({
+    ...item,
+    isPrimary: maxRatio !== null && item.ratioNumber !== null && item.ratioNumber === maxRatio,
+  }));
+}
+
+function buildCompanyArticlesRuleDetailViews(details: Array<Record<string, unknown>>): CompanyArticlesRuleDetailView[] {
+  return details.map((item) => ({
+    topic: stringifyExtractionValue(item.topic),
+    rule: stringifyExtractionValue(item.rule),
+    threshold: stringifyExtractionValue(item.threshold),
+  }));
+}
+
+function buildCompanyArticlesControlSummary(
+  shareholders: CompanyArticlesShareholderView[],
+): CompanyArticlesControlSummary | null {
+  if (shareholders.length === 0) {
+    return null;
+  }
+
+  const validShareholders = shareholders.filter((item) => item.ratioNumber !== null);
+  if (validShareholders.length === 0) {
+    return null;
+  }
+
+  const [first, second] = validShareholders;
+  if (first && first.ratioNumber !== null && first.ratioNumber >= 50) {
+    return {
+      label: '控股股东',
+      description: `${first.name} 当前占股 ${first.ratio}，已达到控股股东判断阈值。`,
+    };
+  }
+
+  if (
+    first && second &&
+    first.ratioNumber !== null && second.ratioNumber !== null &&
+    first.ratioNumber + second.ratioNumber > 50
+  ) {
+    return {
+      label: '共同控制候选',
+      description: `${first.name} 与 ${second.name} 合计占股 ${first.ratioNumber + second.ratioNumber}%，建议结合章程表决规则继续核对是否属于共同控制。`,
+    };
+  }
+
+  return {
+    label: '股权分散',
+    description: '当前未看到单一股东超过 50%，建议结合表决规则和一致行动安排继续判断控制关系。',
+  };
+}
+
+function buildCompanyArticlesRuleGroups(
+  items: CompanyArticlesRuleDetailView[],
+): CompanyArticlesRuleGroupView[] {
+  const groups = new Map<string, CompanyArticlesRuleDetailView[]>();
+  items.forEach((item) => {
+    const topic = item.topic || '其他事项';
+    const current = groups.get(topic) || [];
+    current.push(item);
+    groups.set(topic, current);
+  });
+  return Array.from(groups.entries()).map(([topic, groupItems]) => ({ topic, items: groupItems }));
+}
+
+function getRuleTopicBadgeClass(topic: string): string {
+  const normalized = String(topic || '');
+  if (normalized.includes('融资')) {
+    return 'border-blue-200 bg-blue-50 text-blue-700';
+  }
+  if (normalized.includes('贷款') || normalized.includes('借款')) {
+    return 'border-cyan-200 bg-cyan-50 text-cyan-700';
+  }
+  if (normalized.includes('担保')) {
+    return 'border-rose-200 bg-rose-50 text-rose-700';
+  }
+  if (normalized.includes('章程')) {
+    return 'border-violet-200 bg-violet-50 text-violet-700';
+  }
+  if (normalized.includes('股权')) {
+    return 'border-amber-200 bg-amber-50 text-amber-700';
+  }
+  return 'border-slate-200 bg-slate-50 text-slate-700';
 }
 
 function getPrioritySource(
@@ -947,6 +1143,26 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     () => buildFieldSourceSummaries(draft, documents),
     [documents, draft]
   );
+  const companyArticlesInsight = useMemo(
+    () => buildCompanyArticlesInsight(documents, extractionGroups),
+    [documents, extractionGroups]
+  );
+  const companyArticlesShareholderViews = useMemo(
+    () => buildCompanyArticlesShareholderViews(companyArticlesInsight?.shareholders || []),
+    [companyArticlesInsight]
+  );
+  const companyArticlesControlSummary = useMemo(
+    () => buildCompanyArticlesControlSummary(companyArticlesShareholderViews),
+    [companyArticlesShareholderViews]
+  );
+  const companyArticlesRuleDetailViews = useMemo(
+    () => buildCompanyArticlesRuleDetailViews(companyArticlesInsight?.majorDecisionRuleDetails || []),
+    [companyArticlesInsight]
+  );
+  const companyArticlesRuleGroups = useMemo(
+    () => buildCompanyArticlesRuleGroups(companyArticlesRuleDetailViews),
+    [companyArticlesRuleDetailViews]
+  );
   const fieldConsistencyResults = useMemo(
     () => buildFieldConsistencyResults(documents, extractionGroups),
     [documents, extractionGroups]
@@ -1437,6 +1653,196 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                 </div>
               );
             })()}
+          </section>
+        ) : null}
+
+        {selectedCustomerId && companyArticlesInsight ? (
+          <section className="border-b border-slate-200 bg-white px-6 py-5">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-slate-800">公司章程重点信息</h3>
+                  <p className="mt-1 text-sm text-slate-500">
+                    这里聚合展示公司章程中和股权结构、融资审批、重大事项决策直接相关的内容，方便快速核对。
+                  </p>
+                </div>
+                {companyArticlesInsight.document ? (
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    {companyArticlesInsight.document.original_available ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void handlePreviewDocument(companyArticlesInsight.document as CustomerDocumentListItem)}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                        >
+                          查看原件
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadDocument(companyArticlesInsight.document as CustomerDocumentListItem)}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                        >
+                          下载原件
+                        </button>
+                      </>
+                    ) : (
+                      <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-500">
+                        仅保留提取结果
+                      </span>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="grid gap-3 xl:grid-cols-2">
+                <article className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-800">股权结构</h4>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        优先展示注册资本、股东数量、股权结构摘要和逐位股东明细。
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">
+                      股东 {companyArticlesInsight.shareholderCount || companyArticlesShareholderViews.length || '暂无'} 位
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">公司名称</div>
+                      <div className="mt-1 text-slate-700">{companyArticlesInsight.companyName || '暂无'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">注册资本</div>
+                      <div className="mt-1 text-slate-700">{companyArticlesInsight.registeredCapital || '暂无'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">股权结构摘要</div>
+                      <div className="mt-1 text-slate-700">
+                        {companyArticlesInsight.equityStructureSummary || '暂未提取到明确股权结构摘要'}
+                      </div>
+                    </div>
+                    {companyArticlesControlSummary ? (
+                      <div className="rounded-xl border border-violet-200 bg-violet-50/70 px-3 py-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-xs font-medium text-violet-700">
+                            {companyArticlesControlSummary.label}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs leading-5 text-slate-600">
+                          {companyArticlesControlSummary.description}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">股东列表</div>
+                      {companyArticlesShareholderViews.length > 0 ? (
+                        <div className="mt-2 space-y-2">
+                          {companyArticlesShareholderViews.map((shareholder, index) => {
+                            const parts = [shareholder.contribution, shareholder.method, shareholder.date, shareholder.ratio]
+                              .filter((item) => item && item !== '暂无');
+                            return (
+                              <div
+                                key={`${shareholder.name}-${index}`}
+                                className={`rounded-xl border bg-white px-3 py-3 ${
+                                  shareholder.isPrimary
+                                    ? 'border-violet-200 shadow-sm shadow-violet-100/80'
+                                    : 'border-slate-200'
+                                }`}
+                              >
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-sm font-medium text-slate-800">
+                                    {shareholder.name || `股东 ${index + 1}`}
+                                  </div>
+                                  {shareholder.isPrimary ? (
+                                    <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-xs font-medium text-violet-700">
+                                      主要股东
+                                    </span>
+                                  ) : null}
+                                  {shareholder.ratio && shareholder.ratio !== '暂无' ? (
+                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-600">
+                                      {shareholder.ratio}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="mt-1 text-xs leading-5 text-slate-500">
+                                  {parts.length > 0 ? parts.join('｜') : '暂无更多股东明细'}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-slate-700">暂无</div>
+                      )}
+                    </div>
+                  </div>
+                </article>
+
+                <article className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-800">融资与重大事项规则</h4>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        重点查看融资、贷款、担保、章程修改等事项的审批规则和门槛。
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                      门槛 {companyArticlesInsight.financingApprovalThreshold || '待核对'}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">融资/贷款审批规则</div>
+                      <div className="mt-1 text-slate-700">
+                        {companyArticlesInsight.financingApprovalRule || '暂未提取到明确审批规则'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">融资表决门槛</div>
+                      <div className="mt-1 text-slate-700">{companyArticlesInsight.financingApprovalThreshold || '暂无'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">重大事项规则明细</div>
+                      {companyArticlesRuleGroups.length > 0 ? (
+                        <div className="mt-2 space-y-3">
+                          {companyArticlesRuleGroups.map((group, groupIndex) => (
+                            <div key={`${group.topic}-${groupIndex}`} className="rounded-xl border border-slate-200 bg-white px-3 py-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${getRuleTopicBadgeClass(group.topic)}`}>
+                                  {group.topic || `事项组 ${groupIndex + 1}`}
+                                </span>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-500">
+                                  {group.items.length} 条
+                                </span>
+                              </div>
+                              <div className="mt-3 space-y-2">
+                                {group.items.map((item, index) => (
+                                  <div key={`${group.topic}-${index}`} className="rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      {item.threshold && item.threshold !== '暂无' ? (
+                                        <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">
+                                          门槛：{item.threshold}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <div className="mt-1 text-xs leading-5 text-slate-500">{item.rule || '暂无规则原文'}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-slate-700">暂无</div>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </div>
           </section>
         ) : null}
 
