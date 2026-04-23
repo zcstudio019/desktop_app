@@ -629,6 +629,14 @@ function getRuleTopicBadgeClass(topic: string): string {
   return 'border-slate-200 bg-slate-50 text-slate-700';
 }
 
+function getCompanyArticlesSourceLabel(document?: CustomerDocumentListItem): string {
+  if (!document) {
+    return '来源：公司章程结构化提取';
+  }
+  const fileName = document.file_name || '公司章程';
+  return `来源：${fileName}`;
+}
+
 function getPrioritySource(
   fieldKey: string,
   sources: FieldConsistencySourceValue[],
@@ -1769,6 +1777,18 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                                 <div className="mt-1 text-xs leading-5 text-slate-500">
                                   {parts.length > 0 ? parts.join('｜') : '暂无更多股东明细'}
                                 </div>
+                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                  <span>{getCompanyArticlesSourceLabel(companyArticlesInsight.document)}</span>
+                                  {companyArticlesInsight.document?.original_available ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void handlePreviewDocument(companyArticlesInsight.document as CustomerDocumentListItem)}
+                                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 transition-colors hover:bg-slate-50"
+                                    >
+                                      查看来源
+                                    </button>
+                                  ) : null}
+                                </div>
                               </div>
                             );
                           })}
@@ -1821,19 +1841,31 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                               <div className="mt-3 space-y-2">
                                 {group.items.map((item, index) => (
                                   <div key={`${group.topic}-${index}`} className="rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      {item.threshold && item.threshold !== '暂无' ? (
-                                        <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">
-                                          门槛：{item.threshold}
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                    <div className="mt-1 text-xs leading-5 text-slate-500">{item.rule || '暂无规则原文'}</div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {item.threshold && item.threshold !== '暂无' ? (
+                                      <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">
+                                        门槛：{item.threshold}
+                                      </span>
+                                    ) : null}
                                   </div>
-                                ))}
-                              </div>
+                                  <div className="mt-1 text-xs leading-5 text-slate-500">{item.rule || '暂无规则原文'}</div>
+                                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                    <span>{getCompanyArticlesSourceLabel(companyArticlesInsight.document)}</span>
+                                    {companyArticlesInsight.document?.original_available ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => void handlePreviewDocument(companyArticlesInsight.document as CustomerDocumentListItem)}
+                                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 transition-colors hover:bg-slate-50"
+                                      >
+                                        查看来源
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ))}
                             </div>
-                          ))}
+                          </div>
+                        ))}
                         </div>
                       ) : (
                         <div className="mt-1 text-slate-700">暂无</div>
