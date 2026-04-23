@@ -342,11 +342,6 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
     if change_table_value:
         return change_table_value
 
-    label_patterns = (
-        re.compile(r"法定代表人(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{2,6})"),
-        re.compile(r"执行董事、法定代表人(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{2,6})"),
-        re.compile(r"董事长、法定代表人(?:信息)?\s*[:：]\s*([\u4e00-\u9fff·]{2,6})"),
-    )
     sentence_patterns = (
         re.compile(r"法定代表人由\s*([\u4e00-\u9fff·]{2,6})\s*担任"),
         re.compile(r"由\s*([\u4e00-\u9fff·]{2,6})\s*担任(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\)|、法定代表人)"),
@@ -354,14 +349,6 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         re.compile(r"任命\s*([\u4e00-\u9fff·]{2,6})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
         re.compile(r"([\u4e00-\u9fff·]{2,6})\s*为(?:公司)?法定代表人"),
     )
-
-    for pattern in label_patterns:
-        match = pattern.search(source)
-        if not match:
-            continue
-        candidate = _clean_company_articles_person_candidate(match.group(1))
-        if _is_valid_company_articles_person_candidate(candidate):
-            return candidate
 
     for raw_line in source.splitlines():
         line = normalize_text(raw_line)
@@ -447,6 +434,7 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         "公司类型", "公司股东", "决定聘任",
         "印章", "用章", "动用", "使用", "制度", "印鉴",
         "利润", "分配", "亏损", "利润分配", "弥补亏损",
+        "委托", "受托", "国家", "机关", "授权",
         "股东", "法定代表人", "的法定代表人",
         "执行董事", "的执行董事",
         "董事长", "的董事长",
@@ -458,7 +446,7 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         return False
     if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人", "经理", "监事")):
         return False
-    if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会", "制度", "印章", "用章", "动用", "使用", "印鉴", "利润", "分配", "亏损", "收益", "财务", "会计", "清算", "章程", "事项")):
+    if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会", "制度", "印章", "用章", "动用", "使用", "印鉴", "利润", "分配", "亏损", "收益", "财务", "会计", "清算", "章程", "事项", "委托", "受托", "国家", "机关", "授权")):
         return False
     if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人", "经理", "监事")):
         return False

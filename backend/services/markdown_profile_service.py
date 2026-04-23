@@ -274,6 +274,11 @@ def _is_invalid_legal_person_value(value: Any) -> bool:
           '亏损',
           '利润分配',
           '弥补亏损',
+          '委托',
+          '受托',
+          '国家',
+          '机关',
+          '授权',
           '签字',
         '签章',
         '盖章',
@@ -294,7 +299,7 @@ def _is_invalid_legal_person_value(value: Any) -> bool:
         return True
     if any(title_fragment in text for title_fragment in ('法定代表', '执行董事', '董事长', '负责人')):
         return True
-    if any(fragment in text for fragment in ('职务', '报酬', '董事', '监事会', '制度', '印章', '用章', '动用', '使用', '印鉴', '利润', '分配', '亏损', '收益', '财务', '会计', '清算', '章程', '事项')):
+    if any(fragment in text for fragment in ('职务', '报酬', '董事', '监事会', '制度', '印章', '用章', '动用', '使用', '印鉴', '利润', '分配', '亏损', '收益', '财务', '会计', '清算', '章程', '事项', '委托', '受托', '国家', '机关', '授权')):
         return True
     if text.startswith('的') and any(title in text for title in ('法定代表人', '执行董事', '董事长', '负责人')):
         return True
