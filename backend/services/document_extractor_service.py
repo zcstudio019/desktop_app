@@ -433,6 +433,8 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
     candidate = _clean_company_articles_person_candidate(value)
     if not candidate:
         return False
+    if len(candidate) < 2 or len(candidate) > 4:
+        return False
     invalid_exact_values = {
         "姓名或者名称", "姓名或名称", "姓名名称",
         "信息", "资料", "说明",
@@ -444,6 +446,7 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         "职务", "董事", "报酬", "及其报酬", "其报酬",
         "公司类型", "公司股东", "决定聘任",
         "印章", "用章", "动用", "使用", "制度", "印鉴",
+        "利润", "分配", "亏损", "利润分配", "弥补亏损",
         "股东", "法定代表人", "的法定代表人",
         "执行董事", "的执行董事",
         "董事长", "的董事长",
@@ -455,7 +458,7 @@ def _is_valid_company_articles_person_candidate(value: str) -> bool:
         return False
     if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人", "经理", "监事")):
         return False
-    if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会", "制度", "印章", "用章", "动用", "使用", "印鉴")):
+    if any(fragment in candidate for fragment in ("职务", "报酬", "董事", "监事会", "制度", "印章", "用章", "动用", "使用", "印鉴", "利润", "分配", "亏损", "收益", "财务", "会计", "清算", "章程", "事项")):
         return False
     if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人", "经理", "监事")):
         return False
