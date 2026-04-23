@@ -238,12 +238,36 @@ def extract_company_articles_legal_person(text: str) -> str:
     invalid_fragments = (
         "担任", "组成", "任命", "选举", "产生", "负责", "行使", "职权", "执行", "设", "由", "为公司",
     )
+    invalid_exact_values = {
+        "姓名或者名称",
+        "姓名或名称",
+        "姓名名称",
+        "股东",
+        "法定代表人",
+        "执行董事",
+        "董事长",
+        "负责人",
+        "姓名",
+        "名称",
+    }
 
     def _clean_candidate(value: str) -> str:
         cleaned = normalize_text(value)
         cleaned = re.sub(r"^[：:\-—()\[\]（）\s]+", "", cleaned)
         cleaned = re.sub(r"\s+", "", cleaned).strip("：:;；，,。.")
         return cleaned
+
+    def _is_valid_candidate(value: str) -> bool:
+        candidate = _clean_candidate(value)
+        if not candidate:
+            return False
+        if candidate in invalid_exact_values:
+            return False
+        if any(fragment in candidate for fragment in invalid_fragments):
+            return False
+        if any(keyword in candidate for keyword in ("姓名或者名称", "姓名或名称", "股东姓名", "股东名称", "出资方式", "出资额", "出资日期")):
+            return False
+        return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,20}", candidate))
 
     for raw_line in source.splitlines():
         line = normalize_text(raw_line)
@@ -254,9 +278,8 @@ def extract_company_articles_legal_person(text: str) -> str:
 
         candidate = re.sub(r"^.*?(法定代表人|执行董事|董事长)\s*[:：]?\s*", "", line)
         candidate = _clean_candidate(candidate)
-        if candidate and not any(fragment in candidate for fragment in invalid_fragments):
-            if re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,20}", candidate):
-                return candidate
+        if _is_valid_candidate(candidate):
+            return candidate
 
     multiline_patterns = (
         re.compile(r"法定代表人\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
@@ -268,7 +291,7 @@ def extract_company_articles_legal_person(text: str) -> str:
         if not match:
             continue
         candidate = _clean_candidate(match.group(1))
-        if candidate and not any(fragment in candidate for fragment in invalid_fragments):
+        if _is_valid_candidate(candidate):
             return candidate
 
     return ""
