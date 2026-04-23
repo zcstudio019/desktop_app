@@ -242,6 +242,9 @@ def extract_company_articles_legal_person(text: str) -> str:
         "姓名或者名称",
         "姓名或名称",
         "姓名名称",
+        "信息",
+        "资料",
+        "说明",
         "签字",
         "签章",
         "盖章",
@@ -309,6 +312,9 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         "姓名或者名称",
         "姓名或名称",
         "姓名名称",
+        "信息",
+        "资料",
+        "说明",
         "签字",
         "签章",
         "盖章",
@@ -341,10 +347,10 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,20}", candidate))
 
     label_patterns = (
-        re.compile(r"法定代表人\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
-        re.compile(r"执行董事\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
-        re.compile(r"董事长\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
-        re.compile(r"执行董事、法定代表人\s*[:：]?\s*([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"法定代表人(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"执行董事(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"董事长(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
+        re.compile(r"执行董事、法定代表人(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{2,20})"),
     )
     sentence_patterns = (
         re.compile(
