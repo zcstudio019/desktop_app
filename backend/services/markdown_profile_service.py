@@ -62,6 +62,10 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'credit_code': '\u7edf\u4e00\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801',
     'certificate_number': '\u8bc1\u7167\u7f16\u53f7',
     'legal_person': '\u6cd5\u5b9a\u4ee3\u8868\u4eba',
+    'executive_director': '\u6267\u884c\u8463\u4e8b',
+    'chairman': '\u8463\u4e8b\u957f',
+    'manager': '\u7ecf\u7406',
+    'supervisor': '\u76d1\u4e8b',
     'registered_capital': '\u6ce8\u518c\u8d44\u672c',
     'establish_date': '\u6210\u7acb\u65e5\u671f',
     'business_scope': '\u7ecf\u8425\u8303\u56f4',
@@ -95,6 +99,7 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'shareholders': '\u80a1\u4e1c\u4fe1\u606f',
     'shareholder_count': '\u80a1\u4e1c\u6570\u91cf',
     'management_structure': '\u6cbb\u7406\u7ed3\u6784',
+    'management_roles_summary': '\u4efb\u804c\u4fe1\u606f\u6458\u8981',
     'major_decision_rule_details': '\u91cd\u5927\u4e8b\u9879\u89c4\u5219\u660e\u7ec6',
     'source_type': '\u6765\u6e90\u7c7b\u578b',
 }
@@ -243,12 +248,20 @@ def _is_invalid_legal_person_value(value: Any) -> bool:
         '名称',
         '股东',
         '法定代表人',
+        '的法定代表人',
         '执行董事',
+        '的执行董事',
         '董事长',
+        '的董事长',
         '负责人',
+        '的负责人',
         '事)担任。',
     }
     if text in invalid_values:
+        return True
+    if any(title_fragment in text for title_fragment in ('法定代表', '执行董事', '董事长', '负责人')):
+        return True
+    if text.startswith('的') and any(title in text for title in ('法定代表人', '执行董事', '董事长', '负责人')):
         return True
     invalid_fragments = ('担任', '组成', '任命', '选举', '产生', '负责', '行使', '职权', '为公司')
     if any(fragment in text for fragment in invalid_fragments):

@@ -260,9 +260,13 @@ def extract_company_articles_legal_person(text: str) -> str:
         "盖章",
         "股东",
         "法定代表人",
+        "的法定代表人",
         "执行董事",
+        "的执行董事",
         "董事长",
+        "的董事长",
         "负责人",
+        "的负责人",
         "姓名",
         "名称",
     }
@@ -278,6 +282,10 @@ def extract_company_articles_legal_person(text: str) -> str:
         if not candidate:
             return False
         if candidate in invalid_exact_values:
+            return False
+        if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人")):
+            return False
+        if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人")):
             return False
         if any(fragment in candidate for fragment in invalid_fragments):
             return False
@@ -340,9 +348,13 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         "盖章",
         "股东",
         "法定代表人",
+        "的法定代表人",
         "执行董事",
+        "的执行董事",
         "董事长",
+        "的董事长",
         "负责人",
+        "的负责人",
         "姓名",
         "名称",
     }
@@ -359,6 +371,10 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         if not candidate:
             return False
         if candidate in invalid_exact_values:
+            return False
+        if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人")):
+            return False
+        if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人")):
             return False
         if any(fragment in candidate for fragment in invalid_fragments):
             return False
@@ -447,6 +463,160 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
                 return candidate
 
     return ""
+
+
+def _clean_company_articles_person_candidate(value: str) -> str:
+    cleaned = normalize_text(value)
+    cleaned = re.sub(r"^[：:\-\—()\[\]（）\s]+", "", cleaned)
+    cleaned = re.sub(r"^(?:为|由)+", "", cleaned)
+    cleaned = re.sub(r"\s+", "", cleaned).strip("：:;；，,。.")
+    return cleaned
+
+
+def _is_valid_company_articles_person_candidate(value: str) -> bool:
+    candidate = _clean_company_articles_person_candidate(value)
+    if not candidate:
+        return False
+    invalid_exact_values = {
+        "姓名或者名称", "姓名或名称", "姓名名称",
+        "信息", "资料", "说明",
+        "无", "暂无", "待定", "空白",
+        "填写", "填报", "填入",
+        "未填写", "未填报", "未填入",
+        "签字", "签章", "盖章",
+        "股东", "法定代表人", "的法定代表人",
+        "执行董事", "的执行董事",
+        "董事长", "的董事长",
+        "负责人", "的负责人",
+        "经理", "总经理", "监事",
+        "姓名", "名称",
+    }
+    if candidate in invalid_exact_values:
+        return False
+    if any(title_fragment in candidate for title_fragment in ("法定代表", "执行董事", "董事长", "负责人", "经理", "监事")):
+        return False
+    if candidate.startswith("的") and any(title in candidate for title in ("法定代表人", "执行董事", "董事长", "负责人", "经理", "监事")):
+        return False
+    if any(fragment in candidate for fragment in ("担任", "组成", "任命", "选举", "产生", "负责", "行使", "职权", "执行", "设", "由", "为公司")):
+        return False
+    if any(keyword in candidate for keyword in ("姓名或者名称", "姓名或名称", "股东姓名", "股东名称", "出资方式", "出资额", "出资日期")):
+        return False
+    return bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·]{2,20}", candidate))
+
+
+def _extract_company_articles_role_name(
+    text: str,
+    *,
+    labels: tuple[str, ...],
+    titles: tuple[str, ...],
+) -> str:
+    source = text or ""
+    title_group = "|".join(re.escape(item) for item in titles)
+    label_group = "|".join(re.escape(item) for item in labels)
+    label_patterns = (
+        re.compile(rf"(?:{label_group})(?:信息)?(?:\s*[:：]\s*|\s+)([\u4e00-\u9fffA-Za-z·]{{2,20}})"),
+    )
+    sentence_patterns = (
+        re.compile(rf"(?:由)?([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*担任(?:公司)?(?:{title_group})"),
+        re.compile(rf"(?:{title_group})\s*由\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*担任"),
+        re.compile(rf"选举\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
+        re.compile(rf"任命\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
+        re.compile(rf"聘任\s*([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
+        re.compile(rf"([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*任(?:公司)?(?:{title_group})"),
+        re.compile(rf"([\u4e00-\u9fffA-Za-z·]{{2,20}})\s*为(?:公司)?(?:{title_group})"),
+    )
+    nearby_patterns = (
+        re.compile(rf"(?:{title_group})[^\u3002\n\uff1a:]{{0,20}}?([\u4e00-\u9fff]{{2,4}})"),
+        re.compile(rf"([\u4e00-\u9fff]{{2,4}})[^\u3002\n]{{0,12}}?(?:{title_group})"),
+    )
+
+    for raw_line in source.splitlines():
+        line = normalize_text(raw_line)
+        if not line:
+            continue
+        if not any(label in line for label in labels):
+            continue
+        for pattern in label_patterns + sentence_patterns:
+            match = pattern.search(line)
+            if not match:
+                continue
+            candidate = _clean_company_articles_person_candidate(match.group(1))
+            if _is_valid_company_articles_person_candidate(candidate):
+                return candidate
+
+    for pattern in label_patterns + sentence_patterns:
+        match = pattern.search(source)
+        if not match:
+            continue
+        candidate = _clean_company_articles_person_candidate(match.group(1))
+        if _is_valid_company_articles_person_candidate(candidate):
+            return candidate
+
+    positions: list[int] = []
+    for label in labels:
+        start = 0
+        while True:
+            idx = source.find(label, start)
+            if idx < 0:
+                break
+            positions.append(idx)
+            start = idx + len(label)
+    for idx in positions:
+        window_text = source[max(0, idx - 24): min(len(source), idx + 36)]
+        for pattern in nearby_patterns:
+            match = pattern.search(window_text)
+            if not match:
+                continue
+            candidate = _clean_company_articles_person_candidate(match.group(1))
+            if _is_valid_company_articles_person_candidate(candidate):
+                return candidate
+    return ""
+
+
+def extract_company_articles_management_roles(text: str) -> dict[str, str]:
+    executive_director = _extract_company_articles_role_name(
+        text,
+        labels=("执行董事",),
+        titles=("执行董事",),
+    )
+    chairman = _extract_company_articles_role_name(
+        text,
+        labels=("董事长",),
+        titles=("董事长",),
+    )
+    manager = _extract_company_articles_role_name(
+        text,
+        labels=("经理", "总经理"),
+        titles=("经理", "总经理"),
+    )
+    supervisor = _extract_company_articles_role_name(
+        text,
+        labels=("监事",),
+        titles=("监事", "监事会主席"),
+    )
+    legal_person = extract_company_articles_legal_person_v2(text)
+    if not legal_person:
+        legal_person = executive_director or chairman
+
+    summary_parts = []
+    for label, value in (
+        ("法定代表人", legal_person),
+        ("执行董事", executive_director),
+        ("董事长", chairman),
+        ("经理", manager),
+        ("监事", supervisor),
+    ):
+        if value:
+            summary_parts.append(f"{label}：{value}")
+
+    return {
+        "legal_person": legal_person,
+        "executive_director": executive_director,
+        "chairman": chairman,
+        "manager": manager,
+        "supervisor": supervisor,
+        "management_roles_summary": "；".join(summary_parts),
+    }
 
 
 def clean_business_scope(value: str) -> str:
@@ -612,11 +782,16 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
     equity_structure_summary = _build_equity_structure_summary(shareholders)
     equity_ratios = _build_equity_ratios(shareholders)
     financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details = _extract_financing_rules_from_articles(text)
+    management_roles = extract_company_articles_management_roles(text)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
         "registered_capital": registered_capital,
-        "legal_person": extract_company_articles_legal_person_v2(text),
+        "legal_person": management_roles.get("legal_person", ""),
+        "executive_director": management_roles.get("executive_director", ""),
+        "chairman": management_roles.get("chairman", ""),
+        "manager": management_roles.get("manager", ""),
+        "supervisor": management_roles.get("supervisor", ""),
         "shareholders": shareholders,
         "shareholder_count": str(len(shareholders)) if shareholders else "",
         "equity_structure_summary": equity_structure_summary,
@@ -628,6 +803,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
         "business_scope": _find_after_labels(text, ("经营范围",)),
         "address": _find_after_labels(text, ("住所", "公司住所", "地址")),
         "management_structure": "；".join(_extract_keyword_sentences(text, ("董事会", "监事", "经理", "治理结构"))[:3]),
+        "management_roles_summary": management_roles.get("management_roles_summary", ""),
         "summary": summary,
     }
 
@@ -2805,11 +2981,16 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
     equity_structure_summary = _build_equity_structure_summary(shareholders)
     equity_ratios = _build_equity_ratios(shareholders)
     financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details = _extract_financing_rules_from_articles(text)
+    management_roles = extract_company_articles_management_roles(text)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
         "company_name": _find_after_labels(text, ("公司名称", "名称")),
         "registered_capital": registered_capital,
-        "legal_person": extract_company_articles_legal_person_v2(text),
+        "legal_person": management_roles.get("legal_person", ""),
+        "executive_director": management_roles.get("executive_director", ""),
+        "chairman": management_roles.get("chairman", ""),
+        "manager": management_roles.get("manager", ""),
+        "supervisor": management_roles.get("supervisor", ""),
         "shareholders": shareholders,
         "shareholder_count": str(len(shareholders)) if shareholders else "",
         "equity_structure_summary": equity_structure_summary,
@@ -2821,6 +3002,7 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
         "business_scope": _find_after_labels(text, ("经营范围",)),
         "address": _find_after_labels(text, ("住所", "公司住所", "地址")),
         "management_structure": "；".join(_extract_keyword_sentences(text, ("董事会", "监事", "经理", "治理结构"))[:3]),
+        "management_roles_summary": management_roles.get("management_roles_summary", ""),
         "summary": summary,
     }
 

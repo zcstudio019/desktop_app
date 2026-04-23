@@ -913,9 +913,13 @@ function sanitizeProfileMarkdown(markdown: string): string {
     '名称',
     '股东',
     '法定代表人',
+    '的法定代表人',
     '执行董事',
+    '的执行董事',
     '董事长',
+    '的董事长',
     '负责人',
+    '的负责人',
     '事)担任。',
   ];
 
