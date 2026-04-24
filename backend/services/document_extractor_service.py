@@ -347,7 +347,6 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
         re.compile(r"由\s*([\u4e00-\u9fff·]{2,6})\s*担任(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\)|、法定代表人)"),
         re.compile(r"选举\s*([\u4e00-\u9fff·]{2,6})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
         re.compile(r"任命\s*([\u4e00-\u9fff·]{2,6})\s*为(?:公司)?(?:执行董事|董事长)(?:（法定代表人）|\(法定代表人\))?"),
-        re.compile(r"([\u4e00-\u9fff·]{2,6})\s*为(?:公司)?法定代表人"),
     )
 
     for raw_line in source.splitlines():
@@ -378,7 +377,7 @@ def extract_company_articles_legal_person_v2(text: str) -> str:
 def extract_company_articles_legal_person_from_change_table(text: str) -> str:
     """Extract legal representative from registration notice change tables."""
     source = text or ""
-    if not any(keyword in source for keyword in ("登记通知书", "登记变更事项", "变更后事项", "法定代表人")):
+    if not any(keyword in source for keyword in ("登记通知书", "登记变更事项", "变更后事项", "原登记事项")):
         return ""
 
     lines = [_clean_line(line) for line in source.splitlines() if _clean_line(line)]
