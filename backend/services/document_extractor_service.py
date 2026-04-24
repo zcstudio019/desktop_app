@@ -381,12 +381,13 @@ def extract_company_articles_legal_person_from_change_table(text: str) -> str:
         return ""
 
     lines = [_clean_line(line) for line in source.splitlines() if _clean_line(line)]
+    stop_row_keywords = ("股东", "住所", "经营范围", "名称", "注册资本", "项目", "备注")
     for index, line in enumerate(lines):
         if "法定代表人" not in line:
             continue
         context_lines = [line]
-        for next_line in lines[index + 1 : index + 3]:
-            if any(stop_word in next_line for stop_word in ("股东", "发起人", "合伙人", "投资人", "住所", "经营范围")):
+        for next_line in lines[index + 1 : index + 5]:
+            if any(stop_word in next_line for stop_word in stop_row_keywords):
                 break
             context_lines.append(next_line)
         context = " ".join(context_lines)
