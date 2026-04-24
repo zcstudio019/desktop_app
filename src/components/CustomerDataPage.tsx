@@ -596,6 +596,42 @@ function buildCompanyArticlesInsight(
   };
 }
 
+function synchronizeCompanyArticlesMarkdown(markdown: string, insight: CompanyArticlesInsight | null): string {
+  if (!markdown || !insight) {
+    return markdown;
+  }
+
+  const sectionMatch = markdown.match(/## 公司章程[\s\S]*?(?=\n##\s|$)/);
+  if (!sectionMatch) {
+    return markdown;
+  }
+
+  const section = sectionMatch[0];
+  const legalPersonLine = `- 法定代表人：${insight.legalPerson || '暂无'}`;
+  const summaryLine = insight.managementRolesSummary ? `- 任职信息摘要：${insight.managementRolesSummary}` : '';
+
+  let nextSection = section;
+  if (/^- 法定代表人：.*$/m.test(nextSection)) {
+    nextSection = nextSection.replace(/^- 法定代表人：.*$/m, legalPersonLine);
+  }
+
+  if (/^- 任职信息摘要：.*$/m.test(nextSection)) {
+    if (summaryLine) {
+      nextSection = nextSection.replace(/^- 任职信息摘要：.*$/m, summaryLine);
+    } else {
+      nextSection = nextSection.replace(/^- 任职信息摘要：.*$\n?/m, '');
+    }
+  } else if (summaryLine) {
+    if (/^- 监事：.*$/m.test(nextSection)) {
+      nextSection = nextSection.replace(/(^- 监事：.*$)/m, `$1\n${summaryLine}`);
+    } else if (/^- 法定代表人：.*$/m.test(nextSection)) {
+      nextSection = nextSection.replace(/(^- 法定代表人：.*$)/m, `$1\n${summaryLine}`);
+    }
+  }
+
+  return markdown.replace(section, nextSection);
+}
+
 function parseRatioNumber(value: string): number | null {
   const match = String(value || '').match(/(\d+(?:\.\d+)?)/);
   if (!match) {
@@ -1331,13 +1367,17 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     () => getOverallReadinessSummary(completenessCards),
     [completenessCards]
   );
-  const fieldSourceSummaries = useMemo(
-    () => buildFieldSourceSummaries(draft, documents),
-    [documents, draft]
-  );
   const companyArticlesInsight = useMemo(
     () => buildCompanyArticlesInsight(documents, extractionGroups),
     [documents, extractionGroups]
+  );
+  const renderedDraft = useMemo(
+    () => synchronizeCompanyArticlesMarkdown(draft, companyArticlesInsight),
+    [draft, companyArticlesInsight]
+  );
+  const fieldSourceSummaries = useMemo(
+    () => buildFieldSourceSummaries(renderedDraft, documents),
+    [documents, renderedDraft]
   );
   const companyArticlesRoleItems = useMemo(
     () => {
@@ -2649,7 +2689,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               </div>
               <div className="overflow-visible px-6 py-6">
                 <article className="prose prose-slate max-w-none rounded-[28px] border border-white/80 bg-white/95 p-7 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft || '暂无内容'}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
                 </article>
               </div>
             </section>
