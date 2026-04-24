@@ -11,6 +11,7 @@ Endpoints:
 
 import asyncio
 import logging
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -39,10 +40,16 @@ from backend.services.markdown_profile_service import (
     get_risk_report_schema_template,
     regenerate_customer_profile,
 )
+from backend.services.document_extractor_service import (
+    extract_company_articles_management_roles,
+    extract_company_articles_role_evidence_lines,
+)
 from backend.services.activity_service import add_activity
 from backend.services.profile_sync_service import ProfileSyncService
 from backend.services.rag_service import RagService
 from backend.services.risk_assessment_service import RiskAssessmentService
+from services.file_service import FileService
+from services.ocr_service import OCRService, OCRServiceError
 from ..middleware.auth import get_current_user
 from ..models.schemas import (
     ChatJobCreateResponse,
@@ -76,6 +83,19 @@ _ACTIVE_RISK_JOB_TASKS: set[asyncio.Task[None]] = set()
 _DOCUMENT_ROOT = Path(__file__).parent.parent.parent / "data"
 DOCUMENT_NOT_RETAINED_MESSAGE = "该资料未保存原件，仅保留提取结果和资料汇总"
 DOCUMENT_FILE_MISSING_MESSAGE = "原件文件不存在或已不可用"
+file_service = FileService()
+ocr_service = OCRService()
+
+_COMPANY_ARTICLES_INVALID_ROLE_FRAGMENTS = {
+    "姓名或者名称", "姓名或名称", "姓名名称", "姓名", "名称", "股东",
+    "法定代表人", "执行董事", "董事长", "经理", "监事", "负责人",
+    "信息", "资料", "说明", "无", "暂无", "待定", "空白",
+    "填写", "填报", "填入", "未填写", "未填报", "未填入",
+    "签字", "签章", "盖章", "职务", "董事", "报酬", "及其报酬", "其报酬",
+    "公司类型", "公司股东", "决定聘任", "印章", "用章", "动用", "使用", "印鉴",
+    "利润", "分配", "亏损", "利润分配", "弥补亏损", "委托", "受托", "国家", "机关", "授权",
+    "报告", "通知", "通知书", "材料", "文件", "目录", "附件", "立本", "法规", "法律", "条例",
+}
 
 
 async def _build_customer_risk_report_payload(
@@ -356,6 +376,134 @@ def _build_document_original_status(document: dict[str, Any]) -> tuple[bool, str
     if not absolute_path.exists() or not absolute_path.is_file():
         return False, DOCUMENT_FILE_MISSING_MESSAGE
     return True, "可查看原件"
+
+
+def _is_company_articles_role_missing_or_invalid(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text or text == "暂无":
+        return True
+    if len(text) > 4:
+        return True
+    if any(fragment in text for fragment in _COMPANY_ARTICLES_INVALID_ROLE_FRAGMENTS):
+        return True
+    return re.fullmatch(r"[\u4e00-\u9fff·]{2,4}", text) is None
+
+
+def _ocr_company_articles_front_pages_from_document(document: dict[str, Any]) -> str:
+    absolute_path = _resolve_document_absolute_path(document.get("file_path"))
+    if not absolute_path or not absolute_path.exists() or not absolute_path.is_file():
+        logger.warning(
+            "[company_articles] extraction enrich skipped: original file missing doc_id=%s file_path=%s",
+            document.get("doc_id"),
+            document.get("file_path"),
+        )
+        return ""
+
+    try:
+        file_bytes = absolute_path.read_bytes()
+    except Exception as exc:
+        logger.warning(
+            "[company_articles] extraction enrich read failed doc_id=%s path=%s error=%s",
+            document.get("doc_id"),
+            absolute_path,
+            exc,
+        )
+        return ""
+
+    file_name = document.get("file_name") or absolute_path.name
+    file_type = file_service.get_file_type(file_name)
+
+    try:
+        if file_type == "pdf":
+            images = file_service.pdf_to_images(file_bytes)
+            if not images:
+                logger.warning("[company_articles] extraction enrich skipped: no rendered pages doc_id=%s", document.get("doc_id"))
+                return ""
+            ocr_parts: list[str] = []
+            for page_index in (0, 1):
+                if page_index >= len(images):
+                    continue
+                compressed = file_service.compress_image(images[page_index])
+                page_text = ocr_service.recognize_image(compressed).strip()
+                logger.info(
+                    "[company_articles] extraction enrich front-page OCR doc_id=%s page=%s text=%s",
+                    document.get("doc_id"),
+                    page_index + 1,
+                    page_text[:1000] or "(empty)",
+                )
+                if page_text:
+                    ocr_parts.append(f"--- OCR Page {page_index + 1} ---\n{page_text}")
+            return "\n\n".join(ocr_parts)
+
+        if file_type == "image":
+            compressed = file_service.compress_image(file_bytes)
+            image_text = ocr_service.recognize_image(compressed).strip()
+            logger.info(
+                "[company_articles] extraction enrich image OCR doc_id=%s text=%s",
+                document.get("doc_id"),
+                image_text[:1000] or "(empty)",
+            )
+            return image_text
+    except OCRServiceError as exc:
+        logger.warning("[company_articles] extraction enrich OCR failed doc_id=%s error=%s", document.get("doc_id"), exc)
+        return ""
+    except Exception as exc:  # pragma: no cover - best-effort
+        logger.warning("[company_articles] extraction enrich failed doc_id=%s error=%s", document.get("doc_id"), exc)
+        return ""
+
+    return ""
+
+
+def _merge_company_articles_front_page_roles(
+    extracted_data: dict[str, Any],
+    document: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(extracted_data, dict) or not document:
+        return extracted_data
+
+    current_legal_person = extracted_data.get("legal_person")
+    evidence_lines = extracted_data.get("management_role_evidence_lines") or []
+    has_legal_evidence = any("法定代表人" in str(line or "") for line in evidence_lines)
+    if not _is_company_articles_role_missing_or_invalid(current_legal_person) and has_legal_evidence:
+        return extracted_data
+
+    front_page_text = _ocr_company_articles_front_pages_from_document(document)
+    if not front_page_text:
+        logger.warning(
+            "[company_articles] extraction enrich skipped: empty OCR supplement doc_id=%s legal_person=%s",
+            document.get("doc_id"),
+            current_legal_person,
+        )
+        return extracted_data
+
+    role_data = extract_company_articles_management_roles(front_page_text)
+    role_evidence_lines = extract_company_articles_role_evidence_lines(front_page_text)
+    logger.info(
+        "[company_articles] extraction enrich role_data doc_id=%s legal_person=%s executive_director=%s supervisor=%s",
+        document.get("doc_id"),
+        role_data.get("legal_person") or "",
+        role_data.get("executive_director") or "",
+        role_data.get("supervisor") or "",
+    )
+
+    merged = dict(extracted_data)
+    for key in ("legal_person", "executive_director", "chairman", "manager", "supervisor", "management_roles_summary"):
+        candidate = role_data.get(key)
+        if candidate and not _is_company_articles_role_missing_or_invalid(candidate):
+            merged[key] = candidate
+
+    existing_lines = [str(line or "").strip() for line in evidence_lines if str(line or "").strip()]
+    appended_lines = [str(line or "").strip() for line in role_evidence_lines if str(line or "").strip()]
+    deduped_lines: list[str] = []
+    seen: set[str] = set()
+    for line in existing_lines + appended_lines:
+        if line not in seen:
+            seen.add(line)
+            deduped_lines.append(line)
+    if deduped_lines:
+        merged["management_role_evidence_lines"] = deduped_lines
+
+    return merged
 
 
 async def _load_accessible_document(doc_id: str, current_user: dict) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1204,10 +1352,20 @@ async def get_customer_extractions(
     groups: dict[str, list[ExtractionItem]] = {}
     for ext in extractions:
         ext_type = ext.get("extraction_type") or "未知类型"
+        extracted_data = ext.get("extracted_data") or {}
+        if ext_type == "company_articles":
+            document = None
+            doc_id = ext.get("doc_id") or ""
+            if doc_id:
+                try:
+                    document = await storage_service.get_document(doc_id)
+                except Exception as exc:
+                    logger.warning("company_articles enrich document load failed doc_id=%s error=%s", doc_id, exc)
+            extracted_data = _merge_company_articles_front_page_roles(extracted_data, document)
         item = ExtractionItem(
             extraction_id=ext.get("extraction_id") or "",
             extraction_type=ext_type,
-            extracted_data=ext.get("extracted_data") or {},
+            extracted_data=extracted_data,
             created_at=ext.get("created_at") or "",
         )
         groups.setdefault(ext_type, []).append(item)
