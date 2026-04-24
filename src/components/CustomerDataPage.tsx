@@ -96,6 +96,7 @@ interface CompanyArticlesInsight {
   manager: string;
   supervisor: string;
   managementRolesSummary: string;
+  managementRoleEvidenceLines: string[];
   shareholderCount: string;
   equityStructureSummary: string;
   shareholders: Array<Record<string, unknown>>;
@@ -484,6 +485,16 @@ function toRecordList(value: unknown): Array<Record<string, unknown>> {
   return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
 }
 
+function toStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => stringifyExtractionValue(item))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function buildCompanyArticlesInsight(
   documents: CustomerDocumentListItem[],
   extractionGroups: ExtractionGroup[],
@@ -496,19 +507,20 @@ function buildCompanyArticlesInsight(
   const extractedData = (latestItem.extracted_data || {}) as Record<string, unknown>;
   const document = getDocumentsByType(documents, 'company_articles')[0];
 
-  return {
-    companyName: stringifyExtractionValue(extractedData.company_name),
-    registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
-    legalPerson: stringifyExtractionValue(extractedData.legal_person),
-    executiveDirector: stringifyExtractionValue(extractedData.executive_director),
-    chairman: stringifyExtractionValue(extractedData.chairman),
-    manager: stringifyExtractionValue(extractedData.manager),
-    supervisor: stringifyExtractionValue(extractedData.supervisor),
-    managementRolesSummary: stringifyExtractionValue(extractedData.management_roles_summary),
-    shareholderCount: stringifyExtractionValue(extractedData.shareholder_count),
-    equityStructureSummary: stringifyExtractionValue(extractedData.equity_structure_summary),
-    shareholders: toRecordList(extractedData.shareholders),
-    financingApprovalRule: stringifyExtractionValue(extractedData.financing_approval_rule),
+    return {
+      companyName: stringifyExtractionValue(extractedData.company_name),
+      registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
+      legalPerson: stringifyExtractionValue(extractedData.legal_person),
+      executiveDirector: stringifyExtractionValue(extractedData.executive_director),
+      chairman: stringifyExtractionValue(extractedData.chairman),
+      manager: stringifyExtractionValue(extractedData.manager),
+      supervisor: stringifyExtractionValue(extractedData.supervisor),
+      managementRolesSummary: stringifyExtractionValue(extractedData.management_roles_summary),
+      managementRoleEvidenceLines: toStringList(extractedData.management_role_evidence_lines),
+      shareholderCount: stringifyExtractionValue(extractedData.shareholder_count),
+      equityStructureSummary: stringifyExtractionValue(extractedData.equity_structure_summary),
+      shareholders: toRecordList(extractedData.shareholders),
+      financingApprovalRule: stringifyExtractionValue(extractedData.financing_approval_rule),
     financingApprovalThreshold: stringifyExtractionValue(extractedData.financing_approval_threshold),
     majorDecisionRuleDetails: toRecordList(extractedData.major_decision_rule_details),
     document,
@@ -950,6 +962,9 @@ function sanitizeProfileMarkdown(markdown: string): string {
       '目录',
       '附件',
       '立本',
+      '法规',
+      '法律',
+      '条例',
       '签字',
     '签章',
     '盖章',
@@ -981,7 +996,7 @@ function sanitizeProfileMarkdown(markdown: string): string {
     ), sanitizedRoleMarkdown);
     const sanitizedBusinessFragmentMarkdown = roleLabels.reduce((current, roleLabel) => (
       current.replace(
-        new RegExp(`(- ${roleLabel}：)[^\\n]*(利润|分配|亏损|收益|财务|会计|清算|章程|事项|委托|受托|国家|机关|授权|报告|通知|材料|文件|目录|附件|立本)[^\\n]*`, 'g'),
+        new RegExp(`(- ${roleLabel}：)[^\\n]*(利润|分配|亏损|收益|财务|会计|清算|章程|事项|委托|受托|国家|机关|授权|报告|通知|材料|文件|目录|附件|立本|法规|法律|条例)[^\\n]*`, 'g'),
         '$1暂无'
       )
     ), sanitizedRoleFragmentMarkdown);
@@ -1857,6 +1872,22 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         <div className="mt-1 text-slate-700">{companyArticlesInsight.managementRolesSummary}</div>
                       </div>
                     ) : null}
+                    <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-3">
+                      <div className="text-xs font-medium text-amber-700">任职原文线索（调试）</div>
+                      {companyArticlesInsight.managementRoleEvidenceLines.length > 0 ? (
+                        <div className="mt-2 space-y-1 text-xs leading-5 text-slate-700">
+                          {companyArticlesInsight.managementRoleEvidenceLines.map((line, index) => (
+                            <div key={`${line}-${index}`} className="rounded-lg bg-white/80 px-2 py-1">
+                              {line}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-xs leading-5 text-slate-600">
+                          当前未拿到包含法定代表人 / 执行董事 / 经理 / 监事的明确 OCR 原文线索。
+                        </div>
+                      )}
+                    </div>
                     <div>
                       <div className="text-xs font-medium text-slate-500">股权结构摘要</div>
                       <div className="mt-1 text-slate-700">
