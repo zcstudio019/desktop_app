@@ -596,7 +596,11 @@ function buildCompanyArticlesInsight(
   };
 }
 
-function synchronizeCompanyArticlesMarkdown(markdown: string, insight: CompanyArticlesInsight | null): string {
+function synchronizeCompanyArticlesMarkdown(
+  markdown: string,
+  insight: CompanyArticlesInsight | null,
+  equityRatioSummary: string,
+): string {
   if (!markdown || !insight) {
     return markdown;
   }
@@ -609,6 +613,7 @@ function synchronizeCompanyArticlesMarkdown(markdown: string, insight: CompanyAr
   const section = sectionMatch[0];
   const legalPersonLine = `- 法定代表人：${insight.legalPerson || '暂无'}`;
   const summaryLine = insight.managementRolesSummary ? `- 任职信息摘要：${insight.managementRolesSummary}` : '';
+  const equityRatioLine = equityRatioSummary ? `- 股权占比：${equityRatioSummary}` : '';
 
   let nextSection = section;
   if (/^- 法定代表人：.*$/m.test(nextSection)) {
@@ -629,6 +634,20 @@ function synchronizeCompanyArticlesMarkdown(markdown: string, insight: CompanyAr
     }
   }
 
+  if (/^- 股权占比：.*$/m.test(nextSection)) {
+    if (equityRatioLine) {
+      nextSection = nextSection.replace(/^- 股权占比：.*$/m, equityRatioLine);
+    } else {
+      nextSection = nextSection.replace(/^- 股权占比：.*$\n?/m, '');
+    }
+  } else if (equityRatioLine) {
+    if (/^- 股权结构：.*$/m.test(nextSection)) {
+      nextSection = nextSection.replace(/(^- 股权结构：.*$)/m, `$1\n${equityRatioLine}`);
+    } else if (/^- 股东数量：.*$/m.test(nextSection)) {
+      nextSection = nextSection.replace(/(^- 股东数量：.*$)/m, `$1\n${equityRatioLine}`);
+    }
+  }
+
   return markdown.replace(section, nextSection);
 }
 
@@ -641,12 +660,37 @@ function parseRatioNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function buildCompanyArticlesShareholderViews(shareholders: Array<Record<string, unknown>>): CompanyArticlesShareholderView[] {
+function parseAmountNumber(value: string): number | null {
+  const normalized = String(value || '').replace(/人民币/g, '').replace(/,/g, '').trim();
+  const match = normalized.match(/(\d+(?:\.\d+)?)/);
+  if (!match) {
+    return null;
+  }
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatComputedRatio(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(2)}%`;
+}
+
+function buildCompanyArticlesShareholderViews(
+  shareholders: Array<Record<string, unknown>>,
+  registeredCapital: string,
+): CompanyArticlesShareholderView[] {
+  const capitalNumber = parseAmountNumber(registeredCapital);
   const items = shareholders.map((shareholder) => {
-    const ratio = stringifyExtractionValue(shareholder.equity_ratio);
+    const contribution = stringifyExtractionValue(shareholder.capital_contribution);
+    const rawRatio = stringifyExtractionValue(shareholder.equity_ratio);
+    const contributionNumber = parseAmountNumber(contribution);
+    const computedRatio = !rawRatio && capitalNumber && contributionNumber
+      ? formatComputedRatio((contributionNumber / capitalNumber) * 100)
+      : '';
+    const ratio = rawRatio || computedRatio;
     return {
       name: stringifyExtractionValue(shareholder.name),
-      contribution: stringifyExtractionValue(shareholder.capital_contribution),
+      contribution,
       method: stringifyExtractionValue(shareholder.contribution_method),
       date: stringifyExtractionValue(shareholder.contribution_date),
       ratio,
@@ -678,6 +722,13 @@ function buildCompanyArticlesShareholderViews(shareholders: Array<Record<string,
     ...item,
     isPrimary: maxRatio !== null && item.ratioNumber !== null && item.ratioNumber === maxRatio,
   }));
+}
+
+function buildCompanyArticlesEquityRatioSummary(shareholders: CompanyArticlesShareholderView[]): string {
+  const parts = shareholders
+    .filter((item) => item.name && item.ratio)
+    .map((item) => `${item.name} ${item.ratio}`);
+  return parts.join('；');
 }
 
 function buildCompanyArticlesRuleDetailViews(details: Array<Record<string, unknown>>): CompanyArticlesRuleDetailView[] {
@@ -1371,14 +1422,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     () => buildCompanyArticlesInsight(documents, extractionGroups),
     [documents, extractionGroups]
   );
-  const renderedDraft = useMemo(
-    () => synchronizeCompanyArticlesMarkdown(draft, companyArticlesInsight),
-    [draft, companyArticlesInsight]
-  );
-  const fieldSourceSummaries = useMemo(
-    () => buildFieldSourceSummaries(renderedDraft, documents),
-    [documents, renderedDraft]
-  );
   const companyArticlesRoleItems = useMemo(
     () => {
       const items = [
@@ -1393,8 +1436,23 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     [companyArticlesInsight]
   );
   const companyArticlesShareholderViews = useMemo(
-    () => buildCompanyArticlesShareholderViews(companyArticlesInsight?.shareholders || []),
+    () => buildCompanyArticlesShareholderViews(
+      companyArticlesInsight?.shareholders || [],
+      companyArticlesInsight?.registeredCapital || '',
+    ),
     [companyArticlesInsight]
+  );
+  const companyArticlesEquityRatioSummary = useMemo(
+    () => buildCompanyArticlesEquityRatioSummary(companyArticlesShareholderViews),
+    [companyArticlesShareholderViews]
+  );
+  const renderedDraft = useMemo(
+    () => synchronizeCompanyArticlesMarkdown(draft, companyArticlesInsight, companyArticlesEquityRatioSummary),
+    [draft, companyArticlesInsight, companyArticlesEquityRatioSummary]
+  );
+  const fieldSourceSummaries = useMemo(
+    () => buildFieldSourceSummaries(renderedDraft, documents),
+    [documents, renderedDraft]
   );
   const companyArticlesControlSummary = useMemo(
     () => buildCompanyArticlesControlSummary(companyArticlesShareholderViews),
