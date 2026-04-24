@@ -238,6 +238,8 @@ def _is_invalid_legal_person_value(value: Any) -> bool:
     text = str(value or '').strip()
     if not text:
         return True
+    if text == '公司法':
+        return True
     invalid_values = {
         '姓名或者名称',
         '姓名或名称',

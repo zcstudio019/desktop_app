@@ -560,16 +560,31 @@ function buildCompanyArticlesInsight(
   const legalPerson = !isInvalidCompanyArticlesRoleValue(rawLegalPerson)
     ? rawLegalPerson
     : (!isInvalidCompanyArticlesRoleValue(fallbackLegalPerson) ? fallbackLegalPerson : '');
+  const executiveDirector = stringifyExtractionValue(extractedData.executive_director);
+  const chairman = stringifyExtractionValue(extractedData.chairman);
+  const manager = stringifyExtractionValue(extractedData.manager);
+  const supervisor = stringifyExtractionValue(extractedData.supervisor);
+  const sanitizedExecutiveDirector = isInvalidCompanyArticlesRoleValue(executiveDirector) ? '' : executiveDirector;
+  const sanitizedChairman = isInvalidCompanyArticlesRoleValue(chairman) ? '' : chairman;
+  const sanitizedManager = isInvalidCompanyArticlesRoleValue(manager) ? '' : manager;
+  const sanitizedSupervisor = isInvalidCompanyArticlesRoleValue(supervisor) ? '' : supervisor;
+  const managementRolesSummaryParts = [
+    legalPerson ? `法定代表人：${legalPerson}` : '',
+    sanitizedExecutiveDirector ? `执行董事：${sanitizedExecutiveDirector}` : '',
+    sanitizedChairman ? `董事长：${sanitizedChairman}` : '',
+    sanitizedManager ? `经理：${sanitizedManager}` : '',
+    sanitizedSupervisor ? `监事：${sanitizedSupervisor}` : '',
+  ].filter(Boolean);
 
     return {
       companyName: stringifyExtractionValue(extractedData.company_name),
       registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
       legalPerson,
-      executiveDirector: stringifyExtractionValue(extractedData.executive_director),
-      chairman: stringifyExtractionValue(extractedData.chairman),
-      manager: stringifyExtractionValue(extractedData.manager),
-      supervisor: stringifyExtractionValue(extractedData.supervisor),
-      managementRolesSummary: stringifyExtractionValue(extractedData.management_roles_summary),
+      executiveDirector: sanitizedExecutiveDirector,
+      chairman: sanitizedChairman,
+      manager: sanitizedManager,
+      supervisor: sanitizedSupervisor,
+      managementRolesSummary: managementRolesSummaryParts.join('；'),
       managementRoleEvidenceLines: toStringList(extractedData.management_role_evidence_lines),
       shareholderCount: stringifyExtractionValue(extractedData.shareholder_count),
       equityStructureSummary: stringifyExtractionValue(extractedData.equity_structure_summary),
@@ -991,6 +1006,7 @@ function sanitizeProfileMarkdown(markdown: string): string {
       '其报酬',
       '公司类型',
       '公司股东',
+      '公司法',
       '决定聘任',
       '印章',
       '用章',
