@@ -949,6 +949,7 @@ function sanitizeProfileMarkdown(markdown: string): string {
       '文件',
       '目录',
       '附件',
+      '立本',
       '签字',
     '签章',
     '盖章',
@@ -980,7 +981,7 @@ function sanitizeProfileMarkdown(markdown: string): string {
     ), sanitizedRoleMarkdown);
     const sanitizedBusinessFragmentMarkdown = roleLabels.reduce((current, roleLabel) => (
       current.replace(
-        new RegExp(`(- ${roleLabel}：)[^\\n]*(利润|分配|亏损|收益|财务|会计|清算|章程|事项|委托|受托|国家|机关|授权|报告|通知|材料|文件|目录|附件)[^\\n]*`, 'g'),
+        new RegExp(`(- ${roleLabel}：)[^\\n]*(利润|分配|亏损|收益|财务|会计|清算|章程|事项|委托|受托|国家|机关|授权|报告|通知|材料|文件|目录|附件|立本)[^\\n]*`, 'g'),
         '$1暂无'
       )
     ), sanitizedRoleFragmentMarkdown);
