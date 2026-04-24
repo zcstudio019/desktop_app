@@ -1564,7 +1564,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setError(null);
     try {
       const result = await updateCustomerProfileMarkdown(selectedCustomerId, {
-        markdown_content: draft,
+        markdown_content: renderedDraft,
         title: selectedCustomer?.name ? `${selectedCustomer.name} 资料汇总` : undefined,
       });
       setProfile(result);
@@ -2724,7 +2724,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               </div>
               {mode === 'edit' ? (
                 <textarea
-                  value={draft}
+                  value={renderedDraft}
                   onChange={(e) => setDraft(e.target.value)}
                   className="min-h-[520px] resize-y border-0 p-5 font-mono text-sm leading-6 text-slate-700 outline-none"
                   placeholder="请输入资料汇总内容，支持标题、分段等格式"
