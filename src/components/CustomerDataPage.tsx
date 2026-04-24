@@ -378,6 +378,33 @@ function stringifyExtractionValue(value: unknown): string {
   return cleanMarkdownFieldValue(JSON.stringify(value));
 }
 
+function isInvalidCompanyArticlesRoleValue(value: string): boolean {
+  const text = String(value || '').trim();
+  if (!text || text === '暂无') {
+    return true;
+  }
+
+  const invalidFragments = [
+    '姓名或者名称', '姓名或名称', '姓名名称', '姓名', '名称', '股东',
+    '法定代表人', '执行董事', '董事长', '经理', '监事', '负责人',
+    '信息', '资料', '说明', '无', '待定', '空白',
+    '填写', '填报', '填入', '未填写', '未填报', '未填入',
+    '签字', '签章', '盖章', '职务', '董事', '报酬', '及其报酬', '其报酬',
+    '公司类型', '公司股东', '公司法', '决定聘任',
+    '印章', '用章', '动用', '使用', '印鉴',
+    '利润', '分配', '亏损', '利润分配', '弥补亏损',
+    '委托', '受托', '国家', '机关', '授权',
+    '报告', '通知', '通知书', '材料', '文件', '目录', '附件',
+    '立本', '法规', '法律', '条例',
+  ];
+
+  if (invalidFragments.some((fragment) => text.includes(fragment))) {
+    return true;
+  }
+
+  return !/^[\u4e00-\u9fff·]{2,4}$/.test(text);
+}
+
 function normalizeFieldLookupKey(value: string): string {
   return String(value || '').replace(/[\s_\-：:]/g, '').toLowerCase();
 }
@@ -427,6 +454,24 @@ function getExtractionItemsByType(groups: ExtractionGroup[], documentType: strin
   return matchedGroups
     .flatMap((group) => group.items)
     .sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime());
+}
+
+function getFirstValidFieldValueByTypes(
+  extractionGroups: ExtractionGroup[],
+  documentTypes: string[],
+  fieldLabels: string[],
+): string {
+  for (const documentType of documentTypes) {
+    const items = getExtractionItemsByType(extractionGroups, documentType);
+    for (const item of items) {
+      const extractedData = (item.extracted_data || {}) as Record<string, unknown>;
+      const value = extractValueFromExtractionData(extractedData, fieldLabels);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  return '';
 }
 
 function buildFieldConsistencyResults(
@@ -506,11 +551,20 @@ function buildCompanyArticlesInsight(
 
   const extractedData = (latestItem.extracted_data || {}) as Record<string, unknown>;
   const document = getDocumentsByType(documents, 'company_articles')[0];
+  const rawLegalPerson = stringifyExtractionValue(extractedData.legal_person);
+  const fallbackLegalPerson = getFirstValidFieldValueByTypes(
+    extractionGroups,
+    ['business_license', 'account_license'],
+    ['legal_person', '法定代表人', '负责人'],
+  );
+  const legalPerson = !isInvalidCompanyArticlesRoleValue(rawLegalPerson)
+    ? rawLegalPerson
+    : (!isInvalidCompanyArticlesRoleValue(fallbackLegalPerson) ? fallbackLegalPerson : '');
 
     return {
       companyName: stringifyExtractionValue(extractedData.company_name),
       registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
-      legalPerson: stringifyExtractionValue(extractedData.legal_person),
+      legalPerson,
       executiveDirector: stringifyExtractionValue(extractedData.executive_director),
       chairman: stringifyExtractionValue(extractedData.chairman),
       manager: stringifyExtractionValue(extractedData.manager),
