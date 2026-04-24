@@ -91,6 +91,38 @@ def _ocr_pdf_pages(file_bytes: bytes) -> str:
     return "\n\n".join(ocr_results)
 
 
+def _ocr_pdf_selected_pages(file_bytes: bytes, page_indices: list[int], *, log_prefix: str, filename: str) -> str:
+    images = file_service.pdf_to_images(file_bytes)
+    if not images:
+        logger.warning("%s skipped: no rendered PDF images filename=%s", log_prefix, filename)
+        return ""
+
+    ocr_results: list[str] = []
+    total_pages = len(images)
+    for page_index in page_indices:
+        if page_index < 0 or page_index >= total_pages:
+            continue
+        page_number = page_index + 1
+        try:
+            compressed = file_service.compress_image(images[page_index])
+            page_text = ocr_service.recognize_image(compressed).strip()
+            logger.info(
+                "%s page=%s/%s text=%s",
+                log_prefix,
+                page_number,
+                total_pages,
+                page_text[:1000] or "(empty)",
+            )
+            if page_text:
+                ocr_results.append(f"--- OCR Page {page_number} ---\n{page_text}")
+        except OCRServiceError as exc:
+            logger.warning("%s failed page=%s filename=%s error=%s", log_prefix, page_number, filename, exc)
+        except Exception as exc:  # pragma: no cover - best-effort OCR fallback
+            logger.warning("%s failed page=%s filename=%s error=%s", log_prefix, page_number, filename, exc)
+
+    return "\n\n".join(ocr_results)
+
+
 def _crop_image_region(image_bytes: bytes, box: tuple[int, int, int, int]) -> bytes:
     with Image.open(BytesIO(image_bytes)) as image:
         image = image.convert("RGB")
@@ -192,6 +224,35 @@ def _ocr_business_license_seal_region(file_bytes: bytes, file_type: str, filenam
         return ""
 
 
+def _ocr_company_articles_front_pages(file_bytes: bytes, file_type: str, filename: str) -> str:
+    logger.info("[company_articles] start front-page OCR supplement filename=%s file_type=%s", filename, file_type)
+    try:
+        if file_type == "pdf":
+            return _ocr_pdf_selected_pages(
+                file_bytes,
+                [0, 1],
+                log_prefix="[company_articles] front_page_ocr",
+                filename=filename,
+            )
+        if file_type == "image":
+            compressed = file_service.compress_image(file_bytes)
+            text = ocr_service.recognize_image(compressed).strip()
+            logger.info("[company_articles] image OCR supplement text=%s", text[:1000] or "(empty)")
+            return text
+        logger.info(
+            "[company_articles] front-page OCR supplement skipped: unsupported file_type=%s filename=%s",
+            file_type,
+            filename,
+        )
+        return ""
+    except OCRServiceError as exc:
+        logger.warning("[company_articles] front-page OCR supplement failed for %s: %s", filename, exc)
+        return ""
+    except Exception as exc:  # pragma: no cover - best-effort OCR fallback
+        logger.warning("[company_articles] front-page OCR supplement failed for %s: %s", filename, exc)
+        return ""
+
+
 def _extract_content_from_file(file_bytes: bytes, file_type: str, filename: str) -> tuple[str, list[dict]]:
     try:
         if file_type == "pdf":
@@ -285,4 +346,8 @@ async def process_file(
         seal_region_text = _ocr_business_license_seal_region(file_bytes, file_type, file.filename or "")
         if seal_region_text:
             text_content = f"{text_content}\n\n--- Business License Seal Region OCR ---\n{seal_region_text}"
+    if document_type_code == "company_articles":
+        front_page_ocr_text = _ocr_company_articles_front_pages(file_bytes, file_type, file.filename or "")
+        if front_page_ocr_text:
+            text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
     return _extract_structured_data(text_content, document_type_code, rows)
