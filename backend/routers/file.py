@@ -6,27 +6,41 @@ Supports PDF / image / DOCX / XLSX extraction and structured parsing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import shutil
 import sys
+import uuid
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from PIL import Image, ImageEnhance, ImageOps
 
 desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
+from backend.celery_app import TASK_QUEUE_ENABLED
 from backend.document_types import get_document_display_name, normalize_document_type_code
 from backend.routers.chat_helpers import extract_customer_name as extract_customer_name_from_content
+from backend.routers.chat_storage import _save_to_local_storage
+from backend.services import get_storage_service, supports_structured_storage
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
+from backend.services.job_display_config import build_job_result_summary, get_job_target_page, get_job_type_label
+from backend.services.index_rebuild_service import IndexRebuildService
+from backend.services.markdown_profile_service import regenerate_customer_profile
+from backend.services.profile_sync_service import ProfileSyncService
+from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
 from services.ai_service import AIService, AIServiceError
 from services.file_service import FileService
 from services.ocr_service import OCRService, OCRServiceError
 
 from ..middleware.auth import get_current_user
-from ..models.schemas import FileProcessResponse
+from ..models.schemas import ChatJobCreateResponse, ChatJobStatusResponse, FileProcessResponse
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +49,21 @@ router = APIRouter(prefix="/file", tags=["File Processing"])
 file_service = FileService()
 ocr_service = OCRService()
 ai_service = AIService()
+storage_service = get_storage_service()
+job_storage_service = storage_service if all(
+    hasattr(storage_service, method_name)
+    for method_name in ("create_async_job", "get_async_job", "update_async_job", "get_async_job_execution_payload", "mark_async_job_dispatched")
+) else SQLAlchemyStorageService()
+profile_sync_service = ProfileSyncService()
+index_rebuild_service = IndexRebuildService()
+HAS_DB_STORAGE = supports_structured_storage(storage_service)
+HAS_ASYNC_JOB_STORAGE = all(
+    hasattr(job_storage_service, method_name)
+    for method_name in ("create_async_job", "get_async_job", "update_async_job", "get_async_job_execution_payload", "mark_async_job_dispatched")
+)
+_ACTIVE_FILE_PROCESS_JOB_TASKS: set[asyncio.Task[None]] = set()
+_UPLOAD_JOB_TEMP_ROOT = Path(__file__).parent.parent.parent / "data" / "upload_job_files"
+FILE_PROCESS_JOB_TYPE = "file_process"
 
 NO_FILENAME_MESSAGE = "未提供文件名。"
 FILE_READ_FAILED_MESSAGE = "文件读取失败，请重新上传后再试。"
@@ -49,6 +78,89 @@ PDF_TO_IMAGE_FAILED_MESSAGE = "PDF 转图片失败，无法继续识别。"
 AI_CLASSIFICATION_FAILED_MESSAGE = "文件类型识别失败，请手动选择资料类型后重试。"
 AI_EXTRACTION_FAILED_MESSAGE = "资料提取失败，请稍后重试。"
 OCR_PAGE_FAILED_PLACEHOLDER = "[本页识别失败]"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _update_file_process_job(job_id: str, **updates: Any) -> None:
+    await job_storage_service.update_async_job(job_id, updates)
+
+
+async def _update_file_process_progress(job_id: str, message: str) -> None:
+    await _update_file_process_job(job_id, status="running", progress_message=message)
+
+
+def _ensure_upload_job_temp_dir(job_id: str) -> Path:
+    target_dir = _UPLOAD_JOB_TEMP_ROOT / job_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir
+
+
+def _persist_upload_job_temp_file(job_id: str, filename: str, file_bytes: bytes) -> Path:
+    target_dir = _ensure_upload_job_temp_dir(job_id)
+    safe_name = Path(filename or "uploaded_file").name
+    temp_path = target_dir / safe_name
+    temp_path.write_bytes(file_bytes)
+    return temp_path
+
+
+def _cleanup_upload_job_temp_dir(job_id: str) -> None:
+    target_dir = _UPLOAD_JOB_TEMP_ROOT / job_id
+    shutil.rmtree(target_dir, ignore_errors=True)
+
+
+def _build_file_process_job_request_snapshot(
+    *,
+    document_type: str,
+    customer_id: str,
+    customer_name: str,
+    username: str,
+    original_filename: str,
+    file_size: int,
+) -> dict[str, Any]:
+    return {
+        "jobType": FILE_PROCESS_JOB_TYPE,
+        "customerId": customer_id,
+        "customerName": customer_name,
+        "username": username,
+        "files": [
+            {
+                "fileName": original_filename,
+                "size": file_size,
+                "documentType": document_type,
+            }
+        ],
+        "createdFrom": "upload_page_async_job",
+    }
+
+
+def _build_file_process_job_execution_payload(
+    *,
+    job_id: str,
+    temp_file_path: str,
+    original_filename: str,
+    document_type: str,
+    customer_id: str,
+    customer_name: str,
+    username: str,
+    role: str,
+    file_size: int,
+) -> dict[str, Any]:
+    return {
+        "jobId": job_id,
+        "jobType": FILE_PROCESS_JOB_TYPE,
+        "tempFilePath": temp_file_path,
+        "originalFilename": original_filename,
+        "documentType": document_type,
+        "customerId": customer_id,
+        "customerName": customer_name,
+        "username": username,
+        "role": role,
+        "fileSize": file_size,
+        "createdFrom": "upload_page_async_job",
+    }
 
 
 async def _validate_and_read_file(file: UploadFile) -> tuple[bytes, str]:
@@ -253,19 +365,33 @@ def _ocr_company_articles_front_pages(file_bytes: bytes, file_type: str, filenam
         return ""
 
 
-def _extract_content_from_file(file_bytes: bytes, file_type: str, filename: str) -> tuple[str, list[dict]]:
+async def _extract_content_from_file(
+    file_bytes: bytes,
+    file_type: str,
+    filename: str,
+    *,
+    progress_callback: Callable[[str], Awaitable[None]] | None = None,
+) -> tuple[str, list[dict]]:
     try:
         if file_type == "pdf":
+            if progress_callback:
+                await progress_callback("正在解析文件")
             extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
             text_content = extracted.get("text", "")
             if not file_service.is_pdf_text_valid(text_content):
                 logger.info("PDF text extraction invalid for %s, falling back to OCR", filename)
+                if progress_callback:
+                    await progress_callback("正在 OCR 识别")
                 text_content = _ocr_pdf_pages(file_bytes)
             return text_content, []
         if file_type == "image":
+            if progress_callback:
+                await progress_callback("正在 OCR 识别")
             compressed = file_service.compress_image(file_bytes)
             return ocr_service.recognize_image(compressed), []
         if file_type in {"excel", "word"}:
+            if progress_callback:
+                await progress_callback("正在解析文件")
             extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
             return extracted.get("text", ""), extracted.get("rows", [])
         raise HTTPException(status_code=400, detail=UNSUPPORTED_FILE_TYPE_MESSAGE)
@@ -314,6 +440,210 @@ def _extract_structured_data(text_content: str, document_type_code: str, rows: l
         raise HTTPException(status_code=500, detail=AI_EXTRACTION_FAILED_MESSAGE) from exc
 
 
+async def _process_file_bytes(
+    file_bytes: bytes,
+    file_type: str,
+    filename: str,
+    explicit_document_type: str | None,
+    *,
+    progress_callback: Callable[[str], Awaitable[None]] | None = None,
+) -> FileProcessResponse:
+    text_content, rows = await _extract_content_from_file(
+        file_bytes,
+        file_type,
+        filename,
+        progress_callback=progress_callback,
+    )
+    if not text_content or not text_content.strip():
+        raise HTTPException(status_code=400, detail=NO_TEXT_EXTRACTED_MESSAGE)
+
+    document_type_code = _resolve_document_type_code(text_content, explicit_document_type, rows)
+    logger.info(
+        "Resolved document type for %s: %s (%s)",
+        filename,
+        document_type_code,
+        get_document_display_name(document_type_code),
+    )
+    if document_type_code == "business_license":
+        seal_region_text = _ocr_business_license_seal_region(file_bytes, file_type, filename)
+        if seal_region_text:
+            text_content = f"{text_content}\n\n--- Business License Seal Region OCR ---\n{seal_region_text}"
+    if document_type_code == "company_articles":
+        front_page_ocr_text = _ocr_company_articles_front_pages(file_bytes, file_type, filename)
+        if front_page_ocr_text:
+            text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
+    if progress_callback:
+        await progress_callback("正在结构化提取")
+    return _extract_structured_data(text_content, document_type_code, rows)
+
+
+async def _run_file_process_job(
+    job_id: str,
+    execution_payload: dict[str, Any],
+) -> None:
+    temp_file_path = str(execution_payload.get("tempFilePath") or "").strip()
+    original_filename = str(execution_payload.get("originalFilename") or "").strip()
+    explicit_document_type = str(execution_payload.get("documentType") or "").strip()
+    requested_customer_name = str(execution_payload.get("customerName") or "").strip()
+    requested_customer_id = str(execution_payload.get("customerId") or "").strip()
+    current_user_payload = {
+        "username": str(execution_payload.get("username") or "").strip(),
+        "role": str(execution_payload.get("role") or "").strip(),
+    }
+
+    if not temp_file_path:
+        raise ValueError(f"file process job {job_id} missing tempFilePath")
+
+    temp_path = Path(temp_file_path)
+    if not temp_path.exists():
+        raise FileNotFoundError(f"temp upload file not found: {temp_file_path}")
+
+    await _update_file_process_job(
+        job_id,
+        status="running",
+        progress_message="文件已接收，等待处理",
+        started_at=_utc_now_iso(),
+        error_message="",
+    )
+
+    try:
+        file_bytes = temp_path.read_bytes()
+        file_type = file_service.get_file_type(original_filename)
+        if file_type == "unknown":
+            raise HTTPException(status_code=400, detail=UNSUPPORTED_FILE_FORMAT_MESSAGE)
+
+        process_result = await _process_file_bytes(
+            file_bytes,
+            file_type,
+            original_filename,
+            explicit_document_type or None,
+            progress_callback=lambda message: _update_file_process_progress(job_id, message),
+        )
+
+        final_customer_name = requested_customer_name or process_result.customerName or ""
+        if not final_customer_name:
+            raise ValueError("未识别到客户名称，请先选择客户或补充客户名称后再上传。")
+
+        await _update_file_process_progress(job_id, "正在保存资料")
+        save_result = await _save_to_local_storage(
+            original_filename or f"{process_result.documentType}.json",
+            process_result.documentType,
+            process_result.content,
+            final_customer_name,
+            current_user_payload,
+            storage_service,
+            target_customer_id=requested_customer_id or None,
+            file_bytes=file_bytes,
+        )
+        success = bool(save_result[0]) if len(save_result) > 0 else False
+        record_id = save_result[1] if len(save_result) > 1 else None
+        error_msg = save_result[2] if len(save_result) > 2 else None
+        saved_customer_id = save_result[4] if len(save_result) > 4 else None
+        document_id = save_result[5] if len(save_result) > 5 else None
+        original_available = bool(save_result[6]) if len(save_result) > 6 else False
+        final_customer_id = requested_customer_id or saved_customer_id or ""
+        if not success:
+            raise RuntimeError(error_msg or "资料保存失败")
+
+        if final_customer_id:
+            await _update_file_process_progress(job_id, "正在刷新资料汇总")
+            await regenerate_customer_profile(storage_service, final_customer_id)
+            await _update_file_process_progress(job_id, "正在重建检索索引")
+            await index_rebuild_service.rebuild_customer_index(storage_service, final_customer_id, "document_saved")
+            await profile_sync_service.mark_customer_applications_stale(storage_service, final_customer_id)
+
+        result_payload = {
+            "documentType": process_result.documentType,
+            "content": process_result.content,
+            "customerName": final_customer_name,
+            "savedToFeishu": True,
+            "recordId": record_id,
+            "customerId": final_customer_id,
+            "documentId": document_id,
+            "originalAvailable": original_available,
+        }
+        await _update_file_process_job(
+            job_id,
+            status="success",
+            progress_message="处理完成",
+            result_json=result_payload,
+            error_message="",
+            finished_at=_utc_now_iso(),
+        )
+    except Exception as exc:
+        logger.error("[File Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
+        await _update_file_process_job(
+            job_id,
+            status="failed",
+            progress_message="处理失败",
+            error_message=str(exc) or "文件处理任务执行失败",
+            finished_at=_utc_now_iso(),
+        )
+        raise
+    finally:
+        _cleanup_upload_job_temp_dir(job_id)
+
+
+async def execute_file_process_job_from_job(job_id: str) -> None:
+    execution_payload = await job_storage_service.get_async_job_execution_payload(job_id)
+    if not execution_payload:
+        raise ValueError(f"async job {job_id} execution payload not found")
+    await _run_file_process_job(job_id, execution_payload)
+
+
+def _launch_file_process_job(job_id: str) -> None:
+    task = asyncio.create_task(execute_file_process_job_from_job(job_id))
+    _ACTIVE_FILE_PROCESS_JOB_TASKS.add(task)
+
+    def _cleanup(done_task: asyncio.Task[None]) -> None:
+        _ACTIVE_FILE_PROCESS_JOB_TASKS.discard(done_task)
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("[File Job] background task crashed job_id=%s", job_id)
+
+    task.add_done_callback(_cleanup)
+
+
+async def _dispatch_file_process_job(
+    job_id: str,
+    current_user_payload: dict[str, Any],
+    customer_id: str,
+) -> None:
+    logger.info(
+        "[File Job] submit start job_id=%s queue_enabled=%s customer_id=%s username=%s",
+        job_id,
+        TASK_QUEUE_ENABLED,
+        customer_id,
+        current_user_payload.get("username") or "",
+    )
+    if TASK_QUEUE_ENABLED:
+        from backend.celery_app import FILE_PROCESS_TASK_NAME, HEAVY_QUEUE_NAME, celery_app
+
+        async_result = celery_app.send_task(FILE_PROCESS_TASK_NAME, args=[job_id], queue=HEAVY_QUEUE_NAME)
+        await job_storage_service.mark_async_job_dispatched(
+            job_id,
+            async_result.id,
+            worker_name="celery",
+        )
+        logger.info(
+            "[File Job] dispatched to celery job_id=%s celery_task_id=%s customer_id=%s username=%s",
+            job_id,
+            async_result.id,
+            customer_id,
+            current_user_payload.get("username") or "",
+        )
+        return
+
+    logger.warning(
+        "[File Job] fallback to in-process execution job_id=%s customer_id=%s username=%s",
+        job_id,
+        customer_id,
+        current_user_payload.get("username") or "",
+    )
+    _launch_file_process_job(job_id)
+
+
 @router.post("/process", response_model=FileProcessResponse)
 async def process_file(
     file: UploadFile = File(..., description="待处理文件，支持 PDF、图片、DOCX、XLSX"),
@@ -331,23 +661,110 @@ async def process_file(
     )
 
     file_bytes, file_type = await _validate_and_read_file(file)
-    text_content, rows = _extract_content_from_file(file_bytes, file_type, file.filename or "")
-    if not text_content or not text_content.strip():
-        raise HTTPException(status_code=400, detail=NO_TEXT_EXTRACTED_MESSAGE)
-
-    document_type_code = _resolve_document_type_code(text_content, documentType, rows)
-    logger.info(
-        "Resolved document type for %s: %s (%s)",
-        file.filename,
-        document_type_code,
-        get_document_display_name(document_type_code),
+    return await _process_file_bytes(
+        file_bytes,
+        file_type,
+        file.filename or "",
+        documentType,
     )
-    if document_type_code == "business_license":
-        seal_region_text = _ocr_business_license_seal_region(file_bytes, file_type, file.filename or "")
-        if seal_region_text:
-            text_content = f"{text_content}\n\n--- Business License Seal Region OCR ---\n{seal_region_text}"
-    if document_type_code == "company_articles":
-        front_page_ocr_text = _ocr_company_articles_front_pages(file_bytes, file_type, file.filename or "")
-        if front_page_ocr_text:
-            text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
-    return _extract_structured_data(text_content, document_type_code, rows)
+
+
+@router.post("/process/jobs", response_model=ChatJobCreateResponse)
+async def create_file_process_job(
+    file: UploadFile = File(...),
+    documentType: str | None = Form(default=None),
+    customerId: str | None = Form(default=None),
+    customerName: str | None = Form(default=None),
+    current_user: dict = Depends(get_current_user),
+) -> JSONResponse:
+    if not HAS_DB_STORAGE or not HAS_ASYNC_JOB_STORAGE:
+        raise HTTPException(status_code=503, detail="当前环境不支持上传异步任务，请切换到本地数据库存储。")
+
+    file_bytes, _ = await _validate_and_read_file(file)
+    job_id = uuid.uuid4().hex
+    username = current_user.get("username") or "anonymous"
+    role = current_user.get("role") or ""
+    temp_file_path = _persist_upload_job_temp_file(job_id, file.filename or "uploaded_file", file_bytes)
+    request_payload = _build_file_process_job_request_snapshot(
+        document_type=documentType or "",
+        customer_id=customerId or "",
+        customer_name=customerName or "",
+        username=username,
+        original_filename=file.filename or "uploaded_file",
+        file_size=len(file_bytes),
+    )
+    execution_payload = _build_file_process_job_execution_payload(
+        job_id=job_id,
+        temp_file_path=str(temp_file_path),
+        original_filename=file.filename or "uploaded_file",
+        document_type=documentType or "",
+        customer_id=customerId or "",
+        customer_name=customerName or "",
+        username=username,
+        role=role,
+        file_size=len(file_bytes),
+    )
+
+    await job_storage_service.create_async_job(
+        {
+            "job_id": job_id,
+            "job_type": FILE_PROCESS_JOB_TYPE,
+            "customer_id": customerId or "",
+            "username": username,
+            "status": "pending",
+            "progress_message": "文件已接收，等待处理",
+            "request_json": request_payload,
+            "execution_payload_json": execution_payload,
+        }
+    )
+    try:
+        await _dispatch_file_process_job(job_id, {"username": username, "role": role}, customerId or "")
+    except Exception as exc:
+        _cleanup_upload_job_temp_dir(job_id)
+        await job_storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "任务派发失败",
+                "error_message": str(exc) or "上传处理任务派发失败",
+                "finished_at": _utc_now_iso(),
+            },
+        )
+        raise HTTPException(status_code=500, detail="上传处理任务创建失败，请稍后重试。") from exc
+
+    return JSONResponse(content={"jobId": job_id, "status": "pending"})
+
+
+@router.get("/process/jobs/{job_id}", response_model=ChatJobStatusResponse)
+async def get_file_process_job(
+    job_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ChatJobStatusResponse:
+    job = await job_storage_service.get_async_job(job_id)
+    if not job or (job.get("job_type") or "") != FILE_PROCESS_JOB_TYPE:
+        raise HTTPException(status_code=404, detail="未找到该上传处理任务")
+
+    username = current_user.get("username") or "anonymous"
+    if job.get("username") and job.get("username") != username:
+        raise HTTPException(status_code=403, detail="无权查看该上传处理任务")
+
+    result_payload = job.get("result_json") if isinstance(job.get("result_json"), dict) else None
+    job_type = job.get("job_type") or FILE_PROCESS_JOB_TYPE
+    customer_name = job.get("customer_name") or ""
+
+    return ChatJobStatusResponse(
+        jobId=job.get("job_id") or job_id,
+        jobType=job_type,
+        jobTypeLabel=get_job_type_label(job_type),
+        customerId=job.get("customer_id") or "",
+        customerName=customer_name,
+        status=job.get("status") or "pending",
+        progressMessage=job.get("progress_message") or "",
+        result=result_payload,
+        errorMessage=job.get("error_message") or None,
+        createdAt=job.get("created_at") or "",
+        startedAt=job.get("started_at") or "",
+        finishedAt=job.get("finished_at") or "",
+        targetPage=get_job_target_page(job_type),
+        resultSummary=build_job_result_summary(job_type, result_payload, customer_name),
+    )

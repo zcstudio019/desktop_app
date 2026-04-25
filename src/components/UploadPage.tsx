@@ -18,11 +18,11 @@ import {
   FileText, Upload, Check, X, Loader2, AlertCircle,
   Building2, User, Landmark, Wallet, BarChart3, Home, FileSearch, Receipt
 } from 'lucide-react';
-import { downloadDocumentOriginal, listCustomers, previewDocumentOriginal, processFile, saveToStorage } from '../services/api';
+import { createFileProcessJob, downloadDocumentOriginal, getFileProcessJob, listCustomers, previewDocumentOriginal } from '../services/api';
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp, type ExtractionResult, type UploadQueueItem } from '../context/AppContext';
-import { ApiError, classifyError, ErrorType, type CustomerListItem } from '../services/types';
+import { ApiError, classifyError, ErrorType, type ChatJobStatusResponse, type CustomerListItem } from '../services/types';
 import ProcessFeedbackCard from './common/ProcessFeedbackCard';
 
 // ============================================
@@ -46,6 +46,8 @@ interface QueueItem {
   documentType: string;
   status: 'pending' | 'processing' | 'success' | 'error';
   progress: number;
+  jobId?: string;
+  progressMessage?: string;
   error?: string;
   result?: ExtractionResult;
 }
@@ -363,19 +365,6 @@ function validateFile(file: File, acceptedExtensions: string[]): { valid: boolea
   return { valid: true };
 }
 
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('读取原始文件内容失败，请重新选择文件后再试。'));
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const [, base64 = result] = result.split(',');
-      resolve(base64);
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
 // ============================================
 // Sub-Components
 // ============================================
@@ -493,6 +482,11 @@ const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
               style={{ width: `${item.progress}%` }}
             />
           </div>
+          {item.progressMessage ? (
+            <div className="mt-2 text-xs text-gray-500">
+              {item.progressMessage}
+            </div>
+          ) : null}
         </div>
       )}
       
@@ -506,6 +500,38 @@ const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
     </div>
   );
 };
+
+function waitForPolling(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function getProgressFromJobStatus(status: ChatJobStatusResponse): number {
+  const message = status.progressMessage || '';
+  if (status.status === 'success') return 100;
+  if (status.status === 'failed') return 100;
+  if (message.includes('文件已接收')) return 20;
+  if (message.includes('正在解析文件')) return 40;
+  if (message.includes('正在 OCR')) return 55;
+  if (message.includes('正在结构化提取')) return 70;
+  if (message.includes('正在保存资料')) return 82;
+  if (message.includes('正在刷新资料汇总')) return 90;
+  if (message.includes('正在重建检索索引')) return 96;
+  return 35;
+}
+
+function toExtractionResultFromJob(status: ChatJobStatusResponse): ExtractionResult {
+  const result = (status.result || {}) as Record<string, unknown>;
+  return {
+    documentType: String(result.documentType || ''),
+    content: (result.content as Record<string, unknown>) || {},
+    customerName: typeof result.customerName === 'string' ? result.customerName : null,
+    savedToFeishu: Boolean(result.savedToFeishu),
+    recordId: typeof result.recordId === 'string' ? result.recordId : null,
+    customerId: typeof result.customerId === 'string' ? result.customerId : null,
+    documentId: typeof result.documentId === 'string' ? result.documentId : null,
+    originalAvailable: Boolean(result.originalAvailable),
+  };
+}
 
 // ============================================
 // Main Component
@@ -674,55 +700,74 @@ const UploadPage: React.FC = () => {
   const processQueueItem = useCallback(async (item: QueueItem, customerNameOverride: string): Promise<void> => {
     const signal = getSignal();
     setUploadQueue((prev) => prev.map((q) => 
-      q.id === item.id ? { ...q, status: 'processing' as const, progress: 30 } : q
+      q.id === item.id ? { ...q, status: 'processing' as const, progress: 10, progressMessage: '文件上传中...' } : q
     ));
 
     try {
-      setUploadQueue((prev) => prev.map((q) => 
-        q.id === item.id ? { ...q, progress: 60 } : q
-      ));
-      const processResult = await processFile(item.file, item.documentType || undefined, signal);
-
-      setUploadQueue((prev) => prev.map((q) => 
-        q.id === item.id ? { ...q, progress: 80 } : q
-      ));
       const activeCustomerId = state.extraction.currentCustomerId ?? null;
       const activeCustomerName = activeCustomerId ? state.extraction.currentCustomer ?? '' : '';
-      // Prefer the selected customer context first, then manual input, then OCR result.
-      const finalCustomerName =
+      const selectedCustomerName =
         activeCustomerName.trim() ||
         customerNameOverride.trim() ||
-        processResult.customerName ||
         '';
-      if (!finalCustomerName) {
-        throw new Error('未识别到客户名称，请先补充客户名称后再保存。');
-      }
-      const fileContent = await readFileAsBase64(item.file);
-      const storageResult = await saveToStorage({
-        documentType: processResult.documentType,
-        customerName: finalCustomerName,
-        customerId: activeCustomerId,
-        content: processResult.content,
-        fileName: item.file.name,
-        fileContent,
-      }, signal);
+      const createdJob = await createFileProcessJob(
+        item.file,
+        {
+          documentType: item.documentType || undefined,
+          customerId: activeCustomerId,
+          customerName: selectedCustomerName || undefined,
+        },
+        signal,
+      );
+      setUploadQueue((prev) => prev.map((q) => 
+        q.id === item.id
+          ? {
+            ...q,
+            jobId: createdJob.jobId,
+            status: 'processing' as const,
+            progress: 20,
+            progressMessage: '文件上传完成，后台处理中',
+          }
+          : q
+      ));
 
-      const extractionResult: ExtractionResult = {
-        documentType: processResult.documentType,
-        content: processResult.content,
-        customerName: processResult.customerName,
-        savedToFeishu: storageResult.success,
-        recordId: storageResult.recordId,
-        customerId: storageResult.customerId ?? null,
-        documentId: storageResult.documentId ?? null,
-        originalAvailable: storageResult.originalAvailable ?? false,
-      };
+      let finalStatus: ChatJobStatusResponse | null = null;
+      for (;;) {
+        const jobStatus = await getFileProcessJob(createdJob.jobId, signal);
+        finalStatus = jobStatus;
+        setUploadQueue((prev) => prev.map((q) => 
+          q.id === item.id
+            ? {
+              ...q,
+              jobId: createdJob.jobId,
+              status: jobStatus.status === 'failed' ? 'error' as const : jobStatus.status === 'success' ? 'success' as const : 'processing' as const,
+              progress: getProgressFromJobStatus(jobStatus),
+              progressMessage: jobStatus.progressMessage || '后台处理中',
+              error: jobStatus.status === 'failed' ? (jobStatus.errorMessage || '处理失败') : undefined,
+            }
+            : q
+        ));
+
+        if (jobStatus.status === 'success' || jobStatus.status === 'failed') {
+          break;
+        }
+        await waitForPolling(2000);
+      }
+
+      if (!finalStatus || finalStatus.status !== 'success') {
+        throw new Error(finalStatus?.errorMessage || '处理失败');
+      }
+
+      const extractionResult = toExtractionResultFromJob(finalStatus);
+      const finalCustomerName =
+        (activeCustomerName.trim() || customerNameOverride.trim() || extractionResult.customerName || '').trim();
+      const resolvedCustomerId = extractionResult.customerId ?? activeCustomerId;
 
       // Use addCustomerData to group by customer name
       addCustomerData(activeCustomerName || finalCustomerName, extractionResult);
-      setCurrentCustomer(activeCustomerName || finalCustomerName, storageResult.customerId ?? activeCustomerId);
+      setCurrentCustomer(activeCustomerName || finalCustomerName, resolvedCustomerId);
       setUploadQueue((prev) => prev.map((q) => 
-        q.id === item.id ? { ...q, status: 'success' as const, progress: 100, result: extractionResult } : q
+        q.id === item.id ? { ...q, status: 'success' as const, progress: 100, progressMessage: '处理完成', result: extractionResult } : q
       ));
 
       const uploadedFile: UploadedFile = {
@@ -732,11 +777,11 @@ const UploadPage: React.FC = () => {
         time: formatRelativeTime(new Date()),
         type: getFileTypeDisplay(item.file.name),
         color: getFileTypeColor(item.file.name),
-        documentType: processResult.documentType,
+        documentType: extractionResult.documentType,
         result: extractionResult,
-        documentId: storageResult.documentId ?? null,
-        originalAvailable: storageResult.originalAvailable ?? false,
-        originalStatus: storageResult.originalAvailable ? '可查看原件' : getOriginalPolicyLabel(processResult.documentType),
+        documentId: extractionResult.documentId ?? null,
+        originalAvailable: extractionResult.originalAvailable ?? false,
+        originalStatus: extractionResult.originalAvailable ? '可查看原件' : getOriginalPolicyLabel(extractionResult.documentType),
       };
       setUploadedFiles((prev) => [uploadedFile, ...prev]);
       if (
@@ -762,7 +807,7 @@ const UploadPage: React.FC = () => {
         title: '客户资料上传完成',
         description: `${item.file.name} 已保存，并已自动更新资料汇总与问答索引。`,
         customerName: activeCustomerName || finalCustomerName,
-        customerId: storageResult.customerId ?? activeCustomerId,
+        customerId: resolvedCustomerId,
         status: 'success',
       });
       if (
@@ -775,7 +820,7 @@ const UploadPage: React.FC = () => {
           title: '申请表需重新生成',
           description: `${item.file.name} 已覆盖同类旧资料，原申请表已标记为需重生成。`,
           customerName: activeCustomerName || finalCustomerName,
-          customerId: storageResult.customerId ?? activeCustomerId,
+          customerId: extractionResult.customerId ?? activeCustomerId,
           status: 'warning',
         });
       }
@@ -796,7 +841,7 @@ const UploadPage: React.FC = () => {
           title: '方案匹配需重新执行',
           description: `${item.file.name} 已覆盖同类旧资料，原方案匹配结果已标记为需重新匹配。`,
           customerName: activeCustomerName || finalCustomerName,
-          customerId: storageResult.customerId ?? activeCustomerId,
+          customerId: extractionResult.customerId ?? activeCustomerId,
           status: 'warning',
         });
       }

@@ -1,6 +1,7 @@
 import type { ChatJobStatusResponse, ChatJobSummaryResponse } from '../services/types';
 
 export type SupportedJobType =
+  | 'file_process'
   | 'chat_extract'
   | 'risk_report'
   | 'scheme_match'
@@ -51,6 +52,25 @@ const DEFAULT_JOB_DISPLAY_CONFIG: Omit<JobDisplayConfig, 'jobType'> = {
 };
 
 export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
+  file_process: {
+    jobType: 'file_process',
+    jobTypeLabel: '上传资料',
+    targetPage: 'upload',
+    defaultStatusText: {
+      pending: '文件已接收，等待处理',
+      running: '正在后台处理资料',
+      retrying: '上传处理暂时受阻，系统正在自动重试',
+      success: '资料上传处理已完成',
+      failed: '资料上传处理失败',
+      timeout: '资料上传处理超时',
+      interrupted: '资料上传处理可能已中断',
+    },
+    resultSummary: (_result, customerName) => `${(customerName || '').trim() || '当前客户'}的资料上传与处理已完成。`,
+    supportsContinueView: true,
+    supportsViewResult: true,
+    supportsDirectNavigate: false,
+    successActionLabel: '查看处理结果',
+  },
   chat_extract: {
     jobType: 'chat_extract',
     jobTypeLabel: '资料提取',

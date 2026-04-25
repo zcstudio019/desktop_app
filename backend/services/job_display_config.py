@@ -4,6 +4,21 @@ from typing import Any
 
 
 JOB_DISPLAY_CONFIG: dict[str, dict[str, Any]] = {
+    "file_process": {
+        "jobType": "file_process",
+        "jobTypeLabel": "上传资料",
+        "targetPage": "upload",
+        "defaultStatusText": {
+            "pending": "文件已接收，等待处理",
+            "running": "正在后台处理资料",
+            "retrying": "上传处理暂时受阻，系统正在自动重试",
+            "success": "资料上传处理已完成",
+            "failed": "资料上传处理失败",
+        },
+        "supportsContinueView": True,
+        "supportsViewResult": True,
+        "supportsDirectNavigate": False,
+    },
     "chat_extract": {
         "jobType": "chat_extract",
         "jobTypeLabel": "资料提取",

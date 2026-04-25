@@ -21,11 +21,13 @@ from backend.services.worker_health_service import collect_worker_health
 
 CELERY_TASK_MODULES = (
     "backend.tasks.chat_tasks",
+    "backend.tasks.file_process_tasks",
     "backend.tasks.risk_tasks",
     "backend.tasks.scheme_tasks",
     "backend.tasks.application_tasks",
 )
 CHAT_EXTRACT_TASK_NAME = "backend.tasks.chat_tasks.run_chat_extract_job"
+FILE_PROCESS_TASK_NAME = "backend.tasks.file_process_tasks.run_file_process_job"
 RISK_REPORT_TASK_NAME = "backend.tasks.risk_tasks.run_risk_report_job"
 SCHEME_MATCH_TASK_NAME = "backend.tasks.scheme_tasks.run_scheme_match_job"
 APPLICATION_GENERATE_TASK_NAME = "backend.tasks.application_tasks.run_application_generate_job"
@@ -33,6 +35,7 @@ CHAT_QUEUE_NAME = "chat"
 HEAVY_QUEUE_NAME = "heavy"
 EXPECTED_TASK_NAMES = (
     CHAT_EXTRACT_TASK_NAME,
+    FILE_PROCESS_TASK_NAME,
     RISK_REPORT_TASK_NAME,
     SCHEME_MATCH_TASK_NAME,
     APPLICATION_GENERATE_TASK_NAME,
@@ -114,6 +117,7 @@ else:
         ),
         task_routes={
             CHAT_EXTRACT_TASK_NAME: {"queue": CHAT_QUEUE_NAME},
+            FILE_PROCESS_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
             RISK_REPORT_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
             SCHEME_MATCH_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
             APPLICATION_GENERATE_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},

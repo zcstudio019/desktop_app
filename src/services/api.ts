@@ -134,6 +134,51 @@ export async function processFile(
   return handleResponse<FileProcessResponse>(response);
 }
 
+export async function createFileProcessJob(
+  file: File,
+  options?: {
+    documentType?: string;
+    customerId?: string | null;
+    customerName?: string | null;
+  },
+  signal?: AbortSignal
+): Promise<ChatJobCreateResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (options?.documentType) {
+    formData.append('documentType', options.documentType);
+  }
+  if (options?.customerId) {
+    formData.append('customerId', options.customerId);
+  }
+  if (options?.customerName) {
+    formData.append('customerName', options.customerName);
+  }
+  const authHeaders = getAuthHeaders();
+  const requestInit: RequestInit = {
+    method: 'POST',
+    body: formData,
+    signal,
+  };
+  if (Object.keys(authHeaders).length > 0) {
+    requestInit.headers = authHeaders;
+  }
+  const response = await fetch(`${API_BASE}/api/file/process/jobs`, requestInit);
+  return handleResponse<ChatJobCreateResponse>(response);
+}
+
+export async function getFileProcessJob(
+  jobId: string,
+  signal?: AbortSignal
+): Promise<ChatJobStatusResponse> {
+  const response = await fetch(`${API_BASE}/api/file/process/jobs/${jobId}`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<ChatJobStatusResponse>(response);
+}
+
 export async function saveToStorage(
   request: StorageSaveRequest,
   signal?: AbortSignal
