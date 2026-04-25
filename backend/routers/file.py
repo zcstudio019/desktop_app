@@ -86,10 +86,38 @@ def _utc_now_iso() -> str:
 
 async def _update_file_process_job(job_id: str, **updates: Any) -> None:
     await job_storage_service.update_async_job(job_id, updates)
+    if "status" in updates:
+        logger.info(
+            "[File Job] job status updated job_id=%s status=%s progress=%s finished_at=%s",
+            job_id,
+            updates.get("status") or "",
+            updates.get("progress_message") or "",
+            updates.get("finished_at") or "",
+        )
 
 
 async def _update_file_process_progress(job_id: str, message: str) -> None:
     await _update_file_process_job(job_id, status="running", progress_message=message)
+
+
+def _normalize_file_process_job_status(job: dict[str, Any]) -> str:
+    raw_status = str(job.get("status") or "").strip().lower() or "pending"
+    finished_at = str(job.get("finished_at") or "").strip()
+    error_message = str(job.get("error_message") or "").strip()
+    result_payload = job.get("result_json") if isinstance(job.get("result_json"), dict) else None
+
+    if raw_status == "submitted":
+        raw_status = "running"
+
+    if finished_at:
+        if error_message:
+            return "failed"
+        if result_payload:
+            return "success"
+
+    if raw_status in {"pending", "running", "retrying", "success", "failed", "timeout", "interrupted"}:
+        return raw_status
+    return "pending"
 
 
 def _ensure_upload_job_temp_dir(job_id: str) -> Path:
@@ -751,6 +779,12 @@ async def get_file_process_job(
     result_payload = job.get("result_json") if isinstance(job.get("result_json"), dict) else None
     job_type = job.get("job_type") or FILE_PROCESS_JOB_TYPE
     customer_name = job.get("customer_name") or ""
+    normalized_status = _normalize_file_process_job_status(job)
+    progress_message = job.get("progress_message") or ""
+    if normalized_status == "success" and not progress_message:
+        progress_message = "处理完成"
+    elif normalized_status == "failed" and not progress_message:
+        progress_message = "处理失败"
 
     return ChatJobStatusResponse(
         jobId=job.get("job_id") or job_id,
@@ -758,8 +792,8 @@ async def get_file_process_job(
         jobTypeLabel=get_job_type_label(job_type),
         customerId=job.get("customer_id") or "",
         customerName=customer_name,
-        status=job.get("status") or "pending",
-        progressMessage=job.get("progress_message") or "",
+        status=normalized_status,
+        progressMessage=progress_message,
         result=result_payload,
         errorMessage=job.get("error_message") or None,
         createdAt=job.get("created_at") or "",
