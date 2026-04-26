@@ -42,6 +42,7 @@ interface FileTypeConfig {
 
 interface QueueItem {
   id: string;
+  batchId: string;
   file: File;
   documentType: string;
   status: 'pending' | 'processing' | 'success' | 'error';
@@ -64,6 +65,15 @@ interface UploadedFile {
   documentId?: string | null;
   originalAvailable: boolean;
   originalStatus: string;
+}
+
+interface BatchSummary {
+  total: number;
+  successCount: number;
+  errorCount: number;
+  pendingCount: number;
+  processingCount: number;
+  lastSuccessItem: QueueItem | null;
 }
 
 type UploadStage =
@@ -362,6 +372,42 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function buildCustomerDataPath(
+  customerId: string,
+  options?: {
+    highlightDocId?: string | null;
+    highlightDocumentType?: string | null;
+    highlightFileName?: string | null;
+  },
+): string {
+  const params = new URLSearchParams();
+  params.set('customer_id', customerId);
+  if (options?.highlightDocId) {
+    params.set('highlight_doc_id', options.highlightDocId);
+  } else {
+    if (options?.highlightDocumentType) {
+      params.set('highlight_document_type', options.highlightDocumentType);
+    }
+    if (options?.highlightFileName) {
+      params.set('highlight_file_name', options.highlightFileName);
+    }
+  }
+  return `/data?${params.toString()}`;
+}
+
+function clickExistingNavigation(page: 'data'): boolean {
+  const pageIndex: Record<'data', number> = {
+    data: 3,
+  };
+  const navButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('aside nav button'));
+  const targetButton = navButtons[pageIndex[page]];
+  if (!targetButton) {
+    return false;
+  }
+  targetButton.click();
+  return true;
+}
+
 function formatCustomerOptionLabel(customerId: string | null | undefined, customerName: string | null | undefined): string {
   if (customerName?.trim()) return customerName.trim();
   if (!customerId) return '未选择客户';
@@ -518,7 +564,7 @@ const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
 
       <div className="mt-3 grid grid-cols-4 gap-2">
         {uploadSteps.map((step) => {
-          const isActive = stageInfo.stage === step.key;
+          const isActive = stageInfo.stage !== 'success' && stageInfo.stage === step.key;
           const isCompleted = completedSteps.has(step.key);
           const stepClass = isActive
             ? 'border-blue-200 bg-blue-50 text-blue-600'
@@ -683,9 +729,12 @@ const UploadPage: React.FC = () => {
   const [customerName, setCustomerName] = useState<string>('');
   const [customerOptions, setCustomerOptions] = useState<CustomerListItem[]>([]);
   const [customersLoading, setCustomersLoading] = useState(false);
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const [autoRedirectMessage, setAutoRedirectMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
+  const redirectedBatchIdsRef = useRef<Set<string>>(new Set());
   // Ref to track if recovery is in progress
   const isRecoveringRef = useRef(false);
 
@@ -763,10 +812,52 @@ const UploadPage: React.FC = () => {
       nextStep: '请检查文件格式或网络状态后重新上传。',
     };
   }, [error?.message, isProcessing, uploadQueue]);
+  const activeBatchSummary = useMemo<BatchSummary | null>(() => {
+    if (!activeBatchId) {
+      return null;
+    }
+    const batchItems = uploadQueue.filter((item) => item.batchId === activeBatchId);
+    if (!batchItems.length) {
+      return null;
+    }
+    const successItems = batchItems.filter((item) => item.status === 'success');
+    const errorItems = batchItems.filter((item) => item.status === 'error');
+    const pendingItems = batchItems.filter((item) => item.status === 'pending');
+    const processingItems = batchItems.filter((item) => item.status === 'processing');
+    return {
+      total: batchItems.length,
+      successCount: successItems.length,
+      errorCount: errorItems.length,
+      pendingCount: pendingItems.length,
+      processingCount: processingItems.length,
+      lastSuccessItem: successItems.at(-1) ?? null,
+    };
+  }, [activeBatchId, uploadQueue]);
 
   const selectedFileTypeConfig = useMemo(
     () => FILE_TYPES.find((item) => item.id === selectedDocumentType) ?? FILE_TYPES[0],
     [selectedDocumentType]
+  );
+  const navigateToCustomerData = useCallback(
+    (highlightItem?: QueueItem | null) => {
+      const result = highlightItem?.result;
+      const targetCustomerId =
+        result?.customerId ??
+        state.extraction.currentCustomerId ??
+        customerIdFromUrl ??
+        '';
+      if (!targetCustomerId) {
+        return false;
+      }
+      const targetPath = buildCustomerDataPath(targetCustomerId, {
+        highlightDocId: result?.documentId ?? null,
+        highlightDocumentType: result?.documentType ?? highlightItem?.documentType ?? null,
+        highlightFileName: highlightItem?.file.name ?? null,
+      });
+      window.history.pushState({}, '', targetPath);
+      return clickExistingNavigation('data');
+    },
+    [customerIdFromUrl, state.extraction.currentCustomerId],
   );
 
   // Update task status in context when queue changes
@@ -1018,11 +1109,13 @@ const UploadPage: React.FC = () => {
   const addFilesToQueue = useCallback((files: FileList | File[]) => {
     const fileArray = Array.from(files);
     const newItems: QueueItem[] = [];
+    const nextBatchId = generateId();
     for (const file of fileArray) {
       const validation = validateFile(file, selectedFileTypeConfig.acceptedExtensions);
       if (!validation.valid) {
         newItems.push({
           id: generateId(),
+          batchId: nextBatchId,
           file,
           documentType: '',
           status: 'error',
@@ -1032,6 +1125,7 @@ const UploadPage: React.FC = () => {
       } else {
         newItems.push({
           id: generateId(),
+          batchId: nextBatchId,
           file,
           documentType: selectedDocumentType,
           status: 'pending',
@@ -1039,6 +1133,8 @@ const UploadPage: React.FC = () => {
         });
       }
     }
+    setActiveBatchId(nextBatchId);
+    setAutoRedirectMessage(null);
     setUploadQueue((prev) => [...prev, ...newItems]);
     // Pass the new items directly to avoid stale closure issue
     // Pass customerName together to avoid stale closure issues.
@@ -1114,6 +1210,33 @@ const UploadPage: React.FC = () => {
     state.extraction.currentCustomerId,
   ]);
 
+  useEffect(() => {
+    if (!activeBatchId || !activeBatchSummary) {
+      return;
+    }
+    if (redirectedBatchIdsRef.current.has(activeBatchId)) {
+      return;
+    }
+    if (activeBatchSummary.pendingCount > 0 || activeBatchSummary.processingCount > 0) {
+      return;
+    }
+
+    if (activeBatchSummary.successCount === activeBatchSummary.total && activeBatchSummary.total > 0) {
+      redirectedBatchIdsRef.current.add(activeBatchId);
+      setAutoRedirectMessage('资料处理完成，正在跳转到客户资料页...');
+      const timer = window.setTimeout(() => {
+        const navigated = navigateToCustomerData(activeBatchSummary.lastSuccessItem);
+        if (!navigated) {
+          setAutoRedirectMessage('资料处理完成，请手动前往客户资料页查看。');
+        }
+      }, 1000);
+      return () => window.clearTimeout(timer);
+    }
+
+    setAutoRedirectMessage(null);
+    return undefined;
+  }, [activeBatchId, activeBatchSummary, navigateToCustomerData]);
+
   const handleCancelUpload = useCallback(() => {
     abort();
     setUploadQueue((prev) => prev.map((item) => 
@@ -1127,6 +1250,8 @@ const UploadPage: React.FC = () => {
     setUploadQueue((prev) => prev.filter((item) => 
       item.status !== 'success' && item.status !== 'error'
     ));
+    setActiveBatchId(null);
+    setAutoRedirectMessage(null);
   }, []);
 
   const removeUploadedFile = useCallback((id: string) => {
@@ -1268,6 +1393,43 @@ const UploadPage: React.FC = () => {
         nextStep={uploadSummary.nextStep}
         className="mb-6"
       />
+
+      {autoRedirectMessage ? (
+        <div className="mb-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700 shadow-sm">
+          {autoRedirectMessage}
+        </div>
+      ) : null}
+
+      {activeBatchSummary && activeBatchSummary.successCount > 0 && activeBatchSummary.errorCount > 0 ? (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800 shadow-sm">
+          <div>
+            本批次已成功处理 {activeBatchSummary.successCount} 份，失败 {activeBatchSummary.errorCount} 份。
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const navigated = navigateToCustomerData(activeBatchSummary.lastSuccessItem);
+                if (!navigated) {
+                  window.alert('暂时无法自动跳转，请从左侧导航进入资料汇总页。');
+                }
+              }}
+              className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-amber-700 transition-colors hover:bg-amber-100"
+            >
+              查看已保存资料
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setUploadQueue((prev) => prev.filter((item) => !(item.batchId === activeBatchId && item.status === 'error')));
+              }}
+              className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-amber-700 transition-colors hover:bg-amber-100"
+            >
+              继续处理失败文件
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {/* Hidden file input */}
       <input

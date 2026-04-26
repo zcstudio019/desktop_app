@@ -1214,6 +1214,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
   const [collapsedDocumentGroups, setCollapsedDocumentGroups] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+  const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const customerIdFromUrl = urlParams.get('customer_id') || '';
+  const highlightDocId = urlParams.get('highlight_doc_id') || '';
+  const highlightDocumentType = urlParams.get('highlight_document_type') || '';
+  const highlightFileName = urlParams.get('highlight_file_name') || '';
 
   const loadCustomers = useCallback(async () => {
     setLoadingCustomers(true);
@@ -1277,6 +1282,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   useEffect(() => {
     void loadCustomers();
   }, [loadCustomers]);
+
+  useEffect(() => {
+    if (!customerIdFromUrl) {
+      return;
+    }
+    setSelectedCustomerId((current) => (current === customerIdFromUrl ? current : customerIdFromUrl));
+  }, [customerIdFromUrl]);
 
   useEffect(() => {
     if (!selectedCustomerId) return;
@@ -1375,6 +1387,39 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       return next;
     });
   }, [groupedDocuments]);
+
+  const isHighlightedDocument = useCallback(
+    (document: CustomerDocumentListItem): boolean => {
+      if (highlightDocId && document.doc_id === highlightDocId) {
+        return true;
+      }
+      if (highlightFileName && document.file_name === highlightFileName) {
+        return true;
+      }
+      if (highlightDocumentType && document.file_type === highlightDocumentType) {
+        return true;
+      }
+      return false;
+    },
+    [highlightDocId, highlightDocumentType, highlightFileName],
+  );
+
+  useEffect(() => {
+    if (!selectedCustomerId) {
+      return;
+    }
+    const highlightedDoc = documents.find((item) => isHighlightedDocument(item));
+    if (!highlightedDoc) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const target = document.querySelector<HTMLElement>(`[data-doc-id="${highlightedDoc.doc_id}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [documents, isHighlightedDocument, selectedCustomerId]);
 
   const originalDocumentCount = useMemo(() => documents.filter((item) => item.original_available).length, [documents]);
   const extractionOnlyDocumentCount = useMemo(
@@ -2632,14 +2677,29 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
 
                       {collapsedDocumentGroups[group.key] ? null : (
                         <div className="space-y-3 p-4">
-                          {group.items.map((document) => (
-                            <div key={document.doc_id} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                          {group.items.map((document) => {
+                            const highlighted = isHighlightedDocument(document);
+                            return (
+                            <div
+                              key={document.doc_id}
+                              data-doc-id={document.doc_id}
+                              className={`rounded-2xl border p-4 transition-all ${
+                                highlighted
+                                  ? 'border-emerald-300 bg-emerald-50 shadow-sm shadow-emerald-100'
+                                  : 'border-slate-200 bg-slate-50/80'
+                              }`}
+                            >
                               <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <div className="truncate text-sm font-semibold text-slate-800">
                                       {document.file_name || '未命名文件'}
                                     </div>
+                                    {highlighted ? (
+                                      <span className="rounded-full border border-emerald-200 bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                                        刚刚上传
+                                      </span>
+                                    ) : null}
                                     <span
                                       className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
                                         document.original_available
@@ -2695,10 +2755,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                                       仅保留提取结果
                                     </span>
                                   )}
+                                  </div>
                                 </div>
-                              </div>
                             </div>
-                          ))}
+                          );
+                          })}
                         </div>
                       )}
                     </section>
