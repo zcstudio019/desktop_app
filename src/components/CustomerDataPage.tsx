@@ -338,6 +338,21 @@ function extractFieldValueFromMarkdown(markdown: string, labels: string[]): stri
   return '';
 }
 
+function extractFieldValueFromLooseText(text: string, labels: string[]): string {
+  const source = String(text || '');
+  if (!source.trim()) {
+    return '';
+  }
+  for (const label of labels) {
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`${escapedLabel}\\s*[:：]\\s*([^；;\\n]+)`, 'i'));
+    if (match?.[1]) {
+      return cleanMarkdownFieldValue(match[1]);
+    }
+  }
+  return '';
+}
+
 function buildFieldSourceSummaries(
   markdown: string,
   documents: CustomerDocumentListItem[],
@@ -555,6 +570,7 @@ function buildCompanyArticlesInsight(
 
   const extractedData = (latestItem.extracted_data || {}) as Record<string, unknown>;
   const document = getDocumentsByType(documents, 'company_articles')[0];
+  const summaryText = stringifyExtractionValue(extractedData.summary);
   const rawLegalPerson = stringifyExtractionValue(extractedData.legal_person);
   const fallbackLegalPerson = getFirstValidFieldValueByTypes(
     extractionGroups,
@@ -580,13 +596,41 @@ function buildCompanyArticlesInsight(
     sanitizedSupervisor ? `监事：${sanitizedSupervisor}` : '',
   ].filter(Boolean);
 
+  const fallbackCompanyName = getFirstValidFieldValueByTypes(
+    extractionGroups,
+    ['business_license'],
+    ['company_name', '公司名称', '企业名称', '名称'],
+  );
+  const fallbackBusinessScope = getFirstValidFieldValueByTypes(
+    extractionGroups,
+    ['business_license'],
+    ['business_scope', '经营范围'],
+  );
+  const fallbackAddress = getFirstValidFieldValueByTypes(
+    extractionGroups,
+    ['business_license'],
+    ['address', '住所', '地址'],
+  );
+  const companyName = stringifyExtractionValue(extractedData.company_name)
+    || extractFieldValueFromLooseText(summaryText, ['公司名称', '企业名称', '名称'])
+    || fallbackCompanyName;
+  const businessScope = stringifyExtractionValue(extractedData.business_scope)
+    || extractFieldValueFromLooseText(summaryText, ['经营范围', '经营项目'])
+    || fallbackBusinessScope;
+  const address = stringifyExtractionValue(extractedData.address)
+    || extractFieldValueFromLooseText(summaryText, ['地址', '住所'])
+    || fallbackAddress;
+  const managementStructure = stringifyExtractionValue(extractedData.management_structure)
+    || extractFieldValueFromLooseText(summaryText, ['治理结构', '组织机构'])
+    || (managementRolesSummaryParts.length > 0 ? '股东会、执行董事（或董事长）、监事、经理' : '');
+
     return {
-      companyName: stringifyExtractionValue(extractedData.company_name),
+      companyName,
       registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
-      businessScope: stringifyExtractionValue(extractedData.business_scope),
-      address: stringifyExtractionValue(extractedData.address),
-      managementStructure: stringifyExtractionValue(extractedData.management_structure),
-      summary: stringifyExtractionValue(extractedData.summary),
+      businessScope,
+      address,
+      managementStructure,
+      summary: summaryText,
       legalPerson,
       executiveDirector: sanitizedExecutiveDirector,
       chairman: sanitizedChairman,
