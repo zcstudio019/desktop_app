@@ -210,6 +210,12 @@ const FIELD_SOURCE_RULES: FieldSourceRule[] = [
     valueLabels: ['注册资本', 'registered_capital'],
   },
   {
+    fieldKey: 'address',
+    label: '地址 / 住所',
+    sourceTypes: ['business_license', 'company_articles'],
+    valueLabels: ['地址', '住所', '营业场所', 'company_address', 'address'],
+  },
+  {
     fieldKey: 'bank_name',
     label: '开户行',
     sourceTypes: ['account_license', 'bank_statement'],
@@ -233,33 +239,83 @@ const FIELD_SOURCE_RULES: FieldSourceRule[] = [
     sourceTypes: ['account_license', 'bank_statement'],
     valueLabels: ['户名', '账户名称', '账户名', '存款人名称', 'account_name'],
   },
+  {
+    fieldKey: 'shareholder_names',
+    label: '股东名称',
+    sourceTypes: ['company_articles'],
+    valueLabels: ['shareholders', '股东信息', '股东列表'],
+  },
+  {
+    fieldKey: 'equity_ratios',
+    label: '股权比例',
+    sourceTypes: ['company_articles'],
+    valueLabels: ['equity_ratios', '股权占比', 'shareholders'],
+  },
 ];
 
 const FIELD_CONSISTENCY_RULES = [
   'company_name',
+  'credit_code',
   'legal_person',
   'registered_capital',
+  'address',
   'bank_name',
   'account_number',
   'account_name',
+  'shareholder_names',
+  'equity_ratios',
 ] as const;
 
 const FIELD_PRIORITY_RULES: Record<string, string[]> = {
   company_name: ['business_license', 'company_articles'],
+  credit_code: ['business_license'],
   legal_person: ['business_license', 'company_articles'],
   registered_capital: ['business_license', 'company_articles'],
+  address: ['business_license', 'company_articles'],
   bank_name: ['account_license', 'bank_statement'],
   account_number: ['account_license', 'bank_statement'],
   account_name: ['account_license', 'bank_statement'],
+  shareholder_names: ['company_articles'],
+  equity_ratios: ['company_articles'],
 };
+
+const FIELD_CONFLICT_PRIORITY_ORDER = [
+  'account_number',
+  'credit_code',
+  'legal_person',
+  'account_name',
+  'bank_name',
+  'registered_capital',
+  'company_name',
+  'address',
+  'shareholder_names',
+  'equity_ratios',
+] as const;
 
 const FIELD_ACTION_SUGGESTIONS: Record<string, string> = {
   company_name: '建议以营业执照为准，如存在变更请核对最新章程或补充工商变更资料。',
+  credit_code: '建议优先核对营业执照原件或企业登记资料，确认统一社会信用代码后再继续后续流程。',
   legal_person: '建议以营业执照为准，如存在变更请核对工商信息。',
   registered_capital: '建议以营业执照为准，如章程金额不同建议人工核对出资情况。',
+  address: '建议优先核对营业执照登记住所，如章程地址不同请确认是否存在迁址或未同步更新。',
   bank_name: '建议以开户许可证为准，如与对账单不一致建议核对银行账户信息。',
   account_number: '建议以开户许可证为准，如存在差异请重点核对账号准确性。',
   account_name: '建议以开户许可证为准，如与营业执照不一致建议人工核验。',
+  shareholder_names: '建议结合公司章程及最新工商登记信息，确认股东名单是否存在变更或 OCR 识别遗漏。',
+  equity_ratios: '建议优先核对公司章程中的出资额与注册资本计算结果，确认股权比例后再继续生成申请表或风控报告。',
+};
+
+const FIELD_IMPACT_TAGS: Record<string, string[]> = {
+  company_name: ['影响申请表', '影响主体核验'],
+  credit_code: ['影响申请表', '影响主体核验', '影响风控'],
+  legal_person: ['影响申请表', '影响风控'],
+  registered_capital: ['影响申请表', '影响风控'],
+  address: ['影响申请表', '影响主体核验'],
+  bank_name: ['影响账户核验', '影响风控'],
+  account_number: ['影响账户核验', '影响风控'],
+  account_name: ['影响账户核验', '影响风控'],
+  shareholder_names: ['影响申请表', '影响控制权判断'],
+  equity_ratios: ['影响申请表', '影响控制权判断', '影响风控'],
 };
 
 function getDocumentGroupKey(fileType: string): string {
@@ -385,17 +441,77 @@ function buildFieldSourceSummaries(
 }
 
 function normalizeComparisonValue(fieldKey: string, value: string): string {
-  const normalized = cleanMarkdownFieldValue(value)
+  const raw = cleanMarkdownFieldValue(value)
     .replace(/\u3000/g, ' ')
-    .replace(/\s+/g, '');
+    .replace(/\r/g, '')
+    .trim();
+  const compact = raw.replace(/\s+/g, '');
 
-  if (fieldKey === 'account_number') {
-    return normalized.replace(/\D/g, '');
+  if (!compact) {
+    return '';
   }
+
+  if (fieldKey === 'account_number' || fieldKey === 'credit_code' || fieldKey === 'id_number') {
+    return compact.replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+  }
+
+  if (fieldKey === 'company_name' || fieldKey === 'account_name') {
+    return compact.replace(/[，。、“”"'‘’（）()【】\[\]：:；;、,.]/g, '');
+  }
+
   if (fieldKey === 'registered_capital') {
-    return normalized.replace(/^人民币/, '');
+    const normalizedCapital = compact
+      .replace(/^人民币/, '')
+      .replace(/_/g, '')
+      .replace(/万人民币/g, '万元')
+      .replace(/万$/g, '万元');
+    const amountMatch = normalizedCapital.match(/(\d+(?:\.\d+)?)(万元|元|亿)?/);
+    if (!amountMatch) {
+      return normalizedCapital;
+    }
+    const unit = amountMatch[2] || '';
+    const amount = Number(amountMatch[1]);
+    if (!Number.isFinite(amount)) {
+      return normalizedCapital;
+    }
+    return `${amount.toFixed(4).replace(/\.?0+$/, '')}${unit}`;
   }
-  return normalized;
+
+  if (fieldKey === 'address') {
+    return compact.replace(/[，,。.;；]/g, '');
+  }
+
+  if (fieldKey === 'equity_ratios') {
+    return compact
+      .split(/[；;、]/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const match = item.match(/([\u4e00-\u9fffA-Za-z0-9·]+).*?(\d+(?:\.\d+)?)%/);
+        if (match) {
+          return `${match[1]}:${Number(match[2]).toFixed(2).replace(/\.?0+$/, '')}%`;
+        }
+        const decimalMatch = item.match(/([\u4e00-\u9fffA-Za-z0-9·]+).*?0\.(\d+)/);
+        if (decimalMatch) {
+          const ratio = Number(`0.${decimalMatch[2]}`) * 100;
+          return `${decimalMatch[1]}:${ratio.toFixed(2).replace(/\.?0+$/, '')}%`;
+        }
+        return item;
+      })
+      .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+      .join('|');
+  }
+
+  if (fieldKey === 'shareholder_names') {
+    return compact
+      .split(/[；;、,，]/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+      .join('|');
+  }
+
+  return compact;
 }
 
 function stringifyExtractionValue(value: unknown): string {
@@ -471,6 +587,35 @@ function extractValueFromExtractionData(data: Record<string, unknown>, labels: s
   return looseMatch ? stringifyExtractionValue(looseMatch[1]) : '';
 }
 
+function extractConsistencyFieldValue(fieldKey: string, data: Record<string, unknown>, labels: string[]): string {
+  if (fieldKey === 'shareholder_names') {
+    const shareholders = toRecordList(data.shareholders);
+    const names = shareholders
+      .map((item) => stringifyExtractionValue(item.name || item.shareholder_name || item.shareholder))
+      .filter(Boolean);
+    return names.join('、');
+  }
+
+  if (fieldKey === 'equity_ratios') {
+    const shareholders = toRecordList(data.shareholders);
+    const ratioPairs = shareholders
+      .map((item) => {
+        const name = stringifyExtractionValue(item.name || item.shareholder_name || item.shareholder);
+        const ratio = stringifyExtractionValue(item.equity_ratio || item.voting_ratio || item.ratio);
+        if (!name || !ratio) {
+          return '';
+        }
+        return `${name} ${ratio}`;
+      })
+      .filter(Boolean);
+    if (ratioPairs.length > 0) {
+      return ratioPairs.join('；');
+    }
+  }
+
+  return extractValueFromExtractionData(data, labels);
+}
+
 function isDocumentTypeMatch(sourceType: string, targetType: string): boolean {
   const normalizedSource = normalizeFieldLookupKey(sourceType);
   const normalizedTarget = normalizeFieldLookupKey(targetType);
@@ -521,7 +666,11 @@ function buildFieldConsistencyResults(
       const typeDocuments = getDocumentsByType(documents, documentType);
       const extractionItems = getExtractionItemsByType(extractionGroups, documentType);
       return extractionItems.flatMap((item, index) => {
-        const rawValue = extractValueFromExtractionData(item.extracted_data, rule.valueLabels);
+        const rawValue = extractConsistencyFieldValue(
+          fieldKey,
+          (item.extracted_data || {}) as Record<string, unknown>,
+          rule.valueLabels,
+        );
         if (!rawValue) {
           return [];
         }
@@ -539,7 +688,21 @@ function buildFieldConsistencyResults(
       });
     });
 
-    const nonEmptySources = comparedSources.filter((source) => source.normalizedValue);
+    const priorityTypes = FIELD_PRIORITY_RULES[fieldKey] || [];
+    const nonEmptySources = comparedSources
+      .filter((source) => source.normalizedValue)
+      .sort((a, b) => {
+        const aIndex = priorityTypes.findIndex((type) => isDocumentTypeMatch(a.documentType, type));
+        const bIndex = priorityTypes.findIndex((type) => isDocumentTypeMatch(b.documentType, type));
+        const normalizedA = aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex;
+        const normalizedB = bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex;
+        if (normalizedA !== normalizedB) {
+          return normalizedA - normalizedB;
+        }
+        const aTime = new Date(a.document?.upload_time || '').getTime();
+        const bTime = new Date(b.document?.upload_time || '').getTime();
+        return bTime - aTime;
+      });
     const uniqueValues = new Set(nonEmptySources.map((source) => source.normalizedValue));
     const status: FieldConsistencyStatus = nonEmptySources.length < 2
       ? 'insufficient'
@@ -554,6 +717,38 @@ function buildFieldConsistencyResults(
       comparedSources: nonEmptySources,
     };
   }).filter(Boolean) as FieldConsistencyResult[];
+}
+
+function formatConsistencyValueForDisplay(fieldKey: string, value: string): string[] {
+  const cleanValue = cleanMarkdownFieldValue(value);
+  if (!cleanValue) {
+    return [];
+  }
+
+  if (fieldKey === 'shareholder_names') {
+    return cleanValue
+      .split(/[；;、]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  if (fieldKey === 'equity_ratios') {
+    return cleanValue
+      .split(/[；;]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return [cleanValue];
+}
+
+function getFieldConflictPriority(fieldKey: string): number {
+  const index = FIELD_CONFLICT_PRIORITY_ORDER.indexOf(fieldKey as (typeof FIELD_CONFLICT_PRIORITY_ORDER)[number]);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function getFieldImpactTags(fieldKey: string): string[] {
+  return FIELD_IMPACT_TAGS[fieldKey] || [];
 }
 
 function toRecordList(value: unknown): Array<Record<string, unknown>> {
@@ -1301,6 +1496,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [documents, setDocuments] = useState<CustomerDocumentListItem[]>([]);
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
   const [collapsedDocumentGroups, setCollapsedDocumentGroups] = useState<Record<string, boolean>>({});
+  const [showConsistentFields, setShowConsistentFields] = useState(false);
+  const [focusedConflictDocId, setFocusedConflictDocId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const customerIdFromUrl = urlParams.get('customer_id') || '';
@@ -1603,8 +1800,27 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     () => buildFieldConsistencyResults(documents, extractionGroups),
     [documents, extractionGroups]
   );
+  const consistentConsistencyResults = useMemo(
+    () => fieldConsistencyResults.filter((result) => result.status === 'consistent'),
+    [fieldConsistencyResults]
+  );
   const conflictingConsistencyResults = useMemo(
-    () => fieldConsistencyResults.filter((result) => result.status === 'conflict'),
+    () => fieldConsistencyResults
+      .filter((result) => result.status === 'conflict')
+      .sort((a, b) => {
+        const aPriority = getFieldConflictPriority(a.fieldKey);
+        const bPriority = getFieldConflictPriority(b.fieldKey);
+        if (aPriority !== bPriority) {
+          return aPriority - bPriority;
+        }
+        return a.label.localeCompare(b.label, 'zh-CN');
+      }),
+    [fieldConsistencyResults]
+  );
+  const insufficientConsistencyResults = useMemo(
+    () => fieldConsistencyResults
+      .filter((result) => result.status === 'insufficient')
+      .sort((a, b) => getFieldConflictPriority(a.fieldKey) - getFieldConflictPriority(b.fieldKey)),
     [fieldConsistencyResults]
   );
 
@@ -1775,6 +1991,33 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setError(err instanceof Error ? err.message : '下载原件失败');
     }
   }, []);
+
+  const handleScrollToDocument = useCallback((document: CustomerDocumentListItem) => {
+    setDocumentFilter('all');
+    setFocusedConflictDocId(document.doc_id);
+    const groupKey = getDocumentGroupKey(document.file_type);
+    setCollapsedDocumentGroups((current) => ({
+      ...current,
+      [groupKey]: false,
+    }));
+
+    window.setTimeout(() => {
+      const target = window.document.querySelector<HTMLElement>(`[data-doc-id="${document.doc_id}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 280);
+  }, []);
+
+  useEffect(() => {
+    if (!focusedConflictDocId) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setFocusedConflictDocId('');
+    }, 3200);
+    return () => window.clearTimeout(timer);
+  }, [focusedConflictDocId]);
 
   const handleRecommendedAction = useCallback((action: ActionType) => {
     if (!selectedCustomerId) {
@@ -2534,10 +2777,25 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
           <section className="border-b border-slate-200 bg-white px-6 py-5">
             <div className="flex flex-col gap-4">
               <div>
-                <h3 className="text-base font-semibold text-slate-800">关键字段一致性检查</h3>
+                <h3 className="text-base font-semibold text-slate-800">字段冲突与一致性提示</h3>
                 <p className="mt-1 text-sm text-slate-500">
-                  基于当前客户已保存的结构化提取结果，对多来源字段做轻量比对；单一来源字段不会误判为冲突。
+                  基于当前客户已保存的结构化提取结果，对关键字段做多来源比对；建议先核验冲突字段后再生成申请表或风控报告。
                 </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                  <div className="text-xs font-medium text-emerald-700">一致字段</div>
+                  <div className="mt-1 text-2xl font-semibold text-emerald-800">{consistentConsistencyResults.length}</div>
+                </div>
+                <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3">
+                  <div className="text-xs font-medium text-orange-700">存在差异</div>
+                  <div className="mt-1 text-2xl font-semibold text-orange-800">{conflictingConsistencyResults.length}</div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-xs font-medium text-slate-600">信息不足</div>
+                  <div className="mt-1 text-2xl font-semibold text-slate-700">{insufficientConsistencyResults.length}</div>
+                </div>
               </div>
 
               <div
@@ -2555,6 +2813,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     <div className="mt-1">
                       建议优先核对：{conflictingConsistencyResults.map((item) => item.label).join('、')}
                     </div>
+                    <div className="mt-1">
+                      建议先核对营业执照、公司章程、开户许可证等原件，确认字段后再继续生成申请表或风控报告。
+                    </div>
                   </>
                 ) : (
                   <div className="font-semibold">当前未发现关键字段冲突</div>
@@ -2566,116 +2827,236 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                   暂无可用于一致性检查的结构化字段。上传并提取关键资料后，这里会显示字段是否一致。
                 </div>
               ) : (
-                <div className="grid gap-3 xl:grid-cols-2">
-                  {fieldConsistencyResults.map((result) => {
-                    const statusMeta = getFieldConsistencyStatusMeta(result.status);
-                    const prioritySource = result.status === 'conflict'
-                      ? getPrioritySource(result.fieldKey, result.comparedSources)
-                      : null;
-                    const actionSuggestion = result.status === 'conflict'
-                      ? getActionSuggestion(result.fieldKey)
-                      : '';
-                    return (
-                      <article
-                        key={result.fieldKey}
-                        className={`rounded-2xl border p-4 ${statusMeta.cardClassName}`}
-                      >
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <h4 className="text-sm font-semibold text-slate-800">{result.label}</h4>
-                            <p className="mt-1 text-xs text-slate-500">
-                              参与比对来源：{result.comparedSources.length} 个
-                            </p>
-                          </div>
-                          <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusMeta.className}`}>
-                            {statusMeta.label}
-                          </span>
-                        </div>
-
-                        {result.status === 'conflict' ? (
-                          <div className="mt-4 rounded-xl border border-orange-200 bg-white/90 px-3 py-3 text-sm text-orange-800">
-                            <div>
-                              <span className="font-semibold">建议优先：</span>
-                              {prioritySource?.documentTypeName || '请人工确认更可信来源'}
+                <div className="space-y-4">
+                  {conflictingConsistencyResults.length > 0 ? (
+                    <div className="grid gap-3 xl:grid-cols-2">
+                      {conflictingConsistencyResults.map((result) => {
+                        const statusMeta = getFieldConsistencyStatusMeta(result.status);
+                        const prioritySource = getPrioritySource(result.fieldKey, result.comparedSources);
+                        const actionSuggestion = getActionSuggestion(result.fieldKey);
+                        const impactTags = getFieldImpactTags(result.fieldKey);
+                        return (
+                          <article
+                            key={result.fieldKey}
+                            className={`rounded-2xl border p-4 ${statusMeta.cardClassName}`}
+                          >
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <h4 className="text-sm font-semibold text-slate-800">{result.label}</h4>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  参与比对来源：{result.comparedSources.length} 个
+                                </p>
+                              </div>
+                              <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusMeta.className}`}>
+                                {statusMeta.label}
+                              </span>
                             </div>
-                            <div className="mt-1">
-                              <span className="font-semibold">操作建议：</span>
-                              {actionSuggestion}
+
+                            {impactTags.length > 0 ? (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {impactTags.map((tag) => (
+                                  <span
+                                    key={`${result.fieldKey}-${tag}`}
+                                    className="rounded-full border border-orange-200 bg-orange-100 px-2.5 py-1 text-xs font-medium text-orange-700"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+
+                            <div className="mt-4 rounded-xl border border-orange-200 bg-white/90 px-3 py-3 text-sm text-orange-800">
+                              <div>
+                                <span className="font-semibold">建议优先：</span>
+                                {prioritySource?.documentTypeName || '请人工确认更可信来源'}
+                              </div>
+                              <div className="mt-1">
+                                <span className="font-semibold">操作建议：</span>
+                                {actionSuggestion}
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
 
-                        {result.status === 'insufficient' ? (
-                          <div className="mt-4 rounded-xl border border-white/80 bg-white/80 px-3 py-3 text-sm text-slate-600">
-                            {result.comparedSources.length === 1
-                              ? `当前仅 ${result.comparedSources[0].documentTypeName} 提供了该字段，暂不做冲突判断。`
-                              : '当前没有足够的非空来源值，暂不做冲突判断。'}
-                          </div>
-                        ) : null}
-
-                        {result.comparedSources.length > 0 ? (
-                          <div className="mt-4 space-y-2">
-                            {result.comparedSources.map((source) => (
-                              <div
-                                key={`${result.fieldKey}-${source.extractionId}-${source.documentType}-${source.rawValue}`}
-                                className="rounded-xl border border-white/80 bg-white/90 px-3 py-3"
-                              >
-                                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="text-sm font-medium text-slate-800">
-                                        {source.documentTypeName}
-                                      </span>
-                                      <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-500">
-                                        {source.fileName}
-                                      </span>
-                                      <span
-                                        className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
-                                          source.document?.original_available
-                                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                            : 'border-sky-200 bg-sky-50 text-sky-700'
-                                        }`}
-                                      >
-                                        {source.document?.original_available ? '可查看原件' : '仅保留提取结果'}
-                                      </span>
-                                    </div>
-                                    <div className="mt-2 break-words text-sm text-slate-700">
-                                      字段值：{source.rawValue}
-                                    </div>
-                                  </div>
-
-                                  <div className="flex shrink-0 flex-wrap gap-2">
-                                    {source.document?.original_available ? (
-                                      <>
-                                        <button
-                                          type="button"
-                                          onClick={() => void handlePreviewDocument(source.document as CustomerDocumentListItem)}
-                                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                            <div className="mt-4 space-y-2">
+                              {result.comparedSources.map((source) => (
+                                <div
+                                  key={`${result.fieldKey}-${source.extractionId}-${source.documentType}-${source.rawValue}`}
+                                  className="rounded-xl border border-white/80 bg-white/90 px-3 py-3"
+                                >
+                                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-sm font-medium text-slate-800">
+                                          {source.documentTypeName}
+                                        </span>
+                                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-500">
+                                          {source.fileName}
+                                        </span>
+                                        <span
+                                          className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
+                                            source.document?.original_available
+                                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                              : 'border-sky-200 bg-sky-50 text-sky-700'
+                                          }`}
                                         >
-                                          查看原件
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => void handleDownloadDocument(source.document as CustomerDocumentListItem)}
-                                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
-                                        >
-                                          下载原件
-                                        </button>
-                                      </>
-                                    ) : (
-                                      <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-500">
-                                        不提供原件按钮
-                                      </span>
-                                    )}
+                                          {source.document?.original_available ? '可查看原件' : '仅保留提取结果'}
+                                        </span>
+                                      </div>
+                                      <div className="mt-2 text-sm text-slate-700">
+                                        <div className="font-medium text-slate-600">字段值</div>
+                                        <div className="mt-1 space-y-1">
+                                          {formatConsistencyValueForDisplay(result.fieldKey, source.rawValue).map((line, index) => (
+                                            <div key={`${result.fieldKey}-${source.extractionId}-line-${index}`} className="break-words">
+                                              {line}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                      <div className="flex shrink-0 flex-wrap gap-2">
+                                        {source.document?.original_available ? (
+                                          <>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleScrollToDocument(source.document as CustomerDocumentListItem)}
+                                              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                                            >
+                                              定位来源文档
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => void handlePreviewDocument(source.document as CustomerDocumentListItem)}
+                                              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                                            >
+                                            查看原件
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleDownloadDocument(source.document as CustomerDocumentListItem)}
+                                            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                                          >
+                                            下载原件
+                                          </button>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleScrollToDocument(source.document as CustomerDocumentListItem)}
+                                              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                                            >
+                                              定位来源文档
+                                            </button>
+                                            <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-500">
+                                              仅保留提取结果
+                                            </span>
+                                          </>
+                                        )}
+                                      </div>
                                   </div>
                                 </div>
-                              </div>
-                            ))}
+                              ))}
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  {insufficientConsistencyResults.length > 0 ? (
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h4 className="text-sm font-semibold text-slate-700">信息不足字段</h4>
+                          <p className="mt-1 text-xs text-slate-500">
+                            以下字段当前只有单一来源或暂无足够值可比对，不视为冲突。
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600">
+                          {insufficientConsistencyResults.length} 项
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-2 xl:grid-cols-2">
+                        {insufficientConsistencyResults.map((result) => (
+                          <div
+                            key={result.fieldKey}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-600"
+                          >
+                            <div className="font-medium text-slate-700">{result.label}</div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              {result.comparedSources.length === 1
+                                ? `当前仅 ${result.comparedSources[0].documentTypeName} 提供了该字段，暂无其他来源可比对。`
+                                : '当前没有足够的非空来源值，暂不做冲突判断。'}
+                            </div>
                           </div>
-                        ) : null}
-                      </article>
-                    );
-                  })}
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {consistentConsistencyResults.length > 0 ? (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <h4 className="text-sm font-semibold text-emerald-800">一致字段</h4>
+                          <p className="mt-1 text-xs text-emerald-700">
+                            多来源字段标准化后结果一致，默认折叠展示。
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowConsistentFields((current) => !current)}
+                          className="rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-50"
+                        >
+                          {showConsistentFields ? '收起一致字段' : '查看一致字段'}
+                        </button>
+                      </div>
+
+                      {showConsistentFields ? (
+                        <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                          {consistentConsistencyResults.map((result) => {
+                            const statusMeta = getFieldConsistencyStatusMeta(result.status);
+                            return (
+                              <article
+                                key={result.fieldKey}
+                                className={`rounded-2xl border p-4 ${statusMeta.cardClassName}`}
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <h4 className="text-sm font-semibold text-slate-800">{result.label}</h4>
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      参与比对来源：{result.comparedSources.length} 个
+                                    </p>
+                                  </div>
+                                  <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusMeta.className}`}>
+                                    {statusMeta.label}
+                                  </span>
+                                </div>
+                                <div className="mt-3 space-y-2">
+                                  {result.comparedSources.map((source) => (
+                                    <div
+                                      key={`${result.fieldKey}-${source.extractionId}-${source.documentType}-${source.rawValue}`}
+                                      className="rounded-xl border border-white/80 bg-white/90 px-3 py-3"
+                                    >
+                                      <div className="text-sm font-medium text-slate-800">{source.documentTypeName}</div>
+                                      <div className="mt-1 space-y-1 text-sm text-slate-700">
+                                        {formatConsistencyValueForDisplay(result.fieldKey, source.rawValue).map((line, index) => (
+                                          <div key={`${result.fieldKey}-${source.extractionId}-consistent-${index}`} className="break-words">
+                                            {line}
+                                          </div>
+                                        ))}
+                                      </div>
+                                      <div className="mt-1 text-xs text-slate-500">{source.fileName}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -2789,13 +3170,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         <div className="space-y-3 p-4">
                           {group.items.map((document) => {
                             const highlighted = isHighlightedDocument(document);
+                            const focusedFromConflict = focusedConflictDocId === document.doc_id;
                             return (
                             <div
                               key={document.doc_id}
                               data-doc-id={document.doc_id}
                               className={`rounded-2xl border p-4 transition-all ${
-                                highlighted
-                                  ? 'border-emerald-300 bg-emerald-50 shadow-sm shadow-emerald-100'
+                                focusedFromConflict
+                                  ? 'border-sky-300 bg-sky-50 shadow-sm shadow-sky-100 ring-2 ring-sky-100'
+                                  : highlighted
+                                    ? 'border-emerald-300 bg-emerald-50 shadow-sm shadow-emerald-100'
                                   : 'border-slate-200 bg-slate-50/80'
                               }`}
                             >
@@ -2805,6 +3189,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                                     <div className="truncate text-sm font-semibold text-slate-800">
                                       {document.file_name || '未命名文件'}
                                     </div>
+                                    {focusedFromConflict ? (
+                                      <span className="rounded-full border border-sky-200 bg-sky-100 px-2.5 py-1 text-xs font-medium text-sky-700">
+                                        来自冲突核验
+                                      </span>
+                                    ) : null}
                                     {highlighted ? (
                                       <span className="rounded-full border border-emerald-200 bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700">
                                         刚刚上传
