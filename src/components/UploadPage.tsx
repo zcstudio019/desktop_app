@@ -66,6 +66,15 @@ interface UploadedFile {
   originalStatus: string;
 }
 
+type UploadStage =
+  | 'uploading'
+  | 'pending'
+  | 'ocr'
+  | 'extracting'
+  | 'saving'
+  | 'success'
+  | 'failed';
+
 // ============================================
 // Constants - File Type Configuration
 // ============================================
@@ -412,34 +421,35 @@ const QueueItemIcon: React.FC<{ documentType: string }> = ({ documentType }) => 
 /* eslint-enable react-hooks/static-components */
 
 const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
+  const stageInfo = resolveUploadStage(item.status, item.progressMessage);
   
   const renderStatus = () => {
     switch (item.status) {
       case 'pending':
         return (
           <span data-testid="status-pending" className="text-gray-500 text-sm flex items-center gap-1">
-            等待中...
+            {stageInfo.stageLabel}
           </span>
         );
       case 'processing':
         return (
           <span data-testid="status-processing" className="text-blue-500 text-sm flex items-center gap-1">
             <Loader2 className="w-4 h-4 animate-spin" />
-            处理中...
+            {stageInfo.stageLabel}
           </span>
         );
       case 'success':
         return (
           <span data-testid="status-success" className="text-green-600 text-sm flex items-center gap-1">
             <Check className="w-4 h-4" />
-            已保存到本地
+            完成
           </span>
         );
       case 'error':
         return (
           <span data-testid="status-error" className="text-red-500 text-sm flex items-center gap-1">
             <X className="w-4 h-4" />
-            {item.error || '失败'}
+            失败
           </span>
         );
       default:
@@ -482,11 +492,9 @@ const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
               style={{ width: `${item.progress}%` }}
             />
           </div>
-          {item.progressMessage ? (
-            <div className="mt-2 text-xs text-gray-500">
-              {item.progressMessage}
-            </div>
-          ) : null}
+          <div className="mt-2 text-xs text-gray-500">
+            {stageInfo.description}
+          </div>
         </div>
       )}
       
@@ -494,7 +502,7 @@ const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
       {item.status === 'error' && item.error && (
         <div className="flex items-center gap-1 mt-2 text-red-500 text-xs">
           <AlertCircle className="w-3 h-3" />
-          {item.error}
+          处理失败：{item.error}
         </div>
       )}
     </div>
@@ -505,18 +513,75 @@ function waitForPolling(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function getProgressFromJobStatus(status: ChatJobStatusResponse): number {
+function resolveUploadStage(
+  itemStatus: QueueItem['status'],
+  progressMessage?: string,
+): {
+  stage: UploadStage;
+  stageLabel: string;
+  description: string;
+} {
+  const message = (progressMessage || '').trim();
+
+  if (itemStatus === 'success') {
+    return { stage: 'success', stageLabel: '完成', description: message || '处理完成' };
+  }
+
+  if (itemStatus === 'error') {
+    return { stage: 'failed', stageLabel: '失败', description: message || '处理失败' };
+  }
+
+  if (message.includes('文件上传中')) {
+    return { stage: 'uploading', stageLabel: '文件上传中', description: '文件上传中' };
+  }
+
+  if (!message || message.includes('文件已接收') || message.includes('等待处理')) {
+    return { stage: 'pending', stageLabel: '等待处理', description: message || '文件已上传，等待处理' };
+  }
+
+  if (/ocr/i.test(message) || message.includes('OCR')) {
+    return { stage: 'ocr', stageLabel: '正在 OCR', description: '正在 OCR 识别' };
+  }
+
+  if (message.includes('结构化') || message.includes('提取') || message.includes('AI')) {
+    return { stage: 'extracting', stageLabel: '正在提取', description: '正在提取结构化资料' };
+  }
+
+  if (
+    message.includes('保存') ||
+    message.includes('入库') ||
+    message.includes('刷新资料汇总') ||
+    message.includes('重建检索索引') ||
+    /index/i.test(message)
+  ) {
+    return { stage: 'saving', stageLabel: '正在入库', description: '正在保存并更新资料汇总' };
+  }
+
+  return {
+    stage: itemStatus === 'pending' ? 'pending' : 'extracting',
+    stageLabel: itemStatus === 'pending' ? '等待处理' : '处理中',
+    description: message || '后台处理中',
+  };
+}
+
+function getProgressFromJobStatus(status: ChatJobStatusResponse, currentProgress = 0): number {
   const message = status.progressMessage || '';
   if (status.status === 'success') return 100;
-  if (status.status === 'failed') return 100;
+  if (status.status === 'failed') return currentProgress;
+  if (status.status === 'pending') return 10;
+  if (message.includes('文件上传中')) return 20;
   if (message.includes('文件已接收')) return 20;
-  if (message.includes('正在解析文件')) return 40;
-  if (message.includes('正在 OCR')) return 55;
-  if (message.includes('正在结构化提取')) return 70;
-  if (message.includes('正在保存资料')) return 82;
-  if (message.includes('正在刷新资料汇总')) return 90;
-  if (message.includes('正在重建检索索引')) return 96;
-  return 35;
+  if (message.includes('正在解析文件')) return 30;
+  if (/ocr/i.test(message) || message.includes('OCR')) return 40;
+  if (message.includes('正在结构化提取') || message.includes('提取') || message.includes('AI')) return 65;
+  if (
+    message.includes('正在保存资料') ||
+    message.includes('入库') ||
+    message.includes('正在刷新资料汇总') ||
+    message.includes('正在重建检索索引') ||
+    /index/i.test(message)
+  ) return 85;
+  return Math.max(currentProgress, 25);
 }
 
 function toExtractionResultFromJob(status: ChatJobStatusResponse): ExtractionResult {
@@ -741,7 +806,7 @@ const UploadPage: React.FC = () => {
               ...q,
               jobId: createdJob.jobId,
               status: jobStatus.status === 'failed' ? 'error' as const : jobStatus.status === 'success' ? 'success' as const : 'processing' as const,
-              progress: getProgressFromJobStatus(jobStatus),
+              progress: getProgressFromJobStatus(jobStatus, q.progress),
               progressMessage: jobStatus.progressMessage || '后台处理中',
               error: jobStatus.status === 'failed' ? (jobStatus.errorMessage || '处理失败') : undefined,
             }

@@ -73,9 +73,11 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'company_type': '\u7c7b\u578b',
     'equity_structure_summary': '\u80a1\u6743\u7ed3\u6784',
     'equity_ratios': '\u80a1\u6743\u5360\u6bd4',
+    'voting_rights_basis': '\u8868\u51b3\u6743\u4f9d\u636e',
     'financing_approval_rule': '\u878d\u8d44/\u8d37\u6b3e\u5ba1\u6279\u89c4\u5219',
     'financing_approval_threshold': '\u878d\u8d44\u8868\u51b3\u95e8\u69db',
     'major_decision_rules': '\u91cd\u5927\u4e8b\u9879\u89c4\u5219',
+    'control_analysis': '\u63a7\u5236\u6743\u5206\u6790',
     'registration_authority': '\u767b\u8bb0\u673a\u5173',
     'registration_date': '\u767b\u8bb0\u673a\u5173\u65e5\u671f',
     'document_type_name': '\u8d44\u6599\u7c7b\u578b',
@@ -159,6 +161,49 @@ def _format_list_for_markdown(value: list[Any]) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
+def _format_company_articles_shareholders_v2(value: list[Any]) -> str:
+    if not value:
+        return '\u6682\u65e0'
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            text = str(item).strip()
+            if text:
+                lines.append(f"  - {text}")
+            continue
+        parts = [
+            str(item.get('name') or '').strip(),
+            str(item.get('capital_contribution') or '').strip(),
+            str(item.get('contribution_method') or '').strip(),
+            str(item.get('contribution_date') or '').strip(),
+            str(item.get('equity_ratio') or '').strip(),
+            str(item.get('voting_ratio') or '').strip(),
+        ]
+        parts = [part for part in parts if part]
+        if parts:
+            lines.append(f"  - {' | '.join(parts)}")
+    return '\n' + '\n'.join(lines) if lines else '\u6682\u65e0'
+
+def _format_company_articles_rule_list_v2(value: list[Any]) -> str:
+    if not value:
+        return '\u6682\u65e0'
+    lines: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            matter = str(item.get('matter') or item.get('topic') or '').strip()
+            approval_rule = str(item.get('approval_rule') or item.get('rule') or '').strip()
+            threshold = str(item.get('threshold') or '').strip()
+            text = f"{matter}: {approval_rule}" if matter and approval_rule else matter or approval_rule
+            if threshold:
+                text = f"{text} ({threshold})" if text else threshold
+            if text:
+                lines.append(f"  - {text}")
+            continue
+        text = str(item).strip()
+        if text:
+            lines.append(f"  - {text}")
+    return '\n' + '\n'.join(lines) if lines else '\u6682\u65e0'
+
 def _format_shareholders_for_markdown(value: list[Any]) -> str:
     if not value:
         return '\u6682\u65e0'
@@ -176,9 +221,8 @@ def _format_shareholders_for_markdown(value: list[Any]) -> str:
         ]
         parts = [part for part in parts if part]
         if parts:
-            lines.append(f"  - {'｜'.join(parts)}")
+            lines.append(f"  - {' | '.join(parts)}")
     return '\n' + '\n'.join(lines) if lines else '\u6682\u65e0'
-
 
 def _format_equity_ratios_for_markdown(value: list[Any]) -> str:
     if not value:
@@ -192,8 +236,7 @@ def _format_equity_ratios_for_markdown(value: list[Any]) -> str:
                 parts.append(f"{name} {ratio}")
         elif item:
             parts.append(str(item))
-    return '；'.join(parts) if parts else '\u6682\u65e0'
-
+    return '; '.join(parts) if parts else '\u6682\u65e0'
 
 def _format_rule_list_for_markdown(value: list[Any]) -> str:
     if not value:
@@ -333,11 +376,11 @@ def _format_value(key: str, value: Any) -> str:
         return '\u6682\u65e0'
     if isinstance(value, list):
         if key == 'shareholders':
-            return _format_shareholders_for_markdown(value)
+            return _format_company_articles_shareholders_v2(value)
         if key == 'equity_ratios':
             return _format_equity_ratios_for_markdown(value)
         if key == 'major_decision_rules':
-            return _format_rule_list_for_markdown(value)
+            return _format_company_articles_rule_list_v2(value)
         if key == 'major_decision_rule_details':
             return _format_rule_detail_list_for_markdown(value)
         return _format_list_for_markdown(value)

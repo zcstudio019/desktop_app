@@ -774,18 +774,183 @@ def extract_account_license(text: str) -> dict[str, Any]:
     }
 
 
+def _extract_company_articles_rules_v2(text: str) -> tuple[str, str, list[dict[str, str]], list[dict[str, str]], str]:
+    return _extract_company_articles_rules_v3(text)
+
+def _build_company_articles_control_analysis(
+    shareholders: list[dict[str, str]],
+    voting_rights_basis: str,
+    major_decision_rules: list[dict[str, str]],
+) -> str:
+    comparable = [item for item in shareholders if item.get('name') and item.get('equity_ratio')]
+    if not comparable:
+        return ''
+
+    def ratio_to_decimal(value: str) -> Decimal | None:
+        text = normalize_text(value).replace('%', '')
+        if not text:
+            return None
+        try:
+            return Decimal(text)
+        except InvalidOperation:
+            return None
+
+    comparable = sorted(
+        comparable,
+        key=lambda item: ratio_to_decimal(item.get('equity_ratio', '')) or Decimal('0'),
+        reverse=True,
+    )
+    top = comparable[0]
+    top_ratio = ratio_to_decimal(top.get('equity_ratio', '')) or Decimal('0')
+    basis_text = voting_rights_basis or '\u80a1\u4e1c\u6309\u7167\u8ba4\u7f34\u51fa\u8d44\u6bd4\u4f8b\u884c\u4f7f\u8868\u51b3\u6743\u3002'
+    parts = [f'\u6839\u636e\u5f53\u524d\u7ae0\u7a0b\u6587\u672c\u548c\u51fa\u8d44\u6bd4\u4f8b\u63a8\u7b97\uff0c{top.get("name", "")}\u6301\u80a1{top.get("equity_ratio", "")}\u3002']
+    if top_ratio >= Decimal('66.67'):
+        parts.append(f'{top.get("name", "")}\u5355\u72ec\u8d85\u8fc7\u4e09\u5206\u4e4b\u4e8c\u8868\u51b3\u6743\uff0c\u53ef\u5355\u72ec\u901a\u8fc7\u7ae0\u7a0b\u7ea6\u5b9a\u9700\u4e09\u5206\u4e4b\u4e8c\u4ee5\u4e0a\u8868\u51b3\u6743\u7684\u91cd\u5927\u4e8b\u9879\u3002')
+    elif top_ratio >= Decimal('50'):
+        parts.append(f'{top.get("name", "")}\u5355\u72ec\u8d85\u8fc7\u534a\u6570\u8868\u51b3\u6743\uff0c\u53ef\u5355\u72ec\u63a8\u52a8\u666e\u901a\u4e8b\u9879\u8868\u51b3\u901a\u8fc7\u3002')
+    else:
+        parts.append(f'{top.get("name", "")}\u672a\u5355\u72ec\u8d85\u8fc7\u534a\u6570\u8868\u51b3\u6743\uff0c\u9700\u8054\u5408\u5176\u4ed6\u80a1\u4e1c\u5f62\u6210\u591a\u6570\u3002')
+
+    if len(comparable) > 1:
+        others = []
+        for item in comparable[1:3]:
+            if item.get('name') and item.get('equity_ratio'):
+                others.append(f"{item['name']}\u6301\u80a1{item['equity_ratio']}")
+        if others:
+            parts.append('\uff1b'.join(others) + '\u3002')
+    if basis_text:
+        parts.append(basis_text)
+    return ''.join(part for part in parts if part)
+
+def _extract_company_articles_registered_capital_v2(text: str) -> str:
+    source = normalize_text(text).replace('_', '')
+    if not source:
+        return ''
+    patterns = (
+        '(?:\u516c\u53f8)?\u6ce8\u518c\u8d44\u672c[\uff1a:\s]*((?:\u4eba\u6c11\u5e01)?\s*[0-9,]+(?:\.[0-9]+)?\s*(?:\u4e07\u5143|\u4ebf\u5143|\u5143))',
+        '\u7b2c\u56db\u6761[^\n]{0,40}?\u6ce8\u518c\u8d44\u672c[\uff1a:\s]*((?:\u4eba\u6c11\u5e01)?\s*[0-9,]+(?:\.[0-9]+)?\s*(?:\u4e07\u5143|\u4ebf\u5143|\u5143))',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, source)
+        if match:
+            return re.sub(r'\s+', '', match.group(1))
+    return ''
+
+def _extract_shareholders_from_articles_v2(text: str, registered_capital: str) -> list[dict[str, str]]:
+    lines = [normalize_text(line) for line in (text or '').splitlines()]
+    lines = [line for line in lines if line]
+    blacklist = {
+        '\u516c\u53f8\u7ae0\u7a0b', '\u80a1\u4e1c', '\u80a1\u4e1c\u7684\u59d3\u540d\u6216\u8005\u540d\u79f0', '\u80a1\u4e1c\u59d3\u540d\u6216\u8005\u540d\u79f0', '\u51fa\u8d44\u65b9\u5f0f', '\u51fa\u8d44\u989d', '\u51fa\u8d44\u65e5\u671f', '\u59d3\u540d\u6216\u8005\u540d\u79f0',
+    }
+    method_values = {'\u8d27\u5e01', '\u5b9e\u7269', '\u77e5\u8bc6\u4ea7\u6743', '\u80a1\u6743', '\u503a\u6743', '\u6280\u672f'}
+    shareholder_rows: list[dict[str, str]] = []
+    current_name = ''
+    current_amount = ''
+    current_method = ''
+    current_date = ''
+
+    def flush_current() -> None:
+        nonlocal current_name, current_amount, current_method, current_date
+        if current_name and current_amount:
+            shareholder_rows.append({
+                'name': current_name,
+                'capital_contribution': current_amount,
+                'contribution_method': current_method,
+                'contribution_date': current_date,
+                'equity_ratio': '',
+                'voting_ratio': '',
+            })
+        current_name = ''
+        current_amount = ''
+        current_method = ''
+        current_date = ''
+
+    for line in lines:
+        if any(keyword in line for keyword in ('\u6ce8\u518c\u8d44\u672c', '\u516c\u53f8\u6ce8\u518c\u8d44\u672c', '\u7b2c\u56db\u6761')):
+            continue
+        if line in blacklist:
+            continue
+        if re.fullmatch('[\u4e00-\u9fff]{2,4}', line) and line not in method_values:
+            if current_name and current_amount:
+                flush_current()
+            current_name = line
+            continue
+        amount_match = re.search('([0-9]+(?:\.[0-9]+)?\s*(?:\u4e07\u5143|\u4ebf\u5143|\u5143))', line)
+        if amount_match and current_name and not current_amount:
+            current_amount = re.sub(r'\s+', '', amount_match.group(1))
+            continue
+        if line in method_values and current_name and current_amount and not current_method:
+            current_method = line
+            continue
+        date_match = re.search('((?:19|20)\d{2}\u5e74\d{1,2}\u6708\d{1,2}\u65e5)', line)
+        if date_match and current_name and current_amount and not current_date:
+            current_date = date_match.group(1)
+            continue
+    flush_current()
+
+    if not shareholder_rows:
+        return []
+
+    shareholders: list[dict[str, str]] = []
+    total_capital = _parse_amount_to_wanyuan(registered_capital)
+    for item in shareholder_rows:
+        contribution = item['capital_contribution']
+        ratio = ''
+        if total_capital and total_capital > 0:
+            contribution_amount = _parse_amount_to_wanyuan(contribution)
+            if contribution_amount is not None:
+                ratio = _format_ratio(contribution_amount * Decimal('100') / total_capital)
+        item['equity_ratio'] = ratio
+        item['voting_ratio'] = ratio
+        shareholders.append(item)
+    return shareholders
+
+def _extract_company_articles_rules_v3(text: str) -> tuple[str, str, list[dict[str, str]], list[dict[str, str]], str]:
+    source = normalize_text(text)
+    voting_rights_basis = ''
+    if '\u80a1\u4e1c\u4f1a\u4f1a\u8bae\u7531\u80a1\u4e1c\u6309\u7167\u8ba4\u7f34\u51fa\u8d44\u6bd4\u4f8b\u884c\u4f7f\u8868\u51b3\u6743' in source:
+        voting_rights_basis = '\u80a1\u4e1c\u6309\u7167\u8ba4\u7f34\u51fa\u8d44\u6bd4\u4f8b\u884c\u4f7f\u8868\u51b3\u6743\u3002'
+    rules: list[dict[str, str]] = []
+
+    def add_rule(matter: str, approval_rule: str, threshold: str) -> None:
+        if any(item.get('matter') == matter for item in rules):
+            return
+        rules.append({'matter': matter, 'approval_rule': approval_rule, 'threshold': threshold})
+
+    if all(keyword in source for keyword in ('\u4fee\u6539\u516c\u53f8\u7ae0\u7a0b', '\u589e\u52a0\u6216\u8005\u51cf\u5c11\u6ce8\u518c\u8d44\u672c', '\u4e09\u5206\u4e4b\u4e8c\u4ee5\u4e0a\u8868\u51b3\u6743')):
+        add_rule('\u4fee\u6539\u516c\u53f8\u7ae0\u7a0b\u3001\u589e\u52a0\u6216\u8005\u51cf\u5c11\u6ce8\u518c\u8d44\u672c\u3001\u516c\u53f8\u5408\u5e76\u3001\u5206\u7acb\u3001\u89e3\u6563\u6216\u8005\u53d8\u66f4\u516c\u53f8\u5f62\u5f0f', '\u7ecf\u4ee3\u8868\u5168\u4f53\u80a1\u4e1c\u4e09\u5206\u4e4b\u4e8c\u4ee5\u4e0a\u8868\u51b3\u6743\u7684\u80a1\u4e1c\u901a\u8fc7', '66.67%')
+    if '\u9664\u524d\u6b3e\u4ee5\u5916\u4e8b\u9879\u7684\u51b3\u8bae' in source and ('\u8fc7\u534a\u6570\u8868\u51b3\u6743' in source or '\u8fc7\u534a\u6570' in source):
+        add_rule('\u9664\u524d\u6b3e\u4ee5\u5916\u4e8b\u9879', '\u7ecf\u4ee3\u8868\u8fc7\u534a\u6570\u8868\u51b3\u6743\u7684\u80a1\u4e1c\u901a\u8fc7', '50%+')
+    if '\u516c\u53f8\u5411\u5176\u4ed6\u4f01\u4e1a\u6295\u8d44\u6216\u8005\u4e3a\u4ed6\u4eba\u63d0\u4f9b\u62c5\u4fdd' in source:
+        add_rule('\u516c\u53f8\u5411\u5176\u4ed6\u4f01\u4e1a\u6295\u8d44\u6216\u8005\u4e3a\u4ed6\u4eba\u63d0\u4f9b\u62c5\u4fdd', '\u7531\u80a1\u4e1c\u4f1a\u4f5c\u51fa\u51b3\u5b9a', '\u80a1\u4e1c\u4f1a\u51b3\u5b9a')
+    if '\u4e3a\u516c\u53f8\u80a1\u4e1c\u6216\u8005\u5b9e\u9645\u63a7\u5236\u4eba\u63d0\u4f9b\u62c5\u4fdd' in source and '\u5176\u4ed6\u80a1\u4e1c\u6240\u6301\u8868\u51b3\u6743\u8fc7\u534a\u6570\u901a\u8fc7' in source:
+        add_rule('\u4e3a\u516c\u53f8\u80a1\u4e1c\u6216\u8005\u5b9e\u9645\u63a7\u5236\u4eba\u63d0\u4f9b\u62c5\u4fdd', '\u7ecf\u80a1\u4e1c\u4f1a\u51b3\u8bae\uff0c\u5e76\u7531\u51fa\u5e2d\u4f1a\u8bae\u7684\u5176\u4ed6\u80a1\u4e1c\u6240\u6301\u8868\u51b3\u6743\u8fc7\u534a\u6570\u901a\u8fc7', '\u5176\u4ed6\u80a1\u4e1c\u8868\u51b3\u6743 50%+')
+
+    financing_rule = '\u7ae0\u7a0b\u672a\u660e\u786e\u5355\u5217\u94f6\u884c\u8d37\u6b3e/\u5bf9\u5916\u878d\u8d44\u89c4\u5219\uff1b\u5bf9\u5916\u6295\u8d44\u6216\u62c5\u4fdd\u7531\u80a1\u4e1c\u4f1a\u51b3\u5b9a\uff0c\u5176\u4ed6\u91cd\u5927\u4e8b\u9879\u6309\u7ae0\u7a0b\u7ea6\u5b9a\u5206\u522b\u9002\u7528\u4e09\u5206\u4e4b\u4e8c\u4ee5\u4e0a\u6216\u8fc7\u534a\u6570\u8868\u51b3\u6743\u89c4\u5219\u3002'
+    financing_threshold = '\u672a\u5355\u5217\u8d37\u6b3e\u878d\u8d44\u95e8\u69db\uff1b\u91cd\u5927\u4e8b\u9879 66.67%\uff0c\u4e00\u822c\u4e8b\u9879 50%+\uff0c\u5bf9\u5916\u62c5\u4fdd\u6309\u80a1\u4e1c\u4f1a\u89c4\u5219\u6267\u884c\u3002'
+    legacy_details = [_rule_detail_to_legacy_rule_detail(item) for item in rules]
+    return financing_rule, financing_threshold, rules, legacy_details, voting_rights_basis
+
 def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[str, Any]:
-    shareholder_sentences = _extract_keyword_sentences(text, ("股东", "出资", "持股"))
-    registered_capital = extract_company_articles_registered_capital(text)
+    shareholder_sentences = _extract_keyword_sentences(text, ("???", "???", "???"))
+    registered_capital = extract_company_articles_registered_capital(text) or _extract_company_articles_registered_capital_v2(text)
     shareholders = _extract_shareholders_from_articles(text, registered_capital)
+    if not shareholders:
+        shareholders = _extract_shareholders_from_articles_v2(text, registered_capital)
     equity_structure_summary = _build_equity_structure_summary(shareholders)
     equity_ratios = _build_equity_ratios(shareholders)
-    financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details = _extract_financing_rules_from_articles(text)
+    financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details, voting_rights_basis = _extract_company_articles_rules_v2(text)
+    if not major_decision_rules and not voting_rights_basis:
+        financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details, voting_rights_basis = _extract_company_articles_rules_v3(text)
     management_roles = extract_company_articles_management_roles(text)
     management_role_evidence_lines = extract_company_articles_role_evidence_lines(text)
+    for item in shareholders:
+        if item.get("equity_ratio") and not item.get("voting_ratio"):
+            item["voting_ratio"] = item.get("equity_ratio", "")
+    control_analysis = _build_company_articles_control_analysis(shareholders, voting_rights_basis, major_decision_rules)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
-        "company_name": _find_after_labels(text, ("公司名称", "名称")),
+        "company_name": _find_after_labels(text, ("??????", "???")),
         "registered_capital": registered_capital,
         "legal_person": management_roles.get("legal_person", ""),
         "executive_director": management_roles.get("executive_director", ""),
@@ -796,18 +961,19 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
         "shareholder_count": str(len(shareholders)) if shareholders else "",
         "equity_structure_summary": equity_structure_summary,
         "equity_ratios": equity_ratios,
+        "voting_rights_basis": voting_rights_basis,
         "financing_approval_rule": financing_approval_rule,
         "financing_approval_threshold": financing_approval_threshold,
         "major_decision_rules": major_decision_rules,
         "major_decision_rule_details": major_decision_rule_details,
-        "business_scope": _find_after_labels(text, ("经营范围",)),
-        "address": _find_after_labels(text, ("住所", "公司住所", "地址")),
-        "management_structure": "；".join(_extract_keyword_sentences(text, ("董事会", "监事", "经理", "治理结构"))[:3]),
+        "control_analysis": control_analysis,
+        "business_scope": _find_after_labels(text, ("??????",)),
+        "address": _find_after_labels(text, ("???", "??????", "???")),
+        "management_structure": "",
         "management_roles_summary": management_roles.get("management_roles_summary", ""),
         "management_role_evidence_lines": management_role_evidence_lines,
         "summary": summary,
     }
-
 
 def extract_contract(text: str) -> dict[str, Any]:
     return {
@@ -1885,6 +2051,7 @@ def _extract_shareholders_from_articles(text: str, registered_capital: str) -> l
                 "contribution_method": contribution_method,
                 "contribution_date": contribution_date_match.group(1) if contribution_date_match else "",
                 "equity_ratio": "",
+                "voting_ratio": "",
             }
         )
 
@@ -1908,6 +2075,7 @@ def _extract_shareholders_from_articles(text: str, registered_capital: str) -> l
                     "contribution_method": match.group(2) or "",
                     "contribution_date": match.group(4) or "",
                     "equity_ratio": "",
+                    "voting_ratio": "",
                 }
             )
 
@@ -1939,6 +2107,51 @@ def _build_equity_structure_summary(shareholders: list[dict[str, str]]) -> str:
         if segment:
             parts.append(segment)
     return "；".join(parts)
+
+
+def _extract_voting_rights_basis_from_articles(text: str) -> str:
+    source = normalize_text(text)
+    if not source:
+        return ""
+    explicit_match = re.search(r"(股东会会议由股东按照认缴出资比例行使表决权[。；;]?)", source)
+    if explicit_match:
+        return _clean_line(explicit_match.group(1))
+    for sentence in _extract_keyword_sentences(text, ("表决权", "认缴出资比例")):
+        cleaned = _clean_line(sentence)
+        if "表决权" in cleaned and "认缴出资比例" in cleaned:
+            return cleaned
+    return ""
+
+
+def _extract_threshold_label(text: str) -> str:
+    source = normalize_text(text)
+    if not source:
+        return ""
+    if "全体股东一致同意" in source or "全体一致" in source or "一致同意" in source:
+        return "全体一致"
+    if "三分之二" in source or "2/3" in source:
+        return "66.67%"
+    if "四分之三" in source or "3/4" in source:
+        return "75%"
+    if "过半数" in source or "半数以上" in source or "二分之一以上" in source:
+        return "50%+"
+    if "十分之一以上" in source:
+        return "10%+"
+    if "由股东会作出决定" in source or "由股东会决定" in source or "股东会决定" in source:
+        return "股东会决定"
+    return ""
+
+
+def _rule_detail_to_legacy_rule_detail(rule: dict[str, str]) -> dict[str, str]:
+    matter = _clean_line(rule.get("matter", ""))
+    approval_rule = _clean_line(rule.get("approval_rule", ""))
+    threshold = _clean_line(rule.get("threshold", ""))
+    combined = f"{matter}：{approval_rule}" if matter and approval_rule else matter or approval_rule
+    return {
+        "topic": matter or "重大事项",
+        "rule": combined,
+        "threshold": threshold,
+    }
 
 
 def _extract_financing_threshold(sentence: str) -> str:
@@ -1996,6 +2209,7 @@ def _merge_shareholders_from_articles(
                 "contribution_method": "",
                 "contribution_date": "",
                 "equity_ratio": "",
+                "voting_ratio": "",
             }
             merged[normalized_name] = item
         return item
@@ -2007,7 +2221,7 @@ def _merge_shareholders_from_articles(
         target = _ensure_item(name)
         if name not in initial_names:
             initial_names.append(name)
-        for key in ("capital_contribution", "contribution_method", "contribution_date", "equity_ratio"):
+        for key in ("capital_contribution", "contribution_method", "contribution_date", "equity_ratio", "voting_ratio"):
             if not target.get(key) and item.get(key):
                 target[key] = item[key]
 
@@ -2976,17 +3190,25 @@ def extract_account_license(text: str) -> dict[str, Any]:
 
 
 def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[str, Any]:
-    shareholder_sentences = _extract_keyword_sentences(text, ("股东", "出资", "持股"))
-    registered_capital = extract_company_articles_registered_capital(text)
+    shareholder_sentences = _extract_keyword_sentences(text, ("???", "???", "???"))
+    registered_capital = extract_company_articles_registered_capital(text) or _extract_company_articles_registered_capital_v2(text)
     shareholders = _extract_shareholders_from_articles(text, registered_capital)
+    if not shareholders:
+        shareholders = _extract_shareholders_from_articles_v2(text, registered_capital)
     equity_structure_summary = _build_equity_structure_summary(shareholders)
     equity_ratios = _build_equity_ratios(shareholders)
-    financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details = _extract_financing_rules_from_articles(text)
+    financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details, voting_rights_basis = _extract_company_articles_rules_v2(text)
+    if not major_decision_rules and not voting_rights_basis:
+        financing_approval_rule, financing_approval_threshold, major_decision_rules, major_decision_rule_details, voting_rights_basis = _extract_company_articles_rules_v3(text)
     management_roles = extract_company_articles_management_roles(text)
     management_role_evidence_lines = extract_company_articles_role_evidence_lines(text)
+    for item in shareholders:
+        if item.get("equity_ratio") and not item.get("voting_ratio"):
+            item["voting_ratio"] = item.get("equity_ratio", "")
+    control_analysis = _build_company_articles_control_analysis(shareholders, voting_rights_basis, major_decision_rules)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
     return {
-        "company_name": _find_after_labels(text, ("公司名称", "名称")),
+        "company_name": _find_after_labels(text, ("??????", "???")),
         "registered_capital": registered_capital,
         "legal_person": management_roles.get("legal_person", ""),
         "executive_director": management_roles.get("executive_director", ""),
@@ -2997,18 +3219,19 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
         "shareholder_count": str(len(shareholders)) if shareholders else "",
         "equity_structure_summary": equity_structure_summary,
         "equity_ratios": equity_ratios,
+        "voting_rights_basis": voting_rights_basis,
         "financing_approval_rule": financing_approval_rule,
         "financing_approval_threshold": financing_approval_threshold,
         "major_decision_rules": major_decision_rules,
         "major_decision_rule_details": major_decision_rule_details,
-        "business_scope": _find_after_labels(text, ("经营范围",)),
-        "address": _find_after_labels(text, ("住所", "公司住所", "地址")),
-        "management_structure": "；".join(_extract_keyword_sentences(text, ("董事会", "监事", "经理", "治理结构"))[:3]),
+        "control_analysis": control_analysis,
+        "business_scope": _find_after_labels(text, ("??????",)),
+        "address": _find_after_labels(text, ("???", "??????", "???")),
+        "management_structure": "",
         "management_roles_summary": management_roles.get("management_roles_summary", ""),
         "management_role_evidence_lines": management_role_evidence_lines,
         "summary": summary,
     }
-
 
 def extract_contract(text: str) -> dict[str, Any]:
     return {
