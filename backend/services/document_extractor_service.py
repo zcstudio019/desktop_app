@@ -949,8 +949,53 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
             item["voting_ratio"] = item.get("equity_ratio", "")
     control_analysis = _build_company_articles_control_analysis(shareholders, voting_rights_basis, major_decision_rules)
     summary = _build_summary(text, shareholder_sentences, ai_service=ai_service)
+    company_name = _pick_first_nonempty(
+        _extract_label_value(
+            text,
+            ("公司名称", "企业名称", "名称"),
+            stop_labels=("注册资本", "法定代表人", "经营范围", "住所", "地址", "类型"),
+        ),
+        _find_after_labels(text, ("公司名称", "企业名称", "名称")),
+        _find_first_match(text, re.compile(r"([一-龥A-Za-z0-9（）()·]+(?:有限责任公司|股份有限公司|有限公司|合伙企业))")),
+    )
+    business_scope = clean_business_scope(
+        _pick_first_nonempty(
+            _extract_label_value(
+                text,
+                ("经营范围", "经营项目", "营业范围"),
+                stop_labels=("住所", "地址", "治理结构", "组织机构", "法定代表人", "注册资本", "股东会"),
+                allow_multiline=True,
+                max_length=500,
+            ),
+            _find_after_labels(text, ("经营范围", "经营项目", "营业范围")),
+        )
+    )
+    address = clean_address(
+        _pick_first_nonempty(
+            _extract_label_value(
+                text,
+                ("住所", "地址", "营业场所", "公司住所"),
+                stop_labels=("经营范围", "治理结构", "组织机构", "法定代表人", "注册资本", "股东会"),
+                allow_multiline=True,
+                max_length=260,
+            ),
+            _find_after_labels(text, ("住所", "地址", "营业场所", "公司住所")),
+        )
+    )
+    management_structure = _pick_first_nonempty(
+        _extract_label_value(
+            text,
+            ("治理结构", "组织机构", "公司机构及其产生办法、职权、议事规则"),
+            stop_labels=("经营范围", "住所", "地址", "股东会", "董事会", "监事会"),
+            allow_multiline=True,
+            max_length=260,
+        ),
+        "股东会、执行董事（或董事长）、监事、经理" if any(
+            management_roles.get(key, "") for key in ("executive_director", "chairman", "supervisor", "manager")
+        ) else "",
+    )
     return {
-        "company_name": _find_after_labels(text, ("??????", "???")),
+        "company_name": company_name,
         "registered_capital": registered_capital,
         "legal_person": management_roles.get("legal_person", ""),
         "executive_director": management_roles.get("executive_director", ""),
@@ -967,9 +1012,9 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
         "major_decision_rules": major_decision_rules,
         "major_decision_rule_details": major_decision_rule_details,
         "control_analysis": control_analysis,
-        "business_scope": _find_after_labels(text, ("??????",)),
-        "address": _find_after_labels(text, ("???", "??????", "???")),
-        "management_structure": "",
+        "business_scope": business_scope,
+        "address": address,
+        "management_structure": management_structure,
         "management_roles_summary": management_roles.get("management_roles_summary", ""),
         "management_role_evidence_lines": management_role_evidence_lines,
         "summary": summary,
