@@ -345,12 +345,26 @@ function extractFieldValueFromLooseText(text: string, labels: string[]): string 
   }
   for (const label of labels) {
     const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = source.match(new RegExp(`${escapedLabel}\\s*[:：]\\s*([^；;\\n]+)`, 'i'));
+    const match = source.match(new RegExp(`${escapedLabel}\\s*[:：]\\s*([^；;。\\n]+)`, 'i'));
     if (match?.[1]) {
       return cleanMarkdownFieldValue(match[1]);
     }
   }
   return '';
+}
+
+function extractCompanyNameFromLooseText(text: string): string {
+  const source = String(text || '');
+  if (!source.trim()) {
+    return '';
+  }
+  const labeled = extractFieldValueFromLooseText(source, ['公司名称', '企业名称', '名称']);
+  const labeledMatch = labeled.match(/([\u4e00-\u9fffA-Za-z0-9（）()·]+(?:有限责任公司|股份有限公司|有限公司|合伙企业))/);
+  if (labeledMatch?.[1]) {
+    return cleanMarkdownFieldValue(labeledMatch[1]);
+  }
+  const directMatch = source.match(/([\u4e00-\u9fffA-Za-z0-9（）()·]+(?:有限责任公司|股份有限公司|有限公司|合伙企业))/);
+  return directMatch?.[1] ? cleanMarkdownFieldValue(directMatch[1]) : '';
 }
 
 function buildFieldSourceSummaries(
@@ -612,8 +626,8 @@ function buildCompanyArticlesInsight(
     ['address', '住所', '地址'],
   );
   const companyName = stringifyExtractionValue(extractedData.company_name)
-    || extractFieldValueFromLooseText(summaryText, ['公司名称', '企业名称', '名称'])
-    || fallbackCompanyName;
+    || fallbackCompanyName
+    || extractCompanyNameFromLooseText(summaryText);
   const businessScope = stringifyExtractionValue(extractedData.business_scope)
     || extractFieldValueFromLooseText(summaryText, ['经营范围', '经营项目'])
     || fallbackBusinessScope;
@@ -684,10 +698,12 @@ function synchronizeCompanyArticlesMarkdown(
   let nextSection = section;
   nextSection = applyLine(nextSection, '公司名称', insight.companyName);
   nextSection = applyLine(nextSection, '注册资本', insight.registeredCapital);
-  nextSection = applyLine(nextSection, '经营范围', insight.businessScope);
   nextSection = applyLine(nextSection, '地址', insight.address);
   nextSection = applyLine(nextSection, '治理结构', insight.managementStructure);
   nextSection = applyLine(nextSection, '摘要', insight.summary);
+  if (/^- 经营范围：.*$/m.test(nextSection)) {
+    nextSection = nextSection.replace(/^- 经营范围：.*$\n?/m, '');
+  }
   if (/^- 法定代表人：.*$/m.test(nextSection)) {
     nextSection = nextSection.replace(/^- 法定代表人：.*$/m, legalPersonLine);
   }
@@ -2155,6 +2171,28 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                       <div>
                         <div className="text-xs font-medium text-slate-500">任职信息摘要</div>
                         <div className="mt-1 text-slate-700">{companyArticlesInsight.managementRolesSummary}</div>
+                      </div>
+                    ) : null}
+                    {companyArticlesInsight.address || companyArticlesInsight.managementStructure ? (
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {companyArticlesInsight.address ? (
+                          <div>
+                            <div className="text-xs font-medium text-slate-500">地址</div>
+                            <div className="mt-1 text-slate-700">{companyArticlesInsight.address}</div>
+                          </div>
+                        ) : null}
+                        {companyArticlesInsight.managementStructure ? (
+                          <div>
+                            <div className="text-xs font-medium text-slate-500">治理结构</div>
+                            <div className="mt-1 text-slate-700">{companyArticlesInsight.managementStructure}</div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {companyArticlesInsight.summary ? (
+                      <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
+                        <div className="text-xs font-medium text-slate-500">章程摘要</div>
+                        <div className="mt-1 text-sm leading-6 text-slate-700">{companyArticlesInsight.summary}</div>
                       </div>
                     ) : null}
                     <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-3">
