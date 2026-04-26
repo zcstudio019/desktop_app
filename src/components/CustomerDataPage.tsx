@@ -90,6 +90,10 @@ interface FieldConsistencyResult {
 interface CompanyArticlesInsight {
   companyName: string;
   registeredCapital: string;
+  businessScope: string;
+  address: string;
+  managementStructure: string;
+  summary: string;
   legalPerson: string;
   executiveDirector: string;
   chairman: string;
@@ -579,6 +583,10 @@ function buildCompanyArticlesInsight(
     return {
       companyName: stringifyExtractionValue(extractedData.company_name),
       registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
+      businessScope: stringifyExtractionValue(extractedData.business_scope),
+      address: stringifyExtractionValue(extractedData.address),
+      managementStructure: stringifyExtractionValue(extractedData.management_structure),
+      summary: stringifyExtractionValue(extractedData.summary),
       legalPerson,
       executiveDirector: sanitizedExecutiveDirector,
       chairman: sanitizedChairman,
@@ -611,11 +619,31 @@ function synchronizeCompanyArticlesMarkdown(
   }
 
   const section = sectionMatch[0];
+  const hasMeaningfulValue = (value: string): boolean => Boolean(value && value.trim() && value.trim() !== '暂无');
+
+  const applyLine = (content: string, label: string, value: string): string => {
+    if (!hasMeaningfulValue(value)) {
+      return content;
+    }
+    const nextLine = `- ${label}：${value}`;
+    const pattern = new RegExp(`^- ${label}：.*$`, 'm');
+    if (pattern.test(content)) {
+      return content.replace(pattern, nextLine);
+    }
+    return content;
+  };
+
   const legalPersonLine = `- 法定代表人：${insight.legalPerson || '暂无'}`;
   const summaryLine = insight.managementRolesSummary ? `- 任职信息摘要：${insight.managementRolesSummary}` : '';
   const equityRatioLine = equityRatioSummary ? `- 股权占比：${equityRatioSummary}` : '';
 
   let nextSection = section;
+  nextSection = applyLine(nextSection, '公司名称', insight.companyName);
+  nextSection = applyLine(nextSection, '注册资本', insight.registeredCapital);
+  nextSection = applyLine(nextSection, '经营范围', insight.businessScope);
+  nextSection = applyLine(nextSection, '地址', insight.address);
+  nextSection = applyLine(nextSection, '治理结构', insight.managementStructure);
+  nextSection = applyLine(nextSection, '摘要', insight.summary);
   if (/^- 法定代表人：.*$/m.test(nextSection)) {
     nextSection = nextSection.replace(/^- 法定代表人：.*$/m, legalPersonLine);
   }
