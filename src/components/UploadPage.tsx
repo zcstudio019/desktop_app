@@ -75,6 +75,11 @@ type UploadStage =
   | 'success'
   | 'failed';
 
+interface UploadStepItem {
+  key: 'ocr' | 'extracting' | 'saving' | 'success';
+  label: string;
+}
+
 // ============================================
 // Constants - File Type Configuration
 // ============================================
@@ -422,6 +427,27 @@ const QueueItemIcon: React.FC<{ documentType: string }> = ({ documentType }) => 
 
 const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
   const stageInfo = resolveUploadStage(item.status, item.progressMessage);
+  const uploadSteps: UploadStepItem[] = [
+    { key: 'ocr', label: 'OCR' },
+    { key: 'extracting', label: '提取' },
+    { key: 'saving', label: '入库' },
+    { key: 'success', label: '完成' },
+  ];
+  const completedSteps = getCompletedUploadSteps(stageInfo.stage);
+
+  const progressToneClass =
+    item.status === 'error'
+      ? 'bg-red-500'
+      : item.status === 'success'
+        ? 'bg-emerald-500'
+        : 'bg-blue-500';
+
+  const stageBadgeClass =
+    item.status === 'error'
+      ? 'bg-red-50 text-red-600 border-red-200'
+      : item.status === 'success'
+        ? 'bg-emerald-50 text-emerald-600 border-emerald-200'
+        : 'bg-blue-50 text-blue-600 border-blue-200';
   
   const renderStatus = () => {
     switch (item.status) {
@@ -480,15 +506,43 @@ const QueueItemDisplay: React.FC<QueueItemDisplayProps> = ({ item }) => {
           {renderStatus()}
         </div>
       </div>
+
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${stageBadgeClass}`}>
+          {stageInfo.stageLabel}
+        </span>
+        <span className="text-xs font-medium text-gray-500">
+          {Math.round(item.progress)}%
+        </span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-4 gap-2">
+        {uploadSteps.map((step) => {
+          const isActive = stageInfo.stage === step.key;
+          const isCompleted = completedSteps.has(step.key);
+          const stepClass = isActive
+            ? 'border-blue-200 bg-blue-50 text-blue-600'
+            : isCompleted
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
+              : 'border-slate-200 bg-slate-50 text-slate-400';
+
+          return (
+            <div
+              key={step.key}
+              className={`rounded-lg border px-2 py-1.5 text-center text-xs font-medium transition-colors ${stepClass}`}
+            >
+              {step.label}
+            </div>
+          );
+        })}
+      </div>
       
       {/* Progress bar - shown when processing */}
-      {(item.status === 'pending' || item.status === 'processing') && (
-        <div data-testid="progress-indicator" className="mt-2">
-          <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+      {(item.status === 'pending' || item.status === 'processing' || item.status === 'success' || item.status === 'error') && (
+        <div data-testid="progress-indicator" className="mt-3">
+          <div className="h-3 bg-gray-200 rounded-full overflow-hidden shadow-inner">
             <div 
-              className={`h-full transition-all duration-300 ${
-                item.status === 'processing' ? 'bg-blue-500' : 'bg-gray-300'
-              }`}
+              className={`h-full transition-all duration-500 ${progressToneClass}`}
               style={{ width: `${item.progress}%` }}
             />
           </div>
@@ -582,6 +636,21 @@ function getProgressFromJobStatus(status: ChatJobStatusResponse, currentProgress
     /index/i.test(message)
   ) return 85;
   return Math.max(currentProgress, 25);
+}
+
+function getCompletedUploadSteps(stage: UploadStage): Set<UploadStepItem['key']> {
+  switch (stage) {
+    case 'success':
+      return new Set(['ocr', 'extracting', 'saving', 'success']);
+    case 'saving':
+      return new Set(['ocr', 'extracting', 'saving']);
+    case 'extracting':
+      return new Set(['ocr', 'extracting']);
+    case 'ocr':
+      return new Set(['ocr']);
+    default:
+      return new Set();
+  }
 }
 
 function toExtractionResultFromJob(status: ChatJobStatusResponse): ExtractionResult {
