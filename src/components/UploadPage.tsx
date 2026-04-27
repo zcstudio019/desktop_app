@@ -737,6 +737,7 @@ const UploadPage: React.FC = () => {
   const redirectedBatchIdsRef = useRef<Set<string>>(new Set());
   // Ref to track if recovery is in progress
   const isRecoveringRef = useRef(false);
+  const hasBoundCustomerFromUrlRef = useRef(false);
 
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const customerIdFromUrl = urlParams.get('customer_id') || '';
@@ -1177,7 +1178,18 @@ const UploadPage: React.FC = () => {
     fileInputRef.current?.click();
   }, []);
 
+  const clearUploadUrlContext = useCallback(() => {
+    const nextParams = new URLSearchParams(window.location.search);
+    nextParams.delete('customer_id');
+    nextParams.delete('missing');
+    const nextQuery = nextParams.toString();
+    const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}`;
+    window.history.replaceState({}, '', nextUrl);
+  }, []);
+
   const handleCustomerSelect = useCallback((customerId: string) => {
+    hasBoundCustomerFromUrlRef.current = true;
+    clearUploadUrlContext();
     if (!customerId) {
       setCurrentCustomer(null, null);
       setCustomerName('');
@@ -1187,10 +1199,13 @@ const UploadPage: React.FC = () => {
     const nextName = target?.name ?? '';
     setCurrentCustomer(nextName || null, customerId);
     setCustomerName(nextName);
-  }, [customerOptions, setCurrentCustomer]);
+  }, [clearUploadUrlContext, customerOptions, setCurrentCustomer]);
 
   useEffect(() => {
     if (!customerIdFromUrl) {
+      return;
+    }
+    if (hasBoundCustomerFromUrlRef.current) {
       return;
     }
 
@@ -1200,12 +1215,17 @@ const UploadPage: React.FC = () => {
       (!targetCustomer || state.extraction.currentCustomer === targetCustomer.name);
 
     if (!contextAlreadyBound) {
-      handleCustomerSelect(customerIdFromUrl);
+      const nextName = targetCustomer?.name ?? state.extraction.currentCustomer ?? '';
+      setCurrentCustomer(nextName || null, customerIdFromUrl);
+      if (nextName) {
+        setCustomerName(nextName);
+      }
     }
+    hasBoundCustomerFromUrlRef.current = true;
   }, [
     customerIdFromUrl,
     customerOptions,
-    handleCustomerSelect,
+    setCurrentCustomer,
     state.extraction.currentCustomer,
     state.extraction.currentCustomerId,
   ]);
