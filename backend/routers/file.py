@@ -417,7 +417,29 @@ async def _extract_content_from_file(
                 await progress_callback("正在 OCR 识别")
             compressed = file_service.compress_image(file_bytes)
             return ocr_service.recognize_image(compressed), []
-        if file_type in {"excel", "word"}:
+        if file_type == "word":
+            if progress_callback:
+                await progress_callback("正在解析文件")
+            extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
+            text_content = extracted.get("text", "")
+            if not text_content or not text_content.strip():
+                word_images = file_service.extract_word_images(file_bytes)
+                if word_images:
+                    logger.info("Word text extraction empty for %s, falling back to embedded-image OCR", filename)
+                    if progress_callback:
+                        await progress_callback("正在 OCR 识别")
+                    ocr_parts: list[str] = []
+                    for index, image_bytes in enumerate(word_images, start=1):
+                        try:
+                            compressed = file_service.compress_image(image_bytes)
+                            image_text = ocr_service.recognize_image(compressed).strip()
+                            if image_text:
+                                ocr_parts.append(f"--- DOCX Image {index} ---\n{image_text}")
+                        except OCRServiceError as exc:
+                            logger.warning("Embedded DOCX image OCR failed for %s image=%s error=%s", filename, index, exc)
+                    text_content = "\n\n".join(ocr_parts)
+            return text_content, extracted.get("rows", [])
+        if file_type == "excel":
             if progress_callback:
                 await progress_callback("正在解析文件")
             extracted = file_service.extract_content(file_bytes, file_type, filename=filename)

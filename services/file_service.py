@@ -1,6 +1,7 @@
 """文件处理服务"""
 import io
 import warnings
+import zipfile
 from pathlib import Path
 from typing import Any, List, Tuple
 
@@ -230,6 +231,26 @@ class FileService:
             return "\n".join(paragraphs + tables)
         except Exception as e:
             return f"[Word 读取失败: {str(e)}]"
+
+    @staticmethod
+    def extract_word_images(file_bytes: bytes) -> list[bytes]:
+        """Extract embedded image bytes from a DOCX package."""
+        images: list[bytes] = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+                for member_name in archive.namelist():
+                    lowered = member_name.lower()
+                    if not lowered.startswith("word/media/"):
+                        continue
+                    if not lowered.endswith((".png", ".jpg", ".jpeg", ".bmp", ".webp")):
+                        continue
+                    try:
+                        images.append(archive.read(member_name))
+                    except Exception:
+                        continue
+        except Exception:
+            return []
+        return images
 
     @staticmethod
     def read_excel_rows(file_bytes: bytes) -> list[dict[str, str]]:
