@@ -5345,3 +5345,172 @@ def extract_bank_statement_pdf_fields(text: str) -> dict[str, Any]:
         'top_inflows': [],
         'top_outflows': [],
     }
+
+
+def _clean_id_card_value(value: str) -> str:
+    cleaned = normalize_text(value)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"[\u3000\t]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip("：:，,；;。 ")
+
+
+def _normalize_id_card_date(value: str) -> str:
+    cleaned = _clean_id_card_value(value)
+    if not cleaned:
+        return ""
+    if cleaned == "长期":
+        return cleaned
+    match = re.search(r"((?:19|20)\d{2})[年./-](\d{1,2})[月./-](\d{1,2})日?", cleaned)
+    if not match:
+        return cleaned
+    return f"{match.group(1)}年{match.group(2).zfill(2)}月{match.group(3).zfill(2)}日"
+
+
+def _extract_id_card_labeled_value(
+    text: str,
+    labels: tuple[str, ...],
+    *,
+    stop_labels: tuple[str, ...] = (),
+    max_length: int = 180,
+    allow_multiline: bool = False,
+) -> str:
+    source = text or ""
+    for label in labels:
+        pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*")
+        match = pattern.search(source)
+        if not match:
+            continue
+        candidate = source[match.end() : match.end() + max_length]
+        stop_indexes: list[int] = []
+        for stop_label in stop_labels:
+            stop_match = re.search(rf"{re.escape(stop_label)}\s*[:：]?", candidate)
+            if stop_match:
+                stop_indexes.append(stop_match.start())
+        if stop_indexes:
+            candidate = candidate[: min(stop_indexes)]
+        if not allow_multiline:
+            candidate = candidate.splitlines()[0]
+        cleaned = _clean_id_card_value(candidate)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _extract_id_card_name(text: str) -> str:
+    compact = re.sub(r"[\s\u3000]+", "", text or "")
+    patterns = (
+        re.compile(r"姓名[:：]?([\u4e00-\u9fff·]{2,12}?)(?=性别|民族|出生|住址|公民身份号码|身份号码|身份证号码)"),
+        re.compile(r"姓名[:：]?([\u4e00-\u9fff·]{2,12})"),
+    )
+    for pattern in patterns:
+        match = pattern.search(compact)
+        if match:
+            return _clean_id_card_value(match.group(1))
+    return ""
+
+
+def _extract_id_card_gender(text: str) -> str:
+    compact = re.sub(r"[\s\u3000]+", "", text or "")
+    match = re.search(r"性别[:：]?(男|女)", compact)
+    return match.group(1) if match else ""
+
+
+def _extract_id_card_ethnicity(text: str) -> str:
+    compact = re.sub(r"[\s\u3000]+", "", text or "")
+    match = re.search(r"民族[:：]?([\u4e00-\u9fff]{1,8}?)(?=出生|住址|公民身份号码|身份号码|身份证号码|签发机关|有效期限|$)", compact)
+    return _clean_id_card_value(match.group(1)) if match else ""
+
+
+def _extract_id_card_birth_date(text: str) -> str:
+    compact = re.sub(r"[\s\u3000]+", "", text or "")
+    match = re.search(r"出生[:：]?((?:19|20)\d{2}[年./-]\d{1,2}[月./-]\d{1,2}日?)", compact)
+    return _normalize_id_card_date(match.group(1)) if match else ""
+
+
+def _extract_id_card_address(text: str, id_number: str) -> str:
+    address = _extract_id_card_labeled_value(
+        text,
+        ("住址", "地址"),
+        stop_labels=("公民身份号码", "身份号码", "身份证号码", "签发机关", "有效期限", "姓名", "性别", "民族", "出生"),
+        max_length=240,
+        allow_multiline=True,
+    )
+    if not address:
+        return ""
+    if id_number:
+        address = address.replace(id_number, "").strip()
+    address = re.sub(r"(公民身份号码|身份号码|身份证号码).*$", "", address).strip("：:，,；;。 ")
+    return _clean_id_card_value(address)
+
+
+def _extract_id_card_issuing_authority(text: str) -> str:
+    compact = re.sub(r"[\s\u3000]+", "", text or "")
+    match = re.search(r"签发机关[:：]?([\u4e00-\u9fff]{2,40}(?:公安局|公安分局|公安局派出所|分局|派出所))", compact)
+    return _clean_id_card_value(match.group(1)) if match else ""
+
+
+def _extract_id_card_valid_period(text: str) -> str:
+    compact = re.sub(r"[\s\u3000]+", "", text or "")
+    if re.search(r"有效期限[:：]?长期", compact):
+        return "长期"
+    match = re.search(
+        r"有效期限[:：]?((?:19|20)\d{2}[年./-]\d{1,2}[月./-]\d{1,2}日?)\s*(?:-|至)\s*((?:19|20)\d{2}[年./-]\d{1,2}[月./-]\d{1,2}日?|长期)",
+        compact,
+    )
+    if not match:
+        return ""
+    start = _normalize_id_card_date(match.group(1))
+    end = _normalize_id_card_date(match.group(2))
+    return f"{start}-{end}" if end and end != "长期" else f"{start}-长期"
+
+
+def _build_id_card_completeness_hint(side: str, front_ready: bool, back_ready: bool) -> str:
+    if side == "both":
+        return "已识别正反面"
+    if front_ready:
+        return "已识别正面，缺少反面信息（签发机关、有效期限）"
+    if back_ready:
+        return "已识别反面，缺少正面信息（姓名、身份证号码、住址）"
+    return "未识别到身份证正反面关键信息"
+
+
+def _extract_id_card_fields(text: str) -> dict[str, Any]:
+    source = text or ""
+    id_number = _find_first_match(source, ID_CARD_PATTERN)
+    name = _extract_id_card_name(source)
+    gender = _extract_id_card_gender(source)
+    ethnicity = _extract_id_card_ethnicity(source)
+    birth_date = _extract_id_card_birth_date(source)
+    address = _extract_id_card_address(source, id_number)
+    issuing_authority = _extract_id_card_issuing_authority(source)
+    valid_period = _extract_id_card_valid_period(source)
+
+    front_ready = any((name, id_number, address, gender, ethnicity, birth_date))
+    back_ready = any((issuing_authority, valid_period))
+    if front_ready and back_ready:
+        side = "both"
+    elif front_ready:
+        side = "front"
+    elif back_ready:
+        side = "back"
+    else:
+        side = "unknown"
+
+    return {
+        "name": name,
+        "gender": gender,
+        "ethnicity": ethnicity,
+        "birth_date": birth_date,
+        "id_number": id_number.upper() if id_number else "",
+        "address": address,
+        "issuing_authority": issuing_authority,
+        "valid_period": valid_period,
+        "side": side,
+        "completeness_hint": _build_id_card_completeness_hint(side, front_ready, back_ready),
+    }
+
+
+def extract_id_card(text: str) -> dict[str, Any]:
+    return _extract_id_card_fields(text)

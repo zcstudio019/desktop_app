@@ -50,6 +50,15 @@ AMOUNT_FIELDS = {
 COUNT_FIELDS = {'transaction_count'}
 
 STRUCTURED_FIELD_LABELS: dict[str, str] = {
+    'name': '\u59d3\u540d',
+    'gender': '\u6027\u522b',
+    'ethnicity': '\u6c11\u65cf',
+    'birth_date': '\u51fa\u751f\u65e5\u671f',
+    'id_number': '\u8eab\u4efd\u8bc1\u53f7\u7801',
+    'issuing_authority': '\u7b7e\u53d1\u673a\u5173',
+    'valid_period': '\u6709\u6548\u671f\u9650',
+    'side': '\u8bc6\u522b\u9762',
+    'completeness_hint': '\u5b8c\u6574\u6027\u63d0\u793a',
     'account_name': '\u8d26\u6237\u540d\u79f0',
     'account_number': '\u8d26\u53f7',
     'bank_name': '\u94f6\u884c\u540d\u79f0',
@@ -390,6 +399,14 @@ def _format_value(key: str, value: Any) -> str:
         return _format_amount_for_markdown(value)
     if key in COUNT_FIELDS:
         return _format_count_for_markdown(value)
+    if key == 'side':
+        side_map = {
+            'front': '\u6b63\u9762',
+            'back': '\u53cd\u9762',
+            'both': '\u6b63\u53cd\u9762',
+            'unknown': '\u672a\u77e5',
+        }
+        return side_map.get(str(value or '').strip().lower(), str(value))
     if key in {'legal_person', 'executive_director', 'chairman', 'manager', 'supervisor'} and _is_invalid_management_role_value(value):
         return '\u6682\u65e0'
     return str(value)
@@ -406,7 +423,84 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
     extractions = await storage_service.get_extractions_by_customer(customer_id)
     sections: list[str] = []
     source_documents: list[dict[str, Any]] = []
-    for extraction in extractions:
+    id_card_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'id_card']
+    other_extractions = [item for item in extractions if (item.get('extraction_type') or '') != 'id_card']
+
+    if id_card_extractions:
+        try:
+            merged_data: dict[str, Any] = {}
+            merged_file_names: list[str] = []
+            has_front = False
+            has_back = False
+            any_original_available = False
+
+            for extraction in id_card_extractions:
+                extracted_data = (extraction.get('extracted_data') or {}) if isinstance(extraction.get('extracted_data'), dict) else {}
+                for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address', 'issuing_authority', 'valid_period'):
+                    if not merged_data.get(key):
+                        merged_data[key] = extracted_data.get(key) or ''
+                if any(extracted_data.get(key) for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address')):
+                    has_front = True
+                if any(extracted_data.get(key) for key in ('issuing_authority', 'valid_period')):
+                    has_back = True
+
+                document = None
+                doc_id = extraction.get('doc_id')
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning("profile_markdown id_card_document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
+                file_name = (document or {}).get('file_name') or '\u6682\u65e0'
+                file_path = (document or {}).get('file_path') or ''
+                merged_file_names.append(file_name)
+                any_original_available = any_original_available or bool(file_path)
+                source_documents.append({
+                    'source_type': 'id_card',
+                    'source_type_name': get_document_display_name('id_card'),
+                    'extraction_id': extraction.get('extraction_id'),
+                    'doc_id': doc_id,
+                    'file_name': file_name,
+                    'original_status': '\u53ef\u67e5\u770b' if file_path else '\u539f\u4ef6\u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u5df2\u4e0d\u53ef\u7528',
+                    'original_available': bool(file_path),
+                })
+
+            if has_front and has_back:
+                merged_data['side'] = 'both'
+                merged_data['completeness_hint'] = '\u5df2\u8bc6\u522b\u6b63\u53cd\u9762'
+            elif has_front:
+                merged_data['side'] = 'front'
+                merged_data['completeness_hint'] = '\u5df2\u8bc6\u522b\u6b63\u9762\uff0c\u7f3a\u5c11\u53cd\u9762\u4fe1\u606f\uff08\u7b7e\u53d1\u673a\u5173\u3001\u6709\u6548\u671f\u9650\uff09'
+            elif has_back:
+                merged_data['side'] = 'back'
+                merged_data['completeness_hint'] = '\u5df2\u8bc6\u522b\u53cd\u9762\uff0c\u7f3a\u5c11\u6b63\u9762\u4fe1\u606f\uff08\u59d3\u540d\u3001\u8eab\u4efd\u8bc1\u53f7\u7801\u3001\u4f4f\u5740\uff09'
+            else:
+                merged_data['side'] = 'unknown'
+                merged_data['completeness_hint'] = '\u672a\u8bc6\u522b\u5230\u8eab\u4efd\u8bc1\u6b63\u53cd\u9762\u5173\u952e\u4fe1\u606f'
+
+            merged_file_name_text = '、'.join(dict.fromkeys(merged_file_names)) if merged_file_names else '暂无'
+            merged_original_status = '可查看' if any_original_available else '原件文件不存在或已不可用'
+            id_card_lines = [
+                f"- \u8d44\u6599\u7c7b\u578b\uff1a{get_document_display_name('id_card')}",
+                f"- \u6765\u6e90\u6587\u4ef6\uff1a{merged_file_name_text}",
+                f"- \u539f\u4ef6\u72b6\u6001\uff1a{merged_original_status}",
+            ]
+            for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address', 'issuing_authority', 'valid_period', 'side', 'completeness_hint'):
+                id_card_lines.append(f"- {_format_field_label(key)}\uff1a{_format_value(key, merged_data.get(key))}")
+            sections.append(_markdown_section(get_document_display_name('id_card'), id_card_lines))
+        except Exception as exc:
+            logger.warning("profile_markdown id_card_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+            sections.append(
+                _markdown_section(
+                    get_document_display_name('id_card'),
+                    [
+                        f"- \u8d44\u6599\u7c7b\u578b\uff1a{get_document_display_name('id_card')}",
+                        '- \u63d0\u793a\uff1a\u8eab\u4efd\u8bc1\u8d44\u6599\u6574\u7406\u5931\u8d25\uff0c\u8bf7\u91cd\u65b0\u4e0a\u4f20\u6216\u68c0\u67e5\u539f\u4ef6\u3002',
+                    ],
+                )
+            )
+
+    for extraction in other_extractions:
         extraction_id = extraction.get('extraction_id') or ''
         extraction_type = extraction.get('extraction_type') or '\u672a\u547d\u540d\u8d44\u6599'
         try:

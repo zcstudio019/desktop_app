@@ -652,6 +652,16 @@ function getFirstValidFieldValueByTypes(
   return '';
 }
 
+function hasCompleteIdCardExtraction(extractionGroups: ExtractionGroup[]): boolean {
+  const items = getExtractionItemsByType(extractionGroups, 'id_card');
+  return items.some((item) => {
+    const extractedData = (item.extracted_data || {}) as Record<string, unknown>;
+    const name = extractValueFromExtractionData(extractedData, ['name', '姓名']);
+    const idNumber = extractValueFromExtractionData(extractedData, ['id_number', '身份证号码', '身份证号']);
+    return Boolean(name && idNumber);
+  });
+}
+
 function buildFieldConsistencyResults(
   documents: CustomerDocumentListItem[],
   extractionGroups: ExtractionGroup[],
@@ -1498,6 +1508,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [collapsedDocumentGroups, setCollapsedDocumentGroups] = useState<Record<string, boolean>>({});
   const [showConsistentFields, setShowConsistentFields] = useState(false);
   const [focusedConflictDocId, setFocusedConflictDocId] = useState('');
+  const [focusedConflictDocIds, setFocusedConflictDocIds] = useState<string[]>([]);
+  const [focusedConflictLabel, setFocusedConflictLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const customerIdFromUrl = urlParams.get('customer_id') || '';
@@ -1599,14 +1611,19 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   }, [customerSearch, customers]);
 
   const filteredDocuments = useMemo(() => {
+    let nextDocuments = documents;
     if (documentFilter === 'original') {
-      return documents.filter((item) => item.original_available);
+      nextDocuments = nextDocuments.filter((item) => item.original_available);
     }
     if (documentFilter === 'extraction') {
-      return documents.filter((item) => !item.original_available);
+      nextDocuments = nextDocuments.filter((item) => !item.original_available);
     }
-    return documents;
-  }, [documentFilter, documents]);
+    if (focusedConflictDocIds.length > 0) {
+      const idSet = new Set(focusedConflictDocIds);
+      nextDocuments = nextDocuments.filter((item) => idSet.has(item.doc_id));
+    }
+    return nextDocuments;
+  }, [documentFilter, documents, focusedConflictDocIds]);
 
   const groupedDocuments = useMemo(() => {
     const groups = new Map<
@@ -1713,6 +1730,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   );
   const completenessCards = useMemo<CompletenessCard[]>(() => {
     const presentTypes = new Set(documents.map((item) => item.file_type).filter(Boolean));
+    const idCardComplete = hasCompleteIdCardExtraction(extractionGroups);
 
     return DOCUMENT_GROUP_ORDER.map((groupKey) => {
       const rule = DOCUMENT_COMPLETENESS_RULES[groupKey];
@@ -1721,10 +1739,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       const missingRequired = rule.required.filter((type) => !presentTypes.has(type));
       const missingOptional = rule.optional.filter((type) => !presentTypes.has(type));
       const existingTypes = [...existingRequired, ...existingOptional];
+      const idCardIncomplete = groupKey === 'personal' && presentTypes.has('id_card') && !idCardComplete;
 
       let status: CompletenessStatus = 'pending';
       if (groupKey === 'asset') {
         status = existingTypes.length > 0 ? 'available' : 'empty';
+      } else if (idCardIncomplete) {
+        status = 'pending';
       } else if (rule.required.length > 0 && missingRequired.length === 0) {
         status = 'complete';
       } else if (existingTypes.length === 0) {
@@ -1738,12 +1759,19 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
         title: rule.title,
         description: rule.description,
         status,
-        existingLabels: existingTypes.map(getDocumentTypeDisplayNameByCode),
-        missingRequiredLabels: missingRequired.map(getDocumentTypeDisplayNameByCode),
+        existingLabels: existingTypes.map((type) => (
+          type === 'id_card' && idCardIncomplete
+            ? '身份证（信息不完整）'
+            : getDocumentTypeDisplayNameByCode(type)
+        )),
+        missingRequiredLabels: [
+          ...missingRequired.map(getDocumentTypeDisplayNameByCode),
+          ...(idCardIncomplete ? ['身份证关键信息（姓名、身份证号码）'] : []),
+        ],
         missingOptionalLabels: missingOptional.map(getDocumentTypeDisplayNameByCode),
       };
     });
-  }, [documents]);
+  }, [documents, extractionGroups]);
   const readinessSummary = useMemo(
     () => getOverallReadinessSummary(completenessCards),
     [completenessCards]
@@ -2007,6 +2035,42 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
         target.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     }, 280);
+  }, []);
+
+  const handleFocusConflictDocuments = useCallback((result: FieldConsistencyResult) => {
+    const docIds = Array.from(new Set(
+      result.comparedSources
+        .map((source) => source.document?.doc_id || '')
+        .filter(Boolean),
+    ));
+    if (docIds.length === 0) {
+      return;
+    }
+    setDocumentFilter('all');
+    setFocusedConflictDocIds(docIds);
+    setFocusedConflictLabel(result.label);
+    setCollapsedDocumentGroups((current) => {
+      const next = { ...current };
+      documents
+        .filter((document) => docIds.includes(document.doc_id))
+        .forEach((document) => {
+          next[getDocumentGroupKey(document.file_type)] = false;
+        });
+      return next;
+    });
+
+    window.setTimeout(() => {
+      const firstDocId = docIds[0];
+      const target = window.document.querySelector<HTMLElement>(`[data-doc-id="${firstDocId}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 280);
+  }, [documents]);
+
+  const clearFocusedConflictDocuments = useCallback(() => {
+    setFocusedConflictDocIds([]);
+    setFocusedConflictLabel('');
   }, []);
 
   useEffect(() => {
@@ -2288,6 +2352,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                       {readinessSummary.missingLabels.length > 0 ? (
                         <div className="mt-3 rounded-2xl border border-white/70 bg-white/70 px-3 py-2 text-sm text-slate-700">
                           优先补充：{readinessSummary.missingLabels.join('、')}
+                        </div>
+                      ) : null}
+                      {conflictingConsistencyResults.length > 0 ? (
+                        <div className="mt-3 rounded-2xl border border-orange-200 bg-orange-50 px-3 py-3 text-sm text-orange-800">
+                          <div className="font-semibold">
+                            当前存在 {conflictingConsistencyResults.length} 个关键字段冲突
+                          </div>
+                          <div className="mt-1">
+                            建议先核对：{conflictingConsistencyResults.map((item) => item.label).join('、')}，再继续生成申请表或风控报告。
+                          </div>
                         </div>
                       ) : null}
                     </div>
@@ -2874,6 +2948,15 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                                 <span className="font-semibold">操作建议：</span>
                                 {actionSuggestion}
                               </div>
+                              <div className="mt-3">
+                                <button
+                                  type="button"
+                                  onClick={() => handleFocusConflictDocuments(result)}
+                                  className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-700 transition-colors hover:bg-orange-100"
+                                >
+                                  仅看冲突来源文档
+                                </button>
+                              </div>
                             </div>
 
                             <div className="mt-4 space-y-2">
@@ -3105,6 +3188,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     {label}
                   </button>
                 ))}
+                {focusedConflictDocIds.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-orange-200 bg-orange-50 px-3 py-1.5 text-sm text-orange-700">
+                      当前仅显示与“{focusedConflictLabel || '冲突字段'}”相关的来源文档
+                    </span>
+                    <button
+                      type="button"
+                      onClick={clearFocusedConflictDocuments}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 transition-colors hover:bg-slate-50"
+                    >
+                      退出聚焦
+                    </button>
+                  </div>
+                ) : null}
                 {groupedDocuments.length > 0 ? (
                   <>
                     <button
