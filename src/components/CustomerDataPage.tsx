@@ -186,6 +186,12 @@ const DOCUMENT_COMPLETENESS_RULES = {
 
 const FIELD_SOURCE_RULES: FieldSourceRule[] = [
   {
+    fieldKey: 'personal_name',
+    label: '姓名',
+    sourceTypes: ['id_card', 'hukou'],
+    valueLabels: ['name', '姓名', 'household_head_name', '户主姓名'],
+  },
+  {
     fieldKey: 'company_name',
     label: '公司名称',
     sourceTypes: ['business_license', 'company_articles'],
@@ -212,8 +218,8 @@ const FIELD_SOURCE_RULES: FieldSourceRule[] = [
   {
     fieldKey: 'address',
     label: '地址 / 住所',
-    sourceTypes: ['business_license', 'company_articles'],
-    valueLabels: ['地址', '住所', '营业场所', 'company_address', 'address'],
+    sourceTypes: ['business_license', 'company_articles', 'hukou', 'id_card'],
+    valueLabels: ['地址', '住所', '营业场所', 'company_address', 'address', 'household_address', '户籍地址'],
   },
   {
     fieldKey: 'bank_name',
@@ -232,6 +238,24 @@ const FIELD_SOURCE_RULES: FieldSourceRule[] = [
     label: '身份证号',
     sourceTypes: ['id_card'],
     valueLabels: ['身份证号', '证件号码', 'id_number'],
+  },
+  {
+    fieldKey: 'household_member_names',
+    label: '家庭成员姓名',
+    sourceTypes: ['hukou'],
+    valueLabels: ['members', 'household_head_name', '户主姓名'],
+  },
+  {
+    fieldKey: 'household_member_id_numbers',
+    label: '家庭成员身份证号',
+    sourceTypes: ['hukou'],
+    valueLabels: ['members'],
+  },
+  {
+    fieldKey: 'household_relationships',
+    label: '家庭成员关系',
+    sourceTypes: ['hukou'],
+    valueLabels: ['members'],
   },
   {
     fieldKey: 'account_name',
@@ -588,6 +612,51 @@ function extractValueFromExtractionData(data: Record<string, unknown>, labels: s
 }
 
 function extractConsistencyFieldValue(fieldKey: string, data: Record<string, unknown>, labels: string[]): string {
+  if (fieldKey === 'personal_name') {
+    const direct = extractValueFromExtractionData(data, labels);
+    if (direct) {
+      return direct;
+    }
+    const householdHead = stringifyExtractionValue(data.household_head_name || data['户主姓名']);
+    if (householdHead) {
+      return householdHead;
+    }
+  }
+
+  if (fieldKey === 'household_member_names') {
+    const members = toRecordList(data.members);
+    const names = members
+      .map((item) => stringifyExtractionValue(item.name || item['姓名']))
+      .filter(Boolean);
+    if (names.length > 0) {
+      return names.join('、');
+    }
+    return stringifyExtractionValue(data.household_head_name || data['户主姓名']);
+  }
+
+  if (fieldKey === 'household_member_id_numbers') {
+    const members = toRecordList(data.members);
+    const idNumbers = members
+      .map((item) => stringifyExtractionValue(item.id_number || item['身份证号码'] || item['身份证号']))
+      .filter(Boolean);
+    return idNumbers.join('、');
+  }
+
+  if (fieldKey === 'household_relationships') {
+    const members = toRecordList(data.members);
+    const relationPairs = members
+      .map((item) => {
+        const name = stringifyExtractionValue(item.name || item['姓名']);
+        const relation = stringifyExtractionValue(item.relationship_to_head || item['与户主关系'] || item['户主或与户主关系']);
+        if (!name && !relation) {
+          return '';
+        }
+        return name && relation ? `${name} ${relation}` : (name || relation);
+      })
+      .filter(Boolean);
+    return relationPairs.join('；');
+  }
+
   if (fieldKey === 'shareholder_names') {
     const shareholders = toRecordList(data.shareholders);
     const names = shareholders
