@@ -672,9 +672,6 @@ async def _build_single_document_section(
             f"- {_format_field_label('completeness_note')}\uff1a{_format_value('completeness_note', extracted_data.get('completeness_note'))}",
             _format_value('members', extracted_data.get('members') or []),
         ]
-        raw_pages_markdown = _format_raw_pages_for_markdown(extracted_data.get('raw_pages') or [])
-        if raw_pages_markdown:
-            lines.append(raw_pages_markdown)
         return _markdown_section(type_name, lines), source_document
     lines = [f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}']
     lines.append(f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}')

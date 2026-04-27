@@ -5580,6 +5580,171 @@ def extract_hukou_from_pages(raw_pages: list[dict[str, Any]]) -> dict[str, Any]:
     for page_item in raw_pages or []:
         if not isinstance(page_item, dict):
             continue
+        lines = clean_lines(page_item.get("text") or "")
+        if not lines:
+            continue
+        joined = "\n".join(lines)
+
+        homepage_hits = sum(1 for label in ("户别", "户主姓名", "户号", "住址") if label in joined)
+        if homepage_hits >= 3:
+            page_home = {
+                "household_head_name": find_value(lines, ("户主姓名",), stop_labels=("户号", "户别", "住址", "登记事项变更")),
+                "household_number": find_value(lines, ("户号",), stop_labels=("户别", "住址", "户主姓名")),
+                "household_type": find_value(lines, ("户别",), stop_labels=("户号", "住址", "户主姓名")),
+                "household_address": find_value(lines, ("住址", "户籍地址", "地址"), stop_labels=("户主姓名", "户号", "户别", "登记事项变更", "常住人口登记卡")),
+                "registration_authority": "",
+            }
+            for line in lines:
+                if "派出所" in line or "公安局" in line:
+                    page_home["registration_authority"] = line.strip("，。；; ")
+                    break
+            if not page_home["household_head_name"]:
+                for idx, line in enumerate(lines):
+                    if line == "户主姓名" and idx + 1 < len(lines) and is_reasonable_name(lines[idx + 1]):
+                        page_home["household_head_name"] = lines[idx + 1]
+                        break
+            if not is_reasonable_name(page_home["household_head_name"]):
+                page_home["household_head_name"] = ""
+            if any(page_home.values()):
+                homepage_present = True
+            for key, value in page_home.items():
+                if value and not homepage_data.get(key):
+                    homepage_data[key] = value
+
+        member_hits = sum(1 for keyword in ("常住人口登记卡", "姓名", "户主或与户主关系", "公民身份号码", "出生日期") if keyword in joined)
+        if member_hits >= 2:
+            id_match = re.search(r"\d{17}[\dXx]", joined)
+            member = {
+                "name": find_value(lines, ("姓名",), stop_labels=("户主或与户主关系", "公民身份号码", "性别", "民族", "出生日期")).strip(),
+                "relationship_to_head": find_value(lines, ("户主或与户主关系", "与户主关系"), stop_labels=("公民身份号码", "性别", "民族", "出生日期", "婚姻状况", "服务处所", "职业")).strip(),
+                "gender": find_value(lines, ("性别",), stop_labels=("民族", "出生日期", "公民身份号码", "婚姻状况")).strip(),
+                "ethnicity": find_value(lines, ("民族",), stop_labels=("出生日期", "公民身份号码", "婚姻状况")).strip(),
+                "birth_date": find_value(lines, ("出生日期",), stop_labels=("公民身份号码", "婚姻状况", "服务处所", "职业")).strip(),
+                "id_number": id_match.group(0).upper() if id_match else "",
+                "native_place": find_value(lines, ("籍贯", "出生地"), stop_labels=("婚姻状况", "文化程度", "公民身份号码")).strip(),
+                "marital_status": find_value(lines, ("婚姻状况",), stop_labels=("服务处所", "职业", "兵役状况", "何时由何地迁来本市（县）", "何时由何地迁来本址")).strip(),
+                "education": find_value(lines, ("文化程度",), stop_labels=("婚姻状况", "兵役状况", "服务处所", "职业")).strip(),
+                "service_place": find_value(lines, ("服务处所",), stop_labels=("职业", "兵役状况", "何时由何地迁来本市（县）", "何时由何地迁来本址")).strip(),
+                "occupation": find_value(lines, ("职业",), stop_labels=("兵役状况", "何时由何地迁来本市（县）", "何时由何地迁来本址")).strip(),
+            }
+            if not member["name"]:
+                for idx, line in enumerate(lines):
+                    if line == "姓名" and idx + 1 < len(lines) and is_reasonable_name(lines[idx + 1]):
+                        member["name"] = lines[idx + 1]
+                        break
+            if not member["relationship_to_head"]:
+                for idx, line in enumerate(lines):
+                    if line == "户主或与户主关系" and idx + 1 < len(lines):
+                        member["relationship_to_head"] = lines[idx + 1].strip()
+                        break
+            if not member["birth_date"] and member["id_number"]:
+                raw = member["id_number"][6:14]
+                if raw.isdigit():
+                    member["birth_date"] = f"{raw[:4]}年{raw[4:6]}月{raw[6:8]}日"
+            if not is_reasonable_name(member["name"]):
+                member["name"] = ""
+            relation_allowed = {"户主", "妻", "夫", "子", "女", "父", "母", "配偶", "长子", "长女", "次子", "次女", "孙子", "孙女"}
+            if member["relationship_to_head"] and member["relationship_to_head"] not in relation_allowed:
+                if member["relationship_to_head"].startswith("户主"):
+                    member["relationship_to_head"] = "户主"
+                else:
+                    member["relationship_to_head"] = ""
+            member_key = (member["id_number"] or f"{member['name']}|{member['birth_date']}").strip("|")
+            if (member["name"] or member["id_number"]) and member_key and member_key not in seen_member_keys:
+                seen_member_keys.add(member_key)
+                members.append(member)
+                member_present = True
+
+    if not homepage_data["household_head_name"]:
+        for member in members:
+            if member.get("relationship_to_head") == "户主" and member.get("name"):
+                homepage_data["household_head_name"] = member["name"]
+                break
+
+    if homepage_present and members:
+        completeness_note = "已识别户口本首页和成员页"
+    elif homepage_present:
+        completeness_note = "已识别户口本首页，缺少成员页"
+    elif members:
+        completeness_note = "已识别成员页，缺少户口本首页"
+    else:
+        completeness_note = "户口本信息不完整"
+
+    return {
+        "household_head_name": homepage_data.get("household_head_name", ""),
+        "household_number": homepage_data.get("household_number", ""),
+        "household_type": homepage_data.get("household_type", ""),
+        "household_address": homepage_data.get("household_address", ""),
+        "registration_authority": homepage_data.get("registration_authority", ""),
+        "members": members,
+        "completeness_note": completeness_note,
+    }
+
+
+def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    if raw_pages:
+        return extract_hukou_from_pages(raw_pages)
+    return _extract_hukou_fields(text)
+
+
+def extract_hukou_from_pages(raw_pages: list[dict[str, Any]]) -> dict[str, Any]:
+    def clean_lines(text: str) -> list[str]:
+        return [re.sub(r"\s+", " ", str(line or "")).strip() for line in str(text or "").splitlines() if str(line or "").strip()]
+
+    def find_value(lines: list[str], labels: tuple[str, ...], *, stop_labels: tuple[str, ...] = (), max_lookahead: int = 8) -> str:
+        for index, line in enumerate(lines):
+            for label in labels:
+                if line == label:
+                    for offset in range(1, max_lookahead + 1):
+                        pos = index + offset
+                        if pos >= len(lines):
+                            break
+                        candidate = lines[pos].strip()
+                        if not candidate:
+                            continue
+                        if any(stop in candidate for stop in stop_labels):
+                            break
+                        return candidate
+                if label in line:
+                    candidate = re.sub(rf"^.*?{re.escape(label)}\s*[:：]?\s*", "", line).strip()
+                    if candidate and not any(stop in candidate for stop in stop_labels):
+                        return candidate
+                    for offset in range(1, max_lookahead + 1):
+                        pos = index + offset
+                        if pos >= len(lines):
+                            break
+                        candidate = lines[pos].strip()
+                        if not candidate:
+                            continue
+                        if any(stop in candidate for stop in stop_labels):
+                            break
+                        return candidate
+        return ""
+
+    def is_reasonable_name(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text or len(text) > 8:
+            return False
+        invalid_fragments = ("姓名", "户主或与", "公民身份号码", "住址", "常住人口登记卡", "登记事项", "户口", "调查")
+        if any(fragment in text for fragment in invalid_fragments):
+            return False
+        return bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,8}", text))
+
+    homepage_data = {
+        "household_head_name": "",
+        "household_number": "",
+        "household_type": "",
+        "household_address": "",
+        "registration_authority": "",
+    }
+    members: list[dict[str, str]] = []
+    seen_member_keys: set[str] = set()
+    homepage_present = False
+    member_present = False
+
+    for page_item in raw_pages or []:
+        if not isinstance(page_item, dict):
+            continue
         page_text = str(page_item.get("text") or "")
         lines = clean_lines(page_text)
         if not lines:
