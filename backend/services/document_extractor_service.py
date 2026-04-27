@@ -5557,29 +5557,6 @@ def _normalize_hukou_relation(value: str) -> str:
     cleaned = _normalize_hukou_text(value)
     if not cleaned:
         return ""
-    mapping = {
-        "户主": "户主",
-        "配偶": "配偶",
-        "妻": "配偶",
-        "夫": "配偶",
-        "子": "子",
-        "长子": "子",
-        "次子": "子",
-        "女": "女",
-        "长女": "女",
-        "次女": "女",
-        "父": "父",
-        "母": "母",
-        "祖父": "祖父",
-        "祖母": "祖母",
-        "外祖父": "外祖父",
-        "外祖母": "外祖母",
-        "孙子": "孙子",
-        "孙女": "孙女",
-    }
-    for original, normalized in mapping.items():
-        if cleaned == original:
-            return normalized
     return cleaned
 
 
@@ -5600,8 +5577,6 @@ def _normalize_hukou_household_type(value: str) -> str:
     cleaned = _normalize_hukou_text(value)
     if not cleaned:
         return ""
-    if cleaned == "非农家庭户":
-        return "非农业家庭户"
     return cleaned if "户" in cleaned and len(cleaned) <= 8 else ""
 
 
@@ -5617,10 +5592,6 @@ def _normalize_hukou_ethnicity(value: str) -> str:
     cleaned = _normalize_hukou_text(value)
     if not cleaned:
         return ""
-    if cleaned.endswith("族"):
-        return cleaned
-    if len(cleaned) <= 3:
-        return f"{cleaned}族"
     return cleaned
 
 
@@ -5628,19 +5599,6 @@ def _normalize_hukou_marital_status(value: str) -> str:
     cleaned = _normalize_hukou_text(value)
     if not cleaned:
         return ""
-    mapping = {
-        "已婚": "已婚",
-        "有配偶": "已婚",
-        "未婚": "未婚",
-        "无配偶": "未婚",
-        "离婚": "离异",
-        "离异": "离异",
-        "丧偶": "丧偶",
-        "再婚": "再婚",
-    }
-    for original, normalized in mapping.items():
-        if cleaned == original:
-            return normalized
     return cleaned
 
 
@@ -5648,29 +5606,6 @@ def _normalize_hukou_education(value: str) -> str:
     cleaned = _normalize_hukou_text(value)
     if not cleaned:
         return ""
-    mapping = {
-        "博士研究生": "博士",
-        "博士": "博士",
-        "硕士研究生": "硕士",
-        "硕士": "硕士",
-        "大学本科": "本科",
-        "本科": "本科",
-        "大学专科": "大专",
-        "专科": "大专",
-        "大专": "大专",
-        "高中": "高中",
-        "普通高中": "高中",
-        "中专": "中专",
-        "中技": "中专",
-        "技校": "中专",
-        "初中": "初中",
-        "初级中学": "初中",
-        "小学": "小学",
-        "文盲或半文盲": "文盲或半文盲",
-    }
-    for original, normalized in mapping.items():
-        if cleaned == original:
-            return normalized
     return cleaned
 
 
