@@ -272,6 +272,41 @@ def _format_raw_pages_for_markdown(value: list[Any]) -> str:
     return '\n' + '\n'.join(lines) if has_page else ''
 
 
+def _format_hukou_members_for_markdown(value: list[Any]) -> str:
+    if not value:
+        return '\n- 暂未识别到成员信息'
+    header = [
+        '| 姓名 | 与户主关系 | 性别 | 民族 | 出生日期 | 身份证号码 | 婚姻状况 |',
+        '|---|---|---|---|---|---|---|',
+    ]
+    rows: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name') or '').strip()
+        id_number = str(item.get('id_number') or '').strip()
+        if not name and not id_number:
+            continue
+        rows.append(
+            '| '
+            + ' | '.join(
+                [
+                    name,
+                    str(item.get('relationship_to_head') or '').strip(),
+                    str(item.get('gender') or '').strip(),
+                    str(item.get('ethnicity') or '').strip(),
+                    str(item.get('birth_date') or '').strip(),
+                    id_number,
+                    str(item.get('marital_status') or '').strip(),
+                ]
+            )
+            + ' |'
+        )
+    if not rows:
+        return '\n- 暂未识别到成员信息'
+    return '\n### 家庭成员\n' + '\n'.join(header + rows)
+
+
 def _format_shareholders_for_markdown(value: list[Any]) -> str:
     if not value:
         return '\u6682\u65e0'

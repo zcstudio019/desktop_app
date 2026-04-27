@@ -487,6 +487,7 @@ def _extract_structured_data(
             text_content,
             document_type_code,
             rows=rows,
+            raw_pages=raw_pages or [],
             ai_service=ai_service,
         )
         raw_pages = raw_pages or []
