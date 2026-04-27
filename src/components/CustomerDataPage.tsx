@@ -136,6 +136,17 @@ interface CompanyArticlesRuleGroupView {
   items: CompanyArticlesRuleDetailView[];
 }
 
+interface HukouInsight {
+  householdHeadName: string;
+  householdNumber: string;
+  householdType: string;
+  householdAddress: string;
+  registrationAuthority: string;
+  completenessNote: string;
+  members: Array<Record<string, unknown>>;
+  document?: CustomerDocumentListItem;
+}
+
 const DOCUMENT_GROUPS = {
   enterprise: {
     title: '企业主体资料',
@@ -968,6 +979,287 @@ function buildCompanyArticlesInsight(
     majorDecisionRuleDetails: toRecordList(extractedData.major_decision_rule_details),
     document,
   };
+}
+
+function buildHukouInsightFromRawPages(rawPagesValue: unknown): HukouInsight | null {
+  const rawPages = toRecordList(rawPagesValue)
+    .map((item) => ({
+      page: Number(item.page || 0),
+      text: stringifyExtractionValue(item.text),
+    }))
+    .filter((item) => item.text);
+  if (rawPages.length === 0) {
+    return null;
+  }
+
+  const cleanLines = (text: string): string[] =>
+    text
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+  const findValue = (
+    lines: string[],
+    labels: string[],
+    stopLabels: string[] = [],
+    maxLookahead = 8,
+  ): string => {
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      for (const label of labels) {
+        if (line === label) {
+          for (let offset = 1; offset <= maxLookahead; offset += 1) {
+            const candidate = lines[index + offset];
+            if (!candidate) {
+              break;
+            }
+            if (stopLabels.some((stopLabel) => candidate.includes(stopLabel))) {
+              break;
+            }
+            return candidate;
+          }
+        }
+        if (line.includes(label)) {
+          const candidate = line.replace(new RegExp(`^.*?${label}\\s*[:：]?\\s*`), '').trim();
+          if (candidate && !stopLabels.some((stopLabel) => candidate.includes(stopLabel))) {
+            return candidate;
+          }
+          for (let offset = 1; offset <= maxLookahead; offset += 1) {
+            const nextLine = lines[index + offset];
+            if (!nextLine) {
+              break;
+            }
+            if (stopLabels.some((stopLabel) => nextLine.includes(stopLabel))) {
+              break;
+            }
+            return nextLine;
+          }
+        }
+      }
+    }
+    return '';
+  };
+
+  const isReasonableName = (value: string): boolean => {
+    const text = value.trim();
+    if (!text || text.length > 8) {
+      return false;
+    }
+    if (['姓名', '户主或与', '公民身份号码', '住址', '常住人口登记卡', '登记事项', '户口', '调查'].some((fragment) => text.includes(fragment))) {
+      return false;
+    }
+    return /^[\u4e00-\u9fff·]{2,8}$/.test(text);
+  };
+
+  const homepage = {
+    householdHeadName: '',
+    householdNumber: '',
+    householdType: '',
+    householdAddress: '',
+    registrationAuthority: '',
+  };
+  const members: Array<Record<string, unknown>> = [];
+  const seenMemberKeys = new Set<string>();
+  let homepagePresent = false;
+
+  for (const page of rawPages) {
+    const lines = cleanLines(page.text);
+    if (lines.length === 0) {
+      continue;
+    }
+    const joined = lines.join('\n');
+    const homepageHits = ['户别', '户主姓名', '户号', '住址'].filter((label) => joined.includes(label)).length;
+    if (homepageHits >= 3) {
+      const headName = findValue(lines, ['户主姓名'], ['户号', '户别', '住址', '登记事项变更']);
+      const pageHomepage = {
+        householdHeadName: isReasonableName(headName) ? headName : '',
+        householdNumber: findValue(lines, ['户号'], ['户别', '住址', '户主姓名']),
+        householdType: findValue(lines, ['户别'], ['户号', '住址', '户主姓名']),
+        householdAddress: findValue(lines, ['住址', '户籍地址', '地址'], ['户主姓名', '户号', '户别', '登记事项变更', '常住人口登记卡']),
+        registrationAuthority: lines.find((line) => line.includes('派出所') || line.includes('公安局')) || '',
+      };
+      if (Object.values(pageHomepage).some(Boolean)) {
+        homepagePresent = true;
+      }
+      if (!homepage.householdHeadName && pageHomepage.householdHeadName) homepage.householdHeadName = pageHomepage.householdHeadName;
+      if (!homepage.householdNumber && pageHomepage.householdNumber) homepage.householdNumber = pageHomepage.householdNumber;
+      if (!homepage.householdType && pageHomepage.householdType) homepage.householdType = pageHomepage.householdType;
+      if (!homepage.householdAddress && pageHomepage.householdAddress) homepage.householdAddress = pageHomepage.householdAddress;
+      if (!homepage.registrationAuthority && pageHomepage.registrationAuthority) homepage.registrationAuthority = pageHomepage.registrationAuthority;
+    }
+
+    const memberHits = ['常住人口登记卡', '姓名', '户主或与户主关系', '公民身份号码', '出生日期'].filter((label) => joined.includes(label)).length;
+    if (memberHits >= 2) {
+      let name = findValue(lines, ['姓名'], ['户主或与户主关系', '公民身份号码', '性别', '民族', '出生日期']).trim();
+      if (!name) {
+        const idx = lines.indexOf('姓名');
+        if (idx >= 0 && lines[idx + 1] && isReasonableName(lines[idx + 1])) {
+          name = lines[idx + 1];
+        }
+      }
+      const relationship = findValue(lines, ['户主或与户主关系', '与户主关系'], ['公民身份号码', '性别', '民族', '出生日期', '婚姻状况', '服务处所', '职业']).trim();
+      const member = {
+        name: isReasonableName(name) ? name : '',
+        relationship_to_head: ['户主', '妻', '夫', '子', '女', '父', '母', '配偶', '长子', '长女', '次子', '次女', '孙子', '孙女'].includes(relationship) ? relationship : (relationship.startsWith('户主') ? '户主' : ''),
+        gender: findValue(lines, ['性别'], ['民族', '出生日期', '公民身份号码', '婚姻状况']).trim(),
+        ethnicity: findValue(lines, ['民族'], ['出生日期', '公民身份号码', '婚姻状况']).trim(),
+        birth_date: findValue(lines, ['出生日期'], ['公民身份号码', '婚姻状况', '服务处所', '职业']).trim(),
+        id_number: (joined.match(/\d{17}[\dXx]/)?.[0] || '').toUpperCase(),
+        marital_status: findValue(lines, ['婚姻状况'], ['服务处所', '职业', '兵役状况', '何时由何地迁来本市（县）', '何时由何地迁来本址']).trim(),
+      } as Record<string, unknown>;
+      if (!member.birth_date && typeof member.id_number === 'string' && member.id_number.length >= 14) {
+        const raw = member.id_number.slice(6, 14);
+        if (/^\d{8}$/.test(raw)) {
+          member.birth_date = `${raw.slice(0, 4)}年${raw.slice(4, 6)}月${raw.slice(6, 8)}日`;
+        }
+      }
+      const key = stringifyExtractionValue(member.id_number) || `${stringifyExtractionValue(member.name)}|${stringifyExtractionValue(member.birth_date)}`.replace(/^\|+|\|+$/g, '');
+      if ((member.name || member.id_number) && key && !seenMemberKeys.has(key)) {
+        seenMemberKeys.add(key);
+        members.push(member);
+      }
+    }
+  }
+
+  if (!homepage.householdHeadName) {
+    const headMember = members.find((member) => stringifyExtractionValue(member.relationship_to_head) === '户主');
+    homepage.householdHeadName = stringifyExtractionValue(headMember?.name);
+  }
+
+  const completenessNote = homepagePresent && members.length > 0
+    ? '已识别户口本首页和成员页'
+    : homepagePresent
+      ? '已识别户口本首页，缺少成员页'
+      : members.length > 0
+        ? '已识别成员页，缺少户口本首页'
+        : '户口本信息不完整';
+
+  return {
+    householdHeadName: homepage.householdHeadName,
+    householdNumber: homepage.householdNumber,
+    householdType: homepage.householdType,
+    householdAddress: homepage.householdAddress,
+    registrationAuthority: homepage.registrationAuthority,
+    completenessNote,
+    members,
+  };
+}
+
+function buildHukouInsight(
+  documents: CustomerDocumentListItem[],
+  extractionGroups: ExtractionGroup[],
+): HukouInsight | null {
+  const latestItem = getExtractionItemsByType(extractionGroups, 'hukou')[0];
+  if (!latestItem) {
+    return null;
+  }
+
+  const extractedData = (latestItem.extracted_data || {}) as Record<string, unknown>;
+  const document = getDocumentsByType(documents, 'hukou')[0];
+  const parsedInsight = buildHukouInsightFromRawPages(extractedData.raw_pages);
+  const extractedMembers = toRecordList(extractedData.members).filter((item) => {
+    const name = stringifyExtractionValue(item.name || item['姓名']);
+    const idNumber = stringifyExtractionValue(item.id_number || item['身份证号码'] || item['身份证号']);
+    return Boolean(name || idNumber);
+  });
+  const mergedMembers = new Map<string, Record<string, unknown>>();
+  [...(parsedInsight?.members || []), ...extractedMembers].forEach((item) => {
+    const key = stringifyExtractionValue(item.id_number || item['身份证号码'] || item['身份证号'])
+      || `${stringifyExtractionValue(item.name || item['姓名'])}|${stringifyExtractionValue(item.birth_date || item['出生日期'])}`.replace(/^\|+|\|+$/g, '');
+    if (!key) {
+      return;
+    }
+    const existing = mergedMembers.get(key) || {};
+    mergedMembers.set(key, { ...item, ...existing, ...Object.fromEntries(Object.entries(item).filter(([, value]) => Boolean(stringifyExtractionValue(value)))) });
+  });
+  const members = Array.from(mergedMembers.values());
+
+  let householdHeadName = extractValueFromExtractionData(extractedData, ['household_head_name', '户主姓名']);
+  if (!householdHeadName) {
+    const householdHeadMember = members.find((item) => stringifyExtractionValue(item.relationship_to_head || item['与户主关系'] || item['户主或与户主关系']) === '户主');
+    householdHeadName = stringifyExtractionValue(householdHeadMember?.name || householdHeadMember?.['姓名']);
+  }
+
+  return {
+    householdHeadName: householdHeadName || parsedInsight?.householdHeadName || '',
+    householdNumber: extractValueFromExtractionData(extractedData, ['household_number', '户号']) || parsedInsight?.householdNumber || '',
+    householdType: extractValueFromExtractionData(extractedData, ['household_type', '户别']) || parsedInsight?.householdType || '',
+    householdAddress: extractValueFromExtractionData(extractedData, ['household_address', '户籍地址', '住址', '地址']) || parsedInsight?.householdAddress || '',
+    registrationAuthority: extractValueFromExtractionData(extractedData, ['registration_authority', '登记机关', '签发机关']) || parsedInsight?.registrationAuthority || '',
+    completenessNote: extractValueFromExtractionData(extractedData, ['completeness_note', '完整性提示']) || parsedInsight?.completenessNote || '',
+    members,
+    document,
+  };
+}
+
+function buildHukouMembersMarkdown(members: Array<Record<string, unknown>>): string {
+  if (members.length === 0) {
+    return '### 家庭成员\n- 暂未识别到成员信息';
+  }
+
+  const header = [
+    '### 家庭成员',
+    '| 姓名 | 与户主关系 | 性别 | 民族 | 出生日期 | 身份证号码 | 婚姻状况 |',
+    '|---|---|---|---|---|---|---|',
+  ];
+
+  const rows = members.map((member) => {
+    const values = [
+      stringifyExtractionValue(member.name || member['姓名']),
+      stringifyExtractionValue(member.relationship_to_head || member['与户主关系'] || member['户主或与户主关系']),
+      stringifyExtractionValue(member.gender || member['性别']),
+      stringifyExtractionValue(member.ethnicity || member['民族']),
+      stringifyExtractionValue(member.birth_date || member['出生日期']),
+      stringifyExtractionValue(member.id_number || member['身份证号码'] || member['身份证号']),
+      stringifyExtractionValue(member.marital_status || member['婚姻状况']),
+    ].map((value) => value.trim() || '—');
+    return `| ${values.join(' | ')} |`;
+  });
+
+  return [...header, ...rows].join('\n');
+}
+
+function synchronizeHukouMarkdown(markdown: string, insight: HukouInsight | null): string {
+  if (!markdown || !insight) {
+    return markdown;
+  }
+
+  const sectionMatch = markdown.match(/## 户口本[\s\S]*?(?=\n##\s|$)/);
+  if (!sectionMatch) {
+    return markdown;
+  }
+
+  const section = sectionMatch[0];
+  const applyLine = (content: string, label: string, value: string): string => {
+    if (!value || value.trim() === '暂无') {
+      return content;
+    }
+    const nextLine = `- ${label}：${value}`;
+    const pattern = new RegExp(`^- ${label}：.*$`, 'm');
+    if (pattern.test(content)) {
+      return content.replace(pattern, nextLine);
+    }
+    return content;
+  };
+
+  let nextSection = section;
+  nextSection = applyLine(nextSection, '户主姓名', insight.householdHeadName);
+  nextSection = applyLine(nextSection, '户号', insight.householdNumber);
+  nextSection = applyLine(nextSection, '户别', insight.householdType);
+  nextSection = applyLine(nextSection, '户籍地址', insight.householdAddress);
+  nextSection = applyLine(nextSection, '登记机关', insight.registrationAuthority);
+  nextSection = applyLine(nextSection, '完整性提示', insight.completenessNote);
+
+  nextSection = nextSection.replace(/###\s*PDF原文识别内容[\s\S]*$/m, '').trimEnd();
+
+  const memberBlock = buildHukouMembersMarkdown(insight.members);
+  if (/###\s*家庭成员[\s\S]*?(?=\n###\s|$)/m.test(nextSection)) {
+    nextSection = nextSection.replace(/###\s*家庭成员[\s\S]*?(?=\n###\s|$)/m, memberBlock);
+  } else {
+    nextSection = `${nextSection}\n\n${memberBlock}`;
+  }
+
+  return markdown.replace(section, nextSection);
 }
 
 function synchronizeCompanyArticlesMarkdown(
@@ -1890,6 +2182,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     () => buildCompanyArticlesInsight(documents, extractionGroups),
     [documents, extractionGroups]
   );
+  const hukouInsight = useMemo(
+    () => buildHukouInsight(documents, extractionGroups),
+    [documents, extractionGroups]
+  );
   const companyArticlesRoleItems = useMemo(
     () => {
       const items = [
@@ -1915,8 +2211,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     [companyArticlesShareholderViews]
   );
   const renderedDraft = useMemo(
-    () => synchronizeCompanyArticlesMarkdown(draft, companyArticlesInsight, companyArticlesEquityRatioSummary),
-    [draft, companyArticlesInsight, companyArticlesEquityRatioSummary]
+    () => synchronizeHukouMarkdown(
+      synchronizeCompanyArticlesMarkdown(draft, companyArticlesInsight, companyArticlesEquityRatioSummary),
+      hukouInsight,
+    ),
+    [draft, companyArticlesInsight, companyArticlesEquityRatioSummary, hukouInsight]
   );
   const fieldSourceSummaries = useMemo(
     () => buildFieldSourceSummaries(renderedDraft, documents),
@@ -2850,6 +3149,133 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     </article>
                   );
                 })}
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {selectedCustomerId && hukouInsight ? (
+          <section className="border-b border-slate-200 bg-white px-6 py-5">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-slate-800">户口本重点信息</h3>
+                  <p className="mt-1 text-sm text-slate-500">
+                    这里直接展示户口本首页和家庭成员的结构化结果，优先便于核对户主、地址和家庭成员信息。
+                  </p>
+                </div>
+                {hukouInsight.document ? (
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    {hukouInsight.document.original_available ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void handlePreviewDocument(hukouInsight.document as CustomerDocumentListItem)}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                        >
+                          查看原件
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadDocument(hukouInsight.document as CustomerDocumentListItem)}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+                        >
+                          下载原件
+                        </button>
+                      </>
+                    ) : (
+                      <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-500">
+                        仅保留提取结果
+                      </span>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="grid gap-3 xl:grid-cols-2">
+                <article className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-800">户口本首页</h4>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        优先核对户主姓名、户号、户别、户籍地址和登记机关。
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                      {hukouInsight.completenessNote || '已提取'}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 text-sm">
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">户主姓名</div>
+                      <div className="mt-1 text-slate-700">{hukouInsight.householdHeadName || '暂无'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">户号</div>
+                      <div className="mt-1 text-slate-700">{hukouInsight.householdNumber || '暂无'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">户别</div>
+                      <div className="mt-1 text-slate-700">{hukouInsight.householdType || '暂无'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-slate-500">登记机关</div>
+                      <div className="mt-1 text-slate-700">{hukouInsight.registrationAuthority || '暂无'}</div>
+                    </div>
+                    <div className="md:col-span-2">
+                      <div className="text-xs font-medium text-slate-500">户籍地址</div>
+                      <div className="mt-1 text-slate-700 break-words">{hukouInsight.householdAddress || '暂无'}</div>
+                    </div>
+                  </div>
+                </article>
+
+                <article className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-800">家庭成员</h4>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        优先展示姓名、关系、性别、民族、出生日期、身份证号码和婚姻状况。
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">
+                      成员 {hukouInsight.members.length} 人
+                    </span>
+                  </div>
+
+                  {hukouInsight.members.length > 0 ? (
+                    <div className="mt-4 overflow-x-auto">
+                      <table className="min-w-full border-separate border-spacing-0 overflow-hidden rounded-xl border border-slate-200 bg-white text-sm">
+                        <thead className="bg-slate-100/90 text-slate-600">
+                          <tr>
+                            {['姓名', '与户主关系', '性别', '民族', '出生日期', '身份证号码', '婚姻状况'].map((label) => (
+                              <th key={label} className="border-b border-slate-200 px-3 py-2 text-left text-xs font-medium">
+                                {label}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {hukouInsight.members.map((member, index) => (
+                            <tr key={`${stringifyExtractionValue(member.id_number || member['身份证号码'] || member['身份证号']) || stringifyExtractionValue(member.name || member['姓名'])}-${index}`} className="odd:bg-white even:bg-slate-50/50">
+                              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{stringifyExtractionValue(member.name || member['姓名']) || '—'}</td>
+                              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{stringifyExtractionValue(member.relationship_to_head || member['与户主关系'] || member['户主或与户主关系']) || '—'}</td>
+                              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{stringifyExtractionValue(member.gender || member['性别']) || '—'}</td>
+                              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{stringifyExtractionValue(member.ethnicity || member['民族']) || '—'}</td>
+                              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{stringifyExtractionValue(member.birth_date || member['出生日期']) || '—'}</td>
+                              <td className="border-b border-slate-100 px-3 py-2 font-mono text-slate-700">{stringifyExtractionValue(member.id_number || member['身份证号码'] || member['身份证号']) || '—'}</td>
+                              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{stringifyExtractionValue(member.marital_status || member['婚姻状况']) || '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
+                      暂未识别到家庭成员信息。
+                    </div>
+                  )}
+                </article>
               </div>
             </div>
           </section>
