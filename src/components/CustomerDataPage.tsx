@@ -1230,34 +1230,26 @@ function synchronizeHukouMarkdown(markdown: string, insight: HukouInsight | null
   }
 
   const section = sectionMatch[0];
-  const applyLine = (content: string, label: string, value: string): string => {
-    if (!value || value.trim() === '暂无') {
-      return content;
-    }
-    const nextLine = `- ${label}：${value}`;
-    const pattern = new RegExp(`^- ${label}：.*$`, 'm');
-    if (pattern.test(content)) {
-      return content.replace(pattern, nextLine);
-    }
-    return content;
-  };
-
-  let nextSection = section;
-  nextSection = applyLine(nextSection, '户主姓名', insight.householdHeadName);
-  nextSection = applyLine(nextSection, '户号', insight.householdNumber);
-  nextSection = applyLine(nextSection, '户别', insight.householdType);
-  nextSection = applyLine(nextSection, '户籍地址', insight.householdAddress);
-  nextSection = applyLine(nextSection, '登记机关', insight.registrationAuthority);
-  nextSection = applyLine(nextSection, '完整性提示', insight.completenessNote);
-
-  nextSection = nextSection.replace(/###\s*PDF原文识别内容[\s\S]*$/m, '').trimEnd();
-
-  const memberBlock = buildHukouMembersMarkdown(insight.members);
-  if (/###\s*家庭成员[\s\S]*?(?=\n###\s|$)/m.test(nextSection)) {
-    nextSection = nextSection.replace(/###\s*家庭成员[\s\S]*?(?=\n###\s|$)/m, memberBlock);
-  } else {
-    nextSection = `${nextSection}\n\n${memberBlock}`;
-  }
+  const fileName = insight.document?.file_name || '暂无';
+  const originalStatus = insight.document
+    ? (insight.document.original_available ? '可查看' : '仅保留提取结果')
+    : '暂无';
+  const nextSection = [
+    '## 户口本',
+    `- 资料类型：户口本`,
+    `- 来源文件：${fileName}`,
+    `- 原件状态：${originalStatus}`,
+    '',
+    '### 结构化提取结果',
+    `- 户主姓名：${insight.householdHeadName || '暂无'}`,
+    `- 户号：${insight.householdNumber || '暂无'}`,
+    `- 户别：${insight.householdType || '暂无'}`,
+    `- 户籍地址：${insight.householdAddress || '暂无'}`,
+    `- 登记机关：${insight.registrationAuthority || '暂无'}`,
+    `- 完整性提示：${insight.completenessNote || '暂无'}`,
+    '',
+    buildHukouMembersMarkdown(insight.members),
+  ].join('\n');
 
   return markdown.replace(section, nextSection);
 }
