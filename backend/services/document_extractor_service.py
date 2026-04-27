@@ -5514,3 +5514,324 @@ def _extract_id_card_fields(text: str) -> dict[str, Any]:
 
 def extract_id_card(text: str) -> dict[str, Any]:
     return _extract_id_card_fields(text)
+
+
+def extract_hukou(text: str) -> dict[str, Any]:
+    return _extract_hukou_fields(text)
+
+
+HUKOU_ID_PATTERN = re.compile(r"([1-9]\d{16}[\dXx])")
+HUKOU_DATE_PATTERN = re.compile(r"((?:19|20)\d{2}[年\./-]\d{1,2}[月\./-]\d{1,2}日?)")
+HUKOU_RELATION_VALUES = (
+    "户主", "配偶", "夫", "妻", "子", "女", "父", "母", "长子", "长女", "次子", "次女",
+    "孙子", "孙女", "祖父", "祖母", "外祖父", "外祖母",
+)
+HUKOU_HOMEPAGE_KEYWORDS = (
+    "户别", "户主姓名", "户号", "住址", "户口专用", "承办人", "签发日期",
+)
+HUKOU_MEMBER_KEYWORDS = (
+    "常住人口登记卡", "户主或与户主关系", "公民身份号码", "服务处所", "婚姻状况", "文化程度",
+)
+
+
+def _normalize_hukou_text(value: str) -> str:
+    cleaned = normalize_text(value)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"[|¦]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip("：:;；，,。 ")
+
+
+def _normalize_hukou_date(value: str) -> str:
+    cleaned = _normalize_hukou_text(value)
+    if not cleaned:
+        return ""
+    match = re.search(r"((?:19|20)\d{2})[年\./-](\d{1,2})[月\./-](\d{1,2})", cleaned)
+    if not match:
+        return cleaned
+    return f"{match.group(1)}年{match.group(2).zfill(2)}月{match.group(3).zfill(2)}日"
+
+
+def _find_hukou_field(text: str, labels: tuple[str, ...], *, stop_labels: tuple[str, ...] = (), max_length: int = 220) -> str:
+    source = text or ""
+    for label in labels:
+        pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*")
+        match = pattern.search(source)
+        if not match:
+            continue
+        candidate = source[match.end() : match.end() + max_length]
+        stop_indexes: list[int] = []
+        for stop_label in stop_labels:
+            stop_match = re.search(rf"{re.escape(stop_label)}\s*[:：]?", candidate)
+            if stop_match:
+                stop_indexes.append(stop_match.start())
+        if stop_indexes:
+            candidate = candidate[: min(stop_indexes)]
+        cleaned = _normalize_hukou_text(candidate.splitlines()[0] if "\n" in candidate else candidate)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _collect_hukou_lines(text: str) -> list[str]:
+    return [_normalize_hukou_text(line) for line in (text or "").splitlines() if _normalize_hukou_text(line)]
+
+
+def _detect_hukou_page_type(lines: list[str]) -> str:
+    joined = " ".join(lines)
+    homepage_hits = sum(1 for keyword in HUKOU_HOMEPAGE_KEYWORDS if keyword in joined)
+    member_hits = sum(1 for keyword in HUKOU_MEMBER_KEYWORDS if keyword in joined)
+    if member_hits >= 2 and member_hits >= homepage_hits:
+        return "member"
+    if homepage_hits >= 2:
+        return "homepage"
+    if "户主或与户主关系" in joined or "公民身份号码" in joined:
+        return "member"
+    if "户主姓名" in joined or "户号" in joined or "户别" in joined:
+        return "homepage"
+    return "unknown"
+
+
+def _extract_hukou_homepage_fields(text: str, lines: list[str]) -> dict[str, str]:
+    source = text or ""
+    household_head_name = _find_hukou_field(
+        source,
+        ("户主姓名", "户主"),
+        stop_labels=("户号", "户别", "住址", "住 所", "籍贯", "承办人"),
+    )
+    household_number = _find_hukou_field(
+        source,
+        ("户号",),
+        stop_labels=("户主姓名", "户别", "住址", "籍贯", "承办人"),
+    )
+    household_type = _find_hukou_field(
+        source,
+        ("户别",),
+        stop_labels=("户主姓名", "户号", "住址", "籍贯", "承办人"),
+    )
+    household_address = _find_hukou_field(
+        source,
+        ("住址", "户籍地址", "住 所", "地址"),
+        stop_labels=("户主姓名", "户号", "户别", "承办人", "签发日期", "登记日期"),
+        max_length=260,
+    )
+    registration_authority = _find_hukou_field(
+        source,
+        ("签发机关", "登记机关", "承办单位"),
+        stop_labels=("有效期限", "签发日期", "登记日期"),
+    )
+    if not registration_authority:
+        for line in lines:
+            if "派出所" in line or "公安局" in line:
+                registration_authority = line
+                break
+    return {
+        "household_head_name": household_head_name,
+        "household_number": household_number,
+        "household_type": household_type,
+        "household_address": household_address,
+        "registration_authority": registration_authority,
+    }
+
+
+def _member_birth_from_id(id_number: str) -> str:
+    if not id_number or len(id_number) < 14:
+        return ""
+    raw = id_number[6:14]
+    if not raw.isdigit():
+        return ""
+    return f"{raw[:4]}年{raw[4:6]}月{raw[6:8]}日"
+
+
+def _extract_hukou_member_fields_from_block(block_text: str) -> dict[str, str]:
+    source = block_text or ""
+    name = _find_hukou_field(
+        source,
+        ("姓名",),
+        stop_labels=("户主或与户主关系", "性别", "民族", "出生地", "籍贯", "出生日期", "公民身份号码"),
+    )
+    relationship = _find_hukou_field(
+        source,
+        ("户主或与户主关系", "与户主关系", "关系"),
+        stop_labels=("姓名", "性别", "民族", "出生日期", "公民身份号码", "服务处所", "职业"),
+    )
+    gender = _find_hukou_field(
+        source,
+        ("性别",),
+        stop_labels=("民族", "出生日期", "公民身份号码", "文化程度", "婚姻状况"),
+    )
+    ethnicity = _find_hukou_field(
+        source,
+        ("民族",),
+        stop_labels=("出生日期", "公民身份号码", "文化程度", "婚姻状况", "兵役状况"),
+    )
+    birth_date = _normalize_hukou_date(
+        _find_hukou_field(
+            source,
+            ("出生日期", "出生"),
+            stop_labels=("公民身份号码", "文化程度", "婚姻状况", "兵役状况"),
+        )
+    )
+    id_number = _find_first_match(source, HUKOU_ID_PATTERN).upper()
+    native_place = _find_hukou_field(
+        source,
+        ("籍贯", "出生地"),
+        stop_labels=("本市(县)其他地址", "宗教信仰", "公民身份号码", "文化程度"),
+    )
+    marital_status = _find_hukou_field(
+        source,
+        ("婚姻状况",),
+        stop_labels=("兵役状况", "服务处所", "职业", "何时由何地迁来本市(县)"),
+    )
+    education = _find_hukou_field(
+        source,
+        ("文化程度",),
+        stop_labels=("婚姻状况", "兵役状况", "服务处所", "职业"),
+    )
+    service_place = _find_hukou_field(
+        source,
+        ("服务处所",),
+        stop_labels=("职业", "何时由何地迁来本市(县)", "迁来本址时间", "登记日期"),
+        max_length=240,
+    )
+    occupation = _find_hukou_field(
+        source,
+        ("职业",),
+        stop_labels=("何时由何地迁来本市(县)", "迁来本址时间", "登记日期"),
+    )
+    if not birth_date and id_number:
+        birth_date = _member_birth_from_id(id_number)
+    return {
+        "name": name,
+        "relationship_to_head": relationship,
+        "gender": gender,
+        "ethnicity": ethnicity,
+        "birth_date": birth_date,
+        "id_number": id_number,
+        "native_place": native_place,
+        "marital_status": marital_status,
+        "education": education,
+        "service_place": service_place,
+        "occupation": occupation,
+    }
+
+
+def _extract_hukou_member_blocks(lines: list[str]) -> list[str]:
+    if not lines:
+        return []
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    saw_member_label = False
+    for line in lines:
+        if "姓名" in line and ("户主或与户主关系" in line or "公民身份号码" in line):
+            if current:
+                blocks.append(current)
+            current = [line]
+            saw_member_label = True
+            continue
+        if saw_member_label and not current:
+            current = [line]
+            continue
+        if saw_member_label:
+            if ("常住人口登记卡" in line or ("姓名" in line and "公民身份号码" in line and current)):
+                if current:
+                    blocks.append(current)
+                current = [line]
+                continue
+            current.append(line)
+    if current:
+        blocks.append(current)
+    return ["\n".join(block).strip() for block in blocks if any(part.strip() for part in block)]
+
+
+def _extract_hukou_members(text: str, lines: list[str]) -> list[dict[str, str]]:
+    blocks = _extract_hukou_member_blocks(lines)
+    members: list[dict[str, str]] = []
+    if not blocks and ("公民身份号码" in text or "户主或与户主关系" in text):
+        blocks = [text]
+
+    seen_keys: set[str] = set()
+    for block in blocks:
+        member = _extract_hukou_member_fields_from_block(block)
+        comparable_key = member.get("id_number") or f"{member.get('name', '')}|{member.get('birth_date', '')}"
+        comparable_key = comparable_key.strip("|")
+        if not member.get("name") and not member.get("id_number"):
+            continue
+        if comparable_key and comparable_key in seen_keys:
+            continue
+        if comparable_key:
+            seen_keys.add(comparable_key)
+        if not member.get("relationship_to_head") and member.get("name"):
+            member["relationship_to_head"] = "户主" if member["name"] == member.get("household_head_name") else ""
+        members.append(member)
+    return members
+
+
+def _merge_hukou_member_lists(*member_lists: list[dict[str, str]]) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: dict[str, dict[str, str]] = {}
+    for member_list in member_lists:
+        for member in member_list or []:
+            key = (member.get("id_number") or f"{member.get('name', '')}|{member.get('birth_date', '')}").strip("|")
+            if not key:
+                key = f"row:{len(merged)}"
+            existing = seen.get(key)
+            if existing is None:
+                cloned = dict(member)
+                seen[key] = cloned
+                merged.append(cloned)
+                continue
+            for field, value in member.items():
+                if value and not existing.get(field):
+                    existing[field] = value
+    return merged
+
+
+def _build_hukou_completeness_note(homepage_present: bool, member_present: bool) -> str:
+    if homepage_present and member_present:
+        return "已识别户口本首页和成员页"
+    if homepage_present:
+        return "已识别户口本首页，缺少成员页"
+    if member_present:
+        return "已识别成员页，缺少户口本首页"
+    return "户口本信息不完整"
+
+
+def _extract_hukou_fields(text: str) -> dict[str, Any]:
+    source = text or ""
+    lines = _collect_hukou_lines(source)
+    page_type = _detect_hukou_page_type(lines)
+    homepage_fields = _extract_hukou_homepage_fields(source, lines) if page_type in {"homepage", "unknown"} else {
+        "household_head_name": "",
+        "household_number": "",
+        "household_type": "",
+        "household_address": "",
+        "registration_authority": "",
+    }
+    members = _extract_hukou_members(source, lines) if page_type in {"member", "unknown"} else []
+    members = _merge_hukou_member_lists(members)
+
+    household_head_name = homepage_fields.get("household_head_name") or ""
+    if not household_head_name:
+        for member in members:
+            if member.get("relationship_to_head") == "户主":
+                household_head_name = member.get("name", "")
+                break
+
+    homepage_present = any(homepage_fields.values())
+    member_present = len(members) > 0
+
+    return {
+        "household_head_name": household_head_name,
+        "household_number": homepage_fields.get("household_number", ""),
+        "household_type": homepage_fields.get("household_type", ""),
+        "household_address": homepage_fields.get("household_address", ""),
+        "registration_authority": homepage_fields.get("registration_authority", ""),
+        "members": members,
+        "completeness_note": _build_hukou_completeness_note(homepage_present, member_present),
+    }
+
+
+def extract_hukou(text: str) -> dict[str, Any]:
+    return _extract_hukou_fields(text)

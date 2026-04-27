@@ -59,6 +59,12 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'valid_period': '\u6709\u6548\u671f\u9650',
     'side': '\u8bc6\u522b\u9762',
     'completeness_hint': '\u5b8c\u6574\u6027\u63d0\u793a',
+    'household_head_name': '户主姓名',
+    'household_number': '户号',
+    'household_type': '户别',
+    'household_address': '户籍地址',
+    'members': '家庭成员',
+    'completeness_note': '完整性提示',
     'account_name': '\u8d26\u6237\u540d\u79f0',
     'account_number': '\u8d26\u53f7',
     'bank_name': '\u94f6\u884c\u540d\u79f0',
@@ -212,6 +218,37 @@ def _format_company_articles_rule_list_v2(value: list[Any]) -> str:
         if text:
             lines.append(f"  - {text}")
     return '\n' + '\n'.join(lines) if lines else '\u6682\u65e0'
+
+
+def _format_hukou_members_for_markdown(value: list[Any]) -> str:
+    if not value:
+        return '\n- 暂未识别到成员信息'
+    header = [
+        '| 姓名 | 与户主关系 | 性别 | 民族 | 出生日期 | 身份证号码 | 婚姻状况 |',
+        '|---|---|---|---|---|---|---|',
+    ]
+    rows: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            '| '
+            + ' | '.join(
+                [
+                    str(item.get('name') or '').strip() or '暂无',
+                    str(item.get('relationship_to_head') or '').strip() or '暂无',
+                    str(item.get('gender') or '').strip() or '暂无',
+                    str(item.get('ethnicity') or '').strip() or '暂无',
+                    str(item.get('birth_date') or '').strip() or '暂无',
+                    str(item.get('id_number') or '').strip() or '暂无',
+                    str(item.get('marital_status') or '').strip() or '暂无',
+                ]
+            )
+            + ' |'
+        )
+    if not rows:
+        return '\n- 暂未识别到成员信息'
+    return '\n### 家庭成员\n' + '\n'.join(header + rows)
 
 def _format_shareholders_for_markdown(value: list[Any]) -> str:
     if not value:
@@ -384,6 +421,8 @@ def _format_value(key: str, value: Any) -> str:
     if value is None or value == '':
         return '\u6682\u65e0'
     if isinstance(value, list):
+        if key == 'members':
+            return _format_hukou_members_for_markdown(value)
         if key == 'shareholders':
             return _format_company_articles_shareholders_v2(value)
         if key == 'equity_ratios':
@@ -571,6 +610,9 @@ async def _build_single_document_section(
                     continue
                 formatted_value = _format_value(key, value)
                 if extraction_type == 'company_articles' and key in OPTIONAL_COMPANY_ARTICLES_FIELDS and formatted_value == '\u6682\u65e0':
+                    continue
+                if key == 'members':
+                    lines.append(formatted_value)
                     continue
                 lines.append(f'- {_format_field_label(key)}\uff1a{formatted_value}')
             except Exception as exc:

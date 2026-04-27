@@ -684,6 +684,18 @@ function hasCompleteIdCardExtraction(extractionGroups: ExtractionGroup[]): boole
   });
 }
 
+function hasUsableHukouExtraction(extractionGroups: ExtractionGroup[]): boolean {
+  const items = getExtractionItemsByType(extractionGroups, 'hukou');
+  return items.some((item) => {
+    const extractedData = (item.extracted_data || {}) as Record<string, unknown>;
+    const headName = extractValueFromExtractionData(extractedData, ['household_head_name', '户主姓名']);
+    const householdAddress = extractValueFromExtractionData(extractedData, ['household_address', '户籍地址', 'address', '地址']);
+    const members = extractedData.members;
+    const memberCount = Array.isArray(members) ? members.length : 0;
+    return Boolean((headName || memberCount > 0) && householdAddress);
+  });
+}
+
 function buildFieldConsistencyResults(
   documents: CustomerDocumentListItem[],
   extractionGroups: ExtractionGroup[],
@@ -1753,6 +1765,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const completenessCards = useMemo<CompletenessCard[]>(() => {
     const presentTypes = new Set(documents.map((item) => item.file_type).filter(Boolean));
     const idCardComplete = hasCompleteIdCardExtraction(extractionGroups);
+    const hukouComplete = hasUsableHukouExtraction(extractionGroups);
 
     return DOCUMENT_GROUP_ORDER.map((groupKey) => {
       const rule = DOCUMENT_COMPLETENESS_RULES[groupKey];
@@ -1762,6 +1775,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       const missingOptional = rule.optional.filter((type) => !presentTypes.has(type));
       const existingTypes = [...existingRequired, ...existingOptional];
       const idCardIncomplete = groupKey === 'personal' && presentTypes.has('id_card') && !idCardComplete;
+      const hukouIncomplete = groupKey === 'personal' && presentTypes.has('hukou') && !hukouComplete;
 
       let status: CompletenessStatus = 'pending';
       if (groupKey === 'asset') {
@@ -1784,13 +1798,18 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
         existingLabels: existingTypes.map((type) => (
           type === 'id_card' && idCardIncomplete
             ? '身份证（信息不完整）'
+            : type === 'hukou' && hukouIncomplete
+              ? '户口本（信息不完整）'
             : getDocumentTypeDisplayNameByCode(type)
         )),
         missingRequiredLabels: [
           ...missingRequired.map(getDocumentTypeDisplayNameByCode),
           ...(idCardIncomplete ? ['身份证关键信息（姓名、身份证号码）'] : []),
         ],
-        missingOptionalLabels: missingOptional.map(getDocumentTypeDisplayNameByCode),
+        missingOptionalLabels: [
+          ...missingOptional.map(getDocumentTypeDisplayNameByCode),
+          ...(hukouIncomplete ? ['户口本关键信息（户主姓名/成员信息、户籍地址）'] : []),
+        ],
       };
     });
   }, [documents, extractionGroups]);
