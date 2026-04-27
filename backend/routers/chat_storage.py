@@ -43,6 +43,10 @@ _PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
     "vehicle_license",
 })
 
+_MULTI_INSTANCE_DOCUMENT_TYPE_CODES = frozenset({
+    "id_card",
+})
+
 _DOCUMENT_TYPE_CODE_FALLBACKS = {
     "营业执照": "business_license",
     "营业执照正本": "business_license",
@@ -400,6 +404,13 @@ async def _replace_existing_documents_of_same_type(
     downstream application generation aligned with the newest material.
     """
     document_type_code = _normalize_storage_document_type(document_type)
+    if document_type_code in _MULTI_INSTANCE_DOCUMENT_TYPE_CODES:
+        logger.info(
+            "[Local Save] Skip replacement for multi-instance document type customer_id=%s type=%s",
+            customer_id,
+            document_type_code,
+        )
+        return
     existing_documents = await storage_service.list_documents(customer_id)
     replaced_count = 0
 
