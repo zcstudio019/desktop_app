@@ -128,6 +128,8 @@ HIDDEN_STRUCTURED_FIELDS = {
     'source_type',
     'source_type_name',
     'management_role_evidence_lines',
+    'raw_text',
+    'raw_pages',
 }
 OPTIONAL_COMPANY_ARTICLES_FIELDS = {
     'executive_director',
@@ -249,6 +251,26 @@ def _format_hukou_members_for_markdown(value: list[Any]) -> str:
     if not rows:
         return '\n- 暂未识别到成员信息'
     return '\n### 家庭成员\n' + '\n'.join(header + rows)
+
+def _format_raw_pages_for_markdown(value: list[Any]) -> str:
+    if not value:
+        return ''
+    lines = ['### PDF原文识别内容']
+    has_page = False
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        page_number = item.get('page')
+        page_text = str(item.get('text') or '').strip()
+        if not page_text:
+            continue
+        has_page = True
+        lines.append(f'#### 第 {page_number} 页')
+        lines.append('```text')
+        lines.append(page_text)
+        lines.append('```')
+    return '\n' + '\n'.join(lines) if has_page else ''
+
 
 def _format_shareholders_for_markdown(value: list[Any]) -> str:
     if not value:
@@ -600,6 +622,25 @@ async def _build_single_document_section(
         'original_status': original_status,
         'original_available': bool(store_original and file_path),
     }
+    if extraction_type == 'hukou' and isinstance(extracted_data, dict):
+        lines = [
+            f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}',
+            f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}',
+            f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}',
+            '',
+            '### 结构化提取结果',
+            f"- {_format_field_label('household_head_name')}\uff1a{_format_value('household_head_name', extracted_data.get('household_head_name'))}",
+            f"- {_format_field_label('household_number')}\uff1a{_format_value('household_number', extracted_data.get('household_number'))}",
+            f"- {_format_field_label('household_type')}\uff1a{_format_value('household_type', extracted_data.get('household_type'))}",
+            f"- {_format_field_label('household_address')}\uff1a{_format_value('household_address', extracted_data.get('household_address'))}",
+            f"- {_format_field_label('registration_authority')}\uff1a{_format_value('registration_authority', extracted_data.get('registration_authority'))}",
+            f"- {_format_field_label('completeness_note')}\uff1a{_format_value('completeness_note', extracted_data.get('completeness_note'))}",
+            _format_value('members', extracted_data.get('members') or []),
+        ]
+        raw_pages_markdown = _format_raw_pages_for_markdown(extracted_data.get('raw_pages') or [])
+        if raw_pages_markdown:
+            lines.append(raw_pages_markdown)
+        return _markdown_section(type_name, lines), source_document
     lines = [f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}']
     lines.append(f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}')
     lines.append(f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}')

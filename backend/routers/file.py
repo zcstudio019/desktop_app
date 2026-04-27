@@ -214,21 +214,29 @@ async def _validate_and_read_file(file: UploadFile) -> tuple[bytes, str]:
     return file_bytes, file_type
 
 
-def _ocr_pdf_pages(file_bytes: bytes) -> str:
+def _build_raw_text_from_pages(raw_pages: list[dict[str, Any]]) -> str:
+    return "\n\n".join(
+        f"--- 第 {int(item.get('page') or 0)} 页 ---\n{str(item.get('text') or '').strip()}"
+        for item in raw_pages
+        if str(item.get("text") or "").strip()
+    )
+
+
+def _ocr_pdf_pages(file_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
     images = file_service.pdf_to_images(file_bytes)
     if not images:
         raise HTTPException(status_code=400, detail=PDF_TO_IMAGE_FAILED_MESSAGE)
 
-    ocr_results: list[str] = []
+    raw_pages: list[dict[str, Any]] = []
     for index, img_bytes in enumerate(images, start=1):
         compressed = file_service.compress_image(img_bytes)
         try:
             page_text = ocr_service.recognize_image(compressed)
-            ocr_results.append(f"--- Page {index} ---\n{page_text}")
+            raw_pages.append({"page": index, "text": page_text})
         except OCRServiceError as exc:
             logger.warning("OCR failed for page %s: %s", index, exc)
-            ocr_results.append(f"--- Page {index} ---\n{OCR_PAGE_FAILED_PLACEHOLDER}")
-    return "\n\n".join(ocr_results)
+            raw_pages.append({"page": index, "text": OCR_PAGE_FAILED_PLACEHOLDER})
+    return _build_raw_text_from_pages(raw_pages), raw_pages
 
 
 def _ocr_pdf_selected_pages(file_bytes: bytes, page_indices: list[int], *, log_prefix: str, filename: str) -> str:
@@ -399,24 +407,25 @@ async def _extract_content_from_file(
     filename: str,
     *,
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict], list[dict[str, Any]]]:
     try:
         if file_type == "pdf":
             if progress_callback:
                 await progress_callback("正在解析文件")
             extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
             text_content = extracted.get("text", "")
+            raw_pages: list[dict[str, Any]] = []
             if not file_service.is_pdf_text_valid(text_content):
                 logger.info("PDF text extraction invalid for %s, falling back to OCR", filename)
                 if progress_callback:
                     await progress_callback("正在 OCR 识别")
-                text_content = _ocr_pdf_pages(file_bytes)
-            return text_content, []
+                text_content, raw_pages = _ocr_pdf_pages(file_bytes)
+            return text_content, [], raw_pages
         if file_type == "image":
             if progress_callback:
                 await progress_callback("正在 OCR 识别")
             compressed = file_service.compress_image(file_bytes)
-            return ocr_service.recognize_image(compressed), []
+            return ocr_service.recognize_image(compressed), [], []
         if file_type == "word":
             if progress_callback:
                 await progress_callback("正在解析文件")
@@ -438,12 +447,12 @@ async def _extract_content_from_file(
                         except OCRServiceError as exc:
                             logger.warning("Embedded DOCX image OCR failed for %s image=%s error=%s", filename, index, exc)
                     text_content = "\n\n".join(ocr_parts)
-            return text_content, extracted.get("rows", [])
+            return text_content, extracted.get("rows", []), []
         if file_type == "excel":
             if progress_callback:
                 await progress_callback("正在解析文件")
             extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
-            return extracted.get("text", ""), extracted.get("rows", [])
+            return extracted.get("text", ""), extracted.get("rows", []), []
         raise HTTPException(status_code=400, detail=UNSUPPORTED_FILE_TYPE_MESSAGE)
     except OCRServiceError as exc:
         logger.error("OCR service error while processing %s: %s", filename, exc)
@@ -466,7 +475,13 @@ def _resolve_document_type_code(text_content: str, explicit_type: str | None, ro
         raise HTTPException(status_code=500, detail=AI_CLASSIFICATION_FAILED_MESSAGE) from exc
 
 
-def _extract_structured_data(text_content: str, document_type_code: str, rows: list[dict]) -> FileProcessResponse:
+def _extract_structured_data(
+    text_content: str,
+    document_type_code: str,
+    rows: list[dict],
+    *,
+    raw_pages: list[dict[str, Any]] | None = None,
+) -> FileProcessResponse:
     try:
         content = build_structured_extraction(
             text_content,
@@ -474,6 +489,10 @@ def _extract_structured_data(text_content: str, document_type_code: str, rows: l
             rows=rows,
             ai_service=ai_service,
         )
+        raw_pages = raw_pages or []
+        if raw_pages:
+            content["raw_pages"] = raw_pages
+            content["raw_text"] = _build_raw_text_from_pages(raw_pages)
         customer_name = extract_customer_name_from_content(content)
         return FileProcessResponse(
             documentType=document_type_code,
@@ -498,7 +517,7 @@ async def _process_file_bytes(
     *,
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> FileProcessResponse:
-    text_content, rows = await _extract_content_from_file(
+    text_content, rows, raw_pages = await _extract_content_from_file(
         file_bytes,
         file_type,
         filename,
@@ -524,7 +543,7 @@ async def _process_file_bytes(
             text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
     if progress_callback:
         await progress_callback("正在结构化提取")
-    return _extract_structured_data(text_content, document_type_code, rows)
+    return _extract_structured_data(text_content, document_type_code, rows, raw_pages=raw_pages)
 
 
 async def _run_file_process_job(
