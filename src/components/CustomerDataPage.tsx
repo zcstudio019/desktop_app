@@ -1007,41 +1007,52 @@ function buildHukouInsightFromRawPages(rawPagesValue: unknown, rawTextValue?: un
       .map((line) => line.replace(/\s+/g, ' ').trim())
       .filter(Boolean);
 
-  const findValue = (
+  const knownLabels = [
+    '户别', '户主姓名', '户号', '住址', '户籍地址', '地址', '登记机关', '签发机关',
+    '常住人口登记卡', '姓名', '户主或与户主关系', '与户主关系', '性别', '民族', '出生日期',
+    '公民身份号码', '身份证号码', '身份证号', '婚姻状况', '兵役状况', '服务处所', '职业', '籍贯', '出生地',
+  ];
+
+  const normalizeInlineValue = (value: string): string =>
+    value
+      .replace(/^[：:\s]+/, '')
+      .replace(/[|｜]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const isKnownLabelLine = (line: string): boolean =>
+    knownLabels.some((label) => line === label || line.startsWith(`${label}：`) || line.startsWith(`${label}:`));
+
+  const findLabelValue = (
     lines: string[],
     labels: string[],
     stopLabels: string[] = [],
     maxLookahead = 8,
+    validator?: (value: string) => boolean,
   ): string => {
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
       for (const label of labels) {
-        if (line === label) {
-          for (let offset = 1; offset <= maxLookahead; offset += 1) {
-            const candidate = lines[index + offset];
-            if (!candidate) {
-              break;
-            }
-            if (stopLabels.some((stopLabel) => candidate.includes(stopLabel))) {
-              break;
-            }
+        const inlinePattern = new RegExp(`^${label}\\s*[:：]?\\s*(.+)$`);
+        const inlineMatch = line.match(inlinePattern);
+        if (inlineMatch) {
+          const candidate = normalizeInlineValue(inlineMatch[1]);
+          if (candidate && !stopLabels.some((stopLabel) => candidate.includes(stopLabel)) && (!validator || validator(candidate))) {
             return candidate;
           }
         }
-        if (line.includes(label)) {
-          const candidate = line.replace(new RegExp(`^.*?${label}\\s*[:：]?\\s*`), '').trim();
-          if (candidate && !stopLabels.some((stopLabel) => candidate.includes(stopLabel))) {
-            return candidate;
-          }
+        if (line === label || line.includes(label)) {
           for (let offset = 1; offset <= maxLookahead; offset += 1) {
-            const nextLine = lines[index + offset];
-            if (!nextLine) {
+            const candidate = normalizeInlineValue(lines[index + offset] || '');
+            if (!candidate) {
               break;
             }
-            if (stopLabels.some((stopLabel) => nextLine.includes(stopLabel))) {
+            if (stopLabels.some((stopLabel) => candidate.includes(stopLabel)) || isKnownLabelLine(candidate)) {
               break;
             }
-            return nextLine;
+            if (!validator || validator(candidate)) {
+              return candidate;
+            }
           }
         }
       }
@@ -1059,6 +1070,14 @@ function buildHukouInsightFromRawPages(rawPagesValue: unknown, rawTextValue?: un
     }
     return /^[\u4e00-\u9fff·]{2,8}$/.test(text);
   };
+
+  const relationshipOptions = ['户主', '妻', '夫', '子', '女', '父', '母', '配偶', '长子', '长女', '次子', '次女', '孙子', '孙女'];
+  const isRelationshipValue = (value: string): boolean => relationshipOptions.includes(value.trim());
+  const isGenderValue = (value: string): boolean => ['男', '女'].includes(value.trim());
+  const isEthnicityValue = (value: string): boolean => /^[\u4e00-\u9fff]{1,8}$/.test(value.trim()) && !value.includes('出生') && !value.includes('日期');
+  const isBirthDateValue = (value: string): boolean => /(?:19|20)\d{2}年\d{2}月\d{2}日/.test(value.trim());
+  const isIdNumberValue = (value: string): boolean => /\d{17}[\dXx]/.test(value.trim());
+  const isMaritalStatusValue = (value: string): boolean => ['已婚', '未婚', '有配偶', '无配偶', '离婚', '离异', '丧偶', '再婚'].includes(value.trim());
 
   const homepage = {
     householdHeadName: '',
@@ -1079,13 +1098,13 @@ function buildHukouInsightFromRawPages(rawPagesValue: unknown, rawTextValue?: un
     const joined = lines.join('\n');
     const homepageHits = ['户别', '户主姓名', '户号', '住址'].filter((label) => joined.includes(label)).length;
     if (homepageHits >= 3) {
-      const headName = findValue(lines, ['户主姓名'], ['户号', '户别', '住址', '登记事项变更'])
+      const headName = findLabelValue(lines, ['户主姓名'], ['户号', '户别', '住址', '登记事项变更'], 6, isReasonableName)
         || (joined.match(/户主姓名\s*[:：]?\s*([\u4e00-\u9fff·]{2,8})/)?.[1] || '');
       const pageHomepage = {
         householdHeadName: isReasonableName(headName) ? headName : '',
-        householdNumber: findValue(lines, ['户号'], ['户别', '住址', '户主姓名']) || (joined.match(/户号\s*[:：]?\s*([A-Za-z0-9]+)/)?.[1] || ''),
-        householdType: findValue(lines, ['户别'], ['户号', '住址', '户主姓名']) || (joined.match(/户别\s*[:：]?\s*([^\n]{2,20})/)?.[1] || ''),
-        householdAddress: findValue(lines, ['住址', '户籍地址', '地址'], ['户主姓名', '户号', '户别', '登记事项变更', '常住人口登记卡'])
+        householdNumber: findLabelValue(lines, ['户号'], ['户别', '住址', '户主姓名'], 6, (value) => /^[A-Za-z0-9]{4,}$/.test(value)) || (joined.match(/户号\s*[:：]?\s*([A-Za-z0-9]+)/)?.[1] || ''),
+        householdType: findLabelValue(lines, ['户别'], ['户号', '住址', '户主姓名'], 6, (value) => value.length >= 2 && value.length <= 20) || (joined.match(/户别\s*[:：]?\s*([^\n]{2,20})/)?.[1] || ''),
+        householdAddress: findLabelValue(lines, ['住址', '户籍地址', '地址'], ['户主姓名', '户号', '户别', '登记事项变更', '常住人口登记卡'], 8, (value) => value.length >= 4)
           || (joined.match(/住址\s*[:：]?\s*([^\n]{4,80})/)?.[1] || ''),
         registrationAuthority: lines.find((line) => line.includes('派出所') || line.includes('公安局')) || '',
       };
@@ -1102,7 +1121,7 @@ function buildHukouInsightFromRawPages(rawPagesValue: unknown, rawTextValue?: un
     const memberHits = ['常住人口登记卡', '姓名', '户主或与户主关系', '公民身份号码', '出生日期'].filter((label) => joined.includes(label)).length;
     if (memberHits >= 2) {
       let name = (
-        findValue(lines, ['姓名'], ['户主或与户主关系', '公民身份号码', '性别', '民族', '出生日期'])
+        findLabelValue(lines, ['姓名'], ['户主或与户主关系', '公民身份号码', '性别', '民族', '出生日期'], 6, isReasonableName)
         || (joined.match(/姓名\s*[:：]?\s*([\u4e00-\u9fff·]{2,8})/)?.[1] || '')
       ).trim();
       if (!name) {
@@ -1112,17 +1131,17 @@ function buildHukouInsightFromRawPages(rawPagesValue: unknown, rawTextValue?: un
         }
       }
       const relationship = (
-        findValue(lines, ['户主或与户主关系', '与户主关系'], ['公民身份号码', '性别', '民族', '出生日期', '婚姻状况', '服务处所', '职业'])
+        findLabelValue(lines, ['户主或与户主关系', '与户主关系'], ['公民身份号码', '性别', '民族', '出生日期', '婚姻状况', '服务处所', '职业'], 6, isRelationshipValue)
         || (joined.match(/户主或与户主关系\s*[:：]?\s*(户主|妻|夫|子|女|父|母|配偶|长子|长女|次子|次女|孙子|孙女)/)?.[1] || '')
       ).trim();
       const member = {
         name: isReasonableName(name) ? name : '',
-        relationship_to_head: ['户主', '妻', '夫', '子', '女', '父', '母', '配偶', '长子', '长女', '次子', '次女', '孙子', '孙女'].includes(relationship) ? relationship : (relationship.startsWith('户主') ? '户主' : ''),
-        gender: (findValue(lines, ['性别'], ['民族', '出生日期', '公民身份号码', '婚姻状况']) || (joined.match(/性别\s*[:：]?\s*(男|女)/)?.[1] || '')).trim(),
-        ethnicity: (findValue(lines, ['民族'], ['出生日期', '公民身份号码', '婚姻状况']) || (joined.match(/民族\s*[:：]?\s*([\u4e00-\u9fff]{1,8})/)?.[1] || '')).trim(),
-        birth_date: (findValue(lines, ['出生日期'], ['公民身份号码', '婚姻状况', '服务处所', '职业']) || (joined.match(/((?:19|20)\d{2}年\d{2}月\d{2}日)/)?.[1] || '')).trim(),
-        id_number: (joined.match(/\d{17}[\dXx]/)?.[0] || '').toUpperCase(),
-        marital_status: (findValue(lines, ['婚姻状况'], ['服务处所', '职业', '兵役状况', '何时由何地迁来本市（县）', '何时由何地迁来本址']) || (joined.match(/婚姻状况\s*[:：]?\s*([^\n]{1,12})/)?.[1] || '')).trim(),
+        relationship_to_head: isRelationshipValue(relationship) ? relationship : (relationship.startsWith('户主') ? '户主' : ''),
+        gender: (findLabelValue(lines, ['性别'], ['民族', '出生日期', '公民身份号码', '婚姻状况'], 4, isGenderValue) || (joined.match(/性别\s*[:：]?\s*(男|女)/)?.[1] || '')).trim(),
+        ethnicity: (findLabelValue(lines, ['民族'], ['出生日期', '公民身份号码', '婚姻状况'], 4, isEthnicityValue) || (joined.match(/民族\s*[:：]?\s*([\u4e00-\u9fff]{1,8})/)?.[1] || '')).trim(),
+        birth_date: (findLabelValue(lines, ['出生日期'], ['公民身份号码', '婚姻状况', '服务处所', '职业'], 4, isBirthDateValue) || (joined.match(/((?:19|20)\d{2}年\d{2}月\d{2}日)/)?.[1] || '')).trim(),
+        id_number: (findLabelValue(lines, ['公民身份号码', '身份证号码', '身份证号'], ['婚姻状况', '服务处所', '职业'], 4, isIdNumberValue) || (joined.match(/\d{17}[\dXx]/)?.[0] || '')).toUpperCase(),
+        marital_status: (findLabelValue(lines, ['婚姻状况'], ['服务处所', '职业', '兵役状况', '何时由何地迁来本市（县）', '何时由何地迁来本址'], 4, isMaritalStatusValue) || (joined.match(/婚姻状况\s*[:：]?\s*(已婚|未婚|有配偶|无配偶|离婚|离异|丧偶|再婚)/)?.[1] || '')).trim(),
       } as Record<string, unknown>;
       if (!member.birth_date && typeof member.id_number === 'string' && member.id_number.length >= 14) {
         const raw = member.id_number.slice(6, 14);
