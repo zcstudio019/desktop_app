@@ -5583,6 +5583,36 @@ def _normalize_hukou_relation(value: str) -> str:
     return cleaned
 
 
+def _is_valid_hukou_person_name(value: str) -> bool:
+    cleaned = _normalize_hukou_text(value)
+    if not cleaned:
+        return False
+    invalid_fragments = (
+        "户主或与", "姓名", "成员", "住址", "公民身份号码", "登记卡", "调查",
+        "说明", "居民", "户口", "登记事项", "户主页", "本户",
+    )
+    if any(fragment in cleaned for fragment in invalid_fragments):
+        return False
+    return bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,6}", cleaned))
+
+
+def _normalize_hukou_household_type(value: str) -> str:
+    cleaned = _normalize_hukou_text(value)
+    if not cleaned:
+        return ""
+    if cleaned == "非农家庭户":
+        return "非农业家庭户"
+    return cleaned if "户" in cleaned and len(cleaned) <= 8 else ""
+
+
+def _normalize_hukou_registration_authority(value: str) -> str:
+    cleaned = _normalize_hukou_text(value)
+    if not cleaned:
+        return ""
+    match = re.search(r"([\u4e00-\u9fff]{2,30}(?:派出所|公安局|公安分局|公安机关))", cleaned)
+    return match.group(1) if match else ""
+
+
 def _normalize_hukou_ethnicity(value: str) -> str:
     cleaned = _normalize_hukou_text(value)
     if not cleaned:
@@ -5814,6 +5844,9 @@ def _extract_hukou_homepage_fields(text: str, lines: list[str]) -> dict[str, str
             if "派出所" in line or "公安局" in line:
                 registration_authority = line
                 break
+    household_head_name = household_head_name if _is_valid_hukou_person_name(household_head_name) else ""
+    household_type = _normalize_hukou_household_type(household_type)
+    registration_authority = _normalize_hukou_registration_authority(registration_authority)
     return {
         "household_head_name": household_head_name,
         "household_number": household_number,
@@ -5932,9 +5965,14 @@ def _extract_hukou_member_fields_from_block(block_text: str) -> dict[str, str]:
     )
     if not birth_date and id_number:
         birth_date = _member_birth_from_id(id_number)
+    name = name if _is_valid_hukou_person_name(name) else ""
+    normalized_relation = _normalize_hukou_relation(relationship)
+    valid_relations = {"户主", "配偶", "子", "女", "父", "母", "祖父", "祖母", "外祖父", "外祖母", "孙子", "孙女"}
+    if normalized_relation not in valid_relations:
+        normalized_relation = ""
     return {
         "name": name,
-        "relationship_to_head": _normalize_hukou_relation(relationship),
+        "relationship_to_head": normalized_relation,
         "gender": gender,
         "ethnicity": _normalize_hukou_ethnicity(ethnicity),
         "birth_date": birth_date,
@@ -5967,6 +6005,8 @@ def _extract_hukou_members(text: str, lines: list[str]) -> list[dict[str, str]]:
         comparable_key = member.get("id_number") or f"{member.get('name', '')}|{member.get('birth_date', '')}"
         comparable_key = comparable_key.strip("|")
         if not member.get("name") and not member.get("id_number"):
+            continue
+        if member.get("name") and not _is_valid_hukou_person_name(member.get("name", "")):
             continue
         if comparable_key and comparable_key in seen_keys:
             continue
