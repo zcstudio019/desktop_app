@@ -423,8 +423,8 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
     extractions = await storage_service.get_extractions_by_customer(customer_id)
     sections: list[str] = []
     source_documents: list[dict[str, Any]] = []
-    id_card_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'id_card']
-    other_extractions = [item for item in extractions if (item.get('extraction_type') or '') != 'id_card']
+    id_card_extractions: list[dict[str, Any]] = []
+    other_extractions = extractions
 
     if id_card_extractions:
         try:
@@ -487,7 +487,9 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             ]
             for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address', 'issuing_authority', 'valid_period', 'side', 'completeness_hint'):
                 id_card_lines.append(f"- {_format_field_label(key)}\uff1a{_format_value(key, merged_data.get(key))}")
-            sections.append(_markdown_section(get_document_display_name('id_card'), id_card_lines))
+            id_card_name = str(merged_data.get('name') or '').strip()
+            id_card_title = f"{get_document_display_name('id_card')}（{id_card_name}）" if id_card_name else get_document_display_name('id_card')
+            sections.append(_markdown_section(id_card_title, id_card_lines))
         except Exception as exc:
             logger.warning("profile_markdown id_card_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
             sections.append(
@@ -706,3 +708,145 @@ async def get_or_create_customer_profile(storage_service: Any, customer_id: str)
 async def regenerate_customer_profile(storage_service: Any, customer_id: str) -> dict[str, Any]:
     generated = await build_auto_profile_payload(storage_service, customer_id)
     return await storage_service.upsert_customer_profile(generated)
+
+
+def _normalize_id_card_identity_piece(value: Any) -> str:
+    return ''.join(ch for ch in str(value or '').strip().upper() if ch.isalnum())
+
+
+def _resolve_id_card_group_key(extracted_data: dict[str, Any], file_name: str, index: int) -> str:
+    id_number = _normalize_id_card_identity_piece(extracted_data.get('id_number'))
+    if id_number:
+        return f"id_number:{id_number}"
+    name = str(extracted_data.get('name') or '').strip()
+    birth_date = _normalize_id_card_identity_piece(extracted_data.get('birth_date'))
+    if name and birth_date:
+        return f"name_birth:{name}|{birth_date}"
+    if name:
+        return f"name:{name}"
+    return f"document:{file_name or index}"
+
+
+async def _build_document_sections(storage_service: Any, customer_id: str) -> tuple[list[str], list[dict[str, Any]]]:
+    extractions = await storage_service.get_extractions_by_customer(customer_id)
+    sections: list[str] = []
+    source_documents: list[dict[str, Any]] = []
+    id_card_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'id_card']
+    other_extractions = [item for item in extractions if (item.get('extraction_type') or '') != 'id_card']
+
+    if id_card_extractions:
+        try:
+            grouped_id_cards: dict[str, dict[str, Any]] = {}
+
+            for index, extraction in enumerate(id_card_extractions, start=1):
+                extracted_data = (extraction.get('extracted_data') or {}) if isinstance(extraction.get('extracted_data'), dict) else {}
+                document = None
+                doc_id = extraction.get('doc_id')
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning("profile_markdown id_card_document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
+
+                file_name = (document or {}).get('file_name') or '暂无'
+                file_path = (document or {}).get('file_path') or ''
+                source_documents.append({
+                    'source_type': 'id_card',
+                    'source_type_name': get_document_display_name('id_card'),
+                    'extraction_id': extraction.get('extraction_id'),
+                    'doc_id': doc_id,
+                    'file_name': file_name,
+                    'original_status': '可查看' if file_path else '原件文件不存在或已不可用',
+                    'original_available': bool(file_path),
+                })
+
+                group_key = _resolve_id_card_group_key(extracted_data, file_name, index)
+                group = grouped_id_cards.setdefault(
+                    group_key,
+                    {
+                        'data': {},
+                        'file_names': [],
+                        'has_front': False,
+                        'has_back': False,
+                        'any_original_available': False,
+                    },
+                )
+
+                for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address', 'issuing_authority', 'valid_period'):
+                    if not group['data'].get(key):
+                        group['data'][key] = extracted_data.get(key) or ''
+
+                if any(extracted_data.get(key) for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address')):
+                    group['has_front'] = True
+                if any(extracted_data.get(key) for key in ('issuing_authority', 'valid_period')):
+                    group['has_back'] = True
+
+                group['file_names'].append(file_name)
+                group['any_original_available'] = group['any_original_available'] or bool(file_path)
+
+            for group in grouped_id_cards.values():
+                merged_data = group['data']
+                if group['has_front'] and group['has_back']:
+                    merged_data['side'] = 'both'
+                    merged_data['completeness_hint'] = '已识别正反面'
+                elif group['has_front']:
+                    merged_data['side'] = 'front'
+                    merged_data['completeness_hint'] = '已识别正面，缺少反面信息（签发机关、有效期限）'
+                elif group['has_back']:
+                    merged_data['side'] = 'back'
+                    merged_data['completeness_hint'] = '已识别反面，缺少正面信息（姓名、身份证号码、住址）'
+                else:
+                    merged_data['side'] = 'unknown'
+                    merged_data['completeness_hint'] = '未识别到身份证正反面关键信息'
+
+                merged_file_name_text = '、'.join(dict.fromkeys(group['file_names'])) if group['file_names'] else '暂无'
+                merged_original_status = '可查看' if group['any_original_available'] else '原件文件不存在或已不可用'
+                id_card_lines = [
+                    f"- 资料类型：{get_document_display_name('id_card')}",
+                    f"- 来源文件：{merged_file_name_text}",
+                    f"- 原件状态：{merged_original_status}",
+                ]
+                for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address', 'issuing_authority', 'valid_period', 'side', 'completeness_hint'):
+                    id_card_lines.append(f"- {_format_field_label(key)}：{_format_value(key, merged_data.get(key))}")
+                id_card_name = str(merged_data.get('name') or '').strip()
+                id_card_title = f"{get_document_display_name('id_card')}（{id_card_name}）" if id_card_name else get_document_display_name('id_card')
+                sections.append(_markdown_section(id_card_title, id_card_lines))
+        except Exception as exc:
+            logger.warning("profile_markdown id_card_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+            sections.append(
+                _markdown_section(
+                    get_document_display_name('id_card'),
+                    [
+                        f"- 资料类型：{get_document_display_name('id_card')}",
+                        '- 提示：身份证资料整理失败，请重新上传或检查原件。',
+                    ],
+                )
+            )
+
+    for extraction in other_extractions:
+        extraction_id = extraction.get('extraction_id') or ''
+        extraction_type = extraction.get('extraction_type') or '未命名资料'
+        try:
+            section, source_document = await _build_single_document_section(storage_service, customer_id, extraction)
+            sections.append(section)
+            source_documents.append(source_document)
+        except Exception as exc:
+            logger.warning(
+                "profile_markdown extraction_section_failed customer_id=%s extraction_id=%s document_type=%s error=%s",
+                customer_id,
+                extraction_id,
+                extraction_type,
+                exc,
+                exc_info=True,
+            )
+            sections.append(
+                _markdown_section(
+                    get_document_display_name(extraction_type),
+                    [
+                        f"- 资料类型：{get_document_display_name(extraction_type)}",
+                        '- 提示：该资料整理失败，请查看来源文档列表或重新上传。',
+                    ],
+                )
+            )
+
+    return sections, source_documents

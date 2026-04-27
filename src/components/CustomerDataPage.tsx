@@ -627,6 +627,28 @@ function getDocumentsByType(documents: CustomerDocumentListItem[], documentType:
   return sortDocumentsWithinGroup(documents.filter((document) => isDocumentTypeMatch(document.file_type, documentType)));
 }
 
+function getDocumentTypeDisplayLabel(
+  document: CustomerDocumentListItem,
+  extractionGroups: ExtractionGroup[],
+): string {
+  const defaultLabel = document.file_type_name || getDocumentTypeDisplayNameByCode(document.file_type);
+  if (document.file_type !== 'id_card') {
+    return defaultLabel;
+  }
+
+  const matchedExtraction = extractionGroups
+    .filter((group) => (group.extraction_type || '') === 'id_card')
+    .flatMap((group) => group.items || [])
+    .find((item) => String((item as ExtractionItem & { doc_id?: string }).doc_id || '').trim() === document.doc_id);
+
+  const extractedData = matchedExtraction?.extracted_data as Record<string, unknown> | undefined;
+  const idName = extractValueFromExtractionData(extractedData || {}, ['name', '姓名']).trim();
+  if (!idName) {
+    return defaultLabel;
+  }
+  return `${defaultLabel}（${idName}）`;
+}
+
 function getExtractionItemsByType(groups: ExtractionGroup[], documentType: string): ExtractionItem[] {
   const matchedGroups = groups.filter((group) => isDocumentTypeMatch(group.extraction_type, documentType));
   return matchedGroups
@@ -2789,7 +2811,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                                       {document.file_name || '未命名文件'}
                                     </span>
                                     <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-500">
-                                      {document.file_type_name || getDocumentTypeDisplayNameByCode(document.file_type)}
+                                      {getDocumentTypeDisplayLabel(document, extractionGroups)}
                                     </span>
                                     <span
                                       className={`rounded-full border px-2 py-0.5 text-xs font-medium ${
@@ -3316,7 +3338,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                                     </span>
                                   </div>
                                   <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-                                    <span>资料类型：{document.file_type_name}</span>
+                                    <span>资料类型：{getDocumentTypeDisplayLabel(document, extractionGroups)}</span>
                                     <span>上传时间：{formatProfileDateTime(document.upload_time)}</span>
                                     <span>原件状态：{document.original_status}</span>
                                   </div>
