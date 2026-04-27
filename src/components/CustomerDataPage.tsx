@@ -981,14 +981,23 @@ function buildCompanyArticlesInsight(
   };
 }
 
-function buildHukouInsightFromRawPages(rawPagesValue: unknown): HukouInsight | null {
+function buildHukouInsightFromRawPages(rawPagesValue: unknown, rawTextValue?: unknown): HukouInsight | null {
   const rawPages = toRecordList(rawPagesValue)
     .map((item) => ({
       page: Number(item.page || 0),
       text: stringifyExtractionValue(item.text),
     }))
     .filter((item) => item.text);
-  if (rawPages.length === 0) {
+  const rawText = stringifyExtractionValue(rawTextValue);
+  const synthesizedPages = rawPages.length > 0
+    ? rawPages
+    : rawText
+      ? rawText
+          .split(/---\s*第\s*\d+\s*页\s*---/)
+          .map((text, index) => ({ page: index + 1, text: text.trim() }))
+          .filter((item) => item.text)
+      : [];
+  if (synthesizedPages.length === 0) {
     return null;
   }
 
@@ -1062,7 +1071,7 @@ function buildHukouInsightFromRawPages(rawPagesValue: unknown): HukouInsight | n
   const seenMemberKeys = new Set<string>();
   let homepagePresent = false;
 
-  for (const page of rawPages) {
+  for (const page of synthesizedPages) {
     const lines = cleanLines(page.text);
     if (lines.length === 0) {
       continue;
@@ -1070,12 +1079,14 @@ function buildHukouInsightFromRawPages(rawPagesValue: unknown): HukouInsight | n
     const joined = lines.join('\n');
     const homepageHits = ['户别', '户主姓名', '户号', '住址'].filter((label) => joined.includes(label)).length;
     if (homepageHits >= 3) {
-      const headName = findValue(lines, ['户主姓名'], ['户号', '户别', '住址', '登记事项变更']);
+      const headName = findValue(lines, ['户主姓名'], ['户号', '户别', '住址', '登记事项变更'])
+        || (joined.match(/户主姓名\s*[:：]?\s*([\u4e00-\u9fff·]{2,8})/)?.[1] || '');
       const pageHomepage = {
         householdHeadName: isReasonableName(headName) ? headName : '',
-        householdNumber: findValue(lines, ['户号'], ['户别', '住址', '户主姓名']),
-        householdType: findValue(lines, ['户别'], ['户号', '住址', '户主姓名']),
-        householdAddress: findValue(lines, ['住址', '户籍地址', '地址'], ['户主姓名', '户号', '户别', '登记事项变更', '常住人口登记卡']),
+        householdNumber: findValue(lines, ['户号'], ['户别', '住址', '户主姓名']) || (joined.match(/户号\s*[:：]?\s*([A-Za-z0-9]+)/)?.[1] || ''),
+        householdType: findValue(lines, ['户别'], ['户号', '住址', '户主姓名']) || (joined.match(/户别\s*[:：]?\s*([^\n]{2,20})/)?.[1] || ''),
+        householdAddress: findValue(lines, ['住址', '户籍地址', '地址'], ['户主姓名', '户号', '户别', '登记事项变更', '常住人口登记卡'])
+          || (joined.match(/住址\s*[:：]?\s*([^\n]{4,80})/)?.[1] || ''),
         registrationAuthority: lines.find((line) => line.includes('派出所') || line.includes('公安局')) || '',
       };
       if (Object.values(pageHomepage).some(Boolean)) {
@@ -1090,22 +1101,28 @@ function buildHukouInsightFromRawPages(rawPagesValue: unknown): HukouInsight | n
 
     const memberHits = ['常住人口登记卡', '姓名', '户主或与户主关系', '公民身份号码', '出生日期'].filter((label) => joined.includes(label)).length;
     if (memberHits >= 2) {
-      let name = findValue(lines, ['姓名'], ['户主或与户主关系', '公民身份号码', '性别', '民族', '出生日期']).trim();
+      let name = (
+        findValue(lines, ['姓名'], ['户主或与户主关系', '公民身份号码', '性别', '民族', '出生日期'])
+        || (joined.match(/姓名\s*[:：]?\s*([\u4e00-\u9fff·]{2,8})/)?.[1] || '')
+      ).trim();
       if (!name) {
         const idx = lines.indexOf('姓名');
         if (idx >= 0 && lines[idx + 1] && isReasonableName(lines[idx + 1])) {
           name = lines[idx + 1];
         }
       }
-      const relationship = findValue(lines, ['户主或与户主关系', '与户主关系'], ['公民身份号码', '性别', '民族', '出生日期', '婚姻状况', '服务处所', '职业']).trim();
+      const relationship = (
+        findValue(lines, ['户主或与户主关系', '与户主关系'], ['公民身份号码', '性别', '民族', '出生日期', '婚姻状况', '服务处所', '职业'])
+        || (joined.match(/户主或与户主关系\s*[:：]?\s*(户主|妻|夫|子|女|父|母|配偶|长子|长女|次子|次女|孙子|孙女)/)?.[1] || '')
+      ).trim();
       const member = {
         name: isReasonableName(name) ? name : '',
         relationship_to_head: ['户主', '妻', '夫', '子', '女', '父', '母', '配偶', '长子', '长女', '次子', '次女', '孙子', '孙女'].includes(relationship) ? relationship : (relationship.startsWith('户主') ? '户主' : ''),
-        gender: findValue(lines, ['性别'], ['民族', '出生日期', '公民身份号码', '婚姻状况']).trim(),
-        ethnicity: findValue(lines, ['民族'], ['出生日期', '公民身份号码', '婚姻状况']).trim(),
-        birth_date: findValue(lines, ['出生日期'], ['公民身份号码', '婚姻状况', '服务处所', '职业']).trim(),
+        gender: (findValue(lines, ['性别'], ['民族', '出生日期', '公民身份号码', '婚姻状况']) || (joined.match(/性别\s*[:：]?\s*(男|女)/)?.[1] || '')).trim(),
+        ethnicity: (findValue(lines, ['民族'], ['出生日期', '公民身份号码', '婚姻状况']) || (joined.match(/民族\s*[:：]?\s*([\u4e00-\u9fff]{1,8})/)?.[1] || '')).trim(),
+        birth_date: (findValue(lines, ['出生日期'], ['公民身份号码', '婚姻状况', '服务处所', '职业']) || (joined.match(/((?:19|20)\d{2}年\d{2}月\d{2}日)/)?.[1] || '')).trim(),
         id_number: (joined.match(/\d{17}[\dXx]/)?.[0] || '').toUpperCase(),
-        marital_status: findValue(lines, ['婚姻状况'], ['服务处所', '职业', '兵役状况', '何时由何地迁来本市（县）', '何时由何地迁来本址']).trim(),
+        marital_status: (findValue(lines, ['婚姻状况'], ['服务处所', '职业', '兵役状况', '何时由何地迁来本市（县）', '何时由何地迁来本址']) || (joined.match(/婚姻状况\s*[:：]?\s*([^\n]{1,12})/)?.[1] || '')).trim(),
       } as Record<string, unknown>;
       if (!member.birth_date && typeof member.id_number === 'string' && member.id_number.length >= 14) {
         const raw = member.id_number.slice(6, 14);
@@ -1156,7 +1173,11 @@ function buildHukouInsight(
 
   const extractedData = (latestItem.extracted_data || {}) as Record<string, unknown>;
   const document = getDocumentsByType(documents, 'hukou')[0];
-  const parsedInsight = buildHukouInsightFromRawPages(extractedData.raw_pages);
+  const parsedInsight = buildHukouInsightFromRawPages(extractedData.raw_pages, extractedData.raw_text);
+  const isMeaningfulValue = (value: string): boolean => {
+    const text = value.trim();
+    return Boolean(text && text !== '暂无' && text !== '—' && text !== '-');
+  };
   const extractedMembers = toRecordList(extractedData.members).filter((item) => {
     const name = stringifyExtractionValue(item.name || item['姓名']);
     const idNumber = stringifyExtractionValue(item.id_number || item['身份证号码'] || item['身份证号']);
@@ -1169,24 +1190,43 @@ function buildHukouInsight(
     if (!key) {
       return;
     }
-    const existing = mergedMembers.get(key) || {};
-    mergedMembers.set(key, { ...item, ...existing, ...Object.fromEntries(Object.entries(item).filter(([, value]) => Boolean(stringifyExtractionValue(value)))) });
+    const existing = mergedMembers.get(key);
+    if (!existing) {
+      mergedMembers.set(key, { ...item });
+      return;
+    }
+    const next = { ...existing };
+    Object.entries(item).forEach(([field, value]) => {
+      const currentValue = stringifyExtractionValue(next[field]);
+      const incomingValue = stringifyExtractionValue(value);
+      if (!isMeaningfulValue(currentValue) && isMeaningfulValue(incomingValue)) {
+        next[field] = value;
+      }
+    });
+    mergedMembers.set(key, next);
   });
   const members = Array.from(mergedMembers.values());
 
-  let householdHeadName = extractValueFromExtractionData(extractedData, ['household_head_name', '户主姓名']);
+  const extractedHeadName = extractValueFromExtractionData(extractedData, ['household_head_name', '户主姓名']);
+  let householdHeadName = isMeaningfulValue(extractedHeadName) ? extractedHeadName : '';
   if (!householdHeadName) {
     const householdHeadMember = members.find((item) => stringifyExtractionValue(item.relationship_to_head || item['与户主关系'] || item['户主或与户主关系']) === '户主');
     householdHeadName = stringifyExtractionValue(householdHeadMember?.name || householdHeadMember?.['姓名']);
   }
 
+  const extractedHouseholdNumber = extractValueFromExtractionData(extractedData, ['household_number', '户号']);
+  const extractedHouseholdType = extractValueFromExtractionData(extractedData, ['household_type', '户别']);
+  const extractedHouseholdAddress = extractValueFromExtractionData(extractedData, ['household_address', '户籍地址', '住址', '地址']);
+  const extractedRegistrationAuthority = extractValueFromExtractionData(extractedData, ['registration_authority', '登记机关', '签发机关']);
+  const extractedCompletenessNote = extractValueFromExtractionData(extractedData, ['completeness_note', '完整性提示']);
+
   return {
     householdHeadName: householdHeadName || parsedInsight?.householdHeadName || '',
-    householdNumber: extractValueFromExtractionData(extractedData, ['household_number', '户号']) || parsedInsight?.householdNumber || '',
-    householdType: extractValueFromExtractionData(extractedData, ['household_type', '户别']) || parsedInsight?.householdType || '',
-    householdAddress: extractValueFromExtractionData(extractedData, ['household_address', '户籍地址', '住址', '地址']) || parsedInsight?.householdAddress || '',
-    registrationAuthority: extractValueFromExtractionData(extractedData, ['registration_authority', '登记机关', '签发机关']) || parsedInsight?.registrationAuthority || '',
-    completenessNote: extractValueFromExtractionData(extractedData, ['completeness_note', '完整性提示']) || parsedInsight?.completenessNote || '',
+    householdNumber: (isMeaningfulValue(extractedHouseholdNumber) ? extractedHouseholdNumber : '') || parsedInsight?.householdNumber || '',
+    householdType: (isMeaningfulValue(extractedHouseholdType) ? extractedHouseholdType : '') || parsedInsight?.householdType || '',
+    householdAddress: (isMeaningfulValue(extractedHouseholdAddress) ? extractedHouseholdAddress : '') || parsedInsight?.householdAddress || '',
+    registrationAuthority: (isMeaningfulValue(extractedRegistrationAuthority) ? extractedRegistrationAuthority : '') || parsedInsight?.registrationAuthority || '',
+    completenessNote: (isMeaningfulValue(extractedCompletenessNote) ? extractedCompletenessNote : '') || parsedInsight?.completenessNote || '',
     members,
     document,
   };
