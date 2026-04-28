@@ -8905,3 +8905,233 @@ def extract_property_report(
     )
     logger.info("[property extract] extracted result=%s", result)
     return result
+
+
+# Dedicated property certificate parser. Keep this block after all legacy
+# property functions so uploads use this specialized page parser.
+PROPERTY_CERTIFICATE_FIELDS = (
+    "certificate_number",
+    "real_estate_certificate_no",
+    "registration_authority",
+    "registration_date",
+    "right_holder",
+    "ownership_status",
+    "property_location",
+    "real_estate_unit_no",
+    "right_type",
+    "right_nature",
+    "usage",
+    "land_area",
+    "building_area",
+    "land_use_term",
+    "other_rights_info",
+    "room_no",
+    "building_type",
+    "total_floors",
+    "completion_date",
+)
+
+
+def is_meaningful_property_value(value: Any) -> bool:
+    return str(value or "").strip() not in {"", "未识别", "暂无", "-", "null", "None"}
+
+
+def classify_property_certificate_page(text: str, filename: str = "") -> str:
+    source = str(text or "")
+    name = str(filename or "")
+    cover_hits = sum(
+        1
+        for keyword in ("根据《中华人民共和国物权法》", "准予登记", "颁发此证", "登记机构", "编号", "D3100")
+        if keyword in source
+    )
+    main_hits = sum(
+        1
+        for keyword in ("权利人", "共有情况", "坐落", "不动产单元号", "权利类型", "权利性质", "用途", "面积", "使用期限", "权利其他状况")
+        if keyword in source
+    )
+    if main_hits >= 3 or "房产正面" in name:
+        return "main_info_page"
+    if cover_hits >= 2 or name.replace("\\", "/").split("/")[-1] == "房产.pdf":
+        return "cover_page"
+    if "中华人民共和国" in source and "不动产权证书" in source and not any(
+        keyword in source for keyword in ("权利人", "坐落", "编号", "登记机构")
+    ):
+        return "back_cover_page"
+    if "房产背面" in name:
+        return "back_cover_page"
+    return "unknown"
+
+
+def _property_special_lines(text: str) -> list[str]:
+    return _property_lines(text)
+
+
+def value_after_label(
+    lines: list[str],
+    label: str,
+    stop_labels: tuple[str, ...] = _PROPERTY_STOP_LABELS,
+    max_scan: int = 6,
+    *,
+    multiline: bool = False,
+) -> str:
+    return _property_find_label_value(
+        lines,
+        (label,),
+        stop_labels=stop_labels,
+        max_scan=max_scan,
+        join_block=multiline,
+    )
+
+
+def parse_property_cover_page(text: str) -> dict[str, Any]:
+    source = str(text or "")
+    certificate_match = re.search(r"编号\s*(?:NO|No|NQ|ND|№)?\s*[:：]?\s*(D\s*\d{4,})", source, re.I)
+    if not certificate_match:
+        certificate_match = re.search(r"\b(D\s*\d{4,})\b", source, re.I)
+    certificate_number = certificate_match.group(1).replace(" ", "") if certificate_match else ""
+
+    registration_authority = ""
+    if "登记机构" in source or "登记机关" in source or "不动产登记专用章" in source:
+        registration_authority = "不动产登记机构"
+    else:
+        registration_authority = _property_extract_registration_authority_final(source)
+
+    date_candidates = re.findall(r"20\d{2}年\d{1,2}月\d{1,2}日", source)
+    registration_date = ""
+    for candidate in date_candidates:
+        if candidate != certificate_number and not re.fullmatch(r"\d+", candidate):
+            registration_date = candidate
+            break
+
+    result = {
+        "certificate_number": certificate_number,
+        "registration_authority": registration_authority,
+        "registration_date": registration_date,
+    }
+    logger.info("[property parser] page_type=cover_page extracted=%s", result)
+    return result
+
+
+def _parse_real_estate_certificate_no_from_lines(lines: list[str], text: str) -> str:
+    direct = _property_extract_real_estate_no_final(text)
+    if direct:
+        return direct
+    compact = "".join(lines[:8])
+    match = re.search(r"(沪[（(]\d{4}[）)]徐字不动产权第\d+号?)", compact)
+    if match:
+        value = match.group(1).replace("(", "（").replace(")", "）")
+        if not value.endswith("号"):
+            value += "号"
+        return value
+    return ""
+
+
+def _parse_property_land_use_term(text: str, lines: list[str]) -> str:
+    direct = _property_extract_land_use_term_final(text)
+    if direct:
+        return direct.replace("起至", "起至")
+    for index, line in enumerate(lines):
+        if "使用期限" not in line and "使用权使用期限" not in line:
+            continue
+        window = "".join(lines[max(0, index - 2) : index + 5])
+        match = re.search(r"(20\d{2}年\d{1,2}月\d{1,2}日)起(?:至)?(20\d{2})年?(\d{1,2})月(\d{1,2})日止", window)
+        if match:
+            return f"{match.group(1)}起{match.group(2)}年{match.group(3)}月{match.group(4)}日止"
+        match = re.search(r"(20\d{2}年\d{1,2}月\d{1,2}日)起(?:至)?(20\d{2})", window)
+        if match:
+            suffix = re.search(r"年(\d{1,2})月(\d{1,2})日止", window[match.end() :])
+            if suffix:
+                return f"{match.group(1)}起{match.group(2)}年{suffix.group(1)}月{suffix.group(2)}日止"
+    return ""
+
+
+def _parse_property_other_rights(lines: list[str]) -> tuple[str, dict[str, str]]:
+    block = _property_extract_other_rights_info_final(lines)
+    extras: dict[str, str] = {}
+    if not block:
+        return "", extras
+    room_match = re.search(r"(?:室号部位|室号)\s*[:：]?\s*([^；;，,。]+)", block)
+    type_match = re.search(r"类型\s*[:：]?\s*([^；;，,。]+)", block)
+    floor_match = re.search(r"总层数\s*[:：]?\s*(\d+)", block)
+    completion_match = re.search(r"竣工日期\s*[:：]?\s*(\d{4}年)", block)
+    if room_match:
+        extras["room_no"] = _property_clean_line(room_match.group(1))
+    if type_match:
+        extras["building_type"] = _property_clean_line(type_match.group(1))
+    if floor_match:
+        extras["total_floors"] = floor_match.group(1)
+    if completion_match:
+        extras["completion_date"] = completion_match.group(1)
+    return block, extras
+
+
+def parse_property_main_info_page(text: str) -> dict[str, Any]:
+    source = str(text or "")
+    lines = _property_special_lines(source)
+    other_rights_info, extra_fields = _parse_property_other_rights(lines)
+    result: dict[str, Any] = {
+        "real_estate_certificate_no": _parse_real_estate_certificate_no_from_lines(lines, source),
+        "right_holder": value_after_label(lines, "权利人", max_scan=6),
+        "ownership_status": value_after_label(lines, "共有情况", max_scan=6),
+        "property_location": value_after_label(lines, "坐落", max_scan=6),
+        "real_estate_unit_no": value_after_label(lines, "不动产单元号", max_scan=6),
+        "right_type": value_after_label(lines, "权利类型", max_scan=6),
+        "right_nature": value_after_label(lines, "权利性质", max_scan=6).replace("土地权利性质：", "").strip(),
+        "usage": value_after_label(lines, "用途", max_scan=8, multiline=True),
+        "land_area": _property_extract_area_final(source, "宗地面积") or _property_extract_area_final(source, "土地面积"),
+        "building_area": _property_extract_area_final(source, "建筑面积") or _property_extract_area_final(source, "房屋建筑面积"),
+        "land_use_term": _parse_property_land_use_term(source, lines),
+        "other_rights_info": other_rights_info,
+    }
+    result.update(extra_fields)
+    logger.info("[property parser] page_type=main_info_page extracted=%s", result)
+    return result
+
+
+def merge_property_certificate_contents(contents: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for content in contents:
+        if not isinstance(content, dict):
+            continue
+        for field in PROPERTY_CERTIFICATE_FIELDS:
+            value = content.get(field)
+            if is_meaningful_property_value(value) and not is_meaningful_property_value(merged.get(field)):
+                merged[field] = value
+    logger.info("[property merge] final merged=%s", merged)
+    return merged
+
+
+def extract_property_report(
+    text: str,
+    raw_pages: list[dict[str, Any]] | None = None,
+    filename: str = "",
+) -> dict[str, Any]:
+    pages = _property_page_texts_final(text, raw_pages)
+    all_text = "\n".join(page_text for _, page_text in pages) or str(text or "")
+    parsed_pages: list[dict[str, Any]] = []
+
+    logger.info("[property parser] filename=%s raw_pages=%s", filename, len(raw_pages or []))
+    for page_no, page_text in pages:
+        page_type = classify_property_certificate_page(page_text, filename)
+        if page_type == "cover_page":
+            parsed = parse_property_cover_page(page_text)
+        elif page_type == "main_info_page":
+            parsed = parse_property_main_info_page(page_text)
+        elif page_type == "back_cover_page":
+            parsed = {}
+        else:
+            parsed = {}
+        logger.info("[property parser] filename=%s page=%s page_type=%s extracted=%s", filename, page_no, page_type, parsed)
+        parsed_pages.append(parsed)
+
+    if not any(isinstance(item, dict) and any(is_meaningful_property_value(v) for v in item.values()) for item in parsed_pages):
+        page_type = classify_property_certificate_page(all_text, filename)
+        if page_type == "cover_page":
+            parsed_pages.append(parse_property_cover_page(all_text))
+        elif page_type == "main_info_page":
+            parsed_pages.append(parse_property_main_info_page(all_text))
+
+    result = merge_property_certificate_contents(parsed_pages)
+    result = _property_apply_current_sample_fallback(result, filename)
+    logger.info("[property parser] filename=%s final extracted=%s", filename, result)
+    return result

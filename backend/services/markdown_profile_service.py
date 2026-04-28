@@ -939,6 +939,10 @@ PROPERTY_MERGE_FIELDS = (
     'registration_authority',
     'registration_date',
     'other_rights_info',
+    'room_no',
+    'building_type',
+    'total_floors',
+    'completion_date',
 )
 
 
@@ -990,10 +994,17 @@ def _build_property_section_lines(file_names: list[str], original_available: boo
         ('land_use_term', '\u4f7f\u7528\u671f\u9650'),
         ('registration_authority', '\u767b\u8bb0\u673a\u6784'),
         ('registration_date', '\u767b\u8bb0\u65e5\u671f'),
-        ('other_rights_info', '\u6743\u5229\u5176\u4ed6\u72b6\u51b5'),
     ]
     for key, label in property_fields:
         lines.append(f"- {label}\uff1a{_marriage_display(extracted_data.get(key))}")
+    other_rights_info = str(extracted_data.get('other_rights_info') or '').strip()
+    if other_rights_info and other_rights_info not in {'未识别', '暂无', '-'}:
+        lines.append("- \u6743\u5229\u5176\u4ed6\u72b6\u51b5\uff1a")
+        parts = [part.strip(" \uff1b;") for part in re.split(r"[；;]\s*", other_rights_info) if part.strip(" \uff1b;")]
+        for part in parts:
+            lines.append(f"  - {part}")
+    else:
+        lines.append("- \u6743\u5229\u5176\u4ed6\u72b6\u51b5\uff1a\u672a\u8bc6\u522b")
     return lines
 
 
@@ -1371,6 +1382,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     'original_status': '可查看' if file_path else '原件文件不存在或已不可用',
                     'original_available': bool(file_path),
                 })
+            logger.info("[property merge] final merged=%s", merged_property_data)
             sections.append(_markdown_section('房产证', _build_property_section_lines(property_file_names, property_original_available, merged_property_data)))
         except Exception as exc:
             logger.warning("profile_markdown property_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
