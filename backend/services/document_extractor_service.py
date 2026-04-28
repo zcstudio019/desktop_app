@@ -5762,6 +5762,181 @@ def extract_marriage_cert(text: str, raw_pages: list[dict[str, Any]] | None = No
     }
 
 
+PROPERTY_DATE_PATTERN = re.compile(
+    r"((?:19|20)\d{2})\s*[年./-]\s*(0?[1-9]|1[0-2])\s*[月./-]\s*(3[01]|[12]\d|0?[1-9])\s*日?"
+)
+PROPERTY_CERT_NO_PATTERN = re.compile(r"(D[A-Z0-9]{4,})", re.IGNORECASE)
+PROPERTY_REAL_ESTATE_NO_PATTERN = re.compile(
+    r"((?:[\u4e00-\u9fa5]{1,3}\s*[（(]\s*(?:19|20)\d{2}\s*[）)]\s*[\u4e00-\u9fa5]{0,8}\s*)?不动产权\s*第\s*[A-Z0-9\d\s-]+\s*号)"
+)
+
+
+def _property_clean(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", "", text)
+    return text.strip("：:，,；;。 ")
+
+
+def _property_lines(text: str) -> list[str]:
+    return [str(line or "").strip() for line in str(text or "").replace("\r", "\n").split("\n") if str(line or "").strip()]
+
+
+def _property_normalize_date(value: Any) -> str:
+    match = PROPERTY_DATE_PATTERN.search(str(value or ""))
+    if not match:
+        return ""
+    year, month, day = match.groups()
+    return f"{year}年{int(month):02d}月{int(day):02d}日"
+
+
+def _property_find_after_label(
+    text: str,
+    labels: tuple[str, ...],
+    stop_labels: tuple[str, ...] = (),
+    *,
+    max_length: int = 180,
+    allow_multiline: bool = False,
+) -> str:
+    source = str(text or "")
+    for label in labels:
+        match = re.search(rf"{re.escape(label)}\s*[:：]?\s*", source)
+        if not match:
+            continue
+        candidate = source[match.end(): match.end() + max_length]
+        stop_indexes = []
+        for stop_label in stop_labels:
+            stop_match = re.search(rf"{re.escape(stop_label)}\s*[:：]?", candidate)
+            if stop_match:
+                stop_indexes.append(stop_match.start())
+        if stop_indexes:
+            candidate = candidate[: min(stop_indexes)]
+        if not allow_multiline:
+            candidate = candidate.splitlines()[0]
+        cleaned = re.sub(r"\s+", " ", candidate).strip("：:，,；;。 ")
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _extract_property_certificate_number(text: str) -> str:
+    for pattern in (
+        re.compile(r"编号\s*(?:No|NO|№)?\s*[:：]?\s*(D[A-Z0-9]{4,})", re.IGNORECASE),
+        PROPERTY_CERT_NO_PATTERN,
+    ):
+        match = pattern.search(text or "")
+        if match:
+            value = _property_clean(match.group(1)).upper()
+            if value.startswith("D"):
+                return value
+    return ""
+
+
+def _extract_real_estate_certificate_no(text: str) -> str:
+    match = PROPERTY_REAL_ESTATE_NO_PATTERN.search(text or "")
+    if match:
+        value = re.sub(r"\s+", "", match.group(1))
+        if "不动产权第" in value:
+            return value
+    lines = _property_lines(text)
+    for index, line in enumerate(lines):
+        joined = "".join(lines[index:index + 3])
+        if "不动产权第" in joined:
+            match = PROPERTY_REAL_ESTATE_NO_PATTERN.search(joined)
+            if match:
+                return re.sub(r"\s+", "", match.group(1))
+    return ""
+
+
+def _extract_property_registration_authority(text: str) -> str:
+    candidates: list[str] = []
+    for line in _property_lines(text):
+        cleaned = _property_clean(line)
+        if not cleaned:
+            continue
+        if any(keyword in cleaned for keyword in ("登记事务中心", "不动产登记", "自然资源局", "规划和自然资源局", "登记中心")):
+            cleaned = re.sub(r"^\W+", "", cleaned)
+            cleaned = re.sub(r"(?:\d{4}年\d{1,2}月\d{1,2}日).*", "", cleaned)
+            if 4 <= len(cleaned) <= 60:
+                candidates.append(cleaned)
+    logger.info("[property_certificate] registration_authority_candidates=%s", candidates)
+    for candidate in candidates:
+        if "登记事务中心" in candidate or "不动产登记" in candidate:
+            logger.info("[property_certificate] final registration_authority=%s", candidate)
+            return candidate
+    final = candidates[0] if candidates else ""
+    logger.info("[property_certificate] final registration_authority=%s", final or "(empty)")
+    return final
+
+
+def _extract_property_registration_date(text: str) -> str:
+    labeled = _property_find_after_label(
+        text,
+        ("登记日期", "发证日期", "填发日期", "核发日期"),
+        ("权利其他状况", "使用期限", "附记", "权利人", "坐落"),
+        max_length=80,
+    )
+    normalized = _property_normalize_date(labeled)
+    if normalized:
+        return normalized
+
+    seal_sections = re.findall(r"Property Certificate Seal OCR.*?(?=---|\Z)", text or "", flags=re.S)
+    for section in seal_sections:
+        normalized = _property_normalize_date(section)
+        if normalized:
+            return normalized
+
+    lines = _property_lines(text)
+    for index, line in enumerate(lines):
+        if any(skip in line for skip in ("使用期限", "起", "止", "竣工日期", "土地用途")):
+            continue
+        if any(anchor in line for anchor in ("登记", "发证", "填发", "核发", "不动产登记", "登记事务中心", "自然资源局")):
+            normalized = _property_normalize_date("\n".join(lines[index:index + 3]))
+            if normalized:
+                return normalized
+    return ""
+
+
+def extract_property_report(text: str) -> dict[str, Any]:
+    stop_labels = (
+        "共有情况", "坐落", "不动产单元号", "权利类型", "权利性质", "用途", "面积", "使用期限", "权利其他状况", "附记",
+        "权利人", "登记机构", "登记机关", "登记日期", "发证日期",
+    )
+    real_estate_no = _extract_real_estate_certificate_no(text)
+    certificate_number = _extract_property_certificate_number(text)
+    right_holder = _property_find_after_label(text, ("权利人",), stop_labels, max_length=120)
+    ownership_status = _property_find_after_label(text, ("共有情况",), stop_labels, max_length=80)
+    property_location = _property_find_after_label(text, ("坐落", "房屋坐落"), stop_labels, max_length=220, allow_multiline=True)
+    real_estate_unit_no = _property_find_after_label(text, ("不动产单元号",), stop_labels, max_length=120)
+    right_type = _property_find_after_label(text, ("权利类型",), stop_labels, max_length=160)
+    right_nature = _property_find_after_label(text, ("权利性质",), stop_labels, max_length=160)
+    usage = _property_find_after_label(text, ("用途",), stop_labels, max_length=180, allow_multiline=True)
+    land_area = _property_find_after_label(text, ("土地面积",), stop_labels, max_length=80)
+    building_area = _property_find_after_label(text, ("建筑面积", "房屋建筑面积"), stop_labels, max_length=80)
+    if not building_area:
+        match = re.search(r"建筑面积\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?\s*平方米)", text or "")
+        building_area = match.group(1) if match else ""
+    land_use_term = _property_find_after_label(text, ("使用期限", "土地使用期限"), ("权利其他状况", "附记", "登记机构", "登记日期"), max_length=220, allow_multiline=True)
+    other_rights_info = _property_find_after_label(text, ("权利其他状况", "附记"), ("登记机构", "登记机关", "登记日期", "发证日期"), max_length=500, allow_multiline=True)
+
+    return {
+        "certificate_number": certificate_number,
+        "real_estate_certificate_no": real_estate_no,
+        "registration_authority": _extract_property_registration_authority(text),
+        "registration_date": _extract_property_registration_date(text),
+        "right_holder": _property_clean(right_holder),
+        "ownership_status": _property_clean(ownership_status),
+        "property_location": re.sub(r"\s+", "", property_location).strip("：:，,；;。 "),
+        "real_estate_unit_no": _property_clean(real_estate_unit_no),
+        "right_type": right_type.strip("：:，,；;。 "),
+        "right_nature": right_nature.strip("：:，,；;。 "),
+        "usage": re.sub(r"\s+", " ", usage).strip("：:，,；;。 "),
+        "land_area": land_area.strip("：:，,；;。 "),
+        "building_area": building_area.strip("：:，,；;。 "),
+        "land_use_term": re.sub(r"\s+", "", land_use_term).strip("：:，,；;。 "),
+        "other_rights_info": re.sub(r"\s+", " ", other_rights_info).strip("：:，,；;。 "),
+    }
+
+
 # Final hukou member normalization. Keep this at file end so it is the runtime implementation.
 _HUKOU_FINAL_RELATIONS = {"户主", "妻", "夫", "配偶", "子", "女", "长子", "长女", "次子", "次女", "父", "母"}
 _HUKOU_FINAL_LABELS = {
@@ -7532,7 +7707,7 @@ def build_structured_extraction(
         )
         if homepage_present and content.get("members"):
             content["completeness_note"] = "已识别户口本首页和成员页"
-    elif normalized_code == "property_report":
+    elif normalized_code in {"property_report", "collateral", "mortgage_info"}:
         content = extract_property_report(text_content)
     elif normalized_code == "special_license":
         content = extract_special_license(text_content)

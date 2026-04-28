@@ -77,6 +77,18 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'company_name': '\u516c\u53f8\u540d\u79f0',
     'credit_code': '\u7edf\u4e00\u793e\u4f1a\u4fe1\u7528\u4ee3\u7801',
     'certificate_number': '\u8bc1\u7167\u7f16\u53f7',
+    'real_estate_certificate_no': '\u4e0d\u52a8\u4ea7\u6743\u53f7',
+    'right_holder': '\u6743\u5229\u4eba',
+    'ownership_status': '\u5171\u6709\u60c5\u51b5',
+    'property_location': '\u5750\u843d',
+    'real_estate_unit_no': '\u4e0d\u52a8\u4ea7\u5355\u5143\u53f7',
+    'right_type': '\u6743\u5229\u7c7b\u578b',
+    'right_nature': '\u6743\u5229\u6027\u8d28',
+    'usage': '\u7528\u9014',
+    'land_area': '\u571f\u5730\u9762\u79ef',
+    'building_area': '\u5efa\u7b51\u9762\u79ef',
+    'land_use_term': '\u4f7f\u7528\u671f\u9650',
+    'other_rights_info': '\u6743\u5229\u5176\u4ed6\u72b6\u51b5',
     'legal_person': '\u6cd5\u5b9a\u4ee3\u8868\u4eba',
     'executive_director': '\u6267\u884c\u8463\u4e8b',
     'chairman': '\u8463\u4e8b\u957f',
@@ -837,6 +849,70 @@ def _format_marriage_raw_text_for_markdown(extracted_data: dict[str, Any]) -> st
     return '\n'.join(lines) if has_content else ''
 
 
+PROPERTY_RAW_NOISE_KEYWORDS = (
+    '\u626b\u63cf\u5168\u80fd\u738b',
+    '\u626b\u63cfApp',
+    '3\u4ebf\u4eba',
+    'CamScanner',
+    'Adobe Scan',
+)
+
+
+def _format_property_raw_line(line: str) -> str:
+    text = str(line or '').strip().strip('|').strip()
+    if not text:
+        return ''
+    if any(keyword in text for keyword in PROPERTY_RAW_NOISE_KEYWORDS):
+        return ''
+    if re.fullmatch(r'[\d\s./_-]+', text) and len(text.replace(' ', '')) <= 3:
+        return ''
+    if re.fullmatch(r'[\W_]+', text, flags=re.UNICODE):
+        return ''
+    text = re.sub(r'\s+', ' ', text).strip()
+    field_labels = (
+        '\u7f16\u53f7', '\u4e0d\u52a8\u4ea7\u6743\u53f7', '\u6743\u5229\u4eba', '\u5171\u6709\u60c5\u51b5',
+        '\u5750\u843d', '\u4e0d\u52a8\u4ea7\u5355\u5143\u53f7', '\u6743\u5229\u7c7b\u578b', '\u6743\u5229\u6027\u8d28',
+        '\u7528\u9014', '\u571f\u5730\u9762\u79ef', '\u5efa\u7b51\u9762\u79ef', '\u4f7f\u7528\u671f\u9650',
+        '\u767b\u8bb0\u673a\u6784', '\u767b\u8bb0\u673a\u5173', '\u767b\u8bb0\u65e5\u671f', '\u53d1\u8bc1\u65e5\u671f',
+    )
+    compact = re.sub(r'\s+', '', text)
+    for label in field_labels:
+        if compact.startswith(label) and not compact.startswith(f'{label}\uff1a') and not compact.startswith(f'{label}:'):
+            value = compact[len(label):].strip()
+            if value:
+                return f'{label}\uff1a{value}  '
+    return f'{text}  '
+
+
+def _format_property_raw_text_for_markdown(extracted_data: dict[str, Any]) -> str:
+    raw_pages = extracted_data.get('raw_pages')
+    lines = ['### \u539f\u6587\u8bc6\u522b\u5185\u5bb9']
+    has_content = False
+    if isinstance(raw_pages, list):
+        for item in raw_pages:
+            if not isinstance(item, dict):
+                continue
+            page_text = str(item.get('text') or '').strip()
+            if not page_text:
+                continue
+            page_lines = [_format_property_raw_line(raw_line) for raw_line in page_text.replace('\r', '\n').split('\n')]
+            page_lines = [line for line in page_lines if line]
+            if not page_lines:
+                continue
+            has_content = True
+            page_no = item.get('page') or len(lines)
+            lines.append(f'#### \u7b2c {page_no} \u9875')
+            lines.extend(page_lines)
+    if not has_content:
+        raw_text = str(extracted_data.get('raw_text') or '').strip()
+        raw_lines = [_format_property_raw_line(raw_line) for raw_line in raw_text.replace('\r', '\n').split('\n')]
+        raw_lines = [line for line in raw_lines if line]
+        if raw_lines:
+            has_content = True
+            lines.extend(raw_lines)
+    return '\n'.join(lines) if has_content else ''
+
+
 async def _build_single_document_section(
     storage_service: Any,
     customer_id: str,
@@ -868,6 +944,39 @@ async def _build_single_document_section(
         'original_status': original_status,
         'original_available': bool(store_original and file_path),
     }
+    if extraction_type in {'property_report', 'collateral', 'mortgage_info'} and isinstance(extracted_data, dict):
+        property_title = '\u623f\u4ea7\u8bc1'
+        lines = [
+            f'- \u8d44\u6599\u7c7b\u578b\uff1a{property_title}',
+            f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}',
+            f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}',
+            '',
+            '### \u7ed3\u6784\u5316\u63d0\u53d6\u7ed3\u679c',
+        ]
+        property_fields = [
+            ('certificate_number', '\u7f16\u53f7'),
+            ('real_estate_certificate_no', '\u4e0d\u52a8\u4ea7\u6743\u53f7'),
+            ('right_holder', '\u6743\u5229\u4eba'),
+            ('ownership_status', '\u5171\u6709\u60c5\u51b5'),
+            ('property_location', '\u5750\u843d'),
+            ('real_estate_unit_no', '\u4e0d\u52a8\u4ea7\u5355\u5143\u53f7'),
+            ('right_type', '\u6743\u5229\u7c7b\u578b'),
+            ('right_nature', '\u6743\u5229\u6027\u8d28'),
+            ('usage', '\u7528\u9014'),
+            ('land_area', '\u571f\u5730\u9762\u79ef'),
+            ('building_area', '\u5efa\u7b51\u9762\u79ef'),
+            ('land_use_term', '\u4f7f\u7528\u671f\u9650'),
+            ('registration_authority', '\u767b\u8bb0\u673a\u6784'),
+            ('registration_date', '\u767b\u8bb0\u65e5\u671f'),
+            ('other_rights_info', '\u6743\u5229\u5176\u4ed6\u72b6\u51b5'),
+        ]
+        for key, label in property_fields:
+            lines.append(f"- {label}\uff1a{_marriage_display(extracted_data.get(key))}")
+        raw_markdown = _format_property_raw_text_for_markdown(extracted_data)
+        if raw_markdown:
+            lines.extend(['', raw_markdown])
+        source_document['source_type_name'] = property_title
+        return _markdown_section(property_title, lines), source_document
     if extraction_type == 'marriage_cert' and isinstance(extracted_data, dict):
         lines = [
             f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}',

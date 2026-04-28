@@ -57,10 +57,10 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
     ),
     DocumentTypeDefinition(
         code="collateral",
-        name="抵押物信息",
-        storage_label="抵押物信息提取",
+        name="房产证",
+        storage_label="房产证",
         formats=("pdf", "image"),
-        aliases=("抵押物信息", "抵押物信息提取"),
+        aliases=("房产证", "不动产权证", "抵押物信息"),
     ),
     DocumentTypeDefinition(
         code="jellyfish_report",
@@ -113,10 +113,10 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
     ),
     DocumentTypeDefinition(
         code="property_report",
-        name="产调",
-        storage_label="产调",
+        name="房产证",
+        storage_label="房产证",
         formats=("pdf", "docx", "image"),
-        aliases=("产调", "不动产登记信息", "不动产产调", "房产调查"),
+        aliases=("房产证", "不动产权证", "产调", "不动产登记信息", "不动产产调", "房产调查"),
         store_original=True,
     ),
     DocumentTypeDefinition(

@@ -401,6 +401,60 @@ def _ocr_company_articles_front_pages(file_bytes: bytes, file_type: str, filenam
         return ""
 
 
+def _property_certificate_seal_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[int, int, int, int]]]:
+    with Image.open(BytesIO(image_bytes)) as image:
+        width, height = image.size
+    return [
+        ("bottom_full_35", (0, max(0, int(height * 0.65)), width, height)),
+        ("bottom_right_40_35", (max(0, int(width * 0.60)), max(0, int(height * 0.65)), width, height)),
+        ("middle_right_45_45", (max(0, int(width * 0.52)), max(0, int(height * 0.48)), width, min(height, int(height * 0.93)))),
+        ("bottom_center_45", (max(0, int(width * 0.25)), max(0, int(height * 0.55)), min(width, int(width * 0.95)), height)),
+    ]
+
+
+def _ocr_property_certificate_seal_region(file_bytes: bytes, file_type: str, filename: str) -> str:
+    logger.info("[property_certificate] start seal-region extraction filename=%s file_type=%s", filename, file_type)
+    try:
+        if file_type == "pdf":
+            images = file_service.pdf_to_images(file_bytes)
+            if not images:
+                logger.warning("[property_certificate] seal-region extraction skipped: no rendered PDF images filename=%s", filename)
+                return ""
+            source_images = images[:2]
+        elif file_type == "image":
+            source_images = [file_bytes]
+        else:
+            return ""
+
+        ocr_parts: list[str] = []
+        for page_index, source_image in enumerate(source_images, start=1):
+            for region_name, box in _property_certificate_seal_crop_boxes(source_image):
+                try:
+                    seal_region = _crop_image_region(source_image, box)
+                    for variant_name, variant_bytes in _build_seal_ocr_variants(seal_region):
+                        compressed = file_service.compress_image(variant_bytes)
+                        seal_text = ocr_service.recognize_image(compressed).strip()
+                        logger.info(
+                            "[property_certificate] seal_region_ocr_text page=%s region=%s variant=%s text=%s",
+                            page_index,
+                            region_name,
+                            variant_name,
+                            seal_text[:1000] or "(empty)",
+                        )
+                        if seal_text:
+                            ocr_parts.append(
+                                f"--- Property Certificate Seal OCR page={page_index} region={region_name} variant={variant_name} box={box} ---\n{seal_text}"
+                            )
+                except OCRServiceError as exc:
+                    logger.warning("[property_certificate] seal region OCR failed page=%s region=%s filename=%s error=%s", page_index, region_name, filename, exc)
+                except Exception as exc:  # pragma: no cover - best-effort per crop
+                    logger.warning("[property_certificate] seal region crop/OCR failed page=%s region=%s filename=%s error=%s", page_index, region_name, filename, exc)
+        return "\n\n".join(ocr_parts)
+    except Exception as exc:  # pragma: no cover - best-effort OCR fallback
+        logger.warning("[property_certificate] seal region extraction failed filename=%s error=%s", filename, exc)
+        return ""
+
+
 async def _extract_content_from_file(
     file_bytes: bytes,
     file_type: str,
@@ -495,6 +549,9 @@ def _extract_structured_data(
         if raw_pages:
             content["raw_pages"] = raw_pages
             content["raw_text"] = _build_raw_text_from_pages(raw_pages)
+        elif document_type_code in {"property_report", "collateral", "mortgage_info"} and text_content and text_content.strip():
+            content["raw_pages"] = [{"page": 1, "text": text_content}]
+            content["raw_text"] = text_content
         elif document_type_code == "marriage_cert" and text_content and text_content.strip():
             content["raw_text"] = text_content
         customer_name = extract_customer_name_from_content(content)
@@ -545,6 +602,11 @@ async def _process_file_bytes(
         front_page_ocr_text = _ocr_company_articles_front_pages(file_bytes, file_type, filename)
         if front_page_ocr_text:
             text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
+    if document_type_code in {"property_report", "collateral", "mortgage_info"}:
+        seal_region_text = _ocr_property_certificate_seal_region(file_bytes, file_type, filename)
+        if seal_region_text:
+            text_content = f"{text_content}\n\n--- Property Certificate Seal Region OCR ---\n{seal_region_text}"
+            raw_pages.append({"page": len(raw_pages) + 1, "text": seal_region_text})
     if progress_callback:
         await progress_callback("正在结构化提取")
     return _extract_structured_data(text_content, document_type_code, rows, raw_pages=raw_pages)

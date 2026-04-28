@@ -147,7 +147,7 @@ const FILE_TYPES: FileTypeConfig[] = [
   },
   { 
     id: 'collateral', 
-    name: '抵押物信息', 
+    name: '房产证', 
     formats: 'PDF / 图片', 
     color: 'text-cyan-600',
     bgColor: 'bg-cyan-50',
