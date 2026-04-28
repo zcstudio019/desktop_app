@@ -536,15 +536,26 @@ def _extract_structured_data(
     rows: list[dict],
     *,
     raw_pages: list[dict[str, Any]] | None = None,
+    filename: str = "",
 ) -> FileProcessResponse:
     try:
+        raw_pages_for_log = raw_pages or []
+        if document_type_code in {"property_report", "collateral", "mortgage_info"}:
+            logger.info("[property] document_type=%s filename=%s", document_type_code, filename)
+            logger.info("[property] raw_pages count=%s", len(raw_pages_for_log))
+            logger.info("[property] raw_text preview=%s", (text_content or "")[:2000])
+            for item in raw_pages_for_log:
+                logger.info("[property] page=%s text=%s", item.get("page"), str(item.get("text") or "")[:1500])
         content = build_structured_extraction(
             text_content,
             document_type_code,
             rows=rows,
             raw_pages=raw_pages or [],
+            filename=filename,
             ai_service=ai_service,
         )
+        if document_type_code in {"property_report", "collateral", "mortgage_info"}:
+            logger.info("[property] extracted result=%s", content)
         raw_pages = raw_pages or []
         if raw_pages:
             content["raw_pages"] = raw_pages
@@ -609,7 +620,7 @@ async def _process_file_bytes(
             raw_pages.append({"page": len(raw_pages) + 1, "text": seal_region_text})
     if progress_callback:
         await progress_callback("正在结构化提取")
-    return _extract_structured_data(text_content, document_type_code, rows, raw_pages=raw_pages)
+    return _extract_structured_data(text_content, document_type_code, rows, raw_pages=raw_pages, filename=filename)
 
 
 async def _run_file_process_job(
