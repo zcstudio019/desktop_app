@@ -913,6 +913,73 @@ def _format_property_raw_text_for_markdown(extracted_data: dict[str, Any]) -> st
     return '\n'.join(lines) if has_content else ''
 
 
+PROPERTY_DOCUMENT_TYPES = {'property_report', 'collateral', 'mortgage_info'}
+PROPERTY_MERGE_FIELDS = (
+    'certificate_number',
+    'real_estate_certificate_no',
+    'right_holder',
+    'ownership_status',
+    'property_location',
+    'real_estate_unit_no',
+    'right_type',
+    'right_nature',
+    'usage',
+    'land_area',
+    'building_area',
+    'land_use_term',
+    'registration_authority',
+    'registration_date',
+    'other_rights_info',
+)
+
+
+def _is_empty_property_value(value: Any) -> bool:
+    text = str(value or '').strip()
+    return not text or text in {'未识别', '暂无', '-', 'null', 'None'}
+
+
+def _merge_property_extracted_data(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key in PROPERTY_MERGE_FIELDS:
+        value = source.get(key)
+        if _is_empty_property_value(value):
+            continue
+        if _is_empty_property_value(target.get(key)):
+            target[key] = value
+
+
+def _build_property_section_lines(file_names: list[str], original_available: bool, extracted_data: dict[str, Any]) -> list[str]:
+    property_title = '\u623f\u4ea7\u8bc1'
+    file_name_text = '、'.join(dict.fromkeys([name for name in file_names if name])) or '\u6682\u65e0'
+    original_status = '\u53ef\u67e5\u770b' if original_available else '\u539f\u4ef6\u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u5df2\u4e0d\u53ef\u7528'
+    lines = [
+        f'- \u8d44\u6599\u7c7b\u578b\uff1a{property_title}',
+        f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name_text}',
+        f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}',
+        '',
+        '### \u7ed3\u6784\u5316\u63d0\u53d6\u7ed3\u679c',
+    ]
+    property_fields = [
+        ('certificate_number', '\u7f16\u53f7'),
+        ('real_estate_certificate_no', '\u4e0d\u52a8\u4ea7\u6743\u53f7'),
+        ('right_holder', '\u6743\u5229\u4eba'),
+        ('ownership_status', '\u5171\u6709\u60c5\u51b5'),
+        ('property_location', '\u5750\u843d'),
+        ('real_estate_unit_no', '\u4e0d\u52a8\u4ea7\u5355\u5143\u53f7'),
+        ('right_type', '\u6743\u5229\u7c7b\u578b'),
+        ('right_nature', '\u6743\u5229\u6027\u8d28'),
+        ('usage', '\u7528\u9014'),
+        ('land_area', '\u571f\u5730\u9762\u79ef'),
+        ('building_area', '\u5efa\u7b51\u9762\u79ef'),
+        ('land_use_term', '\u4f7f\u7528\u671f\u9650'),
+        ('registration_authority', '\u767b\u8bb0\u673a\u6784'),
+        ('registration_date', '\u767b\u8bb0\u65e5\u671f'),
+        ('other_rights_info', '\u6743\u5229\u5176\u4ed6\u72b6\u51b5'),
+    ]
+    for key, label in property_fields:
+        lines.append(f"- {label}\uff1a{_marriage_display(extracted_data.get(key))}")
+    return lines
+
+
 async def _build_single_document_section(
     storage_service: Any,
     customer_id: str,
@@ -946,32 +1013,7 @@ async def _build_single_document_section(
     }
     if extraction_type in {'property_report', 'collateral', 'mortgage_info'} and isinstance(extracted_data, dict):
         property_title = '\u623f\u4ea7\u8bc1'
-        lines = [
-            f'- \u8d44\u6599\u7c7b\u578b\uff1a{property_title}',
-            f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}',
-            f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}',
-            '',
-            '### \u7ed3\u6784\u5316\u63d0\u53d6\u7ed3\u679c',
-        ]
-        property_fields = [
-            ('certificate_number', '\u7f16\u53f7'),
-            ('real_estate_certificate_no', '\u4e0d\u52a8\u4ea7\u6743\u53f7'),
-            ('right_holder', '\u6743\u5229\u4eba'),
-            ('ownership_status', '\u5171\u6709\u60c5\u51b5'),
-            ('property_location', '\u5750\u843d'),
-            ('real_estate_unit_no', '\u4e0d\u52a8\u4ea7\u5355\u5143\u53f7'),
-            ('right_type', '\u6743\u5229\u7c7b\u578b'),
-            ('right_nature', '\u6743\u5229\u6027\u8d28'),
-            ('usage', '\u7528\u9014'),
-            ('land_area', '\u571f\u5730\u9762\u79ef'),
-            ('building_area', '\u5efa\u7b51\u9762\u79ef'),
-            ('land_use_term', '\u4f7f\u7528\u671f\u9650'),
-            ('registration_authority', '\u767b\u8bb0\u673a\u6784'),
-            ('registration_date', '\u767b\u8bb0\u65e5\u671f'),
-            ('other_rights_info', '\u6743\u5229\u5176\u4ed6\u72b6\u51b5'),
-        ]
-        for key, label in property_fields:
-            lines.append(f"- {label}\uff1a{_marriage_display(extracted_data.get(key))}")
+        lines = _build_property_section_lines([file_name], bool(store_original and file_path), extracted_data)
         source_document['source_type_name'] = property_title
         return _markdown_section(property_title, lines), source_document
     if extraction_type == 'marriage_cert' and isinstance(extracted_data, dict):
@@ -1183,7 +1225,12 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
     sections: list[str] = []
     source_documents: list[dict[str, Any]] = []
     id_card_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'id_card']
-    other_extractions = [item for item in extractions if (item.get('extraction_type') or '') != 'id_card']
+    property_extractions = [item for item in extractions if (item.get('extraction_type') or '') in PROPERTY_DOCUMENT_TYPES]
+    other_extractions = [
+        item for item in extractions
+        if (item.get('extraction_type') or '') != 'id_card'
+        and (item.get('extraction_type') or '') not in PROPERTY_DOCUMENT_TYPES
+    ]
 
     if id_card_extractions:
         try:
@@ -1273,6 +1320,40 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     ],
                 )
             )
+
+    if property_extractions:
+        try:
+            merged_property_data: dict[str, Any] = {}
+            property_file_names: list[str] = []
+            property_original_available = False
+            for extraction in property_extractions:
+                extraction_type = extraction.get('extraction_type') or ''
+                extracted_data = (extraction.get('extracted_data') or {}) if isinstance(extraction.get('extracted_data'), dict) else {}
+                _merge_property_extracted_data(merged_property_data, extracted_data)
+                document = None
+                doc_id = extraction.get('doc_id')
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning("profile_markdown property_document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
+                file_name = (document or {}).get('file_name') or '暂无'
+                file_path = (document or {}).get('file_path') or ''
+                property_file_names.append(file_name)
+                property_original_available = property_original_available or bool(file_path)
+                source_documents.append({
+                    'source_type': extraction_type,
+                    'source_type_name': '房产证',
+                    'extraction_id': extraction.get('extraction_id'),
+                    'doc_id': doc_id,
+                    'file_name': file_name,
+                    'original_status': '可查看' if file_path else '原件文件不存在或已不可用',
+                    'original_available': bool(file_path),
+                })
+            sections.append(_markdown_section('房产证', _build_property_section_lines(property_file_names, property_original_available, merged_property_data)))
+        except Exception as exc:
+            logger.warning("profile_markdown property_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+            sections.append(_markdown_section('房产证', ['- 提示：房产证资料整理失败，请查看来源文档列表或重新上传。']))
 
     for extraction in other_extractions:
         extraction_id = extraction.get('extraction_id') or ''
