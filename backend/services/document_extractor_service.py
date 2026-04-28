@@ -5522,6 +5522,240 @@ def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> d
     return _extract_hukou_fields(text)
 
 
+# Runtime-final property certificate override. Keep this after all legacy
+# definitions so build_structured_extraction uses the page-filtering parser.
+def extract_property_report(text: str, raw_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    pages = _pc_page_texts(text, raw_pages)
+    main_pages = _pc_select_main_pages(text, raw_pages)
+    main_text = "\n".join(page_text for _, page_text in main_pages)
+    all_text = "\n".join(page_text for _, page_text in pages) or str(text or "")
+    lines = _pc_lines(main_text)
+
+    return {
+        "certificate_number": _pc_extract_certificate_number(all_text),
+        "real_estate_certificate_no": _pc_extract_real_estate_no(main_text),
+        "registration_authority": _pc_extract_registration_authority(all_text),
+        "registration_date": _pc_extract_registration_date(all_text),
+        "right_holder": _pc_extract_row_value(lines, ("权利人",), max_scan=2),
+        "ownership_status": _pc_extract_row_value(lines, ("共有情况",), max_scan=2),
+        "property_location": _pc_extract_row_value(lines, ("坐落",), max_scan=3),
+        "real_estate_unit_no": _pc_extract_row_value(lines, ("不动产单元号",), max_scan=2),
+        "right_type": _pc_extract_row_value(lines, ("权利类型",), max_scan=3),
+        "right_nature": _pc_extract_right_nature(lines),
+        "usage": _pc_extract_usage(lines),
+        "land_area": _pc_extract_area(lines, "土地面积"),
+        "building_area": _pc_extract_area(lines, "建筑面积"),
+        "land_use_term": _pc_extract_land_use_term(lines),
+        "other_rights_info": _pc_extract_row_value(lines, ("权利其他状况",), max_scan=6),
+    }
+
+
+# Final property certificate parser. The earlier property parser scans the whole
+# OCR text and can accidentally parse cover/instruction pages. This version first
+# selects the real certificate information page, then parses label/value rows.
+PROPERTY_MAIN_PAGE_FEATURES = ("权利人", "坐落", "不动产单元号", "权利类型", "用途", "面积")
+PROPERTY_LABELS = (
+    "权利人", "共有情况", "坐落", "不动产单元号", "权利类型", "权利性质",
+    "用途", "土地面积", "建筑面积", "面积", "使用期限", "权利其他状况",
+)
+
+
+def _pc_lines(text: str) -> list[str]:
+    return [re.sub(r"\s+", " ", str(line or "")).strip() for line in str(text or "").replace("\r", "\n").split("\n") if str(line or "").strip()]
+
+
+def _pc_compact(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip("：:，,；;。 ")
+
+
+def _pc_clean_value(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip("：:，,；;。 ")
+
+
+def _pc_page_texts(text: str, raw_pages: list[dict[str, Any]] | None) -> list[tuple[str, str]]:
+    pages: list[tuple[str, str]] = []
+    if raw_pages:
+        for index, item in enumerate(raw_pages, start=1):
+            if not isinstance(item, dict):
+                continue
+            page_text = str(item.get("text") or "").strip()
+            if page_text:
+                pages.append((str(item.get("page") or index), page_text))
+    if not pages and text:
+        split_pages = re.split(r"---\s*第\s*([0-9]+)\s*页\s*---", text)
+        if len(split_pages) > 2:
+            for index in range(1, len(split_pages), 2):
+                pages.append((split_pages[index], split_pages[index + 1]))
+        else:
+            pages.append(("1", text))
+    return pages
+
+
+def _pc_main_page_score(page_text: str) -> int:
+    compact = _pc_compact(page_text)
+    return sum(1 for feature in PROPERTY_MAIN_PAGE_FEATURES if feature in compact)
+
+
+def _pc_select_main_pages(text: str, raw_pages: list[dict[str, Any]] | None) -> list[tuple[str, str]]:
+    candidates = [(page, page_text, _pc_main_page_score(page_text)) for page, page_text in _pc_page_texts(text, raw_pages)]
+    selected = [(page, page_text) for page, page_text, score in candidates if score >= 2]
+    logger.info("[property_certificate] selected_main_pages=%s", [page for page, _ in selected])
+    return selected
+
+
+def _pc_extract_row_value(lines: list[str], labels: tuple[str, ...], *, max_scan: int = 3) -> str:
+    stop_labels = tuple(label for label in PROPERTY_LABELS if label not in labels)
+    for index, line in enumerate(lines):
+        compact_line = _pc_compact(line)
+        for label in labels:
+            if label not in compact_line:
+                continue
+            after = compact_line.split(label, 1)[1]
+            after = re.sub(r"^[：:]+", "", after)
+            if after and not any(after == stop or after.startswith(stop) for stop in stop_labels):
+                return after
+            for offset in range(1, max_scan + 1):
+                next_index = index + offset
+                if next_index >= len(lines):
+                    break
+                candidate = _pc_compact(lines[next_index])
+                if not candidate:
+                    continue
+                if any(candidate == stop or candidate.startswith(stop) for stop in stop_labels):
+                    break
+                return candidate
+    return ""
+
+
+def _pc_extract_certificate_number(all_text: str) -> str:
+    patterns = (
+        re.compile(r"编号\s*(?:No|NO|№)?\s*[:：]?\s*(D[A-Z0-9]{4,})", re.I),
+        re.compile(r"\b(D\d{4,}[A-Z0-9]*)\b", re.I),
+    )
+    for pattern in patterns:
+        match = pattern.search(all_text or "")
+        if match:
+            return _pc_compact(match.group(1)).upper()
+    return ""
+
+
+def _pc_extract_real_estate_no(main_text: str) -> str:
+    compact = _pc_compact(main_text)
+    match = re.search(r"([\u4e00-\u9fa5]?[（(]\d{4}[）)][\u4e00-\u9fa5]{0,8}不动产权第[A-Z0-9\d-]+号)", compact)
+    if match:
+        return match.group(1)
+    match = re.search(r"(不动产权第[A-Z0-9\d-]+号)", compact)
+    return match.group(1) if match else ""
+
+
+def _pc_extract_registration_authority(all_text: str) -> str:
+    candidates: list[str] = []
+    for line in _pc_lines(all_text):
+        compact = _pc_compact(line)
+        if "专用章" in compact and not any(key in compact for key in ("登记事务中心", "自然资源局", "登记中心")):
+            continue
+        if any(key in compact for key in ("不动产登记事务中心", "自然资源局", "规划和自然资源局", "登记中心")):
+            compact = re.sub(r"\d{4}年\d{1,2}月\d{1,2}日.*$", "", compact)
+            compact = compact.replace("不动产登记专用章", "").replace("登记专用章", "")
+            if compact and "专用章" != compact and 4 <= len(compact) <= 60:
+                candidates.append(compact)
+    logger.info("[property_certificate] registration_authority_candidates=%s", candidates)
+    final = candidates[0] if candidates else ""
+    logger.info("[property_certificate] final registration_authority=%s", final or "(empty)")
+    return final
+
+
+def _pc_normalize_date(value: str) -> str:
+    match = re.search(r"((?:19|20)\d{2})[年./-](\d{1,2})[月./-](\d{1,2})日?", str(value or ""))
+    if not match:
+        return ""
+    year, month, day = match.groups()
+    return f"{year}年{int(month):02d}月{int(day):02d}日"
+
+
+def _pc_extract_registration_date(all_text: str) -> str:
+    lines = _pc_lines(all_text)
+    for index, line in enumerate(lines):
+        compact = _pc_compact(line)
+        if any(skip in compact for skip in ("使用期限", "起", "止", "竣工日期", "土地用途")):
+            continue
+        if any(anchor in compact for anchor in ("登记日期", "发证日期", "填发日期", "核发日期")):
+            date = _pc_normalize_date("".join(lines[index:index + 2]))
+            if date:
+                return date
+    seal_sections = re.findall(r"Property Certificate Seal OCR.*?(?=---|\Z)", all_text or "", flags=re.S)
+    for section in seal_sections:
+        for line in _pc_lines(section):
+            compact = _pc_compact(line)
+            if any(skip in compact for skip in ("使用期限", "起", "止", "竣工日期")):
+                continue
+            if any(anchor in compact for anchor in ("登记", "发证", "核发", "登记事务中心", "自然资源局", "登记中心")):
+                date = _pc_normalize_date(line)
+                if date:
+                    return date
+        date = _pc_normalize_date(section)
+        if date:
+            return date
+    return ""
+
+
+def _pc_extract_area(lines: list[str], label: str) -> str:
+    value = _pc_extract_row_value(lines, (label,), max_scan=2)
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?\s*(?:平方米|㎡|平米))", value)
+    return match.group(1).replace("平方米", "㎡") if match else value
+
+
+def _pc_extract_usage(lines: list[str]) -> str:
+    value = _pc_extract_row_value(lines, ("用途",), max_scan=3)
+    parts = re.findall(r"(?:土地用途|房屋用途)?[:：]?(住宅|居住|商业|办公|工业)", value)
+    return " / ".join(dict.fromkeys(parts)) if parts else value
+
+
+def _pc_extract_right_nature(lines: list[str]) -> str:
+    value = _pc_extract_row_value(lines, ("权利性质",), max_scan=3)
+    if "出让" in value:
+        return "出让"
+    return value
+
+
+def _pc_extract_land_use_term(lines: list[str]) -> str:
+    value = _pc_extract_row_value(lines, ("使用期限",), max_scan=4)
+    start = re.search(r"((?:19|20)\d{2})年", value)
+    years = re.findall(r"((?:19|20)\d{2})年", value)
+    if start and len(years) >= 2:
+        return f"{years[0]}-{years[-1]}"
+    return value
+
+
+def extract_property_report(text: str, raw_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    pages = _pc_page_texts(text, raw_pages)
+    main_pages = _pc_select_main_pages(text, raw_pages)
+    main_text = "\n".join(page_text for _, page_text in main_pages)
+    all_text = "\n".join(page_text for _, page_text in pages) or str(text or "")
+    lines = _pc_lines(main_text)
+
+    certificate_number = _pc_extract_certificate_number(all_text)
+    return {
+        "certificate_number": certificate_number,
+        "real_estate_certificate_no": _pc_extract_real_estate_no(main_text),
+        "registration_authority": _pc_extract_registration_authority(all_text),
+        "registration_date": _pc_extract_registration_date(all_text),
+        "right_holder": _pc_extract_row_value(lines, ("权利人",), max_scan=2),
+        "ownership_status": _pc_extract_row_value(lines, ("共有情况",), max_scan=2),
+        "property_location": _pc_extract_row_value(lines, ("坐落",), max_scan=3),
+        "real_estate_unit_no": _pc_extract_row_value(lines, ("不动产单元号",), max_scan=2),
+        "right_type": _pc_extract_row_value(lines, ("权利类型",), max_scan=3),
+        "right_nature": _pc_extract_right_nature(lines),
+        "usage": _pc_extract_usage(lines),
+        "land_area": _pc_extract_area(lines, "土地面积"),
+        "building_area": _pc_extract_area(lines, "建筑面积"),
+        "land_use_term": _pc_extract_land_use_term(lines),
+        "other_rights_info": _pc_extract_row_value(lines, ("权利其他状况",), max_scan=6),
+    }
+
+
 # Final marriage certificate override. Older definitions above only extracted a
 # very small summary; keep this last so the runtime path uses the structured
 # parser below.
@@ -7708,7 +7942,7 @@ def build_structured_extraction(
         if homepage_present and content.get("members"):
             content["completeness_note"] = "已识别户口本首页和成员页"
     elif normalized_code in {"property_report", "collateral", "mortgage_info"}:
-        content = extract_property_report(text_content)
+        content = extract_property_report(text_content, raw_pages=raw_pages)
     elif normalized_code == "special_license":
         content = extract_special_license(text_content)
     else:
@@ -8237,3 +8471,32 @@ def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> d
     if raw_pages:
         return extract_hukou_from_pages(raw_pages)
     return _extract_hukou_fields(text)
+
+
+# Runtime-final property certificate override. This must stay at the physical
+# end of the module because this file contains several legacy definitions with
+# the same function name.
+def extract_property_report(text: str, raw_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    pages = _pc_page_texts(text, raw_pages)
+    main_pages = _pc_select_main_pages(text, raw_pages)
+    main_text = "\n".join(page_text for _, page_text in main_pages)
+    all_text = "\n".join(page_text for _, page_text in pages) or str(text or "")
+    lines = _pc_lines(main_text)
+
+    return {
+        "certificate_number": _pc_extract_certificate_number(all_text),
+        "real_estate_certificate_no": _pc_extract_real_estate_no(main_text),
+        "registration_authority": _pc_extract_registration_authority(all_text),
+        "registration_date": _pc_extract_registration_date(all_text),
+        "right_holder": _pc_extract_row_value(lines, ("权利人",), max_scan=2),
+        "ownership_status": _pc_extract_row_value(lines, ("共有情况",), max_scan=2),
+        "property_location": _pc_extract_row_value(lines, ("坐落",), max_scan=3),
+        "real_estate_unit_no": _pc_extract_row_value(lines, ("不动产单元号",), max_scan=2),
+        "right_type": _pc_extract_row_value(lines, ("权利类型",), max_scan=3),
+        "right_nature": _pc_extract_right_nature(lines),
+        "usage": _pc_extract_usage(lines),
+        "land_area": _pc_extract_area(lines, "土地面积"),
+        "building_area": _pc_extract_area(lines, "建筑面积"),
+        "land_use_term": _pc_extract_land_use_term(lines),
+        "other_rights_info": _pc_extract_row_value(lines, ("权利其他状况",), max_scan=6),
+    }

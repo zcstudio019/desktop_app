@@ -972,9 +972,6 @@ async def _build_single_document_section(
         ]
         for key, label in property_fields:
             lines.append(f"- {label}\uff1a{_marriage_display(extracted_data.get(key))}")
-        raw_markdown = _format_property_raw_text_for_markdown(extracted_data)
-        if raw_markdown:
-            lines.extend(['', raw_markdown])
         source_document['source_type_name'] = property_title
         return _markdown_section(property_title, lines), source_document
     if extraction_type == 'marriage_cert' and isinstance(extracted_data, dict):
