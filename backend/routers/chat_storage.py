@@ -47,6 +47,13 @@ _MULTI_INSTANCE_DOCUMENT_TYPE_CODES = frozenset({
     "id_card",
 })
 
+_PROPERTY_MULTI_FILE_DOCUMENT_TYPE_CODES = frozenset({
+    "collateral",
+    "property_report",
+    "mortgage_info",
+    "property_certificate",
+})
+
 _DOCUMENT_TYPE_CODE_FALLBACKS = {
     "营业执照": "business_license",
     "营业执照正本": "business_license",
@@ -396,6 +403,7 @@ async def _replace_existing_documents_of_same_type(
     storage_service: Any,
     customer_id: str,
     document_type: str,
+    chat_file_name: str | None = None,
 ) -> None:
     """Delete older documents of the same type before saving the new one.
 
@@ -404,6 +412,15 @@ async def _replace_existing_documents_of_same_type(
     downstream application generation aligned with the newest material.
     """
     document_type_code = _normalize_storage_document_type(document_type)
+    if document_type_code in _PROPERTY_MULTI_FILE_DOCUMENT_TYPE_CODES:
+        await _replace_existing_property_document_with_same_name(
+            storage_service,
+            customer_id,
+            document_type_code,
+            chat_file_name,
+        )
+        return
+
     if document_type_code in _MULTI_INSTANCE_DOCUMENT_TYPE_CODES:
         logger.info(
             "[Local Save] Skip replacement for multi-instance document type customer_id=%s type=%s",
@@ -453,6 +470,78 @@ async def _replace_existing_documents_of_same_type(
         )
 
 
+async def _replace_existing_property_document_with_same_name(
+    storage_service: Any,
+    customer_id: str,
+    document_type_code: str,
+    chat_file_name: str | None,
+) -> None:
+    """For property certificates, preserve sibling files and only replace exact filename duplicates."""
+    upload_file_name = Path(chat_file_name or "").name
+    if not upload_file_name:
+        logger.info(
+            "[Local Save] Property multi-file mode preserves same-type documents customer_id=%s type=%s file_name=(empty)",
+            customer_id,
+            document_type_code,
+        )
+        return
+
+    existing_documents = await storage_service.list_documents(customer_id)
+    replaced_count = 0
+
+    for document in existing_documents:
+        existing_type = _normalize_storage_document_type(document.get("file_type") or "")
+        if existing_type not in _PROPERTY_MULTI_FILE_DOCUMENT_TYPE_CODES:
+            continue
+        existing_file_name = Path(document.get("file_name") or "").name
+        if existing_file_name != upload_file_name:
+            continue
+        doc_id = document.get("doc_id")
+        if not doc_id:
+            continue
+        try:
+            deleted = await storage_service.delete_document(doc_id)
+        except Exception as exc:
+            logger.error(
+                "[Local Save] Failed to replace same-name property document customer_id=%s document_type=%s file_name=%s old_doc_id=%s error=%s",
+                customer_id,
+                document_type_code,
+                upload_file_name,
+                doc_id,
+                exc,
+                exc_info=True,
+            )
+            raise RuntimeError(f"replace same-name property document failed, cannot delete old document: {doc_id}") from exc
+
+        if not deleted:
+            logger.warning(
+                "[Local Save] Same-name property document disappeared during replacement customer_id=%s document_type=%s file_name=%s old_doc_id=%s",
+                customer_id,
+                document_type_code,
+                upload_file_name,
+                doc_id,
+            )
+            raise RuntimeError(f"replace same-name property document failed, old document not found: {doc_id}")
+
+        replaced_count += 1
+
+    if replaced_count:
+        logger.info(
+            "[Local Save] Replaced %s same-name property document(s) for customer=%s, type=%s, file_name=%s",
+            replaced_count,
+            customer_id,
+            document_type_code,
+            upload_file_name,
+        )
+    else:
+        logger.info(
+            "[Local Save] Property multi-file mode preserved existing same-type documents customer_id=%s type=%s file_name=%s",
+            customer_id,
+            document_type_code,
+            upload_file_name,
+        )
+
+
 async def _save_to_local_storage(
     chat_file_name: str,
     document_type: str,
@@ -476,6 +565,7 @@ async def _save_to_local_storage(
                 storage_service,
                 target_customer_id,
                 document_type_code,
+                chat_file_name,
             )
             extraction_id, doc_id, original_available = await _save_doc_and_extraction(
                 storage_service,
@@ -498,6 +588,7 @@ async def _save_to_local_storage(
             storage_service,
             customer_id,
             document_type_code,
+            chat_file_name,
         )
         extraction_id, doc_id, original_available = await _save_doc_and_extraction(
             storage_service,
