@@ -702,6 +702,85 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
     return sections, source_documents
 
 
+def _marriage_display(value: Any) -> str:
+    text = str(value or '').strip()
+    return text if text else '\u672a\u8bc6\u522b'
+
+
+def _format_marriage_persons_for_markdown(value: Any, extracted_data: dict[str, Any]) -> str:
+    persons = value if isinstance(value, list) else []
+    normalized: list[dict[str, Any]] = [item for item in persons if isinstance(item, dict)]
+    if not normalized:
+        husband_name = str(extracted_data.get('husband_name') or '').strip()
+        wife_name = str(extracted_data.get('wife_name') or '').strip()
+        if husband_name or extracted_data.get('husband_id_number'):
+            normalized.append({
+                'name': husband_name,
+                'gender': '\u7537',
+                'nationality': extracted_data.get('husband_nationality') or '',
+                'birth_date': extracted_data.get('husband_birth_date') or '',
+                'id_number': extracted_data.get('husband_id_number') or '',
+            })
+        if wife_name or extracted_data.get('wife_id_number'):
+            normalized.append({
+                'name': wife_name,
+                'gender': '\u5973',
+                'nationality': extracted_data.get('wife_nationality') or '',
+                'birth_date': extracted_data.get('wife_birth_date') or '',
+                'id_number': extracted_data.get('wife_id_number') or '',
+            })
+    if not normalized:
+        return '### \u767b\u8bb0\u53cc\u65b9\n- \u672a\u8bc6\u522b\u5230\u767b\u8bb0\u53cc\u65b9\u4fe1\u606f'
+
+    lines = [
+        '### \u767b\u8bb0\u53cc\u65b9',
+        '',
+        '| \u59d3\u540d | \u6027\u522b | \u56fd\u7c4d | \u51fa\u751f\u65e5\u671f | \u8eab\u4efd\u8bc1\u53f7\u7801 |',
+        '|---|---|---|---|---|',
+    ]
+    for person in normalized:
+        lines.append(
+            '| '
+            + ' | '.join(
+                [
+                    _marriage_display(person.get('name')),
+                    _marriage_display(person.get('gender')),
+                    _marriage_display(person.get('nationality')),
+                    _marriage_display(person.get('birth_date')),
+                    _marriage_display(person.get('id_number')),
+                ]
+            )
+            + ' |'
+        )
+    return '\n'.join(lines)
+
+
+def _format_marriage_raw_text_for_markdown(extracted_data: dict[str, Any]) -> str:
+    raw_pages = extracted_data.get('raw_pages')
+    lines = ['### \u539f\u6587\u8bc6\u522b\u5185\u5bb9']
+    has_content = False
+    if isinstance(raw_pages, list):
+        for item in raw_pages:
+            if not isinstance(item, dict):
+                continue
+            page_text = str(item.get('text') or '').strip()
+            if not page_text:
+                continue
+            has_content = True
+            lines.append(f"#### \u7b2c {item.get('page') or len(lines)} \u9875")
+            lines.append('```text')
+            lines.append(page_text)
+            lines.append('```')
+    if not has_content:
+        raw_text = str(extracted_data.get('raw_text') or '').strip()
+        if raw_text:
+            has_content = True
+            lines.append('```text')
+            lines.append(raw_text)
+            lines.append('```')
+    return '\n'.join(lines) if has_content else ''
+
+
 async def _build_single_document_section(
     storage_service: Any,
     customer_id: str,
@@ -733,6 +812,25 @@ async def _build_single_document_section(
         'original_status': original_status,
         'original_available': bool(store_original and file_path),
     }
+    if extraction_type == 'marriage_cert' and isinstance(extracted_data, dict):
+        lines = [
+            f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}',
+            f'- \u6765\u6e90\u6587\u4ef6\uff1a{file_name}',
+            f'- \u539f\u4ef6\u72b6\u6001\uff1a{original_status}',
+            '',
+            '### \u7ed3\u6784\u5316\u63d0\u53d6\u7ed3\u679c',
+            f"- \u5a5a\u59fb\u72b6\u6001\uff1a{_marriage_display(extracted_data.get('marital_status'))}",
+            f"- \u767b\u8bb0\u65e5\u671f\uff1a{_marriage_display(extracted_data.get('registration_date'))}",
+            f"- \u7ed3\u5a5a\u8bc1\u5b57\u53f7\uff1a{_marriage_display(extracted_data.get('certificate_number'))}",
+            f"- \u767b\u8bb0\u673a\u5173\uff1a{_marriage_display(extracted_data.get('registration_authority'))}",
+            f"- \u5b8c\u6574\u6027\u63d0\u793a\uff1a{_marriage_display(extracted_data.get('completeness_note'))}",
+            '',
+            _format_marriage_persons_for_markdown(extracted_data.get('persons'), extracted_data),
+        ]
+        raw_markdown = _format_marriage_raw_text_for_markdown(extracted_data)
+        if raw_markdown:
+            lines.extend(['', raw_markdown])
+        return _markdown_section(type_name, lines), source_document
     if extraction_type == 'hukou' and isinstance(extracted_data, dict):
         lines = [
             f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}',

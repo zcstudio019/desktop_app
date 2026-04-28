@@ -199,8 +199,14 @@ const FIELD_SOURCE_RULES: FieldSourceRule[] = [
   {
     fieldKey: 'personal_name',
     label: '姓名',
-    sourceTypes: ['id_card', 'hukou'],
-    valueLabels: ['name', '姓名', 'household_head_name', '户主姓名'],
+    sourceTypes: ['id_card', 'hukou', 'marriage_cert'],
+    valueLabels: ['name', '姓名', 'household_head_name', '户主姓名', 'husband_name', 'wife_name'],
+  },
+  {
+    fieldKey: 'spouse_name',
+    label: '配偶姓名',
+    sourceTypes: ['marriage_cert'],
+    valueLabels: ['wife_name', 'husband_name', 'persons'],
   },
   {
     fieldKey: 'company_name',
@@ -247,8 +253,20 @@ const FIELD_SOURCE_RULES: FieldSourceRule[] = [
   {
     fieldKey: 'id_number',
     label: '身份证号',
-    sourceTypes: ['id_card'],
-    valueLabels: ['身份证号', '证件号码', 'id_number'],
+    sourceTypes: ['id_card', 'marriage_cert'],
+    valueLabels: ['身份证号', '证件号码', 'id_number', 'husband_id_number', 'wife_id_number'],
+  },
+  {
+    fieldKey: 'marriage_registration_date',
+    label: '结婚登记日期',
+    sourceTypes: ['marriage_cert'],
+    valueLabels: ['registration_date', '结婚登记日期', '登记日期'],
+  },
+  {
+    fieldKey: 'marriage_registration_authority',
+    label: '结婚登记机关',
+    sourceTypes: ['marriage_cert'],
+    valueLabels: ['registration_authority', '登记机关', '婚姻登记机关'],
   },
   {
     fieldKey: 'household_member_names',
@@ -634,6 +652,31 @@ function extractConsistencyFieldValue(fieldKey: string, data: Record<string, unk
     }
   }
 
+  if (fieldKey === 'spouse_name') {
+    const persons = toRecordList(data.persons);
+    const names = persons
+      .map((item) => stringifyExtractionValue(item.name || item['姓名']))
+      .filter(Boolean);
+    if (names.length > 0) {
+      return names.join('、');
+    }
+    const husbandName = stringifyExtractionValue(data.husband_name);
+    const wifeName = stringifyExtractionValue(data.wife_name);
+    return [husbandName, wifeName].filter(Boolean).join('、');
+  }
+
+  if (fieldKey === 'id_number') {
+    const direct = extractValueFromExtractionData(data, labels);
+    if (direct) {
+      return direct;
+    }
+    const persons = toRecordList(data.persons);
+    return persons
+      .map((item) => stringifyExtractionValue(item.id_number || item['身份证号码'] || item['身份证号']))
+      .filter(Boolean)
+      .join('、');
+  }
+
   if (fieldKey === 'household_member_names') {
     const members = toRecordList(data.members);
     const names = members
@@ -773,6 +816,21 @@ function hasUsableHukouExtraction(extractionGroups: ExtractionGroup[]): boolean 
     const members = extractedData.members;
     const memberCount = Array.isArray(members) ? members.length : 0;
     return Boolean((headName || memberCount > 0) && householdAddress);
+  });
+}
+
+function hasUsableMarriageCertExtraction(extractionGroups: ExtractionGroup[]): boolean {
+  const items = getExtractionItemsByType(extractionGroups, 'marriage_cert');
+  return items.some((item) => {
+    const extractedData = (item.extracted_data || {}) as Record<string, unknown>;
+    const husbandName = extractValueFromExtractionData(extractedData, ['husband_name']);
+    const wifeName = extractValueFromExtractionData(extractedData, ['wife_name']);
+    const registrationDate = extractValueFromExtractionData(extractedData, ['registration_date', '结婚登记日期', '登记日期']);
+    const persons = toRecordList(extractedData.persons);
+    const personNames = persons
+      .map((person) => stringifyExtractionValue(person.name || person['姓名']))
+      .filter(Boolean);
+    return Boolean((husbandName && wifeName) || personNames.length >= 2 || registrationDate);
   });
 }
 
@@ -2178,6 +2236,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     const presentTypes = new Set(documents.map((item) => item.file_type).filter(Boolean));
     const idCardComplete = hasCompleteIdCardExtraction(extractionGroups);
     const hukouComplete = hasUsableHukouExtraction(extractionGroups);
+    const marriageCertComplete = hasUsableMarriageCertExtraction(extractionGroups);
 
     return DOCUMENT_GROUP_ORDER.map((groupKey) => {
       const rule = DOCUMENT_COMPLETENESS_RULES[groupKey];
@@ -2188,6 +2247,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       const existingTypes = [...existingRequired, ...existingOptional];
       const idCardIncomplete = groupKey === 'personal' && presentTypes.has('id_card') && !idCardComplete;
       const hukouIncomplete = groupKey === 'personal' && presentTypes.has('hukou') && !hukouComplete;
+      const marriageCertIncomplete = groupKey === 'personal' && presentTypes.has('marriage_cert') && !marriageCertComplete;
 
       let status: CompletenessStatus = 'pending';
       if (groupKey === 'asset') {
@@ -2212,6 +2272,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             ? '身份证（信息不完整）'
             : type === 'hukou' && hukouIncomplete
               ? '户口本（信息不完整）'
+            : type === 'marriage_cert' && marriageCertIncomplete
+              ? '结婚证（信息不完整）'
             : getDocumentTypeDisplayNameByCode(type)
         )),
         missingRequiredLabels: [
@@ -2221,6 +2283,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
         missingOptionalLabels: [
           ...missingOptional.map(getDocumentTypeDisplayNameByCode),
           ...(hukouIncomplete ? ['户口本关键信息（户主姓名/成员信息、户籍地址）'] : []),
+          ...(marriageCertIncomplete ? ['结婚证关键信息（双方姓名或登记日期）'] : []),
         ],
       };
     });

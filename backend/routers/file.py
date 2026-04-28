@@ -425,7 +425,8 @@ async def _extract_content_from_file(
             if progress_callback:
                 await progress_callback("正在 OCR 识别")
             compressed = file_service.compress_image(file_bytes)
-            return ocr_service.recognize_image(compressed), [], []
+            text_content = ocr_service.recognize_image(compressed)
+            return text_content, [], [{"page": 1, "text": text_content}]
         if file_type == "word":
             if progress_callback:
                 await progress_callback("正在解析文件")
@@ -494,6 +495,8 @@ def _extract_structured_data(
         if raw_pages:
             content["raw_pages"] = raw_pages
             content["raw_text"] = _build_raw_text_from_pages(raw_pages)
+        elif document_type_code == "marriage_cert" and text_content and text_content.strip():
+            content["raw_text"] = text_content
         customer_name = extract_customer_name_from_content(content)
         return FileProcessResponse(
             documentType=document_type_code,

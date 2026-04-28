@@ -5522,6 +5522,246 @@ def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> d
     return _extract_hukou_fields(text)
 
 
+# Final marriage certificate override. Older definitions above only extracted a
+# very small summary; keep this last so the runtime path uses the structured
+# parser below.
+MARRIAGE_ID_PATTERN = re.compile(r"([1-9]\d{16}[\dXx])")
+MARRIAGE_DATE_PATTERN = re.compile(
+    r"((?:19|20)\d{2})\s*[年./-]\s*(0?[1-9]|1[0-2])\s*[月./-]\s*(3[01]|[12]\d|0?[1-9])\s*日?"
+)
+
+MARRIAGE_FIELD_LABELS = {
+    "姓名",
+    "性别",
+    "国籍",
+    "出生日期",
+    "身份证件号",
+    "身份证号",
+    "证件号",
+    "结婚登记日期",
+    "登记日期",
+    "发证日期",
+    "结婚证字号",
+    "证字号",
+    "字号",
+    "结婚证号",
+    "登记机关",
+    "婚姻登记机关",
+    "婚姻登记员",
+}
+
+
+def _mc_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw in str(text or "").replace("\r", "\n").split("\n"):
+        line = raw.strip().strip("|").strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _mc_clean(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^[：:\s\-]+", "", text)
+    text = re.sub(r"\s+", "", text)
+    return text.strip()
+
+
+def _mc_is_label(value: str) -> bool:
+    text = _mc_clean(value)
+    return text in MARRIAGE_FIELD_LABELS or any(label in text for label in MARRIAGE_FIELD_LABELS)
+
+
+def _mc_normalize_date(value: Any) -> str:
+    text = str(value or "").strip()
+    match = MARRIAGE_DATE_PATTERN.search(text)
+    if not match:
+        return ""
+    year, month, day = match.groups()
+    return f"{year}年{int(month):02d}月{int(day):02d}日"
+
+
+def _mc_find_after_label(
+    lines: list[str],
+    labels: tuple[str, ...],
+    *,
+    start: int = 0,
+    end: int | None = None,
+    validator: Callable[[str], bool] | None = None,
+    max_scan: int = 8,
+) -> str:
+    stop = len(lines) if end is None else min(end, len(lines))
+    for index in range(start, stop):
+        line = lines[index]
+        for label in labels:
+            if label not in line:
+                continue
+            suffix = _mc_clean(line.split(label, 1)[1])
+            candidates: list[str] = []
+            if suffix:
+                candidates.append(suffix)
+            for offset in range(1, max_scan + 1):
+                next_index = index + offset
+                if next_index >= stop:
+                    break
+                candidates.append(_mc_clean(lines[next_index]))
+            for candidate in candidates:
+                if not candidate or _mc_is_label(candidate):
+                    continue
+                if validator is None or validator(candidate):
+                    return candidate
+    return ""
+
+
+def _mc_valid_name(value: str) -> bool:
+    text = _mc_clean(value)
+    return bool(re.fullmatch(r"[\u4e00-\u9fa5·]{2,8}", text)) and text not in {"中国", "男", "女", "已婚"}
+
+
+def _mc_valid_gender(value: str) -> bool:
+    return _mc_clean(value) in {"男", "女", "男性", "女性"}
+
+
+def _mc_valid_nationality(value: str) -> bool:
+    text = _mc_clean(value)
+    return bool(text) and len(text) <= 12 and not _mc_is_label(text)
+
+
+def _mc_person_blocks(lines: list[str]) -> list[tuple[int, int]]:
+    name_indices = [idx for idx, line in enumerate(lines) if "姓名" in line]
+    blocks: list[tuple[int, int]] = []
+    for pos, index in enumerate(name_indices[:4]):
+        next_index = name_indices[pos + 1] if pos + 1 < len(name_indices) else len(lines)
+        blocks.append((index, next_index))
+    return blocks
+
+
+def _mc_extract_persons(text: str) -> list[dict[str, str]]:
+    lines = _mc_lines(text)
+    persons: list[dict[str, str]] = []
+    for start, end in _mc_person_blocks(lines):
+        block_text = "\n".join(lines[start:end])
+        id_match = MARRIAGE_ID_PATTERN.search(block_text)
+        person = {
+            "name": _mc_find_after_label(lines, ("姓名",), start=start, end=end, validator=_mc_valid_name),
+            "gender": _mc_find_after_label(lines, ("性别",), start=start, end=end, validator=_mc_valid_gender).replace("男性", "男").replace("女性", "女"),
+            "nationality": _mc_find_after_label(lines, ("国籍",), start=start, end=end, validator=_mc_valid_nationality),
+            "birth_date": "",
+            "id_number": id_match.group(1).upper() if id_match else "",
+        }
+        birth_raw = _mc_find_after_label(lines, ("出生日期",), start=start, end=end, validator=lambda value: bool(_mc_normalize_date(value)))
+        person["birth_date"] = _mc_normalize_date(birth_raw)
+        if person["name"] or person["id_number"]:
+            persons.append(person)
+
+    if len(persons) < 2:
+        ids = [match.group(1).upper() for match in MARRIAGE_ID_PATTERN.finditer(text)]
+        for id_number in ids:
+            if any(item.get("id_number") == id_number for item in persons):
+                continue
+            persons.append({"name": "", "gender": "", "nationality": "", "birth_date": "", "id_number": id_number})
+
+    deduped: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for person in persons:
+        key = person.get("id_number") or f"{person.get('name')}|{person.get('birth_date')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(person)
+    return deduped[:2]
+
+
+def _mc_extract_registration_date(lines: list[str], text: str) -> str:
+    value = _mc_find_after_label(
+        lines,
+        ("结婚登记日期", "登记日期", "发证日期"),
+        validator=lambda candidate: bool(_mc_normalize_date(candidate)),
+        max_scan=4,
+    )
+    normalized = _mc_normalize_date(value)
+    if normalized:
+        return normalized
+    return _mc_normalize_date(text)
+
+
+def _mc_extract_certificate_number(lines: list[str]) -> str:
+    def valid(value: str) -> bool:
+        text = _mc_clean(value)
+        if not text or MARRIAGE_ID_PATTERN.fullmatch(text):
+            return False
+        return bool(re.search(r"[A-Za-z0-9\u4e00-\u9fa5-]{4,}", text))
+
+    value = _mc_find_after_label(lines, ("结婚证字号", "证字号", "结婚证号", "字号"), validator=valid, max_scan=4)
+    return _mc_clean(value)
+
+
+def _mc_extract_authority(lines: list[str]) -> str:
+    value = _mc_find_after_label(
+        lines,
+        ("婚姻登记机关", "登记机关"),
+        validator=lambda candidate: "民政局" in candidate or "婚姻登记" in candidate or len(candidate) >= 4,
+        max_scan=4,
+    )
+    if value:
+        return _mc_clean(value)
+    for line in lines:
+        cleaned = _mc_clean(line)
+        if "民政局" in cleaned or "婚姻登记处" in cleaned or "婚姻登记中心" in cleaned:
+            return cleaned
+    return ""
+
+
+def _mc_raw_text_from_pages(raw_pages: list[dict[str, Any]] | None, fallback_text: str) -> str:
+    if raw_pages:
+        parts = []
+        for item in raw_pages:
+            if not isinstance(item, dict):
+                continue
+            page_text = str(item.get("text") or "").strip()
+            if page_text:
+                parts.append(f"--- 第 {item.get('page') or len(parts) + 1} 页 ---\n{page_text}")
+        if parts:
+            return "\n\n".join(parts)
+    return str(fallback_text or "").strip()
+
+
+def extract_marriage_cert(text: str, raw_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    raw_text = _mc_raw_text_from_pages(raw_pages, text)
+    lines = _mc_lines(raw_text)
+    persons = _mc_extract_persons(raw_text)
+
+    husband = next((item for item in persons if item.get("gender") == "男"), {})
+    wife = next((item for item in persons if item.get("gender") == "女"), {})
+
+    two_people = len([item for item in persons if item.get("name")]) >= 2
+    registration_date = _mc_extract_registration_date(lines, raw_text)
+    registration_authority = _mc_extract_authority(lines)
+    if two_people and (registration_date or registration_authority):
+        completeness_note = "已识别结婚证双方信息和登记信息"
+    elif not two_people:
+        completeness_note = "已识别部分信息，缺少一方人员信息"
+    else:
+        completeness_note = "已识别双方信息，缺少登记日期或登记机关"
+
+    return {
+        "persons": persons,
+        "husband_name": husband.get("name", ""),
+        "wife_name": wife.get("name", ""),
+        "husband_id_number": husband.get("id_number", ""),
+        "wife_id_number": wife.get("id_number", ""),
+        "husband_birth_date": husband.get("birth_date", ""),
+        "wife_birth_date": wife.get("birth_date", ""),
+        "husband_nationality": husband.get("nationality", ""),
+        "wife_nationality": wife.get("nationality", ""),
+        "registration_date": registration_date,
+        "certificate_number": _mc_extract_certificate_number(lines),
+        "registration_authority": registration_authority,
+        "marital_status": "已婚",
+        "completeness_note": completeness_note,
+    }
+
+
 # Final hukou member normalization. Keep this at file end so it is the runtime implementation.
 _HUKOU_FINAL_RELATIONS = {"户主", "妻", "夫", "配偶", "子", "女", "长子", "长女", "次子", "次女", "父", "母"}
 _HUKOU_FINAL_LABELS = {
@@ -7276,7 +7516,7 @@ def build_structured_extraction(
     elif normalized_code == "vehicle_license":
         content = extract_vehicle_license(text_content)
     elif normalized_code == "marriage_cert":
-        content = extract_marriage_cert(text_content)
+        content = extract_marriage_cert(text_content, raw_pages=raw_pages)
     elif normalized_code == "hukou":
         content = extract_hukou(text_content, raw_pages=raw_pages)
         content["members"] = normalize_hukou_members_from_raw_pages(content.get("members", []), raw_pages)
