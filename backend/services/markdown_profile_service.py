@@ -410,6 +410,42 @@ def _format_rule_detail_list_for_markdown(value: list[Any]) -> str:
     return '\n' + '\n'.join(lines) if lines else '\u6682\u65e0'
 
 
+def _format_hukou_members_for_markdown(value: list[Any]) -> str:
+    if not value:
+        return '\n### 家庭成员\n- 暂未识别到成员信息'
+    header = [
+        '### 家庭成员',
+        '',
+        '| 序号 | 姓名 | 与户主关系 | 性别 | 民族 | 出生日期 | 身份证号码 | 婚姻状况 |',
+        '|---:|---|---|---|---|---|---|---|',
+    ]
+    rows: list[str] = []
+    for index, item in enumerate([item for item in value if isinstance(item, dict)], start=1):
+        name = str(item.get('name') or '').strip()
+        relation = str(item.get('relationship_to_head') or '').strip()
+        gender = str(item.get('gender') or '').strip()
+        ethnicity = str(item.get('ethnicity') or '').strip()
+        birth_date = str(item.get('birth_date') or '').strip()
+        id_number = str(item.get('id_number') or '').strip()
+        marital_status = str(item.get('marital_status') or '').strip()
+        if not name and not id_number:
+            continue
+        cells = [
+            str(len(rows) + 1),
+            name or '-',
+            relation or '-',
+            gender or '-',
+            ethnicity or '-',
+            birth_date or '-',
+            id_number or '-',
+            marital_status or '-',
+        ]
+        rows.append(f"| {' | '.join(cells)} |")
+    if not rows:
+        return '\n### 家庭成员\n- 暂未识别到成员信息'
+    return '\n' + '\n'.join(header + rows)
+
+
 def _format_count_for_markdown(value: Any) -> str:
     text = str(value or '').strip()
     if not text:
