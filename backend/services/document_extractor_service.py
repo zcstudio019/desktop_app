@@ -5522,6 +5522,285 @@ def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> d
     return _extract_hukou_fields(text)
 
 
+# Final clean hukou override: parse member pages by labels from raw_pages and keep runtime on this version.
+_HUKOU_MEMBER_RELATIONS = {
+    "户主",
+    "配偶",
+    "夫",
+    "妻",
+    "子",
+    "女",
+    "长子",
+    "长女",
+    "次子",
+    "次女",
+    "父",
+    "母",
+}
+_HUKOU_MEMBER_INVALID_NAME_FRAGMENTS = {
+    "户主或与",
+    "户主关系",
+    "曾用名",
+    "性别",
+    "民族",
+    "出生地",
+    "籍贯",
+    "出生日期",
+    "公民身份",
+    "身份证号",
+    "身份证号码",
+    "证件编号",
+    "身高",
+    "血型",
+    "文化程度",
+    "婚姻状况",
+    "兵役状况",
+    "服务处所",
+    "职业",
+    "常住人口登记卡",
+}
+
+
+def _hukou_clean_lines_for_runtime(text: str) -> list[str]:
+    return [re.sub(r"\s+", " ", str(line or "")).strip() for line in str(text or "").splitlines() if str(line or "").strip()]
+
+
+def _hukou_is_name_candidate_for_runtime(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text or len(text) > 8:
+        return False
+    if any(fragment in text for fragment in _HUKOU_MEMBER_INVALID_NAME_FRAGMENTS):
+        return False
+    return bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,4}", text))
+
+
+def _hukou_extract_near_label_for_runtime(
+    lines: list[str],
+    labels: tuple[str, ...],
+    *,
+    stop_labels: tuple[str, ...] = (),
+    max_lookahead: int = 8,
+    validator: Any | None = None,
+) -> str:
+    for index, raw_line in enumerate(lines):
+        line = str(raw_line or "").strip()
+        for label in labels:
+            inline_match = re.match(rf"^{re.escape(label)}\s*[:：]?\s*(.+)$", line)
+            if inline_match:
+                candidate = inline_match.group(1).strip()
+                if candidate and not any(stop in candidate for stop in stop_labels) and (validator is None or validator(candidate)):
+                    return candidate
+            if line == label or label in line:
+                for offset in range(1, max_lookahead + 1):
+                    pos = index + offset
+                    if pos >= len(lines):
+                        break
+                    candidate = str(lines[pos] or "").strip()
+                    if not candidate:
+                        continue
+                    if any(stop in candidate for stop in stop_labels):
+                        break
+                    if validator is None or validator(candidate):
+                        return candidate
+    return ""
+
+
+def extract_hukou_member_from_page(page_text: str) -> dict[str, str]:
+    lines = _hukou_clean_lines_for_runtime(page_text)
+    joined = "\n".join(lines)
+
+    def relation_validator(value: str) -> bool:
+        return str(value or "").strip() in _HUKOU_MEMBER_RELATIONS
+
+    name = _hukou_extract_near_label_for_runtime(
+        lines,
+        ("姓名",),
+        stop_labels=("户主或与", "户主关系", "性别", "民族", "出生日期", "公民身份", "身份证号", "身份证号码"),
+        validator=_hukou_is_name_candidate_for_runtime,
+    )
+    if not name:
+        for index, line in enumerate(lines):
+            if line == "姓名":
+                for offset in range(1, 6):
+                    pos = index + offset
+                    if pos >= len(lines):
+                        break
+                    candidate = str(lines[pos] or "").strip()
+                    if _hukou_is_name_candidate_for_runtime(candidate):
+                        name = candidate
+                        break
+                if name:
+                    break
+
+    relationship = _hukou_extract_near_label_for_runtime(
+        lines,
+        ("户主关系", "户主或与户主关系", "与户主关系"),
+        stop_labels=("姓名", "性别", "民族", "出生日期", "公民身份", "身份证号", "婚姻状况", "兵役状况", "服务处所", "职业"),
+        validator=relation_validator,
+    )
+    if not relationship:
+        relation_match = re.search(r"(户主|配偶|夫|妻|子|女|长子|长女|次子|次女|父|母)", joined)
+        relationship = relation_match.group(1) if relation_match else ""
+
+    gender = _hukou_extract_near_label_for_runtime(
+        lines,
+        ("性别",),
+        stop_labels=("民族", "出生日期", "公民身份", "身份证号", "婚姻状况"),
+        validator=lambda value: value in {"男", "女"},
+    )
+    ethnicity = _hukou_extract_near_label_for_runtime(
+        lines,
+        ("民族",),
+        stop_labels=("出生日期", "公民身份", "身份证号", "婚姻状况"),
+        validator=lambda value: bool(re.fullmatch(r"[\u4e00-\u9fff]{1,8}", value)),
+    )
+    birth_date = _hukou_extract_near_label_for_runtime(
+        lines,
+        ("出生日期",),
+        stop_labels=("公民身份", "身份证号", "婚姻状况", "兵役状况", "服务处所", "职业"),
+        validator=lambda value: bool(re.search(r"(?:19|20)\d{2}年\d{2}月\d{2}日", value)),
+    )
+    id_number = _hukou_extract_near_label_for_runtime(
+        lines,
+        ("公民身份", "公民身份号码", "身份证号", "身份证号码", "份号码", "证件编号"),
+        stop_labels=("婚姻状况", "兵役状况", "服务处所", "职业"),
+        validator=lambda value: bool(re.search(r"\d{17}[\dXx]", value)),
+    )
+    id_match = re.search(r"\d{17}[\dXx]", id_number or joined)
+    id_number = id_match.group(0).upper() if id_match else ""
+    marital_status = _hukou_extract_near_label_for_runtime(
+        lines,
+        ("婚姻状况",),
+        stop_labels=("兵役状况", "服务处所", "职业", "何时由何地迁来本市", "何时由何地迁来本址"),
+        validator=lambda value: value in {"已婚", "未婚", "离异", "丧偶", "有配偶"},
+    )
+    if marital_status == "有配偶":
+        marital_status = "已婚"
+
+    if not birth_date and id_number and len(id_number) >= 14:
+        raw = id_number[6:14]
+        if raw.isdigit():
+            birth_date = f"{raw[:4]}年{raw[4:6]}月{raw[6:8]}日"
+
+    return {
+        "name": name if _hukou_is_name_candidate_for_runtime(name) else "",
+        "relationship_to_head": relationship if relationship in _HUKOU_MEMBER_RELATIONS else "",
+        "gender": gender if gender in {"男", "女"} else "",
+        "ethnicity": ethnicity,
+        "birth_date": birth_date,
+        "id_number": id_number,
+        "native_place": "",
+        "marital_status": marital_status,
+        "education": "",
+        "service_place": "",
+        "occupation": "",
+    }
+
+
+def extract_hukou_from_pages(raw_pages: list[dict[str, Any]]) -> dict[str, Any]:
+    homepage_data = {
+        "household_head_name": "",
+        "household_number": "",
+        "household_type": "",
+        "household_address": "",
+        "registration_authority": "",
+    }
+    members: list[dict[str, str]] = []
+    seen_keys: dict[str, dict[str, str]] = {}
+    homepage_present = False
+    member_present = False
+
+    for page_item in raw_pages or []:
+        if not isinstance(page_item, dict):
+            continue
+        page_no = page_item.get("page")
+        page_text = str(page_item.get("text") or "")
+        lines = _hukou_clean_lines_for_runtime(page_text)
+        if not lines:
+            continue
+        joined = "\n".join(lines)
+
+        homepage_hits = sum(1 for label in ("户别", "户主姓名", "户号", "住址") if label in joined)
+        if homepage_hits >= 3:
+            page_home = {
+                "household_head_name": _hukou_extract_near_label_for_runtime(lines, ("户主姓名",), stop_labels=("户号", "户别", "住址"), validator=_hukou_is_name_candidate_for_runtime),
+                "household_number": _hukou_extract_near_label_for_runtime(lines, ("户号",), stop_labels=("户别", "住址", "户主姓名"), validator=lambda value: bool(re.fullmatch(r"[A-Za-z0-9]{4,}", value))),
+                "household_type": _hukou_extract_near_label_for_runtime(lines, ("户别",), stop_labels=("户号", "住址", "户主姓名"), validator=lambda value: len(value.strip()) >= 2),
+                "household_address": _hukou_extract_near_label_for_runtime(lines, ("住址", "户籍地址", "地址"), stop_labels=("户主姓名", "户号", "户别", "常住人口登记卡"), validator=lambda value: len(value.strip()) >= 4),
+                "registration_authority": "",
+            }
+            for line in lines:
+                if "派出所" in line or "公安局" in line:
+                    page_home["registration_authority"] = line.strip("，。；; ")
+                    break
+            if any(page_home.values()):
+                homepage_present = True
+            for key, value in page_home.items():
+                if value and not homepage_data.get(key):
+                    homepage_data[key] = value
+
+        member_hits = sum(1 for keyword in ("常住人口登记卡", "姓名", "户主或与户主关系", "户主关系", "公民身份", "出生日期") if keyword in joined)
+        if member_hits >= 2:
+            member = extract_hukou_member_from_page(page_text)
+            member_key = (member.get("id_number") or f"{member.get('name', '')}|{member.get('birth_date', '')}").strip("|")
+            if member_key and (member.get("name") or member.get("id_number")):
+                existing = seen_keys.get(member_key)
+                if existing is None:
+                    seen_keys[member_key] = dict(member)
+                    members.append(seen_keys[member_key])
+                    member_present = True
+                else:
+                    for field, value in member.items():
+                        if value and not existing.get(field):
+                            existing[field] = value
+                try:
+                    logger.info(
+                        "[hukou] parse member page=%s name=%s relation=%s id=%s",
+                        page_no,
+                        member.get("name", ""),
+                        member.get("relationship_to_head", ""),
+                        member.get("id_number", ""),
+                    )
+                except Exception:
+                    pass
+
+    if not homepage_data["household_head_name"]:
+        for member in members:
+            if member.get("relationship_to_head") == "户主" and member.get("name"):
+                homepage_data["household_head_name"] = member["name"]
+                break
+
+    if homepage_present and members:
+        completeness_note = "已识别户口本首页和成员页"
+    elif homepage_present:
+        completeness_note = "已识别户口本首页，缺少成员页"
+    elif members:
+        completeness_note = "已识别成员页，缺少户口本首页"
+    else:
+        completeness_note = "户口本信息不完整"
+
+    try:
+        logger.info("[hukou] members before dedupe=%s after dedupe=%s", len(raw_pages or []), len(members))
+    except Exception:
+        pass
+
+    return {
+        "household_head_name": homepage_data.get("household_head_name", ""),
+        "household_number": homepage_data.get("household_number", ""),
+        "household_type": homepage_data.get("household_type", ""),
+        "household_address": homepage_data.get("household_address", ""),
+        "registration_authority": homepage_data.get("registration_authority", ""),
+        "members": members,
+        "completeness_note": completeness_note,
+    }
+
+
+def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    if raw_pages:
+        return extract_hukou_from_pages(raw_pages)
+    return _extract_hukou_fields(text)
+
+
 def extract_hukou_from_pages(raw_pages: list[dict[str, Any]]) -> dict[str, Any]:
     def clean_lines(text: str) -> list[str]:
         return [re.sub(r"\s+", " ", str(line or "")).strip() for line in str(text or "").splitlines() if str(line or "").strip()]
