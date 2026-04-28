@@ -5777,6 +5777,285 @@ def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> d
     return content
 
 
+# Runtime-final hukou parser. Use escaped literals so this block is stable across shell encodings.
+_HF_NAME = "\u59d3\u540d"
+_HF_HOUSEHOLD_OR_WITH = "\u6237\u4e3b\u6216\u4e0e"
+_HF_RELATION = "\u6237\u4e3b\u5173\u7cfb"
+_HF_IDENTITY = "\u516c\u6c11\u8eab\u4efd"
+_HF_ID_NUMBER = "\u8eab\u4efd\u8bc1\u53f7"
+_HF_ID_NUMBER_FULL = "\u8eab\u4efd\u8bc1\u53f7\u7801"
+_HF_GENDER = "\u6027\u522b"
+_HF_ETHNICITY = "\u6c11\u65cf"
+_HF_BIRTH_DATE = "\u51fa\u751f\u65e5\u671f"
+_HF_MARITAL = "\u5a5a\u59fb\u72b6\u51b5"
+_HF_MILITARY = "\u5175\u5f79\u72b6\u51b5"
+_HF_SERVICE = "\u670d\u52a1\u5904\u6240"
+_HF_OCCUPATION = "\u804c\u4e1a"
+_HF_MEMBER_CARD = "\u5e38\u4f4f\u4eba\u53e3\u767b\u8bb0"
+_HF_RELATIONS = {
+    "\u6237\u4e3b",
+    "\u59bb",
+    "\u592b",
+    "\u914d\u5076",
+    "\u5b50",
+    "\u5973",
+    "\u957f\u5b50",
+    "\u957f\u5973",
+    "\u6b21\u5b50",
+    "\u6b21\u5973",
+    "\u7236",
+    "\u6bcd",
+}
+_HF_LABELS = {
+    _HF_NAME,
+    _HF_HOUSEHOLD_OR_WITH,
+    _HF_RELATION,
+    "\u66fe\u7528\u540d",
+    _HF_GENDER,
+    _HF_ETHNICITY,
+    "\u51fa\u751f\u5730",
+    "\u7c4d\u8d2f",
+    _HF_BIRTH_DATE,
+    _HF_IDENTITY,
+    "\u516c\u6c11\u8eab\u4efd\u53f7\u7801",
+    _HF_ID_NUMBER,
+    _HF_ID_NUMBER_FULL,
+    "\u8bc1\u4ef6\u7f16\u53f7",
+    "\u8eab\u9ad8",
+    "\u8840\u578b",
+    "\u6587\u5316\u7a0b\u5ea6",
+    _HF_MARITAL,
+    _HF_MILITARY,
+    _HF_SERVICE,
+    _HF_OCCUPATION,
+}
+
+
+def _hf_clean_lines(text: str) -> list[str]:
+    return [re.sub(r"\s+", " ", str(line or "")).strip() for line in str(text or "").splitlines() if str(line or "").strip()]
+
+
+def _hf_clean(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").replace("|", " ").replace("\uff5c", " ")).strip(" \uff1a:")
+
+
+def _hf_is_label(value: str) -> bool:
+    text = _hf_clean(value)
+    return any(text == label or text.startswith(f"{label}\uff1a") or text.startswith(f"{label}:") for label in _HF_LABELS)
+
+
+def _hf_is_name(value: str) -> bool:
+    text = _hf_clean(value)
+    if not re.fullmatch(r"[\u4e00-\u9fff\u00b7]{2,4}", text):
+        return False
+    if _hf_is_label(text):
+        return False
+    if text in _HF_RELATIONS or text in {"\u7537", "\u5973", "\u7537\u6027", "\u5973\u6027", "\u6c49\u65cf", "\u5df2\u5a5a", "\u672a\u5a5a", "\u6709\u914d\u5076"}:
+        return False
+    return True
+
+
+def _hf_find_after_label(
+    lines: list[str],
+    labels: tuple[str, ...],
+    *,
+    validator: Any | None = None,
+    stop_labels: tuple[str, ...] = (),
+    max_lookahead: int = 10,
+) -> str:
+    for index, line in enumerate(lines):
+        clean_line = _hf_clean(line)
+        for label in labels:
+            inline = re.match(rf"^{re.escape(label)}\s*[:\uff1a]\s*(.+)$", clean_line)
+            if inline:
+                candidate = _hf_clean(inline.group(1))
+                if candidate and not any(stop in candidate for stop in stop_labels) and (validator is None or validator(candidate)):
+                    return candidate
+            if clean_line == label or label in clean_line:
+                for offset in range(1, max_lookahead + 1):
+                    if index + offset >= len(lines):
+                        break
+                    candidate = _hf_clean(lines[index + offset])
+                    if not candidate:
+                        continue
+                    if any(stop in candidate for stop in stop_labels):
+                        break
+                    if _hf_is_label(candidate):
+                        continue
+                    if validator is None or validator(candidate):
+                        return candidate
+    return ""
+
+
+def _hf_gender(value: str) -> str:
+    text = _hf_clean(value)
+    if text in {"\u7537", "\u7537\u6027"}:
+        return "\u7537"
+    if text in {"\u5973", "\u5973\u6027"}:
+        return "\u5973"
+    return ""
+
+
+def _hf_ethnicity(value: str) -> str:
+    text = _hf_clean(value)
+    return text if re.fullmatch(r"[\u4e00-\u9fff]{1,6}\u65cf", text) else ""
+
+
+def _hf_birth_date(value: str) -> str:
+    match = re.search(r"((?:19|20)\d{2})\u5e74(\d{1,2})\u6708(\d{1,2})\u65e5", str(value or ""))
+    if not match:
+        return ""
+    return f"{match.group(1)}\u5e74{match.group(2).zfill(2)}\u6708{match.group(3).zfill(2)}\u65e5"
+
+
+def _hf_marital(value: str) -> str:
+    text = _hf_clean(value)
+    if text in {"\u6709\u914d\u5076", "\u5df2\u5a5a"}:
+        return "\u5df2\u5a5a"
+    if text in {"\u672a\u5a5a", "\u79bb\u5f02", "\u4e27\u5076"}:
+        return text
+    return ""
+
+
+def _hf_member_from_page(page_text: str) -> dict[str, str]:
+    lines = _hf_clean_lines(page_text)
+    joined = "\n".join(lines)
+    id_match = re.search(r"\d{17}[\dXx]", joined)
+    id_number = id_match.group(0).upper() if id_match else ""
+    name = _hf_find_after_label(
+        lines,
+        (_HF_NAME,),
+        validator=_hf_is_name,
+        stop_labels=(_HF_IDENTITY, _HF_ID_NUMBER, _HF_ID_NUMBER_FULL, _HF_MARITAL, _HF_MILITARY),
+        max_lookahead=8,
+    )
+    relation = _hf_find_after_label(
+        lines,
+        (_HF_RELATION, "\u4e0e\u6237\u4e3b\u5173\u7cfb", "\u6237\u4e3b\u6216\u4e0e\u6237\u4e3b\u5173\u7cfb"),
+        validator=lambda value: _hf_clean(value) in _HF_RELATIONS,
+        stop_labels=(_HF_IDENTITY, _HF_ID_NUMBER, _HF_ID_NUMBER_FULL, _HF_MARITAL, _HF_MILITARY),
+        max_lookahead=8,
+    )
+    if not relation:
+        relation_match = re.search(r"(\u6237\u4e3b|\u914d\u5076|\u59bb|\u592b|\u957f\u5b50|\u957f\u5973|\u6b21\u5b50|\u6b21\u5973|\u5b50|\u5973|\u7236|\u6bcd)", joined)
+        relation = relation_match.group(1) if relation_match else ""
+    gender = _hf_gender(_hf_find_after_label(lines, (_HF_GENDER,), validator=lambda value: bool(_hf_gender(value)), max_lookahead=6))
+    ethnicity = _hf_ethnicity(_hf_find_after_label(lines, (_HF_ETHNICITY,), validator=lambda value: bool(_hf_ethnicity(value)), max_lookahead=6))
+    birth_date = _hf_birth_date(_hf_find_after_label(lines, (_HF_BIRTH_DATE,), validator=lambda value: bool(_hf_birth_date(value)), max_lookahead=6))
+    if not birth_date and id_number:
+        raw = id_number[6:14]
+        if raw.isdigit():
+            birth_date = f"{raw[:4]}\u5e74{raw[4:6]}\u6708{raw[6:8]}\u65e5"
+    marital_status = _hf_marital(
+        _hf_find_after_label(
+            lines,
+            (_HF_MARITAL,),
+            validator=lambda value: bool(_hf_marital(value)),
+            stop_labels=(_HF_MILITARY, _HF_SERVICE, _HF_OCCUPATION),
+            max_lookahead=6,
+        )
+    )
+    return {
+        "name": name,
+        "relationship_to_head": relation if relation in _HF_RELATIONS else "",
+        "gender": gender,
+        "ethnicity": ethnicity,
+        "birth_date": birth_date,
+        "id_number": id_number,
+        "native_place": "",
+        "marital_status": marital_status,
+        "education": "",
+        "service_place": "",
+        "occupation": "",
+    }
+
+
+def normalize_hukou_members_from_raw_pages(existing_members: Any, raw_pages: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    logger.info("[hukou] raw_pages count=%s", len(raw_pages or []))
+    parsed: list[dict[str, str]] = []
+    for page in raw_pages or []:
+        if not isinstance(page, dict):
+            continue
+        text = str(page.get("text") or "")
+        if _HF_MEMBER_CARD not in text:
+            continue
+        member = _hf_member_from_page(text)
+        if member.get("name") or member.get("id_number"):
+            parsed.append(member)
+            logger.info(
+                "[hukou] page=%s fallback name=%s relation=%s gender=%s id=%s",
+                page.get("page"),
+                member.get("name", ""),
+                member.get("relationship_to_head", ""),
+                member.get("gender", ""),
+                member.get("id_number", ""),
+            )
+
+    source_members = parsed if parsed else [item for item in (existing_members or []) if isinstance(item, dict)]
+    deduped: dict[str, dict[str, str]] = {}
+    for item in source_members:
+        id_match = re.search(r"\d{17}[\dXx]", str(item.get("id_number") or ""))
+        member = {
+            "name": str(item.get("name") or "").strip(),
+            "relationship_to_head": str(item.get("relationship_to_head") or "").strip(),
+            "gender": _hf_gender(str(item.get("gender") or "")),
+            "ethnicity": _hf_ethnicity(str(item.get("ethnicity") or "")),
+            "birth_date": _hf_birth_date(str(item.get("birth_date") or "")) or str(item.get("birth_date") or "").strip(),
+            "id_number": id_match.group(0).upper() if id_match else "",
+            "native_place": str(item.get("native_place") or "").strip(),
+            "marital_status": _hf_marital(str(item.get("marital_status") or "")) or str(item.get("marital_status") or "").strip(),
+            "education": str(item.get("education") or "").strip(),
+            "service_place": str(item.get("service_place") or "").strip(),
+            "occupation": str(item.get("occupation") or "").strip(),
+        }
+        if member["name"] and not _hf_is_name(member["name"]):
+            member["name"] = ""
+        if member["relationship_to_head"] not in _HF_RELATIONS:
+            member["relationship_to_head"] = ""
+        if member["marital_status"] not in {"\u5df2\u5a5a", "\u672a\u5a5a", "\u79bb\u5f02", "\u4e27\u5076", ""}:
+            member["marital_status"] = ""
+        key = member["id_number"] or f"{member['name']}|{member['birth_date']}".strip("|")
+        if not key:
+            continue
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = member
+            continue
+        for field, value in member.items():
+            if value and not existing.get(field):
+                existing[field] = value
+    order = {"\u6237\u4e3b": 0, "\u59bb": 1, "\u592b": 1, "\u914d\u5076": 1, "\u5b50": 2, "\u957f\u5b50": 2, "\u6b21\u5b50": 2, "\u5973": 3, "\u957f\u5973": 3, "\u6b21\u5973": 3}
+    members = list(deduped.values())
+    members.sort(key=lambda item: (order.get(item.get("relationship_to_head", ""), 9), item.get("birth_date", "")))
+    logger.info("[hukou] members normalized count=%s", len(members))
+    return members
+
+
+def extract_hukou_from_pages(raw_pages: list[dict[str, Any]]) -> dict[str, Any]:
+    content = _extract_hukou_fields(
+        "\n\n".join(str(page.get("text") or "") for page in raw_pages or [] if isinstance(page, dict))
+    )
+    content["members"] = normalize_hukou_members_from_raw_pages(content.get("members", []), raw_pages)
+    if content.get("members") and content.get("household_head_name") in {"", None, "暂无", "-"}:
+        for member in content["members"]:
+            if member.get("relationship_to_head") == "\u6237\u4e3b" and member.get("name"):
+                content["household_head_name"] = member["name"]
+                break
+    if content.get("members") and (
+        content.get("household_head_name") or content.get("household_number") or content.get("household_address")
+    ):
+        content["completeness_note"] = "\u5df2\u8bc6\u522b\u6237\u53e3\u672c\u9996\u9875\u548c\u6210\u5458\u9875"
+    return content
+
+
+def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    if raw_pages:
+        return extract_hukou_from_pages(raw_pages)
+    content = _extract_hukou_fields(text)
+    content["members"] = normalize_hukou_members_from_raw_pages(content.get("members", []), [])
+    return content
+
+
 # Final clean hukou override: parse member pages by labels from raw_pages and keep runtime on this version.
 _HUKOU_MEMBER_RELATIONS = {
     "户主",
