@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -755,6 +756,60 @@ def _format_marriage_persons_for_markdown(value: Any, extracted_data: dict[str, 
     return '\n'.join(lines)
 
 
+MARRIAGE_RAW_NOISE_KEYWORDS = (
+    '\u626b\u63cf\u5168\u80fd\u738b',
+    '\u626b\u63cfApp',
+    '3\u4ebf\u4eba',
+    'CamScanner',
+    'Adobe Scan',
+)
+MARRIAGE_RAW_FIELD_LABELS = (
+    '\u8eab\u4efd\u8bc1\u4ef6\u53f7',
+    '\u7ed3\u5a5a\u8bc1\u5b57\u53f7',
+    '\u51fa\u751f\u65e5\u671f',
+    '\u767b\u8bb0\u65e5\u671f',
+    '\u767b\u8bb0\u673a\u5173',
+    '\u8eab\u4efd\u8bc1\u53f7',
+    '\u6301\u8bc1\u4eba',
+    '\u59d3\u540d',
+    '\u6027\u522b',
+    '\u56fd\u7c4d',
+)
+
+
+def _format_marriage_raw_line(line: str) -> str:
+    text = str(line or '').strip().strip('|').strip()
+    if not text:
+        return ''
+    if any(keyword in text for keyword in MARRIAGE_RAW_NOISE_KEYWORDS):
+        return ''
+    if text in {'```text', '```'}:
+        return ''
+    if re.fullmatch(r'[\d\s./_-]+', text) and len(text.replace(' ', '')) <= 3:
+        return ''
+    if re.fullmatch(r'[\W_]+', text, flags=re.UNICODE):
+        return ''
+
+    text = re.sub(r'\s+', '', text)
+    for label in MARRIAGE_RAW_FIELD_LABELS:
+        if text.startswith(label) and not text.startswith(f'{label}\uff1a') and not text.startswith(f'{label}:'):
+            value = text[len(label):].strip()
+            if value:
+                text = f'{label}\uff1a{value}'
+            break
+    text = text.replace('\u8eab\u4efd\u8bc1\u4ef6\u53f7\uff1a', '\u8eab\u4efd\u8bc1\u53f7\uff1a')
+    return text
+
+
+def _format_marriage_readable_raw_block(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in str(text or '').replace('\r', '\n').split('\n'):
+        formatted = _format_marriage_raw_line(raw_line)
+        if formatted:
+            lines.append(f'{formatted}  ')
+    return lines
+
+
 def _format_marriage_raw_text_for_markdown(extracted_data: dict[str, Any]) -> str:
     raw_pages = extracted_data.get('raw_pages')
     lines = ['### \u539f\u6587\u8bc6\u522b\u5185\u5bb9']
@@ -766,18 +821,19 @@ def _format_marriage_raw_text_for_markdown(extracted_data: dict[str, Any]) -> st
             page_text = str(item.get('text') or '').strip()
             if not page_text:
                 continue
+            page_lines = _format_marriage_readable_raw_block(page_text)
+            if not page_lines:
+                continue
             has_content = True
             lines.append(f"#### \u7b2c {item.get('page') or len(lines)} \u9875")
-            lines.append('```text')
-            lines.append(page_text)
-            lines.append('```')
+            lines.extend(page_lines)
     if not has_content:
         raw_text = str(extracted_data.get('raw_text') or '').strip()
         if raw_text:
-            has_content = True
-            lines.append('```text')
-            lines.append(raw_text)
-            lines.append('```')
+            raw_lines = _format_marriage_readable_raw_block(raw_text)
+            if raw_lines:
+                has_content = True
+                lines.extend(raw_lines)
     return '\n'.join(lines) if has_content else ''
 
 
