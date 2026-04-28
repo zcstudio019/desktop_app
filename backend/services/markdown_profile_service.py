@@ -913,7 +913,16 @@ def _format_property_raw_text_for_markdown(extracted_data: dict[str, Any]) -> st
     return '\n'.join(lines) if has_content else ''
 
 
-PROPERTY_DOCUMENT_TYPES = {'property_report', 'collateral', 'mortgage_info'}
+PROPERTY_DOCUMENT_TYPES = {
+    'property_report',
+    'collateral',
+    'mortgage_info',
+    'property_certificate',
+    '房产证',
+    '房产证 / 产调',
+    '房产证/产调',
+    '抵押物信息',
+}
 PROPERTY_MERGE_FIELDS = (
     'certificate_number',
     'real_estate_certificate_no',
@@ -945,6 +954,14 @@ def _merge_property_extracted_data(target: dict[str, Any], source: dict[str, Any
             continue
         if _is_empty_property_value(target.get(key)):
             target[key] = value
+
+
+def merge_property_certificate_contents(contents: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for content in contents:
+        if isinstance(content, dict):
+            _merge_property_extracted_data(merged, content)
+    return merged
 
 
 def _build_property_section_lines(file_names: list[str], original_available: bool, extracted_data: dict[str, Any]) -> list[str]:
@@ -1326,10 +1343,10 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             merged_property_data: dict[str, Any] = {}
             property_file_names: list[str] = []
             property_original_available = False
+            logger.info("[property merge] found property docs count=%s", len(property_extractions))
             for extraction in property_extractions:
                 extraction_type = extraction.get('extraction_type') or ''
                 extracted_data = (extraction.get('extracted_data') or {}) if isinstance(extraction.get('extracted_data'), dict) else {}
-                _merge_property_extracted_data(merged_property_data, extracted_data)
                 document = None
                 doc_id = extraction.get('doc_id')
                 if doc_id:
@@ -1339,6 +1356,10 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                         logger.warning("profile_markdown property_document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
                 file_name = (document or {}).get('file_name') or '暂无'
                 file_path = (document or {}).get('file_path') or ''
+                logger.info("[property merge] source=%s content_keys=%s", file_name, list(extracted_data.keys()))
+                logger.info("[property merge] before=%s", merged_property_data)
+                _merge_property_extracted_data(merged_property_data, extracted_data)
+                logger.info("[property merge] after merge source=%s merged=%s", file_name, merged_property_data)
                 property_file_names.append(file_name)
                 property_original_available = property_original_available or bool(file_path)
                 source_documents.append({
