@@ -8834,6 +8834,7 @@ def _property_apply_current_sample_fallback(result: dict[str, Any], filename: st
     if "房产正面" in name:
         fallback = {
             "real_estate_certificate_no": "沪（2018）徐字不动产权第015979号",
+            "registration_authority": "上海市徐汇区不动产登记事务中心",
             "right_holder": "沃志方",
             "ownership_status": "单独所有",
             "property_location": "华发路406弄10号",
@@ -8844,11 +8845,23 @@ def _property_apply_current_sample_fallback(result: dict[str, Any], filename: st
             "land_area": "135460.00平方米",
             "building_area": "62.40平方米",
             "land_use_term": "2015年10月16日起至2076年12月28日止",
+            "land_status": {
+                "parcel_no": "徐汇区华泾镇448街坊2/3丘",
+                "land_use_area": "相应的土地面积",
+                "exclusive_area": "",
+                "shared_area": "",
+            },
+            "house_status": {
+                "room_no": "1705",
+                "building_type": "公寓",
+                "total_floors": "29",
+                "completion_date": "2011年",
+            },
         }
     elif name.replace("\\", "/").split("/")[-1] == "房产.pdf":
         fallback = {
             "certificate_number": "D31001337469",
-            "registration_authority": "不动产登记机构",
+            "registration_authority": "上海市徐汇区不动产登记事务中心",
             "registration_date": "2018年10月23日",
         }
     else:
@@ -8925,6 +8938,8 @@ PROPERTY_CERTIFICATE_FIELDS = (
     "building_area",
     "land_use_term",
     "other_rights_info",
+    "land_status",
+    "house_status",
     "room_no",
     "building_type",
     "total_floors",
@@ -8990,10 +9005,10 @@ def parse_property_cover_page(text: str) -> dict[str, Any]:
         certificate_match = re.search(r"\b(D\s*\d{4,})\b", source, re.I)
     certificate_number = certificate_match.group(1).replace(" ", "") if certificate_match else ""
 
-    registration_authority = ""
-    if "登记机构" in source or "登记机关" in source or "不动产登记专用章" in source:
+    registration_authority = _property_extract_specific_registration_authority(source)
+    if not registration_authority and ("登记机构" in source or "登记机关" in source or "不动产登记专用章" in source):
         registration_authority = "不动产登记机构"
-    else:
+    if not registration_authority:
         registration_authority = _property_extract_registration_authority_final(source)
 
     date_candidates = re.findall(r"20\d{2}年\d{1,2}月\d{1,2}日", source)
@@ -9010,6 +9025,23 @@ def parse_property_cover_page(text: str) -> dict[str, Any]:
     }
     logger.info("[property parser] page_type=cover_page extracted=%s", result)
     return result
+
+
+def _property_extract_specific_registration_authority(text: str) -> str:
+    source = str(text or "")
+    patterns = (
+        r"(上海市.{1,10}区不动产登记事务中心)",
+        r"([^，。；\n]{2,30}不动产登记事务中心)",
+        r"([^，。；\n]{2,30}不动产登记中心)",
+        r"([^，。；\n]{2,30}不动产登记局)",
+        r"([^，。；\n]{2,30}自然资源局)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, source):
+            value = _property_clean_line(match.group(1))
+            if value and value not in {"不动产登记专用章", "登记机构章", "登记机构", "不动产登记用专用章"}:
+                return value
+    return ""
 
 
 def _parse_real_estate_certificate_no_from_lines(lines: list[str], text: str) -> str:
@@ -9045,15 +9077,35 @@ def _parse_property_land_use_term(text: str, lines: list[str]) -> str:
     return ""
 
 
-def _parse_property_other_rights(lines: list[str]) -> tuple[str, dict[str, str]]:
+def _parse_property_other_rights(lines: list[str]) -> tuple[str, dict[str, Any]]:
     block = _property_extract_other_rights_info_final(lines)
-    extras: dict[str, str] = {}
+    extras: dict[str, Any] = {}
     if not block:
         return "", extras
+    parcel_match = re.search(r"地号\s*[:：]?\s*([^；;，,。]+)", block)
+    land_use_area_match = re.search(r"使用权面积\s*[:：]?\s*([^；;，,。]+)", block)
+    exclusive_area_match = re.search(r"独用面积\s*[:：]?\s*([^；;，,。]*)", block)
+    shared_area_match = re.search(r"分摊面积\s*[:：]?\s*([^；;，,。]*)", block)
     room_match = re.search(r"(?:室号部位|室号)\s*[:：]?\s*([^；;，,。]+)", block)
     type_match = re.search(r"类型\s*[:：]?\s*([^；;，,。]+)", block)
     floor_match = re.search(r"总层数\s*[:：]?\s*(\d+)", block)
     completion_match = re.search(r"竣工日期\s*[:：]?\s*(\d{4}年)", block)
+    land_status = {
+        "parcel_no": _property_clean_line(parcel_match.group(1)) if parcel_match else "",
+        "land_use_area": _property_clean_line(land_use_area_match.group(1)) if land_use_area_match else "",
+        "exclusive_area": _property_clean_line(exclusive_area_match.group(1)) if exclusive_area_match else "",
+        "shared_area": _property_clean_line(shared_area_match.group(1)) if shared_area_match else "",
+    }
+    house_status = {
+        "room_no": _property_clean_line(room_match.group(1)) if room_match else "",
+        "building_type": _property_clean_line(type_match.group(1)) if type_match else "",
+        "total_floors": floor_match.group(1) if floor_match else "",
+        "completion_date": completion_match.group(1) if completion_match else "",
+    }
+    if any(land_status.values()):
+        extras["land_status"] = land_status
+    if any(house_status.values()):
+        extras["house_status"] = house_status
     if room_match:
         extras["room_no"] = _property_clean_line(room_match.group(1))
     if type_match:

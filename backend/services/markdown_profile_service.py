@@ -939,6 +939,8 @@ PROPERTY_MERGE_FIELDS = (
     'registration_authority',
     'registration_date',
     'other_rights_info',
+    'land_status',
+    'house_status',
     'room_no',
     'building_type',
     'total_floors',
@@ -966,6 +968,12 @@ def merge_property_certificate_contents(contents: list[dict[str, Any]]) -> dict[
         if isinstance(content, dict):
             _merge_property_extracted_data(merged, content)
     return merged
+
+
+def _property_nested_value(data: Any, key: str) -> str:
+    if isinstance(data, dict):
+        return str(data.get(key) or '').strip() or '未识别'
+    return '未识别'
 
 
 def _build_property_section_lines(file_names: list[str], original_available: bool, extracted_data: dict[str, Any]) -> list[str]:
@@ -998,7 +1006,21 @@ def _build_property_section_lines(file_names: list[str], original_available: boo
     for key, label in property_fields:
         lines.append(f"- {label}\uff1a{_marriage_display(extracted_data.get(key))}")
     other_rights_info = str(extracted_data.get('other_rights_info') or '').strip()
-    if other_rights_info and other_rights_info not in {'未识别', '暂无', '-'}:
+    land_status = extracted_data.get('land_status')
+    house_status = extracted_data.get('house_status')
+    if isinstance(land_status, dict) or isinstance(house_status, dict):
+        lines.append("- \u6743\u5229\u5176\u4ed6\u72b6\u51b5\uff1a")
+        lines.append("  - \u571f\u5730\u72b6\u51b5\uff1a")
+        lines.append(f"    - \u5730\u53f7\uff1a{_property_nested_value(land_status, 'parcel_no')}")
+        lines.append(f"    - \u4f7f\u7528\u6743\u9762\u79ef\uff1a{_property_nested_value(land_status, 'land_use_area')}")
+        lines.append(f"    - \u72ec\u7528\u9762\u79ef\uff1a{_property_nested_value(land_status, 'exclusive_area')}")
+        lines.append(f"    - \u5206\u644a\u9762\u79ef\uff1a{_property_nested_value(land_status, 'shared_area')}")
+        lines.append("  - \u623f\u5c4b\u72b6\u51b5\uff1a")
+        lines.append(f"    - \u5ba4\u53f7\u90e8\u4f4d\uff1a{_property_nested_value(house_status, 'room_no')}")
+        lines.append(f"    - \u7c7b\u578b\uff1a{_property_nested_value(house_status, 'building_type')}")
+        lines.append(f"    - \u603b\u5c42\u6570\uff1a{_property_nested_value(house_status, 'total_floors')}")
+        lines.append(f"    - \u7ae3\u5de5\u65e5\u671f\uff1a{_property_nested_value(house_status, 'completion_date')}")
+    elif other_rights_info and other_rights_info not in {'未识别', '暂无', '-'}:
         lines.append("- \u6743\u5229\u5176\u4ed6\u72b6\u51b5\uff1a")
         parts = [part.strip(" \uff1b;") for part in re.split(r"[；;]\s*", other_rights_info) if part.strip(" \uff1b;")]
         for part in parts:
