@@ -112,6 +112,7 @@ class SQLAlchemyStorageService:
             checkfirst=True,
         )
         self._ensure_document_owner_columns()
+        self._ensure_extraction_data_longtext()
 
     def _ensure_document_owner_columns(self) -> None:
         try:
@@ -125,6 +126,40 @@ class SQLAlchemyStorageService:
             logger.info("[Migration] Added column uploader to documents")
         except Exception as exc:
             logger.warning("[Migration] Failed to ensure documents.uploader column: %s", exc)
+
+    def _ensure_extraction_data_longtext(self) -> None:
+        if engine.dialect.name.lower() != "mysql":
+            return
+        try:
+            inspector = inspect(engine)
+            if not inspector.has_table("extractions"):
+                return
+            columns = {
+                column["name"]: str(column.get("type") or "").lower()
+                for column in inspector.get_columns("extractions")
+            }
+            column_type = columns.get("extracted_data", "")
+            if "longtext" in column_type:
+                return
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        ALTER TABLE extractions
+                        MODIFY COLUMN extracted_data LONGTEXT
+                        CHARACTER SET utf8mb4
+                        COLLATE utf8mb4_unicode_ci
+                        NULL
+                        """
+                    )
+                )
+            logger.info("[DB Migration] extractions.extracted_data upgraded to LONGTEXT")
+        except Exception as exc:
+            logger.warning(
+                "[DB Migration] Failed to ensure extractions.extracted_data LONGTEXT: %s",
+                exc,
+                exc_info=True,
+            )
 
     def _sanitize_text_for_mysql(
         self,
@@ -805,6 +840,11 @@ class SQLAlchemyStorageService:
         with self._session_factory() as db:
             payload = extraction_data.copy()
             payload["extracted_data"] = self._dumps(payload.get("extracted_data"), "{}")
+            logger.info(
+                "[Local Save] extracted_data length=%s document_type=%s",
+                len(payload["extracted_data"]),
+                payload.get("extraction_type") or "",
+            )
             row = Extraction(**{k: v for k, v in payload.items() if hasattr(Extraction, k)})
             db.add(row)
             db.commit()

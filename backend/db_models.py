@@ -52,7 +52,7 @@ class Extraction(Base):
     doc_id = Column(String(64), nullable=False, index=True)
     customer_id = Column(String(64), nullable=False, index=True)
     extraction_type = Column(String(50))
-    extracted_data = Column(Text)
+    extracted_data = Column(LONGTEXT().with_variant(Text(), "sqlite"))
     confidence = Column(Float)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 

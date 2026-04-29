@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import inspect, text
 
 from .database import Base, engine
 from . import db_models  # noqa: F401  # Import models so metadata is populated.
 from .routers.auth import ensure_default_admin_exists_only_for_empty_db
+
+logger = logging.getLogger(__name__)
 
 
 def _mysql_column_exists(connection, table_name: str, column_name: str) -> bool:
@@ -16,6 +20,18 @@ def _mysql_column_exists(connection, table_name: str, column_name: str) -> bool:
     except Exception:
         return False
     return any(column.get("name") == column_name for column in columns)
+
+
+def _mysql_column_type(connection, table_name: str, column_name: str) -> str:
+    inspector = inspect(connection)
+    try:
+        columns = inspector.get_columns(table_name)
+    except Exception:
+        return ""
+    for column in columns:
+        if column.get("name") == column_name:
+            return str(column.get("type") or "").lower()
+    return ""
 
 
 def init_database() -> None:
@@ -107,6 +123,19 @@ def init_database() -> None:
                     """
                 )
             )
+            if "longtext" not in _mysql_column_type(connection, "extractions", "extracted_data"):
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE extractions
+                        MODIFY COLUMN extracted_data LONGTEXT
+                        CHARACTER SET utf8mb4
+                        COLLATE utf8mb4_unicode_ci
+                        NULL
+                        """
+                    )
+                )
+                logger.info("[DB Migration] extractions.extracted_data upgraded to LONGTEXT")
             connection.commit()
     ensure_default_admin_exists_only_for_empty_db()
 
