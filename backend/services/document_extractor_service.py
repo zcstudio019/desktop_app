@@ -9249,6 +9249,8 @@ VEHICLE_TYPE_VALUES = (
     "客车",
     "货车",
 )
+VEHICLE_TYPE_KEYWORDS = ("车", "客车", "货车", "摩托车", "轿车")
+VEHICLE_AUTHORITY_KEYWORDS = ("公安局", "交通警察", "车辆管理所", "交警")
 
 
 def _vehicle_clean_line(value: Any) -> str:
@@ -9289,6 +9291,23 @@ def _vehicle_value_after_label(lines: list[str], labels: tuple[str, ...], max_sc
     return ""
 
 
+def _vehicle_values_near_label(lines: list[str], labels: tuple[str, ...], max_scan: int = 6) -> list[str]:
+    values: list[str] = []
+    for index, line in enumerate(lines):
+        if not any(label.lower() in line.lower() for label in labels):
+            continue
+        pattern = "|".join(re.escape(label) for label in labels)
+        inline = re.sub(rf"^.*?(?:{pattern})\s*[:：]?\s*", "", line, flags=re.I).strip()
+        inline = _vehicle_clean_line(inline)
+        if inline and not any(inline.lower() == label.lower() for label in VEHICLE_LABELS):
+            values.append(inline)
+        for candidate in lines[index + 1 : index + 1 + max_scan]:
+            cleaned = _vehicle_clean_line(candidate)
+            if cleaned:
+                values.append(cleaned)
+    return values
+
+
 def _normalize_vehicle_plate(value: str, full_text: str = "") -> str:
     source = f"{value}\n{full_text}"
     match = VEHICLE_PLATE_PATTERN.search(source.replace("·", "").replace(" ", ""))
@@ -9301,8 +9320,7 @@ def _is_vehicle_plate(value: str) -> bool:
 
 
 def _extract_vehicle_type(lines: list[str], full_text: str, plate_no: str) -> str:
-    raw_value = _vehicle_value_after_label(lines, ("车辆类型", "Vehicle Type"), max_scan=5)
-    candidates = [raw_value]
+    candidates = _vehicle_values_near_label(lines, ("车辆类型", "Vehicle Type"), max_scan=8)
     for line in lines:
         candidates.extend(value for value in VEHICLE_TYPE_VALUES if value in line)
     for candidate in candidates:
@@ -9312,7 +9330,7 @@ def _extract_vehicle_type(lines: list[str], full_text: str, plate_no: str) -> st
         for value in VEHICLE_TYPE_VALUES:
             if value in cleaned:
                 return value
-        if any(keyword in cleaned for keyword in ("车", "客车", "货车", "摩托车", "轿车")):
+        if any(keyword in cleaned for keyword in VEHICLE_TYPE_KEYWORDS):
             return cleaned
     for value in VEHICLE_TYPE_VALUES:
         if value in full_text:
@@ -9321,10 +9339,31 @@ def _extract_vehicle_type(lines: list[str], full_text: str, plate_no: str) -> st
 
 
 def _normalize_vehicle_date(value: str) -> str:
-    match = VEHICLE_DATE_PATTERN.search(str(value or ""))
+    source = str(value or "")
+    match = VEHICLE_DATE_PATTERN.search(source)
+    if not match:
+        match = re.search(r"((?:19|20)\d{2})\D{0,3}(\d{1,2})\D{0,3}(\d{1,2})", source)
+    if not match:
+        match = re.search(r"((?:19|20)\d{2})(\d{2})(\d{2})", source)
     if not match:
         return ""
     return f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
+
+
+def _collect_vehicle_dates(text: str) -> list[str]:
+    dates: list[str] = []
+    seen: set[str] = set()
+    for pattern in (
+        VEHICLE_DATE_PATTERN,
+        re.compile(r"((?:19|20)\d{2})\D{0,3}(\d{1,2})\D{0,3}(\d{1,2})"),
+        re.compile(r"((?:19|20)\d{2})(\d{2})(\d{2})"),
+    ):
+        for match in pattern.finditer(text):
+            date = f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
+            if date not in seen:
+                seen.add(date)
+                dates.append(date)
+    return dates
 
 
 def _extract_vehicle_dates(lines: list[str], raw_text: str) -> tuple[str, str]:
@@ -9332,10 +9371,7 @@ def _extract_vehicle_dates(lines: list[str], raw_text: str) -> tuple[str, str]:
     issue_raw = _vehicle_value_after_label(lines, ("发证日期", "Issue Date"), max_scan=4)
     register_date = _normalize_vehicle_date(register_raw)
     issue_date = _normalize_vehicle_date(issue_raw)
-    all_dates = [
-        f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
-        for match in VEHICLE_DATE_PATTERN.finditer(raw_text)
-    ]
+    all_dates = _collect_vehicle_dates(raw_text)
     if not register_date and all_dates:
         register_date = all_dates[0]
     if not issue_date and len(all_dates) >= 2:
@@ -9372,7 +9408,7 @@ def _extract_vehicle_engine_no(value: str, full_text: str = "") -> str:
 
 def _extract_vehicle_issuing_authority(text: str) -> str:
     lines = _vehicle_lines(text)
-    compact_text = "".join(lines)
+    compact_text = re.sub(r"\s+", "", "".join(lines))
     patterns = (
         r"(上海市公安局交通警察总队)",
         r"(.{2,20}公安局.{0,20}交通警察.{0,10})",
@@ -9385,15 +9421,19 @@ def _extract_vehicle_issuing_authority(text: str) -> str:
         for match in re.finditer(pattern, compact_text):
             candidates.append(_vehicle_clean_line(match.group(1)))
     for line in lines:
-        if "印章" in line and not any(keyword in line for keyword in ("公安局", "交通警察", "车辆管理所")):
+        if "印章" in line and not any(keyword in line for keyword in VEHICLE_AUTHORITY_KEYWORDS):
             continue
         for pattern in patterns:
             match = re.search(pattern, line)
             if match:
                 candidates.append(_vehicle_clean_line(match.group(1)))
+    if all(fragment in compact_text for fragment in ("上海市", "公安局", "交通警察")):
+        candidates.append("上海市公安局交通警察总队")
+    elif all(fragment in compact_text for fragment in ("上海市公", "安局交通", "警察总队")):
+        candidates.append("上海市公安局交通警察总队")
     normalized_candidates: list[str] = []
     for candidate in candidates:
-        if not any(keyword in candidate for keyword in ("公安局", "交通警察", "车辆管理所", "交警")) or "印章" in candidate:
+        if not any(keyword in candidate for keyword in VEHICLE_AUTHORITY_KEYWORDS) or "印章" in candidate:
             continue
         city_match = re.search(r"(上海市公安局交通警察总队)", candidate)
         if city_match:
@@ -9444,7 +9484,7 @@ def extract_vehicle_license(
     }
     if result["vehicle_type"] == result["plate_no"] or _is_vehicle_plate(result["vehicle_type"]):
         result["vehicle_type"] = ""
-    if result["issuing_authority"] and not any(keyword in result["issuing_authority"] for keyword in ("公安局", "交通警察", "车辆管理所", "交警")):
+    if result["issuing_authority"] and not any(keyword in result["issuing_authority"] for keyword in VEHICLE_AUTHORITY_KEYWORDS):
         result["issuing_authority"] = ""
     logger.info("[vehicle_license] final issuing_authority=%s", result["issuing_authority"])
     logger.info("[vehicle_license] filename=%s extracted=%s", filename, {k: v for k, v in result.items() if k not in {"raw_text", "raw_pages"}})
