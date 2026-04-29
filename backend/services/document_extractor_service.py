@@ -9449,3 +9449,15 @@ def extract_vehicle_license(
     logger.info("[vehicle_license] final issuing_authority=%s", result["issuing_authority"])
     logger.info("[vehicle_license] filename=%s extracted=%s", filename, {k: v for k, v in result.items() if k not in {"raw_text", "raw_pages"}})
     return result
+
+
+def extract_enterprise_credit_fields(text: str) -> dict[str, Any]:
+    """Minimal enterprise credit parser to keep upload/save flow reliable."""
+    raw_text = str(text or "")
+    return {
+        "document_type_code": "enterprise_credit",
+        "document_type_name": "企业征信",
+        "storage_label": "企业征信",
+        "raw_text": raw_text,
+        "report_summary": raw_text[:3000] if raw_text else "",
+    }
