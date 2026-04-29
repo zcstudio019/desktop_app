@@ -275,9 +275,18 @@ async def _ensure_customer_exists(
             logger.warning("[Local Save] Customer may already exist: %s", exc)
     else:
         try:
+            uploader = (current_user.get("username") or "") if current_user else ""
+            updates = {"upload_time": datetime.now(tz=timezone.utc).strftime("%Y/%m/%d")}
+            existing_uploader = str(existing.get("uploader") or "") if isinstance(existing, dict) else ""
+            if uploader and existing_uploader in {"", "anonymous", uploader}:
+                # Local authorization is currently uploader-based. When an upload
+                # auto-binds to a newly/previously anonymous customer, ensure the
+                # uploader can see it immediately without taking over other users'
+                # explicitly-owned customers.
+                updates["uploader"] = uploader
             await storage_service.update_customer(
                 customer_id,
-                {"upload_time": datetime.now(tz=timezone.utc).strftime("%Y/%m/%d")},
+                updates,
             )
         except Exception as exc:
             logger.warning("[Local Save] Failed to update upload_time: %s", exc)

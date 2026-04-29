@@ -877,6 +877,7 @@ async def _run_file_process_job(
         await _update_file_process_job(
             job_id,
             status="success",
+            customer_id=final_customer_id,
             progress_message="上传已保存，结构化提取部分失败" if partial_failed else "处理完成",
             result_json=result_payload,
             error_message="",
