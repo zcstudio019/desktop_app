@@ -2027,7 +2027,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     try {
       const items = await listCustomers();
       setCustomers(items);
-      setSelectedCustomerId((current) => (current ?? customerIdFromUrl) || items[0]?.record_id || null);
+      setSelectedCustomerId((current) => {
+        const urlCustomerId = customerIdFromUrl.trim();
+        if (urlCustomerId) {
+          return urlCustomerId;
+        }
+        if (current && items.some((item) => item.record_id === current)) {
+          return current;
+        }
+        return items[0]?.record_id || null;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载客户列表失败');
     } finally {
@@ -2039,6 +2048,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     async (customerId: string) => {
       setLoadingProfile(true);
       setError(null);
+      setProfile(null);
+      setDraft('');
       try {
         const result = await getCustomerProfileMarkdown(customerId);
         const sanitizedMarkdown = sanitizeProfileMarkdown(result.markdown_content);
@@ -2059,6 +2070,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
 
   const loadDocuments = useCallback(async (customerId: string) => {
     setLoadingDocuments(true);
+    setDocuments([]);
     try {
       const result = await getCustomerDocuments(customerId);
       setDocuments(result);
@@ -2071,6 +2083,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   }, []);
 
   const loadExtractions = useCallback(async (customerId: string) => {
+    setExtractionGroups([]);
     try {
       const result = await getCustomerExtractions(customerId);
       setExtractionGroups(result);

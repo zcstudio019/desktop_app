@@ -217,7 +217,7 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
-      <AppProvider>
+      <AppProvider key={username}>
         <Layout
           currentPage={currentPage}
           onNavigate={(page) => handleNavigate(page)}
