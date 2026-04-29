@@ -277,12 +277,10 @@ async def _ensure_customer_exists(
         try:
             uploader = (current_user.get("username") or "") if current_user else ""
             updates = {"upload_time": datetime.now(tz=timezone.utc).strftime("%Y/%m/%d")}
-            existing_uploader = str(existing.get("uploader") or "") if isinstance(existing, dict) else ""
-            if uploader and existing_uploader in {"", "anonymous", uploader}:
+            if uploader:
                 # Local authorization is currently uploader-based. When an upload
-                # auto-binds to a newly/previously anonymous customer, ensure the
-                # uploader can see it immediately without taking over other users'
-                # explicitly-owned customers.
+                # auto-binds to a customer, ensure the uploader can see it
+                # immediately in customer list/profile/document endpoints.
                 updates["uploader"] = uploader
             await storage_service.update_customer(
                 customer_id,

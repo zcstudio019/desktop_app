@@ -864,14 +864,21 @@ async def _run_file_process_job(
             "documentType": process_result.documentType,
             "content": process_result.content,
             "customerName": final_customer_name,
+            "customer_name": final_customer_name,
             "resolvedCustomerId": final_customer_id,
+            "resolved_customer_id": final_customer_id,
             "resolvedCustomerName": final_customer_name,
+            "resolved_customer_name": final_customer_name,
             "customerAutoCreated": customer_auto_created,
+            "customer_auto_created": customer_auto_created,
             "savedToFeishu": True,
             "recordId": record_id,
             "customerId": final_customer_id,
+            "customer_id": final_customer_id,
             "documentId": document_id,
+            "document_id": document_id,
             "originalAvailable": original_available,
+            "original_available": original_available,
         }
         partial_failed = process_result.content.get("extraction_status") == "partial_failed"
         await _update_file_process_job(

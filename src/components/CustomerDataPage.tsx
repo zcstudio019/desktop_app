@@ -2016,7 +2016,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [focusedConflictLabel, setFocusedConflictLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
-  const customerIdFromUrl = urlParams.get('customer_id') || '';
+  const customerIdFromUrl = urlParams.get('customer_id') || urlParams.get('customerId') || '';
   const highlightDocId = urlParams.get('highlight_doc_id') || '';
   const highlightDocumentType = urlParams.get('highlight_document_type') || '';
   const highlightFileName = urlParams.get('highlight_file_name') || '';
@@ -2027,13 +2027,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     try {
       const items = await listCustomers();
       setCustomers(items);
-      setSelectedCustomerId((current) => current ?? items[0]?.record_id ?? null);
+      setSelectedCustomerId((current) => (current ?? customerIdFromUrl) || items[0]?.record_id || null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载客户列表失败');
     } finally {
       setLoadingCustomers(false);
     }
-  }, []);
+  }, [customerIdFromUrl]);
 
   const loadProfile = useCallback(
     async (customerId: string) => {

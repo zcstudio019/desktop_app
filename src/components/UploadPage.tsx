@@ -699,20 +699,30 @@ function getCompletedUploadSteps(stage: UploadStage): Set<UploadStepItem['key']>
   }
 }
 
+function getStringResultField(result: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = result[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 function toExtractionResultFromJob(status: ChatJobStatusResponse): ExtractionResult {
   const result = (status.result || {}) as Record<string, unknown>;
   return {
-    documentType: String(result.documentType || ''),
+    documentType: getStringResultField(result, 'documentType', 'document_type') || '',
     content: (result.content as Record<string, unknown>) || {},
-    customerName: typeof result.customerName === 'string' ? result.customerName : null,
+    customerName: getStringResultField(result, 'customerName', 'customer_name'),
     savedToFeishu: Boolean(result.savedToFeishu),
-    recordId: typeof result.recordId === 'string' ? result.recordId : null,
-    customerId: typeof result.customerId === 'string' ? result.customerId : null,
-    resolvedCustomerId: typeof result.resolvedCustomerId === 'string' ? result.resolvedCustomerId : null,
-    resolvedCustomerName: typeof result.resolvedCustomerName === 'string' ? result.resolvedCustomerName : null,
-    customerAutoCreated: Boolean(result.customerAutoCreated),
-    documentId: typeof result.documentId === 'string' ? result.documentId : null,
-    originalAvailable: Boolean(result.originalAvailable),
+    recordId: getStringResultField(result, 'recordId', 'record_id'),
+    customerId: getStringResultField(result, 'customerId', 'customer_id'),
+    resolvedCustomerId: getStringResultField(result, 'resolvedCustomerId', 'resolved_customer_id'),
+    resolvedCustomerName: getStringResultField(result, 'resolvedCustomerName', 'resolved_customer_name'),
+    customerAutoCreated: Boolean(result.customerAutoCreated || result.customer_auto_created),
+    documentId: getStringResultField(result, 'documentId', 'document_id'),
+    originalAvailable: Boolean(result.originalAvailable || result.original_available),
   };
 }
 
@@ -850,6 +860,7 @@ const UploadPage: React.FC = () => {
     (highlightItem?: QueueItem | null) => {
       const result = highlightItem?.result;
       const targetCustomerId =
+        result?.resolvedCustomerId ??
         result?.customerId ??
         state.extraction.currentCustomerId ??
         customerIdFromUrl ??
@@ -1008,6 +1019,14 @@ const UploadPage: React.FC = () => {
       setCurrentCustomer(finalCustomerName || null, resolvedCustomerId);
       if (!activeCustomerId && finalCustomerName) {
         setCustomerName(finalCustomerName);
+      }
+      if (resolvedCustomerId) {
+        window.localStorage.setItem('currentCustomerId', resolvedCustomerId);
+        window.sessionStorage.setItem('currentCustomerId', resolvedCustomerId);
+        if (finalCustomerName) {
+          window.localStorage.setItem('currentCustomerName', finalCustomerName);
+          window.sessionStorage.setItem('currentCustomerName', finalCustomerName);
+        }
       }
       setUploadQueue((prev) => prev.map((q) => 
         q.id === item.id
