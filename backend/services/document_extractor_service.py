@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import calendar
 from collections import Counter
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -5344,6 +5345,217 @@ def extract_bank_statement_pdf_fields(text: str) -> dict[str, Any]:
         'transaction_count': transaction_count,
         'top_inflows': [],
         'top_outflows': [],
+    }
+
+
+def _bank_statement_month_range(text: str) -> tuple[str, str]:
+    source = str(text or "")
+    match = re.search(r"((?:19|20)\d{2})[-年/]?(\d{1,2})\s*(?:至|到|-|~|—)\s*((?:19|20)\d{2})[-年/]?(\d{1,2})", source)
+    if not match:
+        compact = re.search(r"((?:19|20)\d{2})(\d{2}).{0,6}((?:19|20)\d{2})(\d{2})", source)
+        if not compact:
+            return "", ""
+        year1, month1, year2, month2 = compact.groups()
+    else:
+        year1, month1, year2, month2 = match.groups()
+    month1_i = max(1, min(12, int(month1)))
+    month2_i = max(1, min(12, int(month2)))
+    last_day = calendar.monthrange(int(year2), month2_i)[1]
+    return f"{year1}-{month1_i:02d}-01", f"{year2}-{month2_i:02d}-{last_day:02d}"
+
+
+def _bank_statement_date(value: str) -> str:
+    return _normalize_date(str(value or "").replace(".", "-").replace("/", "-"))
+
+
+def _bank_statement_amount(value: str) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"[+-]?\d[\d,]*(?:\.\d{1,2})?", text)
+    return match.group(0) if match else ""
+
+
+def _bank_statement_decimal(value: str) -> Decimal:
+    try:
+        amount = _bank_statement_amount(value).replace(",", "")
+        return Decimal(amount) if amount else Decimal("0")
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
+def _bank_statement_label_value(text: str, labels: tuple[str, ...], *, amount: bool = False, count: bool = False) -> str:
+    source = str(text or "")
+    escaped = "|".join(re.escape(label) for label in labels)
+    if not escaped:
+        return ""
+    if amount:
+        pattern = rf"(?:{escaped})\s*[:：]?\s*([+-]?\d[\d,]*(?:\.\d{{1,2}})?)"
+    elif count:
+        pattern = rf"(?:{escaped})\s*[:：]?\s*(\d{{1,8}})"
+    else:
+        pattern = rf"(?:{escaped})\s*[:：]?\s*([^\n\r；;，,]{{1,120}})"
+    match = re.search(pattern, source, flags=re.I)
+    if not match:
+        return ""
+    value = str(match.group(1) or "").strip()
+    if amount:
+        return _bank_statement_amount(value)
+    if count:
+        return only_digits(value)
+    return value.strip(" ：:；;，,。")
+
+
+def _bank_statement_total_count(text: str) -> str:
+    source = str(text or "")
+    for line in source.splitlines():
+        if "总笔数" not in line:
+            continue
+        cleaned = re.sub(r"(借方总笔数|贷方总笔数)\s*[:：]?\s*\d{1,8}", " ", line)
+        match = re.search(r"(?<!借方)(?<!贷方)总笔数\s*[:：]?\s*(\d{1,8})", cleaned)
+        if match:
+            return only_digits(match.group(1))
+    match = re.search(r"(?<!借方)(?<!贷方)总笔数\s*[:：]?\s*(\d{1,8})", source)
+    return only_digits(match.group(1)) if match else ""
+
+
+def _extract_bank_statement_transactions(text: str) -> list[dict[str, str]]:
+    lines = [str(line or "").strip() for line in str(text or "").splitlines() if str(line or "").strip()]
+    transactions: list[dict[str, str]] = []
+    direction_pattern = r"(?:出账\s*[\(（]借方[\)）]|入账\s*[\(（]贷方[\)）]|出账|入账|借方|贷方)"
+    date_pattern = r"(?:19|20)\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?"
+
+    for line in lines:
+        if not re.search(direction_pattern, line):
+            continue
+        dates = re.findall(date_pattern, line)
+        amounts = re.findall(r"[+-]?\d[\d,]*(?:\.\d{2})", line)
+        if not dates or not amounts:
+            continue
+        direction_match = re.search(direction_pattern, line)
+        direction = direction_match.group(0).replace("（", "(").replace("）", ")").replace(" ", "") if direction_match else ""
+        transaction_time = _bank_statement_date(dates[0])
+        book_date = _bank_statement_date(dates[1] if len(dates) > 1 else dates[0])
+        transaction_amount = _bank_statement_amount(amounts[0])
+        balance = _bank_statement_amount(amounts[1] if len(amounts) > 1 else "")
+        serial_match = re.search(r"^\s*([A-Za-z0-9]{8,})", line)
+        counterparty_account = ""
+        for account_candidate in re.findall(r"\b\d{8,32}\b", line):
+            if serial_match and account_candidate == serial_match.group(1):
+                continue
+            if account_candidate not in {transaction_amount.replace(",", "").split(".")[0], balance.replace(",", "").split(".")[0]}:
+                counterparty_account = account_candidate
+                break
+        tail = line
+        if balance:
+            tail = line.split(balance, 1)[-1]
+        counterparty_name = ""
+        summary = ""
+        purpose = ""
+        tail_parts = [part.strip(" |｜\t") for part in re.split(r"\s{2,}|\|", tail) if part.strip(" |｜\t")]
+        if tail_parts:
+            if counterparty_account and tail_parts[0].startswith(counterparty_account):
+                tail_parts[0] = tail_parts[0][len(counterparty_account):].strip()
+            if len(tail_parts) == 1:
+                tail_parts = [part for part in re.split(r"\s+", tail_parts[0]) if part]
+            counterparty_name = tail_parts[0] if tail_parts else ""
+            summary = tail_parts[1] if len(tail_parts) > 1 else ""
+            purpose = tail_parts[2] if len(tail_parts) > 2 else ""
+        transactions.append(
+            {
+                "transaction_serial_no": serial_match.group(1) if serial_match else "",
+                "transaction_time": transaction_time,
+                "book_date": book_date,
+                "transaction_direction": direction,
+                "transaction_amount": transaction_amount,
+                "balance": balance,
+                "counterparty_account": counterparty_account,
+                "counterparty_name": counterparty_name,
+                "summary": summary,
+                "transaction_purpose": purpose,
+                "remark": tail_parts[3] if len(tail_parts) > 3 else "",
+            }
+        )
+    return transactions
+
+
+def _bank_statement_max_amount(transactions: list[dict[str, str]], direction_keywords: tuple[str, ...]) -> str:
+    matched = [
+        transaction.get("transaction_amount") or ""
+        for transaction in transactions
+        if any(keyword in (transaction.get("transaction_direction") or "") for keyword in direction_keywords)
+    ]
+    if not matched:
+        return ""
+    return max(matched, key=_bank_statement_decimal)
+
+
+def extract_bank_statement_pdf_fields(text: str) -> dict[str, Any]:
+    """Parse bank statement PDF/OCR text into account summary and transaction rows."""
+    source = str(text or "")
+    lines = [str(line or "").strip() for line in source.splitlines() if str(line or "").strip()]
+    header_text = "\n".join(_header_search_region(lines, limit=80)) or source[:3000]
+
+    split_result = _split_header_line(header_text)
+    start_date, end_date = _extract_date_range_from_text(header_text or source)
+    if not start_date or not end_date:
+        month_start, month_end = _bank_statement_month_range(header_text or source)
+        start_date = start_date or month_start
+        end_date = end_date or month_end
+
+    account_number = split_result["account_number"] or _find_longest_digits(header_text or source, min_length=8)
+    account_name = (
+        _bank_statement_label_value(header_text, ("客户名称", "客户名", "账户名称", "户名"))
+        or split_result["account_name"]
+        or _extract_longest_company_name(header_text or source[:3000])
+    )
+    bank_branch = (
+        _bank_statement_label_value(header_text, ("开户行", "开户银行"))
+        or split_result["bank_name"]
+        or _extract_longest_bank_name(header_text or source[:3000])
+    )
+    bank_name = "上海银行" if "上海银行" in bank_branch else bank_branch
+    currency = _bank_statement_label_value(header_text, ("币种",)) or split_result["currency"] or _extract_currency_from_text(header_text)
+
+    debit_count = _bank_statement_label_value(source, ("借方总笔数", "借方笔数"), count=True)
+    debit_total = _bank_statement_label_value(source, ("借方总金额", "借方金额合计"), amount=True)
+    credit_count = _bank_statement_label_value(source, ("贷方总笔数", "贷方笔数"), count=True)
+    credit_total = _bank_statement_label_value(source, ("贷方总金额", "贷方金额合计"), amount=True)
+    total_count = _bank_statement_total_count(source) or _bank_statement_label_value(source, ("交易总笔数", "明细笔数"), count=True)
+
+    transactions = _extract_bank_statement_transactions(source)
+    if not total_count and transactions:
+        total_count = str(len(transactions))
+    first_transaction_date = transactions[0]["book_date"] if transactions else ""
+    last_transaction_date = transactions[-1]["book_date"] if transactions else ""
+
+    return {
+        "document_type_code": "bank_statement",
+        "document_type_name": "银行对账单",
+        "storage_label": "银行对账单",
+        "account_name": account_name,
+        "customer_name": account_name,
+        "account_number": account_number,
+        "bank_name": bank_name,
+        "bank_branch": bank_branch,
+        "currency": currency,
+        "date_range": f"{start_date} 至 {end_date}" if start_date and end_date else "",
+        "start_date": start_date,
+        "end_date": end_date,
+        "total_transaction_count": total_count,
+        "transaction_count": total_count,
+        "debit_transaction_count": debit_count,
+        "debit_total_amount": debit_total,
+        "total_expense": debit_total,
+        "credit_transaction_count": credit_count,
+        "credit_total_amount": credit_total,
+        "total_income": credit_total,
+        "transactions": transactions,
+        "transaction_detail_count": str(len(transactions)) if transactions else "",
+        "first_transaction_date": first_transaction_date,
+        "last_transaction_date": last_transaction_date,
+        "max_credit_amount": _bank_statement_max_amount(transactions, ("入账", "贷方")),
+        "max_debit_amount": _bank_statement_max_amount(transactions, ("出账", "借方")),
+        "top_inflows": [],
+        "top_outflows": [],
     }
 
 

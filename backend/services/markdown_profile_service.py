@@ -1074,6 +1074,82 @@ def _build_vehicle_license_section_lines(file_name: str, original_status: str, e
     return lines
 
 
+def _bank_statement_cell(value: Any) -> str:
+    text = _marriage_display(value)
+    return text.replace('|', '｜').replace('\n', ' ').strip()
+
+
+def _bank_statement_date_range(extracted_data: dict[str, Any]) -> str:
+    if extracted_data.get('date_range'):
+        return _marriage_display(extracted_data.get('date_range'))
+    start_date = str(extracted_data.get('start_date') or '').strip()
+    end_date = str(extracted_data.get('end_date') or '').strip()
+    if start_date and end_date:
+        return f'{start_date} 至 {end_date}'
+    return '暂无'
+
+
+def _build_bank_statement_section_lines(file_name: str, original_status: str, extracted_data: dict[str, Any]) -> list[str]:
+    transactions = extracted_data.get('transactions') if isinstance(extracted_data.get('transactions'), list) else []
+    lines = [
+        '- 资料类型：银行对账单',
+        f'- 来源文件：{file_name}',
+        f'- 原件状态：{original_status}',
+        '',
+        '### 账户信息',
+        f"- 客户名称：{_marriage_display(extracted_data.get('account_name') or extracted_data.get('customer_name'))}",
+        f"- 银行名称：{_marriage_display(extracted_data.get('bank_name'))}",
+        f"- 开户行：{_marriage_display(extracted_data.get('bank_branch') or extracted_data.get('bank_name'))}",
+        f"- 账号：{_marriage_display(extracted_data.get('account_number'))}",
+        f"- 币种：{_marriage_display(extracted_data.get('currency'))}",
+        f"- 记账日期范围：{_bank_statement_date_range(extracted_data)}",
+        '',
+        '### 汇总信息',
+        f"- 总笔数：{_marriage_display(extracted_data.get('total_transaction_count') or extracted_data.get('transaction_count'))}",
+        f"- 借方总笔数：{_marriage_display(extracted_data.get('debit_transaction_count'))}",
+        f"- 借方总金额：{_marriage_display(extracted_data.get('debit_total_amount') or extracted_data.get('total_expense'))}",
+        f"- 贷方总笔数：{_marriage_display(extracted_data.get('credit_transaction_count'))}",
+        f"- 贷方总金额：{_marriage_display(extracted_data.get('credit_total_amount') or extracted_data.get('total_income'))}",
+        '',
+        '### 交易明细摘要',
+        f"- 交易明细总数：{_marriage_display(extracted_data.get('transaction_detail_count') or len(transactions) or extracted_data.get('transaction_count'))}",
+        f"- 首笔交易日期：{_marriage_display(extracted_data.get('first_transaction_date'))}",
+        f"- 末笔交易日期：{_marriage_display(extracted_data.get('last_transaction_date'))}",
+        f"- 最大入账金额：{_marriage_display(extracted_data.get('max_credit_amount'))}",
+        f"- 最大出账金额：{_marriage_display(extracted_data.get('max_debit_amount'))}",
+        '',
+        '### 交易明细',
+    ]
+    if transactions:
+        lines.extend([
+            '| 记账日期 | 交易方向 | 交易金额 | 余额 | 对手名称 | 摘要 | 交易用途 |',
+            '|---|---|---:|---:|---|---|---|',
+        ])
+        for transaction in transactions[:20]:
+            if not isinstance(transaction, dict):
+                continue
+            lines.append(
+                '| '
+                + ' | '.join(
+                    [
+                        _bank_statement_cell(transaction.get('book_date')),
+                        _bank_statement_cell(transaction.get('transaction_direction')),
+                        _bank_statement_cell(transaction.get('transaction_amount')),
+                        _bank_statement_cell(transaction.get('balance')),
+                        _bank_statement_cell(transaction.get('counterparty_name')),
+                        _bank_statement_cell(transaction.get('summary')),
+                        _bank_statement_cell(transaction.get('transaction_purpose')),
+                    ]
+                )
+                + ' |'
+            )
+        if len(transactions) > 20:
+            lines.extend(['', f'完整交易明细已保存，共 {len(transactions)} 条。'])
+    else:
+        lines.append('- 暂未识别到交易明细')
+    return lines
+
+
 async def _build_single_document_section(
     storage_service: Any,
     customer_id: str,
@@ -1124,6 +1200,8 @@ async def _build_single_document_section(
         return _markdown_section(type_name, lines), source_document
     if extraction_type == 'vehicle_license' and isinstance(extracted_data, dict):
         return _markdown_section('行驶证', _build_vehicle_license_section_lines(file_name, original_status, extracted_data)), source_document
+    if extraction_type == 'bank_statement' and isinstance(extracted_data, dict):
+        return _markdown_section('银行对账单', _build_bank_statement_section_lines(file_name, original_status, extracted_data)), source_document
     if extraction_type == 'marriage_cert' and isinstance(extracted_data, dict):
         lines = [
             f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}',
