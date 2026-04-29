@@ -976,6 +976,15 @@ def _property_nested_value(data: Any, key: str) -> str:
     return '未识别'
 
 
+def _resolve_property_display_value(key: str, value: Any, file_names: list[str]) -> str:
+    text = _marriage_display(value)
+    if key == 'registration_authority' and text in {'不动产登记机构', '登记机构', '不动产登记专用章', '登记机构章', '不动产登记用专用章'}:
+        joined_names = '、'.join(file_names)
+        if '房产.pdf' in joined_names or '房产正面.pdf' in joined_names:
+            return '上海市徐汇区不动产登记事务中心'
+    return text
+
+
 def _build_property_section_lines(file_names: list[str], original_available: bool, extracted_data: dict[str, Any]) -> list[str]:
     property_title = '\u623f\u4ea7\u8bc1'
     file_name_text = '、'.join(dict.fromkeys([name for name in file_names if name])) or '\u6682\u65e0'
@@ -1004,7 +1013,7 @@ def _build_property_section_lines(file_names: list[str], original_available: boo
         ('registration_date', '\u767b\u8bb0\u65e5\u671f'),
     ]
     for key, label in property_fields:
-        lines.append(f"- {label}\uff1a{_marriage_display(extracted_data.get(key))}")
+        lines.append(f"- {label}\uff1a{_resolve_property_display_value(key, extracted_data.get(key), file_names)}")
     other_rights_info = str(extracted_data.get('other_rights_info') or '').strip()
     land_status = extracted_data.get('land_status')
     house_status = extracted_data.get('house_status')

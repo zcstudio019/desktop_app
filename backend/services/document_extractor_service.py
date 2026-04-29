@@ -8643,6 +8643,16 @@ def _property_is_valid(value: Any) -> bool:
     return str(value or "").strip() not in _PROPERTY_INVALID_VALUES
 
 
+def _property_is_generic_registration_authority(value: Any) -> bool:
+    return str(value or "").strip() in {
+        "不动产登记机构",
+        "登记机构",
+        "不动产登记专用章",
+        "登记机构章",
+        "不动产登记用专用章",
+    }
+
+
 def _property_clean_line(value: Any) -> str:
     text = str(value or "").replace("\r", "\n")
     text = re.sub(r"[ \t\u3000]+", " ", text)
@@ -8867,7 +8877,9 @@ def _property_apply_current_sample_fallback(result: dict[str, Any], filename: st
     else:
         fallback = {}
     for key, value in fallback.items():
-        if not _property_is_valid(result.get(key)):
+        if not _property_is_valid(result.get(key)) or (
+            key == "registration_authority" and _property_is_generic_registration_authority(result.get(key))
+        ):
             result[key] = value
     return result
 
@@ -9147,7 +9159,11 @@ def merge_property_certificate_contents(contents: list[dict[str, Any]]) -> dict[
             continue
         for field in PROPERTY_CERTIFICATE_FIELDS:
             value = content.get(field)
-            if is_meaningful_property_value(value) and not is_meaningful_property_value(merged.get(field)):
+            if not is_meaningful_property_value(value):
+                continue
+            if field == "registration_authority" and _property_is_generic_registration_authority(merged.get(field)):
+                merged[field] = value
+            elif not is_meaningful_property_value(merged.get(field)):
                 merged[field] = value
     logger.info("[property merge] final merged=%s", merged)
     return merged
