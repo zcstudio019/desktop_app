@@ -5499,6 +5499,90 @@ def _bank_statement_summary_count(text: str, side: str) -> str:
     return ""
 
 
+def _bank_statement_customer_name_from_context(customer_id: str = "", customer_name: str = "") -> str:
+    explicit_name = clean_customer_name(customer_name) or str(customer_name or "").strip()
+    if explicit_name:
+        return explicit_name
+    customer_id = str(customer_id or "").strip()
+    if customer_id.startswith("enterprise_") and len(customer_id) > len("enterprise_"):
+        return customer_id[len("enterprise_"):].strip()
+    return ""
+
+
+def _bank_statement_count_transactions(transactions: list[dict[str, str]]) -> tuple[str, str, str]:
+    debit_keywords = ("借方", "出账", "支出", "debit")
+    credit_keywords = ("贷方", "入账", "收入", "credit")
+    debit_count = 0
+    credit_count = 0
+    for transaction in transactions:
+        direction = str(transaction.get("transaction_direction") or "").lower()
+        if any(keyword.lower() in direction for keyword in debit_keywords):
+            debit_count += 1
+        elif any(keyword.lower() in direction for keyword in credit_keywords):
+            credit_count += 1
+    total_count = len(transactions)
+    return (
+        str(debit_count) if debit_count else "",
+        str(credit_count) if credit_count else "",
+        str(total_count) if total_count else "",
+    )
+
+
+def finalize_bank_statement_fields(
+    content: dict[str, Any],
+    *,
+    customer_id: str = "",
+    customer_name: str = "",
+) -> dict[str, Any]:
+    if not isinstance(content, dict):
+        return content
+
+    context_name = _bank_statement_customer_name_from_context(customer_id, customer_name)
+    logger.info(
+        "[bank_statement] customer_context customer_id=%s customer_name=%s",
+        customer_id,
+        context_name or customer_name or "",
+    )
+    if context_name:
+        content["account_name"] = context_name
+        content["customer_name"] = context_name
+
+    transactions = content.get("transactions") if isinstance(content.get("transactions"), list) else []
+    tx_debit_count, tx_credit_count, tx_total_count = _bank_statement_count_transactions(transactions)
+    logger.info(
+        "[bank_statement] counts_from_transactions debit_count=%s credit_count=%s total_count=%s",
+        tx_debit_count,
+        tx_credit_count,
+        tx_total_count,
+    )
+
+    debit_count = clean_count(content.get("debit_transaction_count") or "")
+    credit_count = clean_count(content.get("credit_transaction_count") or "")
+    total_count = clean_count(content.get("total_transaction_count") or content.get("transaction_count") or "")
+
+    if not debit_count:
+        debit_count = tx_debit_count
+    if not credit_count:
+        credit_count = tx_credit_count
+    if debit_count and credit_count:
+        total_count = str(int(debit_count) + int(credit_count))
+    elif tx_total_count and (not total_count or int(tx_total_count) > int(total_count)):
+        total_count = tx_total_count
+
+    logger.info(
+        "[bank_statement] counts_from_summary debit_count=%s credit_count=%s total_count=%s",
+        debit_count,
+        credit_count,
+        total_count,
+    )
+
+    content["debit_transaction_count"] = debit_count
+    content["credit_transaction_count"] = credit_count
+    content["total_transaction_count"] = total_count
+    content["transaction_count"] = total_count
+    return content
+
+
 def _bank_statement_label_value(text: str, labels: tuple[str, ...], *, amount: bool = False, count: bool = False) -> str:
     source = str(text or "")
     escaped = "|".join(re.escape(label) for label in labels)
@@ -5526,12 +5610,16 @@ def _bank_statement_total_count(text: str) -> str:
     for line in source.splitlines():
         if "总笔数" not in line:
             continue
-        cleaned = re.sub(r"(借方总笔数|贷方总笔数)\s*[:：]?\s*\d{1,8}", " ", line)
-        match = re.search(r"(?<!借方)(?<!贷方)总笔数\s*[:：]?\s*(\d{1,8})", cleaned)
+        if "借方总笔数" in line or "贷方总笔数" in line:
+            cleaned = re.sub(r"(借方总笔数|贷方总笔数)\s*[:：]?\s*\d{1,8}", " ", line)
+            if "总笔数" not in cleaned:
+                continue
+            line = cleaned
+        match = re.search(r"(?<!借方)(?<!贷方)总笔数\s*[:：]?\s*(\d{1,8})", line)
         if match:
-            return only_digits(match.group(1))
+            return clean_count(match.group(1))
     match = re.search(r"(?<!借方)(?<!贷方)总笔数\s*[:：]?\s*(\d{1,8})", source)
-    return only_digits(match.group(1)) if match else ""
+    return clean_count(match.group(1)) if match else ""
 
 
 def _extract_bank_statement_transactions(text: str) -> list[dict[str, str]]:
@@ -8314,6 +8402,8 @@ def build_structured_extraction(
     rows: list[dict[str, Any]] | None = None,
     raw_pages: list[dict[str, Any]] | None = None,
     filename: str = "",
+    customer_id: str = "",
+    customer_name: str = "",
     ai_service: Any | None = None,
 ) -> dict[str, Any]:
     normalized_code = normalize_document_type_code(document_type_code) or document_type_code
@@ -8328,6 +8418,7 @@ def build_structured_extraction(
         content = extract_company_articles(text_content, ai_service=ai_service)
     elif normalized_code == "bank_statement":
         content = extract_bank_statement_from_rows(rows, text_content) if rows else extract_bank_statement_pdf_fields(text_content)
+        content = finalize_bank_statement_fields(content, customer_id=customer_id, customer_name=customer_name)
     elif normalized_code == "bank_statement_detail":
         content = extract_bank_statement_detail_from_rows(rows, text_content)
     elif normalized_code == "contract":

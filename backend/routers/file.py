@@ -674,6 +674,8 @@ def _extract_structured_data(
     *,
     raw_pages: list[dict[str, Any]] | None = None,
     filename: str = "",
+    customer_id: str = "",
+    customer_name: str = "",
 ) -> FileProcessResponse:
     raw_pages = raw_pages or []
 
@@ -712,6 +714,8 @@ def _extract_structured_data(
             rows=rows,
             raw_pages=raw_pages,
             filename=filename,
+            customer_id=customer_id,
+            customer_name=customer_name,
             ai_service=ai_service,
         )
         if document_type_code in {"property_report", "collateral", "mortgage_info"}:
@@ -744,6 +748,8 @@ async def _process_file_bytes(
     filename: str,
     explicit_document_type: str | None,
     *,
+    customer_id: str = "",
+    customer_name: str = "",
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> FileProcessResponse:
     text_content, rows, raw_pages = await _extract_content_from_file(
@@ -777,7 +783,15 @@ async def _process_file_bytes(
             raw_pages.append({"page": len(raw_pages) + 1, "text": seal_region_text})
     if progress_callback:
         await progress_callback("正在结构化提取")
-    return _extract_structured_data(text_content, document_type_code, rows, raw_pages=raw_pages, filename=filename)
+    return _extract_structured_data(
+        text_content,
+        document_type_code,
+        rows,
+        raw_pages=raw_pages,
+        filename=filename,
+        customer_id=customer_id,
+        customer_name=customer_name,
+    )
 
 
 async def _run_file_process_job(
@@ -820,6 +834,8 @@ async def _run_file_process_job(
             file_type,
             original_filename,
             explicit_document_type or None,
+            customer_id=requested_customer_id,
+            customer_name=requested_customer_name,
             progress_callback=lambda message: _update_file_process_progress(job_id, message),
         )
 
