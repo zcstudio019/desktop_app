@@ -12,6 +12,23 @@ import CustomerDataPage from './components/CustomerDataPage';
 import AdminUsersPage from './components/AdminUsersPage';
 import { getCurrentUser } from './services/api';
 
+const CUSTOMER_CONTEXT_STORAGE_KEYS = [
+  'loan-assistant-app-state',
+  'currentCustomerId',
+  'currentCustomerName',
+  'selectedCustomer',
+  'customerData',
+  'profileMarkdown',
+  'customerProfileMarkdown',
+];
+
+function clearCustomerContextStorage(): void {
+  CUSTOMER_CONTEXT_STORAGE_KEYS.forEach((key) => {
+    localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
+  });
+}
+
 interface ErrorBoundaryProps {
   children: ReactNode;
   fallback?: ReactNode;
@@ -93,6 +110,10 @@ const App: React.FC = () => {
 
       try {
         const userInfo = await getCurrentUser();
+        const previousUsername = localStorage.getItem('auth_username') || '';
+        if (previousUsername && previousUsername !== userInfo.username) {
+          clearCustomerContextStorage();
+        }
         setIsLoggedIn(true);
         setUsername(userInfo.username);
         setRole(userInfo.role);
@@ -112,6 +133,10 @@ const App: React.FC = () => {
   }, []);
 
   const handleLogin = useCallback((token: string, loginUsername: string, loginRole: string): void => {
+    const previousUsername = localStorage.getItem('auth_username') || '';
+    if (previousUsername && previousUsername !== loginUsername) {
+      clearCustomerContextStorage();
+    }
     localStorage.setItem('auth_token', token);
     localStorage.setItem('auth_username', loginUsername);
     localStorage.setItem('auth_role', loginRole);
@@ -122,6 +147,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleLogout = useCallback((): void => {
+    clearCustomerContextStorage();
     localStorage.removeItem('auth_token');
     localStorage.removeItem('auth_username');
     localStorage.removeItem('auth_role');

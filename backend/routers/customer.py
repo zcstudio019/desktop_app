@@ -10,7 +10,6 @@ Endpoints:
 """
 
 import asyncio
-import contextlib
 import logging
 import re
 import sys
@@ -360,52 +359,12 @@ def _has_direct_local_customer_access(customer: dict[str, Any], current_user: di
     return any(str(value or "") == username for value in owner_values)
 
 
-def _job_payload_customer_ids(job: dict[str, Any]) -> set[str]:
-    result = job.get("result_json") if isinstance(job.get("result_json"), dict) else {}
-    request = job.get("request_json") if isinstance(job.get("request_json"), dict) else {}
-    execution = job.get("execution_payload_json") if isinstance(job.get("execution_payload_json"), dict) else {}
-    payloads = (job, result, request, execution)
-    keys = ("customer_id", "customerId", "resolvedCustomerId", "resolved_customer_id")
-    return {
-        str(payload.get(key) or "").strip()
-        for payload in payloads
-        if isinstance(payload, dict)
-        for key in keys
-        if str(payload.get(key) or "").strip()
-    }
-
-
-async def _has_upload_job_access(customer_id: str, current_user: dict) -> bool:
-    username = _get_username(current_user)
-    if not customer_id or not username or not hasattr(storage_service, "list_async_jobs"):
-        return False
-    try:
-        jobs = await storage_service.list_async_jobs(username, limit=100)
-    except Exception as exc:
-        logger.warning("Failed to inspect async jobs for customer access customer_id=%s username=%s: %s", customer_id, username, exc)
-        return False
-    for job in jobs:
-        if customer_id in _job_payload_customer_ids(job):
-            return True
-    return False
-
-
-async def _can_access_local_customer(customer: dict[str, Any], current_user: dict) -> bool:
-    if _has_direct_local_customer_access(customer, current_user):
-        return True
-    customer_id = str(customer.get("customer_id") or "")
-    if await _has_upload_job_access(customer_id, current_user):
-        username = _get_username(current_user)
-        if username:
-            with contextlib.suppress(Exception):
-                await storage_service.update_customer(customer_id, {"uploader": username})
-            customer["uploader"] = username
-        return True
-    return False
+def _can_access_local_customer(customer: dict[str, Any], current_user: dict) -> bool:
+    return _has_direct_local_customer_access(customer, current_user)
 
 
 async def _ensure_local_customer_access(customer: dict[str, Any], current_user: dict) -> None:
-    if not await _can_access_local_customer(customer, current_user):
+    if not _can_access_local_customer(customer, current_user):
         raise HTTPException(status_code=403, detail="无权查看该客户记录")
 
 
@@ -626,7 +585,7 @@ async def _list_customers_local(
         customer_id = customer.get("customer_id") or ""
         created_at = customer.get("created_at") or ""
 
-        if not is_admin and not await _can_access_local_customer(customer, current_user):
+        if not is_admin and not _can_access_local_customer(customer, current_user):
             continue
 
         if search_text and search_text not in customer_name.lower():
@@ -822,7 +781,7 @@ async def get_customers_table(
     # 第一步：构建所有行的基础数据
     all_rows: list[dict] = []
     for c in customers:
-        if not is_admin and not await _can_access_local_customer(c, current_user):
+        if not is_admin and not _can_access_local_customer(c, current_user):
             continue
         customer_id = c.get("customer_id") or ""
         row: dict = {
