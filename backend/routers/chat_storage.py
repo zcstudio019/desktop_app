@@ -45,6 +45,7 @@ _PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
 
 _MULTI_INSTANCE_DOCUMENT_TYPE_CODES = frozenset({
     "id_card",
+    "bank_statement",
 })
 
 _PROPERTY_MULTI_FILE_DOCUMENT_TYPE_CODES = frozenset({

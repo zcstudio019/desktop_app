@@ -1116,36 +1116,7 @@ def _build_bank_statement_section_lines(file_name: str, original_status: str, ex
         f"- 末笔交易日期：{_marriage_display(extracted_data.get('last_transaction_date'))}",
         f"- 最大入账金额：{_marriage_display(extracted_data.get('max_credit_amount'))}",
         f"- 最大出账金额：{_marriage_display(extracted_data.get('max_debit_amount'))}",
-        '',
-        '### 交易明细',
     ]
-    if transactions:
-        lines.extend([
-            '| 记账日期 | 交易方向 | 交易金额 | 余额 | 对手名称 | 摘要 | 交易用途 |',
-            '|---|---|---:|---:|---|---|---|',
-        ])
-        for transaction in transactions[:20]:
-            if not isinstance(transaction, dict):
-                continue
-            lines.append(
-                '| '
-                + ' | '.join(
-                    [
-                        _bank_statement_cell(transaction.get('book_date')),
-                        _bank_statement_cell(transaction.get('transaction_direction')),
-                        _bank_statement_cell(transaction.get('transaction_amount')),
-                        _bank_statement_cell(transaction.get('balance')),
-                        _bank_statement_cell(transaction.get('counterparty_name')),
-                        _bank_statement_cell(transaction.get('summary')),
-                        _bank_statement_cell(transaction.get('transaction_purpose')),
-                    ]
-                )
-                + ' |'
-            )
-        if len(transactions) > 20:
-            lines.extend(['', f'完整交易明细已保存，共 {len(transactions)} 条。'])
-    else:
-        lines.append('- 暂未识别到交易明细')
     return lines
 
 
