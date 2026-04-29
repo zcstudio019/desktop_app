@@ -25,7 +25,7 @@ if str(desktop_app_path) not in sys.path:
     sys.path.insert(0, str(desktop_app_path))
 
 from backend.celery_app import TASK_QUEUE_ENABLED
-from backend.document_types import get_document_display_name, normalize_document_type_code
+from backend.document_types import get_document_display_name, get_document_storage_label, normalize_document_type_code
 from backend.routers.chat_helpers import extract_customer_name as extract_customer_name_from_content
 from backend.routers.chat_storage import _save_to_local_storage
 from backend.services import get_storage_service, supports_structured_storage
@@ -538,8 +538,31 @@ def _extract_structured_data(
     raw_pages: list[dict[str, Any]] | None = None,
     filename: str = "",
 ) -> FileProcessResponse:
+    raw_pages = raw_pages or []
+
+    def _fallback_content(exc: Exception) -> FileProcessResponse:
+        logger.exception(
+            "[File Extract] structured extraction failed document_type=%s filename=%s",
+            document_type_code,
+            filename,
+        )
+        fallback_content = {
+            "document_type_code": document_type_code,
+            "document_type_name": get_document_display_name(document_type_code),
+            "storage_label": get_document_storage_label(document_type_code),
+            "raw_text": _build_raw_text_from_pages(raw_pages) if raw_pages else (text_content or ""),
+            "raw_pages": raw_pages,
+            "extraction_error": str(exc),
+            "extraction_status": "partial_failed",
+        }
+        return FileProcessResponse(
+            documentType=document_type_code,
+            content=fallback_content,
+            customerName=None,
+        )
+
     try:
-        raw_pages_for_log = raw_pages or []
+        raw_pages_for_log = raw_pages
         if document_type_code in {"property_report", "collateral", "mortgage_info"}:
             logger.info("[property] document_type=%s filename=%s", document_type_code, filename)
             logger.info("[property] raw_pages count=%s", len(raw_pages_for_log))
@@ -550,13 +573,12 @@ def _extract_structured_data(
             text_content,
             document_type_code,
             rows=rows,
-            raw_pages=raw_pages or [],
+            raw_pages=raw_pages,
             filename=filename,
             ai_service=ai_service,
         )
         if document_type_code in {"property_report", "collateral", "mortgage_info"}:
             logger.info("[property] extracted result=%s", content)
-        raw_pages = raw_pages or []
         if raw_pages:
             content["raw_pages"] = raw_pages
             content["raw_text"] = _build_raw_text_from_pages(raw_pages)
@@ -572,13 +594,11 @@ def _extract_structured_data(
             customerName=customer_name,
         )
     except AIServiceError as exc:
-        logger.error("AI extraction error: %s", exc)
-        raise HTTPException(status_code=500, detail=AI_EXTRACTION_FAILED_MESSAGE) from exc
+        return _fallback_content(exc)
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive wrapper
-        logger.error("Unexpected error during extraction: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=AI_EXTRACTION_FAILED_MESSAGE) from exc
+        return _fallback_content(exc)
 
 
 async def _process_file_bytes(
@@ -708,10 +728,11 @@ async def _run_file_process_job(
             "documentId": document_id,
             "originalAvailable": original_available,
         }
+        partial_failed = process_result.content.get("extraction_status") == "partial_failed"
         await _update_file_process_job(
             job_id,
             status="success",
-            progress_message="处理完成",
+            progress_message="上传已保存，结构化提取部分失败" if partial_failed else "处理完成",
             result_json=result_payload,
             error_message="",
             finished_at=_utc_now_iso(),

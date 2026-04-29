@@ -1110,6 +1110,18 @@ async def _build_single_document_section(
         lines = _build_property_section_lines([file_name], bool(store_original and file_path), extracted_data)
         source_document['source_type_name'] = property_title
         return _markdown_section(property_title, lines), source_document
+    if isinstance(extracted_data, dict) and extracted_data.get('extraction_status') == 'partial_failed':
+        lines = [
+            f'- 资料类型：{type_name}',
+            f'- 来源文件：{file_name}',
+            f'- 原件状态：{original_status}',
+            '- 提取状态：结构化提取部分失败，原件已保存',
+            f"- 错误信息：{_marriage_display(extracted_data.get('extraction_error'))}",
+        ]
+        raw_text = str(extracted_data.get('raw_text') or '').strip()
+        if raw_text:
+            lines.extend(['', '### OCR 原文摘要', raw_text[:2000]])
+        return _markdown_section(type_name, lines), source_document
     if extraction_type == 'vehicle_license' and isinstance(extracted_data, dict):
         return _markdown_section('行驶证', _build_vehicle_license_section_lines(file_name, original_status, extracted_data)), source_document
     if extraction_type == 'marriage_cert' and isinstance(extracted_data, dict):

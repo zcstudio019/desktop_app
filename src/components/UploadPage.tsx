@@ -713,6 +713,10 @@ function toExtractionResultFromJob(status: ChatJobStatusResponse): ExtractionRes
   };
 }
 
+function isPartialExtractionFailure(result: ExtractionResult): boolean {
+  return String((result.content || {}).extraction_status || '') === 'partial_failed';
+}
+
 // ============================================
 // Main Component
 // ============================================
@@ -985,6 +989,7 @@ const UploadPage: React.FC = () => {
       }
 
       const extractionResult = toExtractionResultFromJob(finalStatus);
+      const partialExtractionFailure = isPartialExtractionFailure(extractionResult);
       const finalCustomerName =
         (activeCustomerName.trim() || customerNameOverride.trim() || extractionResult.customerName || '').trim();
       const resolvedCustomerId = extractionResult.customerId ?? activeCustomerId;
@@ -993,7 +998,17 @@ const UploadPage: React.FC = () => {
       addCustomerData(activeCustomerName || finalCustomerName, extractionResult);
       setCurrentCustomer(activeCustomerName || finalCustomerName, resolvedCustomerId);
       setUploadQueue((prev) => prev.map((q) => 
-        q.id === item.id ? { ...q, status: 'success' as const, progress: 100, progressMessage: '处理完成', result: extractionResult } : q
+        q.id === item.id
+          ? {
+            ...q,
+            status: 'success' as const,
+            progress: 100,
+            progressMessage: partialExtractionFailure
+              ? '上传已保存，结构化提取部分失败，请到资料汇总查看原件或稍后重新提取'
+              : '处理完成',
+            result: extractionResult,
+          }
+          : q
       ));
 
       const uploadedFile: UploadedFile = {
