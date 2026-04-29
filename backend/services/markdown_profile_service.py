@@ -108,6 +108,15 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
     'control_analysis': '\u63a7\u5236\u6743\u5206\u6790',
     'registration_authority': '\u767b\u8bb0\u673a\u5173',
     'registration_date': '\u767b\u8bb0\u673a\u5173\u65e5\u671f',
+    'plate_no': '号牌号码',
+    'vehicle_type': '车辆类型',
+    'owner': '所有人',
+    'use_character': '使用性质',
+    'brand_model': '品牌型号',
+    'vin': '车辆识别代号',
+    'engine_no': '发动机号码',
+    'register_date': '注册日期',
+    'issue_date': '发证日期',
     'document_type_name': '\u8d44\u6599\u7c7b\u578b',
     'storage_label': '\u8d44\u6599\u5f52\u7c7b',
     'currency': '\u5e01\u79cd',
@@ -1039,6 +1048,32 @@ def _build_property_section_lines(file_names: list[str], original_available: boo
     return lines
 
 
+def _build_vehicle_license_section_lines(file_name: str, original_status: str, extracted_data: dict[str, Any]) -> list[str]:
+    fields = [
+        ('plate_no', '号牌号码'),
+        ('vehicle_type', '车辆类型'),
+        ('owner', '所有人'),
+        ('address', '住址'),
+        ('use_character', '使用性质'),
+        ('brand_model', '品牌型号'),
+        ('vin', '车辆识别代号'),
+        ('engine_no', '发动机号码'),
+        ('register_date', '注册日期'),
+        ('issue_date', '发证日期'),
+        ('issuing_authority', '发证机关'),
+    ]
+    lines = [
+        '- 资料类型：行驶证',
+        f'- 来源文件：{file_name}',
+        f'- 原件状态：{original_status}',
+        '',
+        '### 结构化提取结果',
+    ]
+    for key, label in fields:
+        lines.append(f"- {label}：{_marriage_display(extracted_data.get(key))}")
+    return lines
+
+
 async def _build_single_document_section(
     storage_service: Any,
     customer_id: str,
@@ -1075,6 +1110,8 @@ async def _build_single_document_section(
         lines = _build_property_section_lines([file_name], bool(store_original and file_path), extracted_data)
         source_document['source_type_name'] = property_title
         return _markdown_section(property_title, lines), source_document
+    if extraction_type == 'vehicle_license' and isinstance(extracted_data, dict):
+        return _markdown_section('行驶证', _build_vehicle_license_section_lines(file_name, original_status, extracted_data)), source_document
     if extraction_type == 'marriage_cert' and isinstance(extracted_data, dict):
         lines = [
             f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}',
