@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
 import sys
 import uuid
@@ -78,6 +79,34 @@ PDF_TO_IMAGE_FAILED_MESSAGE = "PDF 转图片失败，无法继续识别。"
 AI_CLASSIFICATION_FAILED_MESSAGE = "文件类型识别失败，请手动选择资料类型后重试。"
 AI_EXTRACTION_FAILED_MESSAGE = "资料提取失败，请稍后重试。"
 OCR_PAGE_FAILED_PLACEHOLDER = "[本页识别失败]"
+CUSTOMER_NAME_UNRESOLVED_MESSAGE = "未能从资料中识别客户名称，请手动选择客户或填写客户名称后重试。"
+
+_CUSTOMER_NAME_FIELDS = (
+    "company_name",
+    "enterprise_name",
+    "customer_name",
+    "report_subject_name",
+    "被查询企业名称",
+    "企业名称",
+    "公司名称",
+    "名称",
+    "name",
+    "person_name",
+    "borrower_name",
+    "姓名",
+)
+
+_RAW_TEXT_CUSTOMER_NAME_PATTERNS = (
+    r"企业名称[：:\s]*([^\n\r，,；;。]{2,80})",
+    r"被查询者名称[：:\s]*([^\n\r，,；;。]{2,80})",
+    r"报告主体[：:\s]*([^\n\r，,；;。]{2,80})",
+    r"客户名称[：:\s]*([^\n\r，,；;。]{2,80})",
+    r"公司名称[：:\s]*([^\n\r，,；;。]{2,80})",
+    r"名称[：:\s]*([^\n\r，,；;。]{2,80})",
+    r"姓名[：:\s]*([^\n\r，,；;。]{2,20})",
+)
+
+_INVALID_CUSTOMER_NAME_VALUES = {"", "未识别", "暂无", "无", "-", "null", "none", "未知"}
 
 
 def _utc_now_iso() -> str:
@@ -118,6 +147,114 @@ def _normalize_file_process_job_status(job: dict[str, Any]) -> str:
     if raw_status in {"pending", "running", "retrying", "success", "failed", "timeout", "interrupted"}:
         return raw_status
     return "pending"
+
+
+def _clean_customer_name_candidate(value: Any) -> str:
+    if value is None:
+        return ""
+    candidate = str(value).strip().strip("：:，,；;。 \t\r\n")
+    candidate = re.sub(r"^(企业名称|公司名称|客户名称|名称|姓名|被查询者名称|报告主体)[：:\s]*", "", candidate)
+    candidate = re.split(r"[\r\n]", candidate, maxsplit=1)[0].strip().strip("：:，,；;。 ")
+    if not candidate or candidate.lower() in _INVALID_CUSTOMER_NAME_VALUES:
+        return ""
+    if len(candidate) > 80:
+        return ""
+    return candidate
+
+
+def _find_customer_name_in_content(content: Any) -> str:
+    if not isinstance(content, dict):
+        return ""
+
+    for field in _CUSTOMER_NAME_FIELDS:
+        value = content.get(field)
+        candidate = _clean_customer_name_candidate(value)
+        if candidate:
+            return candidate
+
+    for value in content.values():
+        if isinstance(value, dict):
+            candidate = _find_customer_name_in_content(value)
+            if candidate:
+                return candidate
+        elif isinstance(value, list):
+            for item in value:
+                candidate = _find_customer_name_in_content(item)
+                if candidate:
+                    return candidate
+    return ""
+
+
+def _find_customer_name_in_raw_text(text: str) -> str:
+    if not text:
+        return ""
+    for pattern in _RAW_TEXT_CUSTOMER_NAME_PATTERNS:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        candidate = _clean_customer_name_candidate(match.group(1))
+        if candidate:
+            return candidate
+    return ""
+
+
+def _resolve_customer_name_after_extraction(
+    requested_customer_name: str,
+    process_result: FileProcessResponse,
+) -> str:
+    requested = _clean_customer_name_candidate(requested_customer_name)
+    if requested:
+        return requested
+
+    extracted = _clean_customer_name_candidate(process_result.customerName)
+    if extracted:
+        return extracted
+
+    content = process_result.content if isinstance(process_result.content, dict) else {}
+    extracted = _find_customer_name_in_content(content)
+    if extracted:
+        return extracted
+
+    raw_text = str(content.get("raw_text") or "")
+    extracted = _find_customer_name_in_raw_text(raw_text)
+    if extracted:
+        return extracted
+
+    raw_pages = content.get("raw_pages")
+    if isinstance(raw_pages, list):
+        joined_pages = "\n".join(str(page.get("text") or "") for page in raw_pages if isinstance(page, dict))
+        extracted = _find_customer_name_in_raw_text(joined_pages)
+        if extracted:
+            return extracted
+    return ""
+
+
+async def _get_customer_name_by_id(customer_id: str) -> str:
+    if not customer_id:
+        return ""
+    try:
+        customer = await storage_service.get_customer(customer_id)
+    except Exception as exc:
+        logger.warning("[File Job] failed to lookup customer by id=%s: %s", customer_id, exc)
+        return ""
+    if isinstance(customer, dict):
+        return str(customer.get("name") or customer.get("customer_name") or "").strip()
+    return ""
+
+
+async def _customer_exists_by_name(customer_name: str) -> bool:
+    normalized = _clean_customer_name_candidate(customer_name)
+    if not normalized:
+        return False
+    try:
+        customers = await storage_service.list_customers()
+    except Exception as exc:
+        logger.warning("[File Job] failed to list customers for auto-bind check: %s", exc)
+        return False
+    for customer in customers:
+        if str(customer.get("name") or customer.get("customer_name") or "").strip() == normalized:
+            return True
+    return False
 
 
 def _ensure_upload_job_temp_dir(job_id: str) -> Path:
@@ -686,9 +823,13 @@ async def _run_file_process_job(
             progress_callback=lambda message: _update_file_process_progress(job_id, message),
         )
 
-        final_customer_name = requested_customer_name or process_result.customerName or ""
+        final_customer_name = _resolve_customer_name_after_extraction(requested_customer_name, process_result)
+        if requested_customer_id and not final_customer_name:
+            final_customer_name = await _get_customer_name_by_id(requested_customer_id)
         if not final_customer_name:
-            raise ValueError("未识别到客户名称，请先选择客户或补充客户名称后再上传。")
+            raise ValueError(CUSTOMER_NAME_UNRESOLVED_MESSAGE)
+
+        existing_customer_before_save = bool(requested_customer_id) or await _customer_exists_by_name(final_customer_name)
 
         await _update_file_process_progress(job_id, "正在保存资料")
         save_result = await _save_to_local_storage(
@@ -710,6 +851,7 @@ async def _run_file_process_job(
         final_customer_id = requested_customer_id or saved_customer_id or ""
         if not success:
             raise RuntimeError(error_msg or "资料保存失败")
+        customer_auto_created = not requested_customer_id and not existing_customer_before_save and bool(final_customer_id)
 
         if final_customer_id:
             await _update_file_process_progress(job_id, "正在刷新资料汇总")
@@ -722,6 +864,9 @@ async def _run_file_process_job(
             "documentType": process_result.documentType,
             "content": process_result.content,
             "customerName": final_customer_name,
+            "resolvedCustomerId": final_customer_id,
+            "resolvedCustomerName": final_customer_name,
+            "customerAutoCreated": customer_auto_created,
             "savedToFeishu": True,
             "recordId": record_id,
             "customerId": final_customer_id,

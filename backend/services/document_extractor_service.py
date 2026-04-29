@@ -9454,10 +9454,23 @@ def extract_vehicle_license(
 def extract_enterprise_credit_fields(text: str) -> dict[str, Any]:
     """Minimal enterprise credit parser to keep upload/save flow reliable."""
     raw_text = str(text or "")
+    company_name = ""
+    for pattern in (
+        r"企业名称[：:\s]*([^\n\r，,；;。]{2,80})",
+        r"被查询者名称[：:\s]*([^\n\r，,；;。]{2,80})",
+        r"报告主体[：:\s]*([^\n\r，,；;。]{2,80})",
+        r"名称[：:\s]*([^\n\r，,；;。]{2,80})",
+    ):
+        match = re.search(pattern, raw_text)
+        if match:
+            company_name = match.group(1).strip().strip("：:，,；;。 ")
+            break
     return {
         "document_type_code": "enterprise_credit",
         "document_type_name": "企业征信",
         "storage_label": "企业征信",
+        "company_name": company_name,
+        "customer_name": company_name,
         "raw_text": raw_text,
         "report_summary": raw_text[:3000] if raw_text else "",
     }

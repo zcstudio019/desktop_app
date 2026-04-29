@@ -708,6 +708,9 @@ function toExtractionResultFromJob(status: ChatJobStatusResponse): ExtractionRes
     savedToFeishu: Boolean(result.savedToFeishu),
     recordId: typeof result.recordId === 'string' ? result.recordId : null,
     customerId: typeof result.customerId === 'string' ? result.customerId : null,
+    resolvedCustomerId: typeof result.resolvedCustomerId === 'string' ? result.resolvedCustomerId : null,
+    resolvedCustomerName: typeof result.resolvedCustomerName === 'string' ? result.resolvedCustomerName : null,
+    customerAutoCreated: Boolean(result.customerAutoCreated),
     documentId: typeof result.documentId === 'string' ? result.documentId : null,
     originalAvailable: Boolean(result.originalAvailable),
   };
@@ -785,7 +788,7 @@ const UploadPage: React.FC = () => {
         title: '等待上传资料',
         description: '支持企业征信、个人征信、流水、财务数据、水母报告等资料。',
         persistenceHint: '尚未开始本轮上传。',
-        nextStep: '先选择客户与资料类型，再上传文件。',
+        nextStep: '可先选择客户；未选择客户时，系统会尝试从资料中识别客户名称并自动建档。',
       };
     }
 
@@ -990,13 +993,22 @@ const UploadPage: React.FC = () => {
 
       const extractionResult = toExtractionResultFromJob(finalStatus);
       const partialExtractionFailure = isPartialExtractionFailure(extractionResult);
+      const backendResolvedCustomerName = extractionResult.resolvedCustomerName || extractionResult.customerName || '';
+      const backendResolvedCustomerId = extractionResult.resolvedCustomerId || extractionResult.customerId || null;
       const finalCustomerName =
-        (activeCustomerName.trim() || customerNameOverride.trim() || extractionResult.customerName || '').trim();
-      const resolvedCustomerId = extractionResult.customerId ?? activeCustomerId;
+        (activeCustomerName.trim() || customerNameOverride.trim() || backendResolvedCustomerName || '').trim();
+      const resolvedCustomerId = backendResolvedCustomerId ?? activeCustomerId;
+      const autoArchiveMessage =
+        !activeCustomerId && backendResolvedCustomerName
+          ? `已自动归档到客户：${backendResolvedCustomerName}`
+          : null;
 
       // Use addCustomerData to group by customer name
-      addCustomerData(activeCustomerName || finalCustomerName, extractionResult);
-      setCurrentCustomer(activeCustomerName || finalCustomerName, resolvedCustomerId);
+      addCustomerData(finalCustomerName, extractionResult);
+      setCurrentCustomer(finalCustomerName || null, resolvedCustomerId);
+      if (!activeCustomerId && finalCustomerName) {
+        setCustomerName(finalCustomerName);
+      }
       setUploadQueue((prev) => prev.map((q) => 
         q.id === item.id
           ? {
@@ -1005,7 +1017,7 @@ const UploadPage: React.FC = () => {
             progress: 100,
             progressMessage: partialExtractionFailure
               ? '上传已保存，结构化提取部分失败，请到资料汇总查看原件或稍后重新提取'
-              : '处理完成',
+              : autoArchiveMessage || '处理完成',
             result: extractionResult,
           }
           : q
@@ -1046,8 +1058,10 @@ const UploadPage: React.FC = () => {
       recordSystemActivity({
         type: 'upload',
         title: '客户资料上传完成',
-        description: `${item.file.name} 已保存，并已自动更新资料汇总与问答索引。`,
-        customerName: activeCustomerName || finalCustomerName,
+        description: autoArchiveMessage
+          ? `${item.file.name} 已保存，${autoArchiveMessage}，并已自动更新资料汇总与问答索引。`
+          : `${item.file.name} 已保存，并已自动更新资料汇总与问答索引。`,
+        customerName: finalCustomerName,
         customerId: resolvedCustomerId,
         status: 'success',
       });
@@ -1362,7 +1376,7 @@ const UploadPage: React.FC = () => {
             placeholder="输入客户名称（用于智能合并）"
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-48"
           />
-          {state.extraction.currentCustomerId && (
+          {(state.extraction.currentCustomerId || customerName.trim()) && (
             <button
               type="button"
               onClick={() => handleCustomerSelect('')}
@@ -1397,7 +1411,9 @@ const UploadPage: React.FC = () => {
             {state.extraction.currentCustomer || '未选择客户'}
           </div>
           <div className="mt-1 text-xs text-slate-400">
-            新上传资料会优先并入当前客户，并自动刷新资料汇总与问答索引
+            {state.extraction.currentCustomerId
+              ? '新上传资料会优先并入当前客户，并自动刷新资料汇总与问答索引'
+              : '未选择客户时，系统会尝试从资料中识别客户名称并自动建档'}
           </div>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">

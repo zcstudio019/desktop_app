@@ -31,6 +31,12 @@ export interface ExtractionResult {
   recordId: string | null;
   /** Stable customer ID for customer-scoped features */
   customerId?: string | null;
+  /** Customer ID resolved by upload job when no customer was selected */
+  resolvedCustomerId?: string | null;
+  /** Customer name resolved by upload job when no customer was selected */
+  resolvedCustomerName?: string | null;
+  /** Whether the upload job auto-created the customer record */
+  customerAutoCreated?: boolean;
   /** Backing document ID for original preview/download */
   documentId?: string | null;
   /** Whether the original file is retained */
