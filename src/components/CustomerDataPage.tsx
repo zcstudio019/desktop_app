@@ -2021,28 +2021,59 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const highlightDocumentType = urlParams.get('highlight_document_type') || '';
   const highlightFileName = urlParams.get('highlight_file_name') || '';
 
+  const clearCustomerUrlParams = useCallback(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('customer_id');
+    url.searchParams.delete('customerId');
+    url.searchParams.delete('highlight_doc_id');
+    url.searchParams.delete('highlight_document_type');
+    url.searchParams.delete('highlight_file_name');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
+  const clearCurrentCustomerData = useCallback(() => {
+    setSelectedCustomerId(null);
+    setProfile(null);
+    setDraft('');
+    setDocuments([]);
+    setExtractionGroups([]);
+    setCurrentCustomer(null, null);
+  }, [setCurrentCustomer]);
+
   const loadCustomers = useCallback(async () => {
     setLoadingCustomers(true);
     setError(null);
     try {
       const items = await listCustomers();
+      const allowedCustomerIds = new Set(items.map((item) => item.record_id).filter(Boolean));
+      const urlCustomerId = customerIdFromUrl.trim();
       setCustomers(items);
+
+      if (urlCustomerId && !allowedCustomerIds.has(urlCustomerId)) {
+        clearCustomerUrlParams();
+        clearCurrentCustomerData();
+        return;
+      }
+
       setSelectedCustomerId((current) => {
-        const urlCustomerId = customerIdFromUrl.trim();
         if (urlCustomerId) {
           return urlCustomerId;
         }
         if (current && items.some((item) => item.record_id === current)) {
           return current;
         }
+        if (current) {
+          return null;
+        }
         return items[0]?.record_id || null;
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载客户列表失败');
+      clearCurrentCustomerData();
     } finally {
       setLoadingCustomers(false);
     }
-  }, [customerIdFromUrl]);
+  }, [clearCurrentCustomerData, clearCustomerUrlParams, customerIdFromUrl]);
 
   const loadProfile = useCallback(
     async (customerId: string) => {
@@ -2101,15 +2132,48 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     if (!customerIdFromUrl) {
       return;
     }
+    if (loadingCustomers) {
+      return;
+    }
+    const allowedCustomerIds = new Set(customers.map((item) => item.record_id));
+    if (!allowedCustomerIds.has(customerIdFromUrl)) {
+      clearCustomerUrlParams();
+      clearCurrentCustomerData();
+      return;
+    }
     setSelectedCustomerId((current) => (current === customerIdFromUrl ? current : customerIdFromUrl));
-  }, [customerIdFromUrl]);
+  }, [clearCurrentCustomerData, clearCustomerUrlParams, customerIdFromUrl, customers, loadingCustomers]);
 
   useEffect(() => {
-    if (!selectedCustomerId) return;
+    if (!selectedCustomerId) {
+      setProfile(null);
+      setDraft('');
+      setDocuments([]);
+      setExtractionGroups([]);
+      setCurrentCustomer(null, null);
+      return;
+    }
+    if (loadingCustomers) return;
+    const allowedCustomerIds = new Set(customers.map((item) => item.record_id));
+    if (!allowedCustomerIds.has(selectedCustomerId)) {
+      clearCustomerUrlParams();
+      clearCurrentCustomerData();
+      return;
+    }
     void loadProfile(selectedCustomerId);
     void loadDocuments(selectedCustomerId);
     void loadExtractions(selectedCustomerId);
-  }, [selectedCustomerId, loadDocuments, loadExtractions, loadProfile]);
+  }, [
+    clearCurrentCustomerData,
+    clearCustomerUrlParams,
+    customers,
+    loadingCustomers,
+    selectedCustomerId,
+    loadDocuments,
+    loadExtractions,
+    loadProfile,
+    setCurrentCustomer,
+  ]);
 
   const selectedCustomer = useMemo(
     () => customers.find((item) => item.record_id === selectedCustomerId) ?? null,
@@ -2685,7 +2749,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             type="button"
             onClick={() => {
               void loadCustomers();
-              if (selectedCustomerId) void loadProfile(selectedCustomerId);
             }}
             className="rounded-lg border border-slate-200 p-2 text-slate-500 transition-colors hover:bg-slate-50"
             aria-label="刷新"
