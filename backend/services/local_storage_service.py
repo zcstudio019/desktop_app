@@ -158,9 +158,22 @@ class LocalStorageService:
                     file_size INTEGER,
                     upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                     feishu_file_id VARCHAR(255),
+                    uploader VARCHAR(255) DEFAULT '',
                     FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
                 )
             ''')
+
+            for col_def in [
+                "uploader VARCHAR(255) DEFAULT ''",
+            ]:
+                try:
+                    col_name = col_def.split()[0]
+                    if self._column_exists(cursor, "documents", col_name):
+                        continue
+                    cursor.execute(f"ALTER TABLE documents ADD COLUMN {col_def}")
+                    logger.info(f"[Migration] Added column {col_name} to documents")
+                except sqlite3.OperationalError:
+                    pass
 
             # 创建 extractions 表
             cursor.execute('''
@@ -596,8 +609,8 @@ class LocalStorageService:
         try:
             cursor.execute('''
                 INSERT OR REPLACE INTO documents (
-                    doc_id, customer_id, file_name, file_path, file_type, file_size, upload_time
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    doc_id, customer_id, file_name, file_path, file_type, file_size, upload_time, uploader
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 doc_data['doc_id'],
                 doc_data['customer_id'],
@@ -605,7 +618,8 @@ class LocalStorageService:
                 doc_data['file_path'],
                 doc_data['file_type'],
                 doc_data.get('file_size'),
-                doc_data.get('upload_time') or 'CURRENT_TIMESTAMP'
+                doc_data.get('upload_time') or 'CURRENT_TIMESTAMP',
+                doc_data.get('uploader') or '',
             ))
             conn.commit()
             return doc_data
@@ -673,6 +687,26 @@ class LocalStorageService:
             return [self._row_to_document(row) for row in rows]
         except sqlite3.Error as e:
             raise RuntimeError(f"查询文档列表失败: {e}") from e
+        finally:
+            conn.close()
+
+    async def customer_has_document_uploader(self, customer_id: str, username: str) -> bool:
+        if not customer_id or not username:
+            return False
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            if not self._column_exists(cursor, "documents", "uploader"):
+                return False
+            cursor.execute(
+                "SELECT 1 FROM documents WHERE customer_id = ? AND uploader = ? LIMIT 1",
+                (customer_id, username),
+            )
+            return cursor.fetchone() is not None
+        except sqlite3.Error as e:
+            raise RuntimeError(f"查询文档上传人权限失败: {e}") from e
         finally:
             conn.close()
 
@@ -1232,6 +1266,7 @@ class LocalStorageService:
             dict: 客户数据字典
         """
         result = {
+            'id': row[0],
             'customer_id': row[1],
             'name': row[2],
             'phone': row[3],
@@ -1248,6 +1283,9 @@ class LocalStorageService:
         # ALTER TABLE 迁移后新增的列（row[13], row[14], row[15]）
         if len(row) > 13:
             result['uploader'] = row[13] or ''
+            result['owner'] = row[13] or ''
+            result['created_by'] = row[13] or ''
+            result['username'] = row[13] or ''
         if len(row) > 14:
             result['upload_time'] = row[14] or ''
         if len(row) > 15:
@@ -1271,7 +1309,8 @@ class LocalStorageService:
             'file_path': row[4],
             'file_type': row[5],
             'file_size': row[6],
-            'upload_time': row[7]
+            'upload_time': row[7],
+            'uploader': row[9] if len(row) > 9 else '',
         }
 
     def _row_to_extraction(self, row: tuple) -> dict:

@@ -2020,6 +2020,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const highlightDocId = urlParams.get('highlight_doc_id') || '';
   const highlightDocumentType = urlParams.get('highlight_document_type') || '';
   const highlightFileName = urlParams.get('highlight_file_name') || '';
+  const currentAuthUsername = useMemo(() => localStorage.getItem('auth_username') || '', []);
+  const currentAuthRole = useMemo(() => localStorage.getItem('auth_role') || '', []);
 
   const clearCustomerUrlParams = useCallback(() => {
     const url = new URL(window.location.href);
@@ -2045,9 +2047,25 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setError(null);
     try {
       const items = await listCustomers();
-      const allowedCustomerIds = new Set(items.map((item) => item.record_id).filter(Boolean));
+      const visibleItems =
+        currentAuthRole === 'admin'
+          ? items
+          : items.filter((item) => {
+              const uploader = (item.uploader || '').trim();
+              const allowed = Boolean(uploader) && uploader === currentAuthUsername;
+              if (!allowed) {
+                console.warn('[Customer Access] filtered unauthorized customer from list', {
+                  customerId: item.record_id,
+                  name: item.name,
+                  uploader,
+                  currentUser: currentAuthUsername,
+                });
+              }
+              return allowed;
+            });
+      const allowedCustomerIds = new Set(visibleItems.map((item) => item.record_id).filter(Boolean));
       const urlCustomerId = customerIdFromUrl.trim();
-      setCustomers(items);
+      setCustomers(visibleItems);
 
       if (urlCustomerId && !allowedCustomerIds.has(urlCustomerId)) {
         clearCustomerUrlParams();
@@ -2059,13 +2077,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
         if (urlCustomerId) {
           return urlCustomerId;
         }
-        if (current && items.some((item) => item.record_id === current)) {
+        if (current && visibleItems.some((item) => item.record_id === current)) {
           return current;
         }
         if (current) {
           return null;
         }
-        return items[0]?.record_id || null;
+        return visibleItems[0]?.record_id || null;
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载客户列表失败');
@@ -2073,7 +2091,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     } finally {
       setLoadingCustomers(false);
     }
-  }, [clearCurrentCustomerData, clearCustomerUrlParams, customerIdFromUrl]);
+  }, [
+    clearCurrentCustomerData,
+    clearCustomerUrlParams,
+    currentAuthRole,
+    currentAuthUsername,
+    customerIdFromUrl,
+  ]);
 
   const loadProfile = useCallback(
     async (customerId: string) => {

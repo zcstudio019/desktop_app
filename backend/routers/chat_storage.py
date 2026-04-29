@@ -337,6 +337,7 @@ async def _save_doc_and_extraction(
     document_type: str,
     content: dict,
     file_bytes: bytes | None = None,
+    current_user: dict | None = None,
 ) -> tuple[str, str, bool]:
     """Save document metadata and extraction result to local storage."""
     doc_id = str(uuid.uuid4())
@@ -384,6 +385,7 @@ async def _save_doc_and_extraction(
         "file_path": file_path,
         "file_type": document_type_code,
         "file_size": file_size,
+        "uploader": (current_user.get("username") or "") if current_user else "",
     }
     await storage_service.save_document(doc_data)
     logger.info(
@@ -583,6 +585,7 @@ async def _save_to_local_storage(
                 document_type_code,
                 content,
                 file_bytes=file_bytes,
+                current_user=current_user,
             )
             logger.info("[Local Save] MERGED into %s: %s", target_customer_id, chat_file_name)
             return (True, extraction_id, None, [], target_customer_id, doc_id, original_available)
@@ -606,6 +609,7 @@ async def _save_to_local_storage(
             document_type_code,
             content,
             file_bytes=file_bytes,
+            current_user=current_user,
         )
         logger.info("[Local Save] SUCCESS: %s -> extraction_id=%s", chat_file_name, extraction_id)
         return (True, extraction_id, None, [], customer_id, doc_id, original_available)

@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, desc, select, update
+from sqlalchemy import delete, desc, inspect, select, text, update
 from sqlalchemy.exc import DataError, SQLAlchemyError
 
 from backend.database import Base, SessionLocal, engine
@@ -111,6 +111,20 @@ class SQLAlchemyStorageService:
             ],
             checkfirst=True,
         )
+        self._ensure_document_owner_columns()
+
+    def _ensure_document_owner_columns(self) -> None:
+        try:
+            inspector = inspect(engine)
+            document_columns = {column["name"] for column in inspector.get_columns("documents")}
+            if "uploader" in document_columns:
+                return
+            ddl = "ALTER TABLE documents ADD COLUMN uploader VARCHAR(255) DEFAULT ''"
+            with engine.begin() as conn:
+                conn.execute(text(ddl))
+            logger.info("[Migration] Added column uploader to documents")
+        except Exception as exc:
+            logger.warning("[Migration] Failed to ensure documents.uploader column: %s", exc)
 
     def _sanitize_text_for_mysql(
         self,
@@ -389,6 +403,7 @@ class SQLAlchemyStorageService:
 
     def _row_to_customer(self, row: Customer) -> dict[str, Any]:
         return {
+            "id": row.id,
             "customer_id": row.customer_id,
             "name": row.name or "",
             "phone": row.phone or "",
@@ -402,6 +417,9 @@ class SQLAlchemyStorageService:
             "created_at": row.created_at.isoformat() if row.created_at else "",
             "updated_at": row.updated_at.isoformat() if row.updated_at else "",
             "uploader": row.uploader or "",
+            "owner": row.uploader or "",
+            "created_by": row.uploader or "",
+            "username": row.uploader or "",
             "upload_time": row.upload_time or "",
             "customer_type": row.customer_type or "enterprise",
         }
@@ -416,6 +434,7 @@ class SQLAlchemyStorageService:
             "file_size": row.file_size or 0,
             "upload_time": row.upload_time.isoformat() if row.upload_time else "",
             "feishu_file_id": row.feishu_file_id or "",
+            "uploader": row.uploader or "",
         }
 
     def _row_to_extraction(self, row: Extraction) -> dict[str, Any]:
@@ -591,6 +610,18 @@ class SQLAlchemyStorageService:
         with self._session_factory() as db:
             rows = db.execute(select(Customer).order_by(desc(Customer.updated_at), desc(Customer.id))).scalars().all()
             return [self._row_to_customer(row) for row in rows]
+
+    async def customer_has_document_uploader(self, customer_id: str, username: str) -> bool:
+        if not customer_id or not username:
+            return False
+        with self._session_factory() as db:
+            row = db.execute(
+                select(Document.id)
+                .where(Document.customer_id == customer_id)
+                .where(Document.uploader == username)
+                .limit(1)
+            ).first()
+            return row is not None
 
     async def delete_customer(self, customer_id: str) -> bool:
         with self._session_factory() as db:

@@ -363,9 +363,50 @@ def _can_access_local_customer(customer: dict[str, Any], current_user: dict) -> 
     return _has_direct_local_customer_access(customer, current_user)
 
 
+async def _has_uploaded_document_access(customer_id: str, current_user: dict) -> bool:
+    if _is_admin(current_user):
+        return True
+    username = _get_username(current_user)
+    if not customer_id or not username:
+        return False
+    try:
+        checker = getattr(storage_service, "customer_has_document_uploader", None)
+        if callable(checker):
+            return bool(await checker(customer_id, username))
+        documents = await storage_service.list_documents(customer_id)
+    except Exception as exc:
+        logger.warning(
+            "[Customer Access] document uploader check failed customer_id=%s username=%s error=%s",
+            customer_id,
+            username,
+            exc,
+        )
+        return False
+    return any(str(document.get("uploader") or "") == username for document in documents)
+
+
+async def _can_access_local_customer_async(customer: dict[str, Any], current_user: dict) -> bool:
+    if _has_direct_local_customer_access(customer, current_user):
+        return True
+    return await _has_uploaded_document_access(str(customer.get("customer_id") or ""), current_user)
+
+
 async def _ensure_local_customer_access(customer: dict[str, Any], current_user: dict) -> None:
-    if not _can_access_local_customer(customer, current_user):
+    if not await _can_access_local_customer_async(customer, current_user):
         raise HTTPException(status_code=403, detail="无权查看该客户记录")
+
+
+def _customer_access_log_tuple(customer: dict[str, Any]) -> tuple[Any, Any, Any, Any, Any]:
+    owner = customer.get("owner") or customer.get("owner_username") or customer.get("uploader") or ""
+    created_by = customer.get("created_by") or customer.get("creator") or customer.get("uploader") or ""
+    username = customer.get("username") or customer.get("uploader") or ""
+    return (
+        customer.get("id") or customer.get("customer_id") or "",
+        customer.get("name") or "",
+        created_by,
+        owner,
+        username,
+    )
 
 
 def _resolve_document_absolute_path(file_path: str | None) -> Path | None:
@@ -585,8 +626,13 @@ async def _list_customers_local(
         customer_id = customer.get("customer_id") or ""
         created_at = customer.get("created_at") or ""
 
-        if not is_admin and not _can_access_local_customer(customer, current_user):
-            continue
+        has_document_uploader_access = False
+        if not is_admin:
+            has_direct_access = _has_direct_local_customer_access(customer, current_user)
+            if not has_direct_access:
+                has_document_uploader_access = await _has_uploaded_document_access(customer_id, current_user)
+                if not has_document_uploader_access:
+                    continue
 
         if search_text and search_text not in customer_name.lower():
             continue
@@ -599,7 +645,7 @@ async def _list_customers_local(
             CustomerListItem(
                 name=customer_name,
                 record_id=customer_id,
-                uploader=customer.get("uploader") or "",
+                uploader=customer.get("uploader") or (username if has_document_uploader_access else ""),
                 upload_time=customer.get("upload_time") or created_at,
                 customer_type=customer.get("customer_type") or "enterprise",
                 risk_level=latest_assessment.get("risk_level") or "",
@@ -607,6 +653,18 @@ async def _list_customers_local(
                 profile_version=(latest_report or {}).get("profile_version"),
             )
         )
+
+    returned_customer_ids = {item.record_id for item in result}
+    logger.info(
+        "[Customer Access] username=%s role=%s returned_customers=%s",
+        username,
+        current_user.get("role") or "",
+        [
+            _customer_access_log_tuple(customer)
+            for customer in customers
+            if is_admin or customer.get("customer_id") in returned_customer_ids
+        ],
+    )
 
     return result
 
@@ -781,7 +839,7 @@ async def get_customers_table(
     # 第一步：构建所有行的基础数据
     all_rows: list[dict] = []
     for c in customers:
-        if not is_admin and not _can_access_local_customer(c, current_user):
+        if not is_admin and not await _can_access_local_customer_async(c, current_user):
             continue
         customer_id = c.get("customer_id") or ""
         row: dict = {

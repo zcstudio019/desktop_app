@@ -41,6 +41,7 @@ class Document(Base):
     file_size = Column(Integer)
     upload_time = Column(DateTime, server_default=func.now(), nullable=False)
     feishu_file_id = Column(String(255))
+    uploader = Column(String(255), default="")
 
 
 class Extraction(Base):
