@@ -5382,6 +5382,123 @@ def _bank_statement_decimal(value: str) -> Decimal:
         return Decimal("0")
 
 
+def clean_account_no(value: str) -> str:
+    candidates = re.findall(r"\b\d{8,32}\b", str(value or ""))
+    return candidates[0] if candidates else ""
+
+
+def clean_currency(value: str) -> str:
+    source = str(value or "")
+    upper_source = source.upper()
+    if "人民币" in source or "CNY" in upper_source or "RMB" in upper_source:
+        return "人民币"
+    if "USD" in upper_source or "美元" in source:
+        return "USD"
+    if "HKD" in upper_source or "港币" in source:
+        return "HKD"
+    if "EUR" in upper_source or "欧元" in source:
+        return "EUR"
+    return ""
+
+
+def clean_amount(value: str) -> str:
+    amount = _bank_statement_amount(value)
+    return amount.replace(",", "") if amount else ""
+
+
+def clean_count(value: str) -> str:
+    match = re.search(r"\d{1,8}", str(value or ""))
+    return match.group(0) if match else ""
+
+
+def clean_customer_name(value: str) -> str:
+    source = str(value or "")
+    source = re.sub(r"\b\d{8,32}\b", " ", source)
+    source = re.sub(r"[+-]?\d[\d,]*(?:\.\d+)?", " ", source)
+    source = re.sub(r"(客户名称|客户名|账户名称|户名|单位名称|开户行|开户银行|账号|账户号码|币种|人民币|CNY|RMB)", " ", source, flags=re.I)
+    source = re.sub(r"(交易流水号|交易时间|记账日期|交易方向|交易金额|对手账号|对手名称|摘要|交易用途|备注)", " ", source)
+    matches = re.findall(r"[\u4e00-\u9fffA-Za-z（）()·]{2,80}?(?:有限责任公司|股份有限公司|有限公司)", source)
+    cleaned = [re.sub(r"\s+", "", item).strip("：:，,。；; ") for item in matches]
+    cleaned = [item for item in cleaned if item and "银行" not in item]
+    return max(cleaned, key=len) if cleaned else ""
+
+
+def clean_bank_branch(value: str) -> str:
+    source = str(value or "")
+    source = re.sub(r"\b\d{8,32}\b", " ", source)
+    source = re.sub(r"(客户名称|客户名|账户名称|户名|单位名称|开户行|开户银行|账号|账户号码|币种|人民币|CNY|RMB)", " ", source, flags=re.I)
+    source = re.sub(r"[\u4e00-\u9fffA-Za-z（）()·]{2,80}?(?:有限责任公司|股份有限公司|有限公司)", " ", source)
+    candidates = re.findall(r"[\u4e00-\u9fffA-Za-z]{2,50}?银行[\u4e00-\u9fffA-Za-z]{0,40}?(?:支行|分行|营业部|营业室|分理处)", source)
+    if not candidates:
+        candidates = re.findall(r"[\u4e00-\u9fffA-Za-z]{2,50}?银行[\u4e00-\u9fffA-Za-z]{0,40}", source)
+    cleaned = [re.sub(r"\s+", "", item).strip("：:，,。；; ") for item in candidates]
+    if not cleaned:
+        return ""
+    best = max(cleaned, key=len)
+    for suffix in ("营业部", "营业室", "分理处"):
+        if f"{best}{suffix}" in re.sub(r"\s+", "", source):
+            best = f"{best}{suffix}"
+    return best
+
+
+def _bank_statement_account_region(lines: list[str]) -> list[str]:
+    region: list[str] = []
+    stop_keywords = ("交易流水号", "交易时间", "交易方向", "交易金额", "对手账号", "对手名称", "摘要", "交易用途")
+    for line in lines[:100]:
+        if any(keyword in line for keyword in stop_keywords):
+            break
+        region.append(line)
+    return region or _header_search_region(lines, limit=40)
+
+
+def _bank_statement_labeled_value(lines: list[str], labels: tuple[str, ...], *, scan_lines: int = 3) -> str:
+    for index, line in enumerate(lines):
+        if not any(label in line for label in labels):
+            continue
+        for label in labels:
+            if label not in line:
+                continue
+            after = line.split(label, 1)[-1].strip(" ：:")
+            candidates = [after]
+            candidates.extend(lines[index + 1:index + 1 + scan_lines])
+            return " ".join(str(item or "").strip() for item in candidates if str(item or "").strip())
+    return ""
+
+
+def _bank_statement_customer_name(lines: list[str], fallback_text: str) -> str:
+    labeled = _bank_statement_labeled_value(lines, ("客户名称", "客户名", "账户名称", "户名", "单位名称"), scan_lines=4)
+    candidate = clean_customer_name(labeled)
+    if candidate:
+        return candidate
+    account_text = "\n".join(lines)
+    after_currency = re.search(r"(?:人民币|CNY|RMB)\s*([\u4e00-\u9fffA-Za-z（）()·]{2,80}?(?:有限责任公司|股份有限公司|有限公司))", account_text, flags=re.I)
+    if after_currency:
+        candidate = clean_customer_name(after_currency.group(1))
+        if candidate:
+            return candidate
+    for line in lines:
+        if _contains_transaction_row(line):
+            continue
+        candidate = clean_customer_name(line)
+        if candidate:
+            return candidate
+    return clean_customer_name(fallback_text)
+
+
+def _bank_statement_summary_count(text: str, side: str) -> str:
+    source = str(text or "")
+    patterns = [
+        rf"{side}总笔数\s*[:：]?\s*(\d{{1,8}})",
+        rf"{side}笔数\s*[:：]?\s*(\d{{1,8}})",
+        rf"{side}.{{0,12}}总笔数.{{0,8}}?(\d{{1,8}})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, source)
+        if match:
+            return clean_count(match.group(1))
+    return ""
+
+
 def _bank_statement_label_value(text: str, labels: tuple[str, ...], *, amount: bool = False, count: bool = False) -> str:
     source = str(text or "")
     escaped = "|".join(re.escape(label) for label in labels)
@@ -5398,9 +5515,9 @@ def _bank_statement_label_value(text: str, labels: tuple[str, ...], *, amount: b
         return ""
     value = str(match.group(1) or "").strip()
     if amount:
-        return _bank_statement_amount(value)
+        return clean_amount(value)
     if count:
-        return only_digits(value)
+        return clean_count(value)
     return value.strip(" ：:；;，,。")
 
 
@@ -5492,40 +5609,76 @@ def extract_bank_statement_pdf_fields(text: str) -> dict[str, Any]:
     """Parse bank statement PDF/OCR text into account summary and transaction rows."""
     source = str(text or "")
     lines = [str(line or "").strip() for line in source.splitlines() if str(line or "").strip()]
-    header_text = "\n".join(_header_search_region(lines, limit=80)) or source[:3000]
+    account_lines = _bank_statement_account_region(lines)
+    header_text = "\n".join(account_lines) or source[:3000]
+    logger.info("[bank_statement] account_info_raw=%s", header_text[:1000])
 
     split_result = _split_header_line(header_text)
     start_date, end_date = _extract_date_range_from_text(header_text or source)
+    if not start_date or not end_date:
+        range_match = re.search(
+            r"((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\s*(?:至|到|~|—|-)\s*((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})",
+            header_text or source,
+        )
+        if range_match:
+            start_date = start_date or _bank_statement_date(range_match.group(1))
+            end_date = end_date or _bank_statement_date(range_match.group(2))
     if not start_date or not end_date:
         month_start, month_end = _bank_statement_month_range(header_text or source)
         start_date = start_date or month_start
         end_date = end_date or month_end
 
-    account_number = split_result["account_number"] or _find_longest_digits(header_text or source, min_length=8)
-    account_name = (
-        _bank_statement_label_value(header_text, ("客户名称", "客户名", "账户名称", "户名"))
-        or split_result["account_name"]
-        or _extract_longest_company_name(header_text or source[:3000])
+    account_number = clean_account_no(
+        split_result["account_number"]
+        or _bank_statement_labeled_value(account_lines, ("账号", "账户号码", "选择账号"), scan_lines=2)
+        or _find_longest_digits(header_text or source, min_length=8)
     )
-    bank_branch = (
-        _bank_statement_label_value(header_text, ("开户行", "开户银行"))
+    account_name = _bank_statement_customer_name(account_lines, header_text)
+    bank_branch = clean_bank_branch(
+        _bank_statement_labeled_value(account_lines, ("开户行", "开户银行"), scan_lines=4)
         or split_result["bank_name"]
-        or _extract_longest_bank_name(header_text or source[:3000])
+        or _extract_longest_bank_name(header_text)
     )
     bank_name = "上海银行" if "上海银行" in bank_branch else bank_branch
-    currency = _bank_statement_label_value(header_text, ("币种",)) or split_result["currency"] or _extract_currency_from_text(header_text)
+    currency = clean_currency(
+        _bank_statement_labeled_value(account_lines, ("币种",), scan_lines=3)
+        or split_result["currency"]
+        or _extract_currency_from_text(header_text)
+    )
 
-    debit_count = _bank_statement_label_value(source, ("借方总笔数", "借方笔数"), count=True)
+    debit_count = _bank_statement_summary_count(source, "借方") or _bank_statement_label_value(source, ("借方总笔数", "借方笔数"), count=True)
     debit_total = _bank_statement_label_value(source, ("借方总金额", "借方金额合计"), amount=True)
-    credit_count = _bank_statement_label_value(source, ("贷方总笔数", "贷方笔数"), count=True)
+    credit_count = _bank_statement_summary_count(source, "贷方") or _bank_statement_label_value(source, ("贷方总笔数", "贷方笔数"), count=True)
     credit_total = _bank_statement_label_value(source, ("贷方总金额", "贷方金额合计"), amount=True)
     total_count = _bank_statement_total_count(source) or _bank_statement_label_value(source, ("交易总笔数", "明细笔数"), count=True)
+    if not total_count and debit_count and credit_count:
+        total_count = str(int(debit_count) + int(credit_count))
 
     transactions = _extract_bank_statement_transactions(source)
     if not total_count and transactions:
         total_count = str(len(transactions))
     first_transaction_date = transactions[0]["book_date"] if transactions else ""
     last_transaction_date = transactions[-1]["book_date"] if transactions else ""
+    logger.info(
+        "[bank_statement] account_info_cleaned=%s",
+        {
+            "customer_name": account_name,
+            "bank_branch": bank_branch,
+            "account_number": account_number,
+            "currency": currency,
+            "date_range": f"{start_date} 至 {end_date}" if start_date and end_date else "",
+        },
+    )
+    logger.info(
+        "[bank_statement] summary_cleaned=%s",
+        {
+            "debit_total_amount": debit_total,
+            "credit_total_amount": credit_total,
+            "debit_transaction_count": debit_count,
+            "credit_transaction_count": credit_count,
+            "total_transaction_count": total_count,
+        },
+    )
 
     return {
         "document_type_code": "bank_statement",
