@@ -10,6 +10,7 @@ Endpoints:
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 import sys
@@ -105,7 +106,7 @@ async def _build_customer_risk_report_payload(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="鏈壘鍒拌瀹㈡埛璁板綍")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     previous_report = await storage_service.get_latest_customer_risk_report(customer_id)
     result = await risk_assessment_service.generate_report(storage_service, customer_id)
@@ -342,16 +343,69 @@ def _get_username(current_user: dict) -> str:
     return str(current_user.get("username") or "")
 
 
-def _can_access_local_customer(customer: dict[str, Any], current_user: dict) -> bool:
+def _has_direct_local_customer_access(customer: dict[str, Any], current_user: dict) -> bool:
     if _is_admin(current_user):
         return True
-    uploader = str(customer.get("uploader") or "")
     username = _get_username(current_user)
-    return bool(username) and uploader == username
+    if not username:
+        return False
+    owner_values = (
+        customer.get("uploader"),
+        customer.get("owner"),
+        customer.get("owner_username"),
+        customer.get("creator"),
+        customer.get("created_by"),
+        customer.get("username"),
+    )
+    return any(str(value or "") == username for value in owner_values)
 
 
-def _ensure_local_customer_access(customer: dict[str, Any], current_user: dict) -> None:
-    if not _can_access_local_customer(customer, current_user):
+def _job_payload_customer_ids(job: dict[str, Any]) -> set[str]:
+    result = job.get("result_json") if isinstance(job.get("result_json"), dict) else {}
+    request = job.get("request_json") if isinstance(job.get("request_json"), dict) else {}
+    execution = job.get("execution_payload_json") if isinstance(job.get("execution_payload_json"), dict) else {}
+    payloads = (job, result, request, execution)
+    keys = ("customer_id", "customerId", "resolvedCustomerId", "resolved_customer_id")
+    return {
+        str(payload.get(key) or "").strip()
+        for payload in payloads
+        if isinstance(payload, dict)
+        for key in keys
+        if str(payload.get(key) or "").strip()
+    }
+
+
+async def _has_upload_job_access(customer_id: str, current_user: dict) -> bool:
+    username = _get_username(current_user)
+    if not customer_id or not username or not hasattr(storage_service, "list_async_jobs"):
+        return False
+    try:
+        jobs = await storage_service.list_async_jobs(username, limit=100)
+    except Exception as exc:
+        logger.warning("Failed to inspect async jobs for customer access customer_id=%s username=%s: %s", customer_id, username, exc)
+        return False
+    for job in jobs:
+        if customer_id in _job_payload_customer_ids(job):
+            return True
+    return False
+
+
+async def _can_access_local_customer(customer: dict[str, Any], current_user: dict) -> bool:
+    if _has_direct_local_customer_access(customer, current_user):
+        return True
+    customer_id = str(customer.get("customer_id") or "")
+    if await _has_upload_job_access(customer_id, current_user):
+        username = _get_username(current_user)
+        if username:
+            with contextlib.suppress(Exception):
+                await storage_service.update_customer(customer_id, {"uploader": username})
+            customer["uploader"] = username
+        return True
+    return False
+
+
+async def _ensure_local_customer_access(customer: dict[str, Any], current_user: dict) -> None:
+    if not await _can_access_local_customer(customer, current_user):
         raise HTTPException(status_code=403, detail="无权查看该客户记录")
 
 
@@ -520,7 +574,7 @@ async def _load_accessible_document(doc_id: str, current_user: dict) -> tuple[di
     customer = await storage_service.get_customer(customer_id) if customer_id else None
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该资料所属客户")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
     return document, customer
 
 
@@ -572,7 +626,7 @@ async def _list_customers_local(
         customer_id = customer.get("customer_id") or ""
         created_at = customer.get("created_at") or ""
 
-        if not is_admin and (customer.get("uploader") or "") != username:
+        if not is_admin and not await _can_access_local_customer(customer, current_user):
             continue
 
         if search_text and search_text not in customer_name.lower():
@@ -768,7 +822,7 @@ async def get_customers_table(
     # 第一步：构建所有行的基础数据
     all_rows: list[dict] = []
     for c in customers:
-        if not is_admin and (c.get("uploader") or "") != username:
+        if not is_admin and not await _can_access_local_customer(c, current_user):
             continue
         customer_id = c.get("customer_id") or ""
         row: dict = {
@@ -894,7 +948,7 @@ async def _get_customer_detail_local(
 
     customer_name = customer.get("name") or "未命名客户"
     created_at = customer.get("created_at") or ""
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     # 获取该客户的所有提取结果
     all_fields: dict[str, Any] = {}
@@ -1035,7 +1089,7 @@ async def get_customer_profile_markdown(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         profile, auto_generated = await get_or_create_customer_profile(storage_service, customer_id)
@@ -1061,7 +1115,7 @@ async def update_customer_profile_markdown(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         profile = await storage_service.upsert_customer_profile(
@@ -1112,7 +1166,7 @@ async def delete_customer_profile_markdown(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         await storage_service.delete_customer_profile(customer_id)
@@ -1152,7 +1206,7 @@ async def customer_rag_chat(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     question = (body.question or "").strip()
     if not question:
@@ -1201,7 +1255,7 @@ async def create_customer_risk_report_job(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="鏈壘鍒拌瀹㈡埛璁板綍")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     job_id = uuid.uuid4().hex
     request_payload = {
@@ -1286,7 +1340,7 @@ async def get_customer_risk_report_history(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         items = await storage_service.list_customer_risk_reports(customer_id, limit=limit)
@@ -1341,7 +1395,7 @@ async def get_customer_extractions(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         extractions = await storage_service.get_extractions_by_customer(customer_id)
@@ -1388,7 +1442,7 @@ async def get_customer_documents(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         documents = await storage_service.list_documents(customer_id)
@@ -1542,7 +1596,7 @@ async def update_customer_field(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         updated = await storage_service.update_customer(customer_id, {body.field: body.value})
@@ -1583,7 +1637,7 @@ async def update_customer_extraction(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     extraction = await storage_service.get_extraction(extraction_id)
     if not extraction or extraction.get("customer_id") != customer_id:
@@ -1615,7 +1669,7 @@ async def delete_customer(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         deleted = await storage_service.delete_customer(customer_id)
@@ -1642,7 +1696,7 @@ async def delete_customer_document(
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
-    _ensure_local_customer_access(customer, current_user)
+    await _ensure_local_customer_access(customer, current_user)
 
     try:
         document = await storage_service.get_document(doc_id)

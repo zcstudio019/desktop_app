@@ -381,6 +381,7 @@ function buildCustomerDataPath(
   },
 ): string {
   const params = new URLSearchParams();
+  params.set('customerId', customerId);
   params.set('customer_id', customerId);
   if (options?.highlightDocId) {
     params.set('highlight_doc_id', options.highlightDocId);
@@ -392,7 +393,7 @@ function buildCustomerDataPath(
       params.set('highlight_file_name', options.highlightFileName);
     }
   }
-  return `/data?${params.toString()}`;
+  return `/customer-data?${params.toString()}`;
 }
 
 function clickExistingNavigation(page: 'data'): boolean {
