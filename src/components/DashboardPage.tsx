@@ -32,6 +32,36 @@ export interface DashboardPageProps {
   onNavigate: (page: PageType) => void;
 }
 
+const CUSTOMER_CONTEXT_PAGES = new Set<PageType>(['upload', 'application', 'scheme', 'data']);
+
+function buildDashboardPagePath(page: PageType, customerId?: string | null, customerName?: string | null): string {
+  const pathnameMap: Record<PageType, string> = {
+    dashboard: '/',
+    customers: '/customers',
+    upload: '/upload',
+    application: '/application',
+    scheme: '/scheme',
+    chat: '/chat',
+    data: '/data',
+    admin: '/admin',
+  };
+
+  const pathname = pathnameMap[page] || '/';
+  if (!CUSTOMER_CONTEXT_PAGES.has(page) || !customerId?.trim()) {
+    return pathname;
+  }
+
+  const params = new URLSearchParams();
+  params.set('customer_id', customerId.trim());
+  params.set('customerId', customerId.trim());
+  if (customerName?.trim()) {
+    params.set('customerName', customerName.trim());
+  }
+
+  const query = params.toString();
+  return `${pathname}${query ? `?${query}` : ''}`;
+}
+
 interface StatCardConfig {
   id: 'totalCustomers' | 'todayUploads' | 'pendingMaterialCustomers' | 'reportedCustomers';
   icon: LucideIcon;
@@ -394,19 +424,47 @@ function ActivityRow({
   const action = getActivityAction(activity);
   const secondaryAction = getSecondaryAction(activity);
   const customerLabel = formatDashboardCustomerLabel(activity.customerName, activity.customerId);
+  const persistCustomerContext = () => {
+    const nextCustomerId = activity.customerId?.trim() || '';
+    const nextCustomerName = (activity.customerName || customerLabel || '').trim();
+    if (nextCustomerId) {
+      window.localStorage.setItem('currentCustomerId', nextCustomerId);
+      window.sessionStorage.setItem('currentCustomerId', nextCustomerId);
+    }
+    if (nextCustomerName) {
+      window.localStorage.setItem('currentCustomerName', nextCustomerName);
+      window.sessionStorage.setItem('currentCustomerName', nextCustomerName);
+    }
+  };
   const handleActionClick = () => {
     if (activity.customerName || activity.customerId) {
       onSelectCustomer(activity.customerName || null, activity.customerId || null);
+      persistCustomerContext();
     }
     if (action) {
+      if (activity.customerId && CUSTOMER_CONTEXT_PAGES.has(action.page)) {
+        window.history.pushState(
+          {},
+          '',
+          buildDashboardPagePath(action.page, activity.customerId, activity.customerName || customerLabel),
+        );
+      }
       onNavigate(action.page);
     }
   };
   const handleSecondaryActionClick = () => {
     if (activity.customerName || activity.customerId) {
       onSelectCustomer(activity.customerName || null, activity.customerId || null);
+      persistCustomerContext();
     }
     if (secondaryAction) {
+      if (activity.customerId && CUSTOMER_CONTEXT_PAGES.has(secondaryAction.page)) {
+        window.history.pushState(
+          {},
+          '',
+          buildDashboardPagePath(secondaryAction.page, activity.customerId, activity.customerName || customerLabel),
+        );
+      }
       onNavigate(secondaryAction.page);
     }
   };
@@ -425,6 +483,14 @@ function ActivityRow({
                 type="button"
                 onClick={() => {
                   onSelectCustomer(activity.customerName || null, activity.customerId || null);
+                  persistCustomerContext();
+                  if (activity.customerId) {
+                    window.history.pushState(
+                      {},
+                      '',
+                      buildDashboardPagePath('data', activity.customerId, activity.customerName || customerLabel),
+                    );
+                  }
                   onNavigate('data');
                 }}
                 className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"

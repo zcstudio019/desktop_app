@@ -22,6 +22,76 @@ const CUSTOMER_CONTEXT_STORAGE_KEYS = [
   'customerProfileMarkdown',
 ];
 
+const PAGE_PATH_MAP: Record<PageType, string> = {
+  dashboard: '/',
+  customers: '/customers',
+  upload: '/upload',
+  application: '/application',
+  scheme: '/scheme',
+  chat: '/chat',
+  data: '/data',
+  admin: '/admin',
+};
+
+const CUSTOMER_CONTEXT_PAGES = new Set<PageType>(['upload', 'application', 'scheme', 'data']);
+
+function readPersistedCustomerContext(): { customerId: string; customerName: string } {
+  let customerId =
+    localStorage.getItem('currentCustomerId') ||
+    sessionStorage.getItem('currentCustomerId') ||
+    '';
+  let customerName =
+    localStorage.getItem('currentCustomerName') ||
+    sessionStorage.getItem('currentCustomerName') ||
+    '';
+
+  if (!customerId || !customerName) {
+    try {
+      const raw = localStorage.getItem('loan-assistant-app-state');
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          extraction?: {
+            currentCustomerId?: string | null;
+            currentCustomer?: string | null;
+          };
+        };
+        customerId = customerId || parsed.extraction?.currentCustomerId || '';
+        customerName = customerName || parsed.extraction?.currentCustomer || '';
+      }
+    } catch {
+      // Ignore malformed persisted state and continue with direct storage keys.
+    }
+  }
+
+  return {
+    customerId: customerId.trim(),
+    customerName: customerName.trim(),
+  };
+}
+
+function syncNavigationUrl(page: PageType): void {
+  if (typeof window === 'undefined') return;
+
+  const pathname = PAGE_PATH_MAP[page];
+  if (!pathname) return;
+
+  const nextParams = new URLSearchParams();
+  if (CUSTOMER_CONTEXT_PAGES.has(page)) {
+    const { customerId, customerName } = readPersistedCustomerContext();
+    if (customerId) {
+      nextParams.set('customer_id', customerId);
+      nextParams.set('customerId', customerId);
+    }
+    if (customerName) {
+      nextParams.set('customerName', customerName);
+    }
+  }
+
+  const query = nextParams.toString();
+  const nextUrl = `${pathname}${query ? `?${query}` : ''}`;
+  window.history.pushState({}, '', nextUrl);
+}
+
 function clearCustomerContextStorage(): void {
   CUSTOMER_CONTEXT_STORAGE_KEYS.forEach((key) => {
     localStorage.removeItem(key);
@@ -168,6 +238,7 @@ const App: React.FC = () => {
         setCurrentPage('dashboard');
         return;
       }
+      syncNavigationUrl(normalizedPage as PageType);
       setCurrentPage(normalizedPage as PageType);
     },
     [role]
@@ -176,7 +247,7 @@ const App: React.FC = () => {
   const renderPage = (): ReactNode => {
     switch (currentPage) {
       case 'dashboard':
-        return <DashboardPage onNavigate={setCurrentPage} />;
+        return <DashboardPage onNavigate={handleNavigate} />;
       case 'customers':
         return <CustomerListPage userRole={role} username={username} />;
       case 'data':
@@ -190,9 +261,9 @@ const App: React.FC = () => {
       case 'chat':
         return <ChatPage onNavigate={handleNavigate} />;
       case 'admin':
-        return role === 'admin' ? <AdminUsersPage currentUsername={username} /> : <DashboardPage onNavigate={setCurrentPage} />;
+        return role === 'admin' ? <AdminUsersPage currentUsername={username} /> : <DashboardPage onNavigate={handleNavigate} />;
       default:
-        return <DashboardPage onNavigate={setCurrentPage} />;
+        return <DashboardPage onNavigate={handleNavigate} />;
     }
   };
 

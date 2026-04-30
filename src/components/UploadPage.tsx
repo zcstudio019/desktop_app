@@ -751,6 +751,7 @@ const UploadPage: React.FC = () => {
   const [autoRedirectMessage, setAutoRedirectMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const customerSelectRef = useRef<HTMLSelectElement>(null);
   const processingRef = useRef(false);
   const redirectedBatchIdsRef = useRef<Set<string>>(new Set());
   // Ref to track if recovery is in progress
@@ -759,6 +760,16 @@ const UploadPage: React.FC = () => {
 
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const customerIdFromUrl = urlParams.get('customer_id') || urlParams.get('customerId') || '';
+  const persistedCustomerId =
+    (typeof window !== 'undefined'
+      ? window.localStorage.getItem('currentCustomerId') || window.sessionStorage.getItem('currentCustomerId') || ''
+      : ''
+    ).trim();
+  const persistedCustomerName =
+    (typeof window !== 'undefined'
+      ? window.localStorage.getItem('currentCustomerName') || window.sessionStorage.getItem('currentCustomerName') || ''
+      : ''
+    ).trim();
   const missingTypes = useMemo(() => {
     const missingParam = urlParams.get('missing') || '';
     return missingParam
@@ -857,6 +868,29 @@ const UploadPage: React.FC = () => {
     () => FILE_TYPES.find((item) => item.id === selectedDocumentType) ?? FILE_TYPES[0],
     [selectedDocumentType]
   );
+  const resolvedCustomerId = useMemo(
+    () => (state.extraction.currentCustomerId || customerIdFromUrl || persistedCustomerId || '').trim(),
+    [customerIdFromUrl, persistedCustomerId, state.extraction.currentCustomerId],
+  );
+  const resolvedCustomerName = useMemo(() => {
+    const fromOptions = resolvedCustomerId
+      ? customerOptions.find((item) => item.record_id === resolvedCustomerId)?.name?.trim() || ''
+      : '';
+    return (
+      state.extraction.currentCustomer?.trim() ||
+      fromOptions ||
+      customerName.trim() ||
+      persistedCustomerName ||
+      ''
+    );
+  }, [
+    customerName,
+    customerOptions,
+    persistedCustomerName,
+    resolvedCustomerId,
+    state.extraction.currentCustomer,
+  ]);
+  const requiresCustomerSelection = !resolvedCustomerId;
   const navigateToCustomerData = useCallback(
     (highlightItem?: QueueItem | null) => {
       const result = highlightItem?.result;
@@ -949,12 +983,12 @@ const UploadPage: React.FC = () => {
     ));
 
     try {
-      const activeCustomerId = state.extraction.currentCustomerId ?? customerIdFromUrl ?? null;
+      const activeCustomerId = resolvedCustomerId || null;
       const customerFromOptions = activeCustomerId
         ? customerOptions.find((item) => item.record_id === activeCustomerId)?.name ?? ''
         : '';
       const activeCustomerName = activeCustomerId
-        ? state.extraction.currentCustomer ?? customerFromOptions ?? customerName ?? ''
+        ? state.extraction.currentCustomer ?? customerFromOptions ?? customerName ?? persistedCustomerName ?? ''
         : '';
       const selectedCustomerName =
         activeCustomerName.trim() ||
@@ -1022,7 +1056,7 @@ const UploadPage: React.FC = () => {
       const backendResolvedCustomerId = extractionResult.resolvedCustomerId || extractionResult.customerId || null;
       const finalCustomerName =
         (activeCustomerName.trim() || customerNameOverride.trim() || backendResolvedCustomerName || '').trim();
-      const resolvedCustomerId = backendResolvedCustomerId ?? activeCustomerId;
+      const savedCustomerId = backendResolvedCustomerId ?? activeCustomerId;
       const autoArchiveMessage =
         !activeCustomerId && backendResolvedCustomerName
           ? `已自动归档到客户：${backendResolvedCustomerName}`
@@ -1030,13 +1064,13 @@ const UploadPage: React.FC = () => {
 
       // Use addCustomerData to group by customer name
       addCustomerData(finalCustomerName, extractionResult);
-      setCurrentCustomer(finalCustomerName || null, resolvedCustomerId);
+      setCurrentCustomer(finalCustomerName || null, savedCustomerId);
       if (!activeCustomerId && finalCustomerName) {
         setCustomerName(finalCustomerName);
       }
-      if (resolvedCustomerId) {
-        window.localStorage.setItem('currentCustomerId', resolvedCustomerId);
-        window.sessionStorage.setItem('currentCustomerId', resolvedCustomerId);
+      if (savedCustomerId) {
+        window.localStorage.setItem('currentCustomerId', savedCustomerId);
+        window.sessionStorage.setItem('currentCustomerId', savedCustomerId);
         if (finalCustomerName) {
           window.localStorage.setItem('currentCustomerName', finalCustomerName);
           window.sessionStorage.setItem('currentCustomerName', finalCustomerName);
@@ -1095,7 +1129,7 @@ const UploadPage: React.FC = () => {
           ? `${item.file.name} 已保存，${autoArchiveMessage}，并已自动更新资料汇总与问答索引。`
           : `${item.file.name} 已保存，并已自动更新资料汇总与问答索引。`,
         customerName: finalCustomerName,
-        customerId: resolvedCustomerId,
+        customerId: savedCustomerId,
         status: 'success',
       });
       if (
@@ -1150,7 +1184,7 @@ const UploadPage: React.FC = () => {
         q.id === item.id ? { ...q, status: 'error' as const, error: errorMessage } : q
       ));
     }
-  }, [addCustomerData, customerIdFromUrl, customerName, customerOptions, getSignal, recordSystemActivity, setApplicationResult, setCurrentCustomer, setSchemeResult, state.application.result, state.extraction.currentCustomer, state.extraction.currentCustomerId, state.scheme.result]);
+  }, [addCustomerData, customerIdFromUrl, customerName, customerOptions, getSignal, persistedCustomerName, recordSystemActivity, resolvedCustomerId, setApplicationResult, setCurrentCustomer, setSchemeResult, state.application.result, state.extraction.currentCustomer, state.extraction.currentCustomerId, state.scheme.result]);
 
   // Note: customerNameOverride is passed explicitly to avoid stale closure issues.
   const processQueue = useCallback(async (itemsToProcess?: QueueItem[], customerNameOverride?: string) => {
@@ -1170,6 +1204,10 @@ const UploadPage: React.FC = () => {
   }, [uploadQueue, execute, processQueueItem]);
 
   const addFilesToQueue = useCallback((files: FileList | File[]) => {
+    if (!resolvedCustomerId) {
+      alert('请先选择客户后再上传资料');
+      return;
+    }
     const fileArray = Array.from(files);
     const newItems: QueueItem[] = [];
     const nextBatchId = generateId();
@@ -1206,16 +1244,20 @@ const UploadPage: React.FC = () => {
       const currentCustomerName = customerName; // Capture the latest value before scheduling.
       setTimeout(() => processQueue(pendingNewItems, currentCustomerName), 100);
     }
-  }, [selectedDocumentType, selectedFileTypeConfig.acceptedExtensions, processQueue, customerName]);
+  }, [customerName, processQueue, resolvedCustomerId, selectedDocumentType, selectedFileTypeConfig.acceptedExtensions]);
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
+    if (requiresCustomerSelection) {
+      window.alert('请先选择客户后再上传资料');
+      return;
+    }
     if (e.dataTransfer.files.length > 0) {
       addFilesToQueue(e.dataTransfer.files);
     }
-  }, [addFilesToQueue]);
+  }, [addFilesToQueue, requiresCustomerSelection]);
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -1237,8 +1279,12 @@ const UploadPage: React.FC = () => {
   }, [addFilesToQueue]);
 
   const handleUploadClick = useCallback(() => {
+    if (!resolvedCustomerId) {
+      alert('请先选择客户后再上传资料');
+      return;
+    }
     fileInputRef.current?.click();
-  }, []);
+  }, [resolvedCustomerId]);
 
   const clearUploadUrlContext = useCallback(() => {
     const nextParams = new URLSearchParams(window.location.search);
@@ -1292,6 +1338,16 @@ const UploadPage: React.FC = () => {
     state.extraction.currentCustomer,
     state.extraction.currentCustomerId,
   ]);
+
+  useEffect(() => {
+    if (!requiresCustomerSelection || customersLoading) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      customerSelectRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [customersLoading, requiresCustomerSelection]);
 
   useEffect(() => {
     if (!activeBatchId || !activeBatchSummary) {
@@ -1382,9 +1438,14 @@ const UploadPage: React.FC = () => {
         </div>
         <div className="flex gap-3">
           <select
-            value={state.extraction.currentCustomerId || ''}
+            ref={customerSelectRef}
+            value={resolvedCustomerId || ''}
             onChange={(e) => handleCustomerSelect(e.target.value)}
-            className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[220px]"
+            className={`min-w-[220px] rounded-lg px-4 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 ${
+              requiresCustomerSelection
+                ? 'border-amber-300 bg-amber-50 focus:ring-amber-400'
+                : 'border-gray-200 bg-white focus:ring-blue-500'
+            }`}
           >
             <option value="">{customersLoading ? '加载客户中...' : '请选择客户'}</option>
             {customerOptions.map((customer) => (
@@ -1410,7 +1471,7 @@ const UploadPage: React.FC = () => {
             placeholder="输入客户名称（用于智能合并）"
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-48"
           />
-          {(state.extraction.currentCustomerId || customerName.trim()) && (
+          {(resolvedCustomerId || customerName.trim()) && (
             <button
               type="button"
               onClick={() => handleCustomerSelect('')}
@@ -1421,13 +1482,22 @@ const UploadPage: React.FC = () => {
           )}
           <button
             onClick={handleUploadClick}
-            disabled={isProcessing}
+            disabled={isProcessing || requiresCustomerSelection}
             className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isProcessing ? '资料处理中...' : '选择文件并开始处理'}
           </button>
         </div>
       </div>
+
+      {requiresCustomerSelection ? (
+        <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800 shadow-sm">
+          <div className="font-semibold">请先选择客户</div>
+          <div className="mt-1 leading-6">
+            当前上传资料页是独立页面，上传前需要先在顶部选择客户，系统才会把企业征信、流水等资料保存到正确的客户档案中。
+          </div>
+        </div>
+      ) : null}
 
       {missingTypeDisplayNames.length > 0 && (
         <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800 shadow-sm">
@@ -1439,15 +1509,15 @@ const UploadPage: React.FC = () => {
       )}
 
       <div className="mb-6 grid gap-4 md:grid-cols-3">
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className={`rounded-2xl bg-white p-4 shadow-sm ${requiresCustomerSelection ? 'border border-amber-200' : 'border border-slate-200'}`}>
           <div className="text-xs text-slate-500">当前客户上下文</div>
           <div className="mt-2 text-base font-semibold text-slate-800">
-            {state.extraction.currentCustomer || '未选择客户'}
+            {resolvedCustomerName || '未选择客户'}
           </div>
           <div className="mt-1 text-xs text-slate-400">
-            {state.extraction.currentCustomerId
-              ? '新上传资料会优先并入当前客户，并自动刷新资料汇总与问答索引'
-              : '未选择客户时，系统会尝试从资料中识别客户名称并自动建档'}
+            {resolvedCustomerId
+              ? '新上传资料会保存到当前客户，并自动刷新资料汇总与问答索引'
+              : '请先选择客户后再上传资料'}
           </div>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
