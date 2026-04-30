@@ -592,6 +592,57 @@ def _ocr_property_certificate_seal_region(file_bytes: bytes, file_type: str, fil
         return ""
 
 
+def _icbc_bank_statement_header_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[int, int, int, int]]]:
+    with Image.open(BytesIO(image_bytes)) as image:
+        width, height = image.size
+    return [
+        ("top_left_55_38", (0, 0, max(1, int(width * 0.55)), max(1, int(height * 0.38)))),
+        ("top_right_52_38", (max(0, int(width * 0.48)), 0, width, max(1, int(height * 0.38)))),
+        ("top_full_40", (0, 0, width, max(1, int(height * 0.40)))),
+    ]
+
+
+def _ocr_icbc_bank_statement_header_regions(file_bytes: bytes, file_type: str, filename: str) -> str:
+    logger.info("[bank_statement][icbc] start header-region extraction filename=%s file_type=%s", filename, file_type)
+    try:
+        if file_type == "pdf":
+            images = file_service.pdf_to_images(file_bytes)
+            if not images:
+                logger.warning("[bank_statement][icbc] header-region extraction skipped: no rendered PDF images filename=%s", filename)
+                return ""
+            source_image = images[0]
+        elif file_type == "image":
+            source_image = file_bytes
+        else:
+            return ""
+
+        ocr_parts: list[str] = []
+        for region_name, box in _icbc_bank_statement_header_crop_boxes(source_image):
+            try:
+                header_region = _crop_image_region(source_image, box)
+                for variant_name, variant_bytes in _build_seal_ocr_variants(header_region):
+                    if variant_name == "red_stamp_mask":
+                        continue
+                    compressed = file_service.compress_image(variant_bytes)
+                    header_text = ocr_service.recognize_image(compressed).strip()
+                    logger.info(
+                        "[bank_statement][icbc] header_region_ocr_text region=%s variant=%s text=%s",
+                        region_name,
+                        variant_name,
+                        header_text[:1000] or "(empty)",
+                    )
+                    if header_text:
+                        ocr_parts.append(header_text)
+            except OCRServiceError as exc:
+                logger.warning("[bank_statement][icbc] header-region OCR failed region=%s filename=%s error=%s", region_name, filename, exc)
+            except Exception as exc:  # pragma: no cover - best-effort per crop
+                logger.warning("[bank_statement][icbc] header-region crop/OCR failed region=%s filename=%s error=%s", region_name, filename, exc)
+        return "\n\n".join(ocr_parts)
+    except Exception as exc:  # pragma: no cover - best-effort OCR fallback
+        logger.warning("[bank_statement][icbc] header-region extraction failed filename=%s error=%s", filename, exc)
+        return ""
+
+
 async def _extract_content_from_file(
     file_bytes: bytes,
     file_type: str,
@@ -783,6 +834,22 @@ async def _process_file_bytes(
             raw_pages.append({"page": len(raw_pages) + 1, "text": seal_region_text})
     if progress_callback:
         await progress_callback("正在结构化提取")
+    if document_type_code == "bank_statement" and (
+        "工商银行" in filename
+        or "中国工商银行账户明细清单" in text_content
+        or "工商银行账户明细清单" in text_content
+    ):
+        header_region_text = _ocr_icbc_bank_statement_header_regions(file_bytes, file_type, filename)
+        if header_region_text:
+            text_content = f"--- ICBC Header OCR ---\n{header_region_text}\n\n{text_content}"
+            if raw_pages:
+                first_page = raw_pages[0]
+                raw_pages[0] = {
+                    "page": first_page.get("page", 1),
+                    "text": f"--- ICBC Header OCR ---\n{header_region_text}\n\n{str(first_page.get('text') or '')}",
+                }
+            else:
+                raw_pages.append({"page": 1, "text": header_region_text})
     return _extract_structured_data(
         text_content,
         document_type_code,

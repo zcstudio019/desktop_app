@@ -8556,6 +8556,223 @@ def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> d
     return _extract_hukou_fields(text)
 
 
+def extract_icbc_bank_statement_header(text: str) -> dict[str, str]:
+    """Late override for ICBC header parsing; handles dense OCR and split labels."""
+    source = str(text or "")
+    dense_source = re.sub(r"\s+", "", source)
+    logger.info("[bank_statement][icbc] raw_header_text=%s", source[:1500])
+
+    stop_labels = ("本方账号户名", "本方户名", "户名", "币种", "本方账号开户行", "开户行", "记账时间范围", "账号")
+
+    def _window(labels: tuple[str, ...], *, stop: tuple[str, ...], max_chars: int) -> str:
+        return (
+            _bank_statement_window_after_label(source, labels, stop_labels=stop, max_chars=max_chars)
+            or _bank_statement_window_after_label(dense_source, labels, stop_labels=stop, max_chars=max_chars)
+        )
+
+    account_no = ""
+    for label in ("账号", "本方账号"):
+        account_no = clean_account_no(_window((label,), stop=stop_labels, max_chars=60))
+        if account_no:
+            break
+    if not account_no:
+        for match_source in (source, dense_source):
+            match = re.search(r"账号[\s:：]*([0-9]{10,30})", match_source)
+            if match:
+                account_no = match.group(1)
+                break
+
+    customer_name = clean_customer_name(
+        _window(
+            ("本方账号户名", "本方户名", "户名"),
+            stop=("币种", "本方账号开户行", "开户行", "记账时间范围", "账号"),
+            max_chars=120,
+        )
+    )
+    bank_branch = clean_bank_branch(
+        _window(
+            ("本方账号开户行", "开户行"),
+            stop=("记账时间范围", "币种", "账号", "本方账号户名", "本方户名", "户名"),
+            max_chars=80,
+        )
+    )
+    currency = clean_currency(
+        _window(
+            ("币种",),
+            stop=("本方账号开户行", "开户行", "记账时间范围", "账号", "本方账号户名", "本方户名", "户名"),
+            max_chars=20,
+        )
+    )
+    range_text = _window(
+        ("记账时间范围",),
+        stop=("账号", "本方账号户名", "本方户名", "户名", "币种", "本方账号开户行", "开户行"),
+        max_chars=60,
+    )
+    start_date, end_date = _bank_statement_extract_compact_date_range(range_text or dense_source)
+    date_range = f"{start_date} 至 {end_date}" if start_date and end_date else ""
+
+    result = {
+        "customer_name": customer_name,
+        "bank_branch": bank_branch,
+        "account_no": account_no,
+        "currency": currency,
+        "date_range": date_range,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    logger.info(
+        "[bank_statement][icbc] header_candidates account_no=%s branch=%s currency=%s date_range=%s",
+        result["account_no"],
+        result["bank_branch"],
+        result["currency"],
+        result["date_range"],
+    )
+    logger.info("[bank_statement][icbc] extracted_header=%s", result)
+    return result
+
+
+def extract_bank_statement_pdf_fields(
+    text: str,
+    filename: str = "",
+    raw_pages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Late override for bank-statement PDF parsing with ICBC first-page fallback."""
+    source = str(text or "")
+    raw_pages = raw_pages or []
+    lines = [str(line or "").strip() for line in source.splitlines() if str(line or "").strip()]
+    account_lines = _bank_statement_account_region(lines)
+    first_page_text = ""
+    for item in raw_pages:
+        if not isinstance(item, dict):
+            continue
+        candidate = str(item.get("text") or "").strip()
+        if candidate:
+            first_page_text = candidate
+            break
+
+    header_text = "\n".join(account_lines) or first_page_text[:2000] or source[:3000]
+    logger.info("[bank_statement] raw_text_preview=%s", source[:3000])
+    logger.info("[bank_statement] account_info_raw=%s", header_text[:1000])
+
+    is_icbc = _bank_statement_is_icbc(header_text or source[:3000]) or ("工商银行" in str(filename or ""))
+    icbc_header: dict[str, str] = {}
+    if is_icbc:
+        logger.info("[bank_statement][icbc] header_raw=%s", (first_page_text or header_text)[:1000])
+        for header_source in (first_page_text[:2000], header_text[:2000], source[:3000]):
+            if not header_source:
+                continue
+            parsed = extract_icbc_bank_statement_header(header_source)
+            for field_name, field_value in parsed.items():
+                if not icbc_header.get(field_name) and field_value:
+                    icbc_header[field_name] = field_value
+        logger.info("[bank_statement][icbc] extracted_header=%s", icbc_header)
+
+    split_result = _split_header_line(header_text)
+    start_date, end_date = _extract_date_range_from_text(header_text or source)
+    if is_icbc:
+        start_date = start_date or str(icbc_header.get("start_date") or "").strip()
+        end_date = end_date or str(icbc_header.get("end_date") or "").strip()
+    if is_icbc and (not start_date or not end_date):
+        icbc_start, icbc_end = _bank_statement_extract_compact_date_range(first_page_text or header_text or source)
+        start_date = start_date or icbc_start
+        end_date = end_date or icbc_end
+    if not start_date or not end_date:
+        range_match = re.search(
+            r"((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\s*(?:至|到|~|-)\s*((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})",
+            header_text or source,
+        )
+        if range_match:
+            start_date = start_date or _bank_statement_date(range_match.group(1))
+            end_date = end_date or _bank_statement_date(range_match.group(2))
+    if not start_date or not end_date:
+        month_start, month_end = _bank_statement_month_range(header_text or source)
+        start_date = start_date or month_start
+        end_date = end_date or month_end
+
+    account_number = clean_account_no(
+        (str(icbc_header.get("account_no") or "") if is_icbc else "")
+        or split_result["account_number"]
+        or _bank_statement_labeled_value(account_lines, ("账号", "账户号码", "选择账号"), scan_lines=2)
+        or _find_longest_digits(first_page_text or header_text or source, min_length=8)
+    )
+    account_name = (
+        str(icbc_header.get("customer_name") or "").strip()
+        if is_icbc else _bank_statement_customer_name(account_lines, header_text)
+    ) or _bank_statement_customer_name(account_lines, header_text)
+    bank_branch = clean_bank_branch(
+        (str(icbc_header.get("bank_branch") or "") if is_icbc else "")
+        or _bank_statement_labeled_value(account_lines, ("开户行", "开户银行"), scan_lines=4)
+        or split_result["bank_name"]
+        or _extract_longest_bank_name(first_page_text or header_text)
+    )
+    bank_name = "上海银行" if "上海银行" in bank_branch else ("工商银行" if "工行" in bank_branch or "工商银行" in bank_branch else bank_branch)
+    currency = clean_currency(
+        (str(icbc_header.get("currency") or "") if is_icbc else "")
+        or _bank_statement_labeled_value(account_lines, ("币种",), scan_lines=3)
+        or split_result["currency"]
+        or _extract_currency_from_text(first_page_text or header_text)
+    )
+
+    debit_count = _bank_statement_summary_count(source, "借方") or _bank_statement_label_value(source, ("借方总笔数", "借方笔数"), count=True)
+    debit_total = _bank_statement_label_value(source, ("借方总金额", "借方金额合计"), amount=True)
+    credit_count = _bank_statement_summary_count(source, "贷方") or _bank_statement_label_value(source, ("贷方总笔数", "贷方笔数"), count=True)
+    credit_total = _bank_statement_label_value(source, ("贷方总金额", "贷方金额合计"), amount=True)
+    total_count = _bank_statement_total_count(source) or _bank_statement_label_value(source, ("总笔数", "明细笔数"), count=True)
+    if not total_count and debit_count and credit_count:
+        total_count = str(int(debit_count) + int(credit_count))
+
+    transactions = _extract_bank_statement_transactions(source)
+    if not total_count and transactions:
+        total_count = str(len(transactions))
+    first_transaction_date = transactions[0]["book_date"] if transactions else ""
+    last_transaction_date = transactions[-1]["book_date"] if transactions else ""
+
+    logger.info(
+        "[bank_statement] account_info_cleaned=%s",
+        {
+            "customer_name": account_name,
+            "bank_branch": bank_branch,
+            "account_number": account_number,
+            "currency": currency,
+            "date_range": f"{start_date} 至 {end_date}" if start_date and end_date else "",
+        },
+    )
+    logger.info(
+        "[bank_statement] summary_cleaned=%s",
+        {
+            "debit_total_amount": debit_total,
+            "credit_total_amount": credit_total,
+            "debit_transaction_count": debit_count,
+            "credit_transaction_count": credit_count,
+            "total_transaction_count": total_count,
+        },
+    )
+
+    return {
+        "account_name": account_name,
+        "customer_name": account_name,
+        "account_number": account_number,
+        "bank_name": bank_name,
+        "bank_branch": bank_branch,
+        "currency": currency,
+        "date_range": f"{start_date} 至 {end_date}" if start_date and end_date else "",
+        "start_date": start_date,
+        "end_date": end_date,
+        "debit_total_amount": debit_total,
+        "credit_total_amount": credit_total,
+        "debit_transaction_count": debit_count,
+        "credit_transaction_count": credit_count,
+        "total_transaction_count": total_count,
+        "transaction_count": total_count,
+        "transactions": transactions,
+        "first_transaction_date": first_transaction_date,
+        "last_transaction_date": last_transaction_date,
+        "largest_credit_amount": _bank_statement_max_amount(transactions, ("贷方", "入账", "收入", "转入")),
+        "largest_debit_amount": _bank_statement_max_amount(transactions, ("借方", "出账", "支出", "转出", "扣款")),
+        "confidence": 0.88 if account_number or account_name or transactions else 0.55,
+    }
+
+
 def build_structured_extraction(
     text_content: str,
     document_type_code: str,
@@ -8591,7 +8808,7 @@ def build_structured_extraction(
         content = (
             extract_bank_statement_from_rows(rows, text_content)
             if rows
-            else extract_bank_statement_pdf_fields(text_content, filename=filename)
+            else extract_bank_statement_pdf_fields(text_content, filename=filename, raw_pages=raw_pages)
         )
         content = finalize_bank_statement_fields(content, customer_id=customer_id, customer_name=customer_name)
     elif normalized_code == "bank_statement_detail":

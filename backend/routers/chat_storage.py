@@ -433,6 +433,15 @@ async def _replace_existing_documents_of_same_type(
         )
         return
 
+    if document_type_code == "bank_statement":
+        await _replace_existing_bank_statement_with_same_name(
+            storage_service,
+            customer_id,
+            document_type_code,
+            chat_file_name,
+        )
+        return
+
     if document_type_code in _MULTI_INSTANCE_DOCUMENT_TYPE_CODES:
         logger.info(
             "[Local Save] Skip replacement for multi-instance document type customer_id=%s type=%s",
@@ -480,6 +489,66 @@ async def _replace_existing_documents_of_same_type(
             customer_id,
             document_type_code,
         )
+
+
+async def _replace_existing_bank_statement_with_same_name(
+    storage_service: Any,
+    customer_id: str,
+    document_type_code: str,
+    chat_file_name: str | None,
+) -> None:
+    """Bank statements can coexist by filename; only exact filename duplicates are replaced."""
+    upload_file_name = Path(chat_file_name or "").name
+    if not upload_file_name:
+        logger.info(
+            "[bank_statement][save] replace_existing same_filename=(empty) customer_id=%s replaced=0",
+            customer_id,
+        )
+        return
+
+    existing_documents = await storage_service.list_documents(customer_id)
+    replaced_count = 0
+
+    for document in existing_documents:
+        existing_type = _normalize_storage_document_type(document.get("file_type") or "")
+        if existing_type != document_type_code:
+            continue
+        existing_file_name = Path(document.get("file_name") or "").name
+        if existing_file_name != upload_file_name:
+            continue
+        doc_id = document.get("doc_id")
+        if not doc_id:
+            continue
+        try:
+            deleted = await storage_service.delete_document(doc_id)
+        except Exception as exc:
+            logger.error(
+                "[bank_statement][save] replace_existing same_filename=%s customer_id=%s old_doc_id=%s error=%s",
+                upload_file_name,
+                customer_id,
+                doc_id,
+                exc,
+                exc_info=True,
+            )
+            raise RuntimeError(f"替换同名银行对账单失败，无法删除旧文档：{doc_id}") from exc
+
+        if not deleted:
+            logger.warning(
+                "[bank_statement][save] replace_existing same_filename=%s customer_id=%s old_doc_id=%s missing",
+                upload_file_name,
+                customer_id,
+                doc_id,
+            )
+            raise RuntimeError(f"替换同名银行对账单失败，未找到旧文档：{doc_id}")
+
+        replaced_count += 1
+
+    logger.info(
+        "[bank_statement][save] replace_existing same_filename=%s customer_id=%s replaced=%s",
+        upload_file_name,
+        customer_id,
+        replaced_count,
+    )
 
 
 async def _replace_existing_property_document_with_same_name(
