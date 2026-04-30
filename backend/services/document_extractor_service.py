@@ -8556,6 +8556,38 @@ def extract_hukou(text: str, raw_pages: list[dict[str, Any]] | None = None) -> d
     return _extract_hukou_fields(text)
 
 
+def _clean_icbc_bank_branch(value: str) -> str:
+    source = str(value or "").strip()
+    if not source:
+        return ""
+    banned_values = {
+        "中国工商银行账户明细",
+        "中国工商银行账户明细清单",
+        "工商银行账户明细清单",
+        "账户明细清单",
+    }
+    source = re.sub(r"(本方账号开户行|开户行)\s*[:：]?\s*", "", source)
+    source = re.sub(r"\s+", "", source)
+    stop_markers = ("记账时间范围", "币种", "账号", "本方账号户名", "本方户名", "户名")
+    stop_positions = [source.find(marker) for marker in stop_markers if marker in source]
+    if stop_positions:
+        source = source[:min(stop_positions)]
+    if source in banned_values:
+        return ""
+
+    direct_matches = re.findall(r"工行[\u4e00-\u9fa5A-Za-z0-9（）()·\-]{1,40}", source)
+    cleaned_direct = [item for item in (match.strip("：:，。；; ") for match in direct_matches) if item not in banned_values]
+    if cleaned_direct:
+        return max(cleaned_direct, key=len)
+
+    cleaned = clean_bank_branch(source)
+    if cleaned in banned_values:
+        return ""
+    if any(bad in cleaned for bad in banned_values):
+        return ""
+    return cleaned
+
+
 def extract_icbc_bank_statement_header(text: str) -> dict[str, str]:
     """Late override for ICBC header parsing; handles dense OCR and split labels."""
     source = str(text or "")
@@ -8589,13 +8621,29 @@ def extract_icbc_bank_statement_header(text: str) -> dict[str, str]:
             max_chars=120,
         )
     )
-    bank_branch = clean_bank_branch(
+    bank_branch_candidates: list[str] = []
+    for branch_source in (source, dense_source):
+        for pattern in (
+            r"本方账号开户行[\s:：]*([^\n\r]{1,40})",
+            r"开户行[\s:：]*([^\n\r]{1,40})",
+            r"(工行[\u4e00-\u9fa5A-Za-z0-9（）()·\-]{1,40})",
+        ):
+            bank_branch_candidates.extend(re.findall(pattern, branch_source))
+    bank_branch_candidates.append(
         _window(
             ("本方账号开户行", "开户行"),
             stop=("记账时间范围", "币种", "账号", "本方账号户名", "本方户名", "户名"),
             max_chars=80,
         )
     )
+    cleaned_bank_branch_candidates = [
+        candidate
+        for candidate in (_clean_icbc_bank_branch(item) for item in bank_branch_candidates)
+        if candidate
+    ]
+    logger.info("[bank_statement][icbc] bank_branch_candidates=%s", cleaned_bank_branch_candidates)
+    bank_branch = max(cleaned_bank_branch_candidates, key=len) if cleaned_bank_branch_candidates else ""
+    logger.info("[bank_statement][icbc] selected_bank_branch=%s", bank_branch)
     currency = clean_currency(
         _window(
             ("币种",),
