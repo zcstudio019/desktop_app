@@ -26,7 +26,7 @@ if command -v npm >/dev/null 2>&1; then
   echo "========== 安装前端依赖 =========="
   npm install --legacy-peer-deps
   echo "========== 构建前端 =========="
-  npm run build
+  npm run build:prod
 
   echo "========== 发布前端到 Nginx 目录 =========="
   mkdir -p "$NGINX_WEB_DIR"

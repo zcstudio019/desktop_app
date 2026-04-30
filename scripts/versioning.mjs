@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -8,6 +9,7 @@ const __dirname = path.dirname(__filename);
 export const projectRoot = path.resolve(__dirname, '..');
 export const packageJsonPath = path.resolve(projectRoot, 'package.json');
 export const versionMetaPath = path.resolve(projectRoot, 'src', 'generated', 'version.ts');
+export const buildInfoPath = path.resolve(projectRoot, 'src', 'generated', 'build-info.ts');
 export const versionHistoryPath = path.resolve(projectRoot, 'logs', 'version-history.log');
 
 function pad(value) {
@@ -20,6 +22,10 @@ function formatDate(date) {
 
 function formatDateTime(date) {
   return `${formatDate(date)} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function escapeTsString(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 export function incrementVersion(version) {
@@ -72,6 +78,33 @@ export function writeVersionMeta(version, now = new Date()) {
   fs.writeFileSync(versionMetaPath, versionMetaContent, 'utf8');
 }
 
+export function getGitShortHash() {
+  const result = spawnSync('git', ['rev-parse', '--short', 'HEAD'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+  });
+
+  if (result.status !== 0) {
+    return 'unknown';
+  }
+
+  return String(result.stdout || '').trim() || 'unknown';
+}
+
+export function writeBuildInfo(version, now = new Date(), commitHash = getGitShortHash()) {
+  const buildInfoContent = `export const BUILD_INFO = {
+  version: "V${escapeTsString(version)}",
+  releaseDate: "${escapeTsString(formatDate(now))}",
+  buildTime: "${escapeTsString(formatDateTime(now))}",
+  commitHash: "${escapeTsString(commitHash)}",
+} as const;
+`;
+
+  fs.mkdirSync(path.dirname(buildInfoPath), { recursive: true });
+  fs.writeFileSync(buildInfoPath, buildInfoContent, 'utf8');
+}
+
 export function appendVersionHistory(currentVersion, nextVersion, now = new Date()) {
   const historyLine = `[${formatDateTime(now)}] ${currentVersion} -> ${nextVersion}\n`;
   fs.mkdirSync(path.dirname(versionHistoryPath), { recursive: true });
@@ -81,6 +114,13 @@ export function appendVersionHistory(currentVersion, nextVersion, now = new Date
 export function prepareVersionMeta() {
   const version = getCurrentVersion();
   writeVersionMeta(version);
+  writeBuildInfo(version);
+  return version;
+}
+
+export function prepareBuildInfo() {
+  const version = getCurrentVersion();
+  writeBuildInfo(version);
   return version;
 }
 
@@ -90,6 +130,7 @@ export function bumpVersion() {
   const nextVersion = incrementVersion(currentVersion);
   writePackageVersion(nextVersion);
   writeVersionMeta(nextVersion, now);
+  writeBuildInfo(nextVersion, now);
   appendVersionHistory(currentVersion, nextVersion, now);
   return {
     currentVersion,
