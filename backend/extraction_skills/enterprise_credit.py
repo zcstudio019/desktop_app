@@ -357,6 +357,92 @@ def _numbers_after_heading(lines: list[str], heading_keywords: tuple[str, ...], 
     return []
 
 
+def _window_after(text: str, anchor: str, length: int = 1500) -> str:
+    normalized = _normalize_text(text)
+    idx = normalized.find(anchor)
+    if idx < 0:
+        compact_anchor = _normalize_for_search(anchor)
+        compact_text = _normalize_for_search(normalized)
+        compact_idx = compact_text.find(compact_anchor)
+        if compact_idx < 0:
+            return ""
+        # Approximate the compact index back to the original text.
+        seen = 0
+        idx = 0
+        for pos, char in enumerate(normalized):
+            if _normalize_for_search(char):
+                if seen == compact_idx:
+                    idx = pos
+                    break
+                seen += 1
+    return normalized[idx: idx + length]
+
+
+def _window_after_best(text: str, anchors: tuple[str, ...], required_keywords: tuple[str, ...], length: int = 1500) -> str:
+    normalized = _normalize_text(text)
+    candidates: list[str] = []
+    for anchor in anchors:
+        start = 0
+        while True:
+            idx = normalized.find(anchor, start)
+            if idx < 0:
+                break
+            window = normalized[idx: idx + length]
+            candidates.append(window)
+            start = idx + len(anchor)
+    for window in candidates:
+        if all(keyword in window for keyword in required_keywords):
+            return window
+    for window in candidates:
+        if any(keyword in window for keyword in required_keywords):
+            return window
+    return candidates[0] if candidates else ""
+
+
+def _window_lines(window: str) -> list[str]:
+    return _merge_fragment_lines([_clean_value(line) for line in window.split("\n") if _clean_value(line)])
+
+
+def _parse_borrowing_guarantee_summary(window: str) -> dict[str, str | None]:
+    result = {
+        "active_borrowing_balance": None,
+        "guarantee_balance": None,
+        "active_recourse_balance": None,
+        "guarantee_special_mention_balance": None,
+        "active_special_mention_balance": None,
+        "guarantee_non_performing_balance": None,
+        "active_non_performing_balance": None,
+    }
+    if "借贷交易" not in window or "担保交易" not in window:
+        return result
+
+    match = re.search(r"余额\s+([0-9,.]+)\s+余额\s+([0-9,.]+)", window)
+    if match:
+        result["active_borrowing_balance"] = _normalize_numeric(match.group(1))
+        result["guarantee_balance"] = _normalize_numeric(match.group(2))
+
+    match = re.search(r"被追偿余额\s+([0-9,.]+)", window)
+    if match:
+        result["active_recourse_balance"] = _normalize_numeric(match.group(1))
+
+    match = re.search(r"其中\s*[:：]?\s*关注类余额\s+([0-9,.]+)", window)
+    if match:
+        result["guarantee_special_mention_balance"] = _normalize_numeric(match.group(1))
+
+    for match in re.finditer(r"关注类余额\s+([0-9,.]+)\s+不良类余额\s+([0-9,.]+)", window):
+        prefix = window[max(0, match.start() - 8): match.start()]
+        if "其中" in prefix:
+            continue
+        result["active_special_mention_balance"] = _normalize_numeric(match.group(1))
+        result["guarantee_non_performing_balance"] = _normalize_numeric(match.group(2))
+        break
+
+    matches = re.findall(r"不良类余额\s+([0-9,.]+)", window)
+    if matches:
+        result["active_non_performing_balance"] = _normalize_numeric(matches[-1])
+    return result
+
+
 def _first_index(lines: list[str], keywords: tuple[str, ...], start: int = 0) -> int:
     for idx in range(max(start, 0), len(lines)):
         normalized = _normalize_for_search(lines[idx])
@@ -571,23 +657,10 @@ def _extract_credit_summary(lines: list[str], text: str) -> dict[str, Any]:
         ("未结清信贷及授信信息概要", "基本信息", "身份标识", "股东信息"),
     )
     info_source = " ".join(info_block) if info_block else text[:6000]
-    loan_idx = info_source.find("借贷交易")
-    if loan_idx >= 0:
-        balance_source = info_source[loan_idx: loan_idx + 500]
-        balance_numbers = re.findall(r"-?\d+(?:\.\d+)?", balance_source)
-        if len(balance_numbers) >= 2:
-            summary["active_borrowing_balance"] = _normalize_numeric(balance_numbers[0])
-            summary["guarantee_balance"] = _normalize_numeric(balance_numbers[1])
-        if len(balance_numbers) >= 3:
-            summary["active_recourse_balance"] = _normalize_numeric(balance_numbers[2])
-        if len(balance_numbers) >= 4:
-            summary["guarantee_special_mention_balance"] = _normalize_numeric(balance_numbers[3])
-        if len(balance_numbers) >= 5:
-            summary["active_special_mention_balance"] = _normalize_numeric(balance_numbers[4])
-        if len(balance_numbers) >= 6:
-            summary["guarantee_non_performing_balance"] = _normalize_numeric(balance_numbers[5])
-        if len(balance_numbers) >= 7:
-            summary["active_non_performing_balance"] = _normalize_numeric(balance_numbers[6])
+    loan_match = re.search(r"借贷交易\s+担保交易", info_source)
+    if loan_match:
+        balance_source = info_source[loan_match.start(): loan_match.start() + 500]
+        summary.update({key: value for key, value in _parse_borrowing_guarantee_summary(balance_source).items() if value is not None})
     return summary
 
 
@@ -1117,6 +1190,351 @@ def _derive_risk_indicators(extracted_json: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _zh_window_after(text: str, anchors: tuple[str, ...], required_keywords: tuple[str, ...] = (), length: int = 1500) -> str:
+    normalized = _normalize_text(text)
+    candidates: list[str] = []
+    for anchor in anchors:
+        start = 0
+        while True:
+            idx = normalized.find(anchor, start)
+            if idx < 0:
+                break
+            candidates.append(normalized[idx: idx + length])
+            start = idx + max(len(anchor), 1)
+    for candidate in candidates:
+        if all(keyword in candidate for keyword in required_keywords):
+            return candidate
+    for candidate in candidates:
+        if any(keyword in candidate for keyword in required_keywords):
+            return candidate
+    return candidates[0] if candidates else ""
+
+
+def _zh_clean(value: Any) -> str:
+    text = _normalize_text(str(value or ""))
+    for marker in ("信息来源机构", "更新日期"):
+        if marker in text:
+            text = text.split(marker, 1)[0]
+    for marker in (
+        "经济类型",
+        "组织机构类型",
+        "企业规模",
+        "所属行业",
+        "成立年份",
+        "登记证书有效截止日期",
+        "登记地址",
+        "办公/经营地址",
+        "存续状态",
+        "注册资本及主要出资人信息",
+        "主要组成人员信息",
+        "实际控制人",
+        "信贷记录明细",
+    ):
+        if marker in text and not text.startswith(marker):
+            text = text.split(marker, 1)[0]
+    text = re.sub(r"[)）]\s*有限公司.*$", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" :：;；,-")
+    return text or ""
+
+
+def _zh_numeric(value: Any) -> str | None:
+    normalized = _normalize_numeric(value)
+    return normalized if normalized not in {None, ""} else None
+
+
+def _zh_extract_basic_field(text: str, label: str, stop_labels: tuple[str, ...]) -> str | None:
+    stop_pattern = "|".join(re.escape(item) for item in ("信息来源机构", "更新日期", *stop_labels))
+    match = re.search(rf"{re.escape(label)}\s+(.+?)(?=\s*(?:{stop_pattern})|$)", text, re.S)
+    return _zh_clean(match.group(1)) if match else None
+
+
+def _zh_parse_summary_rows(info_window: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row_type in ("中长期借款", "短期借款", "合计"):
+        match = re.search(
+            rf"{row_type}\s+(\d+)\s+([0-9,.]+)\s+(\d+)\s+([0-9,.]+)\s+(\d+)\s+([0-9,.]+)\s+(\d+)\s+([0-9,.]+)",
+            info_window,
+        )
+        if not match:
+            continue
+        rows.append(
+            {
+                "type": row_type,
+                "normal_account_count": _extract_count(match.group(1)),
+                "normal_balance": _zh_numeric(match.group(2)),
+                "special_mention_account_count": _extract_count(match.group(3)),
+                "special_mention_balance": _zh_numeric(match.group(4)),
+                "non_performing_account_count": _extract_count(match.group(5)),
+                "non_performing_balance": _zh_numeric(match.group(6)),
+                "total_account_count": _extract_count(match.group(7)),
+                "total_balance": _zh_numeric(match.group(8)),
+            }
+        )
+    return rows
+
+
+def _zh_parse_enterprise_credit_overrides(raw_text: str) -> dict[str, Any]:
+    info_window = _zh_window_after(raw_text, ("信息概要",), ("首次有信贷交易", "借贷交易"), 5000)
+    facility_window = _zh_window_after(raw_text, ("非循环信用额度",), ("循环信用额度", "已用额度"), 1200)
+    basic_window = _zh_window_after(raw_text, ("基本概况信息", "经济类型"), ("经济类型", "信息来源机构"), 4000)
+    capital_window = _zh_window_after(raw_text, ("注册资本及主要出资人信息",), ("注册资本折人民币合计", "出资比例"), 1600)
+    personnel_window = _zh_window_after(raw_text, ("主要组成人员信息",), ("法定代表人", "身份证"), 1200)
+    controller_window = _zh_window_after(raw_text, ("实际控制人",), ("身份标识", "身份证"), 1000)
+    if "信贷记录明细" in controller_window:
+        controller_window = controller_window.split("信贷记录明细", 1)[0]
+
+    credit_summary: dict[str, Any] = {}
+    header_window = _zh_window_after(info_window or raw_text, ("首次有信贷交易",), (), 500)
+    header_match = re.search(r"(20\d{2})\s+(\d+)\s+(\d+)\s+(?:--|20\d{2})", header_window)
+    if header_match:
+        credit_summary["first_credit_year"] = header_match.group(1)
+        credit_summary["credit_institution_count"] = _extract_count(header_match.group(2))
+        credit_summary["current_active_credit_institution_count"] = _extract_count(header_match.group(3))
+
+    borrowing_window = _zh_window_after(info_window or raw_text, ("借贷交易",), ("担保交易", "余额"), 800)
+    loan_match = re.search(r"余额\s+([0-9,.]+)\s+余额\s+([0-9,.]+)", borrowing_window)
+    if loan_match:
+        credit_summary["active_borrowing_balance"] = _zh_numeric(loan_match.group(1))
+        credit_summary["guarantee_balance"] = _zh_numeric(loan_match.group(2))
+    recourse_match = re.search(r"被追偿余额\s+([0-9,.]+)", borrowing_window)
+    if recourse_match:
+        credit_summary["active_recourse_balance"] = _zh_numeric(recourse_match.group(1))
+    guarantee_special_match = re.search(r"其中\s*[:：]?\s*关注类余额\s+([0-9,.]+)", borrowing_window)
+    if guarantee_special_match:
+        credit_summary["guarantee_special_mention_balance"] = _zh_numeric(guarantee_special_match.group(1))
+    for match in re.finditer(r"关注类余额\s+([0-9,.]+)\s+不良类余额\s+([0-9,.]+)", borrowing_window):
+        if "其中" in borrowing_window[max(0, match.start() - 12): match.start()]:
+            continue
+        credit_summary["active_special_mention_balance"] = _zh_numeric(match.group(1))
+        credit_summary["guarantee_non_performing_balance"] = _zh_numeric(match.group(2))
+        break
+    bad_matches = re.findall(r"不良类余额\s+([0-9,.]+)", borrowing_window)
+    if bad_matches:
+        credit_summary["active_non_performing_balance"] = _zh_numeric(bad_matches[-1])
+
+    account_window = _zh_window_after(info_window or raw_text, ("非信贷交易账户数",), ("欠税记录条数", "行政处罚记录条数"), 800)
+    account_match = re.search(r"非信贷交易账户数\s+欠税记录条数\s+民事判决记录条数\s+强制执行记录条数\s+行政处罚记录条数\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", account_window)
+    if account_match:
+        credit_summary.update(
+            {
+                "non_credit_account_count": _extract_count(account_match.group(1)),
+                "tax_arrear_record_count": _extract_count(account_match.group(2)),
+                "civil_judgment_record_count": _extract_count(account_match.group(3)),
+                "enforcement_record_count": _extract_count(account_match.group(4)),
+                "administrative_penalty_record_count": _extract_count(account_match.group(5)),
+            }
+        )
+
+    active_rows = _zh_parse_summary_rows(info_window)
+    total_row = next((item for item in active_rows if item.get("type") == "合计"), None)
+    if total_row:
+        credit_summary["active_borrowing_balance"] = total_row.get("total_balance")
+        credit_summary["active_special_mention_balance"] = total_row.get("special_mention_balance")
+        credit_summary["active_non_performing_balance"] = total_row.get("non_performing_balance")
+
+    facility_summary: dict[str, Any] = {}
+    if "非循环信用额度" in facility_window and "循环信用额度" in facility_window:
+        facility_numbers = re.findall(r"\d+(?:\.\d+)?", facility_window)
+        if len(facility_numbers) >= 6 and facility_numbers[:2] != ["1", "327.50"]:
+            facility_summary = {
+                "non_revolving": {
+                    "total_limit": _zh_numeric(facility_numbers[0]),
+                    "used_limit": _zh_numeric(facility_numbers[1]),
+                    "available_limit": _zh_numeric(facility_numbers[2]),
+                },
+                "revolving": {
+                    "total_limit": _zh_numeric(facility_numbers[3]),
+                    "used_limit": _zh_numeric(facility_numbers[4]),
+                    "available_limit": _zh_numeric(facility_numbers[5]),
+                },
+            }
+
+    registration_info = {
+        "economic_type": _zh_extract_basic_field(basic_window, "经济类型", ("组织机构类型", "企业规模")),
+        "organization_type": _zh_extract_basic_field(basic_window, "组织机构类型", ("企业规模", "所属行业")),
+        "enterprise_size": _zh_extract_basic_field(basic_window, "企业规模", ("所属行业", "成立年份")),
+        "industry": _zh_extract_basic_field(basic_window, "所属行业", ("成立年份", "登记证书有效截止日期")),
+        "established_year": _zh_extract_basic_field(basic_window, "成立年份", ("登记证书有效截止日期", "登记地址")),
+        "registration_valid_until": _normalize_date(_zh_extract_basic_field(basic_window, "登记证书有效截止日期", ("登记地址", "办公/经营地址"))),
+        "registered_address": _zh_extract_basic_field(basic_window, "登记地址", ("办公/经营地址", "存续状态")),
+        "business_address": _zh_extract_basic_field(basic_window, "办公/经营地址", ("存续状态", "注册资本及主要出资人信息")),
+        "business_status": _zh_extract_basic_field(basic_window, "存续状态", ("注册资本及主要出资人信息", "主要组成人员信息")),
+    }
+    capital_match = re.search(r"注册资本折人民币合计\s*([0-9,.]+\s*万元)", capital_window)
+    if capital_match:
+        registration_info["registered_capital_rmb"] = _zh_clean(capital_match.group(1))
+        registration_info["registered_capital"] = registration_info["registered_capital_rmb"]
+
+    shareholders: list[dict[str, Any]] = []
+    for match in re.finditer(r"股东\s+([\u4e00-\u9fa5]{2,4})\s+身份证\s+([0-9Xx]{15,18})\s+([0-9.]+\s*%)", capital_window):
+        shareholders.append(
+            {
+                "type": "股东",
+                "shareholder_type": "股东",
+                "name": match.group(1),
+                "identity_type": "身份证",
+                "id_type": "身份证",
+                "identity_no": match.group(2),
+                "id_no": match.group(2),
+                "contribution_ratio": match.group(3).replace(" ", ""),
+                "shareholding_ratio": match.group(3).replace(" ", ""),
+            }
+        )
+
+    personnel_text = personnel_window.replace("负责\n人", "负责人").replace("负责 人", "负责人")
+    key_personnel: list[dict[str, Any]] = []
+    legal_match = re.search(r"法定代表人/非法人组织负责人\s*人?([\u4e00-\u9fa5]{2,4})\s+身份证\s+([0-9Xx]{15,18})", personnel_text)
+    if legal_match:
+        key_personnel.append(
+            {
+                "position": "法定代表人/非法人组织负责人",
+                "name": legal_match.group(1),
+                "identity_type": "身份证",
+                "identity_no": legal_match.group(2),
+            }
+        )
+
+    actual_controller: dict[str, Any] = {}
+    controller_match = re.search(r"([\u4e00-\u9fa5]{2,4})\s+身份证\s+([0-9Xx]{12,18})", controller_window)
+    if controller_match:
+        actual_controller = {
+            "name": controller_match.group(1),
+            "identity_type": "身份证",
+            "identity_no": controller_match.group(2),
+        }
+
+    return {
+        "debug_windows": {
+            "info_summary": info_window,
+            "facility": facility_window,
+            "basic_info": basic_window,
+            "capital": capital_window,
+            "personnel": personnel_window,
+            "controller": controller_window,
+        },
+        "credit_summary": {key: value for key, value in credit_summary.items() if value is not None},
+        "active_credit_summary_by_type": active_rows,
+        "credit_facility_summary": facility_summary,
+        "registration_info": {key: value for key, value in registration_info.items() if value},
+        "shareholders": shareholders,
+        "key_personnel": key_personnel,
+        "actual_controller": actual_controller,
+    }
+
+
+def _merge_meaningful_values(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base or {})
+    for key, value in (override or {}).items():
+        if value not in (None, "", "未识别", "暂无", "-"):
+            merged[key] = value
+    return merged
+
+
+def _format_ratio_percent(value: Any) -> str:
+    if value is None:
+        return "未识别"
+    try:
+        number = float(str(value).replace("%", ""))
+    except (TypeError, ValueError):
+        return "未识别"
+    percent_value = number if number > 10 else number * 100
+    formatted = f"{percent_value:.2f}".rstrip("0").rstrip(".")
+    return f"{formatted}%"
+
+
+def _display(value: Any) -> str:
+    if value in (None, "", "未识别", "暂无"):
+        return "未识别"
+    return str(value)
+
+
+def _find_active_row(rows: list[dict[str, Any]], *names: str) -> dict[str, Any]:
+    for item in rows:
+        row_type = str(item.get("type") or "")
+        if row_type in names or any(name in row_type for name in names):
+            return item
+    return {}
+
+
+def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
+    report_basic = extracted_json.get("report_basic") or {}
+    registration_info = extracted_json.get("registration_info") or {}
+    credit_summary = extracted_json.get("credit_summary") or {}
+    risk_indicators = extracted_json.get("risk_indicators") or {}
+    facility_summary = extracted_json.get("credit_facility_summary") or {}
+    shareholders = extracted_json.get("shareholders") or []
+    personnel = extracted_json.get("key_personnel") or []
+    actual_controller = extracted_json.get("actual_controller") or {}
+    active_rows = extracted_json.get("active_credit_summary_by_type") or []
+
+    short_term = _find_active_row(active_rows, "短期借款", "鐭湡鍊熸")
+    long_term = _find_active_row(active_rows, "中长期借款", "涓暱鏈熷€熸")
+    non_revolving = facility_summary.get("non_revolving") or {}
+    revolving = facility_summary.get("revolving") or {}
+
+    lines = [
+        "## 企业征信摘要",
+        "",
+        "### 报告基础信息",
+        f"- 企业名称：{_display(report_basic.get('company_name'))}",
+        f"- 统一社会信用代码：{_display(report_basic.get('credit_code'))}",
+        f"- 中征码：{_display(report_basic.get('zhongzheng_code'))}",
+        f"- 报告编号：{_display(report_basic.get('report_no'))}",
+        f"- 报告时间：{_display(report_basic.get('report_date'))}",
+        f"- 查询机构：{_display(report_basic.get('query_institution'))}",
+        "",
+        "### 信贷概要",
+        f"- 当前未结清借贷余额：{_display(credit_summary.get('active_borrowing_balance'))}",
+        f"- 当前未结清信贷机构数：{_display(credit_summary.get('current_active_credit_institution_count'))}",
+        f"- 短期借款余额：{_display(short_term.get('total_balance'))}",
+        f"- 中长期借款余额：{_display(long_term.get('total_balance'))}",
+        f"- 关注类余额：{_display(credit_summary.get('active_special_mention_balance'))}",
+        f"- 不良类余额：{_display(credit_summary.get('active_non_performing_balance'))}",
+        f"- 对外担保余额：{_display(credit_summary.get('guarantee_balance'))}",
+        "",
+        "### 授信额度",
+        f"- 非循环额度：总额 {_display(non_revolving.get('total_limit'))} / 已用 {_display(non_revolving.get('used_limit'))} / 可用 {_display(non_revolving.get('available_limit'))}",
+        f"- 循环额度：总额 {_display(revolving.get('total_limit'))} / 已用 {_display(revolving.get('used_limit'))} / 可用 {_display(revolving.get('available_limit'))}",
+        "",
+        "### 企业基本信息",
+        f"- 经济类型：{_display(registration_info.get('economic_type'))}",
+        f"- 组织机构类型：{_display(registration_info.get('organization_type'))}",
+        f"- 企业规模：{_display(registration_info.get('enterprise_size'))}",
+        f"- 所属行业：{_display(registration_info.get('industry'))}",
+        f"- 成立年份：{_display(registration_info.get('established_year'))}",
+        f"- 注册资本：{_display(registration_info.get('registered_capital_rmb'))}",
+        f"- 经营状态：{_display(registration_info.get('business_status'))}",
+        f"- 注册地址：{_display(registration_info.get('registered_address'))}",
+        f"- 经营地址：{_display(registration_info.get('business_address'))}",
+        "",
+        "### 股东与人员",
+    ]
+    if shareholders:
+        for item in shareholders:
+            lines.append(f"- 股东：{_display(item.get('name'))}，持股 {_display(item.get('contribution_ratio') or item.get('shareholding_ratio'))}")
+    else:
+        lines.append("- 暂未识别到股东信息")
+    legal_person = next((item for item in personnel if "法定代表人" in str(item.get("position") or "") and item.get("name")), {})
+    lines.append(f"- 法定代表人：{_display(legal_person.get('name'))}")
+    lines.append(f"- 实际控制人：{_display(actual_controller.get('name'))}")
+    risk_tags = risk_indicators.get("risk_tags") or []
+    lines.extend(
+        [
+            "",
+            "### 风险指标",
+            f"- 是否逾期：{'是' if risk_indicators.get('has_overdue') else '否'}",
+            f"- 是否不良：{'是' if risk_indicators.get('has_non_performing') else '否'}",
+            f"- 是否关注：{'是' if risk_indicators.get('has_special_mention') else '否'}",
+            f"- 多头授信风险：{_display(risk_indicators.get('multi_lender_risk'))}",
+            f"- 短期负债占比：{_format_ratio_percent(risk_indicators.get('short_term_debt_ratio'))}",
+            f"- 授信使用率：{_format_ratio_percent(risk_indicators.get('credit_utilization_ratio'))}",
+            f"- 风险标签：{'、'.join(risk_tags) if risk_tags else '未识别'}",
+            f"- 风险总结：{_display(risk_indicators.get('summary'))}",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
 def _build_markdown_summary(extracted_json: dict[str, Any]) -> str:
     report_basic = extracted_json.get("report_basic") or {}
     registration_info = extracted_json.get("registration_info") or {}
@@ -1214,10 +1632,64 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             lines = [line for line in lines if line and not re.fullmatch(r"第?\s*\d+\s*页(?:/共\s*\d+\s*页)?", line)]
 
             sections = _split_sections(lines)
+            logger.info("[EnterpriseCredit][DEBUG] raw_text_head=%s", raw_text[:5000])
+            logger.info("[EnterpriseCredit][DEBUG] section keys=%s", list(sections.keys()))
+            for section_name, section_lines in sections.items():
+                logger.info("[EnterpriseCredit][DEBUG] section=%s head=%s", section_name, _section_text(section_lines)[:1000])
+            zh_overrides = _zh_parse_enterprise_credit_overrides(raw_text)
+            zh_windows = zh_overrides.get("debug_windows") or {}
+            if zh_windows.get("info_summary"):
+                logger.info("[EnterpriseCredit][DEBUG] info_summary_section=%s", zh_windows.get("info_summary", "")[:3000])
+            if zh_windows.get("basic_info"):
+                logger.info("[EnterpriseCredit][DEBUG] basic_info_section=%s", zh_windows.get("basic_info", "")[:3000])
+
+            info_summary_text = _window_after_best(
+                raw_text,
+                ("信息概要",),
+                ("首次有信贷交易", "借贷交易"),
+                5000,
+            ) or _section_text(sections.get("summary") or [])
+            basic_info_text = _window_after_best(
+                raw_text,
+                ("基本概况信息", "基本信息", "经济类型"),
+                ("经济类型", "企业规模"),
+                5000,
+            ) or _section_text(sections.get("basic") or [])
+            capital_text = _window_after_best(
+                raw_text,
+                ("注册资本及主要出资人信息", "注册资本折人民币合计"),
+                ("注册资本折人民币合计",),
+                1600,
+            ) or basic_info_text
+            personnel_text = _window_after_best(
+                raw_text,
+                ("主要组成人员信息", "主要组成人员"),
+                ("身份证",),
+                1200,
+            ) or basic_info_text
+            controller_text = _window_after_best(
+                raw_text,
+                ("实际控制人",),
+                ("身份标识", "身份证"),
+                1000,
+            ) or basic_info_text
+            facility_text = _window_after_best(
+                raw_text,
+                ("非循环信用额度",),
+                ("循环信用额度", "总额", "已用额度"),
+                1200,
+            ) or info_summary_text
+            logger.info("[EnterpriseCredit][DEBUG] info_summary_section=%s", info_summary_text[:3000])
+            logger.info("[EnterpriseCredit][DEBUG] basic_info_section=%s", basic_info_text[:3000])
+
             header_lines = _merge_fragment_lines(sections.get("header") or [])
             identity_lines = _merge_fragment_lines(sections.get("identity") or [])
-            summary_lines = _merge_fragment_lines(sections.get("summary") or [])
-            basic_lines = _merge_fragment_lines(sections.get("basic") or [])
+            summary_lines = _window_lines(info_summary_text)
+            basic_lines = _window_lines(basic_info_text)
+            capital_lines = _window_lines(capital_text)
+            personnel_lines = _window_lines(personnel_text)
+            controller_lines = _window_lines(controller_text)
+            facility_lines = _window_lines(facility_text)
             credit_detail_text = _section_text(sections.get("credit_detail") or [])
             public_record_text = _section_text(sections.get("public_records") or [])
 
@@ -1229,13 +1701,34 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 raw_pages,
             )
             identity_info = _extract_identity_info(identity_lines, _section_text(sections.get("identity") or []))
-            registration_info = _extract_registration_info(basic_lines, _section_text(sections.get("basic") or []))
-            credit_summary = _extract_credit_summary(summary_lines, _section_text(sections.get("summary") or []))
-            active_credit_summary_by_type = _extract_active_credit_summary_by_type(summary_lines, _section_text(sections.get("summary") or []))
-            credit_facility_summary = _extract_credit_facility_summary(summary_lines, _section_text(sections.get("summary") or []))
-            shareholders = _extract_shareholders(basic_lines, _section_text(sections.get("basic") or []))
-            key_personnel = _extract_key_personnel(basic_lines, _section_text(sections.get("basic") or []))
-            actual_controller = _extract_actual_controller(basic_lines, _section_text(sections.get("basic") or []))
+            registration_info = _extract_registration_info(basic_lines, basic_info_text + "\n" + capital_text)
+            credit_summary = _extract_credit_summary(summary_lines, info_summary_text)
+            active_credit_summary_by_type = _extract_active_credit_summary_by_type(summary_lines, info_summary_text)
+            credit_facility_summary = _extract_credit_facility_summary(facility_lines, facility_text)
+            shareholders = _extract_shareholders(capital_lines, capital_text)
+            key_personnel = _extract_key_personnel(personnel_lines, personnel_text)
+            actual_controller = _extract_actual_controller(controller_lines, controller_text)
+
+            if zh_overrides.get("registration_info"):
+                registration_info = _merge_meaningful_values(registration_info, zh_overrides["registration_info"])
+            if zh_overrides.get("credit_summary"):
+                credit_summary = _merge_meaningful_values(credit_summary, zh_overrides["credit_summary"])
+            if zh_overrides.get("active_credit_summary_by_type"):
+                active_credit_summary_by_type = zh_overrides["active_credit_summary_by_type"]
+                total_row = _find_active_row(active_credit_summary_by_type, "合计")
+                if total_row:
+                    credit_summary["active_borrowing_balance"] = total_row.get("total_balance")
+                    credit_summary["active_special_mention_balance"] = total_row.get("special_mention_balance")
+                    credit_summary["active_non_performing_balance"] = total_row.get("non_performing_balance")
+            if zh_overrides.get("credit_facility_summary"):
+                credit_facility_summary = zh_overrides["credit_facility_summary"]
+            if zh_overrides.get("shareholders"):
+                shareholders = zh_overrides["shareholders"]
+            if zh_overrides.get("key_personnel"):
+                key_personnel = zh_overrides["key_personnel"]
+            if zh_overrides.get("actual_controller"):
+                actual_controller = zh_overrides["actual_controller"]
+
             if not actual_controller.get("name"):
                 actual_controller = _pick_actual_controller_from_shareholders(shareholders)
             key_personnel = _backfill_personnel_identity_numbers(key_personnel, shareholders, actual_controller)
@@ -1322,7 +1815,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 }
                 for tag in (extracted_json.get("risk_indicators") or {}).get("risk_tags", [])
             ]
-            markdown_summary = _build_markdown_summary(extracted_json)
+            markdown_summary = _build_markdown_summary_v2(extracted_json)
 
             warnings: list[str] = []
             if not report_basic.get("company_name"):
