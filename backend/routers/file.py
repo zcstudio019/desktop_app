@@ -81,6 +81,8 @@ AI_EXTRACTION_FAILED_MESSAGE = "资料提取失败，请稍后重试。"
 OCR_PAGE_FAILED_PLACEHOLDER = "[本页识别失败]"
 CUSTOMER_NAME_UNRESOLVED_MESSAGE = "未能从资料中识别客户名称，请手动选择客户或填写客户名称后重试。"
 
+CUSTOMER_ID_REQUIRED_MESSAGE = "customerId is required for customer document upload"
+
 _CUSTOMER_NAME_FIELDS = (
     "company_name",
     "enterprise_name",
@@ -875,10 +877,19 @@ async def _run_file_process_job(
     explicit_document_type = str(execution_payload.get("documentType") or "").strip()
     requested_customer_name = str(execution_payload.get("customerName") or "").strip()
     requested_customer_id = str(execution_payload.get("customerId") or "").strip()
+    logger.info(
+        "[File Job Payload] customerId=%s customerName=%s documentType=%s",
+        requested_customer_id,
+        requested_customer_name,
+        explicit_document_type,
+    )
     current_user_payload = {
         "username": str(execution_payload.get("username") or "").strip(),
         "role": str(execution_payload.get("role") or "").strip(),
     }
+
+    if not requested_customer_id:
+        raise ValueError(CUSTOMER_ID_REQUIRED_MESSAGE)
 
     if not temp_file_path:
         raise ValueError(f"file process job {job_id} missing tempFilePath")
@@ -1089,6 +1100,14 @@ async def create_file_process_job(
         raise HTTPException(status_code=503, detail="当前环境不支持上传异步任务，请切换到本地数据库存储。")
 
     file_bytes, _ = await _validate_and_read_file(file)
+    logger.info(
+        "[File Job Create] customerId=%s customerName=%s documentType=%s",
+        customerId or "",
+        customerName or "",
+        documentType or "",
+    )
+    if not (customerId or "").strip():
+        raise HTTPException(status_code=400, detail=CUSTOMER_ID_REQUIRED_MESSAGE)
     job_id = uuid.uuid4().hex
     username = current_user.get("username") or "anonymous"
     role = current_user.get("role") or ""

@@ -758,7 +758,7 @@ const UploadPage: React.FC = () => {
   const hasBoundCustomerFromUrlRef = useRef(false);
 
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
-  const customerIdFromUrl = urlParams.get('customer_id') || '';
+  const customerIdFromUrl = urlParams.get('customer_id') || urlParams.get('customerId') || '';
   const missingTypes = useMemo(() => {
     const missingParam = urlParams.get('missing') || '';
     return missingParam
@@ -949,12 +949,25 @@ const UploadPage: React.FC = () => {
     ));
 
     try {
-      const activeCustomerId = state.extraction.currentCustomerId ?? null;
-      const activeCustomerName = activeCustomerId ? state.extraction.currentCustomer ?? '' : '';
+      const activeCustomerId = state.extraction.currentCustomerId ?? customerIdFromUrl ?? null;
+      const customerFromOptions = activeCustomerId
+        ? customerOptions.find((item) => item.record_id === activeCustomerId)?.name ?? ''
+        : '';
+      const activeCustomerName = activeCustomerId
+        ? state.extraction.currentCustomer ?? customerFromOptions ?? customerName ?? ''
+        : '';
       const selectedCustomerName =
         activeCustomerName.trim() ||
         customerNameOverride.trim() ||
         '';
+      console.log(
+        '[Upload] customerId=',
+        activeCustomerId,
+        'customerName=',
+        selectedCustomerName,
+        'documentType=',
+        item.documentType,
+      );
       const createdJob = await createFileProcessJob(
         item.file,
         {
@@ -1137,7 +1150,7 @@ const UploadPage: React.FC = () => {
         q.id === item.id ? { ...q, status: 'error' as const, error: errorMessage } : q
       ));
     }
-  }, [addCustomerData, getSignal, recordSystemActivity, setApplicationResult, setCurrentCustomer, setSchemeResult, state.application.result, state.extraction.currentCustomer, state.extraction.currentCustomerId, state.scheme.result]);
+  }, [addCustomerData, customerIdFromUrl, customerName, customerOptions, getSignal, recordSystemActivity, setApplicationResult, setCurrentCustomer, setSchemeResult, state.application.result, state.extraction.currentCustomer, state.extraction.currentCustomerId, state.scheme.result]);
 
   // Note: customerNameOverride is passed explicitly to avoid stale closure issues.
   const processQueue = useCallback(async (itemsToProcess?: QueueItem[], customerNameOverride?: string) => {
@@ -1230,6 +1243,7 @@ const UploadPage: React.FC = () => {
   const clearUploadUrlContext = useCallback(() => {
     const nextParams = new URLSearchParams(window.location.search);
     nextParams.delete('customer_id');
+    nextParams.delete('customerId');
     nextParams.delete('missing');
     const nextQuery = nextParams.toString();
     const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}`;

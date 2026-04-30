@@ -709,6 +709,11 @@ async def _save_to_local_storage(
         return (False, None, MISSING_CUSTOMER_NAME_MESSAGE, [], None, None, False)
 
     document_type_code = _normalize_storage_document_type(document_type)
+    logger.info(
+        "[Local Save] target customer_id=%s document_type=%s",
+        (target_customer_id or "").strip(),
+        document_type_code,
+    )
 
     try:
         if target_customer_id:
