@@ -1380,8 +1380,14 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
         raise ValueError('customer not found')
 
     customer_name = customer.get('name') or ''
+    logger.info("[Profile Sync] customer_id=%s", customer_id)
     try:
         doc_sections, source_documents = await _build_document_sections(storage_service, customer_id)
+        logger.info("[Profile Sync] documents count=%s", len(source_documents))
+        logger.info(
+            "[Profile Sync] enterprise_credit active found=%s",
+            any((doc.get('source_type') or '') == 'enterprise_credit' for doc in source_documents),
+        )
     except Exception as exc:
         logger.warning("profile_markdown documents_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
         doc_sections, source_documents = [
@@ -1426,7 +1432,7 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
         scheme_section,
     ]
 
-    return {
+    payload = {
         'customer_id': customer_id,
         'customer_name': customer_name,
         'title': f"{customer_name or customer_id}\u8d44\u6599\u6c47\u603b",
@@ -1436,11 +1442,13 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
             'customer_name': customer_name,
             'source_documents': source_documents,
             'application_summary': application_snapshot,
-            'scheme_summary': scheme_meta,
+        'scheme_summary': scheme_meta,
         },
         'rag_source_priority': get_rag_source_priority(),
         'risk_report_schema': get_risk_report_schema_template(),
     }
+    logger.info("[Profile Sync] markdown length=%s", len(payload.get('markdown_content') or ''))
+    return payload
 
 
 async def get_or_create_customer_profile(storage_service: Any, customer_id: str) -> tuple[dict[str, Any], bool]:
@@ -1476,7 +1484,11 @@ def _resolve_id_card_group_key(extracted_data: dict[str, Any], file_name: str, i
 
 
 async def _build_document_sections(storage_service: Any, customer_id: str) -> tuple[list[str], list[dict[str, Any]]]:
-    extractions = await storage_service.get_extractions_by_customer(customer_id)
+    get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+    if callable(get_business_extractions):
+        extractions = await get_business_extractions(customer_id)
+    else:
+        extractions = await storage_service.get_extractions_by_customer(customer_id)
     sections: list[str] = []
     source_documents: list[dict[str, Any]] = []
     id_card_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'id_card']
@@ -1577,6 +1589,49 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     ],
                 )
             )
+
+    if enterprise_credit_extractions:
+        try:
+            latest_success = next(
+                (
+                    item for item in enterprise_credit_extractions
+                    if isinstance(item.get('extracted_data'), dict)
+                    and str(item.get('extraction_status') or (item.get('extracted_data') or {}).get('extraction_status') or 'success') == 'success'
+                ),
+                enterprise_credit_extractions[0],
+            )
+            for extraction in enterprise_credit_extractions:
+                document = None
+                doc_id = extraction.get('doc_id')
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "profile_markdown enterprise_credit_document_meta_failed customer_id=%s doc_id=%s error=%s",
+                            customer_id,
+                            doc_id,
+                            exc,
+                        )
+                file_name = (document or {}).get('file_name') or '暂无'
+                file_path = (document or {}).get('file_path') or ''
+                extracted_data = (extraction.get('extracted_data') or {}) if isinstance(extraction.get('extracted_data'), dict) else {}
+                source_documents.append({
+                    'source_type': 'enterprise_credit',
+                    'source_type_name': get_document_display_name('enterprise_credit'),
+                    'extraction_id': extraction.get('extraction_id'),
+                    'doc_id': doc_id,
+                    'file_name': file_name,
+                    'original_status': '可查看' if file_path else '原件文件不存在或已不可用',
+                    'original_available': bool(file_path),
+                    'is_latest': extraction.get('extraction_id') == latest_success.get('extraction_id'),
+                    'schema_version': extracted_data.get('schema_version') or '',
+                })
+            section, _ = await _build_single_document_section(storage_service, customer_id, latest_success)
+            sections.append(section)
+        except Exception as exc:
+            logger.warning("profile_markdown enterprise_credit_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+            sections.append(_markdown_section('企业征信', ['- 提示：企业征信资料整理失败，请查看来源文档列表或重新提取。']))
 
     if property_extractions:
         try:

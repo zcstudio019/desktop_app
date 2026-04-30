@@ -75,6 +75,27 @@ class ProfileSyncService:
         if refresh_profile:
             logger.info("profile_sync start customer_id=%s operation_type=%s status=start", customer_id, operation_type)
             try:
+                documents = await storage_service.list_documents(customer_id)
+            except Exception as exc:
+                documents = []
+                logger.warning("[Profile Sync] documents preload failed customer_id=%s error=%s", customer_id, exc)
+            try:
+                get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+                if callable(get_business_extractions):
+                    extractions = await get_business_extractions(customer_id)
+                else:
+                    extractions = await storage_service.get_extractions_by_customer(customer_id)
+            except Exception as exc:
+                extractions = []
+                logger.warning("[Profile Sync] extractions preload failed customer_id=%s error=%s", customer_id, exc)
+            logger.info("[Profile Sync] customer_id=%s", customer_id)
+            logger.info("[Profile Sync] documents count=%s", len(documents))
+            logger.info("[Profile Sync] extractions count=%s", len(extractions))
+            logger.info(
+                "[Profile Sync] enterprise_credit active found=%s",
+                any((item.get("extraction_type") or "") == "enterprise_credit" for item in extractions if isinstance(item, dict)),
+            )
+            try:
                 await regenerate_customer_profile(storage_service, customer_id)
                 logger.info("profile_sync finish customer_id=%s operation_type=%s status=success", customer_id, operation_type)
             except Exception as exc:
