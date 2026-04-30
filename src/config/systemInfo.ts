@@ -1,8 +1,8 @@
 import { BUILD_INFO } from '../generated/build-info';
 
 export const SYSTEM_INFO = {
-  name: '鏅鸿兘璐锋鍔╂墜',
-  subtitle: '鏅鸿兘璐锋鐢宠绠＄悊绯荤粺',
+  name: '贷款助手',
+  subtitle: '客户资料驱动的融资处理系统',
   baseVersion: BUILD_INFO.version,
   version: BUILD_INFO.version,
   releaseDate: BUILD_INFO.releaseDate,
@@ -11,5 +11,5 @@ export const SYSTEM_INFO = {
 } as const;
 
 export function getSystemVersionLabel(): string {
-  return `绯荤粺鐗堟湰 ${SYSTEM_INFO.version}`;
+  return `版本 ${SYSTEM_INFO.version}`;
 }
