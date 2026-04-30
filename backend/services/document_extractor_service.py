@@ -8891,6 +8891,7 @@ def build_structured_extraction(
     elif normalized_code == "financial_statement":
         content = extract_financial_statement_fields(text_content)
     elif normalized_code == "enterprise_credit":
+        print("[enterprise_credit] 使用 skill:", normalized_code)
         content = build_enterprise_credit_content(
             text=str(text_content or ""),
             customer_id=customer_id,
@@ -8898,6 +8899,7 @@ def build_structured_extraction(
             file_name=filename,
             raw_pages=raw_pages,
         )
+        print("[enterprise_credit] 提取完成:", list((content.get("extracted_json") or {}).keys()))
         content["raw_text"] = str(text_content or "")
         if raw_pages:
             content["raw_pages"] = raw_pages

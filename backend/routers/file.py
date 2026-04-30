@@ -753,6 +753,11 @@ def _extract_structured_data(
 
     try:
         raw_pages_for_log = raw_pages
+        if document_type_code == "enterprise_credit":
+            print("[enterprise_credit] 上传 document_type:", document_type_code)
+            logger.info("[enterprise_credit] raw_text_preview=%s", (text_content or "")[:3000])
+            for item in raw_pages_for_log:
+                logger.info("[enterprise_credit] page=%s preview=%s", item.get("page"), str(item.get("text") or "")[:1500])
         if document_type_code in {"property_report", "collateral", "mortgage_info"}:
             logger.info("[property] document_type=%s filename=%s", document_type_code, filename)
             logger.info("[property] raw_pages count=%s", len(raw_pages_for_log))

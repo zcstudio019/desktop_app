@@ -134,6 +134,7 @@ async def save_to_storage(
             try:
                 from backend.services.profile_sync_service import ProfileSyncService
 
+                print("[enterprise_credit] 更新客户资料汇总", customer_id)
                 await ProfileSyncService().handle_document_saved(storage_service, customer_id)
             except Exception as exc:
                 logger.warning(
@@ -449,6 +450,7 @@ async def _save_doc_and_extraction(
         "skill_version": str(content.get("skill_version") or ""),
         "schema_version": str(content.get("schema_version") or ""),
     }
+    print("[enterprise_credit] 写入 extracted_json", bool(extraction_data.get("extracted_data")))
     await storage_service.save_extraction(extraction_data)
     logger.info("[Local Save] Saved extraction: %s", extraction_id)
 
