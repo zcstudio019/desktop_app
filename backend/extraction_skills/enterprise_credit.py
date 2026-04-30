@@ -58,6 +58,7 @@ def _clean_value(value: str | None) -> str:
             text = text.split(marker, 1)[0]
     text = text.strip(":;,.- ")
     text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[)）]有限公司$", "", text).strip()
     text = re.sub(r"(?:--|－|—)+$", "", text).strip()
     return text
 
@@ -303,6 +304,22 @@ def _extract_report_no(text: str, lines: list[str]) -> str:
 
 
 def _extract_line_field_value(lines: list[str], labels: tuple[str, ...], *, max_scan: int = 2) -> str:
+    field_stops = (
+        "经济类型",
+        "组织机构类型",
+        "企业规模",
+        "所属行业",
+        "成立年份",
+        "登记证书有效截止日期",
+        "登记地址",
+        "办公/经营地址",
+        "办公地址",
+        "经营地址",
+        "存续状态",
+        "注册资本",
+        "信贷记录明细",
+        "公共记录明细",
+    )
     for idx, line in enumerate(lines):
         normalized_line = _normalize_for_search(line)
         for label in labels:
@@ -315,6 +332,9 @@ def _extract_line_field_value(lines: list[str], labels: tuple[str, ...], *, max_
             elif normalized_label in normalized_line:
                 # Fall back to the text after the visible label length when OCR inserted spaces.
                 value = line
+            for stop in field_stops:
+                if stop not in labels and stop in value:
+                    value = value.split(stop, 1)[0]
             value = _clean_value(value)
             if value and value not in labels:
                 return value
@@ -334,6 +354,51 @@ def _numbers_after_heading(lines: list[str], heading_keywords: tuple[str, ...], 
         source = " ".join(lines[idx + 1: idx + 1 + max_scan])
         return re.findall(r"-?\d+(?:\.\d+)?", source)
     return []
+
+
+def _first_index(lines: list[str], keywords: tuple[str, ...], start: int = 0) -> int:
+    for idx in range(max(start, 0), len(lines)):
+        normalized = _normalize_for_search(lines[idx])
+        if any(keyword in lines[idx] or _normalize_for_search(keyword) in normalized for keyword in keywords):
+            return idx
+    return -1
+
+
+def _split_sections(lines: list[str]) -> dict[str, list[str]]:
+    anchors = {
+        "identity": ("身份标识",),
+        "summary": ("信息概要",),
+        "basic": ("基本信息",),
+        "credit_detail": ("信贷记录明细",),
+        "public_records": ("公共记录明细",),
+        "appendix": ("附件", "信用记录补充信息"),
+    }
+    positions = {name: _first_index(lines, keywords) for name, keywords in anchors.items()}
+    report_note = _first_index(lines, ("报告说明",))
+    header_end_candidates = [idx for idx in (report_note, positions["identity"]) if idx >= 0]
+    header_end = min(header_end_candidates) if header_end_candidates else len(lines)
+
+    def section_between(start_name: str, end_names: tuple[str, ...]) -> list[str]:
+        start = positions.get(start_name, -1)
+        if start < 0:
+            return []
+        end_candidates = [positions.get(name, -1) for name in end_names]
+        end_candidates = [idx for idx in end_candidates if idx > start]
+        end = min(end_candidates) if end_candidates else len(lines)
+        return lines[start:end]
+
+    return {
+        "header": lines[:header_end],
+        "identity": section_between("identity", ("summary", "basic", "credit_detail")),
+        "summary": section_between("summary", ("basic", "credit_detail", "public_records", "appendix")),
+        "basic": section_between("basic", ("credit_detail", "public_records", "appendix")),
+        "credit_detail": section_between("credit_detail", ("public_records", "appendix")),
+        "public_records": section_between("public_records", ("appendix",)),
+    }
+
+
+def _section_text(lines: list[str]) -> str:
+    return "\n".join(lines)
 
 
 def _extract_report_basic(text: str, lines: list[str], customer_id: str, customer_name: str, raw_pages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -415,7 +480,11 @@ def _extract_identity_info(lines: list[str], text: str) -> dict[str, Any]:
 
 
 def _extract_registration_info(lines: list[str], text: str) -> dict[str, Any]:
-    registered_capital_raw = _extract_line_field_value(lines, ("注册资本", "注册资金")) or _find_value_in_text_window(text, ("注册资本", "注册资金"), stop_labels=("法定代表人", "经济类型"))
+    capital_match = re.search(r"注册资本折人民币合计\s*([0-9,.]+\s*万元)", text)
+    registered_capital_raw = capital_match.group(1).replace(" ", "") if capital_match else (
+        _extract_line_field_value(lines, ("注册资本", "注册资金"))
+        or _find_value_in_text_window(text, ("注册资本", "注册资金"), stop_labels=("法定代表人", "经济类型"))
+    )
     established_year = _normalize_year(
         _extract_line_field_value(lines, ("成立年份", "成立日期", "设立日期", "注册日期"))
         or _find_value_in_text_window(text, ("成立年份", "成立日期", "设立日期", "注册日期"), stop_labels=("登记证书有效截止日期", "注册资本"))
@@ -458,9 +527,9 @@ def _extract_credit_summary(lines: list[str], text: str) -> dict[str, Any]:
         max_scan=4,
     )
     if len(header_counts) >= 3:
-        summary["first_credit_year"] = summary.get("first_credit_year") or header_counts[0]
-        summary["credit_institution_count"] = summary.get("credit_institution_count") if summary.get("credit_institution_count") is not None else _extract_count(header_counts[1])
-        summary["current_active_credit_institution_count"] = summary.get("current_active_credit_institution_count") if summary.get("current_active_credit_institution_count") is not None else _extract_count(header_counts[2])
+        summary["first_credit_year"] = header_counts[0]
+        summary["credit_institution_count"] = _extract_count(header_counts[1])
+        summary["current_active_credit_institution_count"] = _extract_count(header_counts[2])
 
     account_counts = _numbers_after_heading(
         lines,
@@ -468,11 +537,11 @@ def _extract_credit_summary(lines: list[str], text: str) -> dict[str, Any]:
         max_scan=4,
     )
     if len(account_counts) >= 5:
-        summary["non_credit_account_count"] = summary.get("non_credit_account_count") if summary.get("non_credit_account_count") is not None else _extract_count(account_counts[0])
-        summary["tax_arrear_record_count"] = summary.get("tax_arrear_record_count") if summary.get("tax_arrear_record_count") is not None else _extract_count(account_counts[1])
-        summary["civil_judgment_record_count"] = summary.get("civil_judgment_record_count") if summary.get("civil_judgment_record_count") is not None else _extract_count(account_counts[2])
-        summary["enforcement_record_count"] = summary.get("enforcement_record_count") if summary.get("enforcement_record_count") is not None else _extract_count(account_counts[3])
-        summary["administrative_penalty_record_count"] = summary.get("administrative_penalty_record_count") if summary.get("administrative_penalty_record_count") is not None else _extract_count(account_counts[4])
+        summary["non_credit_account_count"] = _extract_count(account_counts[0])
+        summary["tax_arrear_record_count"] = _extract_count(account_counts[1])
+        summary["civil_judgment_record_count"] = _extract_count(account_counts[2])
+        summary["enforcement_record_count"] = _extract_count(account_counts[3])
+        summary["administrative_penalty_record_count"] = _extract_count(account_counts[4])
 
     info_block = _collect_block(
         lines,
@@ -649,6 +718,23 @@ def _extract_shareholders(lines: list[str], text: str) -> list[dict[str, Any]]:
         return []
     rows: list[dict[str, Any]] = []
     joined_block = "\n".join(block)
+    for match in re.finditer(
+        r"(股东|自然人|企业|法人)\s+([\u4e00-\u9fa5]{2,16})\s+(身份证|统一社会信用代码|营业执照)\s+([0-9A-ZxX]{8,24})\s+(\d+(?:\.\d+)?)\s*%",
+        joined_block,
+    ):
+        rows.append(
+            {
+                "type": match.group(1),
+                "shareholder_type": match.group(1),
+                "name": match.group(2),
+                "identity_type": match.group(3),
+                "id_type": match.group(3),
+                "identity_no": match.group(4),
+                "id_no": match.group(4),
+                "contribution_ratio": match.group(5) + "%",
+                "shareholding_ratio": match.group(5) + "%",
+            }
+        )
     record_candidates = re.split(r"(?=(?:自然人|企业|法人|股东))", joined_block)
     for candidate in record_candidates:
         normalized = _normalize_text(candidate)
@@ -671,10 +757,14 @@ def _extract_shareholders(lines: list[str], text: str) -> list[dict[str, Any]]:
         rows.append(
             {
                 "type": row_type,
+                "shareholder_type": row_type,
                 "name": shareholder_name or None,
                 "identity_type": id_type,
+                "id_type": id_type,
                 "identity_no": identity_no_match.group(1) if identity_no_match else None,
+                "id_no": identity_no_match.group(1) if identity_no_match else None,
                 "contribution_ratio": ratio.group(1) + "%",
+                "shareholding_ratio": ratio.group(1) + "%",
             }
         )
     deduped: list[dict[str, Any]] = []
@@ -701,6 +791,20 @@ def _extract_key_personnel(lines: list[str], text: str) -> list[dict[str, Any]]:
         return []
     roles = ("法定代表人", "负责人", "执行董事", "董事长", "董事", "监事", "经理", "总经理", "财务负责人")
     people: list[dict[str, Any]] = []
+    joined_block = " ".join(block)
+    legal_match = re.search(
+        r"法定代表人/非法人组织负责\s*人?\s*([\u4e00-\u9fa5]{2,4})\s+身份证\s+([0-9Xx]{15,18})",
+        joined_block,
+    )
+    if legal_match:
+        people.append(
+            {
+                "position": "法定代表人/非法人组织负责人",
+                "name": legal_match.group(1),
+                "identity_type": "身份证",
+                "identity_no": legal_match.group(2),
+            }
+        )
     for idx, line in enumerate(block):
         normalized = _normalize_text(line)
         role = next((role for role in roles if role in normalized), "")
@@ -750,16 +854,24 @@ def _extract_actual_controller(lines: list[str], text: str) -> dict[str, Any]:
     if not block:
         return {}
     joined = " ".join(block)
+    controller_match = re.search(r"([\u4e00-\u9fa5]{2,16})\s+(身份证|统一社会信用代码|营业执照)\s+([0-9A-ZxX]{8,24})", joined)
     name = _find_after_labels(block, ("名称", "姓名", "实际控制人"), max_scan=2)
     if not name:
         match = re.search(r"实际控制人[: ]*([\u4e00-\u9fa5]{2,12})", joined)
         name = match.group(1) if match else ""
+    if controller_match and (not name or "实际控制人" in name):
+        name = controller_match.group(1)
     identity_type = "身份证" if "身份证" in joined else ("统一社会信用代码" if "统一社会信用代码" in joined else None)
     identity_no_match = re.search(r"([0-9]{17}[0-9Xx]|[0-9A-Z]{8,24})", joined)
+    if controller_match:
+        identity_type = controller_match.group(2)
+        identity_no_match = re.match(r"(.+)", controller_match.group(3))
     return {
         "name": name or None,
         "identity_type": identity_type,
+        "id_type": identity_type,
         "identity_no": identity_no_match.group(1) if identity_no_match else None,
+        "id_no": identity_no_match.group(1) if identity_no_match else None,
     }
 
 
@@ -894,6 +1006,7 @@ def _derive_risk_indicators(extracted_json: dict[str, Any]) -> dict[str, Any]:
     credit_summary = extracted_json.get("credit_summary") or {}
     active_credit_rows = extracted_json.get("active_credit_summary_by_type") or []
     credit_facility_summary = extracted_json.get("credit_facility_summary") or {}
+    active_loans = extracted_json.get("active_loans") or []
 
     special_balance = _to_float(credit_summary.get("active_special_mention_balance")) or 0.0
     non_performing_balance = _to_float(credit_summary.get("active_non_performing_balance")) or 0.0
@@ -909,6 +1022,10 @@ def _derive_risk_indicators(extracted_json: dict[str, Any]) -> dict[str, Any]:
             short_term_total = total_balance
         elif row_type == "中长期借款":
             long_term_total = total_balance
+        special_balance = max(special_balance, _to_float(item.get("special_mention_balance")) or 0.0)
+        non_performing_balance = max(non_performing_balance, _to_float(item.get("non_performing_balance")) or 0.0)
+
+    has_overdue = any((_to_float(item.get("overdue_amount")) or 0.0) > 0 for item in active_loans)
 
     revolving = credit_facility_summary.get("revolving") or {}
     non_revolving = credit_facility_summary.get("non_revolving") or {}
@@ -956,7 +1073,7 @@ def _derive_risk_indicators(extracted_json: dict[str, Any]) -> dict[str, Any]:
         summary_parts.append("当前未识别到明显高风险信号")
 
     return {
-        "has_overdue": False,
+        "has_overdue": has_overdue,
         "has_non_performing": non_performing_balance > 0,
         "has_special_mention": special_balance > 0,
         "has_tax_arrears": bool((credit_summary.get("tax_arrear_record_count") or 0) > 0),
@@ -1070,23 +1187,29 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             lines = [_clean_value(line) for line in raw_text.split("\n")]
             lines = [line for line in lines if line and not re.fullmatch(r"第?\s*\d+\s*页(?:/共\s*\d+\s*页)?", line)]
 
-            search_lines = _merge_fragment_lines(lines)
+            sections = _split_sections(lines)
+            header_lines = _merge_fragment_lines(sections.get("header") or [])
+            identity_lines = _merge_fragment_lines(sections.get("identity") or [])
+            summary_lines = _merge_fragment_lines(sections.get("summary") or [])
+            basic_lines = _merge_fragment_lines(sections.get("basic") or [])
+            credit_detail_text = _section_text(sections.get("credit_detail") or [])
+            public_record_text = _section_text(sections.get("public_records") or [])
 
             report_basic = _extract_report_basic(
-                raw_text,
-                search_lines,
+                _section_text(sections.get("header") or []) or raw_text[:2000],
+                header_lines,
                 input_data.customer_id,
                 str(input_data.metadata.get("customer_name") or ""),
                 raw_pages,
             )
-            identity_info = _extract_identity_info(search_lines, raw_text)
-            registration_info = _extract_registration_info(search_lines, raw_text)
-            credit_summary = _extract_credit_summary(search_lines, raw_text)
-            active_credit_summary_by_type = _extract_active_credit_summary_by_type(search_lines, raw_text)
-            credit_facility_summary = _extract_credit_facility_summary(search_lines, raw_text)
-            shareholders = _extract_shareholders(search_lines, raw_text)
-            key_personnel = _extract_key_personnel(search_lines, raw_text)
-            actual_controller = _extract_actual_controller(search_lines, raw_text)
+            identity_info = _extract_identity_info(identity_lines, _section_text(sections.get("identity") or []))
+            registration_info = _extract_registration_info(basic_lines, _section_text(sections.get("basic") or []))
+            credit_summary = _extract_credit_summary(summary_lines, _section_text(sections.get("summary") or []))
+            active_credit_summary_by_type = _extract_active_credit_summary_by_type(summary_lines, _section_text(sections.get("summary") or []))
+            credit_facility_summary = _extract_credit_facility_summary(summary_lines, _section_text(sections.get("summary") or []))
+            shareholders = _extract_shareholders(basic_lines, _section_text(sections.get("basic") or []))
+            key_personnel = _extract_key_personnel(basic_lines, _section_text(sections.get("basic") or []))
+            actual_controller = _extract_actual_controller(basic_lines, _section_text(sections.get("basic") or []))
             if not actual_controller.get("name"):
                 actual_controller = _pick_actual_controller_from_shareholders(shareholders)
             key_personnel = _backfill_personnel_identity_numbers(key_personnel, shareholders, actual_controller)
@@ -1096,9 +1219,9 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                         actual_controller["identity_type"] = actual_controller.get("identity_type") or person.get("identity_type")
                         actual_controller["identity_no"] = person.get("identity_no")
                         break
-            public_records = _extract_public_records(search_lines, raw_text, credit_summary)
+            public_records = _extract_public_records(_merge_fragment_lines(sections.get("public_records") or []), public_record_text, credit_summary)
             active_loans = _extract_detail_records_from_block(
-                raw_text,
+                credit_detail_text,
                 ("未结清贷款明细", "未结清借款明细", "未结清信贷明细"),
                 ("授信明细", "已结清贷款明细", "公共记录", "查询记录"),
                 {
@@ -1112,7 +1235,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 },
             )
             credit_facilities = _extract_detail_records_from_block(
-                raw_text,
+                credit_detail_text,
                 ("授信明细", "授信额度明细"),
                 ("已结清贷款明细", "公共记录", "查询记录"),
                 {
@@ -1125,7 +1248,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 },
             )
             closed_loans = _extract_detail_records_from_block(
-                raw_text,
+                credit_detail_text,
                 ("已结清贷款明细", "已结清借款明细"),
                 ("公共记录", "查询记录", "附注"),
                 {
