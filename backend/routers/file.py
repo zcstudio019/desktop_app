@@ -164,6 +164,15 @@ def _clean_customer_name_candidate(value: Any) -> str:
     return candidate
 
 
+def _derive_customer_name_from_customer_id(customer_id: str) -> str:
+    raw = str(customer_id or "").strip()
+    if raw.startswith("enterprise_"):
+        return raw[len("enterprise_"):].strip()
+    if raw.startswith("personal_"):
+        return raw[len("personal_"):].strip()
+    return ""
+
+
 def _find_customer_name_in_content(content: Any) -> str:
     if not isinstance(content, dict):
         return ""
@@ -238,10 +247,10 @@ async def _get_customer_name_by_id(customer_id: str) -> str:
         customer = await storage_service.get_customer(customer_id)
     except Exception as exc:
         logger.warning("[File Job] failed to lookup customer by id=%s: %s", customer_id, exc)
-        return ""
+        return _derive_customer_name_from_customer_id(customer_id)
     if isinstance(customer, dict):
-        return str(customer.get("name") or customer.get("customer_name") or "").strip()
-    return ""
+        return str(customer.get("name") or customer.get("customer_name") or "").strip() or _derive_customer_name_from_customer_id(customer_id)
+    return _derive_customer_name_from_customer_id(customer_id)
 
 
 async def _customer_exists_by_name(customer_name: str) -> bool:
@@ -877,6 +886,11 @@ async def _run_file_process_job(
     explicit_document_type = str(execution_payload.get("documentType") or "").strip()
     requested_customer_name = str(execution_payload.get("customerName") or "").strip()
     requested_customer_id = str(execution_payload.get("customerId") or "").strip()
+    if requested_customer_id and not requested_customer_name:
+        requested_customer_name = (
+            _derive_customer_name_from_customer_id(requested_customer_id)
+            or await _get_customer_name_by_id(requested_customer_id)
+        )
     logger.info(
         "[File Job Payload] customerId=%s customerName=%s documentType=%s",
         requested_customer_id,
@@ -924,7 +938,10 @@ async def _run_file_process_job(
 
         final_customer_name = _resolve_customer_name_after_extraction(requested_customer_name, process_result)
         if requested_customer_id and not final_customer_name:
-            final_customer_name = await _get_customer_name_by_id(requested_customer_id)
+            final_customer_name = (
+                _derive_customer_name_from_customer_id(requested_customer_id)
+                or await _get_customer_name_by_id(requested_customer_id)
+            )
         if not final_customer_name:
             raise ValueError(CUSTOMER_NAME_UNRESOLVED_MESSAGE)
 
@@ -951,6 +968,7 @@ async def _run_file_process_job(
         if not success:
             raise RuntimeError(error_msg or "资料保存失败")
         customer_auto_created = not requested_customer_id and not existing_customer_before_save and bool(final_customer_id)
+        post_save_warning = ""
 
         if final_customer_id:
             await _update_file_process_progress(job_id, "正在刷新资料汇总")
@@ -1100,13 +1118,17 @@ async def create_file_process_job(
         raise HTTPException(status_code=503, detail="当前环境不支持上传异步任务，请切换到本地数据库存储。")
 
     file_bytes, _ = await _validate_and_read_file(file)
+    normalized_customer_id = (customerId or "").strip()
+    normalized_customer_name = str(customerName or "").strip()
+    if normalized_customer_id and not normalized_customer_name:
+        normalized_customer_name = _derive_customer_name_from_customer_id(normalized_customer_id)
     logger.info(
         "[File Job Create] customerId=%s customerName=%s documentType=%s",
-        customerId or "",
-        customerName or "",
+        normalized_customer_id,
+        normalized_customer_name,
         documentType or "",
     )
-    if not (customerId or "").strip():
+    if not normalized_customer_id:
         raise HTTPException(status_code=400, detail=CUSTOMER_ID_REQUIRED_MESSAGE)
     job_id = uuid.uuid4().hex
     username = current_user.get("username") or "anonymous"
@@ -1114,8 +1136,8 @@ async def create_file_process_job(
     temp_file_path = _persist_upload_job_temp_file(job_id, file.filename or "uploaded_file", file_bytes)
     request_payload = _build_file_process_job_request_snapshot(
         document_type=documentType or "",
-        customer_id=customerId or "",
-        customer_name=customerName or "",
+        customer_id=normalized_customer_id,
+        customer_name=normalized_customer_name,
         username=username,
         original_filename=file.filename or "uploaded_file",
         file_size=len(file_bytes),
@@ -1125,8 +1147,8 @@ async def create_file_process_job(
         temp_file_path=str(temp_file_path),
         original_filename=file.filename or "uploaded_file",
         document_type=documentType or "",
-        customer_id=customerId or "",
-        customer_name=customerName or "",
+        customer_id=normalized_customer_id,
+        customer_name=normalized_customer_name,
         username=username,
         role=role,
         file_size=len(file_bytes),
@@ -1136,7 +1158,7 @@ async def create_file_process_job(
         {
             "job_id": job_id,
             "job_type": FILE_PROCESS_JOB_TYPE,
-            "customer_id": customerId or "",
+            "customer_id": normalized_customer_id,
             "username": username,
             "status": "pending",
             "progress_message": "文件已接收，等待处理",
@@ -1145,7 +1167,7 @@ async def create_file_process_job(
         }
     )
     try:
-        await _dispatch_file_process_job(job_id, {"username": username, "role": role}, customerId or "")
+        await _dispatch_file_process_job(job_id, {"username": username, "role": role}, normalized_customer_id)
     except Exception as exc:
         _cleanup_upload_job_temp_dir(job_id)
         await job_storage_service.update_async_job(

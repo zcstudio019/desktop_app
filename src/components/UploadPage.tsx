@@ -415,6 +415,11 @@ function formatCustomerOptionLabel(customerId: string | null | undefined, custom
   return customerId.replace(/^(enterprise_|personal_)/, '');
 }
 
+function deriveCustomerNameFromId(customerId: string | null | undefined): string {
+  if (!customerId) return '';
+  return customerId.replace(/^(enterprise_|personal_)/, '').trim();
+}
+
 function validateFile(file: File, acceptedExtensions: string[]): { valid: boolean; error?: string } {
   const ext = getFileExtension(file.name);
   if (!acceptedExtensions.includes(ext)) {
@@ -876,11 +881,13 @@ const UploadPage: React.FC = () => {
     const fromOptions = resolvedCustomerId
       ? customerOptions.find((item) => item.record_id === resolvedCustomerId)?.name?.trim() || ''
       : '';
+    const fromCustomerId = deriveCustomerNameFromId(resolvedCustomerId);
     return (
       state.extraction.currentCustomer?.trim() ||
       fromOptions ||
       customerName.trim() ||
       persistedCustomerName ||
+      fromCustomerId ||
       ''
     );
   }, [
@@ -975,6 +982,12 @@ const UploadPage: React.FC = () => {
     }
   }, [state.extraction.currentCustomer]);
 
+  useEffect(() => {
+    if (!customerName.trim() && resolvedCustomerName) {
+      setCustomerName(resolvedCustomerName);
+    }
+  }, [customerName, resolvedCustomerName]);
+
   // Note: customerNameOverride is passed explicitly to avoid stale closure issues.
   const processQueueItem = useCallback(async (item: QueueItem, customerNameOverride: string): Promise<void> => {
     const signal = getSignal();
@@ -987,12 +1000,18 @@ const UploadPage: React.FC = () => {
       const customerFromOptions = activeCustomerId
         ? customerOptions.find((item) => item.record_id === activeCustomerId)?.name ?? ''
         : '';
+      const customerFromId = deriveCustomerNameFromId(activeCustomerId);
       const activeCustomerName = activeCustomerId
-        ? state.extraction.currentCustomer ?? customerFromOptions ?? customerName ?? persistedCustomerName ?? ''
+        ? state.extraction.currentCustomer?.trim() ||
+          customerFromOptions.trim() ||
+          customerName.trim() ||
+          persistedCustomerName ||
+          customerFromId
         : '';
       const selectedCustomerName =
         activeCustomerName.trim() ||
         customerNameOverride.trim() ||
+        customerFromId ||
         '';
       console.log(
         '[Upload] customerId=',

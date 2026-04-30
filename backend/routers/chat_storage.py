@@ -297,6 +297,26 @@ async def _ensure_customer_exists(
             logger.warning("[Local Save] Failed to update upload_time: %s", exc)
 
 
+def _derive_customer_name_from_id(customer_id: str | None) -> str:
+    raw = str(customer_id or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("enterprise_"):
+        return raw[len("enterprise_"):].strip()
+    if raw.startswith("personal_"):
+        return raw[len("personal_"):].strip()
+    return ""
+
+
+def _infer_customer_type_from_id(customer_id: str | None, document_type_code: str) -> str:
+    raw = str(customer_id or "").strip()
+    if raw.startswith("personal_"):
+        return "personal"
+    if raw.startswith("enterprise_"):
+        return "enterprise"
+    return _guess_customer_type(raw, document_type_code)
+
+
 def _save_file_to_disk(
     customer_id: str,
     file_name: str,
@@ -704,7 +724,8 @@ async def _save_to_local_storage(
     file_bytes: bytes | None = None,
 ) -> tuple[bool, str | None, str | None, list[dict], str | None, str | None, bool]:
     """Save extracted data to local SQLite database."""
-    if not customer_name:
+    effective_customer_name = str(customer_name or "").strip() or _derive_customer_name_from_id(target_customer_id)
+    if not effective_customer_name:
         logger.warning("[Local Save] Missing customer name for %s", chat_file_name)
         return (False, None, MISSING_CUSTOMER_NAME_MESSAGE, [], None, None, False)
 
@@ -717,6 +738,13 @@ async def _save_to_local_storage(
 
     try:
         if target_customer_id:
+            await _ensure_customer_exists(
+                storage_service,
+                target_customer_id,
+                effective_customer_name,
+                _infer_customer_type_from_id(target_customer_id, document_type_code),
+                current_user,
+            )
             await _replace_existing_documents_of_same_type(
                 storage_service,
                 target_customer_id,
@@ -737,10 +765,10 @@ async def _save_to_local_storage(
 
         customer_id, customer_type = await _resolve_customer_target(
             storage_service,
-            customer_name,
+            effective_customer_name,
             document_type_code,
         )
-        await _ensure_customer_exists(storage_service, customer_id, customer_name, customer_type, current_user)
+        await _ensure_customer_exists(storage_service, customer_id, effective_customer_name, customer_type, current_user)
         await _replace_existing_documents_of_same_type(
             storage_service,
             customer_id,
@@ -759,10 +787,15 @@ async def _save_to_local_storage(
         logger.info("[Local Save] SUCCESS: %s -> extraction_id=%s", chat_file_name, extraction_id)
         return (True, extraction_id, None, [], customer_id, doc_id, original_available)
     except Exception as exc:
-        logger.error("[Local Save] Error for %s: %s", chat_file_name, exc, exc_info=True)
+        logger.exception(
+            "[Local Save] FAILED customer_id=%s document_type=%s file_name=%s",
+            (target_customer_id or "").strip(),
+            document_type_code,
+            chat_file_name,
+        )
         if "替换旧资料失败" in str(exc):
             return (False, None, "替换旧资料失败，请稍后重试。", [], None)
-        return (False, None, LOCAL_SAVE_FAILED_MESSAGE, [], None, None, False)
+        return (False, None, f"{LOCAL_SAVE_FAILED_MESSAGE}：{exc}", [], None, None, False)
 
 
 def _save_to_feishu_legacy(
