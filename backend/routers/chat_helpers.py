@@ -1953,7 +1953,11 @@ async def get_customer_data_local(
             logger.info(f"[Local] No customer found for: {customer_name}")
             return (False, {})
 
-        extractions = await storage_service.get_extractions_by_customer(resolved_id)
+        get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+        if callable(get_business_extractions):
+            extractions = await get_business_extractions(resolved_id)
+        else:
+            extractions = await storage_service.get_extractions_by_customer(resolved_id)
         if not extractions:
             logger.info(f"[Local] Customer found but no extractions: {customer_name}")
             return (True, {})

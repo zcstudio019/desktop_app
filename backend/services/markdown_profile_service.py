@@ -152,6 +152,15 @@ HIDDEN_STRUCTURED_FIELDS = {
     'management_role_evidence_lines',
     'raw_text',
     'raw_pages',
+    'extracted_json',
+    'markdown_summary',
+    'skill_name',
+    'skill_version',
+    'schema_version',
+    'warnings',
+    'errors',
+    'extraction_status',
+    'extraction_error',
 }
 OPTIONAL_COMPANY_ARTICLES_FIELDS = {
     'executive_director',
@@ -614,7 +623,11 @@ def _format_field_label(key: str) -> str:
 
 
 async def _build_document_sections(storage_service: Any, customer_id: str) -> tuple[list[str], list[dict[str, Any]]]:
-    extractions = await storage_service.get_extractions_by_customer(customer_id)
+    get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+    if callable(get_business_extractions):
+        extractions = await get_business_extractions(customer_id)
+    else:
+        extractions = await storage_service.get_extractions_by_customer(customer_id)
     sections: list[str] = []
     source_documents: list[dict[str, Any]] = []
     id_card_extractions: list[dict[str, Any]] = []
@@ -695,6 +708,44 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     ],
                 )
             )
+
+    if enterprise_credit_extractions:
+        try:
+            latest_success = next(
+                (
+                    item for item in enterprise_credit_extractions
+                    if isinstance(item.get('extracted_data'), dict)
+                    and (item.get('extracted_data') or {}).get('extraction_status') != 'failed'
+                ),
+                enterprise_credit_extractions[0],
+            )
+            for extraction in enterprise_credit_extractions:
+                document = None
+                doc_id = extraction.get('doc_id')
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning("profile_markdown enterprise_credit_document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
+                file_name = (document or {}).get('file_name') or '暂无'
+                file_path = (document or {}).get('file_path') or ''
+                extracted_data = (extraction.get('extracted_data') or {}) if isinstance(extraction.get('extracted_data'), dict) else {}
+                source_documents.append({
+                    'source_type': 'enterprise_credit',
+                    'source_type_name': get_document_display_name('enterprise_credit'),
+                    'extraction_id': extraction.get('extraction_id'),
+                    'doc_id': doc_id,
+                    'file_name': file_name,
+                    'original_status': '可查看' if file_path else '原件文件不存在或已不可用',
+                    'original_available': bool(file_path),
+                    'is_latest': extraction.get('extraction_id') == latest_success.get('extraction_id'),
+                    'schema_version': extracted_data.get('schema_version') or '',
+                })
+            section, _ = await _build_single_document_section(storage_service, customer_id, latest_success)
+            sections.append(section)
+        except Exception as exc:
+            logger.warning("profile_markdown enterprise_credit_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+            sections.append(_markdown_section('企业征信', ['- 提示：企业征信资料整理失败，请查看来源文档列表或重新提取。']))
 
     for extraction in other_extractions:
         extraction_id = extraction.get('extraction_id') or ''
@@ -1156,6 +1207,54 @@ async def _build_single_document_section(
         lines = _build_property_section_lines([file_name], bool(store_original and file_path), extracted_data)
         source_document['source_type_name'] = property_title
         return _markdown_section(property_title, lines), source_document
+    if extraction_type == 'enterprise_credit' and isinstance(extracted_data, dict):
+        lines = [
+            f'- 资料类型：{type_name}',
+            f'- 来源文件：{file_name}',
+            f'- 原件状态：{original_status}',
+        ]
+        summary = str(extracted_data.get('markdown_summary') or '').strip()
+        if summary:
+            lines.extend(['', summary])
+        else:
+            extracted_json = extracted_data.get('extracted_json') or {}
+            report_basic = extracted_json.get('report_basic') or {}
+            registration_info = extracted_json.get('registration_info') or {}
+            credit_summary = extracted_json.get('credit_summary') or {}
+            lines.extend(
+                [
+                    '',
+                    '### 报告基础信息',
+                    f"- 企业名称：{report_basic.get('company_name') or '未识别'}",
+                    f"- 统一社会信用代码：{report_basic.get('credit_code') or '未识别'}",
+                    f"- 报告编号：{report_basic.get('report_no') or '未识别'}",
+                    f"- 报告时间：{report_basic.get('report_date') or '未识别'}",
+                    '',
+                    '### 登记信息',
+                    f"- 法定代表人：{registration_info.get('legal_representative') or '未识别'}",
+                    f"- 注册资本：{registration_info.get('registered_capital') or '未识别'}",
+                    f"- 成立日期：{registration_info.get('established_date') or '未识别'}",
+                    f"- 经营状态：{registration_info.get('business_status') or '未识别'}",
+                    f"- 地址：{registration_info.get('address') or '未识别'}",
+                    '',
+                    '### 信贷概要',
+                    f"- 贷款账户数：{credit_summary.get('loan_account_count') if credit_summary.get('loan_account_count') is not None else '未识别'}",
+                    f"- 未结清贷款数：{credit_summary.get('outstanding_loan_count') if credit_summary.get('outstanding_loan_count') is not None else '未识别'}",
+                    f"- 逾期账户数：{credit_summary.get('overdue_account_count') if credit_summary.get('overdue_account_count') is not None else '未识别'}",
+                    f"- 对外担保数：{credit_summary.get('guarantee_count') if credit_summary.get('guarantee_count') is not None else '未识别'}",
+                    f"- 查询次数：{credit_summary.get('query_count') if credit_summary.get('query_count') is not None else '未识别'}",
+                ]
+            )
+        if extracted_data.get('warnings'):
+            lines.append('')
+            lines.append('### 提取提示')
+            for warning in extracted_data.get('warnings') or []:
+                lines.append(f"- {warning}")
+        if extracted_data.get('extraction_status') == 'failed':
+            lines.append('')
+            lines.append('- 提取状态：失败')
+            lines.append(f"- 错误信息：{_format_value('summary', extracted_data.get('extraction_error'))}")
+        return _markdown_section('企业征信', lines), source_document
     if isinstance(extracted_data, dict) and extracted_data.get('extraction_status') == 'partial_failed':
         lines = [
             f'- 资料类型：{type_name}',
@@ -1382,10 +1481,12 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
     source_documents: list[dict[str, Any]] = []
     id_card_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'id_card']
     property_extractions = [item for item in extractions if (item.get('extraction_type') or '') in PROPERTY_DOCUMENT_TYPES]
+    enterprise_credit_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'enterprise_credit']
     other_extractions = [
         item for item in extractions
         if (item.get('extraction_type') or '') != 'id_card'
         and (item.get('extraction_type') or '') not in PROPERTY_DOCUMENT_TYPES
+        and (item.get('extraction_type') or '') != 'enterprise_credit'
     ]
 
     if id_card_extractions:

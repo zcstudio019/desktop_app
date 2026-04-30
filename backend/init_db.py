@@ -136,6 +136,37 @@ def init_database() -> None:
                     )
                 )
                 logger.info("[DB Migration] extractions.extracted_data upgraded to LONGTEXT")
+            if not _mysql_column_exists(connection, "documents", "file_hash"):
+                connection.execute(
+                    text(
+                        """
+                        ALTER TABLE documents
+                        ADD COLUMN file_hash VARCHAR(128) DEFAULT ''
+                        """
+                    )
+                )
+            if not _mysql_column_exists(connection, "documents", "is_active"):
+                connection.execute(text("ALTER TABLE documents ADD COLUMN is_active TINYINT(1) DEFAULT 1"))
+            if not _mysql_column_exists(connection, "documents", "archived_at"):
+                connection.execute(text("ALTER TABLE documents ADD COLUMN archived_at DATETIME NULL"))
+            if not _mysql_column_exists(connection, "documents", "replaced_by_document_id"):
+                connection.execute(text("ALTER TABLE documents ADD COLUMN replaced_by_document_id VARCHAR(64) DEFAULT ''"))
+            if not _mysql_column_exists(connection, "documents", "version_policy"):
+                connection.execute(text("ALTER TABLE documents ADD COLUMN version_policy VARCHAR(50) DEFAULT ''"))
+            if not _mysql_column_exists(connection, "documents", "report_date"):
+                connection.execute(text("ALTER TABLE documents ADD COLUMN report_date VARCHAR(64) DEFAULT ''"))
+            if not _mysql_column_exists(connection, "documents", "valid_until"):
+                connection.execute(text("ALTER TABLE documents ADD COLUMN valid_until VARCHAR(64) DEFAULT ''"))
+            if not _mysql_column_exists(connection, "extractions", "extraction_status"):
+                connection.execute(text("ALTER TABLE extractions ADD COLUMN extraction_status VARCHAR(32) DEFAULT 'success'"))
+            if not _mysql_column_exists(connection, "extractions", "extraction_error"):
+                connection.execute(text("ALTER TABLE extractions ADD COLUMN extraction_error TEXT NULL"))
+            if not _mysql_column_exists(connection, "extractions", "skill_name"):
+                connection.execute(text("ALTER TABLE extractions ADD COLUMN skill_name VARCHAR(100) DEFAULT ''"))
+            if not _mysql_column_exists(connection, "extractions", "skill_version"):
+                connection.execute(text("ALTER TABLE extractions ADD COLUMN skill_version VARCHAR(50) DEFAULT ''"))
+            if not _mysql_column_exists(connection, "extractions", "schema_version"):
+                connection.execute(text("ALTER TABLE extractions ADD COLUMN schema_version VARCHAR(100) DEFAULT ''"))
             connection.commit()
     ensure_default_admin_exists_only_for_empty_db()
 

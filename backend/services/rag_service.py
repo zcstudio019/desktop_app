@@ -63,7 +63,11 @@ class RagService:
             {"source_type": "customer_profile_markdown", "source_id": customer_id, "text": profile.get("markdown_content") or ""}
         ]
 
-        extractions = await storage_service.get_extractions_by_customer(customer_id)
+        get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+        if callable(get_business_extractions):
+            extractions = await get_business_extractions(customer_id)
+        else:
+            extractions = await storage_service.get_extractions_by_customer(customer_id)
         for extraction in extractions:
             documents.append(
                 {

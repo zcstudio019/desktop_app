@@ -16,6 +16,7 @@ from backend.document_types import (
     get_document_storage_label,
     normalize_document_type_code,
 )
+from backend.extraction_skills.enterprise_credit import build_enterprise_credit_content
 from backend.services.extraction_utils import normalize_amount, normalize_text, only_digits
 from prompts import get_prompt_for_type, load_prompts
 from utils.json_parser import parse_json
@@ -1020,6 +1021,28 @@ def extract_company_articles(text: str, ai_service: Any | None = None) -> dict[s
         "management_role_evidence_lines": management_role_evidence_lines,
         "summary": summary,
     }
+
+
+def extract_enterprise_credit_fields(
+    text: str,
+    *,
+    customer_id: str = "",
+    customer_name: str = "",
+    filename: str = "",
+    raw_pages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Enterprise credit extraction via the v1 skill wrapper."""
+    content = build_enterprise_credit_content(
+        text=str(text or ""),
+        customer_id=customer_id,
+        customer_name=customer_name,
+        file_name=filename,
+        raw_pages=raw_pages or [],
+    )
+    content["raw_text"] = str(text or "")
+    if raw_pages:
+        content["raw_pages"] = raw_pages
+    return content
 
 def extract_contract(text: str) -> dict[str, Any]:
     return {
@@ -8868,7 +8891,16 @@ def build_structured_extraction(
     elif normalized_code == "financial_statement":
         content = extract_financial_statement_fields(text_content)
     elif normalized_code == "enterprise_credit":
-        content = extract_enterprise_credit_fields(text_content)
+        content = build_enterprise_credit_content(
+            text=str(text_content or ""),
+            customer_id=customer_id,
+            customer_name=customer_name,
+            file_name=filename,
+            raw_pages=raw_pages,
+        )
+        content["raw_text"] = str(text_content or "")
+        if raw_pages:
+            content["raw_pages"] = raw_pages
     elif normalized_code == "id_card":
         content = extract_id_card(text_content)
     elif normalized_code == "vehicle_license":

@@ -744,7 +744,11 @@ async def _load_customer_context(customer_name: str, customer_id: str | None) ->
         customer = await storage_service.get_customer(customer_id)
         if customer:
             customer_found = True
-            extractions = await storage_service.get_extractions_by_customer(customer_id)
+            get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+            if callable(get_business_extractions):
+                extractions = await get_business_extractions(customer_id)
+            else:
+                extractions = await storage_service.get_extractions_by_customer(customer_id)
             customer_data = _merge_extraction_data(extractions)
             profile, _ = await get_or_create_customer_profile(storage_service, customer_id)
             profile_markdown = (profile or {}).get("markdown_content") or ""

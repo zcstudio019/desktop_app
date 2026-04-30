@@ -79,7 +79,11 @@ class RiskAssessmentService:
             return {"missing_items": [], "has_application": False, "has_scheme": False, "profile_version": None}
 
         profile, _ = await get_or_create_customer_profile(storage_service, customer_id)
-        extractions = await storage_service.get_extractions_by_customer(customer_id)
+        get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+        if callable(get_business_extractions):
+            extractions = await get_business_extractions(customer_id)
+        else:
+            extractions = await storage_service.get_extractions_by_customer(customer_id)
         scheme_snapshot = await storage_service.get_latest_scheme_snapshot(customer_id)
         applications = await storage_service.list_saved_applications(customer_id=customer_id)
         active_apps = [item for item in applications if not item.get("stale")]
@@ -232,7 +236,11 @@ class RiskAssessmentService:
             raise ValueError("customer not found")
 
         profile, _ = await get_or_create_customer_profile(storage_service, customer_id)
-        extractions = await storage_service.get_extractions_by_customer(customer_id)
+        get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+        if callable(get_business_extractions):
+            extractions = await get_business_extractions(customer_id)
+        else:
+            extractions = await storage_service.get_extractions_by_customer(customer_id)
         scheme_snapshot = await storage_service.get_latest_scheme_snapshot(customer_id)
         applications = await storage_service.list_saved_applications(customer_id=customer_id)
         active_apps = [item for item in applications if not item.get("stale")]

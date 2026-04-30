@@ -94,7 +94,11 @@ async def _resolve_scheme_customer_data(
             "资料来源": "customer_profile_markdown",
         }, "markdown"
 
-    extraction_records = await storage_service.get_extractions_by_customer(request.customerId)
+    get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
+    if callable(get_business_extractions):
+        extraction_records = await get_business_extractions(request.customerId)
+    else:
+        extraction_records = await storage_service.get_extractions_by_customer(request.customerId)
     if extraction_records:
         extraction_payload: dict[str, Any] = {
             "客户名称": request.customerName or "",

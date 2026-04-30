@@ -112,7 +112,10 @@ class SQLAlchemyStorageService:
             checkfirst=True,
         )
         self._ensure_document_owner_columns()
+        self._ensure_document_hash_column()
+        self._ensure_document_version_columns()
         self._ensure_extraction_data_longtext()
+        self._ensure_extraction_metadata_columns()
 
     def _ensure_document_owner_columns(self) -> None:
         try:
@@ -126,6 +129,47 @@ class SQLAlchemyStorageService:
             logger.info("[Migration] Added column uploader to documents")
         except Exception as exc:
             logger.warning("[Migration] Failed to ensure documents.uploader column: %s", exc)
+
+    def _ensure_document_hash_column(self) -> None:
+        try:
+            inspector = inspect(engine)
+            document_columns = {column["name"] for column in inspector.get_columns("documents")}
+            if "file_hash" in document_columns:
+                return
+            ddl = "ALTER TABLE documents ADD COLUMN file_hash VARCHAR(128) DEFAULT ''"
+            with engine.begin() as conn:
+                conn.execute(text(ddl))
+            logger.info("[Migration] Added column file_hash to documents")
+        except Exception as exc:
+            logger.warning("[Migration] Failed to ensure documents.file_hash column: %s", exc)
+
+    def _ensure_document_version_columns(self) -> None:
+        try:
+            inspector = inspect(engine)
+            if not inspector.has_table("documents"):
+                return
+            document_columns = {column["name"] for column in inspector.get_columns("documents")}
+            ddl_statements: list[str] = []
+            if "is_active" not in document_columns:
+                ddl_statements.append("ALTER TABLE documents ADD COLUMN is_active TINYINT(1) DEFAULT 1")
+            if "archived_at" not in document_columns:
+                ddl_statements.append("ALTER TABLE documents ADD COLUMN archived_at DATETIME NULL")
+            if "replaced_by_document_id" not in document_columns:
+                ddl_statements.append("ALTER TABLE documents ADD COLUMN replaced_by_document_id VARCHAR(64) DEFAULT ''")
+            if "version_policy" not in document_columns:
+                ddl_statements.append("ALTER TABLE documents ADD COLUMN version_policy VARCHAR(50) DEFAULT ''")
+            if "report_date" not in document_columns:
+                ddl_statements.append("ALTER TABLE documents ADD COLUMN report_date VARCHAR(64) DEFAULT ''")
+            if "valid_until" not in document_columns:
+                ddl_statements.append("ALTER TABLE documents ADD COLUMN valid_until VARCHAR(64) DEFAULT ''")
+            if not ddl_statements:
+                return
+            with engine.begin() as conn:
+                for ddl in ddl_statements:
+                    conn.execute(text(ddl))
+            logger.info("[Migration] Added document version columns: %s", ddl_statements)
+        except Exception as exc:
+            logger.warning("[Migration] Failed to ensure document version columns: %s", exc)
 
     def _ensure_extraction_data_longtext(self) -> None:
         if engine.dialect.name.lower() != "mysql":
@@ -160,6 +204,32 @@ class SQLAlchemyStorageService:
                 exc,
                 exc_info=True,
             )
+
+    def _ensure_extraction_metadata_columns(self) -> None:
+        try:
+            inspector = inspect(engine)
+            if not inspector.has_table("extractions"):
+                return
+            extraction_columns = {column["name"] for column in inspector.get_columns("extractions")}
+            ddl_statements: list[str] = []
+            if "extraction_status" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN extraction_status VARCHAR(32) DEFAULT 'success'")
+            if "extraction_error" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN extraction_error TEXT NULL")
+            if "skill_name" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN skill_name VARCHAR(100) DEFAULT ''")
+            if "skill_version" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN skill_version VARCHAR(50) DEFAULT ''")
+            if "schema_version" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN schema_version VARCHAR(100) DEFAULT ''")
+            if not ddl_statements:
+                return
+            with engine.begin() as conn:
+                for ddl in ddl_statements:
+                    conn.execute(text(ddl))
+            logger.info("[Migration] Added extraction metadata columns: %s", ddl_statements)
+        except Exception as exc:
+            logger.warning("[Migration] Failed to ensure extraction metadata columns: %s", exc)
 
     def _sanitize_text_for_mysql(
         self,
@@ -470,6 +540,13 @@ class SQLAlchemyStorageService:
             "upload_time": row.upload_time.isoformat() if row.upload_time else "",
             "feishu_file_id": row.feishu_file_id or "",
             "uploader": row.uploader or "",
+            "file_hash": row.file_hash or "",
+            "is_active": bool(row.is_active),
+            "archived_at": row.archived_at.isoformat() if row.archived_at else "",
+            "replaced_by_document_id": row.replaced_by_document_id or "",
+            "version_policy": row.version_policy or "",
+            "report_date": row.report_date or "",
+            "valid_until": row.valid_until or "",
         }
 
     def _row_to_extraction(self, row: Extraction) -> dict[str, Any]:
@@ -480,6 +557,11 @@ class SQLAlchemyStorageService:
             "extraction_type": row.extraction_type or "",
             "extracted_data": self._loads(row.extracted_data, {}),
             "confidence": row.confidence or 0.0,
+            "extraction_status": row.extraction_status or "success",
+            "extraction_error": row.extraction_error or "",
+            "skill_name": row.skill_name or "",
+            "skill_version": row.skill_version or "",
+            "schema_version": row.schema_version or "",
             "created_at": row.created_at.isoformat() if row.created_at else "",
         }
 
@@ -798,6 +880,76 @@ class SQLAlchemyStorageService:
             ).scalars().all()
             return [self._row_to_document(row) for row in rows]
 
+    async def activate_single_active_document(
+        self,
+        customer_id: str,
+        document_type: str,
+        new_doc_id: str,
+        *,
+        report_date: str = "",
+        valid_until: str = "",
+    ) -> bool:
+        with self._session_factory() as db:
+            now = datetime.now(timezone.utc)
+            rows = db.execute(
+                select(Document)
+                .where(Document.customer_id == customer_id)
+                .where(Document.file_type == document_type)
+            ).scalars().all()
+            target_row = None
+            for row in rows:
+                if row.doc_id == new_doc_id:
+                    target_row = row
+                elif row.is_active:
+                    row.is_active = 0
+                    row.archived_at = now
+                    row.replaced_by_document_id = new_doc_id
+                    if not row.version_policy:
+                        row.version_policy = "single_active"
+            if not target_row:
+                db.rollback()
+                return False
+            target_row.is_active = 1
+            target_row.archived_at = None
+            target_row.replaced_by_document_id = ""
+            target_row.version_policy = "single_active"
+            if report_date:
+                target_row.report_date = report_date
+            if valid_until:
+                target_row.valid_until = valid_until
+            db.commit()
+            return True
+
+    async def get_business_extractions_by_customer(self, customer_id: str) -> list[dict]:
+        with self._session_factory() as db:
+            extraction_rows = db.execute(
+                select(Extraction).where(Extraction.customer_id == customer_id).order_by(desc(Extraction.created_at), desc(Extraction.id))
+            ).scalars().all()
+            document_rows = db.execute(
+                select(Document).where(Document.customer_id == customer_id)
+            ).scalars().all()
+            document_map = {row.doc_id: row for row in document_rows}
+            latest_by_doc: dict[str, Extraction] = {}
+            for row in extraction_rows:
+                if row.doc_id and row.doc_id not in latest_by_doc:
+                    latest_by_doc[row.doc_id] = row
+            filtered_rows: list[Extraction] = []
+            for row in latest_by_doc.values():
+                extraction_type = (row.extraction_type or "").strip()
+                if extraction_type != "enterprise_credit":
+                    filtered_rows.append(row)
+                    continue
+                document = document_map.get(row.doc_id)
+                if not document:
+                    continue
+                if not bool(document.is_active):
+                    continue
+                if (row.extraction_status or "success") != "success":
+                    continue
+                filtered_rows.append(row)
+            filtered_rows.sort(key=lambda item: ((item.created_at or datetime.min), item.id or 0), reverse=True)
+            return [self._row_to_extraction(row) for row in filtered_rows]
+
     async def delete_document(self, doc_id: str) -> bool:
         with self._session_factory() as db:
             try:
@@ -871,6 +1023,12 @@ class SQLAlchemyStorageService:
         with self._session_factory() as db:
             rows = db.execute(select(Extraction).where(Extraction.doc_id == doc_id).order_by(desc(Extraction.created_at))).scalars().all()
             return [self._row_to_extraction(row) for row in rows]
+
+    async def delete_extractions_by_doc(self, doc_id: str) -> int:
+        with self._session_factory() as db:
+            result = db.execute(delete(Extraction).where(Extraction.doc_id == doc_id))
+            db.commit()
+            return result.rowcount or 0
 
     async def update_extraction(self, extraction_id: str, field: str, value: str) -> bool:
         with self._session_factory() as db:

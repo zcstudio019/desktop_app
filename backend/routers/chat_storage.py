@@ -9,7 +9,7 @@ import contextlib
 import hashlib
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,7 @@ _PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
 _MULTI_INSTANCE_DOCUMENT_TYPE_CODES = frozenset({
     "id_card",
     "bank_statement",
+    "enterprise_credit",
 })
 
 _PROPERTY_MULTI_FILE_DOCUMENT_TYPE_CODES = frozenset({
@@ -54,6 +55,8 @@ _PROPERTY_MULTI_FILE_DOCUMENT_TYPE_CODES = frozenset({
     "mortgage_info",
     "property_certificate",
 })
+
+ENTERPRISE_CREDIT_VALID_DAYS = 90
 
 _DOCUMENT_TYPE_CODE_FALLBACKS = {
     "营业执照": "business_license",
@@ -331,6 +334,29 @@ def _save_file_to_disk(
     return (relative_path.as_posix(), file_size)
 
 
+def _normalize_enterprise_credit_report_date(report_date: str | None) -> str:
+    raw = str(report_date or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y年%m月%d日", "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        with contextlib.suppress(ValueError):
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+    compact = raw.replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-").replace(".", "-")
+    with contextlib.suppress(ValueError):
+        return datetime.strptime(compact, "%Y-%m-%d").strftime("%Y-%m-%d")
+    return raw
+
+
+def _compute_enterprise_credit_valid_until(report_date: str | None) -> str:
+    normalized = _normalize_enterprise_credit_report_date(report_date)
+    if not normalized:
+        return ""
+    with contextlib.suppress(ValueError):
+        parsed = datetime.strptime(normalized, "%Y-%m-%d")
+        return (parsed + timedelta(days=ENTERPRISE_CREDIT_VALID_DAYS)).strftime("%Y-%m-%d")
+    return ""
+
+
 async def _save_doc_and_extraction(
     storage_service: Any,
     customer_id: str,
@@ -387,6 +413,19 @@ async def _save_doc_and_extraction(
         "file_type": document_type_code,
         "file_size": file_size,
         "uploader": (current_user.get("username") or "") if current_user else "",
+        "file_hash": hashlib.sha256(file_bytes).hexdigest() if file_bytes else "",
+        "is_active": 0 if document_type_code == "enterprise_credit" else 1,
+        "archived_at": None,
+        "replaced_by_document_id": "",
+        "version_policy": "single_active" if document_type_code == "enterprise_credit" else "",
+        "report_date": _normalize_enterprise_credit_report_date(
+            ((content.get("extracted_json") or {}).get("report_basic") or {}).get("report_date")
+            or content.get("report_date")
+        ),
+        "valid_until": _compute_enterprise_credit_valid_until(
+            ((content.get("extracted_json") or {}).get("report_basic") or {}).get("report_date")
+            or content.get("report_date")
+        ) if document_type_code == "enterprise_credit" else "",
     }
     await storage_service.save_document(doc_data)
     logger.info(
@@ -404,9 +443,38 @@ async def _save_doc_and_extraction(
         "extraction_type": document_type_code,
         "extracted_data": content,
         "confidence": confidence,
+        "extraction_status": str(content.get("extraction_status") or "success"),
+        "extraction_error": str(content.get("extraction_error") or ""),
+        "skill_name": str(content.get("skill_name") or ""),
+        "skill_version": str(content.get("skill_version") or ""),
+        "schema_version": str(content.get("schema_version") or ""),
     }
     await storage_service.save_extraction(extraction_data)
     logger.info("[Local Save] Saved extraction: %s", extraction_id)
+
+    if document_type_code == "enterprise_credit" and extraction_data["extraction_status"] == "success":
+        activate_single_active = getattr(storage_service, "activate_single_active_document", None)
+        if callable(activate_single_active):
+            await activate_single_active(
+                customer_id,
+                document_type_code,
+                doc_id,
+                report_date=doc_data.get("report_date") or "",
+                valid_until=doc_data.get("valid_until") or "",
+            )
+            logger.info(
+                "[Enterprise Credit] activated current version customer_id=%s doc_id=%s report_date=%s valid_until=%s",
+                customer_id,
+                doc_id,
+                doc_data.get("report_date") or "",
+                doc_data.get("valid_until") or "",
+            )
+        else:
+            logger.warning(
+                "[Enterprise Credit] storage backend does not support activate_single_active_document customer_id=%s doc_id=%s",
+                customer_id,
+                doc_id,
+            )
 
     return extraction_id, doc_id, bool(file_path)
 

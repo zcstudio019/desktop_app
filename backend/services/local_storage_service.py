@@ -891,6 +891,10 @@ class LocalStorageService:
         finally:
             conn.close()
 
+    async def get_business_extractions_by_customer(self, customer_id: str) -> list[dict]:
+        """Compatibility shim for business-context reads."""
+        return await self.get_extractions_by_customer(customer_id)
+
     async def update_extraction(self, extraction_id: str, field: str, value: str) -> bool:
         """
         更新单条 extraction 的某个字段值

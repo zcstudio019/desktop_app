@@ -44,6 +44,7 @@ from backend.services.document_extractor_service import (
     extract_company_articles_management_roles,
     extract_company_articles_role_evidence_lines,
 )
+from backend.routers.file import _process_file_bytes
 from backend.services.activity_service import add_activity
 from backend.services.profile_sync_service import ProfileSyncService
 from backend.services.rag_service import RagService
@@ -1474,7 +1475,7 @@ async def get_customer_documents(
         file_type = str(document.get("file_type") or "")
         original_available, original_status = _build_document_original_status(document)
         definition = get_document_type_definition(file_type)
-        is_latest = file_type not in latest_seen_types
+        is_latest = bool(document.get("is_active")) if file_type == "enterprise_credit" else file_type not in latest_seen_types
         latest_seen_types.add(file_type)
 
         items.append(
@@ -1583,6 +1584,86 @@ async def preview_document_original(
         media_type=media_type,
         headers={"Content-Disposition": f"inline; filename*=UTF-8''{encoded_file_name}"},
     )
+
+
+@documents_router.post("/{doc_id}/re-extract")
+async def re_extract_document(
+    doc_id: str,
+    make_active: bool = Query(default=False),
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Re-run structured extraction for a retained document."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持重新提取")
+
+    document, customer = await _load_accessible_document(doc_id, current_user)
+    document_type = str(document.get("file_type") or "")
+    if document_type != "enterprise_credit":
+        raise HTTPException(status_code=400, detail="当前第一版仅支持企业征信重新提取")
+
+    absolute_path = _resolve_document_absolute_path(document.get("file_path"))
+    if not absolute_path or not absolute_path.exists():
+        raise HTTPException(status_code=409, detail=DOCUMENT_FILE_MISSING_MESSAGE)
+
+    file_bytes = absolute_path.read_bytes()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="原件为空，无法重新提取")
+
+    process_result = await _process_file_bytes(
+        file_bytes,
+        absolute_path.suffix,
+        document.get("file_name") or absolute_path.name,
+        document_type,
+        customer_id=document.get("customer_id") or "",
+        customer_name=customer.get("name") or "",
+    )
+
+    content = process_result.content or {}
+    extraction_record = await storage_service.save_extraction(
+        {
+            "extraction_id": uuid.uuid4().hex,
+            "doc_id": doc_id,
+            "customer_id": document.get("customer_id") or "",
+            "extraction_type": document_type,
+            "extracted_data": content,
+            "confidence": float(content.get("confidence") or 0.0),
+            "extraction_status": str(content.get("extraction_status") or "success"),
+            "extraction_error": str(content.get("extraction_error") or ""),
+            "skill_name": str(content.get("skill_name") or ""),
+            "skill_version": str(content.get("skill_version") or ""),
+            "schema_version": str(content.get("schema_version") or ""),
+        }
+    )
+    if (
+        make_active
+        and document_type == "enterprise_credit"
+        and (extraction_record.get("extraction_status") or "success") == "success"
+    ):
+        extracted_json = (content.get("extracted_json") or {}) if isinstance(content, dict) else {}
+        report_basic = extracted_json.get("report_basic") or {}
+        activate_single_active = getattr(storage_service, "activate_single_active_document", None)
+        if callable(activate_single_active):
+            await activate_single_active(
+                document.get("customer_id") or "",
+                document_type,
+                doc_id,
+                report_date=str(report_basic.get("report_date") or content.get("report_date") or ""),
+                valid_until=str(document.get("valid_until") or ""),
+            )
+    await profile_sync_service.handle_document_saved(storage_service, document.get("customer_id") or "")
+    return {
+        "success": True,
+        "doc_id": doc_id,
+        "customer_id": document.get("customer_id") or "",
+        "document_type": document_type,
+        "extraction_id": extraction_record.get("extraction_id") or "",
+        "extraction_status": extraction_record.get("extraction_status") or "success",
+        "schema_version": extraction_record.get("schema_version") or "",
+        "skill_name": extraction_record.get("skill_name") or "",
+        "skill_version": extraction_record.get("skill_version") or "",
+        "customer_name": customer.get("name") or "",
+        "made_active": make_active and (extraction_record.get("extraction_status") or "success") == "success",
+    }
 
 
 @router.patch("/{customer_id}/fields")

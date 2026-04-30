@@ -42,6 +42,13 @@ class Document(Base):
     upload_time = Column(DateTime, server_default=func.now(), nullable=False)
     feishu_file_id = Column(String(255))
     uploader = Column(String(255), default="")
+    file_hash = Column(String(128), default="")
+    is_active = Column(Integer, default=1)
+    archived_at = Column(DateTime, nullable=True)
+    replaced_by_document_id = Column(String(64), default="")
+    version_policy = Column(String(50), default="")
+    report_date = Column(String(64), default="")
+    valid_until = Column(String(64), default="")
 
 
 class Extraction(Base):
@@ -54,6 +61,11 @@ class Extraction(Base):
     extraction_type = Column(String(50))
     extracted_data = Column(LONGTEXT().with_variant(Text(), "sqlite"))
     confidence = Column(Float)
+    extraction_status = Column(String(32), default="success")
+    extraction_error = Column(Text, default="")
+    skill_name = Column(String(100), default="")
+    skill_version = Column(String(50), default="")
+    schema_version = Column(String(100), default="")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
