@@ -53,7 +53,12 @@ def _normalize_text(value: str | None) -> str:
 
 def _clean_value(value: str | None) -> str:
     text = _normalize_text(value).strip()
+    for marker in ("信息来源机构", "更新日期"):
+        if marker in text:
+            text = text.split(marker, 1)[0]
     text = text.strip(":;,.- ")
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"(?:--|－|—)+$", "", text).strip()
     return text
 
 
@@ -274,6 +279,63 @@ def _extract_inline_or_window(text: str, keyword: str, pattern: str, window: int
     return ""
 
 
+def _is_valid_report_no(value: str | None) -> bool:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9]{10,40}", text):
+        return False
+    banned = ("担保方式", "余额", "五级分类", "逾期总额", "账户数", "信息概要", "借贷交易")
+    return not any(word in text for word in banned)
+
+
+def _extract_report_no(text: str, lines: list[str]) -> str:
+    head = text[:2000]
+    for pattern in (r"\bNO\.?\s*([A-Za-z0-9]{10,40})", r"\bNo\.?\s*([A-Za-z0-9]{10,40})"):
+        match = re.search(pattern, head)
+        if match and _is_valid_report_no(match.group(1)):
+            return match.group(1)
+    for line in lines[:80]:
+        if "报告编号" not in line and "报告编码" not in line:
+            continue
+        match = re.search(r"(?:报告编号|报告编码)\s*[:：]?\s*([A-Za-z0-9]{10,40})", line)
+        if match and _is_valid_report_no(match.group(1)):
+            return match.group(1)
+    return ""
+
+
+def _extract_line_field_value(lines: list[str], labels: tuple[str, ...], *, max_scan: int = 2) -> str:
+    for idx, line in enumerate(lines):
+        normalized_line = _normalize_for_search(line)
+        for label in labels:
+            normalized_label = _normalize_for_search(label)
+            if label not in line and normalized_label not in normalized_line:
+                continue
+            value = line
+            if label in value:
+                value = value.split(label, 1)[1]
+            elif normalized_label in normalized_line:
+                # Fall back to the text after the visible label length when OCR inserted spaces.
+                value = line
+            value = _clean_value(value)
+            if value and value not in labels:
+                return value
+            for offset in range(1, max_scan + 1):
+                if idx + offset >= len(lines):
+                    break
+                candidate = _clean_value(lines[idx + offset])
+                if candidate and not any(stop in candidate for stop in labels):
+                    return candidate
+    return ""
+
+
+def _numbers_after_heading(lines: list[str], heading_keywords: tuple[str, ...], *, max_scan: int = 5) -> list[str]:
+    for idx, line in enumerate(lines):
+        if not all(keyword in line for keyword in heading_keywords):
+            continue
+        source = " ".join(lines[idx + 1: idx + 1 + max_scan])
+        return re.findall(r"-?\d+(?:\.\d+)?", source)
+    return []
+
+
 def _extract_report_basic(text: str, lines: list[str], customer_id: str, customer_name: str, raw_pages: list[dict[str, Any]]) -> dict[str, Any]:
     company_name = (
         _normalize_company_name(customer_name)
@@ -306,12 +368,10 @@ def _extract_report_basic(text: str, lines: list[str], customer_id: str, custome
         match = ZHONGZHENG_CODE_RE.search(text)
         zhongzheng_code = match.group(0) if match else ""
 
-    report_no = _find_after_labels(lines, ("报告编号", "报告编码", "编号"), max_scan=2, stop_labels=("报告时间", "查询机构")) or ""
+    report_no = _extract_report_no(text, lines)
     if not report_no:
-        report_no = _find_value_in_text_window(text, ("报告编号", "报告编码"), stop_labels=("报告时间", "查询机构", "统一社会信用代码"))
-    if not report_no:
-        match = REPORT_NO_RE.search(text)
-        report_no = match.group(0) if match else ""
+        match = REPORT_NO_RE.search(text[:2000])
+        report_no = match.group(0) if match and len(match.group(0)) >= 20 and _is_valid_report_no(match.group(0)) else ""
 
     report_date = _normalize_date(
         _find_after_labels(lines, ("报告时间", "报告日期", "查询时间"), max_scan=2, stop_labels=("查询机构", "中征码", "统一社会信用代码"))
@@ -355,22 +415,22 @@ def _extract_identity_info(lines: list[str], text: str) -> dict[str, Any]:
 
 
 def _extract_registration_info(lines: list[str], text: str) -> dict[str, Any]:
-    registered_capital_raw = _find_after_labels(lines, ("注册资本", "注册资金"), max_scan=2) or _find_value_in_text_window(text, ("注册资本", "注册资金"), stop_labels=("法定代表人", "经济类型"))
+    registered_capital_raw = _extract_line_field_value(lines, ("注册资本", "注册资金")) or _find_value_in_text_window(text, ("注册资本", "注册资金"), stop_labels=("法定代表人", "经济类型"))
     established_year = _normalize_year(
-        _find_after_labels(lines, ("成立年份", "成立日期", "设立日期", "注册日期"), max_scan=2)
+        _extract_line_field_value(lines, ("成立年份", "成立日期", "设立日期", "注册日期"))
         or _find_value_in_text_window(text, ("成立年份", "成立日期", "设立日期", "注册日期"), stop_labels=("登记证书有效截止日期", "注册资本"))
     )
     return {
-        "legal_representative": _find_after_labels(lines, ("法定代表人", "负责人", "法定负责人"), max_scan=2) or _find_value_in_text_window(text, ("法定代表人", "负责人", "法定负责人"), stop_labels=("经济类型", "组织机构类型")) or None,
-        "economic_type": _find_after_labels(lines, ("经济类型",), max_scan=2) or _find_value_in_text_window(text, ("经济类型",), stop_labels=("组织机构类型", "企业规模")) or None,
-        "organization_type": _find_after_labels(lines, ("组织机构类型", "组织类型"), max_scan=2) or _find_value_in_text_window(text, ("组织机构类型", "组织类型"), stop_labels=("企业规模", "所属行业")) or None,
-        "enterprise_size": _find_after_labels(lines, ("企业规模", "规模"), max_scan=2) or _find_value_in_text_window(text, ("企业规模",), stop_labels=("所属行业", "成立年份")) or None,
-        "industry": _find_after_labels(lines, ("所属行业", "行业"), max_scan=2) or _find_value_in_text_window(text, ("所属行业", "行业"), stop_labels=("成立年份", "登记证书有效截止日期")) or None,
+        "legal_representative": _extract_line_field_value(lines, ("法定代表人", "负责人", "法定负责人")) or _find_value_in_text_window(text, ("法定代表人", "负责人", "法定负责人"), stop_labels=("经济类型", "组织机构类型")) or None,
+        "economic_type": _extract_line_field_value(lines, ("经济类型",)) or _find_value_in_text_window(text, ("经济类型",), stop_labels=("组织机构类型", "企业规模")) or None,
+        "organization_type": _extract_line_field_value(lines, ("组织机构类型", "组织类型")) or _find_value_in_text_window(text, ("组织机构类型", "组织类型"), stop_labels=("企业规模", "所属行业")) or None,
+        "enterprise_size": _extract_line_field_value(lines, ("企业规模", "规模")) or _find_value_in_text_window(text, ("企业规模",), stop_labels=("所属行业", "成立年份")) or None,
+        "industry": _extract_line_field_value(lines, ("所属行业", "行业")) or _find_value_in_text_window(text, ("所属行业", "行业"), stop_labels=("成立年份", "登记证书有效截止日期")) or None,
         "established_year": established_year or None,
-        "registration_valid_until": _normalize_date(_find_after_labels(lines, ("登记证书有效截止日期", "登记有效期至", "营业期限至"), max_scan=2) or _find_value_in_text_window(text, ("登记证书有效截止日期", "登记有效期至", "营业期限至"), stop_labels=("登记地址", "注册地址"))) or None,
-        "registered_address": _find_after_labels(lines, ("登记地址", "注册地址", "住所"), max_scan=3) or _find_value_in_text_window(text, ("登记地址", "注册地址", "住所"), stop_labels=("办公地址", "经营地址", "存续状态")) or None,
-        "business_address": _find_after_labels(lines, ("办公地址", "经营地址", "通讯地址"), max_scan=3) or _find_value_in_text_window(text, ("办公地址", "经营地址", "通讯地址"), stop_labels=("存续状态", "注册资本", "股东信息")) or None,
-        "business_status": _find_after_labels(lines, ("存续状态", "经营状态", "登记状态"), max_scan=2) or _find_value_in_text_window(text, ("存续状态", "经营状态", "登记状态"), stop_labels=("注册资本", "股东信息", "主要组成人员")) or None,
+        "registration_valid_until": _normalize_date(_extract_line_field_value(lines, ("登记证书有效截止日期", "登记有效期至", "营业期限至")) or _find_value_in_text_window(text, ("登记证书有效截止日期", "登记有效期至", "营业期限至"), stop_labels=("登记地址", "注册地址"))) or None,
+        "registered_address": _extract_line_field_value(lines, ("登记地址", "注册地址", "住所"), max_scan=1) or _find_value_in_text_window(text, ("登记地址", "注册地址", "住所"), stop_labels=("办公地址", "经营地址", "存续状态")) or None,
+        "business_address": _extract_line_field_value(lines, ("办公/经营地址", "办公地址", "经营地址", "通讯地址"), max_scan=1) or _find_value_in_text_window(text, ("办公/经营地址", "办公地址", "经营地址", "通讯地址"), stop_labels=("存续状态", "注册资本", "股东信息")) or None,
+        "business_status": _extract_line_field_value(lines, ("存续状态", "经营状态", "登记状态")) or _find_value_in_text_window(text, ("存续状态", "经营状态", "登记状态"), stop_labels=("注册资本", "股东信息", "主要组成人员")) or None,
         "registered_capital_rmb": registered_capital_raw or None,
         "registered_capital": registered_capital_raw or None,
     }
@@ -392,6 +452,47 @@ def _extract_credit_summary(lines: list[str], text: str) -> dict[str, Any]:
         "enforcement_record_count": _extract_count(_find_after_labels(lines, ("强制执行记录条数",), max_scan=2) or _find_value_in_text_window(text, ("强制执行记录条数",), stop_labels=("行政处罚记录条数",))),
         "administrative_penalty_record_count": _extract_count(_find_after_labels(lines, ("行政处罚记录条数",), max_scan=2) or _find_value_in_text_window(text, ("行政处罚记录条数",), stop_labels=("未结清信贷及授信信息概要", "股东信息"))),
     }
+    header_counts = _numbers_after_heading(
+        lines,
+        ("首次有信贷交易", "发生信贷交易", "当前有未结清信贷交易"),
+        max_scan=4,
+    )
+    if len(header_counts) >= 3:
+        summary["first_credit_year"] = summary.get("first_credit_year") or header_counts[0]
+        summary["credit_institution_count"] = summary.get("credit_institution_count") if summary.get("credit_institution_count") is not None else _extract_count(header_counts[1])
+        summary["current_active_credit_institution_count"] = summary.get("current_active_credit_institution_count") if summary.get("current_active_credit_institution_count") is not None else _extract_count(header_counts[2])
+
+    account_counts = _numbers_after_heading(
+        lines,
+        ("非信贷", "欠税", "民事判决", "强制执行", "行政处罚"),
+        max_scan=4,
+    )
+    if len(account_counts) >= 5:
+        summary["non_credit_account_count"] = summary.get("non_credit_account_count") if summary.get("non_credit_account_count") is not None else _extract_count(account_counts[0])
+        summary["tax_arrear_record_count"] = summary.get("tax_arrear_record_count") if summary.get("tax_arrear_record_count") is not None else _extract_count(account_counts[1])
+        summary["civil_judgment_record_count"] = summary.get("civil_judgment_record_count") if summary.get("civil_judgment_record_count") is not None else _extract_count(account_counts[2])
+        summary["enforcement_record_count"] = summary.get("enforcement_record_count") if summary.get("enforcement_record_count") is not None else _extract_count(account_counts[3])
+        summary["administrative_penalty_record_count"] = summary.get("administrative_penalty_record_count") if summary.get("administrative_penalty_record_count") is not None else _extract_count(account_counts[4])
+
+    info_block = _collect_block(
+        lines,
+        ("信息概要",),
+        ("未结清信贷及授信信息概要", "基本信息", "身份标识", "股东信息"),
+    )
+    info_source = " ".join(info_block) if info_block else text[:6000]
+    loan_idx = info_source.find("借贷交易")
+    if loan_idx >= 0:
+        balance_source = info_source[loan_idx: loan_idx + 500]
+        balance_numbers = re.findall(r"-?\d+(?:\.\d+)?", balance_source)
+        if len(balance_numbers) >= 2:
+            summary["active_borrowing_balance"] = _normalize_numeric(balance_numbers[0])
+            summary["guarantee_balance"] = _normalize_numeric(balance_numbers[1])
+        if len(balance_numbers) >= 3:
+            summary["active_recourse_balance"] = _normalize_numeric(balance_numbers[2])
+        if len(balance_numbers) >= 4:
+            summary["active_special_mention_balance"] = _normalize_numeric(balance_numbers[3])
+        if len(balance_numbers) >= 5:
+            summary["active_non_performing_balance"] = _normalize_numeric(balance_numbers[4])
     return summary
 
 
@@ -477,6 +578,23 @@ def _extract_credit_facility_summary(lines: list[str], text: str) -> dict[str, A
         "non_revolving": {"total_limit": None, "used_limit": None, "available_limit": None},
         "revolving": {"total_limit": None, "used_limit": None, "available_limit": None},
     }
+    combined_heading_numbers = _numbers_after_heading(
+        lines,
+        ("非循环信用额度", "循环信用额度"),
+        max_scan=5,
+    )
+    if len(combined_heading_numbers) >= 6:
+        result["non_revolving"] = {
+            "total_limit": _normalize_numeric(combined_heading_numbers[0]),
+            "used_limit": _normalize_numeric(combined_heading_numbers[1]),
+            "available_limit": _normalize_numeric(combined_heading_numbers[2]),
+        }
+        result["revolving"] = {
+            "total_limit": _normalize_numeric(combined_heading_numbers[3]),
+            "used_limit": _normalize_numeric(combined_heading_numbers[4]),
+            "available_limit": _normalize_numeric(combined_heading_numbers[5]),
+        }
+        return result
     for idx, line in enumerate(lines):
         normalized = _normalize_text(line)
         if "非循环信用额度" in normalized:
