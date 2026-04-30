@@ -349,9 +349,10 @@ def _extract_line_field_value(lines: list[str], labels: tuple[str, ...], *, max_
 
 def _numbers_after_heading(lines: list[str], heading_keywords: tuple[str, ...], *, max_scan: int = 5) -> list[str]:
     for idx, line in enumerate(lines):
-        if not all(keyword in line for keyword in heading_keywords):
+        heading_source = " ".join(lines[idx: idx + max_scan])
+        if not all(keyword in heading_source for keyword in heading_keywords):
             continue
-        source = " ".join(lines[idx + 1: idx + 1 + max_scan])
+        source = " ".join(lines[idx: idx + max_scan])
         return re.findall(r"-?\d+(?:\.\d+)?", source)
     return []
 
@@ -374,6 +375,25 @@ def _split_sections(lines: list[str]) -> dict[str, list[str]]:
         "appendix": ("附件", "信用记录补充信息"),
     }
     positions = {name: _first_index(lines, keywords) for name, keywords in anchors.items()}
+    summary_candidates = [
+        idx for idx, line in enumerate(lines)
+        if "信息概要" in line and (
+            "首次有信贷交易" in " ".join(lines[idx: idx + 80])
+            or "借贷交易" in " ".join(lines[idx: idx + 80])
+        )
+    ]
+    if summary_candidates:
+        positions["summary"] = summary_candidates[0]
+    basic_candidates = [
+        idx for idx, line in enumerate(lines)
+        if "基本信息" in line and (
+            "经济类型" in " ".join(lines[idx: idx + 120])
+            or "企业规模" in " ".join(lines[idx: idx + 120])
+            or "注册资本折人民币合计" in " ".join(lines[idx: idx + 120])
+        )
+    ]
+    if basic_candidates:
+        positions["basic"] = basic_candidates[0]
     report_note = _first_index(lines, ("报告说明",))
     header_end_candidates = [idx for idx in (report_note, positions["identity"]) if idx >= 0]
     header_end = min(header_end_candidates) if header_end_candidates else len(lines)
@@ -507,19 +527,21 @@ def _extract_registration_info(lines: list[str], text: str) -> dict[str, Any]:
 
 def _extract_credit_summary(lines: list[str], text: str) -> dict[str, Any]:
     summary = {
-        "first_credit_year": _normalize_year(_find_after_labels(lines, ("首次有信贷交易年份",), max_scan=2) or _find_value_in_text_window(text, ("首次有信贷交易年份",), stop_labels=("发生信贷交易机构数",))),
-        "credit_institution_count": _extract_count(_find_after_labels(lines, ("发生信贷交易机构数",), max_scan=2) or _find_value_in_text_window(text, ("发生信贷交易机构数",), stop_labels=("当前有未结清信贷交易机构数",))),
-        "current_active_credit_institution_count": _extract_count(_find_after_labels(lines, ("当前有未结清信贷交易机构数", "当前未结清信贷交易机构数"), max_scan=2) or _find_value_in_text_window(text, ("当前有未结清信贷交易机构数", "当前未结清信贷交易机构数"), stop_labels=("借贷交易余额",))),
-        "active_borrowing_balance": _normalize_numeric(_find_after_labels(lines, ("借贷交易余额", "未结清借贷余额"), max_scan=2) or _find_value_in_text_window(text, ("借贷交易余额", "未结清借贷余额"), stop_labels=("被追偿余额",))) or None,
-        "active_recourse_balance": _normalize_numeric(_find_after_labels(lines, ("被追偿余额",), max_scan=2) or _find_value_in_text_window(text, ("被追偿余额",), stop_labels=("关注类余额",))) or None,
-        "active_special_mention_balance": _normalize_numeric(_find_after_labels(lines, ("关注类余额",), max_scan=2) or _find_value_in_text_window(text, ("关注类余额",), stop_labels=("不良类余额",))) or None,
-        "active_non_performing_balance": _normalize_numeric(_find_after_labels(lines, ("不良类余额",), max_scan=2) or _find_value_in_text_window(text, ("不良类余额",), stop_labels=("担保交易余额",))) or None,
-        "guarantee_balance": _normalize_numeric(_find_after_labels(lines, ("担保交易余额",), max_scan=2) or _find_value_in_text_window(text, ("担保交易余额",), stop_labels=("非信贷交易账户数", "非信贷账户数"))) or None,
-        "non_credit_account_count": _extract_count(_find_after_labels(lines, ("非信贷账户数", "非信贷交易账户数"), max_scan=2) or _find_value_in_text_window(text, ("非信贷账户数", "非信贷交易账户数"), stop_labels=("欠税记录条数",))),
-        "tax_arrear_record_count": _extract_count(_find_after_labels(lines, ("欠税记录条数",), max_scan=2) or _find_value_in_text_window(text, ("欠税记录条数",), stop_labels=("民事判决记录条数",))),
-        "civil_judgment_record_count": _extract_count(_find_after_labels(lines, ("民事判决记录条数",), max_scan=2) or _find_value_in_text_window(text, ("民事判决记录条数",), stop_labels=("强制执行记录条数",))),
-        "enforcement_record_count": _extract_count(_find_after_labels(lines, ("强制执行记录条数",), max_scan=2) or _find_value_in_text_window(text, ("强制执行记录条数",), stop_labels=("行政处罚记录条数",))),
-        "administrative_penalty_record_count": _extract_count(_find_after_labels(lines, ("行政处罚记录条数",), max_scan=2) or _find_value_in_text_window(text, ("行政处罚记录条数",), stop_labels=("未结清信贷及授信信息概要", "股东信息"))),
+        "first_credit_year": None,
+        "credit_institution_count": None,
+        "current_active_credit_institution_count": None,
+        "active_borrowing_balance": None,
+        "active_recourse_balance": None,
+        "active_special_mention_balance": None,
+        "active_non_performing_balance": None,
+        "guarantee_balance": None,
+        "guarantee_special_mention_balance": None,
+        "guarantee_non_performing_balance": None,
+        "non_credit_account_count": None,
+        "tax_arrear_record_count": None,
+        "civil_judgment_record_count": None,
+        "enforcement_record_count": None,
+        "administrative_penalty_record_count": None,
     }
     header_counts = _numbers_after_heading(
         lines,
@@ -559,9 +581,13 @@ def _extract_credit_summary(lines: list[str], text: str) -> dict[str, Any]:
         if len(balance_numbers) >= 3:
             summary["active_recourse_balance"] = _normalize_numeric(balance_numbers[2])
         if len(balance_numbers) >= 4:
-            summary["active_special_mention_balance"] = _normalize_numeric(balance_numbers[3])
+            summary["guarantee_special_mention_balance"] = _normalize_numeric(balance_numbers[3])
         if len(balance_numbers) >= 5:
-            summary["active_non_performing_balance"] = _normalize_numeric(balance_numbers[4])
+            summary["active_special_mention_balance"] = _normalize_numeric(balance_numbers[4])
+        if len(balance_numbers) >= 6:
+            summary["guarantee_non_performing_balance"] = _normalize_numeric(balance_numbers[5])
+        if len(balance_numbers) >= 7:
+            summary["active_non_performing_balance"] = _normalize_numeric(balance_numbers[6])
     return summary
 
 
@@ -847,9 +873,9 @@ def _extract_key_personnel(lines: list[str], text: str) -> list[dict[str, Any]]:
 
 
 def _extract_actual_controller(lines: list[str], text: str) -> dict[str, Any]:
-    block = _collect_block(lines, ("实际控制人",), ("公共记录", "信息概要", "主要组成人员"))
+    block = _collect_block(lines, ("实际控制人",), ("信贷记录明细", "公共记录", "信息概要", "主要组成人员"))
     if not block:
-        window = _find_value_in_text_window(text, ("实际控制人",), stop_labels=("公共记录", "信息概要", "主要组成人员"), window=200)
+        window = _find_value_in_text_window(text, ("实际控制人",), stop_labels=("信贷记录明细", "公共记录", "信息概要", "主要组成人员"), window=200)
         block = [part.strip() for part in window.split("\n") if part.strip()]
     if not block:
         return {}
