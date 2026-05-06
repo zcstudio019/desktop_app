@@ -903,6 +903,20 @@ const UploadPage: React.FC = () => {
     state.extraction.currentCustomer,
   ]);
   const requiresCustomerSelection = !resolvedCustomerId;
+  const getEffectiveCustomerId = useCallback((): string => {
+    const selectValue = customerSelectRef.current?.value?.trim() || '';
+    if (customerSelectionOverride !== null) {
+      return (selectValue || customerSelectionOverride).trim();
+    }
+    return (
+      selectValue ||
+      state.extraction.currentCustomerId ||
+      customerIdFromUrl ||
+      persistedCustomerId ||
+      ''
+    ).trim();
+  }, [customerIdFromUrl, customerSelectionOverride, persistedCustomerId, state.extraction.currentCustomerId]);
+
   const navigateToCustomerData = useCallback(
     (highlightItem?: QueueItem | null) => {
       const result = highlightItem?.result;
@@ -1001,7 +1015,7 @@ const UploadPage: React.FC = () => {
     ));
 
     try {
-      const activeCustomerId = resolvedCustomerId || null;
+      const activeCustomerId = getEffectiveCustomerId() || null;
       const customerFromOptions = activeCustomerId
         ? customerOptions.find((item) => item.record_id === activeCustomerId)?.name ?? ''
         : '';
@@ -1208,7 +1222,7 @@ const UploadPage: React.FC = () => {
         q.id === item.id ? { ...q, status: 'error' as const, error: errorMessage } : q
       ));
     }
-  }, [addCustomerData, customerIdFromUrl, customerName, customerOptions, getSignal, persistedCustomerName, recordSystemActivity, resolvedCustomerId, setApplicationResult, setCurrentCustomer, setSchemeResult, state.application.result, state.extraction.currentCustomer, state.extraction.currentCustomerId, state.scheme.result]);
+  }, [addCustomerData, customerIdFromUrl, customerName, customerOptions, getEffectiveCustomerId, getSignal, persistedCustomerName, recordSystemActivity, setApplicationResult, setCurrentCustomer, setSchemeResult, state.application.result, state.extraction.currentCustomer, state.extraction.currentCustomerId, state.scheme.result]);
 
   // Note: customerNameOverride is passed explicitly to avoid stale closure issues.
   const processQueue = useCallback(async (itemsToProcess?: QueueItem[], customerNameOverride?: string) => {
@@ -1228,7 +1242,7 @@ const UploadPage: React.FC = () => {
   }, [uploadQueue, execute, processQueueItem]);
 
   const addFilesToQueue = useCallback((files: FileList | File[]) => {
-    if (!resolvedCustomerId) {
+    if (!getEffectiveCustomerId()) {
       alert('请先选择客户后再上传资料');
       return;
     }
@@ -1268,7 +1282,7 @@ const UploadPage: React.FC = () => {
       const currentCustomerName = customerName; // Capture the latest value before scheduling.
       setTimeout(() => processQueue(pendingNewItems, currentCustomerName), 100);
     }
-  }, [customerName, processQueue, resolvedCustomerId, selectedDocumentType, selectedFileTypeConfig.acceptedExtensions]);
+  }, [customerName, getEffectiveCustomerId, processQueue, selectedDocumentType, selectedFileTypeConfig.acceptedExtensions]);
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -1303,12 +1317,12 @@ const UploadPage: React.FC = () => {
   }, [addFilesToQueue]);
 
   const handleUploadClick = useCallback(() => {
-    if (!resolvedCustomerId) {
+    if (!getEffectiveCustomerId()) {
       alert('请先选择客户后再上传资料');
       return;
     }
     fileInputRef.current?.click();
-  }, [resolvedCustomerId]);
+  }, [getEffectiveCustomerId]);
 
   const clearUploadUrlContext = useCallback(() => {
     const nextParams = new URLSearchParams(window.location.search);
