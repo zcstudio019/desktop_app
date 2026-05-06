@@ -101,6 +101,17 @@ def _normalize_date(value: str | None) -> str:
     return text
 
 
+def format_report_date(value: str | None) -> str:
+    """Display enterprise credit report timestamps as date-only values."""
+    if not value:
+        return ""
+    text = str(value).strip()
+    match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    if match:
+        return match.group(0)
+    return text
+
+
 def _normalize_year(value: str | None) -> str:
     text = _clean_value(value)
     match = re.search(r"((?:19|20)\d{2})", text)
@@ -583,6 +594,45 @@ def _extract_identity_info(lines: list[str], text: str) -> dict[str, Any]:
         "taxpayer_id_national": _find_after_labels(lines, ("纳税人识别号(国税)", "国税纳税人识别号", "国税识别号"), max_scan=2) or _find_value_in_text_window(text, ("纳税人识别号(国税)", "国税纳税人识别号", "国税识别号"), stop_labels=("纳税人识别号(地税)", "经济类型")) or None,
         "taxpayer_id_local": _find_after_labels(lines, ("纳税人识别号(地税)", "地税纳税人识别号", "地税识别号"), max_scan=2) or _find_value_in_text_window(text, ("纳税人识别号(地税)", "地税纳税人识别号", "地税识别号"), stop_labels=("经济类型", "组织机构类型")) or None,
     }
+
+
+def extract_identity_info(text: str) -> dict[str, Any]:
+    """Extract identity table fields from the raw enterprise credit text window."""
+    result: dict[str, Any] = {}
+    if not text:
+        return result
+
+    index = text.find("身份标识")
+    window = text[index : index + 3000] if index != -1 else text[:5000]
+    end = window.find("信息概要")
+    if end > 0:
+        window = window[:end]
+    window = window.replace("（", "(").replace("）", ")")
+    compact = re.sub(r"\s+", " ", window)
+
+    fields: dict[str, tuple[str, ...]] = {
+        "company_name": ("企业名称",),
+        "zhongzheng_code": ("中征码",),
+        "credit_code": ("统一社会信用代码",),
+        "organization_code": ("组织机构代码",),
+        "business_registration_no": ("工商注册号", "工商登记注册号", "营业执照注册号"),
+        "taxpayer_id_national": ("纳税人识别号(国税)", "纳税人识别号 国税", "纳税人识别号(国 税)", "国税纳税人识别号"),
+        "taxpayer_id_local": ("纳税人识别号(地税)", "纳税人识别号 地税", "纳税人识别号(地 税)", "地税纳税人识别号"),
+    }
+
+    def extract_by_labels(labels: tuple[str, ...]) -> str:
+        for label in labels:
+            pattern = rf"{re.escape(label)}[:：]?\s*([A-Za-z0-9\u4e00-\u9fa5\-]+)"
+            match = re.search(pattern, compact)
+            if match:
+                return _clean_value(match.group(1))
+        return ""
+
+    for key, labels in fields.items():
+        value = extract_by_labels(labels)
+        if value:
+            result[key] = value
+    return result
 
 
 def _extract_registration_info(lines: list[str], text: str) -> dict[str, Any]:
@@ -2145,6 +2195,7 @@ def format_loan_detail_lines(loans: list[dict[str, Any]]) -> list[str]:
 
 def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     report_basic = extracted_json.get("report_basic") or {}
+    identity_info = extracted_json.get("identity_info") or {}
     registration_info = extracted_json.get("registration_info") or {}
     credit_summary = extracted_json.get("credit_summary") or {}
     risk_indicators = extracted_json.get("risk_indicators") or {}
@@ -2169,11 +2220,15 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
         "",
         "### 报告基础信息",
         f"- 企业名称：{_display(report_basic.get('company_name'))}",
-        f"- 统一社会信用代码：{_display(report_basic.get('credit_code'))}",
         f"- 中征码：{_display(report_basic.get('zhongzheng_code'))}",
+        f"- 统一社会信用代码：{_display(report_basic.get('credit_code'))}",
+        f"- 组织机构代码：{_display(identity_info.get('organization_code'))}",
+        f"- 工商注册号：{_display(identity_info.get('business_registration_no'))}",
+        f"- 纳税人识别号(国税)：{_display(identity_info.get('taxpayer_id_national'))}",
+        f"- 纳税人识别号(地税)：{_display(identity_info.get('taxpayer_id_local'))}",
         f"- 报告编号：{_display(report_basic.get('report_no'))}",
-        f"- 报告时间：{_display(report_basic.get('report_date'))}",
         f"- 查询机构：{_display(report_basic.get('query_institution'))}",
+        f"- 报告时间：{_display(format_report_date(report_basic.get('report_date')))}",
         "",
         "### 信贷概要",
         f"- 当前未结清借贷余额：{_display(credit_summary.get('active_borrowing_balance'))}",
@@ -2241,6 +2296,7 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
 
 def _build_markdown_summary(extracted_json: dict[str, Any]) -> str:
     report_basic = extracted_json.get("report_basic") or {}
+    identity_info = extracted_json.get("identity_info") or {}
     registration_info = extracted_json.get("registration_info") or {}
     credit_summary = extracted_json.get("credit_summary") or {}
     risk_indicators = extracted_json.get("risk_indicators") or {}
@@ -2278,11 +2334,15 @@ def _build_markdown_summary(extracted_json: dict[str, Any]) -> str:
         "",
         "### 报告基础信息",
         f"- 企业名称：{report_basic.get('company_name') or '未识别'}",
-        f"- 统一社会信用代码：{report_basic.get('credit_code') or '未识别'}",
         f"- 中征码：{report_basic.get('zhongzheng_code') or '未识别'}",
+        f"- 统一社会信用代码：{report_basic.get('credit_code') or '未识别'}",
+        f"- 组织机构代码：{identity_info.get('organization_code') or '未识别'}",
+        f"- 工商注册号：{identity_info.get('business_registration_no') or '未识别'}",
+        f"- 纳税人识别号(国税)：{identity_info.get('taxpayer_id_national') or '未识别'}",
+        f"- 纳税人识别号(地税)：{identity_info.get('taxpayer_id_local') or '未识别'}",
         f"- 报告编号：{report_basic.get('report_no') or '未识别'}",
-        f"- 报告时间：{report_basic.get('report_date') or '未识别'}",
         f"- 查询机构：{report_basic.get('query_institution') or '未识别'}",
+        f"- 报告时间：{format_report_date(report_basic.get('report_date')) or '未识别'}",
         "",
         "### 信贷概要",
         f"- 当前未结清借贷余额：{credit_summary.get('active_borrowing_balance') or '未识别'}",
@@ -2405,6 +2465,21 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 raw_pages,
             )
             identity_info = _extract_identity_info(identity_lines, _section_text(sections.get("identity") or []))
+            raw_identity_info = extract_identity_info(raw_text)
+            if raw_identity_info:
+                identity_info = _merge_meaningful_values(identity_info, {
+                    "organization_code": raw_identity_info.get("organization_code"),
+                    "business_registration_no": raw_identity_info.get("business_registration_no"),
+                    "taxpayer_id_national": raw_identity_info.get("taxpayer_id_national"),
+                    "taxpayer_id_local": raw_identity_info.get("taxpayer_id_local"),
+                })
+                report_basic = _merge_meaningful_values(report_basic, {
+                    "company_name": raw_identity_info.get("company_name"),
+                    "credit_code": raw_identity_info.get("credit_code"),
+                    "zhongzheng_code": raw_identity_info.get("zhongzheng_code"),
+                })
+            if report_basic.get("report_date"):
+                report_basic["report_date"] = format_report_date(report_basic.get("report_date"))
             registration_info = _extract_registration_info(basic_lines, basic_info_text + "\n" + capital_text)
             credit_summary = _extract_credit_summary(summary_lines, info_summary_text)
             active_credit_summary_by_type = _extract_active_credit_summary_by_type(summary_lines, info_summary_text)
