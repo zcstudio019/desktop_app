@@ -1901,11 +1901,20 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                         actual_controller["identity_no"] = person.get("identity_no")
                         break
             public_records = _extract_public_records(_merge_fragment_lines(sections.get("public_records") or []), public_record_text, credit_summary)
+            logger.info("[DEBUG] has_loan_section=%s", "信贷记录明细" in raw_text)
+            loan_section = _zh_window_after(raw_text, ("信贷记录明细",), (), 5000)
+            logger.info("[DEBUG] loan_section_head=%s", loan_section[:1000])
+            logger.info("[DEBUG] has_account_no=%s", "账户编号" in loan_section)
+            debug_blocks = _split_loan_blocks(loan_section)
+            logger.info("[DEBUG] total_blocks=%s", len(debug_blocks))
+            if debug_blocks:
+                logger.info("[DEBUG] first_block_sample=%s", debug_blocks[0][:500])
             active_loan_detail_text = credit_detail_text or _zh_window_after(raw_text, ("信贷记录明细",), ("账户编号",), 20000)
             active_loans = _extract_active_loans_from_credit_detail(
                 active_loan_detail_text,
                 credit_summary.get("active_borrowing_balance"),
             )
+            logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
             credit_facilities = _extract_detail_records_from_block(
                 credit_detail_text,
                 ("授信明细", "授信额度明细"),
@@ -1969,6 +1978,16 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 for tag in (extracted_json.get("risk_indicators") or {}).get("risk_tags", [])
             ]
             markdown_summary = _build_markdown_summary_v2(extracted_json)
+            if active_loans:
+                markdown_summary += "\n\n### 未结清贷款明细（调试摘要）\n"
+                for loan in active_loans[:5]:
+                    markdown_summary += (
+                        f"- 银行：{loan.get('bank') or '未识别'} | "
+                        f"余额：{loan.get('balance') or '未识别'} | "
+                        f"分类：{loan.get('five_classification') or '未识别'}\n"
+                    )
+            else:
+                markdown_summary += "\n\n### 未结清贷款明细（调试摘要）\n- 未识别到贷款明细"
 
             warnings: list[str] = []
             if not report_basic.get("company_name"):
