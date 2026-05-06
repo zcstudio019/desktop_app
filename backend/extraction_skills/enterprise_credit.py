@@ -1328,21 +1328,29 @@ def is_valid_active_loan(loan: dict[str, Any]) -> bool:
         "历史表现",
     ]
     if sum(1 for keyword in header_keywords if keyword in text) >= 4:
+        logger.info("[EnterpriseCredit][DEBUG] drop loan header=%s", loan)
         return False
 
     bank = str(loan.get("bank") or "")
     valid_org_keywords = ["银行", "融资租赁", "保理", "小额贷款", "财务公司", "信托", "消费金融", "担保"]
+    if not bank:
+        logger.info("[EnterpriseCredit][DEBUG] drop loan no bank=%s", loan)
+        return False
     if not any(keyword in bank for keyword in valid_org_keywords):
+        logger.info("[EnterpriseCredit][DEBUG] drop loan invalid bank=%s", loan)
         return False
     if any(keyword in bank for keyword in header_keywords):
+        logger.info("[EnterpriseCredit][DEBUG] drop loan bank header=%s", loan)
         return False
 
     try:
         float(str(loan.get("balance", "")).replace(",", ""))
     except Exception:
+        logger.info("[EnterpriseCredit][DEBUG] drop loan no balance=%s", loan)
         return False
 
     if loan.get("five_classification") not in ["正常", "关注", "次级", "可疑", "损失", "违约", "未分类"]:
+        logger.info("[EnterpriseCredit][DEBUG] drop loan invalid classification=%s", loan)
         return False
 
     return True
@@ -1386,6 +1394,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         for line in (_clean_credit_detail_line(raw_line) for raw_line in normalized.splitlines())
         if line and not _is_credit_table_noise_line(line)
     ]
+    logger.info("[EnterpriseCredit][DEBUG] total_lines=%s", len(lines))
     status_line_pattern = re.compile(
         r"(?P<guarantee>保证|组合|信用|抵押|质押|其他)\s+"
         r"(?P<balance>\d+(?:\.\d+)?)\s+"
@@ -1400,6 +1409,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
     )
     biz_pattern = re.compile(r"(流动资金贷款|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
     loans: list[dict[str, Any]] = []
+    raw_loans: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()
     status_line_count = 0
 
@@ -1407,6 +1417,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         match = status_line_pattern.search(line)
         if not match:
             continue
+        logger.info("[EnterpriseCredit][DEBUG] status_line_hit index=%s line=%s", index, line)
         status_line_count += 1
         context_start = max(0, index - 18)
         for prev_index in range(index - 1, context_start - 1, -1):
@@ -1466,6 +1477,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
             "last_repay_date": last_repay_date,
             "last_repayment_date": last_repay_date,
         }
+        raw_loans.append(loan)
         if not is_valid_active_loan(loan):
             continue
         key = (loan["bank"], str(loan["balance"]), str(loan["due_date"]), str(loan["last_repay_date"]))
@@ -1475,6 +1487,8 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         loans.append(loan)
 
     logger.info("[EnterpriseCredit][DEBUG] status_line_count=%s", status_line_count)
+    logger.info("[EnterpriseCredit][DEBUG] raw_loans_before_filter_count=%s", len(raw_loans))
+    logger.info("[EnterpriseCredit][DEBUG] raw_loans_before_filter=%s", raw_loans[:10])
     logger.info("[EnterpriseCredit][DEBUG] status_line_active_loans_count=%s", len(loans))
     logger.info("[EnterpriseCredit][DEBUG] status_line_active_loans_sample=%s", loans[:5])
     return loans
@@ -1591,12 +1605,9 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
     raw_active_loans = [_parse_active_loan_block(block, active_borrowing_balance) for block in blocks]
     raw_active_loans = [loan for loan in raw_active_loans if loan.get("account_no") or loan.get("bank") or loan.get("balance")]
     logger.info("[EnterpriseCredit][DEBUG] raw_active_loans_count=%s", len(raw_active_loans))
-    loans = [loan for loan in raw_active_loans if is_valid_active_loan(loan)]
-    has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
-    if not has_effective_loan:
-        status_line_loans = _extract_active_loans_by_status_lines(active_text)
-        if status_line_loans:
-            loans = status_line_loans
+    block_loans = [loan for loan in raw_active_loans if is_valid_active_loan(loan)]
+    status_line_loans = _extract_active_loans_by_status_lines(active_text)
+    loans = status_line_loans if len(status_line_loans) >= len(block_loans) else block_loans
     has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
     if not has_effective_loan:
         tolerant_loans = _extract_active_loans_by_tolerant_table(active_text, active_borrowing_balance)
