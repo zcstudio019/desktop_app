@@ -874,13 +874,30 @@ const UploadPage: React.FC = () => {
     () => FILE_TYPES.find((item) => item.id === selectedDocumentType) ?? FILE_TYPES[0],
     [selectedDocumentType]
   );
+  const customerIdMatchedByName = useMemo(() => {
+    const lookupName = (
+      customerName.trim() ||
+      state.extraction.currentCustomer?.trim() ||
+      persistedCustomerName ||
+      ''
+    ).trim();
+    if (!lookupName) {
+      return '';
+    }
+    const matched = customerOptions.find((item) => {
+      const optionName = item.name?.trim() || '';
+      const optionIdLabel = deriveCustomerNameFromId(item.record_id);
+      return optionName === lookupName || optionIdLabel === lookupName;
+    });
+    return matched?.record_id || '';
+  }, [customerName, customerOptions, persistedCustomerName, state.extraction.currentCustomer]);
   const resolvedCustomerId = useMemo(
     () => (
       customerSelectionOverride !== null
         ? customerSelectionOverride
-        : state.extraction.currentCustomerId || customerIdFromUrl || persistedCustomerId || ''
+        : state.extraction.currentCustomerId || customerIdFromUrl || persistedCustomerId || customerIdMatchedByName || ''
     ).trim(),
-    [customerIdFromUrl, customerSelectionOverride, persistedCustomerId, state.extraction.currentCustomerId],
+    [customerIdFromUrl, customerIdMatchedByName, customerSelectionOverride, persistedCustomerId, state.extraction.currentCustomerId],
   );
   const resolvedCustomerName = useMemo(() => {
     const fromOptions = resolvedCustomerId
@@ -913,9 +930,10 @@ const UploadPage: React.FC = () => {
       state.extraction.currentCustomerId ||
       customerIdFromUrl ||
       persistedCustomerId ||
+      customerIdMatchedByName ||
       ''
     ).trim();
-  }, [customerIdFromUrl, customerSelectionOverride, persistedCustomerId, state.extraction.currentCustomerId]);
+  }, [customerIdFromUrl, customerIdMatchedByName, customerSelectionOverride, persistedCustomerId, state.extraction.currentCustomerId]);
 
   const navigateToCustomerData = useCallback(
     (highlightItem?: QueueItem | null) => {
@@ -1354,6 +1372,14 @@ const UploadPage: React.FC = () => {
     }
     const target = customerOptions.find((item) => item.record_id === customerId);
     const nextName = target?.name ?? '';
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('currentCustomerId', customerId);
+      window.sessionStorage.setItem('currentCustomerId', customerId);
+      if (nextName) {
+        window.localStorage.setItem('currentCustomerName', nextName);
+        window.sessionStorage.setItem('currentCustomerName', nextName);
+      }
+    }
     setCurrentCustomer(nextName || null, customerId);
     setCustomerName(nextName);
   }, [clearPersistedCustomerContext, clearUploadUrlContext, customerOptions, setCurrentCustomer]);
