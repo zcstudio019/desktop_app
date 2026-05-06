@@ -2030,13 +2030,17 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     lines.extend(["", "### 未结清贷款明细"])
     if active_loans:
         for loan in active_loans:
-            lines.append(
-                f"- {_display(loan.get('bank'))} | "
-                f"{_display(loan.get('biz_type') or loan.get('loan_type'))} | "
-                f"余额：{_display(loan.get('balance'))} | "
-                f"到期日：{_display(loan.get('due_date') or loan.get('end_date'))} | "
-                f"分类：{_display(loan.get('five_classification'))} | "
-                f"逾期月数：{_display(loan.get('overdue_months') or '0')}"
+            lines.extend(
+                [
+                    f"- 机构：{_display(loan.get('bank'))}",
+                    f"  业务：{_display(loan.get('biz_type') or loan.get('loan_type'))}",
+                    f"  借款金额：{_display(loan.get('loan_amount'))} 万元",
+                    f"  余额：{_display(loan.get('balance'))} 万元",
+                    f"  开立日期：{_display(loan.get('open_date') or loan.get('start_date'))}",
+                    f"  到期日：{_display(loan.get('due_date') or loan.get('end_date'))}",
+                    f"  五级分类：{_display(loan.get('five_classification'))}",
+                    f"  逾期月数：{_display(loan.get('overdue_months') or '0')}",
+                ]
             )
     else:
         lines.append("- 暂未识别到逐笔贷款明细")
