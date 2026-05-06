@@ -750,6 +750,7 @@ const UploadPage: React.FC = () => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedDocumentType, setSelectedDocumentType] = useState<string>('enterprise_credit');
   const [customerName, setCustomerName] = useState<string>('');
+  const [customerSelectionOverride, setCustomerSelectionOverride] = useState<string | null>(null);
   const [customerOptions, setCustomerOptions] = useState<CustomerListItem[]>([]);
   const [customersLoading, setCustomersLoading] = useState(false);
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
@@ -874,8 +875,12 @@ const UploadPage: React.FC = () => {
     [selectedDocumentType]
   );
   const resolvedCustomerId = useMemo(
-    () => (state.extraction.currentCustomerId || customerIdFromUrl || persistedCustomerId || '').trim(),
-    [customerIdFromUrl, persistedCustomerId, state.extraction.currentCustomerId],
+    () => (
+      customerSelectionOverride !== null
+        ? customerSelectionOverride
+        : state.extraction.currentCustomerId || customerIdFromUrl || persistedCustomerId || ''
+    ).trim(),
+    [customerIdFromUrl, customerSelectionOverride, persistedCustomerId, state.extraction.currentCustomerId],
   );
   const resolvedCustomerName = useMemo(() => {
     const fromOptions = resolvedCustomerId
@@ -1315,10 +1320,20 @@ const UploadPage: React.FC = () => {
     window.history.replaceState({}, '', nextUrl);
   }, []);
 
+  const clearPersistedCustomerContext = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.removeItem('currentCustomerId');
+    window.localStorage.removeItem('currentCustomerName');
+    window.sessionStorage.removeItem('currentCustomerId');
+    window.sessionStorage.removeItem('currentCustomerName');
+  }, []);
+
   const handleCustomerSelect = useCallback((customerId: string) => {
     hasBoundCustomerFromUrlRef.current = true;
+    setCustomerSelectionOverride(customerId);
     clearUploadUrlContext();
     if (!customerId) {
+      clearPersistedCustomerContext();
       setCurrentCustomer(null, null);
       setCustomerName('');
       return;
@@ -1327,7 +1342,7 @@ const UploadPage: React.FC = () => {
     const nextName = target?.name ?? '';
     setCurrentCustomer(nextName || null, customerId);
     setCustomerName(nextName);
-  }, [clearUploadUrlContext, customerOptions, setCurrentCustomer]);
+  }, [clearPersistedCustomerContext, clearUploadUrlContext, customerOptions, setCurrentCustomer]);
 
   useEffect(() => {
     if (!customerIdFromUrl) {
