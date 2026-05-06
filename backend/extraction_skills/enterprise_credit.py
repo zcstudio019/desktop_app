@@ -1214,6 +1214,7 @@ def clean_bank_name(bank: Any) -> str:
     for word in noise_words:
         value = value.replace(word, "")
 
+    value = re.sub(r"^\d{1,8}", "", value)
     value = re.sub(r"[A-Z0-9]{6,}", "", value)
     value = re.sub(r"[A-Za-z0-9]{8,}", "", value)
 
@@ -1282,18 +1283,30 @@ def clean_bank_name(bank: Any) -> str:
 
 def _extract_active_credit_text(credit_detail_text: str) -> str:
     credit_detail = normalize_credit_text(credit_detail_text)
-    start_candidates = ("未结清信贷", "中长期借款 共", "短期借款 共")
-    start_pos = -1
-    for key in start_candidates:
-        pos = credit_detail.find(key)
-        if pos != -1:
-            start_pos = pos
-            break
-
+    start_pos = credit_detail.find("未结清信贷")
+    if start_pos == -1:
+        start_pos = credit_detail.find("中长期借款 共")
+    if start_pos == -1:
+        start_pos = credit_detail.find("短期借款 共")
     active_text = credit_detail[start_pos:] if start_pos != -1 else credit_detail
-    end_pos = active_text.find("已结清信贷")
+
+    short_pos = active_text.find("短期借款")
+    closed_positions = [match.start() for match in re.finditer("已结清信贷", active_text)]
+    end_pos = -1
+    if closed_positions:
+        if short_pos != -1:
+            candidates = [position for position in closed_positions if position > short_pos]
+            if candidates:
+                end_pos = candidates[0]
+        else:
+            end_pos = closed_positions[0]
     if end_pos != -1:
         active_text = active_text[:end_pos]
+
+    logger.info("[EnterpriseCredit][DEBUG] has_medium=%s", "中长期借款" in active_text)
+    logger.info("[EnterpriseCredit][DEBUG] has_short=%s", "短期借款" in active_text)
+    logger.info("[EnterpriseCredit][DEBUG] active_text_len=%s", len(active_text))
+    logger.info("[EnterpriseCredit][DEBUG] active_text_tail=%s", active_text[-1500:])
     return active_text
 
 
@@ -1395,7 +1408,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         if not match:
             continue
         status_line_count += 1
-        context_start = max(0, index - 12)
+        context_start = max(0, index - 18)
         for prev_index in range(index - 1, context_start - 1, -1):
             if status_line_pattern.search(lines[prev_index]):
                 context_start = prev_index + 1
@@ -1405,11 +1418,12 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         compact_context = re.sub(r"\s+", "", context)
 
         org_candidates = []
-        for context_line in context_lines:
+        for line_offset, context_line in enumerate(context_lines):
             compact_line = re.sub(r"\s+", "", context_line)
             if not any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
                 continue
-            cleaned_line = _clean_tolerant_loan_bank(compact_line)
+            joined_line = re.sub(r"\s+", "", "".join(context_lines[line_offset : min(len(context_lines), line_offset + 3)]))
+            cleaned_line = _clean_tolerant_loan_bank(joined_line)
             if cleaned_line and not _is_credit_table_noise_line(cleaned_line):
                 org_candidates.append(cleaned_line)
         if not org_candidates:
