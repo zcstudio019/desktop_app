@@ -960,6 +960,7 @@ def _extract_actual_controller(lines: list[str], text: str) -> dict[str, Any]:
         name = match.group(1) if match else ""
     if controller_match and (not name or "实际控制人" in name):
         name = controller_match.group(1)
+    name = _clean_actual_controller_name(name)
     identity_type = "身份证" if "身份证" in joined else ("统一社会信用代码" if "统一社会信用代码" in joined else None)
     identity_no_match = re.search(r"([0-9]{17}[0-9Xx]|[0-9A-Z]{8,24})", joined)
     if controller_match:
@@ -1937,11 +1938,14 @@ def _zh_parse_enterprise_credit_overrides(raw_text: str) -> dict[str, Any]:
     actual_controller: dict[str, Any] = {}
     controller_match = re.search(r"([\u4e00-\u9fa5]{2,4})\s+身份证\s+([0-9Xx]{12,18})", controller_window)
     if controller_match:
+        controller_name = _clean_actual_controller_name(controller_match.group(1))
         actual_controller = {
-            "name": controller_match.group(1),
+            "name": controller_name,
             "identity_type": "身份证",
             "identity_no": controller_match.group(2),
         }
+        if not controller_name:
+            actual_controller = {}
 
     return {
         "debug_windows": {
@@ -1994,6 +1998,51 @@ def _find_active_row(rows: list[dict[str, Any]], *names: str) -> dict[str, Any]:
         if row_type in names or any(name in row_type for name in names):
             return item
     return {}
+
+
+def _clean_actual_controller_name(value: Any) -> str | None:
+    text = str(value or "")
+    stop_keywords = [
+        "经济类型",
+        "组织机构类型",
+        "企业规模",
+        "所属行业",
+        "成立年份",
+        "登记地址",
+        "办公/经营地址",
+        "存续状态",
+        "注册资本",
+        "信息来源机构",
+        "第 ",
+    ]
+    for stop in stop_keywords:
+        index = text.find(stop)
+        if index != -1:
+            text = text[:index]
+    text = re.sub(r"\s+", " ", text).strip(" ：:,，;；")
+    if "身份证" in text:
+        before_id = text.split("身份证", 1)[0]
+        name_match = re.search(r"([\u4e00-\u9fa5]{2,4})\s*$", before_id)
+        text = name_match.group(1) if name_match else before_id
+    else:
+        name_match = re.search(r"([\u4e00-\u9fa5]{2,4})", text)
+        text = name_match.group(1) if name_match else text
+
+    dirty_words = ("合计", "内资", "企业", "小型企业")
+    if not text or any(word in text for word in dirty_words):
+        return None
+    return text
+
+
+def risk_level_zh(level: Any) -> str:
+    mapping = {
+        "high": "高",
+        "medium": "中",
+        "low": "低",
+    }
+    if level in (None, "", "未识别", "暂无"):
+        return "未识别"
+    return mapping.get(str(level).lower(), str(level))
 
 
 def loan_term_type(loan: dict[str, Any]) -> str:
