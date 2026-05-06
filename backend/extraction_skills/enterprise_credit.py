@@ -622,9 +622,9 @@ def extract_identity_info(text: str) -> dict[str, Any]:
 
     identity_fields = [
         ("company_name", "企业名称"),
-        ("zhongzheng_code", "中征码"),
-        ("credit_code", "统一社会信用代码"),
-        ("organization_code", "组织机构代码"),
+        ("credit_code", "中征码"),
+        ("unified_social_credit_code", "统一社会信用代码"),
+        ("org_code", "组织机构代码"),
         ("business_registration_no", "工商注册号"),
         ("taxpayer_id_national", "纳税人识别号(国税)"),
         ("taxpayer_id_local", "纳税人识别号(地税)"),
@@ -650,19 +650,34 @@ def extract_identity_info(text: str) -> dict[str, Any]:
     field_labels.extend(alias for values in aliases.values() for alias in values)
 
     def clean_identity_value(key: str, value: str) -> str:
-        cleaned = re.sub(r"\s+", " ", value).strip(" :：")
+        cleaned = str(value or "").strip().replace("：", ":")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" :")
         for next_label in field_labels:
             if next_label in cleaned:
                 cleaned = cleaned.split(next_label, 1)[0].strip()
-        if key == "organization_code":
-            match = re.search(r"[A-Z0-9]{8,}", cleaned)
+
+        if key == "company_name":
+            match = re.search(r"[\u4e00-\u9fa5A-Za-z0-9（）()]{4,80}有限公司", cleaned)
+            return match.group(0) if match else (cleaned.split()[0] if cleaned.split() else cleaned)
+
+        if key == "credit_code":
+            match = re.search(r"[A-Z0-9]{10,30}", cleaned)
             return match.group(0) if match else cleaned
-        if key in {"credit_code", "business_registration_no", "taxpayer_id_national", "taxpayer_id_local"}:
-            match = re.search(r"[A-Z0-9]{15,25}", cleaned)
+
+        if key == "unified_social_credit_code":
+            match = re.search(r"[A-Z0-9]{18}", cleaned)
             return match.group(0) if match else cleaned
-        if key == "zhongzheng_code":
-            match = ZHONGZHENG_CODE_RE.search(cleaned)
-            return match.group(0) if match else cleaned
+
+        if key == "org_code":
+            candidates = re.findall(r"[A-Z0-9]{8,10}", cleaned)
+            for candidate in candidates:
+                if len(candidate) < 18:
+                    return candidate
+            return ""
+
+        if key in {"business_registration_no", "taxpayer_id_national", "taxpayer_id_local"}:
+            match = re.search(r"[A-Z0-9]{18}", cleaned)
+            return match.group(0) if match else ""
         return _clean_value(cleaned)
 
     for i, (start_idx, key, label) in enumerate(positions):
@@ -678,10 +693,16 @@ def extract_identity_info(text: str) -> dict[str, Any]:
         value = clean_identity_value(key, window[value_start:end_idx])
         if value:
             result[key] = value
+
+    unified_code = result.get("unified_social_credit_code") or ""
+    if not result.get("org_code") and re.fullmatch(r"[A-Z0-9]{18}", unified_code):
+        result["org_code"] = unified_code[8:17]
     if result.get("credit_code"):
-        result["unified_social_credit_code"] = result["credit_code"]
-    if result.get("organization_code"):
-        result["org_code"] = result["organization_code"]
+        result["zhongzheng_code"] = result["credit_code"]
+    if result.get("unified_social_credit_code"):
+        result["organization_credit_code"] = result["unified_social_credit_code"]
+    if result.get("org_code"):
+        result["organization_code"] = result["org_code"]
     return result
 
 
@@ -2264,15 +2285,19 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     medium_long_loans = [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
     short_balance = short_term.get("total_balance") or credit_summary.get("short_term_loan_balance") or _sum_loan_balances(short_loans)
     medium_long_balance = long_term.get("total_balance") or credit_summary.get("medium_long_term_loan_balance") or _sum_loan_balances(medium_long_loans)
+    identity_company_name = identity_info.get("company_name") or report_basic.get("company_name")
+    identity_zhongzheng_code = identity_info.get("credit_code") or identity_info.get("zhongzheng_code") or report_basic.get("zhongzheng_code")
+    identity_unified_code = identity_info.get("unified_social_credit_code") or report_basic.get("credit_code")
+    identity_org_code = identity_info.get("org_code") or identity_info.get("organization_code")
 
     lines = [
         "## 企业征信摘要",
         "",
         "### 报告基础信息",
-        f"- 企业名称：{_display(report_basic.get('company_name'))}",
-        f"- 中征码：{_display(report_basic.get('zhongzheng_code'))}",
-        f"- 统一社会信用代码：{_display(report_basic.get('credit_code'))}",
-        f"- 组织机构代码：{_display(identity_info.get('organization_code'))}",
+        f"- 企业名称：{_display(identity_company_name)}",
+        f"- 中征码：{_display(identity_zhongzheng_code)}",
+        f"- 统一社会信用代码：{_display(identity_unified_code)}",
+        f"- 组织机构代码：{_display(identity_org_code)}",
         f"- 工商注册号：{_display(identity_info.get('business_registration_no'))}",
         f"- 纳税人识别号(国税)：{_display(identity_info.get('taxpayer_id_national'))}",
         f"- 纳税人识别号(地税)：{_display(identity_info.get('taxpayer_id_local'))}",
@@ -2358,6 +2383,10 @@ def _build_markdown_summary(extracted_json: dict[str, Any]) -> str:
 
     short_term = next((item for item in active_rows if item.get("type") == "短期借款"), {})
     long_term = next((item for item in active_rows if item.get("type") == "中长期借款"), {})
+    identity_company_name = identity_info.get("company_name") or report_basic.get("company_name")
+    identity_zhongzheng_code = identity_info.get("credit_code") or identity_info.get("zhongzheng_code") or report_basic.get("zhongzheng_code")
+    identity_unified_code = identity_info.get("unified_social_credit_code") or report_basic.get("credit_code")
+    identity_org_code = identity_info.get("org_code") or identity_info.get("organization_code")
 
     shareholder_lines = []
     for item in shareholders[:6]:
@@ -2383,10 +2412,10 @@ def _build_markdown_summary(extracted_json: dict[str, Any]) -> str:
         "## 企业征信摘要",
         "",
         "### 报告基础信息",
-        f"- 企业名称：{report_basic.get('company_name') or '未识别'}",
-        f"- 中征码：{report_basic.get('zhongzheng_code') or '未识别'}",
-        f"- 统一社会信用代码：{report_basic.get('credit_code') or '未识别'}",
-        f"- 组织机构代码：{identity_info.get('organization_code') or '未识别'}",
+        f"- 企业名称：{identity_company_name or '未识别'}",
+        f"- 中征码：{identity_zhongzheng_code or '未识别'}",
+        f"- 统一社会信用代码：{identity_unified_code or '未识别'}",
+        f"- 组织机构代码：{identity_org_code or '未识别'}",
         f"- 工商注册号：{identity_info.get('business_registration_no') or '未识别'}",
         f"- 纳税人识别号(国税)：{identity_info.get('taxpayer_id_national') or '未识别'}",
         f"- 纳税人识别号(地税)：{identity_info.get('taxpayer_id_local') or '未识别'}",
@@ -2518,15 +2547,17 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             raw_identity_info = extract_identity_info(raw_text)
             if raw_identity_info:
                 identity_info = _merge_meaningful_values(identity_info, {
-                    "organization_code": raw_identity_info.get("organization_code"),
+                    "organization_code": raw_identity_info.get("organization_code") or raw_identity_info.get("org_code"),
+                    "org_code": raw_identity_info.get("org_code") or raw_identity_info.get("organization_code"),
+                    "unified_social_credit_code": raw_identity_info.get("unified_social_credit_code") or raw_identity_info.get("organization_credit_code"),
                     "business_registration_no": raw_identity_info.get("business_registration_no"),
                     "taxpayer_id_national": raw_identity_info.get("taxpayer_id_national"),
                     "taxpayer_id_local": raw_identity_info.get("taxpayer_id_local"),
                 })
                 report_basic = _merge_meaningful_values(report_basic, {
                     "company_name": raw_identity_info.get("company_name"),
-                    "credit_code": raw_identity_info.get("credit_code") or raw_identity_info.get("unified_social_credit_code"),
-                    "zhongzheng_code": raw_identity_info.get("zhongzheng_code"),
+                    "credit_code": raw_identity_info.get("unified_social_credit_code") or raw_identity_info.get("organization_credit_code"),
+                    "zhongzheng_code": raw_identity_info.get("credit_code") or raw_identity_info.get("zhongzheng_code"),
                 })
             if report_basic.get("report_date"):
                 report_basic["report_date"] = format_report_date(report_basic.get("report_date"))
