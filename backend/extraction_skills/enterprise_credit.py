@@ -2034,11 +2034,39 @@ def _clean_actual_controller_name(value: Any) -> str | None:
     return text
 
 
+def extract_actual_controller(text: str) -> str:
+    if not text:
+        return ""
+
+    index = text.find("实际控制人")
+    if index == -1:
+        return ""
+
+    window = text[index : index + 800]
+    for stop in ["第 ", "信贷记录明细", "信息概要", "基本信息", "未结清信贷", "注册资本"]:
+        position = window.find(stop)
+        if position > 0:
+            window = window[:position]
+
+    match = re.search(r"名称\s*身份标识类型\s*身份标识号码\s*([\u4e00-\u9fa5]{2,4})\s*身份证\s*\d{15,18}", window)
+    if match:
+        return _clean_actual_controller_name(match.group(1)) or ""
+
+    match = re.search(r"([\u4e00-\u9fa5]{2,4})\s*身份证\s*\d{15,18}", window)
+    if match:
+        return _clean_actual_controller_name(match.group(1)) or ""
+
+    return ""
+
+
 def risk_level_zh(level: Any) -> str:
     mapping = {
         "high": "高",
         "medium": "中",
         "low": "低",
+        "unknown": "未识别",
+        "": "未识别",
+        "none": "未识别",
     }
     if level in (None, "", "未识别", "暂无"):
         return "未识别"
@@ -2180,7 +2208,7 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
             f"- 是否逾期：{'是' if risk_indicators.get('has_overdue') else '否'}",
             f"- 是否不良：{'是' if risk_indicators.get('has_non_performing') else '否'}",
             f"- 是否关注：{'是' if risk_indicators.get('has_special_mention') else '否'}",
-            f"- 多头授信风险：{_display(risk_indicators.get('multi_lender_risk'))}",
+            f"- 多头授信风险：{risk_level_zh(risk_indicators.get('multi_credit_risk') or risk_indicators.get('multi_lender_risk'))}",
             f"- 短期负债占比：{_format_ratio_percent(risk_indicators.get('short_term_debt_ratio'))}",
             f"- 授信使用率：{_format_ratio_percent(risk_indicators.get('credit_utilization_ratio'))}",
             f"- 风险标签：{'、'.join(risk_tags) if risk_tags else '未识别'}",
@@ -2265,7 +2293,7 @@ def _build_markdown_summary(extracted_json: dict[str, Any]) -> str:
         f"- 是否逾期：{'是' if risk_indicators.get('has_overdue') else '否'}",
         f"- 是否不良：{'是' if risk_indicators.get('has_non_performing') else '否'}",
         f"- 是否关注：{'是' if risk_indicators.get('has_special_mention') else '否'}",
-        f"- 多头授信风险：{risk_indicators.get('multi_lender_risk') or '未识别'}",
+        f"- 多头授信风险：{risk_level_zh(risk_indicators.get('multi_credit_risk') or risk_indicators.get('multi_lender_risk'))}",
         f"- 短期负债占比：{risk_indicators.get('short_term_debt_ratio') if risk_indicators.get('short_term_debt_ratio') is not None else '未识别'}",
         f"- 授信使用率：{risk_indicators.get('credit_utilization_ratio') if risk_indicators.get('credit_utilization_ratio') is not None else '未识别'}",
         f"- 风险标签：{risk_tags_text}",
@@ -2384,8 +2412,14 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             if zh_overrides.get("actual_controller"):
                 actual_controller = zh_overrides["actual_controller"]
 
-            if not actual_controller.get("name"):
-                actual_controller = _pick_actual_controller_from_shareholders(shareholders)
+            explicit_controller_name = extract_actual_controller(raw_text)
+            if explicit_controller_name:
+                actual_controller = {
+                    **(actual_controller or {}),
+                    "name": explicit_controller_name,
+                }
+            elif not actual_controller.get("name"):
+                actual_controller = {}
             key_personnel = _backfill_personnel_identity_numbers(key_personnel, shareholders, actual_controller)
             if actual_controller.get("name") and not actual_controller.get("identity_no"):
                 for person in key_personnel:
@@ -2467,6 +2501,9 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 "raw_text_preview": _extract_compact_preview(raw_text),
             }
             extracted_json["risk_indicators"] = _derive_risk_indicators(extracted_json)
+            risk_level = (extracted_json.get("risk_indicators") or {}).get("multi_credit_risk") or (extracted_json.get("risk_indicators") or {}).get("multi_lender_risk")
+            logger.info("[EnterpriseCredit][DEBUG] actual_controller=%s", actual_controller)
+            logger.info("[EnterpriseCredit][DEBUG] multi_credit_risk_raw=%s zh=%s", risk_level, risk_level_zh(risk_level))
             extracted_json["risk_signals"] = [
                 {
                     "type": tag,
