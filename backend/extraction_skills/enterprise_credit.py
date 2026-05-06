@@ -2042,7 +2042,7 @@ def extract_actual_controller(text: str) -> str:
     if index == -1:
         return ""
 
-    window = text[index : index + 2000]
+    window = text[index : index + 3000]
     for stop in ["信贷记录明细", "未结清信贷", "信息概要", "公共记录明细", "附件1"]:
         position = window.find(stop)
         if position > 50:
@@ -2051,17 +2051,30 @@ def extract_actual_controller(text: str) -> str:
 
     logger.info("[EnterpriseCredit][DEBUG] actual_controller_window=%s", window[:1000])
     compact = re.sub(r"\s+", " ", window)
+    compact_no_space = re.sub(r"\s+", "", window)
 
-    match = re.search(r"([\u4e00-\u9fa5]{2,4})\s*身份证\s*\d{15,18}", compact)
+    controller_part = ""
+    header_patterns = [
+        "名称 身份标识类型 身份标识号码",
+        "名称身份标识类型身份标识号码",
+    ]
+    for header in header_patterns:
+        source = compact if " " in header else compact_no_space
+        header_index = source.rfind(header)
+        if header_index != -1:
+            controller_part = source[header_index : header_index + 300]
+            break
+
+    if not controller_part:
+        return ""
+
+    match = re.search(r"([\u4e00-\u9fa5]{2,4})\s*身份证\s*\d{15,18}", controller_part)
+    if not match:
+        match = re.search(r"([\u4e00-\u9fa5]{2,4})身份证\d{15,18}", controller_part)
     if match:
         name = match.group(1)
-        if name not in ["名称", "姓名", "股东"]:
-            return _clean_actual_controller_name(name) or ""
-
-    match = re.search(r"([\u4e00-\u9fa5]{2,4})身份证\d{15,18}", compact)
-    if match:
-        name = match.group(1)
-        if name not in ["名称", "姓名", "股东"]:
+        prefix = controller_part[max(0, match.start() - 10) : match.start()]
+        if name not in ["名称", "姓名", "股东"] and not any(word in prefix for word in ["股东", "法定代表人", "负责", "出资方"]):
             return _clean_actual_controller_name(name) or ""
 
     return ""
@@ -2426,7 +2439,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                     **(actual_controller or {}),
                     "name": explicit_controller_name,
                 }
-            elif not actual_controller.get("name"):
+            else:
                 actual_controller = {}
             key_personnel = _backfill_personnel_identity_numbers(key_personnel, shareholders, actual_controller)
             if actual_controller.get("name") and not actual_controller.get("identity_no"):
