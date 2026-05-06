@@ -1419,7 +1419,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
             continue
         logger.info("[EnterpriseCredit][DEBUG] status_line_hit index=%s line=%s", index, line)
         status_line_count += 1
-        context_start = max(0, index - 18)
+        context_start = max(0, index - 25)
         for prev_index in range(index - 1, context_start - 1, -1):
             if status_line_pattern.search(lines[prev_index]):
                 context_start = prev_index + 1
@@ -1477,8 +1477,10 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
             "last_repay_date": last_repay_date,
             "last_repayment_date": last_repay_date,
         }
+        logger.info("[EnterpriseCredit][DEBUG] built_loan=%s", loan)
         raw_loans.append(loan)
         if not is_valid_active_loan(loan):
+            logger.info("[EnterpriseCredit][DEBUG] drop_invalid_loan=%s", loan)
             continue
         key = (loan["bank"], str(loan["balance"]), str(loan["due_date"]), str(loan["last_repay_date"]))
         if key in seen:
@@ -1596,6 +1598,11 @@ def _parse_active_loan_block(block: str, active_borrowing_balance: Any = None) -
 
 
 def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_borrowing_balance: Any = None) -> list[dict[str, Any]]:
+    logger.warning("[EnterpriseCredit][VERSION] active-loan-parser-v20260506-02")
+    logger.info("[EnterpriseCredit][DEBUG][PARSE_INPUT] len=%s", len(credit_detail_text or ""))
+    logger.info("[EnterpriseCredit][DEBUG][PARSE_INPUT] has_short=%s", "短期借款" in (credit_detail_text or ""))
+    logger.info("[EnterpriseCredit][DEBUG][PARSE_INPUT] short_index=%s", (credit_detail_text or "").find("短期借款"))
+    logger.info("[EnterpriseCredit][DEBUG][PARSE_INPUT] text_tail=%s", (credit_detail_text or "")[-3000:])
     active_text = _extract_active_credit_text(credit_detail_text)
     logger.info("[EnterpriseCredit][DEBUG] active_text_head=%s", active_text[:1000])
     blocks = _split_loan_blocks(active_text)
@@ -2298,7 +2305,10 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             logger.info("[DEBUG] total_blocks=%s", len(debug_blocks))
             if debug_blocks:
                 logger.info("[DEBUG] first_block_sample=%s", debug_blocks[0][:500])
-            active_loan_detail_text = normalize_credit_text(credit_detail_text or _zh_window_after(raw_text, ("信贷记录明细",), ("账户编号",), 20000))
+            active_loan_detail_text = _extract_active_credit_text(credit_detail_text or _zh_window_after(raw_text, ("信贷记录明细",), ("账户编号",), 20000))
+            if "短期借款 共" not in active_loan_detail_text:
+                logger.warning("[EnterpriseCredit][DEBUG] credit_detail active_text missing short loans, use raw_text fallback")
+                active_loan_detail_text = _extract_active_credit_text(raw_text)
             logger.info("[EnterpriseCredit][DEBUG] credit_detail_len=%s", len(active_loan_detail_text))
             active_loans = _extract_active_loans_from_credit_detail(
                 active_loan_detail_text,
