@@ -1996,6 +1996,55 @@ def _find_active_row(rows: list[dict[str, Any]], *names: str) -> dict[str, Any]:
     return {}
 
 
+def loan_term_type(loan: dict[str, Any]) -> str:
+    biz = str(loan.get("biz_type") or loan.get("loan_type") or "")
+    due_date = str(loan.get("due_date") or loan.get("end_date") or "")
+    open_date = str(loan.get("open_date") or loan.get("start_date") or "")
+
+    if "融资型租赁" in biz or "中长期" in biz:
+        return "medium_long"
+
+    try:
+        from datetime import datetime
+
+        start = datetime.strptime(open_date, "%Y-%m-%d")
+        end = datetime.strptime(due_date, "%Y-%m-%d")
+        if (end - start).days > 365:
+            return "medium_long"
+    except Exception:
+        pass
+
+    return "short"
+
+
+def _sum_loan_balances(loans: list[dict[str, Any]]) -> str | None:
+    values = [_to_float(loan.get("balance")) for loan in loans]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    total = sum(values)
+    return f"{total:.2f}".rstrip("0").rstrip(".")
+
+
+def format_loan_detail_lines(loans: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for loan in loans:
+        lines.extend(
+            [
+                f"  - 机构：{_display(loan.get('bank'))}",
+                f"    业务：{_display(loan.get('biz_type') or loan.get('loan_type'))}",
+                f"    担保方式：{_display(loan.get('guarantee') or loan.get('guarantee_type'))}",
+                f"    借款金额：{_display(loan.get('loan_amount'))} 万元",
+                f"    余额：{_display(loan.get('balance'))} 万元",
+                f"    开立日期：{_display(loan.get('open_date') or loan.get('start_date'))}",
+                f"    到期日：{_display(loan.get('due_date') or loan.get('end_date'))}",
+                f"    五级分类：{_display(loan.get('five_classification'))}",
+                f"    逾期月数：{_display(loan.get('overdue_months') or '0')}",
+            ]
+        )
+    return lines
+
+
 def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     report_basic = extracted_json.get("report_basic") or {}
     registration_info = extracted_json.get("registration_info") or {}
@@ -2012,6 +2061,10 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     long_term = _find_active_row(active_rows, "中长期借款", "涓暱鏈熷€熸")
     non_revolving = facility_summary.get("non_revolving") or {}
     revolving = facility_summary.get("revolving") or {}
+    short_loans = [loan for loan in active_loans if loan_term_type(loan) == "short"]
+    medium_long_loans = [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
+    short_balance = short_term.get("total_balance") or credit_summary.get("short_term_loan_balance") or _sum_loan_balances(short_loans)
+    medium_long_balance = long_term.get("total_balance") or credit_summary.get("medium_long_term_loan_balance") or _sum_loan_balances(medium_long_loans)
 
     lines = [
         "## 企业征信摘要",
@@ -2027,29 +2080,41 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
         "### 信贷概要",
         f"- 当前未结清借贷余额：{_display(credit_summary.get('active_borrowing_balance'))}",
         f"- 当前未结清信贷机构数：{_display(credit_summary.get('current_active_credit_institution_count'))}",
-        f"- 短期借款余额：{_display(short_term.get('total_balance'))}",
-        f"- 中长期借款余额：{_display(long_term.get('total_balance'))}",
-        f"- 关注类余额：{_display(credit_summary.get('active_special_mention_balance'))}",
-        f"- 不良类余额：{_display(credit_summary.get('active_non_performing_balance'))}",
-        f"- 对外担保余额：{_display(credit_summary.get('guarantee_balance'))}",
-        "",
-        "### 授信额度",
-        f"- 非循环额度：总额 {_display(non_revolving.get('total_limit'))} / 已用 {_display(non_revolving.get('used_limit'))} / 可用 {_display(non_revolving.get('available_limit'))}",
-        f"- 循环额度：总额 {_display(revolving.get('total_limit'))} / 已用 {_display(revolving.get('used_limit'))} / 可用 {_display(revolving.get('available_limit'))}",
-        "",
-        "### 企业基本信息",
-        f"- 经济类型：{_display(registration_info.get('economic_type'))}",
-        f"- 组织机构类型：{_display(registration_info.get('organization_type'))}",
-        f"- 企业规模：{_display(registration_info.get('enterprise_size'))}",
-        f"- 所属行业：{_display(registration_info.get('industry'))}",
-        f"- 成立年份：{_display(registration_info.get('established_year'))}",
-        f"- 注册资本：{_display(registration_info.get('registered_capital_rmb'))}",
-        f"- 经营状态：{_display(registration_info.get('business_status'))}",
-        f"- 注册地址：{_display(registration_info.get('registered_address'))}",
-        f"- 经营地址：{_display(registration_info.get('business_address'))}",
-        "",
-        "### 股东与人员",
     ]
+    lines.append(f"- 短期借款余额：{_display(short_balance)}")
+    if short_loans:
+        lines.extend(format_loan_detail_lines(short_loans))
+    else:
+        lines.append("  - 暂未识别到短期借款明细")
+    lines.append(f"- 中长期借款余额：{_display(medium_long_balance)}")
+    if medium_long_loans:
+        lines.extend(format_loan_detail_lines(medium_long_loans))
+    else:
+        lines.append("  - 暂未识别到中长期借款明细")
+    lines.extend(
+        [
+            f"- 关注类余额：{_display(credit_summary.get('active_special_mention_balance'))}",
+            f"- 不良类余额：{_display(credit_summary.get('active_non_performing_balance'))}",
+            f"- 对外担保余额：{_display(credit_summary.get('guarantee_balance'))}",
+            "",
+            "### 授信额度",
+            f"- 非循环额度：总额 {_display(non_revolving.get('total_limit'))} / 已用 {_display(non_revolving.get('used_limit'))} / 可用 {_display(non_revolving.get('available_limit'))}",
+            f"- 循环额度：总额 {_display(revolving.get('total_limit'))} / 已用 {_display(revolving.get('used_limit'))} / 可用 {_display(revolving.get('available_limit'))}",
+            "",
+            "### 企业基本信息",
+            f"- 经济类型：{_display(registration_info.get('economic_type'))}",
+            f"- 组织机构类型：{_display(registration_info.get('organization_type'))}",
+            f"- 企业规模：{_display(registration_info.get('enterprise_size'))}",
+            f"- 所属行业：{_display(registration_info.get('industry'))}",
+            f"- 成立年份：{_display(registration_info.get('established_year'))}",
+            f"- 注册资本：{_display(registration_info.get('registered_capital_rmb'))}",
+            f"- 经营状态：{_display(registration_info.get('business_status'))}",
+            f"- 注册地址：{_display(registration_info.get('registered_address'))}",
+            f"- 经营地址：{_display(registration_info.get('business_address'))}",
+            "",
+            "### 股东与人员",
+        ]
+    )
     if shareholders:
         for item in shareholders:
             lines.append(f"- 股东：{_display(item.get('name'))}，持股 {_display(item.get('contribution_ratio') or item.get('shareholding_ratio'))}")
@@ -2059,23 +2124,6 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     lines.append(f"- 法定代表人：{_display(legal_person.get('name'))}")
     lines.append(f"- 实际控制人：{_display(actual_controller.get('name'))}")
     risk_tags = risk_indicators.get("risk_tags") or []
-    lines.extend(["", "### 未结清贷款明细"])
-    if active_loans:
-        for loan in active_loans:
-            lines.extend(
-                [
-                    f"- 机构：{_display(loan.get('bank'))}",
-                    f"  业务：{_display(loan.get('biz_type') or loan.get('loan_type'))}",
-                    f"  借款金额：{_display(loan.get('loan_amount'))} 万元",
-                    f"  余额：{_display(loan.get('balance'))} 万元",
-                    f"  开立日期：{_display(loan.get('open_date') or loan.get('start_date'))}",
-                    f"  到期日：{_display(loan.get('due_date') or loan.get('end_date'))}",
-                    f"  五级分类：{_display(loan.get('five_classification'))}",
-                    f"  逾期月数：{_display(loan.get('overdue_months') or '0')}",
-                ]
-            )
-    else:
-        lines.append("- 暂未识别到逐笔贷款明细")
     lines.extend(
         [
             "",
