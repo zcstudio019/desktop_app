@@ -1171,14 +1171,96 @@ def _extract_loan_regex(block: str, pattern: str, normalize_numeric: bool = Fals
     return value
 
 
+def _cu(value: str) -> str:
+    return value.encode("ascii").decode("unicode_escape")
+
+
+def normalize_credit_text(text: str) -> str:
+    if not text:
+        return ""
+    normalized = _normalize_text(text)
+    account_no = _cu(r"\u8d26\u6237\u7f16\u53f7")
+    credit_org = _cu(r"\u6388\u4fe1\u673a\u6784")
+    normalized = normalized.replace(_cu(r"\u8d26\u6237\u7f16\n\u53f7"), account_no)
+    normalized = normalized.replace(_cu(r"\u8d26\u6237\u7f16 \u53f7"), account_no)
+    normalized = normalized.replace(_cu(r"\u8d26\u6237 \u7f16\u53f7"), account_no)
+    normalized = normalized.replace(_cu(r"\u53f7\u6388\u4fe1\u673a\u6784"), _cu(r"\u53f7") + " " + credit_org)
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    return normalized
+
+
+def _clean_tolerant_loan_bank(value: Any) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value)
+    cleaned = re.sub(r"第\s*\d+\s*页\s*/?\s*共\s*\d+\s*页", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ：:\t\r\n")
+    return cleaned or None
+
+
+def _extract_active_loans_by_tolerant_table(credit_detail_text: str, active_borrowing_balance: Any = None) -> list[dict[str, Any]]:
+    normalized = normalize_credit_text(credit_detail_text)
+    text_for_parse = re.sub(r"\n+", " ", normalized)
+    text_for_parse = re.sub(r"[ \t]+", " ", text_for_parse)
+    pattern = re.compile(
+        r"(?P<bank>[\u4e00-\u9fa5（）()A-Za-z0-9·\-]+(?:银行|融资租赁|保理)[\u4e00-\u9fa5（）()A-Za-z0-9·\-]*)"
+        r"\s*(?P<biz>流动资金贷款|融资型租赁|贷款|有追索权的国内卖方保理融资|保理融资)"
+        r"\s*(?P<open_date>\d{4}-\d{2}-\d{2})"
+        r"\s*(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
+        r"\s*人民币元\s*"
+        r"(?P<loan_amount>[0-9,.]+)"
+        r".{0,30}?"
+        r"(?P<guarantee>保证|组合|信用|抵押|质押|其他)"
+        r"\s*(?P<balance>[0-9,.]+)"
+        r"\s*(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)"
+        r"\s*(?P<overdue_amount>[0-9,.]+)"
+        r"\s*(?P<overdue_principal>[0-9,.]+)"
+        r"\s*(?P<overdue_months>[0-9]+)",
+        re.S,
+    )
+    loans: list[dict[str, Any]] = []
+    total_balance = _to_float(active_borrowing_balance)
+    for match in pattern.finditer(text_for_parse):
+        balance = _normalize_numeric(match.group("balance"))
+        if balance is not None and total_balance is not None and (_to_float(balance) or 0.0) > total_balance:
+            balance = None
+        loans.append(
+            {
+                "account_no": None,
+                "bank": _clean_tolerant_loan_bank(match.group("bank")),
+                "biz_type": _clean_loan_value(match.group("biz")),
+                "loan_type": _clean_loan_value(match.group("biz")),
+                "open_date": _normalize_date(match.group("open_date")),
+                "start_date": _normalize_date(match.group("open_date")),
+                "due_date": _normalize_date(match.group("due_date")),
+                "end_date": _normalize_date(match.group("due_date")),
+                "currency": "人民币",
+                "loan_amount": _normalize_numeric(match.group("loan_amount")),
+                "guarantee": _clean_loan_value(match.group("guarantee")),
+                "guarantee_type": _clean_loan_value(match.group("guarantee")),
+                "balance": balance,
+                "five_classification": _clean_loan_value(match.group("five_classification")),
+                "overdue_amount": _normalize_numeric(match.group("overdue_amount")),
+                "overdue_total": _normalize_numeric(match.group("overdue_amount")),
+                "overdue_principal": _normalize_numeric(match.group("overdue_principal")),
+                "overdue_months": _clean_loan_value(match.group("overdue_months")),
+            }
+        )
+    return loans
+
+
 def _split_loan_blocks(credit_detail_text: str) -> list[str]:
-    detail = _normalize_text(credit_detail_text)
+    detail = normalize_credit_text(credit_detail_text)
     if "公共记录明细" in detail:
         detail = detail.split("公共记录明细", 1)[0]
     if "已结清" in detail:
         detail = detail.split("已结清", 1)[0]
-    parts = re.split(r"(?=账户编号)", detail)
-    return [part.strip() for part in parts if "账户编号" in part]
+    account_no = _cu(r"\u8d26\u6237\u7f16\u53f7")
+    account_prefix = _cu(r"\u8d26\u6237\u7f16")
+    account_short = _cu(r"\u8d26\u53f7")
+    account_plain = _cu(r"\u8d26\u6237\u53f7")
+    parts = re.split(rf"(?={account_no}|{account_prefix}|{account_short}|{account_plain})", detail)
+    return [part.strip() for part in parts if any(anchor in part for anchor in (account_no, account_prefix, account_short, account_plain))]
 
 
 def _parse_active_loan_block(block: str, active_borrowing_balance: Any = None) -> dict[str, Any]:
@@ -1224,6 +1306,12 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
         logger.info("[LoanBlock] block_sample=%s", blocks[0][:500])
     loans = [_parse_active_loan_block(block, active_borrowing_balance) for block in blocks]
     loans = [loan for loan in loans if loan.get("account_no") or loan.get("bank") or loan.get("balance")]
+    has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
+    if not has_effective_loan:
+        tolerant_loans = _extract_active_loans_by_tolerant_table(credit_detail_text, active_borrowing_balance)
+        logger.info("[LoanBlock] tolerant_table_count=%s", len(tolerant_loans))
+        if tolerant_loans:
+            loans = tolerant_loans
 
     expected_total = _to_float(active_borrowing_balance)
     parsed_total = sum((_to_float(loan.get("balance")) or 0.0) for loan in loans)
@@ -1663,20 +1751,14 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     risk_tags = risk_indicators.get("risk_tags") or []
     lines.extend(["", "### 未结清贷款明细"])
     if active_loans:
-        for index, loan in enumerate(active_loans, start=1):
-            is_overdue = any(
-                (_to_float(loan.get(key)) or 0.0) > 0
-                for key in ("overdue_total", "overdue_principal", "overdue_months", "overdue_amount")
-            )
-            lines.extend(
-                [
-                    f"- 第 {index} 笔：",
-                    f"  - 银行：{_display(loan.get('bank'))}",
-                    f"  - 余额：{_display(loan.get('balance'))}",
-                    f"  - 到期日：{_display(loan.get('end_date'))}",
-                    f"  - 五级分类：{_display(loan.get('five_classification'))}",
-                    f"  - 是否逾期：{'是' if is_overdue else '否'}",
-                ]
+        for loan in active_loans:
+            lines.append(
+                f"- {_display(loan.get('bank'))} | "
+                f"{_display(loan.get('biz_type') or loan.get('loan_type'))} | "
+                f"余额：{_display(loan.get('balance'))} | "
+                f"到期日：{_display(loan.get('due_date') or loan.get('end_date'))} | "
+                f"分类：{_display(loan.get('five_classification'))} | "
+                f"逾期月数：{_display(loan.get('overdue_months') or '0')}"
             )
     else:
         lines.append("- 暂未识别到逐笔贷款明细")
@@ -1852,7 +1934,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             personnel_lines = _window_lines(personnel_text)
             controller_lines = _window_lines(controller_text)
             facility_lines = _window_lines(facility_text)
-            credit_detail_text = _section_text(sections.get("credit_detail") or [])
+            credit_detail_text = normalize_credit_text(_section_text(sections.get("credit_detail") or []))
             public_record_text = _section_text(sections.get("public_records") or [])
 
             report_basic = _extract_report_basic(
@@ -1909,12 +1991,14 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             logger.info("[DEBUG] total_blocks=%s", len(debug_blocks))
             if debug_blocks:
                 logger.info("[DEBUG] first_block_sample=%s", debug_blocks[0][:500])
-            active_loan_detail_text = credit_detail_text or _zh_window_after(raw_text, ("信贷记录明细",), ("账户编号",), 20000)
+            active_loan_detail_text = normalize_credit_text(credit_detail_text or _zh_window_after(raw_text, ("信贷记录明细",), ("账户编号",), 20000))
+            logger.info("[EnterpriseCredit][DEBUG] credit_detail_len=%s", len(active_loan_detail_text))
             active_loans = _extract_active_loans_from_credit_detail(
                 active_loan_detail_text,
                 credit_summary.get("active_borrowing_balance"),
             )
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
+            logger.info("[EnterpriseCredit][DEBUG] active_loans_sample=%s", active_loans[:2])
             credit_facilities = _extract_detail_records_from_block(
                 credit_detail_text,
                 ("授信明细", "授信额度明细"),
@@ -1978,16 +2062,6 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 for tag in (extracted_json.get("risk_indicators") or {}).get("risk_tags", [])
             ]
             markdown_summary = _build_markdown_summary_v2(extracted_json)
-            if active_loans:
-                markdown_summary += "\n\n### 未结清贷款明细（调试摘要）\n"
-                for loan in active_loans[:5]:
-                    markdown_summary += (
-                        f"- 银行：{loan.get('bank') or '未识别'} | "
-                        f"余额：{loan.get('balance') or '未识别'} | "
-                        f"分类：{loan.get('five_classification') or '未识别'}\n"
-                    )
-            else:
-                markdown_summary += "\n\n### 未结清贷款明细（调试摘要）\n- 未识别到贷款明细"
 
             warnings: list[str] = []
             if not report_basic.get("company_name"):
