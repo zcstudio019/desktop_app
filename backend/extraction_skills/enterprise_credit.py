@@ -1190,15 +1190,94 @@ def normalize_credit_text(text: str) -> str:
 
 
 def _clean_tolerant_loan_bank(value: Any) -> str | None:
-    if value is None:
-        return None
-    cleaned = str(value)
-    cleaned = re.sub(r"第\s*\d+\s*页\s*/?\s*共\s*\d+\s*页", "", cleaned)
-    cleaned = re.sub(r"^.*(?:授信机构|账户编号|账户编|账号|账户号)[A-Za-z0-9]*", "", cleaned)
-    cleaned = re.sub(r"^[A-Za-z0-9]+(?=[\u4e00-\u9fa5])", "", cleaned)
-    cleaned = re.split(r"(?:流动资金贷款|融资型租赁|有追索权的国内卖方保理融资|保理融资|\d{4}-\d{2}-\d{2})", cleaned, maxsplit=1)[0]
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ：:\t\r\n")
-    return cleaned or None
+    return clean_bank_name(value)
+
+
+def clean_bank_name(bank: Any) -> str:
+    if not bank:
+        return ""
+
+    value = re.sub(r"\s+", "", str(bank))
+    noise_words = [
+        "信息报告日期",
+        "息报告日期",
+        "账户编号",
+        "未结清账户编号",
+        "授信机构",
+        "业务种类",
+        "开立日期",
+        "到期日",
+        "币种",
+        "借款金额",
+        "发放形式",
+    ]
+    for word in noise_words:
+        value = value.replace(word, "")
+
+    value = re.sub(r"[A-Z0-9]{6,}", "", value)
+    value = re.sub(r"[A-Za-z0-9]{8,}", "", value)
+
+    start_words = [
+        "中国",
+        "上海",
+        "浙江",
+        "温州",
+        "远东",
+        "亚洲",
+        "招商",
+        "工商",
+        "农业",
+        "建设",
+        "交通",
+        "浦发",
+        "兴业",
+        "民生",
+        "平安",
+        "中信",
+        "光大",
+        "广发",
+        "华夏",
+        "网商",
+        "微众",
+        "苏宁",
+    ]
+    if "银行" in value:
+        bank_index = value.find("银行")
+        positions = [value.rfind(word, 0, bank_index + len("银行")) for word in start_words if value.rfind(word, 0, bank_index + len("银行")) != -1]
+        if positions:
+            value = value[min(positions) :]
+    else:
+        positions = [value.rfind(word) for word in start_words if value.rfind(word) != -1]
+        if positions:
+            value = value[max(positions) :]
+
+    if "银行" in value:
+        last_branch = max(value.rfind("支行"), value.rfind("分行"), value.rfind("营业部"))
+        if last_branch != -1:
+            suffix_len = 3 if value[last_branch : last_branch + 3] == "营业部" else 2
+            value = value[: last_branch + suffix_len]
+            return value.strip()
+
+    suffixes = [
+        "有限责任公司",
+        "股份有限公司",
+        "消费金融有限公司",
+        "融资租赁有限公司",
+        "小额贷款公司",
+        "有限公司",
+        "分行",
+        "支行",
+        "营业部",
+    ]
+    end_positions = []
+    for suffix in suffixes:
+        index = value.find(suffix)
+        if index != -1:
+            end_positions.append(index + len(suffix))
+    if end_positions:
+        value = value[: max(end_positions)]
+
+    return value.strip()
 
 
 def _extract_active_credit_text(credit_detail_text: str) -> str:
