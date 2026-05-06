@@ -1814,5 +1814,10 @@ async def delete_customer_document(
     if not deleted:
         raise HTTPException(status_code=404, detail="未找到该资料记录")
 
+    try:
+        await profile_sync_service.handle_document_saved(storage_service, customer_id)
+    except Exception as e:
+        logger.warning("Failed to refresh profile after deleting document customer_id=%s doc_id=%s error=%s", customer_id, doc_id, e)
+
     return {"success": True}
 

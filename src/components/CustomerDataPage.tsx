@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { ArrowLeft, ChevronDown, ChevronRight, Download, Eye, FileText, Pencil, RefreshCw, Save, Trash2 } from 'lucide-react';
 import {
   deleteCustomer,
+  deleteCustomerDocument,
   deleteCustomerProfileMarkdown,
   downloadDocumentOriginal,
   getCustomerDocuments,
@@ -2008,6 +2009,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [customerSearch, setCustomerSearch] = useState('');
   const [documentFilter, setDocumentFilter] = useState<DocumentFilterMode>('all');
   const [documents, setDocuments] = useState<CustomerDocumentListItem[]>([]);
+  const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
   const [collapsedDocumentGroups, setCollapsedDocumentGroups] = useState<Record<string, boolean>>({});
   const [showConsistentFields, setShowConsistentFields] = useState(false);
@@ -2643,6 +2645,26 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setError(err instanceof Error ? err.message : '下载原件失败');
     }
   }, []);
+
+  const handleDeleteDocument = useCallback(async (document: CustomerDocumentListItem) => {
+    if (!selectedCustomerId) return;
+    const confirmed = window.confirm(`确认删除资料“${document.file_name || '未命名文件'}”吗？删除后会同步移除对应提取结果并刷新资料汇总。`);
+    if (!confirmed) return;
+    try {
+      setError(null);
+      setDeletingDocumentId(document.doc_id);
+      await deleteCustomerDocument(selectedCustomerId, document.doc_id);
+      await Promise.all([
+        loadDocuments(selectedCustomerId),
+        loadExtractions(selectedCustomerId),
+        loadProfile(selectedCustomerId),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除资料失败');
+    } finally {
+      setDeletingDocumentId(null);
+    }
+  }, [loadDocuments, loadExtractions, loadProfile, selectedCustomerId]);
 
   const handleScrollToDocument = useCallback((document: CustomerDocumentListItem) => {
     setDocumentFilter('all');
@@ -4073,6 +4095,17 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                                 </div>
 
                                 <div className="flex shrink-0 flex-wrap items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteDocument(document)}
+                                    disabled={deletingDocumentId === document.doc_id}
+                                    className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm text-rose-600 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    <span className="inline-flex items-center gap-1">
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                      {deletingDocumentId === document.doc_id ? '删除中' : '删除'}
+                                    </span>
+                                  </button>
                                   {document.original_available ? (
                                     <>
                                       <button

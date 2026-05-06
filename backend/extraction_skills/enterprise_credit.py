@@ -1101,6 +1101,142 @@ def _extract_detail_records_from_block(
     return deduped
 
 
+_LOAN_BLOCK_STOP_LABELS = (
+    "账户编号",
+    "授信机构",
+    "开户机构",
+    "发放机构",
+    "放款机构",
+    "业务种类",
+    "开立日期",
+    "到期日",
+    "币种",
+    "借款金额",
+    "发放形式",
+    "担保方式",
+    "余额",
+    "五级分类",
+    "逾期总额",
+    "逾期本金",
+    "逾期月数",
+    "最近一次还款日期",
+    "最近一次还款总额",
+    "最近一次还款形式",
+    "特定交易提示",
+    "授信协议编号",
+    "历史表现",
+    "信息报告日期",
+)
+
+
+def _clean_loan_value(value: Any) -> str | None:
+    cleaned = _zh_clean(value)
+    cleaned = re.sub(r"第\s*\d+\s*页\s*/?\s*共\s*\d+\s*页", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
+def _loan_lines(block: str) -> list[str]:
+    return [_clean_loan_value(line) or "" for line in _normalize_text(block).split("\n") if _clean_loan_value(line)]
+
+
+def _extract_loan_label_value(block: str, labels: tuple[str, ...], max_scan: int = 4) -> str | None:
+    lines = _loan_lines(block)
+    for idx, line in enumerate(lines):
+        for label in labels:
+            if label not in line:
+                continue
+            same_line = line.split(label, 1)[1]
+            same_line = re.sub(r"^[\s:：-]+", "", same_line).strip()
+            if same_line and not any(same_line == stop for stop in _LOAN_BLOCK_STOP_LABELS):
+                return _clean_loan_value(same_line)
+            for offset in range(1, max_scan + 1):
+                if idx + offset >= len(lines):
+                    break
+                candidate = lines[idx + offset]
+                if any(candidate.startswith(stop) for stop in _LOAN_BLOCK_STOP_LABELS):
+                    break
+                if candidate:
+                    return _clean_loan_value(candidate)
+    return None
+
+
+def _extract_loan_regex(block: str, pattern: str, normalize_numeric: bool = False) -> str | None:
+    match = re.search(pattern, block, re.S)
+    if not match:
+        return None
+    value = _clean_loan_value(match.group(1))
+    if normalize_numeric:
+        return _normalize_numeric(value)
+    return value
+
+
+def _split_loan_blocks(credit_detail_text: str) -> list[str]:
+    detail = _normalize_text(credit_detail_text)
+    if "公共记录明细" in detail:
+        detail = detail.split("公共记录明细", 1)[0]
+    if "已结清" in detail:
+        detail = detail.split("已结清", 1)[0]
+    parts = re.split(r"(?=账户编号)", detail)
+    return [part.strip() for part in parts if "账户编号" in part]
+
+
+def _parse_active_loan_block(block: str, active_borrowing_balance: Any = None) -> dict[str, Any]:
+    account_no = _extract_loan_regex(block, r"账户编号\s*[:：]?\s*([A-Za-z0-9]+)")
+    balance = _extract_loan_regex(block, r"余额\s*([0-9,.]+)", normalize_numeric=True)
+    total_balance = _to_float(active_borrowing_balance)
+    if balance is not None and total_balance is not None and (_to_float(balance) or 0.0) > total_balance:
+        balance = None
+
+    five_classification = _extract_loan_regex(block, r"五级分类\s*[:：]?\s*(正常|关注|次级|可疑|损失|违约)")
+    if five_classification not in {"正常", "关注", "次级", "可疑", "损失", "违约"}:
+        five_classification = None
+
+    return {
+        "account_no": account_no,
+        "bank": _extract_loan_label_value(block, ("授信机构", "开户机构", "发放机构", "放款机构")),
+        "loan_type": _extract_loan_label_value(block, ("业务种类",)),
+        "start_date": _normalize_date(_extract_loan_regex(block, r"开立日期\s*[:：]?\s*(\d{4}-\d{2}-\d{2})")),
+        "end_date": _normalize_date(_extract_loan_regex(block, r"到期日\s*[:：]?\s*(\d{4}-\d{2}-\d{2})")),
+        "currency": _extract_loan_regex(block, r"币种\s*[:：]?\s*(人民币|USD|CNY)"),
+        "loan_amount": _extract_loan_regex(block, r"借款金额\s*[:：]?\s*([0-9,.]+)", normalize_numeric=True),
+        "disbursement_type": _extract_loan_label_value(block, ("发放形式",)),
+        "guarantee_type": _extract_loan_label_value(block, ("担保方式",)),
+        "balance": balance,
+        "five_classification": five_classification,
+        "overdue_total": _extract_loan_regex(block, r"逾期总额\s*([0-9,.]+)", normalize_numeric=True),
+        "overdue_principal": _extract_loan_regex(block, r"逾期本金\s*([0-9,.]+)", normalize_numeric=True),
+        "overdue_months": _extract_loan_regex(block, r"逾期月数\s*(\d+)"),
+        "last_repayment_date": _normalize_date(_extract_loan_regex(block, r"最近一次还款日期\s*(\d{4}-\d{2}-\d{2})")),
+        "last_repayment_amount": _extract_loan_regex(block, r"最近一次还款总额\s*([0-9,.]+)", normalize_numeric=True),
+        "last_repayment_type": _extract_loan_label_value(block, ("最近一次还款形式",)),
+        "special_flag": _extract_loan_label_value(block, ("特定交易提示",)),
+        "agreement_no": _extract_loan_label_value(block, ("授信协议编号",)),
+        "history_performance": _extract_loan_label_value(block, ("历史表现",)),
+        "report_date": _normalize_date(_extract_loan_regex(block, r"信息报告日期\s*(\d{4}-\d{2}-\d{2})")),
+    }
+
+
+def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_borrowing_balance: Any = None) -> list[dict[str, Any]]:
+    blocks = _split_loan_blocks(credit_detail_text)
+    logger.info("[LoanBlock] total_blocks=%s", len(blocks))
+    if blocks:
+        logger.info("[LoanBlock] block_sample=%s", blocks[0][:500])
+    loans = [_parse_active_loan_block(block, active_borrowing_balance) for block in blocks]
+    loans = [loan for loan in loans if loan.get("account_no") or loan.get("bank") or loan.get("balance")]
+
+    expected_total = _to_float(active_borrowing_balance)
+    parsed_total = sum((_to_float(loan.get("balance")) or 0.0) for loan in loans)
+    if expected_total and loans and abs(parsed_total - expected_total) / expected_total > 0.2:
+        logger.warning(
+            "[LoanBlock] balance_sum_mismatch parsed_total=%s active_borrowing_balance=%s loan_count=%s",
+            parsed_total,
+            active_borrowing_balance,
+            len(loans),
+        )
+    return loans
+
+
 def _derive_risk_indicators(extracted_json: dict[str, Any]) -> dict[str, Any]:
     credit_summary = extracted_json.get("credit_summary") or {}
     active_credit_rows = extracted_json.get("active_credit_summary_by_type") or []
@@ -1124,7 +1260,13 @@ def _derive_risk_indicators(extracted_json: dict[str, Any]) -> dict[str, Any]:
         special_balance = max(special_balance, _to_float(item.get("special_mention_balance")) or 0.0)
         non_performing_balance = max(non_performing_balance, _to_float(item.get("non_performing_balance")) or 0.0)
 
-    has_overdue = any((_to_float(item.get("overdue_amount")) or 0.0) > 0 for item in active_loans)
+    has_overdue = any(
+        (_to_float(item.get("overdue_amount")) or 0.0) > 0
+        or (_to_float(item.get("overdue_total")) or 0.0) > 0
+        or (_to_float(item.get("overdue_principal")) or 0.0) > 0
+        or (_to_float(item.get("overdue_months")) or 0.0) > 0
+        for item in active_loans
+    )
 
     revolving = credit_facility_summary.get("revolving") or {}
     non_revolving = credit_facility_summary.get("non_revolving") or {}
@@ -1466,6 +1608,7 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     personnel = extracted_json.get("key_personnel") or []
     actual_controller = extracted_json.get("actual_controller") or {}
     active_rows = extracted_json.get("active_credit_summary_by_type") or []
+    active_loans = extracted_json.get("active_loans") or []
 
     short_term = _find_active_row(active_rows, "短期借款", "鐭湡鍊熸")
     long_term = _find_active_row(active_rows, "中长期借款", "涓暱鏈熷€熸")
@@ -1518,6 +1661,25 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     lines.append(f"- 法定代表人：{_display(legal_person.get('name'))}")
     lines.append(f"- 实际控制人：{_display(actual_controller.get('name'))}")
     risk_tags = risk_indicators.get("risk_tags") or []
+    lines.extend(["", "### 未结清贷款明细"])
+    if active_loans:
+        for index, loan in enumerate(active_loans, start=1):
+            is_overdue = any(
+                (_to_float(loan.get(key)) or 0.0) > 0
+                for key in ("overdue_total", "overdue_principal", "overdue_months", "overdue_amount")
+            )
+            lines.extend(
+                [
+                    f"- 第 {index} 笔：",
+                    f"  - 银行：{_display(loan.get('bank'))}",
+                    f"  - 余额：{_display(loan.get('balance'))}",
+                    f"  - 到期日：{_display(loan.get('end_date'))}",
+                    f"  - 五级分类：{_display(loan.get('five_classification'))}",
+                    f"  - 是否逾期：{'是' if is_overdue else '否'}",
+                ]
+            )
+    else:
+        lines.append("- 暂未识别到逐笔贷款明细")
     lines.extend(
         [
             "",
@@ -1739,19 +1901,10 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                         actual_controller["identity_no"] = person.get("identity_no")
                         break
             public_records = _extract_public_records(_merge_fragment_lines(sections.get("public_records") or []), public_record_text, credit_summary)
-            active_loans = _extract_detail_records_from_block(
-                credit_detail_text,
-                ("未结清贷款明细", "未结清借款明细", "未结清信贷明细"),
-                ("授信明细", "已结清贷款明细", "公共记录", "查询记录"),
-                {
-                    "机构": "institution",
-                    "业务种类": "business_type",
-                    "五级分类": "five_level_classification",
-                    "余额": "balance",
-                    "逾期金额": "overdue_amount",
-                    "到期日": "maturity_date",
-                    "开户日": "start_date",
-                },
+            active_loan_detail_text = credit_detail_text or _zh_window_after(raw_text, ("信贷记录明细",), ("账户编号",), 20000)
+            active_loans = _extract_active_loans_from_credit_detail(
+                active_loan_detail_text,
+                credit_summary.get("active_borrowing_balance"),
             )
             credit_facilities = _extract_detail_records_from_block(
                 credit_detail_text,
