@@ -112,6 +112,22 @@ def format_report_date(value: str | None) -> str:
     return text
 
 
+def _extract_report_date_from_header(text: str, lines: list[str]) -> str:
+    """Only extract report date from report header, never from detail sections."""
+    header_text = text[:2000]
+    for line in lines[:80]:
+        if "报告时间" not in line and "报告日期" not in line and "查询时间" not in line:
+            continue
+        match = re.search(r"(?:报告时间|报告日期|查询时间)\s*[:：]?\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)", line)
+        if match:
+            return format_report_date(match.group(1))
+
+    match = re.search(r"(?:报告时间|报告日期|查询时间)\s*[:：]?\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)", header_text)
+    if match:
+        return format_report_date(match.group(1))
+    return ""
+
+
 def _normalize_year(value: str | None) -> str:
     text = _clean_value(value)
     match = re.search(r"((?:19|20)\d{2})", text)
@@ -555,13 +571,7 @@ def _extract_report_basic(text: str, lines: list[str], customer_id: str, custome
         match = REPORT_NO_RE.search(text[:2000])
         report_no = match.group(0) if match and len(match.group(0)) >= 20 and _is_valid_report_no(match.group(0)) else ""
 
-    report_date = _normalize_date(
-        _find_after_labels(lines, ("报告时间", "报告日期", "查询时间"), max_scan=2, stop_labels=("查询机构", "中征码", "统一社会信用代码"))
-    )
-    if not report_date:
-        report_date = _normalize_date(
-            _find_value_in_text_window(text, ("报告时间", "报告日期", "查询时间"), stop_labels=("查询机构", "报告编号", "统一社会信用代码"))
-        )
+    report_date = _extract_report_date_from_header(text, lines)
 
     query_institution = _find_after_labels(lines, ("查询机构", "查询人", "查询单位"), max_scan=2, stop_labels=("报告编号", "报告时间"))
     if not query_institution:
@@ -597,7 +607,7 @@ def _extract_identity_info(lines: list[str], text: str) -> dict[str, Any]:
 
 
 def extract_identity_info(text: str) -> dict[str, Any]:
-    """Extract identity table fields from the raw enterprise credit text window."""
+    """Extract identity table fields by slicing from each label to the next label."""
     result: dict[str, Any] = {}
     if not text:
         return result
@@ -608,30 +618,70 @@ def extract_identity_info(text: str) -> dict[str, Any]:
     if end > 0:
         window = window[:end]
     window = window.replace("（", "(").replace("）", ")")
-    compact = re.sub(r"\s+", " ", window)
+    window = re.sub(r"\s+", " ", window)
 
-    fields: dict[str, tuple[str, ...]] = {
-        "company_name": ("企业名称",),
-        "zhongzheng_code": ("中征码",),
-        "credit_code": ("统一社会信用代码",),
-        "organization_code": ("组织机构代码",),
+    identity_fields = [
+        ("company_name", "企业名称"),
+        ("zhongzheng_code", "中征码"),
+        ("credit_code", "统一社会信用代码"),
+        ("organization_code", "组织机构代码"),
+        ("business_registration_no", "工商注册号"),
+        ("taxpayer_id_national", "纳税人识别号(国税)"),
+        ("taxpayer_id_local", "纳税人识别号(地税)"),
+    ]
+
+    aliases: dict[str, tuple[str, ...]] = {
         "business_registration_no": ("工商注册号", "工商登记注册号", "营业执照注册号"),
         "taxpayer_id_national": ("纳税人识别号(国税)", "纳税人识别号 国税", "纳税人识别号(国 税)", "国税纳税人识别号"),
         "taxpayer_id_local": ("纳税人识别号(地税)", "纳税人识别号 地税", "纳税人识别号(地 税)", "地税纳税人识别号"),
     }
 
-    def extract_by_labels(labels: tuple[str, ...]) -> str:
-        for label in labels:
-            pattern = rf"{re.escape(label)}[:：]?\s*([A-Za-z0-9\u4e00-\u9fa5\-]+)"
-            match = re.search(pattern, compact)
-            if match:
-                return _clean_value(match.group(1))
-        return ""
+    positions: list[tuple[int, str, str]] = []
+    for key, label in identity_fields:
+        labels = aliases.get(key, (label,))
+        found = [(window.find(candidate), candidate) for candidate in labels if window.find(candidate) != -1]
+        if found:
+            idx, matched_label = min(found, key=lambda item: item[0])
+            positions.append((idx, key, matched_label))
+    positions.sort(key=lambda item: item[0])
 
-    for key, labels in fields.items():
-        value = extract_by_labels(labels)
+    end_keywords = ("首次有信贷交易的年份", "发生信贷交易的机构数", "信息概要", "信贷记录明细")
+    field_labels = [label for _, label in identity_fields]
+    field_labels.extend(alias for values in aliases.values() for alias in values)
+
+    def clean_identity_value(key: str, value: str) -> str:
+        cleaned = re.sub(r"\s+", " ", value).strip(" :：")
+        for next_label in field_labels:
+            if next_label in cleaned:
+                cleaned = cleaned.split(next_label, 1)[0].strip()
+        if key == "organization_code":
+            match = re.search(r"[A-Z0-9]{8,}", cleaned)
+            return match.group(0) if match else cleaned
+        if key in {"credit_code", "business_registration_no", "taxpayer_id_national", "taxpayer_id_local"}:
+            match = re.search(r"[A-Z0-9]{15,25}", cleaned)
+            return match.group(0) if match else cleaned
+        if key == "zhongzheng_code":
+            match = ZHONGZHENG_CODE_RE.search(cleaned)
+            return match.group(0) if match else cleaned
+        return _clean_value(cleaned)
+
+    for i, (start_idx, key, label) in enumerate(positions):
+        value_start = start_idx + len(label)
+        while value_start < len(window) and window[value_start] in {":", "：", " "}:
+            value_start += 1
+        end_idx = positions[i + 1][0] if i + 1 < len(positions) else len(window)
+        if i + 1 == len(positions):
+            for keyword in end_keywords:
+                pos = window.find(keyword, value_start)
+                if pos != -1:
+                    end_idx = min(end_idx, pos)
+        value = clean_identity_value(key, window[value_start:end_idx])
         if value:
             result[key] = value
+    if result.get("credit_code"):
+        result["unified_social_credit_code"] = result["credit_code"]
+    if result.get("organization_code"):
+        result["org_code"] = result["organization_code"]
     return result
 
 
@@ -2475,7 +2525,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 })
                 report_basic = _merge_meaningful_values(report_basic, {
                     "company_name": raw_identity_info.get("company_name"),
-                    "credit_code": raw_identity_info.get("credit_code"),
+                    "credit_code": raw_identity_info.get("credit_code") or raw_identity_info.get("unified_social_credit_code"),
                     "zhongzheng_code": raw_identity_info.get("zhongzheng_code"),
                 })
             if report_basic.get("report_date"):
