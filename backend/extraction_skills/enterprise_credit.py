@@ -1198,10 +1198,65 @@ def _clean_tolerant_loan_bank(value: Any) -> str | None:
     return cleaned or None
 
 
+def _extract_active_credit_text(credit_detail_text: str) -> str:
+    credit_detail = normalize_credit_text(credit_detail_text)
+    start_candidates = ("未结清信贷", "中长期借款 共", "短期借款 共")
+    start_pos = -1
+    for key in start_candidates:
+        pos = credit_detail.find(key)
+        if pos != -1:
+            start_pos = pos
+            break
+
+    active_text = credit_detail[start_pos:] if start_pos != -1 else credit_detail
+    end_pos = active_text.find("已结清信贷")
+    if end_pos != -1:
+        active_text = active_text[:end_pos]
+    return active_text
+
+
+def is_valid_active_loan(loan: dict[str, Any]) -> bool:
+    text = " ".join(str(value) for value in loan.values() if value)
+    header_keywords = [
+        "业务种类",
+        "开立日期",
+        "到期日",
+        "币种",
+        "借款金额",
+        "发放形式",
+        "担保方式",
+        "五级分类",
+        "逾期总额",
+        "逾期本金",
+        "最近一次还款",
+        "授信协议编号",
+        "历史表现",
+    ]
+    if sum(1 for keyword in header_keywords if keyword in text) >= 4:
+        return False
+
+    bank = str(loan.get("bank") or "")
+    valid_org_keywords = ["银行", "融资租赁", "保理", "小额贷款", "财务公司", "信托", "消费金融", "担保"]
+    if not any(keyword in bank for keyword in valid_org_keywords):
+        return False
+    if any(keyword in bank for keyword in header_keywords):
+        return False
+
+    try:
+        float(str(loan.get("balance", "")).replace(",", ""))
+    except Exception:
+        return False
+
+    if loan.get("five_classification") not in ["正常", "关注", "次级", "可疑", "损失", "违约", "未分类"]:
+        return False
+
+    return True
+
+
 def _extract_active_loans_by_tolerant_table(credit_detail_text: str, active_borrowing_balance: Any = None) -> list[dict[str, Any]]:
-    normalized = normalize_credit_text(credit_detail_text)
+    normalized = _extract_active_credit_text(credit_detail_text)
     text_for_parse = re.sub(r"\n+", " ", normalized)
-    text_for_parse = re.sub(r"[ \t]+", " ", text_for_parse)
+    text_for_parse = re.sub(r"\s+", " ", text_for_parse)
     pattern = re.compile(
         r"(?P<bank>[\u4e00-\u9fa5（）()A-Za-z0-9·\-]+(?:银行|融资租赁|保理)[\u4e00-\u9fa5（）()A-Za-z0-9·\-]*)"
         r"\s*(?P<biz>流动资金贷款|融资型租赁|贷款|有追索权的国内卖方保理融资|保理融资)"
@@ -1300,18 +1355,23 @@ def _parse_active_loan_block(block: str, active_borrowing_balance: Any = None) -
 
 
 def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_borrowing_balance: Any = None) -> list[dict[str, Any]]:
-    blocks = _split_loan_blocks(credit_detail_text)
+    active_text = _extract_active_credit_text(credit_detail_text)
+    logger.info("[EnterpriseCredit][DEBUG] active_text_head=%s", active_text[:1000])
+    blocks = _split_loan_blocks(active_text)
     logger.info("[LoanBlock] total_blocks=%s", len(blocks))
     if blocks:
         logger.info("[LoanBlock] block_sample=%s", blocks[0][:500])
-    loans = [_parse_active_loan_block(block, active_borrowing_balance) for block in blocks]
-    loans = [loan for loan in loans if loan.get("account_no") or loan.get("bank") or loan.get("balance")]
+    raw_active_loans = [_parse_active_loan_block(block, active_borrowing_balance) for block in blocks]
+    raw_active_loans = [loan for loan in raw_active_loans if loan.get("account_no") or loan.get("bank") or loan.get("balance")]
+    logger.info("[EnterpriseCredit][DEBUG] raw_active_loans_count=%s", len(raw_active_loans))
+    loans = [loan for loan in raw_active_loans if is_valid_active_loan(loan)]
     has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
     if not has_effective_loan:
-        tolerant_loans = _extract_active_loans_by_tolerant_table(credit_detail_text, active_borrowing_balance)
+        tolerant_loans = _extract_active_loans_by_tolerant_table(active_text, active_borrowing_balance)
         logger.info("[LoanBlock] tolerant_table_count=%s", len(tolerant_loans))
-        if tolerant_loans:
-            loans = tolerant_loans
+        loans = [loan for loan in tolerant_loans if is_valid_active_loan(loan)]
+    logger.info("[EnterpriseCredit][DEBUG] filtered_active_loans_count=%s", len(loans))
+    logger.info("[EnterpriseCredit][DEBUG] filtered_active_loans_sample=%s", loans[:3])
 
     expected_total = _to_float(active_borrowing_balance)
     parsed_total = sum((_to_float(loan.get("balance")) or 0.0) for loan in loans)
