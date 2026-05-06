@@ -2042,19 +2042,27 @@ def extract_actual_controller(text: str) -> str:
     if index == -1:
         return ""
 
-    window = text[index : index + 800]
-    for stop in ["第 ", "信贷记录明细", "信息概要", "基本信息", "未结清信贷", "注册资本"]:
+    window = text[index : index + 2000]
+    for stop in ["信贷记录明细", "未结清信贷", "信息概要", "公共记录明细", "附件1"]:
         position = window.find(stop)
-        if position > 0:
+        if position > 50:
             window = window[:position]
+            break
 
-    match = re.search(r"名称\s*身份标识类型\s*身份标识号码\s*([\u4e00-\u9fa5]{2,4})\s*身份证\s*\d{15,18}", window)
-    if match:
-        return _clean_actual_controller_name(match.group(1)) or ""
+    logger.info("[EnterpriseCredit][DEBUG] actual_controller_window=%s", window[:1000])
+    compact = re.sub(r"\s+", " ", window)
 
-    match = re.search(r"([\u4e00-\u9fa5]{2,4})\s*身份证\s*\d{15,18}", window)
+    match = re.search(r"([\u4e00-\u9fa5]{2,4})\s*身份证\s*\d{15,18}", compact)
     if match:
-        return _clean_actual_controller_name(match.group(1)) or ""
+        name = match.group(1)
+        if name not in ["名称", "姓名", "股东"]:
+            return _clean_actual_controller_name(name) or ""
+
+    match = re.search(r"([\u4e00-\u9fa5]{2,4})身份证\d{15,18}", compact)
+    if match:
+        name = match.group(1)
+        if name not in ["名称", "姓名", "股东"]:
+            return _clean_actual_controller_name(name) or ""
 
     return ""
 
