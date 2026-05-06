@@ -1,6 +1,6 @@
 {
   "name": "loan-assistant-frontend",
-  "version": "1.0.37",
+  "version": "1.0.38",
   "type": "module",
   "scripts": {
     "dev": "npm run version:auto && npm run version:prepare && vite",
