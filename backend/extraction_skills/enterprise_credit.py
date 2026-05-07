@@ -2113,36 +2113,73 @@ def _display(value: Any) -> str:
     return str(value)
 
 
+def clean_code(value: Any, length: int) -> str:
+    text = str(value or "").strip().upper()
+    match = re.search(rf"[A-Z0-9]{{{length}}}", text)
+    return match.group(0) if match else ""
+
+
+def clean_generic_code(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    match = ZHONGZHENG_CODE_RE.search(text) or re.search(r"[A-Z0-9]{10,30}", text)
+    return match.group(0) if match else ""
+
+
+def clean_company_name(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    match = re.search(r"[\u4e00-\u9fa5A-Za-z0-9（）()]{4,80}有限公司", text)
+    if match:
+        return match.group(0)
+    for marker in ("中征码", "统一社会信用代码", "组织机构代码", "工商注册号", "纳税人识别号", "信息概要"):
+        idx = text.find(marker)
+        if idx > 0:
+            text = text[:idx]
+    return text.strip(" :：")
+
+
+def clean_org_code(value: Any, unified_social_credit_code: str = "") -> str:
+    text = str(value or "").strip().upper()
+    text = re.sub(r"\s+", " ", text)
+    for marker in ("工商注册号", "纳税人识别号", "统一社会信用代码", "中征码", "企业名称"):
+        idx = text.find(marker)
+        if idx != -1:
+            text = text[:idx]
+
+    for candidate in re.findall(r"[A-Z0-9]{8,10}", text):
+        if 8 <= len(candidate) <= 10:
+            return candidate
+
+    unified_match = re.search(r"[A-Z0-9]{18}", str(unified_social_credit_code or "").upper())
+    if unified_match:
+        unified_code = unified_match.group(0)
+        return unified_code[8:17]
+    return ""
+
+
 def build_clean_identity(identity: dict[str, Any]) -> dict[str, str]:
-    """Final display guard for the current enterprise credit identity table."""
+    """Clean identity fields without report-specific hard-coded fallbacks."""
     identity = identity or {}
-    unified_source = str(
-        identity.get("unified_social_credit_code")
-        or identity.get("organization_credit_code")
-        or identity.get("credit_code")
-        or identity.get("business_registration_no")
-        or identity.get("taxpayer_id_national")
-        or ""
+    unified_source = " ".join(
+        str(identity.get(key) or "")
+        for key in (
+            "unified_social_credit_code",
+            "organization_credit_code",
+            "business_registration_no",
+            "taxpayer_id_national",
+            "taxpayer_id_local",
+        )
     )
-    unified_match = re.search(r"[A-Z0-9]{18}", unified_source)
-    unified_code = unified_match.group(0) if unified_match else "91310118MA1JP7UB2B"
-
-    zhongzheng_source = str(identity.get("zhongzheng_code") or identity.get("credit_code") or "")
-    zhongzheng_match = ZHONGZHENG_CODE_RE.search(zhongzheng_source)
-    zhongzheng_code = zhongzheng_match.group(0) if zhongzheng_match else "310118UE83L3F406"
-
-    company_source = str(identity.get("company_name") or "")
-    company_match = re.search(r"[\u4e00-\u9fa5A-Za-z0-9（）()]{4,80}有限公司", company_source)
-    company_name = company_match.group(0) if company_match else "上海意川建筑科技有限公司"
+    unified_code = clean_code(unified_source, 18)
 
     return {
-        "company_name": company_name,
-        "credit_code": zhongzheng_code,
+        "company_name": clean_company_name(identity.get("company_name")),
+        "credit_code": clean_generic_code(identity.get("zhongzheng_code") or identity.get("credit_code")),
         "unified_social_credit_code": unified_code,
-        "org_code": "MA1JP7UB2",
-        "business_registration_no": unified_code,
-        "taxpayer_id_national": unified_code,
-        "taxpayer_id_local": unified_code,
+        "org_code": clean_org_code(identity.get("org_code") or identity.get("organization_code"), unified_code),
+        "business_registration_no": clean_code(identity.get("business_registration_no"), 18) or unified_code,
+        "taxpayer_id_national": clean_code(identity.get("taxpayer_id_national"), 18) or unified_code,
+        "taxpayer_id_local": clean_code(identity.get("taxpayer_id_local"), 18) or unified_code,
     }
 
 
