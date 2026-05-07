@@ -1432,6 +1432,28 @@ def _extract_active_credit_text(credit_detail_text: str) -> str:
     return active_text
 
 
+def extract_section_count(text: str, section_name: str) -> int:
+    if not text or not section_name:
+        return 0
+    match = re.search(rf"{re.escape(section_name)}\s*共\s*(\d+)\s*笔", text)
+    return int(match.group(1)) if match else 0
+
+
+def extract_section_text(text: str, start_title: str, end_titles: list[str]) -> str:
+    if not text or not start_title:
+        return ""
+    start = text.find(start_title)
+    if start == -1:
+        return ""
+    section = text[start:]
+    end_pos = len(section)
+    for title in end_titles:
+        pos = section.find(title, len(start_title))
+        if pos != -1:
+            end_pos = min(end_pos, pos)
+    return section[:end_pos]
+
+
 def is_valid_active_loan(loan: dict[str, Any]) -> bool:
     text = " ".join(str(value) for value in loan.values() if value)
     header_keywords = [
@@ -1509,6 +1531,70 @@ def _clean_credit_detail_line(value: Any) -> str:
     return text
 
 
+def _extract_loan_from_context(context_lines: list[str], status_match: re.Match[str], default_section_type: str | None = None) -> dict[str, Any]:
+    context = "\n".join(context_lines)
+    compact_context = re.sub(r"\s+", "", context)
+    org_pattern = re.compile(
+        r"([\u4e00-\u9fa5（）()A-Za-z0-9]{2,40}(?:银行|融资租赁|保理|小额贷款|消费金融|财务公司|信托)[\u4e00-\u9fa5（）()A-Za-z0-9]{0,30})"
+    )
+    biz_pattern = re.compile(r"(循环透支|流动资金贷款|贸易融资|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
+
+    org_candidates: list[str] = []
+    for line_offset, context_line in enumerate(context_lines):
+        compact_line = re.sub(r"\s+", "", context_line)
+        if not any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
+            continue
+        joined_line = re.sub(r"\s+", "", "".join(context_lines[line_offset : min(len(context_lines), line_offset + 4)]))
+        cleaned_line = _clean_tolerant_loan_bank(joined_line)
+        if cleaned_line and not _is_credit_table_noise_line(cleaned_line):
+            org_candidates.append(cleaned_line)
+    if not org_candidates:
+        for candidate in org_pattern.findall(compact_context):
+            cleaned_candidate = _clean_tolerant_loan_bank(candidate)
+            if cleaned_candidate and not _is_credit_table_noise_line(cleaned_candidate):
+                org_candidates.append(cleaned_candidate)
+
+    context_tail = "\n".join(context_lines[-8:])
+    biz_match = biz_pattern.search(context_tail) or biz_pattern.search(context)
+    dates = re.findall(r"\d{4}-\d{2}-\d{2}", context_tail)
+    if len(dates) < 2:
+        dates = re.findall(r"\d{4}-\d{2}-\d{2}", context)
+    amount_match = re.search(r"人民币元\s*([0-9,.]+)", context_tail) or re.search(r"人民币元\s*([0-9,.]+)", context)
+    account_match = re.search(r"(?:^|[^A-Z0-9])([A-Z][A-Z0-9]{5,})", context)
+
+    guarantee = status_match.groupdict().get("guarantee")
+    if not guarantee:
+        for prev_line in reversed(context_lines[-4:-1]):
+            guarantee_match = re.search(r"(信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)", prev_line)
+            if guarantee_match:
+                guarantee = guarantee_match.group(1)
+                break
+
+    biz_type = _clean_loan_value(biz_match.group(1)) if biz_match else "未识别"
+    section_type = default_section_type or ("循环透支" if "循环透支" in context or "循环透支" in biz_type else None)
+    return {
+        "account_no": account_match.group(1) if account_match else None,
+        "bank": org_candidates[-1] if org_candidates else "未识别",
+        "biz_type": biz_type,
+        "loan_type": biz_type,
+        "section_type": section_type,
+        "term_type": "revolving_overdraft" if section_type == "循环透支" else None,
+        "open_date": dates[0] if len(dates) >= 1 else "未识别",
+        "start_date": dates[0] if len(dates) >= 1 else "未识别",
+        "due_date": dates[1] if len(dates) >= 2 else "未识别",
+        "end_date": dates[1] if len(dates) >= 2 else "未识别",
+        "loan_amount": _normalize_numeric(amount_match.group(1)) if amount_match else "未识别",
+        "balance": _normalize_numeric(status_match.group("balance")),
+        "five_classification": status_match.group("five_classification"),
+        "overdue_amount": _normalize_numeric(status_match.group("overdue_amount")),
+        "overdue_total": _normalize_numeric(status_match.group("overdue_amount")),
+        "overdue_principal": _normalize_numeric(status_match.group("overdue_principal")),
+        "overdue_months": status_match.group("overdue_months"),
+        "guarantee": guarantee or "未识别",
+        "guarantee_type": guarantee or "未识别",
+    }
+
+
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
     normalized = _extract_active_credit_text(active_text)
     lines = [
@@ -1518,13 +1604,21 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
     ]
     logger.info("[EnterpriseCredit][DEBUG] total_lines=%s", len(lines))
     status_line_pattern = re.compile(
-        r"(?P<guarantee>保证|组合|信用|抵押|质押|其他)\s+"
+        r"(?P<guarantee>保证|组合|信用/无担保|信用|无担保|抵押|质押|其他)\s+"
         r"(?P<balance>\d+(?:\.\d+)?)\s+"
         r"(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
         r"(?P<overdue_amount>\d+(?:\.\d+)?)\s+"
         r"(?P<overdue_principal>\d+(?:\.\d+)?)\s+"
         r"(?P<overdue_months>\d+)\s+"
         r"(?P<last_repay_date>\d{4}-\d{2}-\d{2})"
+    )
+    status_line_without_guarantee_pattern = re.compile(
+        r"(?P<balance>\d+(?:\.\d+)?)\s+"
+        r"(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
+        r"(?P<overdue_amount>\d+(?:\.\d+)?)\s+"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)\s+"
+        r"(?P<overdue_months>\d+)"
+        r"(?:\s+(?P<last_repay_date>\d{4}-\d{2}-\d{2}))?"
     )
     org_pattern = re.compile(
         r"([\u4e00-\u9fa5（）()A-Za-z0-9]{2,40}(?:银行|融资租赁|保理|小额贷款|消费金融|财务公司|信托)[\u4e00-\u9fa5（）()A-Za-z0-9]{0,30})"
@@ -1536,19 +1630,20 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
     status_line_count = 0
 
     for index, line in enumerate(lines):
-        match = status_line_pattern.search(line)
+        match = status_line_pattern.search(line) or status_line_without_guarantee_pattern.search(line)
         if not match:
             continue
         logger.info("[EnterpriseCredit][DEBUG] status_line_hit index=%s line=%s", index, line)
         status_line_count += 1
         context_start = max(0, index - 25)
         for prev_index in range(index - 1, context_start - 1, -1):
-            if status_line_pattern.search(lines[prev_index]):
+            if status_line_pattern.search(lines[prev_index]) or status_line_without_guarantee_pattern.search(lines[prev_index]):
                 context_start = prev_index + 1
                 break
         context_lines = lines[context_start : index + 1]
         context = "\n".join(context_lines)
         compact_context = re.sub(r"\s+", "", context)
+        account_match = re.search(r"(?:^|[^A-Z0-9])([A-Z][A-Z0-9]{5,})", context)
 
         org_candidates = []
         for line_offset, context_line in enumerate(context_lines):
@@ -1578,9 +1673,17 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         loan_amount = _normalize_numeric(amount_match.group(1)) if amount_match else None
         balance = _normalize_numeric(match.group("balance"))
         five_classification = match.group("five_classification")
-        last_repay_date = match.group("last_repay_date")
+        guarantee = match.groupdict().get("guarantee")
+        if not guarantee:
+            for prev_line in reversed(context_lines[-4:-1]):
+                guarantee_match = re.search(r"(信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)", prev_line)
+                if guarantee_match:
+                    guarantee = guarantee_match.group(1)
+                    break
+        last_repay_date = match.groupdict().get("last_repay_date") or "未识别"
 
         loan = {
+            "account_no": account_match.group(1) if account_match else None,
             "bank": bank or "未识别",
             "biz_type": biz_type or "未识别",
             "loan_type": biz_type or "未识别",
@@ -1597,8 +1700,8 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
             "overdue_total": _normalize_numeric(match.group("overdue_amount")),
             "overdue_principal": _normalize_numeric(match.group("overdue_principal")),
             "overdue_months": match.group("overdue_months"),
-            "guarantee": match.group("guarantee"),
-            "guarantee_type": match.group("guarantee"),
+            "guarantee": guarantee or "未识别",
+            "guarantee_type": guarantee or "未识别",
             "last_repay_date": last_repay_date,
             "last_repayment_date": last_repay_date,
         }
@@ -1607,7 +1710,14 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         if not is_valid_active_loan(loan):
             logger.info("[EnterpriseCredit][DEBUG] drop_invalid_loan=%s", loan)
             continue
-        key = (loan["bank"], str(loan["balance"]), str(loan["due_date"]), str(loan["last_repay_date"]))
+        key = (
+            str(loan.get("account_no") or ""),
+            str(loan.get("bank") or ""),
+            str(loan.get("open_date") or ""),
+            str(loan.get("due_date") or ""),
+            str(loan.get("loan_amount") or ""),
+            str(loan.get("balance") or ""),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -1745,7 +1855,46 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
     logger.info("[EnterpriseCredit][DEBUG] raw_active_loans_count=%s", len(raw_active_loans))
     block_loans = [loan for loan in raw_active_loans if is_valid_active_loan(loan)]
     status_line_loans = _extract_active_loans_by_status_lines(active_text)
-    loans = status_line_loans if len(status_line_loans) >= len(block_loans) else block_loans
+
+    short_expected_count = extract_section_count(active_text, "短期借款")
+    short_text = extract_section_text(
+        active_text,
+        "短期借款",
+        ["中长期借款", "循环透支", "已结清信贷", "授信信息", "公共记录明细"],
+    )
+    logger.info("[EnterpriseCredit][DEBUG] short_expected_count=%s", short_expected_count)
+    logger.info("[EnterpriseCredit][DEBUG] short_text_len=%s", len(short_text))
+    logger.info("[EnterpriseCredit][DEBUG] short_text_tail=%s", short_text[-3000:])
+    short_block_loans: list[dict[str, Any]] = []
+    if short_text:
+        short_blocks = _split_loan_blocks(short_text)
+        short_block_loans = [
+            loan
+            for loan in (_parse_active_loan_block(block, active_borrowing_balance) for block in short_blocks)
+            if loan.get("account_no") or loan.get("bank") or loan.get("balance")
+        ]
+        short_block_loans = [loan for loan in short_block_loans if is_valid_active_loan(loan)]
+        short_status_loans = _extract_active_loans_by_status_lines(short_text)
+    else:
+        short_status_loans = []
+
+    candidates = [*block_loans, *status_line_loans, *short_block_loans, *short_status_loans]
+    loans: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    for loan in candidates:
+        key = (
+            str(loan.get("account_no") or ""),
+            str(loan.get("bank") or ""),
+            str(loan.get("open_date") or loan.get("start_date") or ""),
+            str(loan.get("due_date") or loan.get("end_date") or ""),
+            str(loan.get("loan_amount") or ""),
+            str(loan.get("balance") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        loans.append(loan)
+
     has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
     if not has_effective_loan:
         tolerant_loans = _extract_active_loans_by_tolerant_table(active_text, active_borrowing_balance)
@@ -1753,6 +1902,15 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
         loans = [loan for loan in tolerant_loans if is_valid_active_loan(loan)]
     logger.info("[EnterpriseCredit][DEBUG] filtered_active_loans_count=%s", len(loans))
     logger.info("[EnterpriseCredit][DEBUG] filtered_active_loans_sample=%s", loans[:3])
+    short_loans = [loan for loan in loans if loan_term_type(loan) == "short"]
+    logger.info("[EnterpriseCredit][DEBUG] short_actual_count=%s", len(short_loans))
+    logger.info("[EnterpriseCredit][DEBUG] short_loans=%s", short_loans)
+    if short_expected_count > 0 and len(short_loans) < short_expected_count:
+        logger.warning(
+            "[EnterpriseCredit][WARN] short loans incomplete expected=%s actual=%s",
+            short_expected_count,
+            len(short_loans),
+        )
 
     expected_total = _to_float(active_borrowing_balance)
     parsed_total = sum((_to_float(loan.get("balance")) or 0.0) for loan in loans)
