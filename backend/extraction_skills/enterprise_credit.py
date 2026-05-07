@@ -1787,6 +1787,102 @@ def parse_loans_from_section(section_text: str, term_type: str) -> list[dict[str
     return loans
 
 
+def extract_credit_limit_count(text: str) -> int:
+    if not text:
+        return 0
+    match = re.search(r"授信信息\s*共\s*(\d+)\s*笔", text)
+    return int(match.group(1)) if match else 0
+
+
+def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
+    text = normalize_credit_text(section_text or "")
+    if not text:
+        return []
+    lines = [
+        line
+        for line in (_clean_credit_detail_line(raw_line) for raw_line in text.splitlines())
+        if line and not _is_credit_table_noise_line(line)
+    ]
+    joined = "\n".join(lines)
+    org_pattern = re.compile(
+        r"([\u4e00-\u9fa5（）()A-Za-z0-9]{2,80}(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)[\u4e00-\u9fa5（）()A-Za-z0-9]{0,80})"
+    )
+    org_matches = list(org_pattern.finditer(joined))
+    records: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for index, org_match in enumerate(org_matches):
+        org_line_start = joined.rfind("\n", 0, org_match.start())
+        prev_line_start = joined.rfind("\n", 0, org_line_start if org_line_start != -1 else org_match.start())
+        start = prev_line_start + 1 if prev_line_start != -1 else 0
+        if index + 1 < len(org_matches):
+            next_org_line_start = joined.rfind("\n", 0, org_matches[index + 1].start())
+            next_prev_line_start = joined.rfind("\n", 0, next_org_line_start if next_org_line_start != -1 else org_matches[index + 1].start())
+            end = next_prev_line_start + 1 if next_prev_line_start != -1 else org_matches[index + 1].start()
+        else:
+            end = len(joined)
+        block = joined[start:end]
+        bank = _clean_tolerant_loan_bank(org_match.group(1))
+        if not bank:
+            continue
+
+        dates = re.findall(r"\d{4}-\d{2}-\d{2}", block)
+        if len(dates) < 2:
+            continue
+        agreement_match = re.search(r"\b([A-Z]\d{4,}[A-Z0-9]*)\b", block)
+        type_match = re.search(r"(贷款|贸易融资|保理|循环额度|流动资金贷款)", block)
+        revolving_match = re.search(r"\s(是|否)\s+\d{4}-\d{2}-\d{2}\s+\d{4}-\d{2}-\d{2}", block)
+        amount_match = re.search(
+            r"人民币元\s*([0-9,.]+)\s+([0-9,.]+)\s+(--|[0-9,.]+)\s+(--|[A-Z0-9]+)\s+(\d{4}-\d{2}-\d{2})",
+            block,
+        )
+        if amount_match:
+            credit_amount = _normalize_numeric(amount_match.group(1))
+            used_amount = _normalize_numeric(amount_match.group(2))
+            credit_limit = amount_match.group(3)
+            credit_limit_no = amount_match.group(4)
+            report_date = amount_match.group(5)
+        else:
+            amount_numbers = re.findall(r"人民币元\s*([0-9,.]+)\s+([0-9,.]+)", block)
+            credit_amount = _normalize_numeric(amount_numbers[-1][0]) if amount_numbers else None
+            used_amount = _normalize_numeric(amount_numbers[-1][1]) if amount_numbers else None
+            credit_limit = "--"
+            credit_limit_no = "--"
+            report_date = dates[-1] if len(dates) >= 3 else None
+
+        record = {
+            "agreement_no": agreement_match.group(1) if agreement_match else "",
+            "institution": bank,
+            "credit_type": type_match.group(1) if type_match else "未识别",
+            "is_revolving": revolving_match.group(1) if revolving_match else "未识别",
+            "effective_date": dates[0],
+            "due_date": dates[1],
+            "currency": "人民币元" if "人民币元" in block else "未识别",
+            "credit_amount": credit_amount or "未识别",
+            "used_amount": used_amount or "未识别",
+            "credit_limit": credit_limit,
+            "credit_limit_no": credit_limit_no,
+            "report_date": report_date or (dates[-1] if dates else ""),
+        }
+        key = (
+            record["institution"],
+            record["effective_date"],
+            record["due_date"],
+            str(record["credit_amount"]),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(record)
+
+    logger.info(
+        "[EnterpriseCredit][DEBUG] credit_limit_expected=%s actual=%s sample=%s",
+        extract_credit_limit_count(text),
+        len(records),
+        records[:3],
+    )
+    return records
+
+
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
     normalized = _extract_active_credit_text(active_text)
     lines = [
@@ -2844,6 +2940,7 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     actual_controller = extracted_json.get("actual_controller") or {}
     active_rows = extracted_json.get("active_credit_summary_by_type") or []
     active_loans = extracted_json.get("active_loans") or []
+    credit_facilities = extracted_json.get("credit_facilities") or []
 
     short_term = _find_active_row(active_rows, "短期借款", "鐭湡鍊熸")
     long_term = _find_active_row(active_rows, "中长期借款", "涓暱鏈熷€熸")
@@ -2921,6 +3018,28 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
             f"- 关注类余额：{_display(credit_summary.get('active_special_mention_balance'))}",
             f"- 不良类余额：{_display(credit_summary.get('active_non_performing_balance'))}",
             f"- 对外担保余额：{_display(credit_summary.get('guarantee_balance'))}",
+            "",
+            "### 授信信息",
+        ]
+    )
+    if credit_facilities:
+        for item in credit_facilities:
+            lines.extend(
+                [
+                    f"- 授信机构：{_display(item.get('institution'))}",
+                    f"  授信额度类型：{_display(item.get('credit_type') or item.get('facility_type'))}",
+                    f"  额度循环标志：{_display(item.get('is_revolving'))}",
+                    f"  授信额度：{_display(item.get('credit_amount') or item.get('limit_amount'))} 万元",
+                    f"  已用额度：{_display(item.get('used_amount') or item.get('used_limit'))} 万元",
+                    f"  生效日期：{_display(item.get('effective_date'))}",
+                    f"  到期日：{_display(item.get('due_date') or item.get('maturity_date'))}",
+                    f"  信息报告日期：{_display(item.get('report_date'))}",
+                ]
+            )
+    else:
+        lines.append("- 暂未识别到授信信息")
+    lines.extend(
+        [
             "",
             "### 授信额度",
             f"- 非循环额度：总额 {_display(non_revolving.get('total_limit'))} / 已用 {_display(non_revolving.get('used_limit'))} / 可用 {_display(non_revolving.get('available_limit'))}",
@@ -3221,19 +3340,13 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             )
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
             logger.info("[EnterpriseCredit][DEBUG] active_loans_sample=%s", active_loans[:2])
-            credit_facilities = _extract_detail_records_from_block(
-                credit_detail_text,
-                ("授信明细", "授信额度明细"),
-                ("已结清贷款明细", "公共记录", "查询记录"),
-                {
-                    "机构": "institution",
-                    "授信种类": "facility_type",
-                    "授信总额": "limit_amount",
-                    "已用额度": "used_limit",
-                    "剩余可用额度": "available_limit",
-                    "到期日": "maturity_date",
-                },
+            credit_limit_text = extract_section_text_from_raw(
+                raw_text,
+                ["授信信息 共", "授信信息"],
+                ["公共记录明细", "附件1", "已结清信贷", "非信贷交易明细"],
             )
+            logger.info("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s tail=%s", len(credit_limit_text), credit_limit_text[-1500:])
+            credit_facilities = parse_credit_limits(credit_limit_text)
             closed_loans = _extract_detail_records_from_block(
                 credit_detail_text,
                 ("已结清贷款明细", "已结清借款明细"),
