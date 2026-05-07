@@ -1794,6 +1794,35 @@ def extract_credit_limit_count(text: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def extract_credit_limit_text(raw_text: str) -> str:
+    text = normalize_credit_text(raw_text or "")
+    match = re.search(r"授信信息\s*共\s*\d+\s*笔", text)
+    logger.warning(
+        "[EnterpriseCredit][DEBUG] credit_limit_section_start=%s",
+        match.group(0) if match else None,
+    )
+    if not match:
+        return ""
+
+    section = text[match.start():]
+    end_keywords = [
+        "已结清信贷",
+        "公共记录明细",
+        "非信贷交易明细",
+        "附件1",
+    ]
+    end_pos = len(section)
+    for keyword in end_keywords:
+        pos = section.find(keyword)
+        if pos != -1:
+            end_pos = min(end_pos, pos)
+    credit_limit_text = section[:end_pos]
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s", len(credit_limit_text))
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_head=%s", credit_limit_text[:1500])
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_tail=%s", credit_limit_text[-1500:])
+    return credit_limit_text
+
+
 def clean_credit_limit_institution(name: str) -> str:
     value = str(name or "")
     value = re.sub(r"\s+", "", value)
@@ -3407,11 +3436,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             )
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
             logger.info("[EnterpriseCredit][DEBUG] active_loans_sample=%s", active_loans[:2])
-            credit_limit_text = extract_section_text_from_raw(
-                raw_text,
-                ["授信信息 共", "授信信息"],
-                ["已结清信贷", "公共记录明细", "非信贷交易明细", "附件1"],
-            )
+            credit_limit_text = extract_credit_limit_text(raw_text)
             credit_limit_expected_count = extract_credit_limit_count(credit_limit_text)
             logger.info("[EnterpriseCredit][DEBUG] credit_limit_expected_count=%s", credit_limit_expected_count)
             logger.info("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s tail=%s", len(credit_limit_text), credit_limit_text[-1500:])
