@@ -902,9 +902,6 @@ async def _run_file_process_job(
         "role": str(execution_payload.get("role") or "").strip(),
     }
 
-    if not requested_customer_id:
-        raise ValueError(CUSTOMER_ID_REQUIRED_MESSAGE)
-
     if not temp_file_path:
         raise ValueError(f"file process job {job_id} missing tempFilePath")
 
@@ -1128,8 +1125,6 @@ async def create_file_process_job(
         normalized_customer_name,
         documentType or "",
     )
-    if not normalized_customer_id:
-        raise HTTPException(status_code=400, detail=CUSTOMER_ID_REQUIRED_MESSAGE)
     job_id = uuid.uuid4().hex
     username = current_user.get("username") or "anonymous"
     role = current_user.get("role") or ""

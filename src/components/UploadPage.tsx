@@ -1260,10 +1260,6 @@ const UploadPage: React.FC = () => {
   }, [uploadQueue, execute, processQueueItem]);
 
   const addFilesToQueue = useCallback((files: FileList | File[]) => {
-    if (!getEffectiveCustomerId()) {
-      alert('请先选择客户后再上传资料');
-      return;
-    }
     const fileArray = Array.from(files);
     const newItems: QueueItem[] = [];
     const nextBatchId = generateId();
@@ -1306,14 +1302,10 @@ const UploadPage: React.FC = () => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-    if (requiresCustomerSelection) {
-      window.alert('请先选择客户后再上传资料');
-      return;
-    }
     if (e.dataTransfer.files.length > 0) {
       addFilesToQueue(e.dataTransfer.files);
     }
-  }, [addFilesToQueue, requiresCustomerSelection]);
+  }, [addFilesToQueue]);
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -1335,12 +1327,8 @@ const UploadPage: React.FC = () => {
   }, [addFilesToQueue]);
 
   const handleUploadClick = useCallback(() => {
-    if (!getEffectiveCustomerId()) {
-      alert('请先选择客户后再上传资料');
-      return;
-    }
     fileInputRef.current?.click();
-  }, [getEffectiveCustomerId]);
+  }, []);
 
   const clearUploadUrlContext = useCallback(() => {
     const nextParams = new URLSearchParams(window.location.search);
@@ -1556,7 +1544,7 @@ const UploadPage: React.FC = () => {
           )}
           <button
             onClick={handleUploadClick}
-            disabled={isProcessing || requiresCustomerSelection}
+            disabled={isProcessing}
             className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors shadow-lg shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isProcessing ? '资料处理中...' : '选择文件并开始处理'}
@@ -1565,10 +1553,10 @@ const UploadPage: React.FC = () => {
       </div>
 
       {requiresCustomerSelection ? (
-        <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800 shadow-sm">
-          <div className="font-semibold">请先选择客户</div>
+        <div className="mb-6 rounded-2xl border border-blue-200 bg-blue-50 px-5 py-4 text-sm text-blue-800 shadow-sm">
+          <div className="font-semibold">新客户上传模式</div>
           <div className="mt-1 leading-6">
-            当前上传资料页是独立页面，上传前需要先在顶部选择客户，系统才会把企业征信、流水等资料保存到正确的客户档案中。
+            如需上传已有客户资料，请在顶部下拉框选择客户；如需上传新客户资料，可保持“请选择客户”，系统会从资料中识别客户名称并自动建档。
           </div>
         </div>
       ) : null}
@@ -1591,7 +1579,7 @@ const UploadPage: React.FC = () => {
           <div className="mt-1 text-xs text-slate-400">
             {resolvedCustomerId
               ? '新上传资料会保存到当前客户，并自动刷新资料汇总与问答索引'
-              : '请先选择客户后再上传资料'}
+              : '未选择客户时，系统会尝试识别客户名称并自动建档'}
           </div>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
