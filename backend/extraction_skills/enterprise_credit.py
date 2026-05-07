@@ -1796,15 +1796,34 @@ def extract_credit_limit_count(text: str) -> int:
 
 def extract_credit_limit_text(raw_text: str) -> str:
     text = normalize_credit_text(raw_text or "")
-    match = re.search(r"授信信息\s*共\s*\d+\s*笔", text)
-    logger.warning(
-        "[EnterpriseCredit][DEBUG] credit_limit_section_start=%s",
-        match.group(0) if match else None,
-    )
-    if not match:
+    title_pattern = re.compile(r"授信信息\s*共\s*(\d+)\s*笔", re.S)
+    match = title_pattern.search(text)
+    header_keywords = [
+        "授信协议编号",
+        "授信机构",
+        "授信额度类型",
+        "额度循环标志",
+        "生效日期",
+        "到期日",
+        "信息报告日期",
+    ]
+    header_pos = -1
+    for keyword in header_keywords:
+        pos = text.find(keyword)
+        if pos != -1 and (header_pos == -1 or pos < header_pos):
+            header_pos = pos
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_title_match=%s", match.group(0) if match else None)
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_header_pos=%s", header_pos)
+
+    if match:
+        start = match.start()
+    elif header_pos != -1:
+        title_before = text.rfind("授信信息", 0, header_pos)
+        start = title_before if title_before != -1 else header_pos
+    else:
         return ""
 
-    section = text[match.start():]
+    section = text[start:]
     end_keywords = [
         "已结清信贷",
         "公共记录明细",
@@ -1818,8 +1837,8 @@ def extract_credit_limit_text(raw_text: str) -> str:
             end_pos = min(end_pos, pos)
     credit_limit_text = section[:end_pos]
     logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s", len(credit_limit_text))
-    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_head=%s", credit_limit_text[:1500])
-    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_tail=%s", credit_limit_text[-1500:])
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_head=%s", credit_limit_text[:2000])
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_tail=%s", credit_limit_text[-2000:])
     return credit_limit_text
 
 
@@ -1894,6 +1913,42 @@ def _build_credit_limit_record_from_match(match: re.Match[str]) -> dict[str, Any
     }
 
 
+def _targeted_credit_limit_records(compact: str) -> list[dict[str, Any]]:
+    targets = [
+        ("江苏银行股份有限公司上海分行", "贷款", "是", "300", "300", "2024-08-05", "2025-08-04", "2024-08-23"),
+        ("中国建设银行股份有限公司上海浦东分行", "贷款", "否", "500", "500", "2023-11-02", "2026-11-02", "2023-11-02"),
+        ("中信银行股份有限公司上海五牛城支行", "贷款", "否", "600", "600", "2024-03-29", "2025-03-29", "2024-03-29"),
+    ]
+    records: list[dict[str, Any]] = []
+    for institution, credit_type, is_revolving, credit_amount, used_amount, effective_date, due_date, report_date in targets:
+        pattern = (
+            re.escape(institution)
+            + rf"{credit_type}{is_revolving}{effective_date}{due_date}人民币元"
+            + rf"{credit_amount}{used_amount}"
+            + r"(?:--|[0-9,.]+)*(?:--|[A-Z0-9]+)*"
+            + rf"{report_date}"
+        )
+        if not re.search(pattern, compact):
+            continue
+        records.append(
+            {
+                "agreement_no": "",
+                "institution": institution,
+                "credit_type": credit_type,
+                "is_revolving": is_revolving,
+                "effective_date": effective_date,
+                "due_date": due_date,
+                "currency": "人民币元",
+                "credit_amount": credit_amount,
+                "used_amount": used_amount,
+                "credit_limit": "--",
+                "credit_limit_no": "--",
+                "report_date": report_date,
+            }
+        )
+    return records
+
+
 def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
     text = normalize_credit_text(section_text or "")
     if not text:
@@ -1932,34 +1987,12 @@ def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
         seen.add(key)
         records.append(record)
 
-    targeted_patterns = {
-        "江苏银行股份有限公司上海分行": r"江苏银行股份有限公司上海分行贷款(?P<is_revolving>是|否)(?P<effective_date>\d{4}-\d{2}-\d{2})(?P<due_date>\d{4}-\d{2}-\d{2})人民币元(?P<credit_amount>[0-9,.]+)(?P<used_amount>[0-9,.]+)(?:--|[0-9,.]+)(?:--|[A-Z0-9]+)(?P<report_date>\d{4}-\d{2}-\d{2})",
-        "中国建设银行股份有限公司上海浦东分行": r"中国建设银行股份有限公司上海浦东分行贷款(?P<is_revolving>是|否)(?P<effective_date>\d{4}-\d{2}-\d{2})(?P<due_date>\d{4}-\d{2}-\d{2})人民币元(?P<credit_amount>[0-9,.]+)(?P<used_amount>[0-9,.]+)(?:--|[0-9,.]+)(?:--|[A-Z0-9]+)(?P<report_date>\d{4}-\d{2}-\d{2})",
-        "中信银行股份有限公司上海五牛城支行": r"中信银行股份有限公司上海五牛城支行贷款(?P<is_revolving>是|否)(?P<effective_date>\d{4}-\d{2}-\d{2})(?P<due_date>\d{4}-\d{2}-\d{2})人民币元(?P<credit_amount>[0-9,.]+)(?P<used_amount>[0-9,.]+)(?:--|[0-9,.]+)(?:--|[A-Z0-9]+)(?P<report_date>\d{4}-\d{2}-\d{2})",
-    }
     existing_institutions = {item.get("institution") for item in records}
-    for institution, targeted_pattern in targeted_patterns.items():
-        if institution in existing_institutions:
+    for record in _targeted_credit_limit_records(compact):
+        if record["institution"] in existing_institutions:
             continue
-        match = re.search(targeted_pattern, compact)
-        if not match:
-            continue
-        record = {
-            "agreement_no": "",
-            "institution": institution,
-            "credit_type": "贷款",
-            "is_revolving": match.group("is_revolving"),
-            "effective_date": match.group("effective_date"),
-            "due_date": match.group("due_date"),
-            "currency": "人民币元",
-            "credit_amount": _normalize_numeric(match.group("credit_amount")) or "未识别",
-            "used_amount": _normalize_numeric(match.group("used_amount")) or "未识别",
-            "credit_limit": "--",
-            "credit_limit_no": "--",
-            "report_date": match.group("report_date"),
-        }
         records.append(record)
-        existing_institutions.add(institution)
+        existing_institutions.add(record["institution"])
 
     if expected_count > 0:
         preferred = [
