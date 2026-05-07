@@ -1407,6 +1407,26 @@ def extract_institution_before_biz(context: str) -> str:
     return clean_bank_name(before[first_chinese.start():])
 
 
+def find_loan_main_line(context_lines: list[str]) -> str:
+    biz_keywords = ["流动资金贷款", "固定资产贷款", "融资型租赁", "循环透支", "贷款"]
+    noise_keywords = ["正常还款", "见附件", "授信协议", "历史表现", "信息报告日期"]
+    for index in range(len(context_lines) - 1, -1, -1):
+        line = str(context_lines[index] or "").strip()
+        if any(noise in line for noise in noise_keywords):
+            continue
+        if not any(keyword in line for keyword in biz_keywords):
+            continue
+        prev = str(context_lines[index - 1] or "").strip() if index > 0 else ""
+        prev2 = str(context_lines[index - 2] or "").strip() if index > 1 else ""
+        parts: list[str] = []
+        for part in (prev2, prev, line):
+            if not part or any(noise in part for noise in noise_keywords):
+                continue
+            parts.append(part)
+        return "".join(parts)
+    return ""
+
+
 def _extract_active_credit_text(credit_detail_text: str) -> str:
     credit_detail = normalize_credit_text(credit_detail_text)
     start_pos = credit_detail.find("未结清信贷")
@@ -1588,7 +1608,8 @@ def _extract_loan_from_context(context_lines: list[str], status_match: re.Match[
     biz_pattern = re.compile(r"(循环透支|流动资金贷款|贸易融资|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
 
     org_candidates: list[str] = []
-    context_institution = extract_institution_before_biz(context)
+    main_line = find_loan_main_line(context_lines)
+    context_institution = extract_institution_before_biz(main_line)
     if context_institution and not _is_credit_table_noise_line(context_institution):
         org_candidates.append(context_institution)
     for line_offset, context_line in enumerate(context_lines):
@@ -2378,7 +2399,8 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         account_match = re.search(r"(?:^|[^A-Z0-9])([A-Z][A-Z0-9]{5,})", context)
 
         org_candidates = []
-        context_institution = extract_institution_before_biz(context)
+        main_line = find_loan_main_line(context_lines)
+        context_institution = extract_institution_before_biz(main_line)
         if context_institution and not _is_credit_table_noise_line(context_institution):
             org_candidates.append(context_institution)
         for line_offset, context_line in enumerate(context_lines):
