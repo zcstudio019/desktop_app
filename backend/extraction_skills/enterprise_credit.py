@@ -1806,17 +1806,16 @@ def extract_credit_limit_text(raw_text: str) -> str:
         logger.error("[EnterpriseCredit][ERROR] credit_limit_text empty, cannot parse credit limits")
         return ""
 
-    section = text[match.start():]
-    end_candidates = []
-    for keyword in ["已结清信贷", "公共记录明细", "非信贷交易明细", "报告说明", "附件1"]:
-        pos = section.find(keyword)
-        if pos != -1:
-            end_candidates.append(pos)
-    if end_candidates:
-        section = section[: min(end_candidates)]
-
-    credit_limit_text = section
+    expected_count = int(match.group(1))
+    # Credit limit rows can cross pages. Some OCR adds "已结清信贷" as a page header
+    # between credit-limit rows, so do not treat it as an end marker here.
+    credit_limit_text = text[match.start(): match.start() + 8000]
+    credit_limit_text = re.sub(r"第\s*\d+\s*页\s*/\s*共\s*\d+\s*页", "\n", credit_limit_text)
+    credit_limit_text = re.sub(r"第\s*\d+\s*页/共\s*\d*\s*页?", "\n", credit_limit_text)
+    credit_limit_text = re.sub(r"(?m)^\s*已结清信贷\s*$", "\n", credit_limit_text)
+    credit_limit_text = re.sub(r"(?m)^\s*已结清信贷\s+", "", credit_limit_text)
     logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s", len(credit_limit_text))
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_expected_from_title=%s", expected_count)
     logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text=%s", credit_limit_text[:3000])
     if not credit_limit_text:
         logger.error("[EnterpriseCredit][ERROR] credit_limit_text empty, cannot parse credit limits")
@@ -1966,8 +1965,8 @@ def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
     text = re.sub(r"第\s*\d+\s*页\s*/\s*共\s*\d+\s*页", "\n", text)
     text = re.sub(r"第\s*\d+\s*页/共", "\n", text)
     text = re.sub(r"\b\d+\s*页\b", "\n", text)
-    if "已结清信贷" in text:
-        text = text.split("已结清信贷", 1)[0]
+    text = re.sub(r"(?m)^\s*已结清信贷\s*$", "\n", text)
+    text = re.sub(r"(?m)^\s*已结清信贷\s+", "", text)
     compact = re.sub(r"\s+", "", text)
     compact = re.sub(r"(?:授信信息共\d+笔|授信信息)", "", compact)
     pattern = re.compile(
@@ -1999,6 +1998,8 @@ def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         records.append(record)
+        if expected_count > 0 and len(records) >= expected_count:
+            break
 
     if not records:
         records = _targeted_credit_limit_records(compact)
