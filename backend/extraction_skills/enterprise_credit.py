@@ -1882,6 +1882,9 @@ def _split_credit_limit_amounts(amount_blob: str) -> tuple[str, str]:
     # OCR/table text often glues "amount + used_amount" together:
     # 800 -> 80 / 0, 05 -> 0 / 5, 120120 -> 120 / 120.
     if value.isdigit():
+        repeated_parts = split_repeated_amount(value)
+        if repeated_parts and len(repeated_parts) >= 2:
+            return _normalize_numeric(repeated_parts[0]) or repeated_parts[0], _normalize_numeric(repeated_parts[1]) or repeated_parts[1]
         if len(value) == 2 and value.startswith("0"):
             return "0", _normalize_numeric(value[1:]) or ""
         if len(value) <= 3 and value.endswith("0"):
@@ -1897,12 +1900,68 @@ def _split_credit_limit_amounts(amount_blob: str) -> tuple[str, str]:
     return _normalize_numeric(value) or "", ""
 
 
+def split_repeated_amount(value: str) -> list[str] | None:
+    compact = str(value or "").strip()
+    if not re.fullmatch(r"\d+", compact):
+        return None
+    for count in (3, 2):
+        if len(compact) % count != 0:
+            continue
+        part_len = len(compact) // count
+        parts = [compact[index * part_len: (index + 1) * part_len] for index in range(count)]
+        if len(set(parts)) == 1:
+            return parts
+    return None
+
+
+def parse_credit_limit_amounts(block: str) -> tuple[str, str, str]:
+    text = normalize_credit_text(block or "")
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if "人民币元" not in line:
+            continue
+        candidate = line
+        if index + 1 < len(lines):
+            candidate += " " + lines[index + 1]
+        if index + 2 < len(lines):
+            candidate += " " + lines[index + 2]
+        candidate = re.split(r"[A-Z]\d{5,}[A-Z0-9]*", candidate)[0]
+        nums = re.findall(r"(?<![A-Z0-9])\d+(?:\.\d+)?(?![A-Z0-9])", candidate)
+        if len(nums) >= 2:
+            return (
+                _normalize_numeric(nums[0]) or nums[0],
+                _normalize_numeric(nums[1]) or nums[1],
+                _normalize_numeric(nums[2]) or nums[2] if len(nums) >= 3 else "",
+            )
+
+    compact = re.sub(r"\s+", "", block or "")
+    blob_match = re.search(r"人民币元(?P<blob>[0-9.]+)", compact)
+    if blob_match:
+        blob = blob_match.group("blob")
+        repeated_parts = split_repeated_amount(blob)
+        if repeated_parts:
+            return (
+                _normalize_numeric(repeated_parts[0]) or repeated_parts[0],
+                _normalize_numeric(repeated_parts[1]) or repeated_parts[1] if len(repeated_parts) > 1 else "",
+                _normalize_numeric(repeated_parts[2]) or repeated_parts[2] if len(repeated_parts) > 2 else "",
+            )
+        credit_amount, used_amount = _split_credit_limit_amounts(blob)
+        return credit_amount, used_amount, ""
+
+    return "", "", ""
+
+
 def _build_credit_limit_record_from_match(match: re.Match[str]) -> dict[str, Any]:
     groupdict = match.groupdict()
     credit_amount = _normalize_numeric(groupdict.get("credit_amount")) or ""
     used_amount = _normalize_numeric(groupdict.get("used_amount")) or ""
     if groupdict.get("amount_blob"):
         credit_amount, used_amount = _split_credit_limit_amounts(groupdict.get("amount_blob") or "")
+    if credit_amount and not used_amount:
+        repeated_parts = split_repeated_amount(credit_amount)
+        if repeated_parts:
+            credit_amount = repeated_parts[0]
+            used_amount = repeated_parts[1] if len(repeated_parts) > 1 else ""
     return {
         "agreement_no": "",
         "institution": clean_credit_limit_institution(match.group("institution")),
@@ -2130,9 +2189,13 @@ def parse_one_credit_limit_block(block: str) -> dict[str, Any] | None:
     effective_date = dates[0] if len(dates) > 0 else ""
     due_date = dates[1] if len(dates) > 1 else ""
     report_date = dates[2] if len(dates) > 2 else ""
-    amount_part = body.split("人民币元", 1)[1] if "人民币元" in body else ""
-    amount_match = re.match(r"([0-9.]+)", amount_part)
-    credit_amount, used_amount = _split_credit_limit_amounts(amount_match.group(1) if amount_match else "")
+    credit_amount, used_amount, credit_limit = parse_credit_limit_amounts(block)
+    if credit_amount and not used_amount:
+        repeated_parts = split_repeated_amount(credit_amount)
+        if repeated_parts:
+            credit_amount = repeated_parts[0]
+            used_amount = repeated_parts[1] if len(repeated_parts) > 1 else ""
+            credit_limit = repeated_parts[2] if len(repeated_parts) > 2 else ""
     if not institution or not match.group("credit_type") or not effective_date:
         return None
     return {
@@ -2145,7 +2208,7 @@ def parse_one_credit_limit_block(block: str) -> dict[str, Any] | None:
         "currency": "人民币元",
         "credit_amount": _normalize_numeric(credit_amount) or credit_amount,
         "used_amount": _normalize_numeric(used_amount) or used_amount,
-        "credit_limit": "--",
+        "credit_limit": _normalize_numeric(credit_limit) or credit_limit or "--",
         "credit_limit_no": "--",
         "report_date": report_date,
     }
