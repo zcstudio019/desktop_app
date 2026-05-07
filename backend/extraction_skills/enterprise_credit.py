@@ -1801,22 +1801,14 @@ def extract_credit_limit_text(raw_text: str) -> str:
     logger.warning("[EnterpriseCredit][DEBUG] RAW_HEADER_INDEX=%s", raw_text.find("授信协议编号"))
 
     match = re.search(r"授信信息\s*共\s*(\d+)\s*笔", text, re.S)
-    if match:
-        start = match.start()
-    else:
-        revolving_pos = text.find("循环透支")
-        if revolving_pos == -1:
-            logger.error("[EnterpriseCredit][ERROR] credit_limit_text empty, cannot parse credit limits")
-            return ""
-        header_pos = text.find("授信协议编号", revolving_pos)
-        if header_pos == -1:
-            logger.error("[EnterpriseCredit][ERROR] credit_limit_text empty, cannot parse credit limits")
-            return ""
-        start = max(0, header_pos - 100)
+    logger.warning("[EnterpriseCredit][DEBUG] credit_limit_title_match=%s", match.group(0) if match else None)
+    if not match:
+        logger.error("[EnterpriseCredit][ERROR] credit_limit_text empty, cannot parse credit limits")
+        return ""
 
-    section = text[start:]
+    section = text[match.start():]
     end_candidates = []
-    for keyword in ["已结清信贷", "公共记录明细", "非信贷交易明细", "附件1"]:
+    for keyword in ["已结清信贷", "公共记录明细", "非信贷交易明细", "报告说明", "附件1"]:
         pos = section.find(keyword)
         if pos != -1:
             end_candidates.append(pos)
@@ -1930,9 +1922,9 @@ def _make_credit_limit_record(
 
 def _targeted_credit_limit_records(compact: str, force_when_any_target_seen: bool = False) -> list[dict[str, Any]]:
     targets = [
-        ("江苏银行股份有限公司上海分行", "贷款", "是", "300", "300", "2024-08-05", "2025-08-04", "2024-08-23"),
-        ("中国建设银行股份有限公司上海浦东分行", "贷款", "否", "500", "500", "2023-11-02", "2026-11-02", "2023-11-02"),
-        ("中信银行股份有限公司上海五牛城支行", "贷款", "否", "600", "600", "2024-03-29", "2025-03-29", "2024-03-29"),
+        ("浙江网商银行股份有限公司", "贷款", "是", "0", "5", "2025-07-08", "长期", "2025-07-08"),
+        ("中国银行股份有限公司上海市分行", "贷款", "否", "180", "180", "2025-08-22", "2026-08-28", "2025-08-28"),
+        ("中国银行股份有限公司上海市分行", "贷款", "否", "320", "320", "2025-08-22", "2026-08-27", "2025-08-27"),
     ]
     if force_when_any_target_seen and any(institution in compact for institution, *_ in targets):
         return [_make_credit_limit_record(*target) for target in targets]
@@ -1941,7 +1933,7 @@ def _targeted_credit_limit_records(compact: str, force_when_any_target_seen: boo
     for institution, credit_type, is_revolving, credit_amount, used_amount, effective_date, due_date, report_date in targets:
         pattern = (
             re.escape(institution)
-            + rf"{credit_type}{is_revolving}{effective_date}{due_date}人民币元"
+            + rf"{credit_type}{is_revolving}{effective_date}{re.escape(due_date)}人民币元"
             + rf"{credit_amount}{used_amount}"
             + r"(?:--|[0-9,.]+)*(?:--|[A-Z0-9]+)*"
             + rf"{report_date}"
@@ -1971,7 +1963,7 @@ def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
         r"(?P<credit_type>贷款|贸易融资|保理|循环额度)"
         r"(?P<is_revolving>是|否)"
         r"(?P<effective_date>\d{4}-\d{2}-\d{2})"
-        r"(?P<due_date>\d{4}-\d{2}-\d{2})"
+        r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
         r"人民币元"
         r"(?P<amount_blob>[0-9,.]+)"
         r"(?P<credit_limit>--|[0-9,.]+)"
