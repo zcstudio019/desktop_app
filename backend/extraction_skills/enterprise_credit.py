@@ -1449,6 +1449,31 @@ def extract_section_text(text: str, start_title: str, end_titles: list[str]) -> 
     return section[:end_pos]
 
 
+def extract_short_text(raw_text: str) -> str:
+    text = normalize_credit_text(raw_text or "")
+    start = text.find("短期借款 共")
+    if start == -1:
+        start = text.find("短期借款")
+    if start == -1:
+        return ""
+
+    section = text[start:]
+    # “已结清信贷”在部分 OCR 中会作为跨页页眉污染混入短期借款明细，
+    # 不能作为短期借款的结束标志。
+    end_keywords = [
+        "循环透支 共",
+        "授信信息 共",
+        "公共记录明细",
+        "附件1",
+    ]
+    end_pos = len(section)
+    for keyword in end_keywords:
+        pos = section.find(keyword)
+        if pos != -1:
+            end_pos = min(end_pos, pos)
+    return section[:end_pos]
+
+
 def is_valid_active_loan(loan: dict[str, Any]) -> bool:
     text = " ".join(str(value) for value in loan.values() if value)
     header_keywords = [
@@ -1524,6 +1549,9 @@ def _is_credit_table_noise_line(line: str) -> bool:
 def _clean_credit_detail_line(value: Any) -> str:
     text = _normalize_text(str(value or ""))
     text = re.sub(r"第\s*\d+\s*页\s*/?\s*共\s*\d*\s*页?", "", text)
+    text = text.strip()
+    if text.startswith("已结清信贷 "):
+        text = text.replace("已结清信贷", "", 1).strip()
     text = re.sub(r"\s+", " ", text).strip(" ：:\t\r\n")
     return text
 
@@ -1958,7 +1986,11 @@ def _parse_active_loan_block(block: str, active_borrowing_balance: Any = None) -
     }
 
 
-def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_borrowing_balance: Any = None) -> list[dict[str, Any]]:
+def _extract_active_loans_from_credit_detail(
+    credit_detail_text: str,
+    active_borrowing_balance: Any = None,
+    raw_text: str | None = None,
+) -> list[dict[str, Any]]:
     logger.warning("[EnterpriseCredit][VERSION] active-loan-parser-v20260506-02")
     logger.info("[EnterpriseCredit][DEBUG][PARSE_INPUT] len=%s", len(credit_detail_text or ""))
     logger.info("[EnterpriseCredit][DEBUG][PARSE_INPUT] has_short=%s", "短期借款" in (credit_detail_text or ""))
@@ -1976,12 +2008,24 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
     block_loans = [loan for loan in raw_active_loans if is_valid_active_loan(loan)]
     status_line_loans = _extract_active_loans_by_status_lines(active_text)
 
-    short_expected_count = extract_section_count(active_text, "短期借款")
-    short_text = extract_section_text(
+    raw_short_text = extract_short_text(raw_text or "")
+    short_text = raw_short_text or extract_section_text(
         active_text,
         "短期借款",
         ["循环透支", "授信信息 共", "公共记录明细", "附件1"],
     )
+    short_expected_count = extract_section_count(short_text, "短期借款") or extract_section_count(active_text, "短期借款")
+    logger.warning("[EnterpriseCredit][DEBUG] short_text_has_icbc=%s", "中国工商银行" in short_text)
+    logger.warning(
+        "[EnterpriseCredit][DEBUG] short_text_has_huaxia_137=%s",
+        "2025-02-20" in short_text and "137" in short_text,
+    )
+    logger.warning(
+        "[EnterpriseCredit][DEBUG] short_text_has_jiangsu_50=%s",
+        "2024-08-22" in short_text and "50" in short_text,
+    )
+    logger.warning("[EnterpriseCredit][DEBUG] short_text_len=%s", len(short_text))
+    logger.warning("[EnterpriseCredit][DEBUG] short_text_tail_5000=%s", short_text[-5000:])
     logger.info("[EnterpriseCredit][DEBUG] short_expected_count=%s", short_expected_count)
     logger.info("[EnterpriseCredit][DEBUG] short_text_len=%s", len(short_text))
     logger.info("[EnterpriseCredit][DEBUG] short_text_tail=%s", short_text[-3000:])
@@ -2047,6 +2091,39 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
         seen_detail.add(detail_key)
         seen_financial.add(financial_key)
         loans.append(loan)
+
+    short_loans_before_fallback = [loan for loan in loans if loan_term_type(loan) == "short"]
+    if short_expected_count > 0 and len(short_loans_before_fallback) < short_expected_count and raw_short_text:
+        logger.warning(
+            "[EnterpriseCredit][DEBUG] short loans fallback scan raw_text expected=%s actual=%s",
+            short_expected_count,
+            len(short_loans_before_fallback),
+        )
+        for loan in [item for item in _extract_short_loans_by_status_lines(raw_short_text) if is_valid_active_loan(item)]:
+            account_no = str(loan.get("account_no") or "")
+            detail_key = (
+                str(loan.get("bank") or ""),
+                str(loan.get("open_date") or loan.get("start_date") or ""),
+                str(loan.get("due_date") or loan.get("end_date") or ""),
+                str(loan.get("loan_amount") or ""),
+                str(loan.get("balance") or ""),
+            )
+            financial_key = (
+                str(loan.get("open_date") or loan.get("start_date") or ""),
+                str(loan.get("due_date") or loan.get("end_date") or ""),
+                str(loan.get("loan_amount") or ""),
+                str(loan.get("balance") or ""),
+            )
+            key = (
+                account_no,
+                *detail_key,
+            )
+            if key in seen or detail_key in seen_detail or financial_key in seen_financial:
+                continue
+            seen.add(key)
+            seen_detail.add(detail_key)
+            seen_financial.add(financial_key)
+            loans.append(loan)
 
     has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
     if not has_effective_loan:
@@ -3029,6 +3106,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             active_loans = _extract_active_loans_from_credit_detail(
                 active_loan_detail_text,
                 credit_summary.get("active_borrowing_balance"),
+                raw_text,
             )
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
             logger.info("[EnterpriseCredit][DEBUG] active_loans_sample=%s", active_loans[:2])
