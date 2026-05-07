@@ -1822,6 +1822,10 @@ def extract_credit_limit_text(raw_text: str) -> tuple[str, int]:
     return credit_limit_text, expected_count
 
 
+def extract_credit_limit_text_from_raw(raw_text: str) -> tuple[str, int]:
+    return extract_credit_limit_text(raw_text)
+
+
 def clean_credit_limit_institution(name: str) -> str:
     value = str(name or "")
     value = re.sub(r"\s+", "", value)
@@ -2053,6 +2057,10 @@ def parse_credit_limits(section_text: str, expected_count: int = 0) -> list[dict
         records[:3],
     )
     return records
+
+
+def parse_credit_limits_from_raw_window(section_text: str, expected_count: int = 0) -> list[dict[str, Any]]:
+    return parse_credit_limits(section_text, expected_count=expected_count)
 
 
 def extract_bill_lc_count(text: str) -> int:
@@ -3316,7 +3324,7 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
                 ]
             )
     else:
-        lines.append("- 暂未识别到授信信息")
+        lines.append("- 本报告未展示逐笔授信信息明细")
     lines.extend(["", "### 银行承兑汇票和信用证"])
     if bill_lc_records:
         for item in bill_lc_records:
@@ -3633,15 +3641,14 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             )
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
             logger.info("[EnterpriseCredit][DEBUG] active_loans_sample=%s", active_loans[:2])
-            credit_limit_text, credit_limit_expected_count = extract_credit_limit_text(raw_text)
-            logger.info("[EnterpriseCredit][DEBUG] credit_limit_expected_count=%s", credit_limit_expected_count)
-            logger.info("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s tail=%s", len(credit_limit_text), credit_limit_text[-1500:])
-            logger.info("[EnterpriseCredit][DEBUG] credit_limit_text_tail=%s", credit_limit_text[-1000:])
-            credit_facilities = parse_credit_limits(credit_limit_text, expected_count=credit_limit_expected_count)
+            credit_limit_text, credit_limit_expected_count = extract_credit_limit_text_from_raw(raw_text)
+            credit_facilities = parse_credit_limits_from_raw_window(credit_limit_text, expected_count=credit_limit_expected_count)
             if credit_limit_expected_count > 0:
                 credit_facilities = credit_facilities[:credit_limit_expected_count]
-            logger.warning("[EnterpriseCredit][DEBUG] FINAL credit_limit_expected_count=%s", credit_limit_expected_count)
-            logger.warning("[EnterpriseCredit][DEBUG] FINAL credit_limits_count=%s", len(credit_facilities))
+            logger.warning("[EnterpriseCredit][DEBUG] raw_has_credit_title=%s", bool(re.search(r"授信信息\s*共\s*\d+\s*笔", raw_text, re.S)))
+            logger.warning("[EnterpriseCredit][DEBUG] credit_limit_expected_count=%s", credit_limit_expected_count)
+            logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s", len(credit_limit_text))
+            logger.warning("[EnterpriseCredit][DEBUG] credit_limits_count=%s", len(credit_facilities))
             logger.warning("[EnterpriseCredit][DEBUG] FINAL credit_limits=%s", credit_facilities)
             bill_lc_text = extract_section_text_from_raw(
                 raw_text,
