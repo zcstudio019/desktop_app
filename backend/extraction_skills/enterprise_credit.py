@@ -2133,6 +2133,34 @@ def parse_bill_lc_records(section_text: str) -> list[dict[str, Any]]:
     return records
 
 
+def parse_bill_lc_summary(raw_text: str) -> list[dict[str, Any]]:
+    text = normalize_credit_text(raw_text or "")
+    compact = re.sub(r"\s+", " ", text)
+    results: list[dict[str, Any]] = []
+    match = re.search(
+        r"银行承兑汇票和信用证\s*共\s*(?P<expected>\d+)\s*笔.*?"
+        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|财务公司)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})\s+"
+        r"(?P<business_type>银行承兑汇票|信用证|保函)\s+"
+        r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
+        r"(?P<account_count>\d+)\s+"
+        r"(?P<balance>\d+(?:\.\d+)?)",
+        compact,
+        re.S,
+    )
+    if match:
+        results.append(
+            {
+                "institution": clean_bank_name(match.group("institution")),
+                "business_type": match.group("business_type"),
+                "classification": match.group("classification"),
+                "account_count": match.group("account_count"),
+                "balance": match.group("balance"),
+            }
+        )
+    logger.info("[EnterpriseCredit][DEBUG] bill_lc_results=%s", results)
+    return results
+
+
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
     normalized = _extract_active_credit_text(active_text)
     lines = [
@@ -3621,6 +3649,9 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 ["授信信息 共", "公共记录明细", "非信贷交易明细", "附件1", "报告说明"],
             )
             bill_lc_records = parse_bill_lc_records(bill_lc_text)
+            bill_lc_items = parse_bill_lc_summary(raw_text)
+            if bill_lc_items:
+                bill_lc_records = bill_lc_items
             logger.info("[EnterpriseCredit][DEBUG] bill_lc_text_len=%s tail=%s", len(bill_lc_text), bill_lc_text[-1000:])
             logger.info("[EnterpriseCredit][DEBUG] bill_lc_records_count=%s records=%s", len(bill_lc_records), bill_lc_records)
             closed_loans = _extract_detail_records_from_block(
