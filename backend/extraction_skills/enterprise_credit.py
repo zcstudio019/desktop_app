@@ -1568,6 +1568,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
 
         biz_match = biz_pattern.search("\n".join(context_lines[-6:]))
         biz_type = biz_match.group(1) if biz_match else None
+        section_type = "循环透支" if "循环透支" in context else None
 
         dates = re.findall(r"\d{4}-\d{2}-\d{2}", "\n".join(context_lines[-6:]))
         open_date = dates[0] if len(dates) >= 1 else None
@@ -1583,6 +1584,8 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
             "bank": bank or "未识别",
             "biz_type": biz_type or "未识别",
             "loan_type": biz_type or "未识别",
+            "section_type": section_type,
+            "term_type": "revolving_overdraft" if section_type == "循环透支" or (biz_type and "循环透支" in biz_type) else None,
             "open_date": open_date or "未识别",
             "start_date": open_date or "未识别",
             "due_date": due_date or "未识别",
@@ -1650,6 +1653,8 @@ def _extract_active_loans_by_tolerant_table(credit_detail_text: str, active_borr
                 "bank": _clean_tolerant_loan_bank(match.group("bank")),
                 "biz_type": _clean_loan_value(match.group("biz")),
                 "loan_type": _clean_loan_value(match.group("biz")),
+                "section_type": "循环透支" if "循环透支" in match.group(0) else None,
+                "term_type": "revolving_overdraft" if "循环透支" in match.group("biz") or "循环透支" in match.group(0) else None,
                 "open_date": _normalize_date(match.group("open_date")),
                 "start_date": _normalize_date(match.group("open_date")),
                 "due_date": _normalize_date(match.group("due_date")),
@@ -1694,10 +1699,14 @@ def _parse_active_loan_block(block: str, active_borrowing_balance: Any = None) -
     if five_classification not in {"正常", "关注", "次级", "可疑", "损失", "违约"}:
         five_classification = None
 
+    loan_type = _extract_loan_label_value(block, ("业务种类",))
+    section_type = "循环透支" if "循环透支" in block or "循环透支" in str(loan_type or "") else None
     return {
         "account_no": account_no,
         "bank": _extract_loan_label_value(block, ("授信机构", "开户机构", "发放机构", "放款机构")),
-        "loan_type": _extract_loan_label_value(block, ("业务种类",)),
+        "loan_type": loan_type,
+        "section_type": section_type,
+        "term_type": "revolving_overdraft" if section_type == "循环透支" else None,
         "start_date": _normalize_date(_extract_loan_regex(block, r"开立日期\s*[:：]?\s*(\d{4}-\d{2}-\d{2})")),
         "end_date": _normalize_date(_extract_loan_regex(block, r"到期日\s*[:：]?\s*(\d{4}-\d{2}-\d{2})")),
         "currency": _extract_loan_regex(block, r"币种\s*[:：]?\s*(人民币|USD|CNY)"),
@@ -1912,7 +1921,7 @@ def _zh_extract_basic_field(text: str, label: str, stop_labels: tuple[str, ...])
 
 def _zh_parse_summary_rows(info_window: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for row_type in ("中长期借款", "短期借款", "合计"):
+    for row_type in ("中长期借款", "短期借款", "循环透支", "合计"):
         match = re.search(
             rf"{row_type}\s+(\d+)\s+([0-9,.]+)\s+(\d+)\s+([0-9,.]+)\s+(\d+)\s+([0-9,.]+)\s+(\d+)\s+([0-9,.]+)",
             info_window,
@@ -1993,6 +2002,9 @@ def _zh_parse_enterprise_credit_overrides(raw_text: str) -> dict[str, Any]:
         credit_summary["active_borrowing_balance"] = total_row.get("total_balance")
         credit_summary["active_special_mention_balance"] = total_row.get("special_mention_balance")
         credit_summary["active_non_performing_balance"] = total_row.get("non_performing_balance")
+    revolving_overdraft_row = next((item for item in active_rows if item.get("type") == "循环透支"), None)
+    if revolving_overdraft_row:
+        credit_summary["revolving_overdraft_balance"] = revolving_overdraft_row.get("total_balance")
 
     facility_summary: dict[str, Any] = {}
     if "非循环信用额度" in facility_window and "循环信用额度" in facility_window:
@@ -2287,8 +2299,15 @@ def risk_level_zh(level: Any) -> str:
 
 def loan_term_type(loan: dict[str, Any]) -> str:
     biz = str(loan.get("biz_type") or loan.get("loan_type") or "")
+    section_type = str(loan.get("section_type") or "")
+    explicit_term_type = str(loan.get("term_type") or "")
     due_date = str(loan.get("due_date") or loan.get("end_date") or "")
     open_date = str(loan.get("open_date") or loan.get("start_date") or "")
+
+    if explicit_term_type == "revolving_overdraft":
+        return "revolving_overdraft"
+    if "循环透支" in biz or section_type == "循环透支":
+        return "revolving_overdraft"
 
     if "融资型租赁" in biz or "中长期" in biz:
         return "medium_long"
@@ -2318,12 +2337,13 @@ def _sum_loan_balances(loans: list[dict[str, Any]]) -> str | None:
 def format_loan_detail_lines(loans: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for loan in loans:
+        amount_label = "信用额度" if loan_term_type(loan) == "revolving_overdraft" else "借款金额"
         lines.extend(
             [
                 f"  - 机构：{_display(loan.get('bank'))}",
                 f"    业务：{_display(loan.get('biz_type') or loan.get('loan_type'))}",
                 f"    担保方式：{_display(loan.get('guarantee') or loan.get('guarantee_type'))}",
-                f"    借款金额：{_display(loan.get('loan_amount'))} 万元",
+                f"    {amount_label}：{_display(loan.get('loan_amount'))} 万元",
                 f"    余额：{_display(loan.get('balance'))} 万元",
                 f"    开立日期：{_display(loan.get('open_date') or loan.get('start_date'))}",
                 f"    到期日：{_display(loan.get('due_date') or loan.get('end_date'))}",
@@ -2349,12 +2369,20 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
 
     short_term = _find_active_row(active_rows, "短期借款", "鐭湡鍊熸")
     long_term = _find_active_row(active_rows, "中长期借款", "涓暱鏈熷€熸")
+    revolving_overdraft_row = _find_active_row(active_rows, "循环透支")
     non_revolving = facility_summary.get("non_revolving") or {}
     revolving = facility_summary.get("revolving") or {}
     short_loans = [loan for loan in active_loans if loan_term_type(loan) == "short"]
     medium_long_loans = [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
+    revolving_loans = [loan for loan in active_loans if loan_term_type(loan) == "revolving_overdraft"]
     short_balance = short_term.get("total_balance") or credit_summary.get("short_term_loan_balance") or _sum_loan_balances(short_loans)
     medium_long_balance = long_term.get("total_balance") or credit_summary.get("medium_long_term_loan_balance") or _sum_loan_balances(medium_long_loans)
+    revolving_balance = (
+        credit_summary.get("revolving_overdraft_balance")
+        or revolving_overdraft_row.get("total_balance")
+        or _sum_loan_balances(revolving_loans)
+        or "0"
+    )
     clean_identity = build_clean_identity({**report_basic, **identity_info})
 
     lines = [
@@ -2386,6 +2414,9 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
         lines.extend(format_loan_detail_lines(medium_long_loans))
     else:
         lines.append("  - 暂未识别到中长期借款明细")
+    lines.append(f"- 循环透支余额：{_display(revolving_balance)}")
+    if revolving_loans:
+        lines.extend(format_loan_detail_lines(revolving_loans))
     lines.extend(
         [
             f"- 关注类余额：{_display(credit_summary.get('active_special_mention_balance'))}",
@@ -2450,6 +2481,7 @@ def _build_markdown_summary(extracted_json: dict[str, Any]) -> str:
 
     short_term = next((item for item in active_rows if item.get("type") == "短期借款"), {})
     long_term = next((item for item in active_rows if item.get("type") == "中长期借款"), {})
+    revolving_overdraft = next((item for item in active_rows if item.get("type") == "循环透支"), {})
     clean_identity = build_clean_identity({**report_basic, **identity_info})
 
     shareholder_lines = []
@@ -2492,6 +2524,7 @@ def _build_markdown_summary(extracted_json: dict[str, Any]) -> str:
         f"- 当前未结清信贷机构数：{credit_summary.get('current_active_credit_institution_count') if credit_summary.get('current_active_credit_institution_count') is not None else '未识别'}",
         f"- 短期借款余额：{short_term.get('total_balance') or '未识别'}",
         f"- 中长期借款余额：{long_term.get('total_balance') or '未识别'}",
+        f"- 循环透支余额：{credit_summary.get('revolving_overdraft_balance') or revolving_overdraft.get('total_balance') or '0'}",
         f"- 关注类余额：{credit_summary.get('active_special_mention_balance') or '未识别'}",
         f"- 不良类余额：{credit_summary.get('active_non_performing_balance') or '未识别'}",
         f"- 对外担保余额：{credit_summary.get('guarantee_balance') or '未识别'}",
