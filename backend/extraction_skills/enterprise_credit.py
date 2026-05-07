@@ -2055,6 +2055,84 @@ def parse_credit_limits(section_text: str, expected_count: int = 0) -> list[dict
     return records
 
 
+def extract_bill_lc_count(text: str) -> int:
+    if not text:
+        return 0
+    match = re.search(r"银行承兑汇票和信用证\s*共\s*(\d+)\s*笔", text)
+    return int(match.group(1)) if match else 0
+
+
+def _split_bill_lc_count_balance(value: str) -> tuple[str, str]:
+    compact = str(value or "").replace(",", "").strip()
+    if not compact:
+        return "", ""
+    # Common OCR/table form glues account_count + balance: 41900 -> 4 / 1900.
+    match = re.fullmatch(r"(\d{1,3})(\d+(?:\.\d+)?)", compact)
+    if match:
+        count = match.group(1)
+        balance = match.group(2)
+        if len(compact) > 3:
+            return count[0], _normalize_numeric(compact[1:]) or compact[1:]
+        return count, _normalize_numeric(balance) or balance
+    numbers = re.findall(r"\d+(?:\.\d+)?", compact)
+    if len(numbers) >= 2:
+        return numbers[0], _normalize_numeric(numbers[1]) or numbers[1]
+    return "", _normalize_numeric(compact) or compact
+
+
+def parse_bill_lc_records(section_text: str) -> list[dict[str, Any]]:
+    text = normalize_credit_text(section_text or "")
+    if not text:
+        return []
+    expected_count = extract_bill_lc_count(text)
+    text = re.sub(r"第\s*\d+\s*页\s*/\s*共\s*\d+\s*页", "\n", text)
+    text = re.sub(r"第\s*\d+\s*页/共", "\n", text)
+    compact = re.sub(r"\s+", "", text)
+    compact = re.sub(r"(?:银行承兑汇票和信用证共\d+笔|银行承兑汇票和信用证)", "", compact)
+    pattern = re.compile(
+        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|财务公司)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})"
+        r"(?P<business_type>银行承兑汇票|信用证|保函)"
+        r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)"
+        r"(?P<count_balance>\d+(?:\.\d+)?(?:\d+(?:\.\d+)?)?)"
+        r"(?=[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|财务公司)|授信信息共|公共记录明细|非信贷交易明细|附件1|报告说明|$)"
+    )
+    records: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for match in pattern.finditer(compact):
+        account_count, balance = _split_bill_lc_count_balance(match.group("count_balance"))
+        record = {
+            "institution": clean_credit_limit_institution(match.group("institution")),
+            "business_type": match.group("business_type"),
+            "classification": match.group("classification"),
+            "account_count": account_count or "未识别",
+            "balance": balance or "未识别",
+        }
+        if not record["institution"]:
+            continue
+        key = (
+            record["institution"],
+            record["business_type"],
+            record["classification"],
+            record["account_count"],
+            record["balance"],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(record)
+        if expected_count > 0 and len(records) >= expected_count:
+            break
+    if expected_count > 0 and len(records) < expected_count:
+        logger.warning(
+            "[EnterpriseCredit][WARN] bill/lc records incomplete expected=%s actual=%s",
+            expected_count,
+            len(records),
+        )
+        logger.warning("[EnterpriseCredit][DEBUG] bill_lc_text=%s", text[:3000])
+    logger.info("[EnterpriseCredit][DEBUG] bill_lc_expected=%s actual=%s sample=%s", expected_count, len(records), records[:3])
+    return records
+
+
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
     normalized = _extract_active_credit_text(active_text)
     lines = [
@@ -3113,6 +3191,7 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     active_rows = extracted_json.get("active_credit_summary_by_type") or []
     active_loans = extracted_json.get("active_loans") or []
     credit_facilities = extracted_json.get("credit_facilities") or []
+    bill_lc_records = extracted_json.get("bill_lc_records") or []
 
     short_term = _find_active_row(active_rows, "短期借款", "鐭湡鍊熸")
     long_term = _find_active_row(active_rows, "中长期借款", "涓暱鏈熷€熸")
@@ -3210,6 +3289,20 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
             )
     else:
         lines.append("- 暂未识别到授信信息")
+    lines.extend(["", "### 银行承兑汇票和信用证"])
+    if bill_lc_records:
+        for item in bill_lc_records:
+            lines.extend(
+                [
+                    f"- 授信机构：{_display(item.get('institution'))}",
+                    f"  业务种类：{_display(item.get('business_type'))}",
+                    f"  五级分类：{_display(item.get('classification'))}",
+                    f"  账户数：{_display(item.get('account_count'))}",
+                    f"  余额：{_display(item.get('balance'))} 万元",
+                ]
+            )
+    else:
+        lines.append("- 本报告未展示银行承兑汇票和信用证明细")
     lines.extend(
         [
             "",
@@ -3522,6 +3615,14 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             logger.warning("[EnterpriseCredit][DEBUG] FINAL credit_limit_expected_count=%s", credit_limit_expected_count)
             logger.warning("[EnterpriseCredit][DEBUG] FINAL credit_limits_count=%s", len(credit_facilities))
             logger.warning("[EnterpriseCredit][DEBUG] FINAL credit_limits=%s", credit_facilities)
+            bill_lc_text = extract_section_text_from_raw(
+                raw_text,
+                ["银行承兑汇票和信用证"],
+                ["授信信息 共", "公共记录明细", "非信贷交易明细", "附件1", "报告说明"],
+            )
+            bill_lc_records = parse_bill_lc_records(bill_lc_text)
+            logger.info("[EnterpriseCredit][DEBUG] bill_lc_text_len=%s tail=%s", len(bill_lc_text), bill_lc_text[-1000:])
+            logger.info("[EnterpriseCredit][DEBUG] bill_lc_records_count=%s records=%s", len(bill_lc_records), bill_lc_records)
             closed_loans = _extract_detail_records_from_block(
                 credit_detail_text,
                 ("已结清贷款明细", "已结清借款明细"),
@@ -3555,6 +3656,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 "queries": [],
                 "active_loans": active_loans,
                 "credit_facilities": credit_facilities,
+                "bill_lc_records": bill_lc_records,
                 "closed_loans": closed_loans,
                 "public_records": public_records,
                 "risk_signals": [],
