@@ -1412,16 +1412,11 @@ def _extract_active_credit_text(credit_detail_text: str) -> str:
         start_pos = credit_detail.find("短期借款 共")
     active_text = credit_detail[start_pos:] if start_pos != -1 else credit_detail
 
-    short_pos = active_text.find("短期借款")
-    closed_positions = [match.start() for match in re.finditer("已结清信贷", active_text)]
     end_pos = -1
-    if closed_positions:
-        if short_pos != -1:
-            candidates = [position for position in closed_positions if position > short_pos]
-            if candidates:
-                end_pos = candidates[0]
-        else:
-            end_pos = closed_positions[0]
+    for marker in ("循环透支", "授信信息 共", "公共记录明细", "附件1"):
+        marker_pos = active_text.find(marker)
+        if marker_pos != -1:
+            end_pos = marker_pos if end_pos == -1 else min(end_pos, marker_pos)
     if end_pos != -1:
         active_text = active_text[:end_pos]
 
@@ -1503,7 +1498,9 @@ def is_valid_active_loan(loan: dict[str, Any]) -> bool:
 def _is_credit_table_noise_line(line: str) -> bool:
     if not line:
         return True
-    if re.fullmatch(r"第\s*\d+\s*页\s*/?\s*共\s*\d+\s*页", line):
+    if re.search(r"第\s*\d+\s*页\s*/?\s*共", line):
+        return True
+    if line.strip() == "已结清信贷":
         return True
     header_keywords = [
         "业务种类",
@@ -1526,7 +1523,7 @@ def _is_credit_table_noise_line(line: str) -> bool:
 
 def _clean_credit_detail_line(value: Any) -> str:
     text = _normalize_text(str(value or ""))
-    text = re.sub(r"第\s*\d+\s*页\s*/?\s*共\s*\d+\s*页", "", text)
+    text = re.sub(r"第\s*\d+\s*页\s*/?\s*共\s*\d*\s*页?", "", text)
     text = re.sub(r"\s+", " ", text).strip(" ：:\t\r\n")
     return text
 
@@ -1983,7 +1980,7 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
     short_text = extract_section_text(
         active_text,
         "短期借款",
-        ["中长期借款", "循环透支", "已结清信贷", "授信信息", "公共记录明细"],
+        ["循环透支", "授信信息 共", "公共记录明细", "附件1"],
     )
     logger.info("[EnterpriseCredit][DEBUG] short_expected_count=%s", short_expected_count)
     logger.info("[EnterpriseCredit][DEBUG] short_text_len=%s", len(short_text))
@@ -2024,6 +2021,7 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
     loans: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str]] = set()
     seen_detail: set[tuple[str, str, str, str, str]] = set()
+    seen_financial: set[tuple[str, str, str, str]] = set()
     for loan in candidates:
         account_no = str(loan.get("account_no") or "")
         detail_key = (
@@ -2033,14 +2031,21 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
             str(loan.get("loan_amount") or ""),
             str(loan.get("balance") or ""),
         )
+        financial_key = (
+            str(loan.get("open_date") or loan.get("start_date") or ""),
+            str(loan.get("due_date") or loan.get("end_date") or ""),
+            str(loan.get("loan_amount") or ""),
+            str(loan.get("balance") or ""),
+        )
         key = (
             account_no,
             *detail_key,
         )
-        if key in seen or detail_key in seen_detail:
+        if key in seen or detail_key in seen_detail or financial_key in seen_financial:
             continue
         seen.add(key)
         seen_detail.add(detail_key)
+        seen_financial.add(financial_key)
         loans.append(loan)
 
     has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
