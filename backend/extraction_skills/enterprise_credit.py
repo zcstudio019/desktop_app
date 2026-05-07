@@ -1336,52 +1336,30 @@ def clean_bank_name(bank: Any) -> str:
     for word in noise_words:
         value = value.replace(word, "")
 
-    value = re.sub(r"^\d{1,8}", "", value)
-    value = re.sub(r"[A-Z0-9]{6,}", "", value)
-    value = re.sub(r"[A-Za-z0-9]{8,}", "", value)
+    value = re.sub(r"^[A-Z0-9_]+", "", value)
+    value = re.sub(r"^\d+", "", value)
 
-    start_words = [
-        "中国",
-        "上海",
-        "浙江",
-        "温州",
-        "远东",
-        "亚洲",
-        "招商",
-        "工商",
-        "农业",
-        "建设",
-        "交通",
-        "浦发",
-        "兴业",
-        "民生",
-        "平安",
-        "中信",
-        "光大",
-        "广发",
-        "华夏",
-        "网商",
-        "微众",
-        "苏宁",
-    ]
-    if "银行" in value:
-        bank_index = value.find("银行")
-        positions = [value.rfind(word, 0, bank_index + len("银行")) for word in start_words if value.rfind(word, 0, bank_index + len("银行")) != -1]
-        if positions:
-            value = value[min(positions) :]
-    else:
-        positions = [value.rfind(word) for word in start_words if value.rfind(word) != -1]
-        if positions:
-            value = value[max(positions) :]
+    first_chinese = re.search(r"[\u4e00-\u9fa5]", value)
+    if first_chinese:
+        value = value[first_chinese.start():]
 
-    if "银行" in value:
-        last_branch = max(value.rfind("支行"), value.rfind("分行"), value.rfind("营业部"))
-        if last_branch != -1:
-            suffix_len = 3 if value[last_branch : last_branch + 3] == "营业部" else 2
-            value = value[: last_branch + suffix_len]
-            return value.strip()
+    for keyword in ["流动资金贷款", "固定资产贷款", "融资型租赁", "贸易融资", "保理", "循环透支", "贷款"]:
+        index = value.find(keyword)
+        if index != -1:
+            value = value[:index]
+            break
+
+    if "股份有限" in value and "股份有限公司" not in value:
+        value = value.replace("股份有限", "股份有限公司")
+
+    for suffix in ["支行", "分行", "营业部"]:
+        index = value.rfind(suffix)
+        if index != -1:
+            return value[: index + len(suffix)].strip()
 
     suffixes = [
+        "村镇银行股份有限公司",
+        "银行股份有限公司",
         "有限责任公司",
         "股份有限公司",
         "消费金融有限公司",
