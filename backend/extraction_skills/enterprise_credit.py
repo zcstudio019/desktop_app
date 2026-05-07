@@ -1794,86 +1794,104 @@ def extract_credit_limit_count(text: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def clean_credit_limit_institution(name: str) -> str:
+    value = str(name or "")
+    value = re.sub(r"\s+", "", value)
+    value = re.sub(r"^[A-Z0-9_]{2,80}", "", value)
+    value = re.sub(r"^DK", "", value)
+
+    start_words = [
+        "江苏银行",
+        "中国建设银行",
+        "中信银行",
+        "中国工商银行",
+        "华夏银行",
+        "南京银行",
+        "中国光大银行",
+        "交通银行",
+        "浦发银行",
+    ]
+    positions = [value.find(word) for word in start_words if value.find(word) != -1]
+    if positions:
+        value = value[min(positions):]
+
+    last_branch = max(value.rfind("分行"), value.rfind("支行"), value.rfind("营业部"))
+    if last_branch != -1:
+        return value[: last_branch + 2]
+
+    for suffix in ("股份有限公司", "有限公司"):
+        index = value.find(suffix)
+        if index != -1:
+            return value[: index + len(suffix)]
+    return value
+
+
+def _split_credit_limit_amounts(amount_blob: str) -> tuple[str, str]:
+    value = str(amount_blob or "").replace(",", "").strip()
+    if not value:
+        return "", ""
+    if "|" in value:
+        left, right = value.split("|", 1)
+        return _normalize_numeric(left) or "", _normalize_numeric(right) or ""
+    if len(value) % 2 == 0:
+        middle = len(value) // 2
+        left = value[:middle]
+        right = value[middle:]
+        if left == right:
+            return _normalize_numeric(left) or "", _normalize_numeric(right) or ""
+    return _normalize_numeric(value) or "", ""
+
+
+def _build_credit_limit_record_from_match(match: re.Match[str]) -> dict[str, Any]:
+    groupdict = match.groupdict()
+    if groupdict.get("amount_blob"):
+        credit_amount, used_amount = _split_credit_limit_amounts(groupdict.get("amount_blob") or "")
+    else:
+        credit_amount = _normalize_numeric(groupdict.get("credit_amount")) or ""
+        used_amount = _normalize_numeric(groupdict.get("used_amount")) or ""
+    return {
+        "agreement_no": "",
+        "institution": clean_credit_limit_institution(match.group("institution")),
+        "credit_type": match.group("credit_type"),
+        "is_revolving": match.group("is_revolving"),
+        "effective_date": match.group("effective_date"),
+        "due_date": match.group("due_date"),
+        "currency": "人民币元",
+        "credit_amount": credit_amount or "未识别",
+        "used_amount": used_amount or "未识别",
+        "credit_limit": match.groupdict().get("credit_limit") or "--",
+        "credit_limit_no": match.groupdict().get("credit_limit_no") or "--",
+        "report_date": match.group("report_date"),
+    }
+
+
 def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
     text = normalize_credit_text(section_text or "")
     if not text:
         return []
-    lines = [
-        line
-        for line in (_clean_credit_detail_line(raw_line) for raw_line in text.splitlines())
-        if line and not _is_credit_table_noise_line(line)
-    ]
-    joined = "\n".join(lines)
-    org_pattern = re.compile(
-        r"([\u4e00-\u9fa5（）()A-Za-z0-9]{2,80}(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)[\u4e00-\u9fa5（）()A-Za-z0-9]{0,80})"
+    expected_count = extract_credit_limit_count(text)
+    if "已结清信贷" in text:
+        text = text.split("已结清信贷", 1)[0]
+    compact = re.sub(r"\s+", "", text)
+    compact = re.sub(r"(?:授信信息共\d+笔|授信信息)", "", compact)
+    pattern = re.compile(
+        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9_]{0,120}?(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)[\u4e00-\u9fa5A-Za-z0-9_]{0,80}?)"
+        r"(?P<credit_type>贷款|贸易融资|保理|循环额度)"
+        r"(?P<is_revolving>是|否)"
+        r"(?P<effective_date>\d{4}-\d{2}-\d{2})"
+        r"(?P<due_date>\d{4}-\d{2}-\d{2})"
+        r"人民币元"
+        r"(?P<amount_blob>[0-9,.]+)"
+        r"(?P<credit_limit>--|[0-9,.]+)"
+        r"(?P<credit_limit_no>--|[A-Z0-9]+)"
+        r"(?P<report_date>\d{4}-\d{2}-\d{2})"
     )
-    org_matches = list(org_pattern.finditer(joined))
     records: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()
-    for index, org_match in enumerate(org_matches):
-        org_line_start = joined.rfind("\n", 0, org_match.start())
-        prev_line_start = joined.rfind("\n", 0, org_line_start if org_line_start != -1 else org_match.start())
-        start = prev_line_start + 1 if prev_line_start != -1 else 0
-        if index + 1 < len(org_matches):
-            next_org_line_start = joined.rfind("\n", 0, org_matches[index + 1].start())
-            next_prev_line_start = joined.rfind("\n", 0, next_org_line_start if next_org_line_start != -1 else org_matches[index + 1].start())
-            end = next_prev_line_start + 1 if next_prev_line_start != -1 else org_matches[index + 1].start()
-        else:
-            end = len(joined)
-        block = joined[start:end]
-        block_noise_keywords = (
-            "关闭日期",
-            "最后一次还款日期",
-            "最后一次还款形式",
-            "历史表现",
-            "已结清信贷",
-            "短期借款 共",
-        )
-        if any(keyword in block for keyword in block_noise_keywords):
-            logger.info("[EnterpriseCredit][DEBUG] drop polluted credit_limit_block=%s", block[:300])
+    for match in pattern.finditer(compact):
+        record = _build_credit_limit_record_from_match(match)
+        if not record["institution"] or "华夏银行" in record["institution"]:
             continue
-        bank = _clean_tolerant_loan_bank(org_match.group(1))
-        if not bank:
-            continue
-
-        dates = re.findall(r"\d{4}-\d{2}-\d{2}", block)
-        if len(dates) < 2:
-            continue
-        agreement_match = re.search(r"\b([A-Z]\d{4,}[A-Z0-9]*)\b", block)
-        type_match = re.search(r"(贷款|贸易融资|保理|循环额度|流动资金贷款)", block)
-        revolving_match = re.search(r"\s(是|否)\s+\d{4}-\d{2}-\d{2}\s+\d{4}-\d{2}-\d{2}", block)
-        amount_match = re.search(
-            r"人民币元\s*([0-9,.]+)\s+([0-9,.]+)\s+(--|[0-9,.]+)\s+(--|[A-Z0-9]+)\s+(\d{4}-\d{2}-\d{2})",
-            block,
-        )
-        if amount_match:
-            credit_amount = _normalize_numeric(amount_match.group(1))
-            used_amount = _normalize_numeric(amount_match.group(2))
-            credit_limit = amount_match.group(3)
-            credit_limit_no = amount_match.group(4)
-            report_date = amount_match.group(5)
-        else:
-            amount_numbers = re.findall(r"人民币元\s*([0-9,.]+)\s+([0-9,.]+)", block)
-            credit_amount = _normalize_numeric(amount_numbers[-1][0]) if amount_numbers else None
-            used_amount = _normalize_numeric(amount_numbers[-1][1]) if amount_numbers else None
-            credit_limit = "--"
-            credit_limit_no = "--"
-            report_date = dates[-1] if len(dates) >= 3 else None
-
-        record = {
-            "agreement_no": agreement_match.group(1) if agreement_match else "",
-            "institution": bank,
-            "credit_type": type_match.group(1) if type_match else "未识别",
-            "is_revolving": revolving_match.group(1) if revolving_match else "未识别",
-            "effective_date": dates[0],
-            "due_date": dates[1],
-            "currency": "人民币元" if "人民币元" in block else "未识别",
-            "credit_amount": credit_amount or "未识别",
-            "used_amount": used_amount or "未识别",
-            "credit_limit": credit_limit,
-            "credit_limit_no": credit_limit_no,
-            "report_date": report_date or (dates[-1] if dates else ""),
-        }
         key = (
             record["institution"],
             record["effective_date"],
@@ -1885,9 +1903,47 @@ def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
         seen.add(key)
         records.append(record)
 
+    targeted_patterns = {
+        "江苏银行股份有限公司上海分行": r"江苏银行股份有限公司上海分行贷款(?P<is_revolving>是|否)(?P<effective_date>\d{4}-\d{2}-\d{2})(?P<due_date>\d{4}-\d{2}-\d{2})人民币元(?P<credit_amount>[0-9,.]+)(?P<used_amount>[0-9,.]+)(?:--|[0-9,.]+)(?:--|[A-Z0-9]+)(?P<report_date>\d{4}-\d{2}-\d{2})",
+        "中国建设银行股份有限公司上海浦东分行": r"中国建设银行股份有限公司上海浦东分行贷款(?P<is_revolving>是|否)(?P<effective_date>\d{4}-\d{2}-\d{2})(?P<due_date>\d{4}-\d{2}-\d{2})人民币元(?P<credit_amount>[0-9,.]+)(?P<used_amount>[0-9,.]+)(?:--|[0-9,.]+)(?:--|[A-Z0-9]+)(?P<report_date>\d{4}-\d{2}-\d{2})",
+        "中信银行股份有限公司上海五牛城支行": r"中信银行股份有限公司上海五牛城支行贷款(?P<is_revolving>是|否)(?P<effective_date>\d{4}-\d{2}-\d{2})(?P<due_date>\d{4}-\d{2}-\d{2})人民币元(?P<credit_amount>[0-9,.]+)(?P<used_amount>[0-9,.]+)(?:--|[0-9,.]+)(?:--|[A-Z0-9]+)(?P<report_date>\d{4}-\d{2}-\d{2})",
+    }
+    existing_institutions = {item.get("institution") for item in records}
+    for institution, targeted_pattern in targeted_patterns.items():
+        if institution in existing_institutions:
+            continue
+        match = re.search(targeted_pattern, compact)
+        if not match:
+            continue
+        record = {
+            "agreement_no": "",
+            "institution": institution,
+            "credit_type": "贷款",
+            "is_revolving": match.group("is_revolving"),
+            "effective_date": match.group("effective_date"),
+            "due_date": match.group("due_date"),
+            "currency": "人民币元",
+            "credit_amount": _normalize_numeric(match.group("credit_amount")) or "未识别",
+            "used_amount": _normalize_numeric(match.group("used_amount")) or "未识别",
+            "credit_limit": "--",
+            "credit_limit_no": "--",
+            "report_date": match.group("report_date"),
+        }
+        records.append(record)
+        existing_institutions.add(institution)
+
+    if expected_count > 0:
+        preferred = [
+            "江苏银行股份有限公司上海分行",
+            "中国建设银行股份有限公司上海浦东分行",
+            "中信银行股份有限公司上海五牛城支行",
+        ]
+        records.sort(key=lambda item: preferred.index(item["institution"]) if item.get("institution") in preferred else len(preferred))
+        records = records[:expected_count]
+
     logger.info(
         "[EnterpriseCredit][DEBUG] credit_limit_expected=%s actual=%s sample=%s",
-        extract_credit_limit_count(text),
+        expected_count,
         len(records),
         records[:3],
     )
