@@ -1595,6 +1595,49 @@ def _extract_loan_from_context(context_lines: list[str], status_match: re.Match[
     }
 
 
+def _split_short_loan_blocks_by_bank(short_text: str) -> list[str]:
+    text = normalize_credit_text(short_text)
+    bank_pattern = re.compile(
+        r"(?=([\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}"
+        r"(?:银行|信用社|融资租赁|消费金融|小额贷款|财务公司|信托)"
+        r"[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80}))"
+    )
+    matches = list(bank_pattern.finditer(text))
+    blocks: list[str] = []
+    for idx, match in enumerate(matches):
+        start = match.start(1)
+        end = matches[idx + 1].start(1) if idx + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        if block:
+            blocks.append(block)
+    logger.info("[DEBUG] short_blocks_count=%s", len(blocks))
+    for idx, block in enumerate(blocks[:20]):
+        logger.info("[DEBUG] short_block_%s=%s", idx, block[:800])
+    return blocks
+
+
+def _parse_short_loan_bank_block(block: str) -> dict[str, Any]:
+    lines = [_clean_credit_detail_line(line) for line in block.splitlines()]
+    lines = [line for line in lines if line and not _is_credit_table_noise_line(line)]
+    compact = re.sub(r"\s+", " ", "\n".join(lines)).strip()
+    status_pattern = re.compile(
+        r"(?:(?P<guarantee>信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)\s+)?"
+        r"(?P<balance>\d+(?:\.\d+)?)\s+"
+        r"(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
+        r"(?P<overdue_amount>\d+(?:\.\d+)?)\s+"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)\s+"
+        r"(?P<overdue_months>\d+)"
+        r"(?:\s+(?P<last_repay_date>\d{4}-\d{2}-\d{2}))?"
+    )
+    status_match = status_pattern.search(compact)
+    if not status_match:
+        return {}
+    loan = _extract_loan_from_context(lines, status_match)
+    loan["section_type"] = None
+    loan["term_type"] = None
+    return loan
+
+
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
     normalized = _extract_active_credit_text(active_text)
     lines = [
@@ -1875,24 +1918,38 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
         ]
         short_block_loans = [loan for loan in short_block_loans if is_valid_active_loan(loan)]
         short_status_loans = _extract_active_loans_by_status_lines(short_text)
+        short_bank_blocks = _split_short_loan_blocks_by_bank(short_text)
+        short_bank_block_loans = [
+            loan
+            for loan in (_parse_short_loan_bank_block(block) for block in short_bank_blocks)
+            if loan.get("account_no") or loan.get("bank") or loan.get("balance")
+        ]
+        short_bank_block_loans = [loan for loan in short_bank_block_loans if is_valid_active_loan(loan)]
     else:
         short_status_loans = []
+        short_bank_block_loans = []
 
-    candidates = [*block_loans, *status_line_loans, *short_block_loans, *short_status_loans]
+    candidates = [*block_loans, *status_line_loans, *short_block_loans, *short_status_loans, *short_bank_block_loans]
     loans: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str]] = set()
+    seen_detail: set[tuple[str, str, str, str, str]] = set()
     for loan in candidates:
-        key = (
-            str(loan.get("account_no") or ""),
+        account_no = str(loan.get("account_no") or "")
+        detail_key = (
             str(loan.get("bank") or ""),
             str(loan.get("open_date") or loan.get("start_date") or ""),
             str(loan.get("due_date") or loan.get("end_date") or ""),
             str(loan.get("loan_amount") or ""),
             str(loan.get("balance") or ""),
         )
-        if key in seen:
+        key = (
+            account_no,
+            *detail_key,
+        )
+        if key in seen or detail_key in seen_detail:
             continue
         seen.add(key)
+        seen_detail.add(detail_key)
         loans.append(loan)
 
     has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
