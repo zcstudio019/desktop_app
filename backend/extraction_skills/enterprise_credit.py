@@ -1821,6 +1821,17 @@ def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
         else:
             end = len(joined)
         block = joined[start:end]
+        block_noise_keywords = (
+            "关闭日期",
+            "最后一次还款日期",
+            "最后一次还款形式",
+            "历史表现",
+            "已结清信贷",
+            "短期借款 共",
+        )
+        if any(keyword in block for keyword in block_noise_keywords):
+            logger.info("[EnterpriseCredit][DEBUG] drop polluted credit_limit_block=%s", block[:300])
+            continue
         bank = _clean_tolerant_loan_bank(org_match.group(1))
         if not bank:
             continue
@@ -3343,10 +3354,16 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             credit_limit_text = extract_section_text_from_raw(
                 raw_text,
                 ["授信信息 共", "授信信息"],
-                ["公共记录明细", "附件1", "已结清信贷", "非信贷交易明细"],
+                ["已结清信贷", "公共记录明细", "非信贷交易明细", "附件1"],
             )
+            credit_limit_expected_count = extract_credit_limit_count(credit_limit_text)
+            logger.info("[EnterpriseCredit][DEBUG] credit_limit_expected_count=%s", credit_limit_expected_count)
             logger.info("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s tail=%s", len(credit_limit_text), credit_limit_text[-1500:])
+            logger.info("[EnterpriseCredit][DEBUG] credit_limit_text_tail=%s", credit_limit_text[-1000:])
             credit_facilities = parse_credit_limits(credit_limit_text)
+            if credit_limit_expected_count > 0:
+                credit_facilities = credit_facilities[:credit_limit_expected_count]
+            logger.info("[EnterpriseCredit][DEBUG] credit_limit_actual_count=%s", len(credit_facilities))
             closed_loans = _extract_detail_records_from_block(
                 credit_detail_text,
                 ("已结清贷款明细", "已结清借款明细"),
