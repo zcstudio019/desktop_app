@@ -1427,6 +1427,54 @@ def find_loan_main_line(context_lines: list[str]) -> str:
     return ""
 
 
+def find_nearest_loan_main_line(lines: list[str], status_idx: int) -> str:
+    biz_keywords = ["流动资金贷款", "固定资产贷款", "融资型租赁", "贷款"]
+    noise_keywords = ["正常还款", "见附件", "授信协议", "历史表现", "信息报告日期"]
+    for index in range(status_idx - 1, max(-1, status_idx - 8), -1):
+        line = str(lines[index] or "").strip()
+        if not line or any(noise in line for noise in noise_keywords):
+            continue
+        if not any(keyword in line for keyword in biz_keywords):
+            continue
+        parts: list[str] = []
+        for part_index in (index - 2, index - 1, index):
+            if 0 <= part_index < len(lines):
+                part = str(lines[part_index] or "").strip()
+                if not part or any(noise in part for noise in noise_keywords):
+                    continue
+                parts.append(part)
+        return "".join(parts)
+    return ""
+
+
+def clean_bank_name_tail_only(name: Any) -> str:
+    value = re.sub(r"\s+", "", str(name or ""))
+    if "股份有限" in value and "股份有限公司" not in value:
+        value = value.replace("股份有限", "股份有限公司")
+    for suffix in ["支行", "分行", "营业部"]:
+        index = value.rfind(suffix)
+        if index != -1:
+            return value[: index + len(suffix)]
+    for suffix in ["村镇银行股份有限公司", "银行股份有限公司", "股份有限公司", "有限公司"]:
+        index = value.rfind(suffix)
+        if index != -1:
+            return value[: index + len(suffix)]
+    return value
+
+
+def extract_bank_from_main_line(main_line: str) -> str:
+    value = re.sub(r"\s+", "", str(main_line or ""))
+    for keyword in ["流动资金贷款", "固定资产贷款", "融资型租赁", "贷款"]:
+        index = value.find(keyword)
+        if index != -1:
+            value = value[:index]
+            break
+    first_chinese = re.search(r"[\u4e00-\u9fa5]", value)
+    if first_chinese:
+        value = value[first_chinese.start():]
+    return clean_bank_name_tail_only(value)
+
+
 def _extract_active_credit_text(credit_detail_text: str) -> str:
     credit_detail = normalize_credit_text(credit_detail_text)
     start_pos = credit_detail.find("未结清信贷")
@@ -1599,7 +1647,12 @@ def _clean_credit_detail_line(value: Any) -> str:
     return text
 
 
-def _extract_loan_from_context(context_lines: list[str], status_match: re.Match[str], default_section_type: str | None = None) -> dict[str, Any]:
+def _extract_loan_from_context(
+    context_lines: list[str],
+    status_match: re.Match[str],
+    default_section_type: str | None = None,
+    status_line_index: int | None = None,
+) -> dict[str, Any]:
     context = "\n".join(context_lines)
     compact_context = re.sub(r"\s+", "", context)
     org_pattern = re.compile(
@@ -1608,8 +1661,11 @@ def _extract_loan_from_context(context_lines: list[str], status_match: re.Match[
     biz_pattern = re.compile(r"(循环透支|流动资金贷款|贸易融资|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
 
     org_candidates: list[str] = []
-    main_line = find_loan_main_line(context_lines)
-    context_institution = extract_institution_before_biz(main_line)
+    if status_line_index is not None:
+        main_line = find_nearest_loan_main_line(context_lines, status_line_index)
+    else:
+        main_line = find_loan_main_line(context_lines)
+    context_institution = extract_bank_from_main_line(main_line)
     if context_institution and not _is_credit_table_noise_line(context_institution):
         org_candidates.append(context_institution)
     for line_offset, context_line in enumerate(context_lines):
@@ -1710,7 +1766,8 @@ def _parse_short_loan_bank_block(block: str) -> dict[str, Any]:
     status_match = status_pattern.search(compact)
     if not status_match:
         return {}
-    loan = _extract_loan_from_context(lines, status_match)
+        status_line_index = len(lines) - 1
+        loan = _extract_loan_from_context(lines, status_match, status_line_index=status_line_index)
     loan["section_type"] = None
     loan["term_type"] = None
     return loan
@@ -1757,8 +1814,10 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
 
         short_status_hits += 1
         context_end = min(len(lines), index + (2 if matched_uses_next else 1))
-        context = "\n".join(lines[max(0, index - 18) : context_end])
-        loan = _extract_loan_from_context(context.splitlines(), match)
+        context_start = max(0, index - 18)
+        context_lines = lines[context_start:context_end]
+        status_line_index = index - context_start
+        loan = _extract_loan_from_context(context_lines, match, status_line_index=status_line_index)
         loan["term_type"] = "short"
         loan["section_type"] = None
         key = (
@@ -2400,7 +2459,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
 
         org_candidates = []
         main_line = find_loan_main_line(context_lines)
-        context_institution = extract_institution_before_biz(main_line)
+        context_institution = extract_bank_from_main_line(main_line)
         if context_institution and not _is_credit_table_noise_line(context_institution):
             org_candidates.append(context_institution)
         for line_offset, context_line in enumerate(context_lines):
