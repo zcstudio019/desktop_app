@@ -1474,6 +1474,25 @@ def extract_short_text(raw_text: str) -> str:
     return section[:end_pos]
 
 
+def extract_section_text_from_raw(raw_text: str, start_keywords: list[str], end_keywords: list[str]) -> str:
+    text = normalize_credit_text(raw_text or "")
+    start = -1
+    for keyword in start_keywords:
+        start = text.find(keyword)
+        if start != -1:
+            break
+    if start == -1:
+        return ""
+
+    section = text[start:]
+    end_pos = len(section)
+    for keyword in end_keywords:
+        pos = section.find(keyword, 1)
+        if pos != -1:
+            end_pos = min(end_pos, pos)
+    return section[:end_pos]
+
+
 def is_valid_active_loan(loan: dict[str, Any]) -> bool:
     text = " ".join(str(value) for value in loan.values() if value)
     header_keywords = [
@@ -1743,6 +1762,31 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
     return loans
 
 
+def parse_loans_from_section(section_text: str, term_type: str) -> list[dict[str, Any]]:
+    if not section_text:
+        return []
+    loans = []
+    section_type = {
+        "medium_long": "中长期借款",
+        "short": "短期借款",
+        "revolving_overdraft": "循环透支",
+    }.get(term_type)
+    for loan in _extract_short_loans_by_status_lines(section_text):
+        if not is_valid_active_loan(loan):
+            continue
+        loan["term_type"] = term_type
+        if section_type:
+            loan["section_type"] = section_type
+        loans.append(loan)
+    logger.info(
+        "[EnterpriseCredit][DEBUG] parsed_%s_loans_count=%s sample=%s",
+        term_type,
+        len(loans),
+        loans[:3],
+    )
+    return loans
+
+
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
     normalized = _extract_active_credit_text(active_text)
     lines = [
@@ -2008,12 +2052,28 @@ def _extract_active_loans_from_credit_detail(
     block_loans = [loan for loan in raw_active_loans if is_valid_active_loan(loan)]
     status_line_loans = _extract_active_loans_by_status_lines(active_text)
 
+    raw_for_sections = raw_text or credit_detail_text
+    medium_text = extract_section_text_from_raw(
+        raw_for_sections,
+        ["中长期借款 共", "中长期借款"],
+        ["短期借款 共", "短期借款", "循环透支 共", "循环透支", "已结清信贷", "授信信息 共"],
+    )
     raw_short_text = extract_short_text(raw_text or "")
     short_text = raw_short_text or extract_section_text(
         active_text,
         "短期借款",
         ["循环透支", "授信信息 共", "公共记录明细", "附件1"],
     )
+    revolving_text = extract_section_text_from_raw(
+        raw_for_sections,
+        ["循环透支 共", "循环透支"],
+        ["授信信息 共", "已结清信贷", "公共记录明细", "附件1"],
+    )
+    logger.info("[EnterpriseCredit][DEBUG] medium_text_len=%s tail=%s", len(medium_text), medium_text[-1500:])
+    logger.info("[EnterpriseCredit][DEBUG] revolving_text_len=%s tail=%s", len(revolving_text), revolving_text[-1500:])
+    medium_section_loans = parse_loans_from_section(medium_text, "medium_long")
+    short_section_loans = parse_loans_from_section(short_text, "short")
+    revolving_section_loans = parse_loans_from_section(revolving_text, "revolving_overdraft")
     short_expected_count = extract_section_count(short_text, "短期借款") or extract_section_count(active_text, "短期借款")
     logger.warning("[EnterpriseCredit][DEBUG] short_text_has_icbc=%s", "中国工商银行" in short_text)
     logger.warning(
@@ -2061,6 +2121,9 @@ def _extract_active_loans_from_credit_detail(
         *short_status_loans,
         *short_bank_block_loans,
         *short_status_driver_loans,
+        *medium_section_loans,
+        *short_section_loans,
+        *revolving_section_loans,
     ]
     loans: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str]] = set()
@@ -2694,6 +2757,10 @@ def loan_term_type(loan: dict[str, Any]) -> str:
 
     if explicit_term_type == "revolving_overdraft":
         return "revolving_overdraft"
+    if explicit_term_type == "medium_long":
+        return "medium_long"
+    if explicit_term_type == "short":
+        return "short"
     if "循环透支" in biz or section_type == "循环透支":
         return "revolving_overdraft"
 
