@@ -1381,6 +1381,32 @@ def clean_bank_name(bank: Any) -> str:
     return value.strip()
 
 
+def extract_institution_before_biz(context: str) -> str:
+    text = re.sub(r"\s+", "", str(context or ""))
+    biz_keywords = [
+        "流动资金贷款",
+        "固定资产贷款",
+        "融资型租赁",
+        "循环透支",
+        "贷款",
+        "贸易融资",
+        "保理",
+    ]
+    biz_pos = -1
+    for keyword in biz_keywords:
+        pos = text.find(keyword)
+        if pos != -1 and (biz_pos == -1 or pos < biz_pos):
+            biz_pos = pos
+    if biz_pos == -1:
+        return clean_bank_name(text)
+
+    before = text[:biz_pos]
+    first_chinese = re.search(r"[\u4e00-\u9fa5]", before)
+    if not first_chinese:
+        return ""
+    return clean_bank_name(before[first_chinese.start():])
+
+
 def _extract_active_credit_text(credit_detail_text: str) -> str:
     credit_detail = normalize_credit_text(credit_detail_text)
     start_pos = credit_detail.find("未结清信贷")
@@ -1562,6 +1588,9 @@ def _extract_loan_from_context(context_lines: list[str], status_match: re.Match[
     biz_pattern = re.compile(r"(循环透支|流动资金贷款|贸易融资|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
 
     org_candidates: list[str] = []
+    context_institution = extract_institution_before_biz(context)
+    if context_institution and not _is_credit_table_noise_line(context_institution):
+        org_candidates.append(context_institution)
     for line_offset, context_line in enumerate(context_lines):
         compact_line = re.sub(r"\s+", "", context_line)
         if not any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
@@ -1602,7 +1631,7 @@ def _extract_loan_from_context(context_lines: list[str], status_match: re.Match[
     section_type = default_section_type or ("循环透支" if "循环透支" in context or "循环透支" in biz_type else None)
     return {
         "account_no": account_match.group(1) if account_match else None,
-        "bank": org_candidates[-1] if org_candidates else "未识别",
+        "bank": context_institution or (org_candidates[-1] if org_candidates else "未识别"),
         "biz_type": biz_type,
         "loan_type": biz_type,
         "section_type": section_type,
@@ -2349,6 +2378,9 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         account_match = re.search(r"(?:^|[^A-Z0-9])([A-Z][A-Z0-9]{5,})", context)
 
         org_candidates = []
+        context_institution = extract_institution_before_biz(context)
+        if context_institution and not _is_credit_table_noise_line(context_institution):
+            org_candidates.append(context_institution)
         for line_offset, context_line in enumerate(context_lines):
             compact_line = re.sub(r"\s+", "", context_line)
             if not any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
@@ -2362,7 +2394,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
                 cleaned_candidate = _clean_tolerant_loan_bank(candidate)
                 if cleaned_candidate and not _is_credit_table_noise_line(cleaned_candidate):
                     org_candidates.append(cleaned_candidate)
-        bank = org_candidates[-1] if org_candidates else None
+        bank = context_institution or (org_candidates[-1] if org_candidates else None)
 
         biz_match = biz_pattern.search("\n".join(context_lines[-6:]))
         biz_type = biz_match.group(1) if biz_match else None
