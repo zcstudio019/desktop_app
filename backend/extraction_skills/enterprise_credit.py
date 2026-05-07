@@ -1830,6 +1830,7 @@ def clean_credit_limit_institution(name: str) -> str:
     value = re.sub(r"^DK", "", value)
 
     start_words = [
+        "宁波银行",
         "江苏银行",
         "中国建设银行",
         "中信银行",
@@ -1862,22 +1863,35 @@ def _split_credit_limit_amounts(amount_blob: str) -> tuple[str, str]:
     if "|" in value:
         left, right = value.split("|", 1)
         return _normalize_numeric(left) or "", _normalize_numeric(right) or ""
+
+    decimal_values = re.findall(r"\d+\.\d{1,2}", value)
+    if len(decimal_values) >= 2 and "".join(decimal_values[:2]) == value:
+        return _normalize_numeric(decimal_values[0]) or "", _normalize_numeric(decimal_values[1]) or ""
+
+    # OCR/table text often glues "amount + used_amount" together:
+    # 800 -> 80 / 0, 05 -> 0 / 5, 120120 -> 120 / 120.
+    if value.isdigit():
+        if len(value) == 2 and value.startswith("0"):
+            return "0", _normalize_numeric(value[1:]) or ""
+        if len(value) <= 3 and value.endswith("0"):
+            return _normalize_numeric(value[:-1]) or "", "0"
+
     if len(value) % 2 == 0:
         middle = len(value) // 2
         left = value[:middle]
         right = value[middle:]
         if left == right:
             return _normalize_numeric(left) or "", _normalize_numeric(right) or ""
+
     return _normalize_numeric(value) or "", ""
 
 
 def _build_credit_limit_record_from_match(match: re.Match[str]) -> dict[str, Any]:
     groupdict = match.groupdict()
+    credit_amount = _normalize_numeric(groupdict.get("credit_amount")) or ""
+    used_amount = _normalize_numeric(groupdict.get("used_amount")) or ""
     if groupdict.get("amount_blob"):
         credit_amount, used_amount = _split_credit_limit_amounts(groupdict.get("amount_blob") or "")
-    else:
-        credit_amount = _normalize_numeric(groupdict.get("credit_amount")) or ""
-        used_amount = _normalize_numeric(groupdict.get("used_amount")) or ""
     return {
         "agreement_no": "",
         "institution": clean_credit_limit_institution(match.group("institution")),
@@ -1949,29 +1963,27 @@ def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
     if not text:
         return []
     expected_count = extract_credit_limit_count(text)
+    text = re.sub(r"第\s*\d+\s*页\s*/\s*共\s*\d+\s*页", "\n", text)
+    text = re.sub(r"第\s*\d+\s*页/共", "\n", text)
+    text = re.sub(r"\b\d+\s*页\b", "\n", text)
     if "已结清信贷" in text:
         text = text.split("已结清信贷", 1)[0]
     compact = re.sub(r"\s+", "", text)
     compact = re.sub(r"(?:授信信息共\d+笔|授信信息)", "", compact)
-    forced_targeted_records = _targeted_credit_limit_records(compact, force_when_any_target_seen=True)
-    if forced_targeted_records:
-        logger.info("[EnterpriseCredit][DEBUG] credit_limit_forced_targeted_records=%s", forced_targeted_records)
-        return forced_targeted_records[: expected_count or len(forced_targeted_records)]
-
     pattern = re.compile(
-        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9_]{0,120}?(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)[\u4e00-\u9fa5A-Za-z0-9_]{0,80}?)"
+        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}银行股份有限公司[\u4e00-\u9fa5A-Za-z0-9（）()]{0,40})"
         r"(?P<credit_type>贷款|贸易融资|保理|循环额度)"
         r"(?P<is_revolving>是|否)"
         r"(?P<effective_date>\d{4}-\d{2}-\d{2})"
         r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
         r"人民币元"
-        r"(?P<amount_blob>[0-9,.]+)"
+        r"(?P<amount_blob>\d+(?:\.\d{1,2})?(?:\d+(?:\.\d{1,2})?)?)"
         r"(?P<credit_limit>--|[0-9,.]+)"
         r"(?P<credit_limit_no>--|[A-Z0-9]+)"
         r"(?P<report_date>\d{4}-\d{2}-\d{2})"
     )
     records: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     for match in pattern.finditer(compact):
         record = _build_credit_limit_record_from_match(match)
         if not record["institution"] or "华夏银行" in record["institution"]:
@@ -1981,27 +1993,25 @@ def parse_credit_limits(section_text: str) -> list[dict[str, Any]]:
             record["effective_date"],
             record["due_date"],
             str(record["credit_amount"]),
+            str(record["used_amount"]),
         )
         if key in seen:
             continue
         seen.add(key)
         records.append(record)
 
-    existing_institutions = {item.get("institution") for item in records}
-    for record in _targeted_credit_limit_records(compact):
-        if record["institution"] in existing_institutions:
-            continue
-        records.append(record)
-        existing_institutions.add(record["institution"])
+    if not records:
+        records = _targeted_credit_limit_records(compact)
 
     if expected_count > 0:
-        preferred = [
-            "江苏银行股份有限公司上海分行",
-            "中国建设银行股份有限公司上海浦东分行",
-            "中信银行股份有限公司上海五牛城支行",
-        ]
-        records.sort(key=lambda item: preferred.index(item["institution"]) if item.get("institution") in preferred else len(preferred))
         records = records[:expected_count]
+    if expected_count > 0 and len(records) < expected_count:
+        logger.warning(
+            "[EnterpriseCredit][WARN] credit limits incomplete expected=%s actual=%s",
+            expected_count,
+            len(records),
+        )
+        logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text=%s", text[:5000])
 
     logger.info(
         "[EnterpriseCredit][DEBUG] credit_limit_expected=%s actual=%s sample=%s",
