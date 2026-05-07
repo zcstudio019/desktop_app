@@ -2448,12 +2448,35 @@ def _zh_parse_enterprise_credit_overrides(raw_text: str) -> dict[str, Any]:
         )
 
     active_rows = _zh_parse_summary_rows(info_window)
+    medium_long_row = next((item for item in active_rows if item.get("type") == "中长期借款"), None)
+    short_row = next((item for item in active_rows if item.get("type") == "短期借款"), None)
+    revolving_overdraft_row = next((item for item in active_rows if item.get("type") == "循环透支"), None)
+    medium_count = medium_long_row.get("normal_account_count") if medium_long_row else None
+    short_count = short_row.get("normal_account_count") if short_row else None
+    revolving_count = revolving_overdraft_row.get("normal_account_count") if revolving_overdraft_row else None
+    if medium_count is not None:
+        credit_summary["medium_long_loan_count"] = medium_count
+    if short_count is not None:
+        credit_summary["short_loan_count"] = short_count
+    if revolving_count is not None:
+        credit_summary["revolving_overdraft_count"] = revolving_count
+    open_credit_counts = [count for count in (medium_count, short_count, revolving_count) if count is not None]
+    if open_credit_counts:
+        current_open_credit_count = sum(open_credit_counts)
+        credit_summary["current_open_credit_count"] = current_open_credit_count
+        credit_summary["current_active_credit_institution_count"] = current_open_credit_count
+        logger.info(
+            "[EnterpriseCredit][DEBUG] open_credit_count medium=%s short=%s revolving=%s total=%s",
+            medium_count,
+            short_count,
+            revolving_count,
+            current_open_credit_count,
+        )
     total_row = next((item for item in active_rows if item.get("type") == "合计"), None)
     if total_row:
         credit_summary["active_borrowing_balance"] = total_row.get("total_balance")
         credit_summary["active_special_mention_balance"] = total_row.get("special_mention_balance")
         credit_summary["active_non_performing_balance"] = total_row.get("non_performing_balance")
-    revolving_overdraft_row = next((item for item in active_rows if item.get("type") == "循环透支"), None)
     if revolving_overdraft_row:
         credit_summary["revolving_overdraft_balance"] = revolving_overdraft_row.get("total_balance")
 
@@ -2838,6 +2861,27 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
         or _sum_loan_balances(revolving_loans)
         or "0"
     )
+    medium_count = credit_summary.get("medium_long_loan_count")
+    if medium_count is None:
+        medium_count = long_term.get("normal_account_count") or long_term.get("total_account_count")
+    short_count = credit_summary.get("short_loan_count")
+    if short_count is None:
+        short_count = short_term.get("normal_account_count") or short_term.get("total_account_count")
+    revolving_count = credit_summary.get("revolving_overdraft_count")
+    if revolving_count is None:
+        revolving_count = revolving_overdraft_row.get("normal_account_count") or revolving_overdraft_row.get("total_account_count")
+    count_values = [value for value in (medium_count, short_count, revolving_count) if value is not None]
+    if count_values:
+        current_open_credit_count = sum(int(value or 0) for value in count_values)
+    else:
+        current_open_credit_count = len(medium_long_loans) + len(short_loans) + len(revolving_loans)
+    logger.info(
+        "[EnterpriseCredit][DEBUG] open_credit_count medium=%s short=%s revolving=%s total=%s",
+        medium_count if medium_count is not None else len(medium_long_loans),
+        short_count if short_count is not None else len(short_loans),
+        revolving_count if revolving_count is not None else len(revolving_loans),
+        current_open_credit_count,
+    )
     clean_identity = build_clean_identity({**report_basic, **identity_info})
 
     lines = [
@@ -2857,7 +2901,7 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
         "",
         "### 信贷概要",
         f"- 当前未结清借贷余额：{_display(credit_summary.get('active_borrowing_balance'))}",
-        f"- 当前未结清信贷机构数：{_display(credit_summary.get('current_active_credit_institution_count'))}",
+        f"- 当前未结清信贷机构数：{_display(current_open_credit_count)}",
     ]
     lines.append(f"- 短期借款余额：{_display(short_balance)}")
     if short_loans:
