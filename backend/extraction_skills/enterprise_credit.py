@@ -1554,7 +1554,13 @@ def _extract_loan_from_context(context_lines: list[str], status_match: re.Match[
             if cleaned_candidate and not _is_credit_table_noise_line(cleaned_candidate):
                 org_candidates.append(cleaned_candidate)
 
-    context_tail = "\n".join(context_lines[-8:])
+    org_line_index = -1
+    for line_offset, context_line in enumerate(context_lines):
+        compact_line = re.sub(r"\s+", "", context_line)
+        if any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
+            org_line_index = line_offset
+    parse_lines = context_lines[org_line_index:] if org_line_index >= 0 else context_lines[-8:]
+    context_tail = "\n".join(parse_lines)
     biz_match = biz_pattern.search(context_tail) or biz_pattern.search(context)
     dates = re.findall(r"\d{4}-\d{2}-\d{2}", context_tail)
     if len(dates) < 2:
@@ -1636,6 +1642,80 @@ def _parse_short_loan_bank_block(block: str) -> dict[str, Any]:
     loan["section_type"] = None
     loan["term_type"] = None
     return loan
+
+
+def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]]:
+    normalized = normalize_credit_text(short_text)
+    lines = [
+        line
+        for line in (_clean_credit_detail_line(raw_line) for raw_line in normalized.splitlines())
+        if line and not _is_credit_table_noise_line(line)
+    ]
+    status_line_pattern = re.compile(
+        r"(?P<guarantee>保证|组合|信用/无担保|信用|无担保|抵押|质押|其他)\s+"
+        r"(?P<balance>\d+(?:\.\d+)?)\s+"
+        r"(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
+        r"(?P<overdue_amount>\d+(?:\.\d+)?)\s+"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)\s+"
+        r"(?P<overdue_months>\d+)"
+        r"(?:\s+(?P<last_repay_date>\d{4}-\d{2}-\d{2}))?"
+    )
+    noise_words = ("最近一次还款", "正常还款", "见附件", "历史表现")
+    loans: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    short_status_hits = 0
+
+    for index, line in enumerate(lines):
+        candidates = [line]
+        if index + 1 < len(lines):
+            candidates.append(f"{line} {lines[index + 1]}")
+        match = None
+        matched_text = ""
+        matched_uses_next = False
+        for candidate in candidates:
+            if any(word in candidate for word in noise_words):
+                continue
+            match = status_line_pattern.search(candidate)
+            if match:
+                matched_text = candidate
+                matched_uses_next = candidate != line
+                break
+        if not match:
+            continue
+
+        short_status_hits += 1
+        context_end = min(len(lines), index + (2 if matched_uses_next else 1))
+        context = "\n".join(lines[max(0, index - 18) : context_end])
+        loan = _extract_loan_from_context(context.splitlines(), match)
+        loan["term_type"] = "short"
+        loan["section_type"] = None
+        key = (
+            str(loan.get("bank") or ""),
+            str(loan.get("open_date") or loan.get("start_date") or ""),
+            str(loan.get("due_date") or loan.get("end_date") or ""),
+            str(loan.get("loan_amount") or ""),
+            str(loan.get("balance") or ""),
+            str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        loans.append(loan)
+        logger.info("[DEBUG] short_status_hit i=%s line=%s loan=%s", index, matched_text, loan)
+
+    logger.info("[DEBUG] short_status_hits=%s", short_status_hits)
+    logger.info("[DEBUG] short_loans_count=%s", len(loans))
+    logger.info("[DEBUG] short_loans=%s", loans)
+    if short_status_hits < extract_section_count(short_text, "短期借款"):
+        for index, line in enumerate(lines):
+            if "正常" in line and re.search(r"\d", line):
+                logger.info(
+                    "[DEBUG] normal_candidate i=%s line=%s prev=%s",
+                    index,
+                    line,
+                    lines[index - 1] if index > 0 else "",
+                )
+    return loans
 
 
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
@@ -1925,11 +2005,22 @@ def _extract_active_loans_from_credit_detail(credit_detail_text: str, active_bor
             if loan.get("account_no") or loan.get("bank") or loan.get("balance")
         ]
         short_bank_block_loans = [loan for loan in short_bank_block_loans if is_valid_active_loan(loan)]
+        short_status_driver_loans = [
+            loan for loan in _extract_short_loans_by_status_lines(short_text) if is_valid_active_loan(loan)
+        ]
     else:
         short_status_loans = []
         short_bank_block_loans = []
+        short_status_driver_loans = []
 
-    candidates = [*block_loans, *status_line_loans, *short_block_loans, *short_status_loans, *short_bank_block_loans]
+    candidates = [
+        *block_loans,
+        *status_line_loans,
+        *short_block_loans,
+        *short_status_loans,
+        *short_bank_block_loans,
+        *short_status_driver_loans,
+    ]
     loans: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str]] = set()
     seen_detail: set[tuple[str, str, str, str, str]] = set()
