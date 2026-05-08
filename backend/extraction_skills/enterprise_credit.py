@@ -75,6 +75,23 @@ def _normalize_company_name(value: str | None) -> str:
     return text
 
 
+def safe_extract_enterprise_name(raw_text: str | None) -> str:
+    try:
+        text = _normalize_text(raw_text or "")
+        match = re.search(r"企业名称\s*[:：]?\s*([^\n]+)", text)
+        if match:
+            value = match.group(1).strip()
+            value = re.split(r"\s*(?:中征码|统一社会信用代码|报告编号|报告时间|查询机构)\s*", value, maxsplit=1)[0]
+            return _normalize_company_name(value)
+        compact = re.sub(r"\s+", " ", text)
+        match = re.search(r"企业名称\s*[:：]?\s*(.{2,80}?有限公司)", compact)
+        if match:
+            return _normalize_company_name(match.group(1))
+    except Exception as exc:
+        logger.warning("[EnterpriseCredit][WARN] safe_extract_enterprise_name failed: %s", exc)
+    return ""
+
+
 def _customer_name_from_customer_id(customer_id: str) -> str:
     raw = str(customer_id or "").strip()
     for prefix in ("enterprise_", "personal_"):
@@ -1668,13 +1685,7 @@ def _extract_loan_from_context(
     biz_pattern = re.compile(r"(循环透支|流动资金贷款|贸易融资|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
 
     org_candidates: list[str] = []
-    if status_line_index is not None:
-        main_line = find_nearest_loan_main_line(context_lines, status_line_index)
-    else:
-        main_line = find_loan_main_line(context_lines)
-    context_institution = extract_bank_from_main_line(main_line)
-    if context_institution and not _is_credit_table_noise_line(context_institution):
-        org_candidates.append(context_institution)
+    context_institution = ""
     for line_offset, context_line in enumerate(context_lines):
         compact_line = re.sub(r"\s+", "", context_line)
         if not any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
@@ -2483,10 +2494,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         account_match = re.search(r"(?:^|[^A-Z0-9])([A-Z][A-Z0-9]{5,})", context)
 
         org_candidates = []
-        main_line = find_loan_main_line(context_lines)
-        context_institution = extract_bank_from_main_line(main_line)
-        if context_institution and not _is_credit_table_noise_line(context_institution):
-            org_candidates.append(context_institution)
+        context_institution = ""
         for line_offset, context_line in enumerate(context_lines):
             compact_line = re.sub(r"\s+", "", context_line)
             if not any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
@@ -3753,6 +3761,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
         _safe_print("[EnterpriseCreditSkill] 被调用", input_data.document_type, input_data.file_name)
         try:
             raw_text = _normalize_text(input_data.raw_text or "")
+            enterprise_name = safe_extract_enterprise_name(raw_text)
             raw_pages = input_data.metadata.get("raw_pages") or []
             lines = [_clean_value(line) for line in raw_text.split("\n")]
             lines = [line for line in lines if line and not re.fullmatch(r"第?\s*\d+\s*页(?:/共\s*\d+\s*页)?", line)]
@@ -3999,18 +4008,25 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 skill_version="v2",
             )
         except Exception as exc:
-            logger.exception("[EnterpriseCredit][ERROR] extract failed")
+            logger.exception("[EnterpriseCredit][ERROR] extract failed: %s", exc)
             _safe_print("[EnterpriseCreditSkill] 提取失败", str(exc))
             raw_text = _normalize_text(input_data.raw_text or "")
-            fallback_markdown = "### 企业征信报告\n- 解析异常，请查看后台日志\n"
+            enterprise_name = safe_extract_enterprise_name(raw_text)
+            fallback_markdown = (
+                "### 企业征信报告\n"
+                f"- 企业名称：{enterprise_name or '未识别'}\n"
+                "- 解析状态：异常，请查看后台日志\n"
+            )
             return ExtractionResult(
                 document_type="enterprise_credit",
                 schema_version="enterprise_credit.v2",
                 extracted_json={
                     "schema_version": "enterprise_credit.v2",
                     "title": "企业征信报告",
-                    "summary": "企业征信报告解析异常，请查看日志",
-                    "data": {"error": str(exc)},
+                    "summary": fallback_markdown,
+                    "enterprise_name": enterprise_name,
+                    "data": {"enterprise_name": enterprise_name, "error": str(exc)},
+                    "error": str(exc),
                     "raw_text": raw_text[:5000] if raw_text else "",
                     "raw_text_preview": raw_text[:3000] if raw_text else "",
                 },
