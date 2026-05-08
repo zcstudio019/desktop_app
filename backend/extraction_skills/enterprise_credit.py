@@ -1862,6 +1862,40 @@ def parse_medium_leasing_loans_fallback(medium_text: str) -> list[dict[str, Any]
         return []
 
 
+def parse_medium_leasing_from_raw(raw_text: str) -> list[dict[str, Any]]:
+    try:
+        loans = parse_medium_leasing_loans_fallback(raw_text)
+        logger.warning("[EnterpriseCredit][FINAL] leasing_fallback_count=%s", len(loans))
+        return loans
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] parse_medium_leasing_from_raw failed")
+        return []
+
+
+def merge_unique_loans(primary: list[dict[str, Any]], fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str, str, str]] = set()
+
+    def key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
+        return (
+            str(loan.get("bank") or ""),
+            str(loan.get("biz_type") or loan.get("loan_type") or loan.get("business_type") or ""),
+            str(loan.get("open_date") or loan.get("start_date") or ""),
+            str(loan.get("due_date") or loan.get("end_date") or ""),
+            str(loan.get("loan_amount") or ""),
+            str(loan.get("balance") or ""),
+            str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
+        )
+
+    for loan in [*(primary or []), *(fallback or [])]:
+        item_key = key(loan)
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        merged.append(loan)
+    return merged
+
+
 def extract_medium_long_text(raw_text: str) -> str:
     try:
         text = normalize_credit_text(raw_text or "")
@@ -4355,11 +4389,9 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 logger.warning("[EnterpriseCredit][DEBUG] credit_detail active_text missing short loans, use raw_text fallback")
                 active_loan_detail_text = safe_extract_active_credit_text(raw_text)
             logger.info("[EnterpriseCredit][DEBUG] credit_detail_len=%s", len(active_loan_detail_text))
-            active_loans = safe_extract_active_loans_from_credit_detail(
-                active_loan_detail_text,
-                credit_summary.get("active_borrowing_balance"),
-                raw_text,
-            )
+            # Do not use the historical mixed active-loan pool as a display source.
+            # Short, medium/long, and revolving loans are parsed from their own sections below.
+            active_loans: list[dict[str, Any]] = []
             medium_count = _extract_count(credit_summary.get("medium_long_loan_count")) or 0
             short_count = _extract_count(credit_summary.get("short_loan_count")) or 0
             revolving_count = _extract_count(credit_summary.get("revolving_overdraft_count")) or 0
@@ -4426,6 +4458,8 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                     appended_medium_leasing_count,
                     len(raw_medium_loans),
                 )
+            medium_leasing_fallback = parse_medium_leasing_from_raw(raw_text or "")
+            raw_medium_loans = merge_unique_loans(raw_medium_loans, medium_leasing_fallback)
             if expected_medium_count and len(raw_medium_loans) < expected_medium_count:
                 logger.warning(
                     "[EnterpriseCredit][WARN] medium loans incomplete expected=%s actual=%s medium_tail=%s",
@@ -4441,12 +4475,11 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 )
                 medium_loans_final = raw_medium_loans[:expected_medium_count]
             else:
-                medium_loans_final = [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
+                medium_loans_final = raw_medium_loans
             logger.warning("[EnterpriseCredit][FINAL] expected_medium_count=%s", expected_medium_count)
             logger.warning("[EnterpriseCredit][FINAL] raw_medium_loans_count=%s", len(raw_medium_loans))
             logger.warning("[EnterpriseCredit][FINAL] medium_loans_final_count=%s", len(medium_loans_final))
-            logger.warning("[EnterpriseCredit][FINAL] markdown_using=medium_loans_final")
-            active_loans = [loan for loan in active_loans if loan_term_type(loan) != "medium_long"] + medium_loans_final
+            logger.warning("[EnterpriseCredit][FINAL] medium_source=medium_loans_plus_leasing count=%s", len(medium_loans_final))
             expected_short_count = short_count
             raw_short_text_for_final = extract_short_text(raw_text or "")
             raw_short_loans = _extract_short_loans_by_status_lines(raw_short_text_for_final) if raw_short_text_for_final else []
@@ -4458,12 +4491,13 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 )
                 short_loans_final = raw_short_loans[:expected_short_count]
             else:
-                short_loans_final = [loan for loan in active_loans if loan_term_type(loan) == "short"]
+                short_loans_final = raw_short_loans
             logger.warning("[EnterpriseCredit][FINAL] expected_short_count=%s", expected_short_count)
             logger.warning("[EnterpriseCredit][FINAL] raw_short_loans_count=%s", len(raw_short_loans))
             logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count=%s", len(short_loans_final))
-            logger.warning("[EnterpriseCredit][FINAL] markdown_using=short_loans_final")
-            active_loans = [loan for loan in active_loans if loan_term_type(loan) != "short"] + short_loans_final
+            logger.warning("[EnterpriseCredit][FINAL] short_source=short_loans_only count=%s", len(short_loans_final))
+            revolving_fallback_loans = parse_open_loans_fallback(raw_text, _cu(r"\u5faa\u73af\u900f\u652f \u5171"), revolving_count, "revolving_overdraft")
+            active_loans = [*short_loans_final, *medium_loans_final, *revolving_fallback_loans]
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
             logger.info("[EnterpriseCredit][DEBUG] active_loans_sample=%s", active_loans[:2])
             logger.warning("[EnterpriseCredit][STEP] start revolving_loans")
