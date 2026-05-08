@@ -1674,10 +1674,22 @@ def extract_business_type_strict(block: str) -> str:
 
 def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count: int = 0, term_type: str = "short") -> list[dict[str, Any]]:
     try:
-        if "循环透支" in section_title:
+        if term_type == "revolving_overdraft":
             end_titles = ["授信信息 共", "已结清信贷", "公共记录明细", "附件1"]
+        elif term_type == "medium_long":
+            end_titles = [
+                "短期借款 共",
+                "短期借款",
+                "循环透支 共",
+                "循环透支",
+                "银行承兑汇票",
+                "银行保函及其他业务",
+                "授信信息 共",
+                "已结清信贷",
+                "公共记录明细",
+            ]
         else:
-            end_titles = ["循环透支 共", "中长期借款 共", "授信信息 共", "已结清信贷", "公共记录明细"]
+            end_titles = ["循环透支 共", "中长期借款 共", "授信信息 共", "公共记录明细"]
         section = extract_section_text_from_raw(raw_text, [section_title], end_titles)
         if not section and " 共" in section_title:
             section = extract_section_text_from_raw(raw_text, [section_title.split(" 共", 1)[0]], end_titles)
@@ -1745,6 +1757,37 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
     except Exception:
         logger.exception("[EnterpriseCredit][ERROR] parse_open_loans_fallback failed section=%s", section_title)
         return []
+
+
+def extract_medium_long_text(raw_text: str) -> str:
+    try:
+        text = normalize_credit_text(raw_text or "")
+        start_scope = text.find("\u672a\u7ed3\u6e05\u4fe1\u8d37")
+        end_scope = text.find("\u5df2\u7ed3\u6e05\u4fe1\u8d37", start_scope if start_scope != -1 else 0)
+        if start_scope != -1 and end_scope != -1 and end_scope > start_scope:
+            source = text[start_scope:end_scope]
+        elif start_scope != -1:
+            source = text[start_scope:]
+        else:
+            source = text
+        return extract_section_text_from_raw(
+            source,
+            ["\u4e2d\u957f\u671f\u501f\u6b3e \u5171", "\u4e2d\u957f\u671f\u501f\u6b3e"],
+            [
+                "\u77ed\u671f\u501f\u6b3e \u5171",
+                "\u77ed\u671f\u501f\u6b3e",
+                "\u5faa\u73af\u900f\u652f \u5171",
+                "\u5faa\u73af\u900f\u652f",
+                "\u94f6\u884c\u627f\u5151\u6c47\u7968",
+                "\u94f6\u884c\u4fdd\u51fd\u53ca\u5176\u4ed6\u4e1a\u52a1",
+                "\u6388\u4fe1\u4fe1\u606f \u5171",
+                "\u516c\u5171\u8bb0\u5f55\u660e\u7ec6",
+                "\u975e\u4fe1\u8d37\u4ea4\u6613\u660e\u7ec6",
+            ],
+        )
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] extract_medium_long_text failed")
+        return ""
 
 
 def is_valid_active_loan(loan: dict[str, Any]) -> bool:
@@ -4159,8 +4202,21 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 credit_summary.get("active_borrowing_balance"),
                 raw_text,
             )
+            medium_count = _extract_count(credit_summary.get("medium_long_loan_count")) or 0
             short_count = _extract_count(credit_summary.get("short_loan_count")) or 0
             revolving_count = _extract_count(credit_summary.get("revolving_overdraft_count")) or 0
+            current_medium_loans = [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
+            if not current_medium_loans:
+                medium_text_for_count = extract_medium_long_text(raw_text)
+                expected_medium_count = extract_section_count(medium_text_for_count, "\u4e2d\u957f\u671f\u501f\u6b3e") or medium_count
+                medium_fallback_loans = parse_open_loans_fallback(raw_text, "\u4e2d\u957f\u671f\u501f\u6b3e \u5171", expected_medium_count, "medium_long")
+                if medium_fallback_loans:
+                    active_loans = [loan for loan in active_loans if loan_term_type(loan) != "medium_long"] + medium_fallback_loans
+                logger.warning(
+                    "[EnterpriseCredit][DEBUG] medium_expected_count=%s medium_actual_count=%s",
+                    expected_medium_count,
+                    len([loan for loan in active_loans if loan_term_type(loan) == "medium_long"]),
+                )
             current_short_loans = [loan for loan in active_loans if loan_term_type(loan) == "short"]
             if not current_short_loans:
                 short_fallback_loans = parse_open_loans_fallback(raw_text, "短期借款 共", short_count, "short")
