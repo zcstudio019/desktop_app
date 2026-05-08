@@ -1589,6 +1589,68 @@ def extract_section_text_from_raw(raw_text: str, start_keywords: list[str], end_
     return section[:end_pos]
 
 
+def clean_loan_institution_strict(raw: str) -> str:
+    try:
+        value = re.sub(r"\s+", "", str(raw or ""))
+        noise_keywords = [
+            "账户编号", "账户编", "授信机构", "业务种类", "开立日期", "到期日", "币种",
+            "借款金额", "信用额度", "发放形式", "担保方式", "余额", "五级分类",
+            "逾期总额", "逾期本金", "逾期月数", "最近一次还款日期",
+            "最近一次还款总额", "最近一次还款形式", "特定交易提示",
+            "授信协议编号", "历史表现", "信息报告日期",
+        ]
+        for keyword in noise_keywords:
+            value = value.replace(keyword, "")
+
+        bank_markers = [
+            "上海松江民生村镇银行",
+            "江苏银行",
+            "中国建设银行",
+            "宁波银行",
+            "浙江泰隆商业银行",
+            "武汉众邦银行",
+        ]
+        positions = [value.find(keyword) for keyword in bank_markers if value.find(keyword) != -1]
+        if positions:
+            value = value[min(positions):]
+        else:
+            matches = list(
+                re.finditer(
+                    r"[\u4e00-\u9fa5]{2,}(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)",
+                    value,
+                )
+            )
+            if matches:
+                value = value[matches[-1].start():]
+            else:
+                first_chinese = re.search(r"[\u4e00-\u9fa5]", value)
+                if first_chinese:
+                    value = value[first_chinese.start():]
+
+        for keyword in ["流动资金贷款", "固定资产贷款", "融资型租赁", "循环透支", "贷款"]:
+            index = value.find(keyword)
+            if index != -1:
+                value = value[:index]
+                break
+
+        if "股份有限" in value and "股份有限公司" not in value:
+            value = value.replace("股份有限", "股份有限公司")
+
+        for suffix in ["上海闵行支行", "上海分行", "上海新桥支行", "上海浦东分行", "支行", "分行", "营业部"]:
+            index = value.rfind(suffix)
+            if index != -1:
+                return value[: index + len(suffix)]
+
+        for suffix in ["村镇银行股份有限公司", "银行股份有限公司", "股份有限公司", "有限公司"]:
+            index = value.rfind(suffix)
+            if index != -1:
+                return value[: index + len(suffix)]
+        return value
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] clean_loan_institution_strict failed")
+        return ""
+
+
 def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count: int = 0, term_type: str = "short") -> list[dict[str, Any]]:
     try:
         if "循环透支" in section_title:
@@ -1617,7 +1679,11 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
         results: list[dict[str, Any]] = []
         for match in pattern.finditer(compact):
             item = match.groupdict()
-            institution = clean_bank_name_tail_only(item.get("institution") or "")
+            institution = clean_loan_institution_strict(item.get("institution") or "")
+            if re.search(r"(最近一次|授信协议|历史表现|信息报告日期|S101|B104|D101)", institution or ""):
+                window_start = max(0, match.start("institution") - 120)
+                window_end = min(len(compact), match.end("institution") + 80)
+                institution = clean_loan_institution_strict(compact[window_start:window_end])
             results.append(
                 {
                     "bank": institution or "未识别",
