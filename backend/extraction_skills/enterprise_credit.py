@@ -2010,7 +2010,7 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
     )
     noise_words = ("最近一次还款", "正常还款", "见附件", "历史表现")
     loans: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
     short_status_hits = 0
 
     for index, line in enumerate(lines):
@@ -2041,11 +2041,13 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
         loan["section_type"] = None
         key = (
             str(loan.get("bank") or ""),
+            str(loan.get("biz_type") or loan.get("loan_type") or ""),
             str(loan.get("open_date") or loan.get("start_date") or ""),
             str(loan.get("due_date") or loan.get("end_date") or ""),
             str(loan.get("loan_amount") or ""),
             str(loan.get("balance") or ""),
             str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
+            str(loan.get("last_repay_date") or loan.get("last_repayment_date") or ""),
         )
         if key in seen:
             continue
@@ -2675,7 +2677,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
     biz_pattern = re.compile(r"(流动资金贷款|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
     loans: list[dict[str, Any]] = []
     raw_loans: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
     status_line_count = 0
 
     for index, line in enumerate(lines):
@@ -2761,12 +2763,14 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
             logger.info("[EnterpriseCredit][DEBUG] drop_invalid_loan=%s", loan)
             continue
         key = (
-            str(loan.get("account_no") or ""),
             str(loan.get("bank") or ""),
-            str(loan.get("open_date") or ""),
-            str(loan.get("due_date") or ""),
+            str(loan.get("biz_type") or loan.get("loan_type") or ""),
+            str(loan.get("open_date") or loan.get("start_date") or ""),
+            str(loan.get("due_date") or loan.get("end_date") or ""),
             str(loan.get("loan_amount") or ""),
             str(loan.get("balance") or ""),
+            str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
+            str(loan.get("last_repay_date") or loan.get("last_repayment_date") or ""),
         )
         if key in seen:
             continue
@@ -2987,9 +2991,9 @@ def _extract_active_loans_from_credit_detail(
     loans_after_clean = [loan for loan in candidates if is_valid_active_loan(loan)]
     logger.warning("[EnterpriseCredit][DEBUG] loans_after_clean_count=%s", len(loans_after_clean))
     loans: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
 
-    def dedupe_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
+    def dedupe_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, str, str, str]:
         return (
             str(loan.get("bank") or ""),
             str(loan.get("biz_type") or loan.get("loan_type") or ""),
@@ -2998,6 +3002,7 @@ def _extract_active_loans_from_credit_detail(
             str(loan.get("loan_amount") or ""),
             str(loan.get("balance") or ""),
             str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
+            str(loan.get("last_repay_date") or loan.get("last_repayment_date") or ""),
         )
 
     for loan in loans_after_clean:
@@ -3764,6 +3769,8 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     short_loans = [loan for loan in active_loans if loan_term_type(loan) == "short"]
     medium_long_loans = [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
     revolving_loans = [loan for loan in active_loans if loan_term_type(loan) == "revolving_overdraft"]
+    logger.warning("[EnterpriseCredit][DEBUG] markdown_short_final_count=%s", len(short_loans))
+    logger.warning("[EnterpriseCredit][DEBUG] markdown_active_loans_count=%s", len(active_loans))
     short_balance = short_term.get("total_balance") or credit_summary.get("short_term_loan_balance") or _sum_loan_balances(short_loans)
     medium_long_balance = long_term.get("total_balance") or credit_summary.get("medium_long_term_loan_balance") or _sum_loan_balances(medium_long_loans)
     revolving_balance = (
