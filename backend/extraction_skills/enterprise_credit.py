@@ -1603,6 +1603,11 @@ def clean_loan_institution_strict(raw: str) -> str:
             value = value.replace(keyword, "")
 
         bank_markers = [
+            "永赢金融租赁",
+            "长江联合金融租赁",
+            "远东宏信",
+            "平安国际融资租赁",
+            "海通恒信国际融资租赁",
             "上海松江民生村镇银行",
             "江苏银行",
             "中国建设银行",
@@ -1616,7 +1621,7 @@ def clean_loan_institution_strict(raw: str) -> str:
         else:
             matches = list(
                 re.finditer(
-                    r"[\u4e00-\u9fa5]{2,}(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)",
+                    r"[\u4e00-\u9fa5]{2,}(?:银行|信用社|小额贷款|消费金融|财务公司|信托|金融租赁|融资租赁|租赁)",
                     value,
                 )
             )
@@ -1627,7 +1632,7 @@ def clean_loan_institution_strict(raw: str) -> str:
                 if first_chinese:
                     value = value[first_chinese.start():]
 
-        for keyword in ["流动资金贷款", "固定资产贷款", "融资型租赁", "循环透支", "贷款"]:
+        for keyword in ["融资型租赁", "固定资产贷款", "流动资金贷款", "融资租赁", "循环透支", "贷款"]:
             index = value.find(keyword)
             if index != -1:
                 value = value[:index]
@@ -1641,7 +1646,7 @@ def clean_loan_institution_strict(raw: str) -> str:
             if index != -1:
                 return value[: index + len(suffix)]
 
-        for suffix in ["村镇银行股份有限公司", "银行股份有限公司", "股份有限公司", "有限公司"]:
+        for suffix in ["金融租赁有限公司", "融资租赁有限公司", "租赁有限公司", "村镇银行股份有限公司", "银行股份有限公司", "股份有限公司", "有限公司"]:
             index = value.rfind(suffix)
             if index != -1:
                 return value[: index + len(suffix)]
@@ -1695,14 +1700,14 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
             section = extract_section_text_from_raw(raw_text, [section_title.split(" 共", 1)[0]], end_titles)
         compact = re.sub(r"\s+", "", section or "")
         pattern = re.compile(
-            r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})"
+            r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|小额贷款|消费金融|财务公司|信托|金融租赁|融资租赁|租赁)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})"
             r"(?P<business_type>流动资金贷款|固定资产贷款|融资型租赁|融资租赁|循环透支|贷款)"
             r"(?P<open_date>\d{4}-\d{2}-\d{2})"
             r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
             r"人民币元"
             r"(?P<amount>\d+(?:\.\d+)?)"
             r"(?:新增)?"
-            r"(?P<guarantee>信用/无担保|保证|组合|抵押|质押|信用|无担保|其他)"
+            r"(?P<guarantee>信用/无担保|保证/保证金|保证|组合|抵押|质押|信用|无担保|其他)"
             r"(?P<balance>\d+(?:\.\d+)?)"
             r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)"
             r"(?P<overdue_total>\d+(?:\.\d+)?)"
@@ -1821,7 +1826,7 @@ def is_valid_active_loan(loan: dict[str, Any]) -> bool:
         return False
 
     bank = str(loan.get("bank") or "")
-    valid_org_keywords = ["银行", "融资租赁", "保理", "小额贷款", "财务公司", "信托", "消费金融", "担保"]
+    valid_org_keywords = ["银行", "融资租赁", "金融租赁", "租赁", "保理", "小额贷款", "财务公司", "信托", "消费金融", "担保"]
     if not bank:
         logger.info("[EnterpriseCredit][DEBUG] drop loan no bank=%s", loan)
         return False
@@ -1890,7 +1895,7 @@ def _extract_loan_from_context(
     context = "\n".join(context_lines)
     compact_context = re.sub(r"\s+", "", context)
     org_pattern = re.compile(
-        r"([\u4e00-\u9fa5（）()A-Za-z0-9]{2,40}(?:银行|融资租赁|保理|小额贷款|消费金融|财务公司|信托)[\u4e00-\u9fa5（）()A-Za-z0-9]{0,30})"
+        r"([\u4e00-\u9fa5（）()A-Za-z0-9]{2,40}(?:银行|金融租赁|融资租赁|租赁|保理|小额贷款|消费金融|财务公司|信托)[\u4e00-\u9fa5（）()A-Za-z0-9]{0,30})"
     )
     biz_pattern = re.compile(r"(循环透支|流动资金贷款|贸易融资|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
 
@@ -1898,7 +1903,7 @@ def _extract_loan_from_context(
     context_institution = ""
     for line_offset, context_line in enumerate(context_lines):
         compact_line = re.sub(r"\s+", "", context_line)
-        if not any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
+        if not any(keyword in compact_line for keyword in ("银行", "金融租赁", "融资租赁", "租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
             continue
         joined_line = re.sub(r"\s+", "", "".join(context_lines[line_offset : min(len(context_lines), line_offset + 4)]))
         cleaned_line = _clean_tolerant_loan_bank(joined_line)
@@ -1913,7 +1918,7 @@ def _extract_loan_from_context(
     org_line_index = -1
     for line_offset, context_line in enumerate(context_lines):
         compact_line = re.sub(r"\s+", "", context_line)
-        if any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
+        if any(keyword in compact_line for keyword in ("银行", "金融租赁", "融资租赁", "租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
             org_line_index = line_offset
     parse_lines = context_lines[org_line_index:] if org_line_index >= 0 else context_lines[-8:]
     context_tail = "\n".join(parse_lines)
@@ -1927,7 +1932,7 @@ def _extract_loan_from_context(
     guarantee = status_match.groupdict().get("guarantee")
     if not guarantee:
         for prev_line in reversed(context_lines[-4:-1]):
-            guarantee_match = re.search(r"(信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)", prev_line)
+            guarantee_match = re.search(r"(信用/无担保|保证/保证金|保证|组合|信用|无担保|抵押|质押|其他)", prev_line)
             if guarantee_match:
                 guarantee = guarantee_match.group(1)
                 break
@@ -1983,7 +1988,7 @@ def _parse_short_loan_bank_block(block: str) -> dict[str, Any]:
     lines = [line for line in lines if line and not _is_credit_table_noise_line(line)]
     compact = re.sub(r"\s+", " ", "\n".join(lines)).strip()
     status_pattern = re.compile(
-        r"(?:(?P<guarantee>信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)\s+)?"
+        r"(?:(?P<guarantee>保证/保证金|信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)\s+)?"
         r"(?P<balance>\d+(?:\.\d+)?)\s+"
         r"(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
         r"(?P<overdue_amount>\d+(?:\.\d+)?)\s+"
@@ -2009,7 +2014,7 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
         if line and not _is_credit_table_noise_line(line)
     ]
     status_line_pattern = re.compile(
-        r"(?P<guarantee>保证|组合|信用/无担保|信用|无担保|抵押|质押|其他)\s+"
+        r"(?P<guarantee>保证/保证金|信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)\s+"
         r"(?P<balance>\d+(?:\.\d+)?)\s+"
         r"(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
         r"(?P<overdue_amount>\d+(?:\.\d+)?)\s+"
@@ -2675,7 +2680,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
     ]
     logger.info("[EnterpriseCredit][DEBUG] total_lines=%s", len(lines))
     status_line_pattern = re.compile(
-        r"(?P<guarantee>保证|组合|信用/无担保|信用|无担保|抵押|质押|其他)\s+"
+        r"(?P<guarantee>保证/保证金|信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)\s+"
         r"(?P<balance>\d+(?:\.\d+)?)\s+"
         r"(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
         r"(?P<overdue_amount>\d+(?:\.\d+)?)\s+"
@@ -2692,9 +2697,9 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         r"(?:\s+(?P<last_repay_date>\d{4}-\d{2}-\d{2}))?"
     )
     org_pattern = re.compile(
-        r"([\u4e00-\u9fa5（）()A-Za-z0-9]{2,40}(?:银行|融资租赁|保理|小额贷款|消费金融|财务公司|信托)[\u4e00-\u9fa5（）()A-Za-z0-9]{0,30})"
+        r"([\u4e00-\u9fa5（）()A-Za-z0-9]{2,40}(?:银行|金融租赁|融资租赁|租赁|保理|小额贷款|消费金融|财务公司|信托)[\u4e00-\u9fa5（）()A-Za-z0-9]{0,30})"
     )
-    biz_pattern = re.compile(r"(流动资金贷款|融资型租赁|有追索权的国内卖方保理融资|保理融资|贷款)")
+    biz_pattern = re.compile(r"(融资型租赁|固定资产贷款|流动资金贷款|融资租赁|循环透支|有追索权的国内卖方保理融资|保理融资|贷款)")
     loans: list[dict[str, Any]] = []
     raw_loans: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
@@ -2720,7 +2725,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         context_institution = ""
         for line_offset, context_line in enumerate(context_lines):
             compact_line = re.sub(r"\s+", "", context_line)
-            if not any(keyword in compact_line for keyword in ("银行", "融资租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
+            if not any(keyword in compact_line for keyword in ("银行", "金融租赁", "融资租赁", "租赁", "保理", "小额贷款", "消费金融", "财务公司", "信托")):
                 continue
             joined_line = re.sub(r"\s+", "", "".join(context_lines[line_offset : min(len(context_lines), line_offset + 3)]))
             cleaned_line = _clean_tolerant_loan_bank(joined_line)
@@ -2748,7 +2753,7 @@ def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, An
         guarantee = match.groupdict().get("guarantee")
         if not guarantee:
             for prev_line in reversed(context_lines[-4:-1]):
-                guarantee_match = re.search(r"(信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)", prev_line)
+                guarantee_match = re.search(r"(保证/保证金|信用/无担保|保证|组合|信用|无担保|抵押|质押|其他)", prev_line)
                 if guarantee_match:
                     guarantee = guarantee_match.group(1)
                     break
@@ -2810,14 +2815,14 @@ def _extract_active_loans_by_tolerant_table(credit_detail_text: str, active_borr
     text_for_parse = re.sub(r"\n+", " ", normalized)
     text_for_parse = re.sub(r"\s+", " ", text_for_parse)
     pattern = re.compile(
-        r"(?P<bank>[\u4e00-\u9fa5（）()A-Za-z0-9·\-]+(?:银行|融资租赁|保理)[\u4e00-\u9fa5（）()A-Za-z0-9·\-]*)"
-        r"\s*(?P<biz>流动资金贷款|融资型租赁|贷款|有追索权的国内卖方保理融资|保理融资)"
+        r"(?P<bank>[\u4e00-\u9fa5（）()A-Za-z0-9·\-]+(?:银行|金融租赁|融资租赁|租赁|保理)[\u4e00-\u9fa5（）()A-Za-z0-9·\-]*)"
+        r"\s*(?P<biz>融资型租赁|固定资产贷款|流动资金贷款|融资租赁|贷款|有追索权的国内卖方保理融资|保理融资)"
         r"\s*(?P<open_date>\d{4}-\d{2}-\d{2})"
         r"\s*(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
         r"\s*人民币元\s*"
         r"(?P<loan_amount>[0-9,.]+)"
         r".{0,30}?"
-        r"(?P<guarantee>保证|组合|信用|抵押|质押|其他)"
+        r"(?P<guarantee>保证/保证金|信用/无担保|保证|组合|信用|抵押|质押|其他)"
         r"\s*(?P<balance>[0-9,.]+)"
         r"\s*(?P<five_classification>正常|关注|次级|可疑|损失|违约|未分类)"
         r"\s*(?P<overdue_amount>[0-9,.]+)"
