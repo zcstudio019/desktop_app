@@ -1790,6 +1790,15 @@ def extract_medium_long_text(raw_text: str) -> str:
         return ""
 
 
+def extract_expected_count(raw_text: str, section_name: str) -> int:
+    try:
+        match = re.search(rf"{re.escape(section_name)}\s*共\s*(\d+)\s*笔", raw_text or "")
+        return int(match.group(1)) if match else 0
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] extract_expected_count failed section=%s", section_name)
+        return 0
+
+
 def is_valid_active_loan(loan: dict[str, Any]) -> bool:
     text = " ".join(str(value) for value in loan.values() if value)
     header_keywords = [
@@ -3784,7 +3793,8 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     revolving = facility_summary.get("revolving") or {}
     short_loans_final = extracted_json.get("short_loans_final") or extracted_json.get("short_loans") or []
     short_loans = short_loans_final or [loan for loan in active_loans if loan_term_type(loan) == "short"]
-    medium_long_loans = [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
+    medium_loans_final = extracted_json.get("medium_loans_final") or extracted_json.get("medium_loans") or extracted_json.get("long_term_loans") or []
+    medium_long_loans = medium_loans_final or [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
     revolving_loans = [loan for loan in active_loans if loan_term_type(loan) == "revolving_overdraft"]
     logger.warning("[EnterpriseCredit][DEBUG] markdown_short_final_count=%s", len(short_loans))
     logger.warning("[EnterpriseCredit][DEBUG] markdown_active_loans_count=%s", len(active_loans))
@@ -3829,6 +3839,10 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count=%s", len(short_loans))
     logger.warning("[EnterpriseCredit][FINAL] markdown_using=short_loans_final")
     logger.warning("[EnterpriseCredit][FINAL] markdown_short_loans_count=%s", len(short_loans))
+    logger.warning("[EnterpriseCredit][FINAL] expected_medium_count=%s", medium_count)
+    logger.warning("[EnterpriseCredit][FINAL] raw_medium_loans_count=%s", len(medium_loans_final))
+    logger.warning("[EnterpriseCredit][FINAL] medium_loans_final_count=%s", len(medium_long_loans))
+    logger.warning("[EnterpriseCredit][FINAL] markdown_using=medium_loans_final")
     clean_identity = build_clean_identity({**report_basic, **identity_info})
 
     lines = [
@@ -4258,6 +4272,26 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 revolving_fallback_loans = parse_open_loans_fallback(raw_text, "循环透支 共", revolving_count, "revolving_overdraft")
                 if revolving_fallback_loans:
                     active_loans = [loan for loan in active_loans if loan_term_type(loan) != "revolving_overdraft"] + revolving_fallback_loans
+            expected_medium_count = extract_expected_count(raw_text, "中长期借款") or medium_count
+            raw_medium_text_for_final = extract_medium_long_text(raw_text or "")
+            raw_medium_loans = _extract_short_loans_by_status_lines(raw_medium_text_for_final) if raw_medium_text_for_final else []
+            for loan in raw_medium_loans:
+                loan["term_type"] = "medium_long"
+                loan["section_type"] = "中长期借款"
+            if expected_medium_count and len(raw_medium_loans) >= expected_medium_count:
+                logger.warning(
+                    "[EnterpriseCredit][FORCE] use raw_medium_loans expected=%s raw=%s",
+                    expected_medium_count,
+                    len(raw_medium_loans),
+                )
+                medium_loans_final = raw_medium_loans[:expected_medium_count]
+            else:
+                medium_loans_final = [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
+            logger.warning("[EnterpriseCredit][FINAL] expected_medium_count=%s", expected_medium_count)
+            logger.warning("[EnterpriseCredit][FINAL] raw_medium_loans_count=%s", len(raw_medium_loans))
+            logger.warning("[EnterpriseCredit][FINAL] medium_loans_final_count=%s", len(medium_loans_final))
+            logger.warning("[EnterpriseCredit][FINAL] markdown_using=medium_loans_final")
+            active_loans = [loan for loan in active_loans if loan_term_type(loan) != "medium_long"] + medium_loans_final
             expected_short_count = short_count
             raw_short_text_for_final = extract_short_text(raw_text or "")
             raw_short_loans = _extract_short_loans_by_status_lines(raw_short_text_for_final) if raw_short_text_for_final else []
@@ -4326,6 +4360,9 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 "active_loans": active_loans,
                 "short_loans": short_loans_final,
                 "short_loans_final": short_loans_final,
+                "medium_loans": medium_loans_final,
+                "long_term_loans": medium_loans_final,
+                "medium_loans_final": medium_loans_final,
                 "credit_facilities": credit_facilities,
                 "bill_lc_records": bill_lc_records,
                 "closed_loans": closed_loans,
