@@ -1764,6 +1764,104 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
         return []
 
 
+def parse_medium_leasing_loans_fallback(medium_text: str) -> list[dict[str, Any]]:
+    """Recover medium/long financing-lease rows whose account numbers start with X."""
+    try:
+        compact = re.sub(r"\s+", "", medium_text or "")
+        if not compact:
+            return []
+
+        finance_lease = _cu(r"\u878d\u8d44\u578b\u79df\u8d41")
+        rmb = _cu(r"\u4eba\u6c11\u5e01\u5143")
+        unknown = _cu(r"\u672a\u8bc6\u522b")
+        medium_label = _cu(r"\u4e2d\u957f\u671f\u501f\u6b3e")
+        suffixes = [
+            _cu(r"\u91d1\u878d\u79df\u8d41\u6709\u9650\u516c\u53f8"),
+            _cu(r"\u878d\u8d44\u79df\u8d41\u6709\u9650\u516c\u53f8"),
+            _cu(r"\u79df\u8d41\u6709\u9650\u516c\u53f8"),
+        ]
+        disbursement_words = [
+            _cu(r"\u65b0\u589e"),
+            _cu(r"\u5176\u4ed6"),
+            _cu(r"\u65e0\u8fd8\u672c\u7eed\u8d37"),
+        ]
+        guarantee_words = [
+            _cu(r"\u4fe1\u7528/\u65e0\u62c5\u4fdd"),
+            _cu(r"\u4fdd\u8bc1/\u4fdd\u8bc1\u91d1"),
+            _cu(r"\u4fdd\u8bc1"),
+            _cu(r"\u7ec4\u5408"),
+            _cu(r"\u62b5\u62bc"),
+            _cu(r"\u8d28\u62bc"),
+            _cu(r"\u4fe1\u7528"),
+        ]
+        class_words = [
+            _cu(r"\u6b63\u5e38"),
+            _cu(r"\u5173\u6ce8"),
+            _cu(r"\u6b21\u7ea7"),
+            _cu(r"\u53ef\u7591"),
+            _cu(r"\u635f\u5931"),
+        ]
+
+        pattern = re.compile(
+            r"(?P<account_no>X\d+[A-Z0-9_-]*)?"
+            rf"(?P<bank>[\u4e00-\u9fa5]{{2,80}}(?:{'|'.join(re.escape(s) for s in suffixes)}))"
+            rf"(?P<biz_type>{re.escape(finance_lease)})"
+            r"(?P<open_date>\d{4}-\d{2}-\d{2})"
+            r"(?P<due_date>\d{4}-\d{2}-\d{2})"
+            rf"{re.escape(rmb)}"
+            r"(?P<loan_amount>\d+(?:\.\d+)?)"
+            rf"(?:{'|'.join(re.escape(s) for s in disbursement_words)})?"
+            rf"(?P<guarantee>{'|'.join(re.escape(s) for s in guarantee_words)})"
+            r"(?P<balance>\d+(?:\.\d+)?)"
+            rf"(?P<five_classification>{'|'.join(re.escape(s) for s in class_words)})"
+            r"(?P<overdue_total>\d+(?:\.\d+)?)"
+            r"(?P<overdue_principal>\d+(?:\.\d+)?)"
+            r"(?P<overdue_months>\d+)"
+            r"(?P<last_repay_date>\d{4}-\d{2}-\d{2})",
+            re.S,
+        )
+
+        results: list[dict[str, Any]] = []
+        for match in pattern.finditer(compact):
+            item = match.groupdict()
+            bank = clean_loan_institution_strict(item.get("bank") or "") or item.get("bank") or unknown
+            biz_type = item.get("biz_type") or finance_lease
+            guarantee = item.get("guarantee") or unknown
+            results.append(
+                {
+                    "account_no": item.get("account_no") or "",
+                    "bank": bank,
+                    "biz_type": biz_type,
+                    "business": biz_type,
+                    "business_type": biz_type,
+                    "loan_type": biz_type,
+                    "term_type": "medium_long",
+                    "section_type": medium_label,
+                    "open_date": item.get("open_date") or unknown,
+                    "start_date": item.get("open_date") or unknown,
+                    "due_date": item.get("due_date") or unknown,
+                    "end_date": item.get("due_date") or unknown,
+                    "loan_amount": item.get("loan_amount") or unknown,
+                    "balance": item.get("balance") or unknown,
+                    "five_classification": item.get("five_classification") or unknown,
+                    "overdue_amount": item.get("overdue_total") or "0",
+                    "overdue_total": item.get("overdue_total") or "0",
+                    "overdue_principal": item.get("overdue_principal") or "0",
+                    "overdue_months": item.get("overdue_months") or "0",
+                    "last_repay_date": item.get("last_repay_date") or "",
+                    "last_repayment_date": item.get("last_repay_date") or "",
+                    "guarantee": guarantee,
+                    "guarantee_type": guarantee,
+                }
+            )
+
+        logger.warning("[EnterpriseCredit][DEBUG] medium_leasing_fallback_count=%s", len(results))
+        return results
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] parse_medium_leasing_loans_fallback failed")
+        return []
+
+
 def extract_medium_long_text(raw_text: str) -> str:
     try:
         text = normalize_credit_text(raw_text or "")
@@ -2873,8 +2971,13 @@ def _split_loan_blocks(credit_detail_text: str) -> list[str]:
     account_prefix = _cu(r"\u8d26\u6237\u7f16")
     account_short = _cu(r"\u8d26\u53f7")
     account_plain = _cu(r"\u8d26\u6237\u53f7")
-    parts = re.split(rf"(?={account_no}|{account_prefix}|{account_short}|{account_plain})", detail)
-    return [part.strip() for part in parts if any(anchor in part for anchor in (account_no, account_prefix, account_short, account_plain))]
+    parts = re.split(rf"(?={account_no}|{account_prefix}|{account_short}|{account_plain}|[A-Z]\d{{4,}}[A-Z0-9_-]*)", detail)
+    return [
+        part.strip()
+        for part in parts
+        if any(anchor in part for anchor in (account_no, account_prefix, account_short, account_plain))
+        or re.match(r"\s*[A-Z]\d{4,}[A-Z0-9_-]*", part)
+    ]
 
 
 def _parse_active_loan_block(block: str, active_borrowing_balance: Any = None) -> dict[str, Any]:
@@ -4283,6 +4386,48 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             for loan in raw_medium_loans:
                 loan["term_type"] = "medium_long"
                 loan["section_type"] = "中长期借款"
+            medium_leasing_loans = parse_medium_leasing_loans_fallback(raw_medium_text_for_final) if raw_medium_text_for_final else []
+            if medium_leasing_loans:
+                existing_medium_keys = {
+                    (
+                        str(loan.get("bank") or ""),
+                        str(loan.get("biz_type") or loan.get("loan_type") or loan.get("business_type") or ""),
+                        str(loan.get("open_date") or loan.get("start_date") or ""),
+                        str(loan.get("due_date") or loan.get("end_date") or ""),
+                        str(loan.get("loan_amount") or ""),
+                        str(loan.get("balance") or ""),
+                        str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
+                    )
+                    for loan in raw_medium_loans
+                }
+                appended_medium_leasing_count = 0
+                for loan in medium_leasing_loans:
+                    key = (
+                        str(loan.get("bank") or ""),
+                        str(loan.get("biz_type") or loan.get("loan_type") or loan.get("business_type") or ""),
+                        str(loan.get("open_date") or loan.get("start_date") or ""),
+                        str(loan.get("due_date") or loan.get("end_date") or ""),
+                        str(loan.get("loan_amount") or ""),
+                        str(loan.get("balance") or ""),
+                        str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
+                    )
+                    if key in existing_medium_keys:
+                        continue
+                    existing_medium_keys.add(key)
+                    raw_medium_loans.append(loan)
+                    appended_medium_leasing_count += 1
+                logger.warning(
+                    "[EnterpriseCredit][DEBUG] medium_leasing_fallback appended=%s total_raw_medium=%s",
+                    appended_medium_leasing_count,
+                    len(raw_medium_loans),
+                )
+            if expected_medium_count and len(raw_medium_loans) < expected_medium_count:
+                logger.warning(
+                    "[EnterpriseCredit][WARN] medium loans incomplete expected=%s actual=%s medium_tail=%s",
+                    expected_medium_count,
+                    len(raw_medium_loans),
+                    raw_medium_text_for_final[-2000:],
+                )
             if expected_medium_count and len(raw_medium_loans) >= expected_medium_count:
                 logger.warning(
                     "[EnterpriseCredit][FORCE] use raw_medium_loans expected=%s raw=%s",
