@@ -1663,7 +1663,7 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
         compact = re.sub(r"\s+", "", section or "")
         pattern = re.compile(
             r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})"
-            r"(?P<business_type>流动资金贷款|固定资产贷款|融资型租赁|循环透支|贷款)"
+            r"(?P<business_type>流动资金贷款|固定资产贷款|融资型租赁|融资租赁|循环透支|贷款)"
             r"(?P<open_date>\d{4}-\d{2}-\d{2})"
             r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
             r"人民币元"
@@ -1675,6 +1675,7 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
             r"(?P<overdue_total>\d+(?:\.\d+)?)"
             r"(?P<overdue_principal>\d+(?:\.\d+)?)"
             r"(?P<overdue_months>\d+)"
+            r"(?P<last_repay_date>\d{4}-\d{2}-\d{2})"
         )
         results: list[dict[str, Any]] = []
         for match in pattern.finditer(compact):
@@ -1702,6 +1703,8 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
                     "overdue_total": item.get("overdue_total") or "0",
                     "overdue_principal": item.get("overdue_principal") or "0",
                     "overdue_months": item.get("overdue_months") or "0",
+                    "last_repay_date": item.get("last_repay_date") or "",
+                    "last_repayment_date": item.get("last_repay_date") or "",
                     "guarantee": item.get("guarantee") or "未识别",
                     "guarantee_type": item.get("guarantee") or "未识别",
                 }
