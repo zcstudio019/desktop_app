@@ -1872,7 +1872,7 @@ def parse_medium_leasing_from_raw(raw_text: str) -> list[dict[str, Any]]:
         return []
 
 
-def loan_business_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
+def loan_business_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, str, str, str]:
     bank = re.sub(r"\s+", "", str(loan.get("bank") or loan.get("institution") or ""))
     return (
         bank,
@@ -1882,12 +1882,13 @@ def loan_business_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, st
         str(loan.get("loan_amount") or ""),
         str(loan.get("balance") or ""),
         str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
+        str(loan.get("last_repay_date") or loan.get("last_repayment_date") or ""),
     )
 
 
 def dedupe_loans_by_business_key(loans: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
     for loan in loans or []:
         item_key = loan_business_key(loan)
         if item_key in seen:
@@ -1899,7 +1900,7 @@ def dedupe_loans_by_business_key(loans: list[dict[str, Any]]) -> list[dict[str, 
 
 def merge_unique_loans(primary: list[dict[str, Any]], fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
     for loan in [*(primary or []), *(fallback or [])]:
         item_key = loan_business_key(loan)
         if item_key in seen:
@@ -4504,11 +4505,15 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             expected_short_count = short_count
             raw_short_text_for_final = extract_short_text(raw_text or "")
             raw_short_loans = _extract_short_loans_by_status_lines(raw_short_text_for_final) if raw_short_text_for_final else []
-            short_primary_loans = dedupe_loans_by_business_key(raw_short_loans)
             short_fallback_used = False
-            if expected_short_count and len(short_primary_loans) >= expected_short_count:
+            if expected_short_count and len(raw_short_loans) == expected_short_count:
+                short_primary_loans = raw_short_loans
+                short_loans_final = raw_short_loans
+            elif expected_short_count and len(raw_short_loans) > expected_short_count:
+                short_primary_loans = dedupe_loans_by_business_key(raw_short_loans)
                 short_loans_final = short_primary_loans[:expected_short_count]
             else:
+                short_primary_loans = dedupe_loans_by_business_key(raw_short_loans)
                 short_fallback = parse_open_loans_fallback(
                     raw_text,
                     _cu(r"\u77ed\u671f\u501f\u6b3e \u5171"),
