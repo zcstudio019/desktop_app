@@ -2081,7 +2081,7 @@ def _split_short_loan_blocks_by_bank(short_text: str) -> list[str]:
     return blocks
 
 
-def _parse_short_loan_bank_block(block: str) -> dict[str, Any]:
+def _parse_short_loan_bank_block(block: str) -> dict[str, Any] | None:
     lines = [_clean_credit_detail_line(line) for line in block.splitlines()]
     lines = [line for line in lines if line and not _is_credit_table_noise_line(line)]
     compact = re.sub(r"\s+", " ", "\n".join(lines)).strip()
@@ -2096,9 +2096,11 @@ def _parse_short_loan_bank_block(block: str) -> dict[str, Any]:
     )
     status_match = status_pattern.search(compact)
     if not status_match:
-        return {}
-        status_line_index = len(lines) - 1
-        loan = _extract_loan_from_context(lines, status_match, status_line_index=status_line_index)
+        return None
+    status_line_index = len(lines) - 1
+    loan = _extract_loan_from_context(lines, status_match, status_line_index=status_line_index)
+    if not loan:
+        return None
     loan["section_type"] = None
     loan["term_type"] = None
     return loan
@@ -3090,11 +3092,14 @@ def _extract_active_loans_from_credit_detail(
         short_block_loans = [loan for loan in short_block_loans if is_valid_active_loan(loan)]
         short_status_loans = _extract_active_loans_by_status_lines(short_text)
         short_bank_blocks = _split_short_loan_blocks_by_bank(short_text)
-        short_bank_block_loans = [
-            loan
-            for loan in (_parse_short_loan_bank_block(block) for block in short_bank_blocks)
-            if loan.get("account_no") or loan.get("bank") or loan.get("balance")
-        ]
+        short_bank_block_loans = []
+        for block in short_bank_blocks:
+            try:
+                loan = _parse_short_loan_bank_block(block)
+                if loan and (loan.get("account_no") or loan.get("bank") or loan.get("balance")):
+                    short_bank_block_loans.append(loan)
+            except Exception:
+                logger.exception("[EnterpriseCredit][ERROR] parse short block failed block=%s", str(block or "")[:500])
         short_bank_block_loans = [loan for loan in short_bank_block_loans if is_valid_active_loan(loan)]
         short_status_driver_loans = [
             loan for loan in _extract_short_loans_by_status_lines(short_text) if is_valid_active_loan(loan)
