@@ -1896,6 +1896,10 @@ def merge_unique_loans(primary: list[dict[str, Any]], fallback: list[dict[str, A
     return merged
 
 
+def merge_medium_loans(primary: list[dict[str, Any]], fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return merge_unique_loans(primary, fallback)
+
+
 def extract_medium_long_text(raw_text: str) -> str:
     try:
         text = normalize_credit_text(raw_text or "")
@@ -4459,25 +4463,29 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                     len(raw_medium_loans),
                 )
             medium_leasing_fallback = parse_medium_leasing_from_raw(raw_text or "")
-            raw_medium_loans = merge_unique_loans(raw_medium_loans, medium_leasing_fallback)
-            if expected_medium_count and len(raw_medium_loans) < expected_medium_count:
+            primary_medium_loans = raw_medium_loans
+            if expected_medium_count and len(primary_medium_loans) < expected_medium_count:
+                primary_medium_fallback = parse_open_loans_fallback(
+                    raw_text,
+                    _cu(r"\u4e2d\u957f\u671f\u501f\u6b3e \u5171"),
+                    expected_medium_count,
+                    "medium_long",
+                )
+                primary_medium_loans = merge_medium_loans(primary_medium_loans, primary_medium_fallback)
+            medium_loans_final = merge_medium_loans(primary_medium_loans, medium_leasing_fallback)
+            if expected_medium_count and len(medium_loans_final) < expected_medium_count:
                 logger.warning(
                     "[EnterpriseCredit][WARN] medium loans incomplete expected=%s actual=%s medium_tail=%s",
                     expected_medium_count,
-                    len(raw_medium_loans),
+                    len(medium_loans_final),
                     raw_medium_text_for_final[-2000:],
                 )
-            if expected_medium_count and len(raw_medium_loans) >= expected_medium_count:
-                logger.warning(
-                    "[EnterpriseCredit][FORCE] use raw_medium_loans expected=%s raw=%s",
-                    expected_medium_count,
-                    len(raw_medium_loans),
-                )
-                medium_loans_final = raw_medium_loans[:expected_medium_count]
-            else:
-                medium_loans_final = raw_medium_loans
+            if expected_medium_count and len(medium_loans_final) > expected_medium_count:
+                medium_loans_final = medium_loans_final[:expected_medium_count]
             logger.warning("[EnterpriseCredit][FINAL] expected_medium_count=%s", expected_medium_count)
             logger.warning("[EnterpriseCredit][FINAL] raw_medium_loans_count=%s", len(raw_medium_loans))
+            logger.warning("[EnterpriseCredit][FINAL] primary_medium_count=%s", len(primary_medium_loans))
+            logger.warning("[EnterpriseCredit][FINAL] leasing_fallback_count=%s", len(medium_leasing_fallback))
             logger.warning("[EnterpriseCredit][FINAL] medium_loans_final_count=%s", len(medium_loans_final))
             logger.warning("[EnterpriseCredit][FINAL] medium_source=medium_loans_plus_leasing count=%s", len(medium_loans_final))
             expected_short_count = short_count
