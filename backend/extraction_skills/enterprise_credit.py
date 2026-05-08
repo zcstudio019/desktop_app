@@ -1589,6 +1589,71 @@ def extract_section_text_from_raw(raw_text: str, start_keywords: list[str], end_
     return section[:end_pos]
 
 
+def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count: int = 0, term_type: str = "short") -> list[dict[str, Any]]:
+    try:
+        if "循环透支" in section_title:
+            end_titles = ["授信信息 共", "已结清信贷", "公共记录明细", "附件1"]
+        else:
+            end_titles = ["循环透支 共", "中长期借款 共", "授信信息 共", "已结清信贷", "公共记录明细"]
+        section = extract_section_text_from_raw(raw_text, [section_title], end_titles)
+        if not section and " 共" in section_title:
+            section = extract_section_text_from_raw(raw_text, [section_title.split(" 共", 1)[0]], end_titles)
+        compact = re.sub(r"\s+", "", section or "")
+        pattern = re.compile(
+            r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|小额贷款|消费金融|融资租赁|财务公司|信托)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})"
+            r"(?P<business_type>流动资金贷款|固定资产贷款|融资型租赁|循环透支|贷款)"
+            r"(?P<open_date>\d{4}-\d{2}-\d{2})"
+            r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
+            r"人民币元"
+            r"(?P<amount>\d+(?:\.\d+)?)"
+            r"(?:新增)?"
+            r"(?P<guarantee>信用/无担保|保证|组合|抵押|质押|信用|无担保|其他)"
+            r"(?P<balance>\d+(?:\.\d+)?)"
+            r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)"
+            r"(?P<overdue_total>\d+(?:\.\d+)?)"
+            r"(?P<overdue_principal>\d+(?:\.\d+)?)"
+            r"(?P<overdue_months>\d+)"
+        )
+        results: list[dict[str, Any]] = []
+        for match in pattern.finditer(compact):
+            item = match.groupdict()
+            institution = clean_bank_name_tail_only(item.get("institution") or "")
+            results.append(
+                {
+                    "bank": institution or "未识别",
+                    "biz_type": item.get("business_type") or "未识别",
+                    "loan_type": item.get("business_type") or "未识别",
+                    "term_type": term_type,
+                    "section_type": "循环透支" if term_type == "revolving_overdraft" else ("短期借款" if term_type == "short" else "中长期借款"),
+                    "open_date": item.get("open_date") or "未识别",
+                    "start_date": item.get("open_date") or "未识别",
+                    "due_date": item.get("due_date") or "未识别",
+                    "end_date": item.get("due_date") or "未识别",
+                    "loan_amount": item.get("amount") or "未识别",
+                    "balance": item.get("balance") or "未识别",
+                    "five_classification": item.get("classification") or "未识别",
+                    "overdue_amount": item.get("overdue_total") or "0",
+                    "overdue_total": item.get("overdue_total") or "0",
+                    "overdue_principal": item.get("overdue_principal") or "0",
+                    "overdue_months": item.get("overdue_months") or "0",
+                    "guarantee": item.get("guarantee") or "未识别",
+                    "guarantee_type": item.get("guarantee") or "未识别",
+                }
+            )
+        if expected_count:
+            results = results[:expected_count]
+        logger.warning(
+            "[EnterpriseCredit][DEBUG] open_loans_fallback section=%s expected=%s actual=%s",
+            section_title,
+            expected_count,
+            len(results),
+        )
+        return results
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] parse_open_loans_fallback failed section=%s", section_title)
+        return []
+
+
 def is_valid_active_loan(loan: dict[str, Any]) -> bool:
     text = " ".join(str(value) for value in loan.values() if value)
     header_keywords = [
@@ -4001,6 +4066,18 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 credit_summary.get("active_borrowing_balance"),
                 raw_text,
             )
+            short_count = _extract_count(credit_summary.get("short_loan_count")) or 0
+            revolving_count = _extract_count(credit_summary.get("revolving_overdraft_count")) or 0
+            current_short_loans = [loan for loan in active_loans if loan_term_type(loan) == "short"]
+            if not current_short_loans:
+                short_fallback_loans = parse_open_loans_fallback(raw_text, "短期借款 共", short_count, "short")
+                if short_fallback_loans:
+                    active_loans = [loan for loan in active_loans if loan_term_type(loan) != "short"] + short_fallback_loans
+            current_revolving_loans = [loan for loan in active_loans if loan_term_type(loan) == "revolving_overdraft"]
+            if not current_revolving_loans:
+                revolving_fallback_loans = parse_open_loans_fallback(raw_text, "循环透支 共", revolving_count, "revolving_overdraft")
+                if revolving_fallback_loans:
+                    active_loans = [loan for loan in active_loans if loan_term_type(loan) != "revolving_overdraft"] + revolving_fallback_loans
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
             logger.info("[EnterpriseCredit][DEBUG] active_loans_sample=%s", active_loans[:2])
             logger.warning("[EnterpriseCredit][STEP] start revolving_loans")
