@@ -2983,35 +2983,30 @@ def _extract_active_loans_from_credit_detail(
         *short_section_loans,
         *revolving_section_loans,
     ]
+    logger.warning("[EnterpriseCredit][DEBUG] raw_loans_before_filter_count=%s", len(candidates))
+    loans_after_clean = [loan for loan in candidates if is_valid_active_loan(loan)]
+    logger.warning("[EnterpriseCredit][DEBUG] loans_after_clean_count=%s", len(loans_after_clean))
     loans: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str, str]] = set()
-    seen_detail: set[tuple[str, str, str, str, str]] = set()
-    seen_financial: set[tuple[str, str, str, str]] = set()
-    for loan in candidates:
-        account_no = str(loan.get("account_no") or "")
-        detail_key = (
+    seen: set[tuple[str, str, str, str, str, str, str]] = set()
+
+    def dedupe_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
+        return (
             str(loan.get("bank") or ""),
+            str(loan.get("biz_type") or loan.get("loan_type") or ""),
             str(loan.get("open_date") or loan.get("start_date") or ""),
             str(loan.get("due_date") or loan.get("end_date") or ""),
             str(loan.get("loan_amount") or ""),
             str(loan.get("balance") or ""),
+            str(loan.get("guarantee") or loan.get("guarantee_type") or ""),
         )
-        financial_key = (
-            str(loan.get("open_date") or loan.get("start_date") or ""),
-            str(loan.get("due_date") or loan.get("end_date") or ""),
-            str(loan.get("loan_amount") or ""),
-            str(loan.get("balance") or ""),
-        )
-        key = (
-            account_no,
-            *detail_key,
-        )
-        if key in seen or detail_key in seen_detail or financial_key in seen_financial:
+
+    for loan in loans_after_clean:
+        key = dedupe_key(loan)
+        if key in seen:
             continue
         seen.add(key)
-        seen_detail.add(detail_key)
-        seen_financial.add(financial_key)
         loans.append(loan)
+    logger.warning("[EnterpriseCredit][DEBUG] loans_after_dedupe_count=%s", len(loans))
 
     short_loans_before_fallback = [loan for loan in loans if loan_term_type(loan) == "short"]
     if short_expected_count > 0 and len(short_loans_before_fallback) < short_expected_count and raw_short_text:
@@ -3021,30 +3016,12 @@ def _extract_active_loans_from_credit_detail(
             len(short_loans_before_fallback),
         )
         for loan in [item for item in _extract_short_loans_by_status_lines(raw_short_text) if is_valid_active_loan(item)]:
-            account_no = str(loan.get("account_no") or "")
-            detail_key = (
-                str(loan.get("bank") or ""),
-                str(loan.get("open_date") or loan.get("start_date") or ""),
-                str(loan.get("due_date") or loan.get("end_date") or ""),
-                str(loan.get("loan_amount") or ""),
-                str(loan.get("balance") or ""),
-            )
-            financial_key = (
-                str(loan.get("open_date") or loan.get("start_date") or ""),
-                str(loan.get("due_date") or loan.get("end_date") or ""),
-                str(loan.get("loan_amount") or ""),
-                str(loan.get("balance") or ""),
-            )
-            key = (
-                account_no,
-                *detail_key,
-            )
-            if key in seen or detail_key in seen_detail or financial_key in seen_financial:
+            key = dedupe_key(loan)
+            if key in seen:
                 continue
             seen.add(key)
-            seen_detail.add(detail_key)
-            seen_financial.add(financial_key)
             loans.append(loan)
+        logger.warning("[EnterpriseCredit][DEBUG] loans_after_raw_short_fallback_count=%s", len(loans))
 
     has_effective_loan = any(loan.get("balance") and loan.get("five_classification") for loan in loans)
     if not has_effective_loan:
@@ -3054,6 +3031,8 @@ def _extract_active_loans_from_credit_detail(
     logger.info("[EnterpriseCredit][DEBUG] filtered_active_loans_count=%s", len(loans))
     logger.info("[EnterpriseCredit][DEBUG] filtered_active_loans_sample=%s", loans[:3])
     short_loans = [loan for loan in loans if loan_term_type(loan) == "short"]
+    logger.warning("[EnterpriseCredit][DEBUG] final_short_loans_count=%s", len(short_loans))
+    logger.warning("[EnterpriseCredit][DEBUG] expected_short_count=%s", short_expected_count)
     logger.info("[EnterpriseCredit][DEBUG] short_actual_count=%s", len(short_loans))
     logger.info("[EnterpriseCredit][DEBUG] short_loans=%s", short_loans)
     if short_expected_count > 0 and len(short_loans) < short_expected_count:
@@ -3062,6 +3041,22 @@ def _extract_active_loans_from_credit_detail(
             short_expected_count,
             len(short_loans),
         )
+        raw_short_candidates = [
+            loan
+            for loan in _extract_short_loans_by_status_lines(raw_short_text or short_text)
+            if loan_term_type(loan) == "short"
+        ]
+        logger.warning(
+            "[EnterpriseCredit][WARN] short loans lost after filter expected=%s actual=%s raw_candidates=%s",
+            short_expected_count,
+            len(short_loans),
+            len(raw_short_candidates),
+        )
+        if len(raw_short_candidates) >= short_expected_count:
+            non_short_loans = [loan for loan in loans if loan_term_type(loan) != "short"]
+            loans = non_short_loans + raw_short_candidates[:short_expected_count]
+            short_loans = [loan for loan in loans if loan_term_type(loan) == "short"]
+            logger.warning("[EnterpriseCredit][DEBUG] final_short_loans_count=%s", len(short_loans))
 
     expected_total = _to_float(active_borrowing_balance)
     parsed_total = sum((_to_float(loan.get("balance")) or 0.0) for loan in loans)
