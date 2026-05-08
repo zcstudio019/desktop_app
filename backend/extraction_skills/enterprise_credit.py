@@ -1928,7 +1928,7 @@ def merge_unique_loans(primary: list[dict[str, Any]], fallback: list[dict[str, A
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
     for loan in [*(primary or []), *(fallback or [])]:
-        item_key = loan_business_key(loan)
+        item_key = strict_loan_key(loan)
         if item_key in seen:
             continue
         seen.add(item_key)
@@ -4532,17 +4532,19 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             raw_short_text_for_final = extract_short_text(raw_text or "")
             raw_short_loans = _extract_short_loans_by_status_lines(raw_short_text_for_final) if raw_short_text_for_final else []
             short_primary_loans = raw_short_loans
+            short_deduped = strict_dedupe_loans(short_primary_loans)
             short_fallback: list[dict[str, Any]] = []
-            short_locked = bool(expected_short_count and len(short_primary_loans) == expected_short_count)
+            short_locked = bool(expected_short_count and len(short_deduped) == expected_short_count)
             if short_locked:
-                short_loans_final = short_primary_loans
+                short_loans_final = short_deduped
                 short_fallback_used = False
                 logger.warning(
                     "[EnterpriseCredit][FINAL] short_locked_skip_postprocess count=%s",
                     len(short_loans_final),
                 )
             else:
-                if expected_short_count and len(short_primary_loans) < expected_short_count:
+                short_loans_final = short_deduped
+                if expected_short_count and len(short_loans_final) < expected_short_count:
                     short_fallback = parse_open_loans_fallback(
                         raw_text,
                         _cu(r"\u77ed\u671f\u501f\u6b3e \u5171"),
@@ -4550,16 +4552,24 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                         "short",
                     )
                 short_fallback_used = bool(short_fallback)
-                short_loans_final = strict_dedupe_loans([*short_primary_loans, *short_fallback])
+                short_loans_final = merge_unique_loans(short_loans_final, short_fallback)
                 if expected_short_count and len(short_loans_final) > expected_short_count:
                     short_loans_final = short_loans_final[:expected_short_count]
             logger.warning("[EnterpriseCredit][FINAL] expected_short_count=%s", expected_short_count)
             logger.warning("[EnterpriseCredit][FINAL] short_locked=%s", short_locked)
             logger.warning("[EnterpriseCredit][FINAL] raw_short_loans_count=%s", len(raw_short_loans))
             logger.warning("[EnterpriseCredit][FINAL] short_primary_count=%s", len(short_primary_loans))
+            logger.warning("[EnterpriseCredit][FINAL] short_deduped_count=%s", len(short_deduped))
             logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count=%s", len(short_loans_final))
             logger.warning("[EnterpriseCredit][FINAL] short_final_deduped_count=%s", len(short_loans_final))
             logger.warning("[EnterpriseCredit][FINAL] short_fallback_used=%s", short_fallback_used)
+            logger.warning(
+                "[EnterpriseCredit][FINAL] short_expected=%s primary=%s deduped=%s final=%s",
+                expected_short_count,
+                len(short_primary_loans),
+                len(short_deduped),
+                len(short_loans_final),
+            )
             logger.warning("[EnterpriseCredit][FINAL] short_source=short_loans_only count=%s", len(short_loans_final))
             revolving_fallback_loans = parse_open_loans_fallback(raw_text, _cu(r"\u5faa\u73af\u900f\u652f \u5171"), revolving_count, "revolving_overdraft")
             active_loans = [*short_loans_final, *medium_loans_final, *revolving_fallback_loans]
