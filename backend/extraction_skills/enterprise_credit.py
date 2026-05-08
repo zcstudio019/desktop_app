@@ -2010,8 +2010,10 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
     )
     noise_words = ("最近一次还款", "正常还款", "见附件", "历史表现")
     loans: list[dict[str, Any]] = []
+    raw_loans: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
     short_status_hits = 0
+    expected_short_count = extract_section_count(short_text, "短期借款")
 
     for index, line in enumerate(lines):
         candidates = [line]
@@ -2039,6 +2041,7 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
         loan = _extract_loan_from_context(context_lines, match, status_line_index=status_line_index)
         loan["term_type"] = "short"
         loan["section_type"] = None
+        raw_loans.append(loan)
         key = (
             str(loan.get("bank") or ""),
             str(loan.get("biz_type") or loan.get("loan_type") or ""),
@@ -2056,9 +2059,17 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
         logger.info("[DEBUG] short_status_hit i=%s line=%s loan=%s", index, matched_text, loan)
 
     logger.info("[DEBUG] short_status_hits=%s", short_status_hits)
+    logger.warning("[EnterpriseCredit][DEBUG] short_raw_count=%s", len(raw_loans))
     logger.info("[DEBUG] short_loans_count=%s", len(loans))
     logger.info("[DEBUG] short_loans=%s", loans)
-    if short_status_hits < extract_section_count(short_text, "短期借款"):
+    if expected_short_count and len(raw_loans) >= expected_short_count:
+        logger.warning(
+            "[EnterpriseCredit][FORCE] use raw_short_loans expected=%s raw=%s",
+            expected_short_count,
+            len(raw_loans),
+        )
+        return raw_loans[:expected_short_count]
+    if short_status_hits < expected_short_count:
         for index, line in enumerate(lines):
             if "正常" in line and re.search(r"\d", line):
                 logger.info(
@@ -3058,6 +3069,11 @@ def _extract_active_loans_from_credit_detail(
             len(raw_short_candidates),
         )
         if len(raw_short_candidates) >= short_expected_count:
+            logger.warning(
+                "[EnterpriseCredit][FORCE] use raw_short_loans expected=%s raw=%s",
+                short_expected_count,
+                len(raw_short_candidates),
+            )
             non_short_loans = [loan for loan in loans if loan_term_type(loan) != "short"]
             loans = non_short_loans + raw_short_candidates[:short_expected_count]
             short_loans = [loan for loan in loans if loan_term_type(loan) == "short"]
@@ -3800,6 +3816,14 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
         revolving_count if revolving_count is not None else len(revolving_loans),
         current_open_credit_count,
     )
+    if short_count and len(short_loans) >= int(short_count or 0):
+        logger.warning(
+            "[EnterpriseCredit][FORCE] use raw_short_loans expected=%s raw=%s",
+            short_count,
+            len(short_loans),
+        )
+        short_loans = short_loans[: int(short_count)]
+    logger.warning("[EnterpriseCredit][FINAL] markdown_short_loans_count=%s", len(short_loans))
     clean_identity = build_clean_identity({**report_basic, **identity_info})
 
     lines = [
