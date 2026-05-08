@@ -392,6 +392,29 @@ async def _save_doc_and_extraction(
     extraction_id = str(uuid.uuid4())
 
     document_type_code = _normalize_storage_document_type(document_type)
+    if not isinstance(content, dict):
+        content = {"raw_result": str(content or "")}
+    if document_type_code == "enterprise_credit":
+        if not content.get("markdown_summary") and content.get("markdown"):
+            content["markdown_summary"] = content.get("markdown")
+        if not content.get("markdown") and content.get("markdown_summary"):
+            content["markdown"] = content.get("markdown_summary")
+        if not content.get("summary") and content.get("markdown_summary"):
+            content["summary"] = content.get("markdown_summary")
+        if not content.get("extracted_json") and content.get("data"):
+            content["extracted_json"] = content.get("data")
+        if not content.get("data") and content.get("extracted_json"):
+            content["data"] = content.get("extracted_json")
+        content.setdefault("type", "enterprise_credit")
+        content.setdefault("name", "企业征信报告")
+        content.setdefault("title", "企业征信报告")
+        logger.warning("[MaterialParse][DEBUG] skill_result_keys=%s", list(content.keys()))
+        logger.warning("[MaterialParse][DEBUG] markdown_summary_len=%s", len(content.get("markdown_summary") or ""))
+        extracted_json_for_log = content.get("extracted_json") or {}
+        logger.warning(
+            "[MaterialParse][DEBUG] extracted_json_keys=%s",
+            list(extracted_json_for_log.keys()) if isinstance(extracted_json_for_log, dict) else [],
+        )
     definition = get_document_type_definition(document_type_code)
     store_original = definition.store_original if definition else should_store_original(document_type_code)
     file_bytes_size = len(file_bytes) if file_bytes else 0

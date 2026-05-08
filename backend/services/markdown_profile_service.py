@@ -1213,11 +1213,16 @@ async def _build_single_document_section(
             f'- 来源文件：{file_name}',
             f'- 原件状态：{original_status}',
         ]
-        summary = str(extracted_data.get('markdown_summary') or '').strip()
+        summary = str(
+            extracted_data.get('markdown_summary')
+            or extracted_data.get('markdown')
+            or extracted_data.get('summary')
+            or ''
+        ).strip()
         if summary:
             lines.extend(['', summary])
         else:
-            extracted_json = extracted_data.get('extracted_json') or {}
+            extracted_json = extracted_data.get('extracted_json') or extracted_data.get('data') or {}
             report_basic = extracted_json.get('report_basic') or {}
             registration_info = extracted_json.get('registration_info') or {}
             credit_summary = extracted_json.get('credit_summary') or {}

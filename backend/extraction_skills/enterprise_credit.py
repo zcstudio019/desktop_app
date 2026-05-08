@@ -1428,22 +1428,25 @@ def find_loan_main_line(context_lines: list[str]) -> str:
 
 
 def find_nearest_loan_main_line(lines: list[str], status_idx: int) -> str:
-    biz_keywords = ["流动资金贷款", "固定资产贷款", "融资型租赁", "贷款"]
-    noise_keywords = ["正常还款", "见附件", "授信协议", "历史表现", "信息报告日期"]
-    for index in range(status_idx - 1, max(-1, status_idx - 8), -1):
-        line = str(lines[index] or "").strip()
-        if not line or any(noise in line for noise in noise_keywords):
-            continue
-        if not any(keyword in line for keyword in biz_keywords):
-            continue
-        parts: list[str] = []
-        for part_index in (index - 2, index - 1, index):
-            if 0 <= part_index < len(lines):
-                part = str(lines[part_index] or "").strip()
-                if not part or any(noise in part for noise in noise_keywords):
-                    continue
-                parts.append(part)
-        return "".join(parts)
+    try:
+        biz_keywords = ["流动资金贷款", "固定资产贷款", "融资型租赁", "贷款"]
+        noise_keywords = ["正常还款", "见附件", "授信协议", "历史表现", "信息报告日期"]
+        for index in range(status_idx - 1, max(-1, status_idx - 8), -1):
+            line = str(lines[index] or "").strip()
+            if not line or any(noise in line for noise in noise_keywords):
+                continue
+            if not any(keyword in line for keyword in biz_keywords):
+                continue
+            parts: list[str] = []
+            for part_index in (index - 2, index - 1, index):
+                if 0 <= part_index < len(lines):
+                    part = str(lines[part_index] or "").strip()
+                    if not part or any(noise in part for noise in noise_keywords):
+                        continue
+                    parts.append(part)
+            return "".join(parts)
+    except Exception as exc:
+        logger.warning("[EnterpriseCredit][WARN] find_nearest_loan_main_line failed: %s", exc)
     return ""
 
 
@@ -1463,16 +1466,20 @@ def clean_bank_name_tail_only(name: Any) -> str:
 
 
 def extract_bank_from_main_line(main_line: str) -> str:
-    value = re.sub(r"\s+", "", str(main_line or ""))
-    for keyword in ["流动资金贷款", "固定资产贷款", "融资型租赁", "贷款"]:
-        index = value.find(keyword)
-        if index != -1:
-            value = value[:index]
-            break
-    first_chinese = re.search(r"[\u4e00-\u9fa5]", value)
-    if first_chinese:
-        value = value[first_chinese.start():]
-    return clean_bank_name_tail_only(value)
+    try:
+        value = re.sub(r"\s+", "", str(main_line or ""))
+        for keyword in ["流动资金贷款", "固定资产贷款", "融资型租赁", "贷款"]:
+            index = value.find(keyword)
+            if index != -1:
+                value = value[:index]
+                break
+        first_chinese = re.search(r"[\u4e00-\u9fa5]", value)
+        if first_chinese:
+            value = value[first_chinese.start():]
+        return clean_bank_name_tail_only(value)
+    except Exception as exc:
+        logger.warning("[EnterpriseCredit][WARN] extract_bank_from_main_line failed: %s", exc)
+        return ""
 
 
 def _extract_active_credit_text(credit_detail_text: str) -> str:
@@ -2002,39 +2009,41 @@ def split_repeated_amount(value: str) -> list[str] | None:
 
 
 def parse_credit_limit_amounts(block: str) -> tuple[str, str, str]:
-    text = normalize_credit_text(block or "")
-    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
-    for index, line in enumerate(lines):
-        if "人民币元" not in line:
-            continue
-        candidate = line
-        if index + 1 < len(lines):
-            candidate += " " + lines[index + 1]
-        if index + 2 < len(lines):
-            candidate += " " + lines[index + 2]
-        candidate = re.split(r"[A-Z]\d{5,}[A-Z0-9]*", candidate)[0]
-        nums = re.findall(r"(?<![A-Z0-9])\d+(?:\.\d+)?(?![A-Z0-9])", candidate)
-        if len(nums) >= 2:
-            return (
-                _normalize_numeric(nums[0]) or nums[0],
-                _normalize_numeric(nums[1]) or nums[1],
-                _normalize_numeric(nums[2]) or nums[2] if len(nums) >= 3 else "",
-            )
+    try:
+        text = normalize_credit_text(block or "")
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+        for index, line in enumerate(lines):
+            if "人民币元" not in line:
+                continue
+            candidate = line
+            if index + 1 < len(lines):
+                candidate += " " + lines[index + 1]
+            if index + 2 < len(lines):
+                candidate += " " + lines[index + 2]
+            candidate = re.split(r"[A-Z]\d{5,}[A-Z0-9]*", candidate)[0]
+            nums = re.findall(r"(?<![A-Z0-9])\d+(?:\.\d+)?(?![A-Z0-9])", candidate)
+            if len(nums) >= 2:
+                return (
+                    _normalize_numeric(nums[0]) or nums[0],
+                    _normalize_numeric(nums[1]) or nums[1],
+                    _normalize_numeric(nums[2]) or nums[2] if len(nums) >= 3 else "",
+                )
 
-    compact = re.sub(r"\s+", "", block or "")
-    blob_match = re.search(r"人民币元(?P<blob>[0-9.]+)", compact)
-    if blob_match:
-        blob = blob_match.group("blob")
-        repeated_parts = split_repeated_amount(blob)
-        if repeated_parts:
-            return (
-                _normalize_numeric(repeated_parts[0]) or repeated_parts[0],
-                _normalize_numeric(repeated_parts[1]) or repeated_parts[1] if len(repeated_parts) > 1 else "",
-                _normalize_numeric(repeated_parts[2]) or repeated_parts[2] if len(repeated_parts) > 2 else "",
-            )
-        credit_amount, used_amount = _split_credit_limit_amounts(blob)
-        return credit_amount, used_amount, ""
-
+        compact = re.sub(r"\s+", "", block or "")
+        blob_match = re.search(r"人民币元(?P<blob>[0-9.]+)", compact)
+        if blob_match:
+            blob = blob_match.group("blob")
+            repeated_parts = split_repeated_amount(blob)
+            if repeated_parts:
+                return (
+                    _normalize_numeric(repeated_parts[0]) or repeated_parts[0],
+                    _normalize_numeric(repeated_parts[1]) or repeated_parts[1] if len(repeated_parts) > 1 else "",
+                    _normalize_numeric(repeated_parts[2]) or repeated_parts[2] if len(repeated_parts) > 2 else "",
+                )
+            credit_amount, used_amount = _split_credit_limit_amounts(blob)
+            return credit_amount, used_amount, ""
+    except Exception as exc:
+        logger.warning("[EnterpriseCredit][WARN] parse_credit_limit_amounts failed: %s", exc)
     return "", "", ""
 
 
@@ -2115,16 +2124,20 @@ def _targeted_credit_limit_records(compact: str, force_when_any_target_seen: boo
     return records
 
 
-def parse_credit_limits(section_text: str, expected_count: int = 0) -> list[dict[str, Any]]:
-    text = normalize_credit_text(section_text or "")
-    if not text:
+def _parse_credit_limits_impl(section_text: str, expected_count: int = 0) -> list[dict[str, Any]]:
+    try:
+        text = normalize_credit_text(section_text or "")
+        if not text:
+            return []
+        expected_count = expected_count or extract_credit_limit_count(text)
+        text = re.sub(r"第\s*\d+\s*页\s*/\s*共\s*\d+\s*页", "\n", text)
+        text = re.sub(r"第\s*\d+\s*页/共", "\n", text)
+        text = re.sub(r"\b\d+\s*页\b", "\n", text)
+        text = re.sub(r"(?m)^\s*已结清信贷\s*$", "\n", text)
+        text = re.sub(r"(?m)^\s*已结清信贷\s+", "", text)
+    except Exception as exc:
+        logger.warning("[EnterpriseCredit][WARN] parse_credit_limits pre-clean failed: %s", exc)
         return []
-    expected_count = expected_count or extract_credit_limit_count(text)
-    text = re.sub(r"第\s*\d+\s*页\s*/\s*共\s*\d+\s*页", "\n", text)
-    text = re.sub(r"第\s*\d+\s*页/共", "\n", text)
-    text = re.sub(r"\b\d+\s*页\b", "\n", text)
-    text = re.sub(r"(?m)^\s*已结清信贷\s*$", "\n", text)
-    text = re.sub(r"(?m)^\s*已结清信贷\s+", "", text)
     blocks = re.split(
         r"(?=(?:[A-Z]\d{5,}[A-Z0-9]*|[A-Z]\d{4,}\s*\d{2,}))",
         text,
@@ -2242,6 +2255,14 @@ def parse_credit_limits(section_text: str, expected_count: int = 0) -> list[dict
         records[:3],
     )
     return records
+
+
+def parse_credit_limits(section_text: str, expected_count: int = 0) -> list[dict[str, Any]]:
+    try:
+        return _parse_credit_limits_impl(section_text, expected_count=expected_count)
+    except Exception as exc:
+        logger.exception("[EnterpriseCredit][ERROR] parse_credit_limits failed")
+        return []
 
 
 def parse_credit_limits_from_raw_window(section_text: str, expected_count: int = 0) -> list[dict[str, Any]]:
@@ -2380,31 +2401,35 @@ def parse_bill_lc_records(section_text: str) -> list[dict[str, Any]]:
 
 
 def parse_bill_lc_summary(raw_text: str) -> list[dict[str, Any]]:
-    text = normalize_credit_text(raw_text or "")
-    compact = re.sub(r"\s+", " ", text)
-    results: list[dict[str, Any]] = []
-    match = re.search(
-        r"银行承兑汇票和信用证\s*共\s*(?P<expected>\d+)\s*笔.*?"
-        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|财务公司)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})\s+"
-        r"(?P<business_type>银行承兑汇票|信用证|保函)\s+"
-        r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
-        r"(?P<account_count>\d+)\s+"
-        r"(?P<balance>\d+(?:\.\d+)?)",
-        compact,
-        re.S,
-    )
-    if match:
-        results.append(
-            {
-                "institution": clean_bank_name(match.group("institution")),
-                "business_type": match.group("business_type"),
-                "classification": match.group("classification"),
-                "account_count": match.group("account_count"),
-                "balance": match.group("balance"),
-            }
+    try:
+        text = normalize_credit_text(raw_text or "")
+        compact = re.sub(r"\s+", " ", text)
+        results: list[dict[str, Any]] = []
+        match = re.search(
+            r"银行承兑汇票和信用证\s*共\s*(?P<expected>\d+)\s*笔.*?"
+            r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|财务公司)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})\s+"
+            r"(?P<business_type>银行承兑汇票|信用证|保函)\s+"
+            r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
+            r"(?P<account_count>\d+)\s+"
+            r"(?P<balance>\d+(?:\.\d+)?)",
+            compact,
+            re.S,
         )
-    logger.info("[EnterpriseCredit][DEBUG] bill_lc_results=%s", results)
-    return results
+        if match:
+            results.append(
+                {
+                    "institution": clean_bank_name(match.group("institution")),
+                    "business_type": match.group("business_type"),
+                    "classification": match.group("classification"),
+                    "account_count": match.group("account_count"),
+                    "balance": match.group("balance"),
+                }
+            )
+        logger.info("[EnterpriseCredit][DEBUG] bill_lc_results=%s", results)
+        return results
+    except Exception as exc:
+        logger.warning("[EnterpriseCredit][WARN] parse_bill_lc_summary failed: %s", exc)
+        return []
 
 
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
@@ -3974,15 +3999,24 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 skill_version="v2",
             )
         except Exception as exc:
-            logger.exception("enterprise_credit_skill_extract_failed file=%s error=%s", input_data.file_name, exc)
+            logger.exception("[EnterpriseCredit][ERROR] extract failed")
             _safe_print("[EnterpriseCreditSkill] 提取失败", str(exc))
+            raw_text = _normalize_text(input_data.raw_text or "")
+            fallback_markdown = "### 企业征信报告\n- 解析异常，请查看后台日志\n"
             return ExtractionResult(
                 document_type="enterprise_credit",
                 schema_version="enterprise_credit.v2",
-                extracted_json={},
-                markdown_summary="",
-                confidence=0,
-                warnings=[],
+                extracted_json={
+                    "schema_version": "enterprise_credit.v2",
+                    "title": "企业征信报告",
+                    "summary": "企业征信报告解析异常，请查看日志",
+                    "data": {"error": str(exc)},
+                    "raw_text": raw_text[:5000] if raw_text else "",
+                    "raw_text_preview": raw_text[:3000] if raw_text else "",
+                },
+                markdown_summary=fallback_markdown,
+                confidence=0.1,
+                warnings=["企业征信报告解析异常，请查看后台日志。"],
                 errors=[str(exc)],
                 skill_name="enterprise_credit",
                 skill_version="v2",
@@ -4017,21 +4051,31 @@ def build_enterprise_credit_content(
 
     report_basic = result.extracted_json.get("report_basic") or {}
     registration_info = result.extracted_json.get("registration_info") or {}
+    markdown_summary = result.markdown_summary or ""
+    extracted_json = result.extracted_json or {}
+    title = "企业征信报告"
+    has_displayable_result = bool(markdown_summary.strip() or extracted_json)
 
     return {
+        "type": "enterprise_credit",
+        "name": title,
+        "title": title,
         "document_type_code": "enterprise_credit",
         "document_type_name": get_document_display_name("enterprise_credit"),
         "storage_label": get_document_storage_label("enterprise_credit"),
         "skill_name": result.skill_name,
         "skill_version": result.skill_version,
         "schema_version": result.schema_version,
-        "extraction_status": "success" if not result.errors else "failed",
+        "extraction_status": "success" if has_displayable_result else "failed",
         "extraction_error": "；".join(result.errors) if result.errors else "",
         "confidence": result.confidence,
         "warnings": result.warnings,
         "errors": result.errors,
-        "markdown_summary": result.markdown_summary,
-        "extracted_json": result.extracted_json,
+        "markdown": markdown_summary,
+        "markdown_summary": markdown_summary,
+        "summary": markdown_summary,
+        "extracted_json": extracted_json,
+        "data": extracted_json,
         "company_name": report_basic.get("company_name") or customer_name,
         "customer_name": report_basic.get("company_name") or customer_name,
         "credit_code": report_basic.get("credit_code") or "",
@@ -4041,6 +4085,6 @@ def build_enterprise_credit_content(
         "registered_capital": registration_info.get("registered_capital_rmb") or "",
         "business_status": registration_info.get("business_status") or "",
         "address": registration_info.get("registered_address") or registration_info.get("business_address") or "",
-        "risk_indicators": result.extracted_json.get("risk_indicators") or {},
-        "raw_text_preview": result.extracted_json.get("raw_text_preview") or "",
+        "risk_indicators": extracted_json.get("risk_indicators") or {},
+        "raw_text_preview": extracted_json.get("raw_text_preview") or "",
     }
