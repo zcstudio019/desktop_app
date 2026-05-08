@@ -2874,6 +2874,62 @@ def _extract_active_loans_from_credit_detail(
     return loans
 
 
+def safe_extract_active_loans_from_credit_detail(
+    credit_detail_text: str,
+    active_borrowing_balance: Any = None,
+    raw_text: str | None = None,
+) -> list[dict[str, Any]]:
+    logger.warning("[EnterpriseCredit][STEP] start active_loans")
+    try:
+        return _extract_active_loans_from_credit_detail(credit_detail_text, active_borrowing_balance, raw_text)
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] parse_active_loans failed")
+        return []
+
+
+def safe_extract_active_credit_text(text: str) -> str:
+    try:
+        return _extract_active_credit_text(text)
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] extract_active_credit_text failed")
+        return ""
+
+
+def safe_parse_credit_limits_from_raw(raw_text: str) -> tuple[str, int, list[dict[str, Any]]]:
+    logger.warning("[EnterpriseCredit][STEP] start credit_limits")
+    try:
+        credit_limit_text, credit_limit_expected_count = extract_credit_limit_text_from_raw(raw_text)
+        credit_facilities = parse_credit_limits_from_raw_window(
+            credit_limit_text,
+            expected_count=credit_limit_expected_count,
+        )
+        if credit_limit_expected_count > 0:
+            credit_facilities = credit_facilities[:credit_limit_expected_count]
+        return credit_limit_text, credit_limit_expected_count, credit_facilities
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] parse_credit_limits failed")
+        return "", 0, []
+
+
+def safe_parse_bill_lc(raw_text: str, bill_lc_text: str) -> list[dict[str, Any]]:
+    logger.warning("[EnterpriseCredit][STEP] start bill_lc")
+    try:
+        bill_lc_records = parse_bill_lc_records(bill_lc_text)
+        bill_lc_items = parse_bill_lc_summary(raw_text)
+        return bill_lc_items or bill_lc_records
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] parse_bill_lc failed")
+        return []
+
+
+def safe_extract_detail_records_from_block(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    try:
+        return _extract_detail_records_from_block(*args, **kwargs)
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] closed_loans failed")
+        return []
+
+
 def _derive_risk_indicators(extracted_json: dict[str, Any]) -> dict[str, Any]:
     credit_summary = extracted_json.get("credit_summary") or {}
     active_credit_rows = extracted_json.get("active_credit_summary_by_type") or []
@@ -3828,38 +3884,58 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             credit_detail_text = normalize_credit_text(_section_text(sections.get("credit_detail") or []))
             public_record_text = _section_text(sections.get("public_records") or [])
 
-            report_basic = _extract_report_basic(
-                _section_text(sections.get("header") or []) or raw_text[:2000],
-                header_lines,
-                input_data.customer_id,
-                str(input_data.metadata.get("customer_name") or ""),
-                raw_pages,
-            )
-            identity_info = _extract_identity_info(identity_lines, _section_text(sections.get("identity") or []))
-            raw_identity_info = extract_identity_info(raw_text)
-            if raw_identity_info:
-                identity_info = _merge_meaningful_values(identity_info, {
-                    "organization_code": raw_identity_info.get("organization_code") or raw_identity_info.get("org_code"),
-                    "org_code": raw_identity_info.get("org_code") or raw_identity_info.get("organization_code"),
-                    "unified_social_credit_code": raw_identity_info.get("unified_social_credit_code") or raw_identity_info.get("organization_credit_code"),
-                    "business_registration_no": raw_identity_info.get("business_registration_no"),
-                    "taxpayer_id_national": raw_identity_info.get("taxpayer_id_national"),
-                    "taxpayer_id_local": raw_identity_info.get("taxpayer_id_local"),
-                })
-                report_basic = _merge_meaningful_values(report_basic, {
-                    "company_name": raw_identity_info.get("company_name"),
-                    "credit_code": raw_identity_info.get("unified_social_credit_code") or raw_identity_info.get("organization_credit_code"),
-                    "zhongzheng_code": raw_identity_info.get("credit_code") or raw_identity_info.get("zhongzheng_code"),
-                })
-            if report_basic.get("report_date"):
-                report_basic["report_date"] = format_report_date(report_basic.get("report_date"))
-            registration_info = _extract_registration_info(basic_lines, basic_info_text + "\n" + capital_text)
-            credit_summary = _extract_credit_summary(summary_lines, info_summary_text)
-            active_credit_summary_by_type = _extract_active_credit_summary_by_type(summary_lines, info_summary_text)
-            credit_facility_summary = _extract_credit_facility_summary(facility_lines, facility_text)
-            shareholders = _extract_shareholders(capital_lines, capital_text)
-            key_personnel = _extract_key_personnel(personnel_lines, personnel_text)
-            actual_controller = _extract_actual_controller(controller_lines, controller_text)
+            logger.warning("[EnterpriseCredit][STEP] start basic_info")
+            try:
+                report_basic = _extract_report_basic(
+                    _section_text(sections.get("header") or []) or raw_text[:2000],
+                    header_lines,
+                    input_data.customer_id,
+                    str(input_data.metadata.get("customer_name") or ""),
+                    raw_pages,
+                )
+                identity_info = _extract_identity_info(identity_lines, _section_text(sections.get("identity") or []))
+                raw_identity_info = extract_identity_info(raw_text)
+                if raw_identity_info:
+                    identity_info = _merge_meaningful_values(identity_info, {
+                        "organization_code": raw_identity_info.get("organization_code") or raw_identity_info.get("org_code"),
+                        "org_code": raw_identity_info.get("org_code") or raw_identity_info.get("organization_code"),
+                        "unified_social_credit_code": raw_identity_info.get("unified_social_credit_code") or raw_identity_info.get("organization_credit_code"),
+                        "business_registration_no": raw_identity_info.get("business_registration_no"),
+                        "taxpayer_id_national": raw_identity_info.get("taxpayer_id_national"),
+                        "taxpayer_id_local": raw_identity_info.get("taxpayer_id_local"),
+                    })
+                    report_basic = _merge_meaningful_values(report_basic, {
+                        "company_name": raw_identity_info.get("company_name"),
+                        "credit_code": raw_identity_info.get("unified_social_credit_code") or raw_identity_info.get("organization_credit_code"),
+                        "zhongzheng_code": raw_identity_info.get("credit_code") or raw_identity_info.get("zhongzheng_code"),
+                    })
+                if report_basic.get("report_date"):
+                    report_basic["report_date"] = format_report_date(report_basic.get("report_date"))
+                if not report_basic.get("company_name") and enterprise_name:
+                    report_basic["company_name"] = enterprise_name
+                registration_info = _extract_registration_info(basic_lines, basic_info_text + "\n" + capital_text)
+                shareholders = _extract_shareholders(capital_lines, capital_text)
+                key_personnel = _extract_key_personnel(personnel_lines, personnel_text)
+                actual_controller = _extract_actual_controller(controller_lines, controller_text)
+            except Exception:
+                logger.exception("[EnterpriseCredit][ERROR] basic_info failed")
+                report_basic = {"company_name": enterprise_name}
+                identity_info = {}
+                registration_info = {}
+                shareholders = []
+                key_personnel = []
+                actual_controller = {}
+
+            logger.warning("[EnterpriseCredit][STEP] start credit_summary")
+            try:
+                credit_summary = _extract_credit_summary(summary_lines, info_summary_text)
+                active_credit_summary_by_type = _extract_active_credit_summary_by_type(summary_lines, info_summary_text)
+                credit_facility_summary = _extract_credit_facility_summary(facility_lines, facility_text)
+            except Exception:
+                logger.exception("[EnterpriseCredit][ERROR] credit_summary failed")
+                credit_summary = {}
+                active_credit_summary_by_type = []
+                credit_facility_summary = {}
 
             if zh_overrides.get("registration_info"):
                 registration_info = _merge_meaningful_values(registration_info, zh_overrides["registration_info"])
@@ -3881,22 +3957,32 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             if zh_overrides.get("actual_controller"):
                 actual_controller = zh_overrides["actual_controller"]
 
-            explicit_controller_name = extract_actual_controller(raw_text)
-            if explicit_controller_name:
-                actual_controller = {
-                    **(actual_controller or {}),
-                    "name": explicit_controller_name,
-                }
-            else:
-                actual_controller = {}
-            key_personnel = _backfill_personnel_identity_numbers(key_personnel, shareholders, actual_controller)
-            if actual_controller.get("name") and not actual_controller.get("identity_no"):
-                for person in key_personnel:
-                    if person.get("name") == actual_controller.get("name") and person.get("identity_no"):
-                        actual_controller["identity_type"] = actual_controller.get("identity_type") or person.get("identity_type")
-                        actual_controller["identity_no"] = person.get("identity_no")
-                        break
-            public_records = _extract_public_records(_merge_fragment_lines(sections.get("public_records") or []), public_record_text, credit_summary)
+            try:
+                explicit_controller_name = extract_actual_controller(raw_text)
+                if explicit_controller_name:
+                    actual_controller = {
+                        **(actual_controller or {}),
+                        "name": explicit_controller_name,
+                    }
+                else:
+                    actual_controller = {}
+                key_personnel = _backfill_personnel_identity_numbers(key_personnel, shareholders, actual_controller)
+                if actual_controller.get("name") and not actual_controller.get("identity_no"):
+                    for person in key_personnel:
+                        if person.get("name") == actual_controller.get("name") and person.get("identity_no"):
+                            actual_controller["identity_type"] = actual_controller.get("identity_type") or person.get("identity_type")
+                            actual_controller["identity_no"] = person.get("identity_no")
+                            break
+            except Exception:
+                logger.exception("[EnterpriseCredit][ERROR] personnel/controller postprocess failed")
+                actual_controller = actual_controller if isinstance(actual_controller, dict) else {}
+                key_personnel = key_personnel if isinstance(key_personnel, list) else []
+
+            try:
+                public_records = _extract_public_records(_merge_fragment_lines(sections.get("public_records") or []), public_record_text, credit_summary)
+            except Exception:
+                logger.exception("[EnterpriseCredit][ERROR] public_records failed")
+                public_records = {"licenses": [], "tax_arrears": [], "civil_judgments": [], "enforcements": [], "administrative_penalties": []}
             logger.info("[DEBUG] has_loan_section=%s", "信贷记录明细" in raw_text)
             loan_section = _zh_window_after(raw_text, ("信贷记录明细",), (), 5000)
             logger.info("[DEBUG] loan_section_head=%s", loan_section[:1000])
@@ -3905,22 +3991,20 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             logger.info("[DEBUG] total_blocks=%s", len(debug_blocks))
             if debug_blocks:
                 logger.info("[DEBUG] first_block_sample=%s", debug_blocks[0][:500])
-            active_loan_detail_text = _extract_active_credit_text(credit_detail_text or _zh_window_after(raw_text, ("信贷记录明细",), ("账户编号",), 20000))
+            active_loan_detail_text = safe_extract_active_credit_text(credit_detail_text or _zh_window_after(raw_text, ("信贷记录明细",), ("账户编号",), 20000))
             if "短期借款 共" not in active_loan_detail_text:
                 logger.warning("[EnterpriseCredit][DEBUG] credit_detail active_text missing short loans, use raw_text fallback")
-                active_loan_detail_text = _extract_active_credit_text(raw_text)
+                active_loan_detail_text = safe_extract_active_credit_text(raw_text)
             logger.info("[EnterpriseCredit][DEBUG] credit_detail_len=%s", len(active_loan_detail_text))
-            active_loans = _extract_active_loans_from_credit_detail(
+            active_loans = safe_extract_active_loans_from_credit_detail(
                 active_loan_detail_text,
                 credit_summary.get("active_borrowing_balance"),
                 raw_text,
             )
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
             logger.info("[EnterpriseCredit][DEBUG] active_loans_sample=%s", active_loans[:2])
-            credit_limit_text, credit_limit_expected_count = extract_credit_limit_text_from_raw(raw_text)
-            credit_facilities = parse_credit_limits_from_raw_window(credit_limit_text, expected_count=credit_limit_expected_count)
-            if credit_limit_expected_count > 0:
-                credit_facilities = credit_facilities[:credit_limit_expected_count]
+            logger.warning("[EnterpriseCredit][STEP] start revolving_loans")
+            credit_limit_text, credit_limit_expected_count, credit_facilities = safe_parse_credit_limits_from_raw(raw_text)
             logger.warning("[EnterpriseCredit][DEBUG] raw_has_credit_title=%s", bool(re.search(r"授信信息\s*共\s*\d+\s*笔", raw_text, re.S)))
             logger.warning("[EnterpriseCredit][DEBUG] credit_limit_expected_count=%s", credit_limit_expected_count)
             logger.warning("[EnterpriseCredit][DEBUG] credit_limit_text_len=%s", len(credit_limit_text))
@@ -3931,13 +4015,10 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 ["银行承兑汇票和信用证"],
                 ["授信信息 共", "公共记录明细", "非信贷交易明细", "附件1", "报告说明"],
             )
-            bill_lc_records = parse_bill_lc_records(bill_lc_text)
-            bill_lc_items = parse_bill_lc_summary(raw_text)
-            if bill_lc_items:
-                bill_lc_records = bill_lc_items
+            bill_lc_records = safe_parse_bill_lc(raw_text, bill_lc_text)
             logger.info("[EnterpriseCredit][DEBUG] bill_lc_text_len=%s tail=%s", len(bill_lc_text), bill_lc_text[-1000:])
             logger.info("[EnterpriseCredit][DEBUG] bill_lc_records_count=%s records=%s", len(bill_lc_records), bill_lc_records)
-            closed_loans = _extract_detail_records_from_block(
+            closed_loans = safe_extract_detail_records_from_block(
                 credit_detail_text,
                 ("已结清贷款明细", "已结清借款明细"),
                 ("公共记录", "查询记录", "附注"),
@@ -3978,7 +4059,11 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 "source_pages": [item.get("page") for item in raw_pages if isinstance(item, dict) and item.get("page") is not None],
                 "raw_text_preview": _extract_compact_preview(raw_text),
             }
-            extracted_json["risk_indicators"] = _derive_risk_indicators(extracted_json)
+            try:
+                extracted_json["risk_indicators"] = _derive_risk_indicators(extracted_json)
+            except Exception:
+                logger.exception("[EnterpriseCredit][ERROR] risk_indicators failed")
+                extracted_json["risk_indicators"] = {}
             risk_level = (extracted_json.get("risk_indicators") or {}).get("multi_credit_risk") or (extracted_json.get("risk_indicators") or {}).get("multi_lender_risk")
             logger.info("[EnterpriseCredit][DEBUG] actual_controller=%s", actual_controller)
             logger.info("[EnterpriseCredit][DEBUG] multi_credit_risk_raw=%s zh=%s", risk_level, risk_level_zh(risk_level))
@@ -3990,7 +4075,23 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 }
                 for tag in (extracted_json.get("risk_indicators") or {}).get("risk_tags", [])
             ]
-            markdown_summary = _build_markdown_summary_v2(extracted_json)
+            logger.warning("[EnterpriseCredit][STEP] start markdown_build")
+            try:
+                markdown_summary = _build_markdown_summary_v2(extracted_json)
+            except Exception:
+                logger.exception("[EnterpriseCredit][ERROR] markdown_build failed")
+                basic = extracted_json.get("report_basic") or {}
+                summary = extracted_json.get("credit_summary") or {}
+                markdown_summary = (
+                    "## 企业征信摘要\n\n"
+                    "### 报告基础信息\n"
+                    f"- 企业名称：{basic.get('company_name') or enterprise_name or '未识别'}\n\n"
+                    "### 信贷概要\n"
+                    f"- 当前未结清借贷余额：{summary.get('active_borrowing_balance') or '未识别'}\n"
+                    f"- 当前未结清信贷机构数：{summary.get('current_active_credit_institution_count') or '未识别'}\n"
+                    f"- 短期借款余额：{summary.get('active_short_term_debt_total') or summary.get('short_term_loan_balance') or '未识别'}\n"
+                    f"- 循环透支余额：{summary.get('revolving_overdraft_balance') or '0'}\n"
+                )
 
             warnings: list[str] = []
             if not report_basic.get("company_name"):
@@ -4008,7 +4109,9 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 skill_version="v2",
             )
         except Exception as exc:
-            logger.exception("[EnterpriseCredit][ERROR] extract failed: %s", exc)
+            logger.exception("[EnterpriseCredit][ERROR] extract failed", exc_info=True)
+            logger.error("[EnterpriseCredit][ERROR] error_type=%s", type(exc).__name__)
+            logger.error("[EnterpriseCredit][ERROR] error_message=%s", str(exc))
             _safe_print("[EnterpriseCreditSkill] 提取失败", str(exc))
             raw_text = _normalize_text(input_data.raw_text or "")
             enterprise_name = safe_extract_enterprise_name(raw_text)
