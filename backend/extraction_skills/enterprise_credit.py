@@ -1651,6 +1651,27 @@ def clean_loan_institution_strict(raw: str) -> str:
         return ""
 
 
+def extract_business_type_strict(block: str) -> str:
+    try:
+        value = re.sub(r"\s+", "", str(block or ""))
+        business_keywords = [
+            "流动资金贷款",
+            "固定资产贷款",
+            "融资型租赁",
+            "融资租赁",
+            "循环透支",
+            "贸易融资",
+            "保理",
+            "贷款",
+        ]
+        for keyword in business_keywords:
+            if keyword in value:
+                return keyword
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] extract_business_type_strict failed")
+    return "未识别"
+
+
 def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count: int = 0, term_type: str = "short") -> list[dict[str, Any]]:
     try:
         if "循环透支" in section_title:
@@ -1685,11 +1706,14 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
                 window_start = max(0, match.start("institution") - 120)
                 window_end = min(len(compact), match.end("institution") + 80)
                 institution = clean_loan_institution_strict(compact[window_start:window_end])
+            business_type = extract_business_type_strict(compact[match.start():match.end()])
             results.append(
                 {
                     "bank": institution or "未识别",
-                    "biz_type": item.get("business_type") or "未识别",
-                    "loan_type": item.get("business_type") or "未识别",
+                    "biz_type": business_type,
+                    "business": business_type,
+                    "business_type": business_type,
+                    "loan_type": business_type,
                     "term_type": term_type,
                     "section_type": "循环透支" if term_type == "revolving_overdraft" else ("短期借款" if term_type == "short" else "中长期借款"),
                     "open_date": item.get("open_date") or "未识别",
