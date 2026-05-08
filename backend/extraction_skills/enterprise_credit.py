@@ -4533,18 +4533,28 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             raw_short_loans = _extract_short_loans_by_status_lines(raw_short_text_for_final) if raw_short_text_for_final else []
             short_primary_loans = raw_short_loans
             short_fallback: list[dict[str, Any]] = []
-            if expected_short_count and len(short_primary_loans) < expected_short_count:
-                short_fallback = parse_open_loans_fallback(
-                    raw_text,
-                    _cu(r"\u77ed\u671f\u501f\u6b3e \u5171"),
-                    expected_short_count,
-                    "short",
+            short_locked = bool(expected_short_count and len(short_primary_loans) == expected_short_count)
+            if short_locked:
+                short_loans_final = short_primary_loans
+                short_fallback_used = False
+                logger.warning(
+                    "[EnterpriseCredit][FINAL] short_locked_skip_postprocess count=%s",
+                    len(short_loans_final),
                 )
-            short_fallback_used = bool(short_fallback)
-            short_loans_final = strict_dedupe_loans([*short_primary_loans, *short_fallback])
-            if expected_short_count and len(short_loans_final) > expected_short_count:
-                short_loans_final = short_loans_final[:expected_short_count]
+            else:
+                if expected_short_count and len(short_primary_loans) < expected_short_count:
+                    short_fallback = parse_open_loans_fallback(
+                        raw_text,
+                        _cu(r"\u77ed\u671f\u501f\u6b3e \u5171"),
+                        expected_short_count,
+                        "short",
+                    )
+                short_fallback_used = bool(short_fallback)
+                short_loans_final = strict_dedupe_loans([*short_primary_loans, *short_fallback])
+                if expected_short_count and len(short_loans_final) > expected_short_count:
+                    short_loans_final = short_loans_final[:expected_short_count]
             logger.warning("[EnterpriseCredit][FINAL] expected_short_count=%s", expected_short_count)
+            logger.warning("[EnterpriseCredit][FINAL] short_locked=%s", short_locked)
             logger.warning("[EnterpriseCredit][FINAL] raw_short_loans_count=%s", len(raw_short_loans))
             logger.warning("[EnterpriseCredit][FINAL] short_primary_count=%s", len(short_primary_loans))
             logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count=%s", len(short_loans_final))
