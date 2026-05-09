@@ -4766,11 +4766,27 @@ def _is_forbidden_short_loan(loan: dict[str, Any]) -> bool:
 
             d1 = datetime.strptime(start, "%Y-%m-%d")
             d2 = datetime.strptime(end, "%Y-%m-%d")
-            if (d2 - d1).days > 366 and "流动资金贷款" not in biz:
+            if (d2 - d1).days > 365:
                 return True
         except Exception:
             pass
     return False
+
+
+def infer_term_type(start_date: Any, end_date: Any, business_type: Any) -> str:
+    biz = str(business_type or "")
+    if any(keyword in biz for keyword in _FINAL_SHORT_FORBIDDEN_KEYWORDS):
+        return "medium_long_term"
+    try:
+        from datetime import datetime
+
+        start = datetime.strptime(str(start_date or ""), "%Y-%m-%d")
+        end = datetime.strptime(str(end_date or ""), "%Y-%m-%d")
+        if (end - start).days > 365:
+            return "medium_long_term"
+        return "short_term"
+    except Exception:
+        return "unknown"
 
 
 def _loan_business_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
@@ -4877,6 +4893,78 @@ def _raw_has_webank_short_loan(raw_text: str, result: dict[str, Any]) -> bool:
     return chinese_hit or mojibake_hit
 
 
+def _extract_short_section_window_for_final(raw_text: str) -> str:
+    unsettled = extract_unsettled_section(raw_text or "")
+    short_text, _ = extract_loan_subsection(unsettled, "短期借款")
+    if short_text:
+        logger.warning("[EnterpriseCredit][SHORT_SECTION] final_short_window_len=%s", len(short_text))
+        return short_text
+    short_text, _ = extract_loan_subsection(unsettled, "鐭湡鍊熸")
+    if short_text:
+        logger.warning("[EnterpriseCredit][SHORT_SECTION] final_short_window_len=%s", len(short_text))
+        return short_text
+    window = extract_short_text(raw_text or "")
+    logger.warning("[EnterpriseCredit][SHORT_FALLBACK_WINDOW] final_short_window_len=%s", len(window or ""))
+    return window
+
+
+def _parse_short_window_loans_for_final(raw_text: str) -> list[dict[str, Any]]:
+    short_window = _extract_short_section_window_for_final(raw_text)
+    if not short_window:
+        return []
+    compact = _final_text(short_window)
+    business = r"(?:流动资金贷款|娴佸姩璧勯噾璐锋|贷款|璐锋)"
+    guarantee = r"(?:信用/无担保|保证/保证金|保证|组合|抵押|质押|信用|淇＄敤/鏃犳媴淇?|淇濊瘉/淇濊瘉閲?|淇濊瘉|缁勫悎|鎶垫娂|璐ㄦ娂|淇＄敤)"
+    pattern = re.compile(
+        r"(?P<bank>[\u4e00-\u9fa5A-Za-z0-9（）()锛堬級]{2,80}?(?:银行股份有限公司|银行|閾惰鑲′唤鏈夐檺鍏徃|閾惰)[\u4e00-\u9fa5A-Za-z0-9（）()锛堬級]{0,40}?)"
+        rf"(?P<biz_type>{business})"
+        r"(?P<open_date>\d{4}-\d{2}-\d{2})"
+        r"(?P<due_date>\d{4}-\d{2}-\d{2})"
+        r"(?:人民币元|浜烘皯甯佸厓)"
+        r"(?P<loan_amount>\d+(?:\.\d+)?)"
+        r"(?:新增|无还本续贷|其他|鏂板|鏃犺繕鏈画璐?|鍏朵粬)?"
+        rf".{{0,60}}?(?P<guarantee>{guarantee})"
+        r"(?P<balance>\d+(?:\.\d+)?)"
+        r"(?P<five_classification>正常|姝ｅ父|关注|鍏虫敞|次级|娆＄骇|可疑|鍙枒|损失|鎹熷け)"
+        r"(?P<overdue_total>\d+(?:\.\d+)?)"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)"
+        r"(?P<overdue_months>\d+)"
+    )
+    loans: list[dict[str, Any]] = []
+    for match in pattern.finditer(compact):
+        item = match.groupdict()
+        loan = {
+            "bank": clean_loan_institution_strict(item.get("bank") or ""),
+            "institution": clean_loan_institution_strict(item.get("bank") or ""),
+            "institution_name": clean_loan_institution_strict(item.get("bank") or ""),
+            "biz_type": item.get("biz_type") or "",
+            "loan_type": item.get("biz_type") or "",
+            "business_type": item.get("biz_type") or "",
+            "open_date": item.get("open_date") or "",
+            "start_date": item.get("open_date") or "",
+            "due_date": item.get("due_date") or "",
+            "end_date": item.get("due_date") or "",
+            "loan_amount": item.get("loan_amount") or "",
+            "balance": item.get("balance") or "",
+            "guarantee": item.get("guarantee") or "",
+            "guarantee_type": item.get("guarantee") or "",
+            "five_classification": item.get("five_classification") or "",
+            "five_category": item.get("five_classification") or "",
+            "overdue_total": item.get("overdue_total") or "",
+            "overdue_principal": item.get("overdue_principal") or "",
+            "overdue_months": item.get("overdue_months") or "0",
+            "source_section": "short_term",
+            "term_type": "short",
+            "evidence_text": compact[max(0, match.start() - 80): match.end() + 80],
+        }
+        if infer_term_type(loan["open_date"], loan["due_date"], loan["biz_type"]) == "short_term":
+            loans.append(_sync_loan_aliases(loan))
+        else:
+            logger.warning("[EnterpriseCredit][SECTION_POLLUTION_WARNING] short_window_medium_like_loan=%s", loan)
+    logger.warning("[EnterpriseCredit][SHORT_FALLBACK_WINDOW] parsed_window_loans=%s", len(loans))
+    return loans
+
+
 def final_normalize_credit_result(
     result: dict[str, Any] | None,
     *,
@@ -4899,6 +4987,10 @@ def final_normalize_credit_result(
         short_candidates = _merge_loan_candidates(
             data.get("short_loans_final"),
             data.get("short_loans"),
+        )
+        short_candidates = _merge_loan_candidates(
+            short_candidates,
+            _parse_short_window_loans_for_final(raw_text),
         )
         medium_candidates = _merge_loan_candidates(
             data.get("medium_loans_final"),
@@ -4939,6 +5031,8 @@ def final_normalize_credit_result(
                     errors.append(f"invalid_institution_name_in_short_term: {bank or '<empty>'}")
             if _is_forbidden_short_loan(loan):
                 loan["term_type"] = "medium_long"
+                loan["source_section"] = loan.get("source_section") or "short_term_reclassified"
+                logger.warning("[EnterpriseCredit][LOAN_MOVED_TO_MEDIUM] loan=%s", loan)
                 normalized_medium.append(loan)
             else:
                 loan["term_type"] = "short"
@@ -5076,6 +5170,8 @@ def final_normalize_credit_result(
             contains_finance_lease_in_short,
             contains_invalid_institution or invalid_institution_found,
         )
+        logger.warning("[EnterpriseCredit][FINAL_SHORT_COUNT] %s", len(normalized_short))
+        logger.warning("[EnterpriseCredit][FINAL_MEDIUM_COUNT] %s", len(normalized_medium))
         return data
     except Exception:
         logger.exception("[EnterpriseCredit][ERROR] final_normalize_credit_result failed")
@@ -5716,8 +5812,10 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 short_loans = parse_loan_rows(short_text, term_type="short")
                 logger.warning("[EnterpriseCredit][SHORT] parsed_by_struct_regex=%s", len(short_loans))
             if not short_loans:
-                short_loans = _extract_short_loans_by_status_lines(raw_text or "")
-                logger.warning("[EnterpriseCredit][SHORT] parsed_by_raw_status_hit=%s", len(short_loans))
+                short_fallback_window = extract_short_text(raw_text or "")
+                logger.warning("[EnterpriseCredit][SHORT_FALLBACK_WINDOW] short_window_len=%s", len(short_fallback_window or ""))
+                short_loans = _extract_short_loans_by_status_lines(short_fallback_window) if short_fallback_window else []
+                logger.warning("[EnterpriseCredit][SHORT] parsed_by_window_status_hit=%s", len(short_loans))
             short_loans_final = strict_dedupe_loans(short_loans)
             if expected_short_count and len(short_loans_final) > expected_short_count:
                 short_loans_final = short_loans_final[:expected_short_count]

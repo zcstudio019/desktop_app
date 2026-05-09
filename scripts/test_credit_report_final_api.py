@@ -36,6 +36,8 @@ def main() -> int:
         return 2
 
     raw_text = raw_path.read_text(encoding="utf-8")
+    expected_path = case_dir / "expected_assertions.json"
+    expected = json.loads(expected_path.read_text(encoding="utf-8")) if expected_path.exists() else {}
     stale_result = _build_stale_profile_result()
     normalized = final_normalize_credit_result(
         stale_result,
@@ -51,7 +53,7 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    failures = _assert_final_payload(normalized)
+    failures = _assert_final_payload(normalized, expected)
     print("Enterprise credit final API payload test")
     print(f"- parser_version: {normalized.get('credit_parser_version')}")
     print(f"- parser_debug: {normalized.get('credit_parser_debug')}")
@@ -79,6 +81,24 @@ def _build_stale_profile_result() -> dict[str, Any]:
         },
         "short_loans": [
             {
+                "bank": "华夏银行股份有限公司上海分行",
+                "institution": "华夏银行股份有限公司上海分行",
+                "institution_name": "华夏银行股份有限公司上海分行",
+                "biz_type": "流动资金贷款",
+                "loan_type": "流动资金贷款",
+                "business_type": "流动资金贷款",
+                "loan_amount": "292",
+                "balance": "292",
+                "open_date": "2024-04-15",
+                "start_date": "2024-04-15",
+                "due_date": "2027-04-08",
+                "end_date": "2027-04-08",
+                "guarantee": "组合",
+                "guarantee_type": "组合",
+                "five_classification": "正常",
+                "overdue_months": "0",
+            },
+            {
                 "bank": "公司",
                 "institution": "公司",
                 "institution_name": "公司",
@@ -97,6 +117,24 @@ def _build_stale_profile_result() -> dict[str, Any]:
             }
         ],
         "short_loans_final": [
+            {
+                "bank": "华夏银行股份有限公司上海分行",
+                "institution": "华夏银行股份有限公司上海分行",
+                "institution_name": "华夏银行股份有限公司上海分行",
+                "biz_type": "流动资金贷款",
+                "loan_type": "流动资金贷款",
+                "business_type": "流动资金贷款",
+                "loan_amount": "292",
+                "balance": "292",
+                "open_date": "2024-04-15",
+                "start_date": "2024-04-15",
+                "due_date": "2027-04-08",
+                "end_date": "2027-04-08",
+                "guarantee": "组合",
+                "guarantee_type": "组合",
+                "five_classification": "正常",
+                "overdue_months": "0",
+            },
             {
                 "bank": "公司",
                 "institution": "公司",
@@ -120,7 +158,7 @@ def _build_stale_profile_result() -> dict[str, Any]:
     }
 
 
-def _assert_final_payload(result: dict[str, Any]) -> list[str]:
+def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | None = None) -> list[str]:
     failures: list[str] = []
     short_loans = result.get("short_loans_final") or result.get("short_loans") or []
     medium_loans = result.get("medium_loans_final") or result.get("medium_loans") or []
@@ -129,9 +167,11 @@ def _assert_final_payload(result: dict[str, Any]) -> list[str]:
         failures.append("parser_version is not latest")
     if any("融资" in _biz(x) or "铻嶈祫" in _biz(x) for x in short_loans):
         failures.append("short_term_loans still contains finance lease")
+    if any("华夏银行股份有限公司上海分行" in _bank(x) and (x.get("end_date") or x.get("due_date")) == "2027-04-08" for x in short_loans):
+        failures.append("short_term_loans contains medium-term 华夏银行 2027-04-08")
     if any((_bank(x) or "").strip() == "公司" for x in [*short_loans, *medium_loans]):
         failures.append("invalid institution_name=公司 leaked")
-    if not any(
+    if (not expected or (expected or {}).get("medium_long_or_lease_must_include")) and not any(
         "融资型租赁" in _biz(x)
         and _same_number(x.get("loan_amount"), "400")
         and _same_number(x.get("balance"), "327.50")
@@ -139,7 +179,11 @@ def _assert_final_payload(result: dict[str, Any]) -> list[str]:
         for x in medium_loans
     ):
         failures.append("medium_long_term_loans missing finance lease 400/327.50 with guarantee")
-    if not any(
+    needs_webank_assert = any(
+        "娴欐睙" in str(item) or "浙江" in str(item)
+        for item in (expected or {}).get("short_term_must_include") or []
+    )
+    if (not expected or needs_webank_assert) and not any(
         _bank(x) == "浙江网商银行股份有限公司"
         and "流动资金贷款" in _biz(x)
         and _same_number(x.get("loan_amount"), "30")
@@ -148,7 +192,41 @@ def _assert_final_payload(result: dict[str, Any]) -> list[str]:
         for x in short_loans
     ):
         failures.append("short_term_loans missing 浙江网商银行 30/5")
+    for target in (expected or {}).get("short_term_must_include") or []:
+        if not _loan_matches(short_loans, target):
+            failures.append(f"short_term_must_include missing: {target}")
+    for target in (expected or {}).get("short_term_must_not_include") or []:
+        if _loan_matches(short_loans, target):
+            failures.append(f"short_term_must_not_include leaked: {target}")
+    for target in (expected or {}).get("medium_long_or_lease_must_include") or []:
+        if not _loan_matches(medium_loans, target):
+            failures.append(f"medium_long_or_lease_must_include missing: {target}")
     return failures
+
+
+def _loan_matches(loans: list[dict[str, Any]], target: dict[str, Any]) -> bool:
+    for loan in loans:
+        ok = True
+        for key, expected_value in target.items():
+            if key == "institution_name":
+                value = _bank(loan)
+            elif key == "business_type":
+                value = _biz(loan)
+            elif key == "guarantee_type":
+                value = _guarantee(loan)
+            elif key == "start_date":
+                value = loan.get("start_date") or loan.get("open_date") or ""
+            elif key == "end_date":
+                value = loan.get("end_date") or loan.get("due_date") or ""
+            else:
+                value = loan.get(key)
+            if isinstance(expected_value, (int, float)):
+                ok = ok and _same_number(value, expected_value)
+            else:
+                ok = ok and str(expected_value) in str(value)
+        if ok:
+            return True
+    return False
 
 
 def _bank(item: dict[str, Any]) -> str:

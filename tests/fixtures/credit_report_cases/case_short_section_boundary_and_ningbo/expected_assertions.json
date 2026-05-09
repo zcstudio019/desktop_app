@@ -1,0 +1,17 @@
+{
+  "short_term_must_include": [
+    {
+      "institution_name": "宁波通商银行股份有限公司上海奉贤支行",
+      "business_type": "流动资金贷款",
+      "loan_amount": 150,
+      "balance": 150,
+      "guarantee_type": "组合"
+    }
+  ],
+  "short_term_must_not_include": [
+    {
+      "institution_name": "华夏银行股份有限公司上海分行",
+      "end_date": "2027-04-08"
+    }
+  ]
+}
