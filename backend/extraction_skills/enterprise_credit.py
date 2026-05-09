@@ -2651,13 +2651,6 @@ def _extract_short_loans_by_status_lines(short_text: str) -> list[dict[str, Any]
     logger.warning("[EnterpriseCredit][DEBUG] short_raw_count=%s", len(raw_loans))
     logger.info("[DEBUG] short_loans_count=%s", len(loans))
     logger.info("[DEBUG] short_loans=%s", loans)
-    if expected_short_count and len(raw_loans) >= expected_short_count:
-        logger.warning(
-            "[EnterpriseCredit][FORCE] use raw_short_loans expected=%s raw=%s",
-            expected_short_count,
-            len(raw_loans),
-        )
-        return raw_loans[:expected_short_count]
     if short_status_hits < expected_short_count:
         for index, line in enumerate(lines):
             if "正常" in line and re.search(r"\d", line):
@@ -5108,8 +5101,19 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             logger.warning("[EnterpriseCredit][FINAL] medium_source=medium_loans_plus_leasing count=%s", len(medium_loans_final))
             unsettled_text = extract_unsettled_section(raw_text or "")
             short_text, expected_short_count = extract_loan_subsection(unsettled_text, "短期借款")
-            short_loans = parse_loan_rows(short_text, term_type="short")
+            short_loans = _extract_short_loans_by_status_lines(short_text) if short_text else []
+            logger.warning("[EnterpriseCredit][SHORT] expected=%s", expected_short_count)
+            logger.warning("[EnterpriseCredit][SHORT] short_text_len=%s", len(short_text or ""))
+            logger.warning("[EnterpriseCredit][SHORT] parsed_by_status_hit=%s", len(short_loans))
+            if not short_loans:
+                short_loans = parse_loan_rows(short_text, term_type="short")
+                logger.warning("[EnterpriseCredit][SHORT] parsed_by_struct_regex=%s", len(short_loans))
+            if not short_loans:
+                short_loans = _extract_short_loans_by_status_lines(raw_text or "")
+                logger.warning("[EnterpriseCredit][SHORT] parsed_by_raw_status_hit=%s", len(short_loans))
             short_loans_final = strict_dedupe_loans(short_loans)
+            if expected_short_count and len(short_loans_final) > expected_short_count:
+                short_loans_final = short_loans_final[:expected_short_count]
             if expected_short_count and len(short_loans_final) != expected_short_count:
                 logger.warning(
                     "[EnterpriseCredit][WARN] short count mismatch expected=%s actual=%s names=%s",
@@ -5127,6 +5131,20 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 )
             logger.warning("[EnterpriseCredit][FINAL] expected_short_count=%s", expected_short_count)
             logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count=%s", len(short_loans_final))
+            logger.warning("[EnterpriseCredit][SHORT] final=%s", len(short_loans_final))
+            logger.warning(
+                "[EnterpriseCredit][SHORT] final_names=%s",
+                [
+                    (
+                        loan.get("bank"),
+                        loan.get("open_date"),
+                        loan.get("due_date"),
+                        loan.get("loan_amount"),
+                        loan.get("balance"),
+                    )
+                    for loan in short_loans_final
+                ],
+            )
             logger.warning("[EnterpriseCredit][FINAL] short_source=unsettled_short_section_only count=%s", len(short_loans_final))
             logger.warning(
                 "[EnterpriseCredit][FINAL] short_names_dates=%s",
