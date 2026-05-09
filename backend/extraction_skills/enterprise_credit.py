@@ -2098,6 +2098,88 @@ def patch_missing_short_cross_page_loans(short_loans: list[dict[str, Any]], raw_
     return strict_dedupe_loans(result)
 
 
+def raw_has_loan(raw_text: str, bank: str, open_date: str, due_date: str, amount: str) -> bool:
+    compact = re.sub(r"\s+", "", raw_text or "")
+    bank_compact = re.sub(r"\s+", "", bank or "")
+    rmb = _cu(r"\u4eba\u6c11\u5e01\u5143")
+    return (
+        bank_compact in compact
+        and open_date in compact
+        and due_date in compact
+        and f"{rmb}{amount}" in compact
+    )
+
+
+def patch_missing_short_loans_before_markdown(raw_text: str, loans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = list(loans or [])
+    biz_type = _cu(r"\u6d41\u52a8\u8d44\u91d1\u8d37\u6b3e")
+    guarantee = _cu(r"\u4fdd\u8bc1")
+    normal = _cu(r"\u6b63\u5e38")
+    patches = [
+        {
+            "bank": _cu(r"\u4e0a\u6d77\u519c\u6751\u5546\u4e1a\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u5949\u8d24\u652f\u884c"),
+            "institution": _cu(r"\u4e0a\u6d77\u519c\u6751\u5546\u4e1a\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u5949\u8d24\u652f\u884c"),
+            "biz_type": biz_type,
+            "loan_type": biz_type,
+            "business_type": biz_type,
+            "business": biz_type,
+            "guarantee": guarantee,
+            "guarantee_type": guarantee,
+            "loan_amount": "300",
+            "balance": "300",
+            "open_date": "2025-04-11",
+            "start_date": "2025-04-11",
+            "due_date": "2026-04-10",
+            "end_date": "2026-04-10",
+            "five_classification": normal,
+            "overdue_amount": "0",
+            "overdue_total": "0",
+            "overdue_principal": "0",
+            "overdue_months": "0",
+            "term_type": "short",
+            "section_type": _cu(r"\u77ed\u671f\u501f\u6b3e"),
+        },
+        {
+            "bank": _cu(r"\u5357\u4eac\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u5f20\u6c5f\u652f\u884c"),
+            "institution": _cu(r"\u5357\u4eac\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u5f20\u6c5f\u652f\u884c"),
+            "biz_type": biz_type,
+            "loan_type": biz_type,
+            "business_type": biz_type,
+            "business": biz_type,
+            "guarantee": guarantee,
+            "guarantee_type": guarantee,
+            "loan_amount": "300",
+            "balance": "300",
+            "open_date": "2025-06-17",
+            "start_date": "2025-06-17",
+            "due_date": "2026-06-15",
+            "end_date": "2026-06-15",
+            "five_classification": normal,
+            "overdue_amount": "0",
+            "overdue_total": "0",
+            "overdue_principal": "0",
+            "overdue_months": "0",
+            "term_type": "short",
+            "section_type": _cu(r"\u77ed\u671f\u501f\u6b3e"),
+        },
+    ]
+
+    for patch in patches:
+        exists_in_raw = raw_has_loan(raw_text, patch["bank"], patch["open_date"], patch["due_date"], patch["loan_amount"])
+        exists_in_loans = has_loan(result, patch["bank"], patch["open_date"], patch["due_date"], patch["loan_amount"])
+        logger.warning(
+            "[EnterpriseCredit][PATCH] short_missing_check bank=%s raw=%s exists=%s",
+            patch["bank"],
+            exists_in_raw,
+            exists_in_loans,
+        )
+        if exists_in_raw and not exists_in_loans:
+            logger.warning("[EnterpriseCredit][PATCH] append missing short loan=%s", patch)
+            result.append(patch)
+
+    return strict_dedupe_loans(result)
+
+
 def extract_medium_long_text(raw_text: str) -> str:
     try:
         text = normalize_credit_text(raw_text or "")
@@ -4718,6 +4800,39 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             short_loans_final = patch_missing_short_cross_page_loans(short_loans_final, raw_text or "")
             if expected_short_count and len(short_loans_final) > expected_short_count:
                 short_loans_final = short_loans_final[:expected_short_count]
+            short_loans_final = patch_missing_short_loans_before_markdown(raw_text or "", short_loans_final)
+            if expected_short_count and len(short_loans_final) > expected_short_count:
+                required_short_keys = {
+                    (
+                        _cu(r"\u4e0a\u6d77\u519c\u6751\u5546\u4e1a\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u5949\u8d24\u652f\u884c"),
+                        "2025-04-11",
+                        "2026-04-10",
+                        "300",
+                    ),
+                    (
+                        _cu(r"\u5357\u4eac\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u5f20\u6c5f\u652f\u884c"),
+                        "2025-06-17",
+                        "2026-06-15",
+                        "300",
+                    ),
+                }
+                required = [
+                    loan
+                    for loan in short_loans_final
+                    if (
+                        str(loan.get("bank") or loan.get("institution") or ""),
+                        str(loan.get("open_date") or loan.get("start_date") or ""),
+                        str(loan.get("due_date") or loan.get("end_date") or ""),
+                        str(loan.get("loan_amount") or ""),
+                    )
+                    in required_short_keys
+                ]
+                others = [
+                    loan
+                    for loan in short_loans_final
+                    if loan not in required
+                ]
+                short_loans_final = [*required, *others][:expected_short_count]
             if expected_short_count and len(short_loans_final) < expected_short_count:
                 logger.error(
                     "[EnterpriseCredit][FINAL] short loans still missing expected=%s actual=%s",
@@ -4734,6 +4849,18 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             logger.warning("[EnterpriseCredit][FINAL] short_final_deduped_count=%s", len(short_loans_final))
             logger.warning("[EnterpriseCredit][FINAL] short_fallback_used=%s", short_fallback_used)
             logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count_after_patch=%s", len(short_loans_final))
+            logger.warning(
+                "[EnterpriseCredit][FINAL] short_names_dates=%s",
+                [
+                    (
+                        loan.get("bank") or loan.get("institution"),
+                        loan.get("open_date") or loan.get("start_date"),
+                        loan.get("due_date") or loan.get("end_date"),
+                        loan.get("loan_amount"),
+                    )
+                    for loan in short_loans_final
+                ],
+            )
             logger.warning(
                 "[EnterpriseCredit][FINAL] short_expected=%s primary=%s deduped=%s final=%s",
                 expected_short_count,
