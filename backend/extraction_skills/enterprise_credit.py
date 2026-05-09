@@ -3113,7 +3113,7 @@ def parse_bill_lc_records(section_text: str) -> list[dict[str, Any]]:
     compact = re.sub(r"(?:银行承兑汇票和信用证共\d+笔|银行承兑汇票和信用证)", "", compact)
     pattern = re.compile(
         r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|财务公司)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})"
-        r"(?P<business_type>银行承兑汇票|信用证|保函)"
+        r"(?P<business_type>银行承兑汇票|信用证)"
         r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)"
         r"(?P<count_balance>\d+(?:\.\d+)?(?:\d+(?:\.\d+)?)?)"
         r"(?=[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|财务公司)|授信信息共|公共记录明细|非信贷交易明细|附件1|报告说明|$)"
@@ -3163,7 +3163,7 @@ def parse_bill_lc_summary(raw_text: str) -> list[dict[str, Any]]:
         match = re.search(
             r"银行承兑汇票和信用证\s*共\s*(?P<expected>\d+)\s*笔.*?"
             r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|财务公司)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})\s+"
-            r"(?P<business_type>银行承兑汇票|信用证|保函)\s+"
+            r"(?P<business_type>银行承兑汇票|信用证)\s+"
             r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)\s+"
             r"(?P<account_count>\d+)\s+"
             r"(?P<balance>\d+(?:\.\d+)?)",
@@ -3184,6 +3184,138 @@ def parse_bill_lc_summary(raw_text: str) -> list[dict[str, Any]]:
         return results
     except Exception as exc:
         logger.warning("[EnterpriseCredit][WARN] parse_bill_lc_summary failed: %s", exc)
+        return []
+
+
+def parse_bank_guarantee_other_business(raw_text: str) -> list[dict[str, Any]]:
+    try:
+        section = extract_section_text_from_raw(
+            raw_text,
+            [_cu(r"\u94f6\u884c\u4fdd\u51fd\u53ca\u5176\u4ed6\u4e1a\u52a1")],
+            [
+                _cu(r"\u6388\u4fe1\u4fe1\u606f"),
+                _cu(r"\u5df2\u7ed3\u6e05\u4fe1\u8d37"),
+                _cu(r"\u77ed\u671f\u501f\u6b3e"),
+                _cu(r"\u4e2d\u957f\u671f\u501f\u6b3e"),
+                _cu(r"\u5faa\u73af\u900f\u652f"),
+                _cu(r"\u516c\u5171\u8bb0\u5f55\u660e\u7ec6"),
+            ],
+        )
+        if not section:
+            return []
+        lines = [line.strip() for line in normalize_credit_text(section).splitlines() if line.strip()]
+        compact_rows: list[str] = []
+        buffer = ""
+        header_words = [
+            _cu(r"\u6388\u4fe1\u673a\u6784"),
+            _cu(r"\u4e1a\u52a1\u79cd\u7c7b"),
+            _cu(r"\u4e94\u7ea7\u5206\u7c7b"),
+            _cu(r"\u8d26\u6237\u6570"),
+            _cu(r"\u4f59\u989d"),
+            _cu(r"\u5171"),
+        ]
+        classifications = [
+            _cu(r"\u6b63\u5e38"),
+            _cu(r"\u672a\u5206\u7c7b"),
+            _cu(r"\u5173\u6ce8"),
+            _cu(r"\u6b21\u7ea7"),
+            _cu(r"\u53ef\u7591"),
+            _cu(r"\u635f\u5931"),
+        ]
+        class_pattern = "|".join(re.escape(item) for item in classifications)
+        for line in lines:
+            if any(word in line for word in header_words):
+                continue
+            buffer += line
+            if re.search(rf"({class_pattern})\s*\d+\s*\d+(?:\.\d+)?$", buffer):
+                compact_rows.append(buffer)
+                buffer = ""
+
+        business_pattern = "|".join(
+            re.escape(item)
+            for item in [
+                _cu(r"\u975e\u878d\u8d44\u7c7b\u94f6\u884c\u4fdd\u51fd"),
+                _cu(r"\u8d37\u6b3e\u4fdd\u8bc1\u4fdd\u9669"),
+                _cu(r"\u94f6\u884c\u4fdd\u51fd"),
+                _cu(r"\u4fdd\u51fd"),
+                _cu(r"\u4fe1\u7528\u8bc1"),
+            ]
+        )
+        results: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str, str]] = set()
+        for row in compact_rows:
+            row_text = re.sub(r"\s+", " ", row).strip()
+            match = re.search(
+                rf"(?P<institution>.+?)(?P<business_type>{business_pattern})"
+                rf"\s*(?P<classification>{class_pattern})\s+(?P<account_count>\d+)\s+(?P<balance>\d+(?:\.\d+)?)",
+                row_text,
+            )
+            if not match:
+                compact = re.sub(r"\s+", "", row)
+                match = re.search(
+                    rf"(?P<institution>.+?)(?P<business_type>{business_pattern})"
+                    rf"(?P<classification>{class_pattern})(?P<count_balance>\d+(?:\.\d+)?(?:\d+(?:\.\d+)?)?)",
+                    compact,
+                )
+            if not match:
+                continue
+            item = match.groupdict()
+            account_count = item.get("account_count")
+            balance = item.get("balance")
+            if not account_count or not balance:
+                account_count, balance = _split_bill_lc_count_balance(item.get("count_balance") or "")
+            record = {
+                "institution": re.sub(r"\s+", "", item.get("institution") or ""),
+                "business_type": item.get("business_type"),
+                "classification": item.get("classification"),
+                "account_count": account_count,
+                "balance": balance,
+            }
+            key = (
+                record["institution"],
+                record["business_type"],
+                record["classification"],
+                record["account_count"],
+                record["balance"],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(record)
+
+        if not results:
+            compact = re.sub(r"\s+", "", section)
+            direct_pattern = re.compile(
+                rf"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{{2,100}}(?:银行股份有限公司|财产保险股份有限公司|保险股份有限公司|银行|保险)[\u4e00-\u9fa5A-Za-z0-9（）()]{{0,80}})"
+                rf"(?P<business_type>{business_pattern})"
+                rf"(?P<classification>{class_pattern})"
+                rf"(?P<count_balance>\d+(?:\.\d+)?(?:\d+(?:\.\d+)?)?)"
+            )
+            for match in direct_pattern.finditer(compact):
+                item = match.groupdict()
+                account_count, balance = _split_bill_lc_count_balance(item.get("count_balance") or "")
+                record = {
+                    "institution": re.sub(r"\s+", "", item.get("institution") or ""),
+                    "business_type": item.get("business_type"),
+                    "classification": item.get("classification"),
+                    "account_count": account_count,
+                    "balance": balance,
+                }
+                key = (
+                    record["institution"],
+                    record["business_type"],
+                    record["classification"],
+                    record["account_count"],
+                    record["balance"],
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(record)
+        logger.info("[EnterpriseCredit][DEBUG] bank_guarantee_other_count=%s records=%s", len(results), results)
+        return results
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] parse_bank_guarantee_other_business failed")
         return []
 
 
@@ -4314,6 +4446,11 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     active_loans = extracted_json.get("active_loans") or []
     credit_facilities = extracted_json.get("credit_facilities") or []
     bill_lc_records = extracted_json.get("bill_lc_records") or []
+    bank_guarantee_other_business = (
+        extracted_json.get("bank_guarantee_other_business")
+        or extracted_json.get("bank_guarantee_other_records")
+        or []
+    )
 
     short_term = _find_active_row(active_rows, "短期借款", "鐭湡鍊熸")
     long_term = _find_active_row(active_rows, "中长期借款", "涓暱鏈熷€熸")
@@ -4445,6 +4582,20 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
             )
     else:
         lines.append("- 本报告未展示银行承兑汇票和信用证明细")
+    lines.extend(["", "### 银行保函及其他业务"])
+    if bank_guarantee_other_business:
+        for item in bank_guarantee_other_business:
+            lines.extend(
+                [
+                    f"- 授信机构：{_display(item.get('institution'))}",
+                    f"  业务种类：{_display(item.get('business_type'))}",
+                    f"  五级分类：{_display(item.get('classification'))}",
+                    f"  账户数：{_display(item.get('account_count'))}",
+                    f"  余额：{_display(item.get('balance'))} 万元",
+                ]
+            )
+    else:
+        lines.append("- 本报告未展示银行保函及其他业务明细")
     lines.extend(
         [
             "",
@@ -5002,6 +5153,12 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             bill_lc_records = safe_parse_bill_lc(raw_text, bill_lc_text)
             logger.info("[EnterpriseCredit][DEBUG] bill_lc_text_len=%s tail=%s", len(bill_lc_text), bill_lc_text[-1000:])
             logger.info("[EnterpriseCredit][DEBUG] bill_lc_records_count=%s records=%s", len(bill_lc_records), bill_lc_records)
+            bank_guarantee_other_business = parse_bank_guarantee_other_business(raw_text)
+            logger.info(
+                "[EnterpriseCredit][DEBUG] bank_guarantee_other_business_count=%s records=%s",
+                len(bank_guarantee_other_business),
+                bank_guarantee_other_business,
+            )
             closed_loans = safe_extract_detail_records_from_block(
                 credit_detail_text,
                 ("已结清贷款明细", "已结清借款明细"),
@@ -5041,6 +5198,8 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                 "medium_loans_final": medium_loans_final,
                 "credit_facilities": credit_facilities,
                 "bill_lc_records": bill_lc_records,
+                "bank_guarantee_other_business": bank_guarantee_other_business,
+                "bank_guarantee_other_records": bank_guarantee_other_business,
                 "closed_loans": closed_loans,
                 "public_records": public_records,
                 "risk_signals": [],
