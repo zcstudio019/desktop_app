@@ -1369,6 +1369,13 @@ def clean_bank_name(bank: Any) -> str:
     if "股份有限" in value and "股份有限公司" not in value:
         value = value.replace("股份有限", "股份有限公司")
 
+    match = re.search(r"[\u4e00-\u9fa5]{2,30}村镇银行股份有限公司", value)
+    if match:
+        return match.group(0)
+    match = re.search(r"[\u4e00-\u9fa5]{2,40}银行股份有限公司(?:[\u4e00-\u9fa5]{0,20}(?:分行|支行))?", value)
+    if match:
+        return match.group(0)
+
     for suffix in ["支行", "分行", "营业部"]:
         index = value.rfind(suffix)
         if index != -1:
@@ -1734,6 +1741,13 @@ def clean_loan_institution_strict(raw: str) -> str:
 
         if "股份有限" in value and "股份有限公司" not in value:
             value = value.replace("股份有限", "股份有限公司")
+
+        match = re.search(r"[\u4e00-\u9fa5]{2,30}村镇银行股份有限公司", value)
+        if match:
+            return match.group(0)
+        match = re.search(r"[\u4e00-\u9fa5]{2,40}银行股份有限公司(?:[\u4e00-\u9fa5]{0,20}(?:分行|支行))?", value)
+        if match:
+            return match.group(0)
 
         for suffix in ["上海闵行支行", "上海分行", "上海新桥支行", "上海浦东分行", "支行", "分行", "营业部"]:
             index = value.rfind(suffix)
