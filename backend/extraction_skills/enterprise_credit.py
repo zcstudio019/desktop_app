@@ -2473,6 +2473,21 @@ def _clean_credit_detail_line(value: Any) -> str:
     return text
 
 
+def extract_bank_from_context(context: Any) -> str:
+    text = re.sub(r"\s+", "", str(context or ""))
+    patterns = [
+        r"上海松江民生村镇银行股份有限公司",
+        r"[\u4e00-\u9fa5]{2,30}村镇银行股份有限公司",
+        r"[\u4e00-\u9fa5]{2,40}银行股份有限公司[\u4e00-\u9fa5]{0,20}(?:分行|支行)",
+        r"[\u4e00-\u9fa5]{2,40}银行股份有限公司",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(0)
+    return ""
+
+
 def _extract_loan_from_context(
     context_lines: list[str],
     status_match: re.Match[str],
@@ -2526,9 +2541,14 @@ def _extract_loan_from_context(
 
     biz_type = _clean_loan_value(biz_match.group(1)) if biz_match else "未识别"
     section_type = default_section_type or ("循环透支" if "循环透支" in context or "循环透支" in biz_type else None)
+    bank = context_institution or (org_candidates[-1] if org_candidates else "未识别")
+    context_bank = extract_bank_from_context(context)
+    if context_bank and str(bank) in {"银行股份有限公司", "未识别", ""}:
+        bank = context_bank
     return {
         "account_no": account_match.group(1) if account_match else None,
-        "bank": context_institution or (org_candidates[-1] if org_candidates else "未识别"),
+        "bank": bank,
+        "institution": bank,
         "biz_type": biz_type,
         "loan_type": biz_type,
         "section_type": section_type,
@@ -2546,6 +2566,8 @@ def _extract_loan_from_context(
         "overdue_months": status_match.group("overdue_months"),
         "guarantee": guarantee or "未识别",
         "guarantee_type": guarantee or "未识别",
+        "_raw_line": context_lines[-1] if context_lines else "",
+        "_raw_block": context,
     }
 
 
@@ -3283,8 +3305,12 @@ def is_bad_bill_lc(item: dict[str, Any]) -> bool:
 
 def parse_bank_guarantee_other_business(raw_text: str) -> list[dict[str, Any]]:
     try:
+        text = normalize_credit_text(raw_text or "")
+        title_match = re.search(r"银行保函及其他业务\s*共\s*\d+\s*笔", text)
+        if not title_match:
+            return []
         section = extract_section_text_from_raw(
-            raw_text,
+            text,
             [_cu(r"\u94f6\u884c\u4fdd\u51fd\u53ca\u5176\u4ed6\u4e1a\u52a1")],
             [
                 _cu(r"\u6388\u4fe1\u4fe1\u606f"),
@@ -3296,6 +3322,9 @@ def parse_bank_guarantee_other_business(raw_text: str) -> list[dict[str, Any]]:
             ],
         )
         if not section:
+            return []
+        header_pattern = r"授信机构\s*业务种类\s*五级分类\s*账户数\s*余额"
+        if not re.search(header_pattern, re.sub(r"\s+", " ", section)):
             return []
         lines = [line.strip() for line in normalize_credit_text(section).splitlines() if line.strip()]
         compact_rows: list[str] = []
@@ -3407,10 +3436,22 @@ def parse_bank_guarantee_other_business(raw_text: str) -> list[dict[str, Any]]:
                 seen.add(key)
                 results.append(record)
         logger.info("[EnterpriseCredit][DEBUG] bank_guarantee_other_count=%s records=%s", len(results), results)
-        return results
+        return [item for item in results if not is_bad_guarantee_other_item(item)]
     except Exception:
         logger.exception("[EnterpriseCredit][ERROR] parse_bank_guarantee_other_business failed")
         return []
+
+
+def is_bad_guarantee_other_item(item: dict[str, Any]) -> bool:
+    institution = str(item.get("institution") or "")
+    return (
+        not institution
+        or "银行保函及其他业务" in institution
+        or "授信机构" in institution
+        or "业务种类" in institution
+        or "账户数" in institution
+        or institution.startswith("银行保函")
+    )
 
 
 def _extract_active_loans_by_status_lines(active_text: str) -> list[dict[str, Any]]:
@@ -4678,8 +4719,8 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
                     f"  余额：{_display(item.get('balance'))} 万元",
                 ]
             )
-    lines.extend(["", "### 银行保函及其他业务"])
     if bank_guarantee_other_business:
+        lines.extend(["", "### 银行保函及其他业务"])
         for item in bank_guarantee_other_business:
             lines.extend(
                 [
@@ -4690,8 +4731,6 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
                     f"  余额：{_display(item.get('balance'))} 万元",
                 ]
             )
-    else:
-        lines.append("- 本报告未展示银行保函及其他业务明细")
     lines.extend(
         [
             "",
