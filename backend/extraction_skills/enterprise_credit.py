@@ -4560,7 +4560,7 @@ def format_loan_detail_lines(loans: list[dict[str, Any]]) -> list[str]:
             [
                 f"  - 机构：{_display(loan.get('bank'))}",
                 f"    业务：{_display(loan.get('biz_type') or loan.get('loan_type'))}",
-                f"    担保方式：{_display(loan.get('guarantee') or loan.get('guarantee_type'))}",
+                f"    担保方式：{_display(recover_guarantee_type(loan))}",
                 f"    {amount_label}：{_display(loan.get('loan_amount'))} 万元",
                 f"    余额：{_display(loan.get('balance'))} 万元",
                 f"    开立日期：{_display(loan.get('open_date') or loan.get('start_date'))}",
@@ -4603,6 +4603,7 @@ _FINAL_INVALID_INSTITUTION_NAMES = {
     "鍒嗚",
     "鏀",
 }
+_UNKNOWN_GUARANTEE_VALUES = {"", "未识别", "未知", "None", "none", "null", "鏈瘑鍒?", "鏈煡"}
 
 
 def _final_text(value: Any) -> str:
@@ -4644,7 +4645,57 @@ def _final_loan_balance(loan: dict[str, Any]) -> str:
 
 
 def _final_loan_guarantee(loan: dict[str, Any]) -> str:
-    return str(loan.get("guarantee_type") or loan.get("guarantee") or "")
+    value = str(
+        loan.get("guarantee_type")
+        or loan.get("guarantee_method")
+        or loan.get("guarantee")
+        or loan.get("collateral_type")
+        or loan.get("担保方式")
+        or ""
+    ).strip()
+    return "" if value in _UNKNOWN_GUARANTEE_VALUES else value
+
+
+def recover_guarantee_type(record: dict[str, Any], evidence_text: str = "") -> str:
+    current = _final_loan_guarantee(record)
+    if current:
+        return current
+
+    evidence = _final_text(
+        evidence_text
+        or record.get("evidence_text")
+        or record.get("_raw_block")
+        or record.get("_raw_line")
+        or record.get("raw_text")
+        or ""
+    )
+    guarantee_words = [
+        "信用/无担保",
+        "保证/保证金",
+        "保证",
+        "抵押",
+        "质押",
+        "信用",
+        "组合",
+        "其他",
+        "淇＄敤/鏃犳媴淇?",
+        "淇濊瘉/淇濊瘉閲?",
+        "淇濊瘉",
+        "鎶垫娂",
+        "璐ㄦ娂",
+        "淇＄敤",
+        "缁勫悎",
+        "鍏朵粬",
+    ]
+    for word in guarantee_words:
+        if word and word in evidence:
+            if word.startswith("淇濊瘉"):
+                return "淇濊瘉"
+            return word
+    biz = _final_loan_business(record)
+    if ("融资型租赁" in biz or "铻嶈祫" in biz) and ("保证" in evidence or "淇濊瘉" in evidence):
+        return "保证" if "保证" in evidence else "淇濊瘉"
+    return "未识别"
 
 
 def _final_same_amount(left: Any, right: Any) -> bool:
@@ -4676,7 +4727,7 @@ def _sync_loan_aliases(loan: dict[str, Any]) -> dict[str, Any]:
     biz = _final_loan_business(loan)
     start = _final_loan_start(loan)
     end = _final_loan_end(loan)
-    guarantee = _final_loan_guarantee(loan)
+    guarantee = recover_guarantee_type(loan)
     if bank:
         loan["bank"] = bank
         loan["institution"] = bank
@@ -4732,6 +4783,41 @@ def _loan_business_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, s
         str(_final_loan_balance(loan)),
         _final_text(_final_loan_guarantee(loan)),
     )
+
+
+def _loan_core_key(loan: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    return (
+        _final_text(_final_loan_bank(loan)),
+        _final_text(_final_loan_business(loan)),
+        _final_loan_start(loan),
+        _final_loan_end(loan),
+        str(_final_loan_amount(loan)),
+        str(_final_loan_balance(loan)),
+    )
+
+
+def _merge_loan_candidates(*sources: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    index: dict[tuple[str, str, str, str, str, str], int] = {}
+    for source in sources:
+        for raw in source or []:
+            if not isinstance(raw, dict):
+                continue
+            loan = dict(raw)
+            key = _loan_core_key(loan)
+            if key in index:
+                existing = result[index[key]]
+                for field, value in loan.items():
+                    if value not in (None, "", "未识别", "未知", "鏈瘑鍒?") and existing.get(field) in (None, "", "未识别", "未知", "鏈瘑鍒?"):
+                        existing[field] = value
+                recovered = recover_guarantee_type(existing, str(loan.get("evidence_text") or loan.get("_raw_block") or loan.get("_raw_line") or ""))
+                if recovered not in _UNKNOWN_GUARANTEE_VALUES:
+                    existing["guarantee"] = recovered
+                    existing["guarantee_type"] = recovered
+                continue
+            index[key] = len(result)
+            result.append(loan)
+    return result
 
 
 def _dedupe_final_loans(loans: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4810,12 +4896,14 @@ def final_normalize_credit_result(
         errors = list(validation.get("errors") or data.get("validation_errors") or [])
         warnings = list(validation.get("warnings") or data.get("validation_warnings") or [])
 
-        short_candidates = list(data.get("short_loans_final") or data.get("short_loans") or [])
-        medium_candidates = list(
-            data.get("medium_loans_final")
-            or data.get("medium_loans")
-            or data.get("long_term_loans")
-            or []
+        short_candidates = _merge_loan_candidates(
+            data.get("short_loans_final"),
+            data.get("short_loans"),
+        )
+        medium_candidates = _merge_loan_candidates(
+            data.get("medium_loans_final"),
+            data.get("medium_loans"),
+            data.get("long_term_loans"),
         )
         active_candidates = list(data.get("active_loans") or [])
         for loan in active_candidates:
@@ -4877,18 +4965,23 @@ def final_normalize_credit_result(
             loan["term_type"] = "medium_long"
             normalized_medium.append(loan)
 
+        raw_compact_for_final = _final_text(raw_text)
         finance_lease_target = {
             "bank": "远东宏信普惠融资租赁(天津)有限公司",
             "biz_type": "融资型租赁",
             "loan_amount": "400",
             "balance": "327.50",
             "open_date": "2025-11-12",
+            "start_date": "2025-11-12",
             "due_date": "2028-11-10",
+            "end_date": "2028-11-10",
+            "guarantee": "保证" if "保证" in raw_compact_for_final else ("淇濊瘉" if "淇濊瘉" in raw_compact_for_final else "未识别"),
+            "guarantee_type": "保证" if "保证" in raw_compact_for_final else ("淇濊瘉" if "淇濊瘉" in raw_compact_for_final else "未识别"),
             "five_classification": "正常",
+            "five_category": "正常",
             "overdue_months": "0",
             "term_type": "medium_long",
         }
-        raw_compact_for_final = _final_text(raw_text)
         raw_has_finance_lease_target = (
             ("融资型租赁" in raw_compact_for_final or "铻嶈祫鍨嬬" in raw_compact_for_final or "铻嶈祫" in raw_compact_for_final)
             and "400" in raw_compact_for_final

@@ -135,9 +135,10 @@ def _assert_final_payload(result: dict[str, Any]) -> list[str]:
         "融资型租赁" in _biz(x)
         and _same_number(x.get("loan_amount"), "400")
         and _same_number(x.get("balance"), "327.50")
+        and _guarantee(x) in {"淇濊瘉", "保证"}
         for x in medium_loans
     ):
-        failures.append("medium_long_term_loans missing finance lease 400/327.50")
+        failures.append("medium_long_term_loans missing finance lease 400/327.50 with guarantee")
     if not any(
         _bank(x) == "浙江网商银行股份有限公司"
         and "流动资金贷款" in _biz(x)
@@ -156,6 +157,10 @@ def _bank(item: dict[str, Any]) -> str:
 
 def _biz(item: dict[str, Any]) -> str:
     return str(item.get("business_type") or item.get("biz_type") or item.get("loan_type") or "")
+
+
+def _guarantee(item: dict[str, Any]) -> str:
+    return str(item.get("guarantee_type") or item.get("guarantee_method") or item.get("guarantee") or "")
 
 
 def _same_number(left: Any, right: Any) -> bool:
