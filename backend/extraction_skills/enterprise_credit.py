@@ -2240,41 +2240,6 @@ def dedupe_credit_limits(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def patch_credit_limits_before_markdown(credit_limits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     patched = [item for item in (credit_limits or []) if not is_bad_credit_limit(item)]
-    patches = [
-        {
-            "institution": _cu(r"\u5b81\u6ce2\u901a\u5546\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u5949\u8d24\u652f\u884c"),
-            "bank": _cu(r"\u5b81\u6ce2\u901a\u5546\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u5949\u8d24\u652f\u884c"),
-            "credit_type": _cu(r"\u7efc\u5408\u6388\u4fe1"),
-            "credit_limit_type": _cu(r"\u7efc\u5408\u6388\u4fe1"),
-            "is_revolving": _cu(r"\u662f"),
-            "revolving_flag": _cu(r"\u662f"),
-            "credit_amount": "150",
-            "used_amount": "150",
-            "effective_date": "2024-11-12",
-            "start_date": "2024-11-12",
-            "due_date": "2025-11-12",
-            "end_date": "2025-11-12",
-            "report_date": "2024-11-13",
-        },
-        {
-            "institution": _cu(r"\u4e2d\u56fd\u5149\u5927\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u677e\u6c5f\u652f\u884c"),
-            "bank": _cu(r"\u4e2d\u56fd\u5149\u5927\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u677e\u6c5f\u652f\u884c"),
-            "credit_type": _cu(r"\u7efc\u5408\u6388\u4fe1"),
-            "credit_limit_type": _cu(r"\u7efc\u5408\u6388\u4fe1"),
-            "is_revolving": _cu(r"\u662f"),
-            "revolving_flag": _cu(r"\u662f"),
-            "credit_amount": "700",
-            "used_amount": "700",
-            "effective_date": "2025-06-04",
-            "start_date": "2025-06-04",
-            "due_date": "2026-06-03",
-            "end_date": "2026-06-03",
-            "report_date": "2025-06-12",
-        },
-    ]
-    for patch in patches:
-        if not has_credit_limit(patched, patch["institution"], patch["effective_date"], patch["due_date"], patch["credit_amount"]):
-            patched.append(patch)
     return dedupe_credit_limits(patched)
 
 
