@@ -3187,6 +3187,28 @@ def parse_bill_lc_summary(raw_text: str) -> list[dict[str, Any]]:
         return []
 
 
+def has_bank_acceptance_lc_section(raw_text: str) -> bool:
+    text = normalize_credit_text(raw_text or "")
+    if not text:
+        return False
+    patterns = [
+        r"银行承兑汇票和信用证\s*共\s*\d+\s*笔",
+        r"银行承兑汇票\s*共\s*\d+\s*笔",
+        r"信用证\s*共\s*\d+\s*笔",
+    ]
+    return any(re.search(pattern, text, re.S) for pattern in patterns)
+
+
+def is_bad_bill_lc(item: dict[str, Any]) -> bool:
+    institution = str(item.get("institution") or "").strip()
+    bad_keywords = ["授信机构", "业务种类", "五级分类", "账户数", "余额"]
+    if not institution or institution == "未识别":
+        return True
+    if any(keyword in institution for keyword in bad_keywords):
+        return True
+    return False
+
+
 def parse_bank_guarantee_other_business(raw_text: str) -> list[dict[str, Any]]:
     try:
         section = extract_section_text_from_raw(
@@ -3801,9 +3823,13 @@ def safe_parse_credit_limits_from_raw(raw_text: str) -> tuple[str, int, list[dic
 def safe_parse_bill_lc(raw_text: str, bill_lc_text: str) -> list[dict[str, Any]]:
     logger.warning("[EnterpriseCredit][STEP] start bill_lc")
     try:
+        if not has_bank_acceptance_lc_section(raw_text):
+            logger.info("[EnterpriseCredit][DEBUG] bill_lc skipped: no explicit bill/lc section")
+            return []
         bill_lc_records = parse_bill_lc_records(bill_lc_text)
         bill_lc_items = parse_bill_lc_summary(raw_text)
-        return bill_lc_items or bill_lc_records
+        records = bill_lc_items or bill_lc_records
+        return [item for item in records if not is_bad_bill_lc(item)]
     except Exception:
         logger.exception("[EnterpriseCredit][ERROR] parse_bill_lc failed")
         return []
@@ -4568,8 +4594,8 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
             )
     else:
         lines.append("- 本报告未展示逐笔授信信息明细")
-    lines.extend(["", "### 银行承兑汇票和信用证"])
     if bill_lc_records:
+        lines.extend(["", "### 银行承兑汇票和信用证"])
         for item in bill_lc_records:
             lines.extend(
                 [
@@ -4580,8 +4606,6 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
                     f"  余额：{_display(item.get('balance'))} 万元",
                 ]
             )
-    else:
-        lines.append("- 本报告未展示银行承兑汇票和信用证明细")
     lines.extend(["", "### 银行保函及其他业务"])
     if bank_guarantee_other_business:
         for item in bank_guarantee_other_business:
