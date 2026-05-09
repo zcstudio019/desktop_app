@@ -91,6 +91,11 @@ def extract_enterprise_credit_report_agent(
     result.guarantees = extract_guarantees(sections)
     result.external_guarantees = extract_external_guarantees(sections)
     result = normalize_agent_result(result)
+    result.raw_evidence_map = {
+        key: str(value)[:3000]
+        for key, value in sections.items()
+        if key != "full_text" and isinstance(value, str) and value
+    }
     result.validation = validate_agent_result(result, expected_counts)
 
     by_section = {
@@ -103,11 +108,6 @@ def extract_enterprise_credit_report_agent(
     }
     overall = round(sum(by_section.values()) / max(1, len(by_section)), 2)
     result.confidence = Confidence(overall=overall, by_section=by_section)
-    result.raw_evidence_map = {
-        key: str(value)[:3000]
-        for key, value in sections.items()
-        if key != "full_text" and isinstance(value, str) and value
-    }
     payload = {
         "sections": {
             key: str(value)[:5000]

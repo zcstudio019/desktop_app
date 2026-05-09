@@ -12,27 +12,6 @@ def _fmt_amount(value: float | None) -> str:
     return text or "0"
 
 
-def _loan_to_legacy(loan: Any) -> dict[str, Any]:
-    return {
-        "bank": loan.institution_name,
-        "institution": loan.institution_name,
-        "biz_type": "流动资金贷款" if loan.business_type in {"short_term_loan", "medium_long_term_loan"} and "贷款" not in loan.evidence_text else loan.business_type,
-        "loan_type": loan.business_type,
-        "guarantee": loan.guarantee_type,
-        "guarantee_type": loan.guarantee_type,
-        "loan_amount": _fmt_amount(loan.loan_amount) if loan.loan_amount is not None else "",
-        "balance": _fmt_amount(loan.balance) if loan.balance is not None else "",
-        "open_date": loan.start_date,
-        "start_date": loan.start_date,
-        "due_date": loan.end_date,
-        "end_date": loan.end_date,
-        "five_classification": loan.five_category,
-        "overdue_months": str(loan.overdue_months),
-        "term_type": "short" if loan.business_type == "short_term_loan" else "medium_long",
-        "evidence_text": loan.evidence_text,
-    }
-
-
 def normalize_agent_result(result: AgentResult) -> AgentResult:
     short_sum = round(sum(float(x.balance or 0) for x in result.short_term_loans), 2)
     medium_sum = round(sum(float(x.balance or 0) for x in result.medium_long_term_loans), 2)
@@ -119,33 +98,6 @@ def build_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def _loan_markdown_lines(loans: list[dict[str, Any]]) -> list[str]:
-    lines: list[str] = []
-    for loan in loans:
-        lines.extend([
-            f"  - 机构：{loan.get('institution_name') or '未识别'}",
-            f"    业务：{loan.get('business_type') or '未识别'}",
-            f"    担保方式：{loan.get('guarantee_type') or '未识别'}",
-            f"    借款金额：{_fmt_amount(loan.get('loan_amount'))} 万元",
-            f"    余额：{_fmt_amount(loan.get('balance'))} 万元",
-            f"    开立日期：{loan.get('start_date') or '未识别'}",
-            f"    到期日：{loan.get('end_date') or '未识别'}",
-            f"    五级分类：{loan.get('five_category') or '未识别'}",
-            f"    逾期月数：{loan.get('overdue_months') if loan.get('overdue_months') is not None else 0}",
-        ])
-    return lines
-
-
-def _business_markdown_lines(item: dict[str, Any]) -> list[str]:
-    return [
-        f"- 授信机构：{item.get('institution_name') or '未识别'}",
-        f"  业务种类：{item.get('business_type') or '未识别'}",
-        f"  五级分类：{item.get('five_category') or '未识别'}",
-        f"  账户数：{item.get('account_count') if item.get('account_count') is not None else '未识别'}",
-        f"  余额：{_fmt_amount(item.get('balance'))} 万元",
-    ]
-
-
 def agent_result_to_legacy_extraction(agent_result: dict[str, Any]) -> tuple[dict[str, Any], str]:
     meta = agent_result.get("report_meta") or {}
     summary = agent_result.get("credit_summary") or {}
@@ -186,6 +138,33 @@ def agent_result_to_legacy_extraction(agent_result: dict[str, Any]) -> tuple[dic
         "agent_result": agent_result,
     }
     return extracted_json, build_markdown(agent_result)
+
+
+def _loan_markdown_lines(loans: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for loan in loans:
+        lines.extend([
+            f"  - 机构：{loan.get('institution_name') or '未识别'}",
+            f"    业务：{loan.get('business_type') or '未识别'}",
+            f"    担保方式：{loan.get('guarantee_type') or '未识别'}",
+            f"    借款金额：{_fmt_amount(loan.get('loan_amount'))} 万元",
+            f"    余额：{_fmt_amount(loan.get('balance'))} 万元",
+            f"    开立日期：{loan.get('start_date') or '未识别'}",
+            f"    到期日：{loan.get('end_date') or '未识别'}",
+            f"    五级分类：{loan.get('five_category') or '未识别'}",
+            f"    逾期月数：{loan.get('overdue_months') if loan.get('overdue_months') is not None else 0}",
+        ])
+    return lines
+
+
+def _business_markdown_lines(item: dict[str, Any]) -> list[str]:
+    return [
+        f"- 授信机构：{item.get('institution_name') or '未识别'}",
+        f"  业务种类：{item.get('business_type') or '未识别'}",
+        f"  五级分类：{item.get('five_category') or '未识别'}",
+        f"  账户数：{item.get('account_count') if item.get('account_count') is not None else '未识别'}",
+        f"  余额：{_fmt_amount(item.get('balance'))} 万元",
+    ]
 
 
 def _legacy_from_agent_loan(loan: dict[str, Any], term_type: str) -> dict[str, Any]:

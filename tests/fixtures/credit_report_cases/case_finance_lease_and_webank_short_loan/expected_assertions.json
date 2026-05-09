@@ -1,0 +1,27 @@
+{
+  "short_term_must_include": [
+    {
+      "institution_name": "浙江网商银行股份有限公司",
+      "business_type": "流动资金贷款",
+      "loan_amount": 30,
+      "balance": 5,
+      "guarantee_type": "保证"
+    }
+  ],
+  "short_term_must_not_include_business_keywords": [
+    "融资型租赁",
+    "融资租赁"
+  ],
+  "medium_long_or_lease_must_include": [
+    {
+      "business_type": "融资型租赁",
+      "loan_amount": 400,
+      "balance": 327.5
+    }
+  ],
+  "invalid_institution_names_forbidden": [
+    "公司",
+    "有限公司",
+    "股份有限公司"
+  ]
+}

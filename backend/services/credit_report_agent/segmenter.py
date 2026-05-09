@@ -23,6 +23,10 @@ def normalize_text(text: str) -> str:
     if not text:
         return ""
     text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("账户编\n号", "账户编号")
+    text = text.replace("账户编 号", "账户编号")
+    text = text.replace("账户 编号", "账户编号")
+    text = text.replace("号授信机构", "号 授信机构")
     text = re.sub(r"第\s*\d+\s*页\s*/\s*共\s*\d+\s*页", "\n", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -33,21 +37,23 @@ def compact_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
 
-def _find_first(text: str, patterns: list[str], start: int = 0) -> re.Match[str] | None:
+def _first_match(text: str, patterns: list[str], start: int = 0) -> re.Match[str] | None:
     best: re.Match[str] | None = None
+    best_pos = -1
     for pattern in patterns:
         match = re.search(pattern, text[start:], re.S)
         if not match:
             continue
-        abs_start = start + match.start()
-        if best is None or abs_start < start + best.start():
+        pos = start + match.start()
+        if best is None or pos < best_pos:
             best = match
+            best_pos = pos
     return best
 
 
 def extract_section_by_title(text: str, start_patterns: list[str], end_patterns: list[str]) -> str:
     text = normalize_text(text)
-    match = _find_first(text, start_patterns)
+    match = _first_match(text, start_patterns)
     if not match:
         return ""
     start = match.start()
@@ -62,16 +68,18 @@ def extract_section_by_title(text: str, start_patterns: list[str], end_patterns:
 
 def extract_unsettled_section(raw_text: str) -> str:
     text = normalize_text(raw_text)
-    match = re.search(r"未结清信贷", text)
-    if not match:
+    start = text.find("未结清信贷")
+    if start == -1:
         return ""
-    section = text[match.start():]
-    end = len(section)
-    for pattern in [r"已结清信贷", r"公共记录明细", r"非信贷交易明细", r"附件\s*1"]:
-        m = re.search(pattern, section[1:], re.S)
-        if m:
-            end = min(end, 1 + m.start())
-    return section[:end].strip()
+    end_candidates = [
+        text.find("已结清信贷", start + 1),
+        text.find("公共记录明细", start + 1),
+        text.find("非信贷交易明细", start + 1),
+        text.find("附件1", start + 1),
+    ]
+    ends = [pos for pos in end_candidates if pos != -1]
+    end = min(ends) if ends else len(text)
+    return text[start:end].strip()
 
 
 def extract_loan_subsection(unsettled_text: str, title: str) -> tuple[str, int]:
@@ -92,6 +100,7 @@ def extract_loan_subsection(unsettled_text: str, title: str) -> tuple[str, int]:
         "授信信息",
         "已结清信贷",
         "公共记录明细",
+        "非信贷交易明细",
     ]
     for next_title in next_titles:
         if next_title == title:
@@ -108,8 +117,7 @@ def extract_credit_limit_section(raw_text: str) -> tuple[str, int]:
     if not match:
         return "", 0
     expected = int(match.group(1))
-    # Credit lines often cross page headers that contain "已结清信贷"; take a bounded
-    # window and stop by expected count during parsing rather than truncating early.
+    # 授信表可能跨页且页眉可能包含“已结清信贷”，这里取有界窗口，解析端按 expected count 控制。
     section = text[match.start(): match.start() + 12000]
     section = re.sub(r"\n\s*已结清信贷\s*\n", "\n", section)
     return section.strip(), expected
