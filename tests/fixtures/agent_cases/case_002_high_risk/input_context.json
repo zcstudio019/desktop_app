@@ -1,0 +1,59 @@
+{
+  "customer_profile": {
+    "customer_id": "case_002_high_risk",
+    "name": "高风险样本有限公司",
+    "legal_person": "李四",
+    "phone": "13987654321",
+    "unified_social_credit_code": "91310000MA87654321"
+  },
+  "documents": {
+    "count": 2,
+    "items": [
+      {"doc_id": "d1", "file_name": "营业执照.pdf", "document_type": "business_license"},
+      {"doc_id": "d2", "file_name": "企业征信.pdf", "document_type": "enterprise_credit"}
+    ]
+  },
+  "extractions": [
+    {
+      "extraction_id": "e1",
+      "doc_id": "d2",
+      "extraction_type": "enterprise_credit",
+      "extracted_data": {"schema_version": "enterprise_credit.agent.v1"}
+    }
+  ],
+  "enterprise_credit": {
+    "schema_version": "enterprise_credit.agent.v1",
+    "credit_summary": {
+      "active_borrowing_balance": 2860,
+      "short_term_loan_balance": 2100,
+      "medium_long_term_loan_balance": 760,
+      "guarantee_balance": 300,
+      "current_active_credit_institution_count": 8
+    },
+    "active_loans": [
+      {
+        "bank": "甲银行股份有限公司",
+        "biz_type": "流动资金贷款",
+        "loan_amount": "500",
+        "balance": "500",
+        "open_date": "2026-01-01",
+        "due_date": "2026-06-01",
+        "five_classification": "正常",
+        "overdue_months": "0"
+      },
+      {
+        "bank": "乙银行股份有限公司",
+        "biz_type": "流动资金贷款",
+        "loan_amount": "300",
+        "balance": "300",
+        "open_date": "2026-01-02",
+        "due_date": "2026-06-02",
+        "five_classification": "关注",
+        "overdue_months": "1"
+      }
+    ],
+    "credit_facilities": [
+      {"institution": "甲银行股份有限公司", "credit_type": "综合授信", "credit_amount": "1000", "used_amount": "980"}
+    ]
+  }
+}

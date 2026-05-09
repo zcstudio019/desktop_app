@@ -1,0 +1,55 @@
+{
+  "case_name": "case_002_high_risk",
+  "estimated_amount_range": "暂不建议给出额度，需结合银行政策复核",
+  "financing_agent_fallback_used": false,
+  "financing_agent_llm_used": false,
+  "forbidden_terms_found": [],
+  "has_disclaimer": true,
+  "missing_optional_materials": [
+    "主要合同",
+    "房产/资产证明",
+    "经营场地证明"
+  ],
+  "missing_required_materials": [
+    "法人身份证",
+    "财务报表",
+    "近12个月开票",
+    "近12个月纳税",
+    "近12个月银行流水"
+  ],
+  "next_actions_count": 3,
+  "risk_agent_fallback_used": false,
+  "risk_agent_llm_used": false,
+  "risk_count": 4,
+  "risk_level": "high",
+  "risk_types": [
+    "多头授信",
+    "对外担保风险",
+    "授信使用率过高",
+    "逾期或分类异常"
+  ],
+  "strengths_count": 2,
+  "version_fingerprint": {
+    "compliance_guard_hash": "f3dd596b65dc",
+    "model_config": {
+      "max_tokens": 4096,
+      "model": "deepseek-chat",
+      "provider": "AIService",
+      "temperature": null
+    },
+    "prompt_hashes": {
+      "FinancingJudgementAgent": "440065fb082d",
+      "RiskAgent": "5627a31aa2b8"
+    },
+    "rule_hashes": {
+      "CreditAnalysisAgent": "3bc73ce3cc37",
+      "MissingMaterialAgent": "c2628237da5b",
+      "RiskAgent": "9c80e893d97f"
+    },
+    "schema_hashes": {
+      "FinancingJudgementAgent": "96cbbf1f68be",
+      "RiskAgent": "d82e05b88210"
+    }
+  },
+  "weaknesses_count": 2
+}

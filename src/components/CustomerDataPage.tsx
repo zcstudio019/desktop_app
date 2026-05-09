@@ -10,8 +10,10 @@ import {
   getCustomerDocuments,
   getCustomerExtractions,
   getCustomerProfileMarkdown,
+  getLatestFinancingAgent,
   listCustomers,
   previewDocumentOriginal,
+  runFinancingAgent,
   updateCustomerProfileMarkdown,
 } from '../services/api';
 import type { CustomerDocumentListItem, CustomerListItem, CustomerProfileMarkdownResponse, ExtractionGroup, ExtractionItem } from '../services/types';
@@ -2011,6 +2013,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [documents, setDocuments] = useState<CustomerDocumentListItem[]>([]);
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentResult, setAgentResult] = useState<Record<string, unknown> | null>(null);
   const [collapsedDocumentGroups, setCollapsedDocumentGroups] = useState<Record<string, boolean>>({});
   const [showConsistentFields, setShowConsistentFields] = useState(false);
   const [focusedConflictDocId, setFocusedConflictDocId] = useState('');
@@ -2024,6 +2028,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const highlightFileName = urlParams.get('highlight_file_name') || '';
   const currentAuthUsername = useMemo(() => localStorage.getItem('auth_username') || '', []);
   const currentAuthRole = useMemo(() => localStorage.getItem('auth_role') || '', []);
+
+  const loadLatestAgent = useCallback(async (customerId: string) => {
+    try {
+      const result = await getLatestFinancingAgent(customerId);
+      setAgentResult(result);
+    } catch (err) {
+      console.warn('加载融资 Agent 结果失败', err);
+      setAgentResult(null);
+    }
+  }, []);
 
   const clearCustomerUrlParams = useCallback(() => {
     const url = new URL(window.location.href);
@@ -2189,10 +2203,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     void loadProfile(selectedCustomerId);
     void loadDocuments(selectedCustomerId);
     void loadExtractions(selectedCustomerId);
+    void loadLatestAgent(selectedCustomerId);
   }, [
     clearCurrentCustomerData,
     clearCustomerUrlParams,
     customers,
+    loadLatestAgent,
     loadingCustomers,
     selectedCustomerId,
     loadDocuments,
@@ -2205,6 +2221,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     () => customers.find((item) => item.record_id === selectedCustomerId) ?? null,
     [customers, selectedCustomerId]
   );
+
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearch.trim().toLowerCase();
     if (!keyword) {
@@ -2589,6 +2606,23 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     }
   }, [draft, recordSystemActivity, selectedCustomer, selectedCustomerId]);
 
+  const handleRunAgent = useCallback(async () => {
+    if (!selectedCustomerId) return;
+    setAgentRunning(true);
+    setError(null);
+    try {
+      const result = await runFinancingAgent(selectedCustomerId, 'full');
+      setAgentResult(result);
+      if (result.success === false) {
+        setError(String(result.error_message || '融资 Agent 未能运行'));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '运行融资 Agent 失败');
+    } finally {
+      setAgentRunning(false);
+    }
+  }, [selectedCustomerId]);
+
   const handleDeleteProfile = useCallback(async () => {
     if (!selectedCustomerId) return;
     const confirmed = window.confirm('确认回到系统整理稿吗？系统会立刻重新生成一份最新资料汇总。');
@@ -2728,6 +2762,27 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     }, 3200);
     return () => window.clearTimeout(timer);
   }, [focusedConflictDocId]);
+
+  const agentReport = useMemo(() => {
+    const result = agentResult || {};
+    return ((result.report as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+  }, [agentResult]);
+
+  const agentRiskLevel = useMemo(() => {
+    const risk = (agentReport.risk_agent as Record<string, unknown> | undefined) || {};
+    return String(risk.risk_level || 'unknown');
+  }, [agentReport]);
+
+  const agentMissingCount = useMemo(() => {
+    const missing = (agentReport.missing_material_agent as Record<string, unknown> | undefined) || {};
+    return Array.isArray(missing.required_materials) ? missing.required_materials.length : 0;
+  }, [agentReport]);
+
+  const agentJudgementText = useMemo(() => {
+    const judgementAgent = (agentReport.financing_judgement_agent as Record<string, unknown> | undefined) || {};
+    const judgement = (judgementAgent.judgement as Record<string, unknown> | undefined) || {};
+    return String(judgement.overall_opinion || '');
+  }, [agentReport]);
 
   const handleRecommendedAction = useCallback((action: ActionType) => {
     if (!selectedCustomerId) {
@@ -2912,6 +2967,14 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             </button>
             <button
               type="button"
+              onClick={() => void handleRunAgent()}
+              disabled={!selectedCustomerId || agentRunning}
+              className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {agentRunning ? 'Agent运行中...' : '运行AI融资Agent'}
+            </button>
+            <button
+              type="button"
               onClick={() => void handleSave()}
               disabled={!selectedCustomerId || saving || !isDirty}
               className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white shadow-sm shadow-blue-200 transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2977,6 +3040,38 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             nextStep={profileFeedback.nextStep}
           />
         </div>
+
+        {selectedCustomerId && agentResult ? (
+          <section className="border-b border-indigo-100 bg-indigo-50/50 px-6 py-4">
+            <div className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">AI融资Agent结果</h3>
+                  <p className="mt-1 text-xs text-slate-500">基于当前客户资料、结构化征信和资料完整性生成。</p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-indigo-700">
+                    风险：{agentRiskLevel}
+                  </span>
+                  <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-700">
+                    缺失资料：{agentMissingCount}
+                  </span>
+                </div>
+              </div>
+              {agentJudgementText ? (
+                <p className="mt-3 text-sm leading-6 text-slate-700">{agentJudgementText}</p>
+              ) : (
+                <p className="mt-3 text-sm text-slate-500">暂无融资初判摘要，请点击“运行AI融资Agent”。</p>
+              )}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs font-medium text-indigo-700">查看JSON结果</summary>
+                <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-slate-100">
+                  {JSON.stringify(agentReport || agentResult, null, 2)}
+                </pre>
+              </details>
+            </div>
+          </section>
+        ) : null}
 
         {selectedCustomerId ? (
           <section className="border-b border-slate-200 bg-white px-6 py-5">

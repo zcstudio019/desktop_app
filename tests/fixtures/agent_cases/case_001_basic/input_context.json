@@ -1,0 +1,68 @@
+{
+  "customer_profile": {
+    "customer_id": "case_001_basic",
+    "name": "测试科技有限公司",
+    "legal_person": "张三",
+    "phone": "13812345678",
+    "unified_social_credit_code": "91310000MA12345678",
+    "registered_address": "上海市浦东新区测试路100号"
+  },
+  "documents": {
+    "count": 5,
+    "items": [
+      {"doc_id": "d1", "file_name": "营业执照.pdf", "document_type": "business_license"},
+      {"doc_id": "d2", "file_name": "企业征信.pdf", "document_type": "enterprise_credit"},
+      {"doc_id": "d3", "file_name": "银行流水.pdf", "document_type": "bank_statement"},
+      {"doc_id": "d4", "file_name": "纳税.pdf", "document_type": "tax"},
+      {"doc_id": "d5", "file_name": "财务报表.pdf", "document_type": "financial_report"}
+    ]
+  },
+  "extractions": [
+    {
+      "extraction_id": "e1",
+      "doc_id": "d2",
+      "extraction_type": "enterprise_credit",
+      "extracted_data": {"schema_version": "enterprise_credit.agent.v1"}
+    }
+  ],
+  "enterprise_credit": {
+    "schema_version": "enterprise_credit.agent.v1",
+    "credit_summary": {
+      "active_borrowing_balance": 320,
+      "short_term_loan_balance": 320,
+      "medium_long_term_loan_balance": 0,
+      "guarantee_balance": 0,
+      "current_active_credit_institution_count": 2
+    },
+    "active_loans": [
+      {
+        "bank": "测试银行股份有限公司",
+        "biz_type": "流动资金贷款",
+        "loan_amount": "200",
+        "balance": "200",
+        "open_date": "2026-01-01",
+        "due_date": "2027-01-01",
+        "five_classification": "正常",
+        "overdue_months": "0"
+      },
+      {
+        "bank": "样例银行股份有限公司",
+        "biz_type": "流动资金贷款",
+        "loan_amount": "120",
+        "balance": "120",
+        "open_date": "2026-02-01",
+        "due_date": "2027-02-01",
+        "five_classification": "正常",
+        "overdue_months": "0"
+      }
+    ],
+    "credit_facilities": [
+      {
+        "institution": "测试银行股份有限公司",
+        "credit_type": "综合授信",
+        "credit_amount": "500",
+        "used_amount": "200"
+      }
+    ]
+  }
+}

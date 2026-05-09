@@ -1,0 +1,43 @@
+{
+  "total_cases": 3,
+  "passed_cases": 3,
+  "failed_cases": 0,
+  "drift_cases": 0,
+  "critical_drift_cases": 0,
+  "high_drift_cases": 0,
+  "average_risk_count": 1.33,
+  "llm_usage_rate": 0.0,
+  "fallback_rate": 0.0,
+  "validation_error_rate": 0.0,
+  "compliance_warning_rate": 0.0,
+  "average_retry_count": 0,
+  "version_fingerprint": {
+    "generated_at": "2026-05-09T08:58:49.997017+00:00",
+    "git_commit": "ee2e6631f6f6a9e456788d9085825c6fb9c93cc2",
+    "git_branch": "main",
+    "python_version": "3.11.9",
+    "app_version": "1.1.6",
+    "agent_version": "agent-platform-v1",
+    "model_config": {
+      "provider": "AIService",
+      "model": "deepseek-chat",
+      "temperature": null,
+      "max_tokens": 4096
+    },
+    "prompt_hashes": {
+      "RiskAgent": "5627a31aa2b8",
+      "FinancingJudgementAgent": "440065fb082d"
+    },
+    "schema_hashes": {
+      "RiskAgent": "d82e05b88210",
+      "FinancingJudgementAgent": "96cbbf1f68be"
+    },
+    "rule_hashes": {
+      "RiskAgent": "9c80e893d97f",
+      "CreditAnalysisAgent": "3bc73ce3cc37",
+      "MissingMaterialAgent": "c2628237da5b"
+    },
+    "compliance_guard_hash": "f3dd596b65dc",
+    "snapshot_version": "v1"
+  }
+}

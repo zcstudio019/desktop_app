@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime
 from typing import Any
@@ -4879,6 +4880,32 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
         try:
             raw_text = _normalize_text(input_data.raw_text or "")
             enterprise_name = safe_extract_enterprise_name(raw_text)
+            if os.getenv("USE_CREDIT_REPORT_AGENT", "false").lower() in {"1", "true", "yes", "on"}:
+                try:
+                    from backend.services.credit_report_agent.normalizer import agent_result_to_legacy_extraction
+                    from backend.services.credit_report_agent.orchestrator import extract_enterprise_credit_report_agent
+
+                    agent_result = extract_enterprise_credit_report_agent(
+                        file_path=input_data.file_path,
+                        raw_text=raw_text,
+                        customer_id=input_data.customer_id,
+                    )
+                    extracted_json, markdown_summary = agent_result_to_legacy_extraction(agent_result)
+                    validation = agent_result.get("validation") or {}
+                    confidence = (agent_result.get("confidence") or {}).get("overall")
+                    return ExtractionResult(
+                        document_type=self.document_type,
+                        schema_version="enterprise_credit.agent.v1",
+                        extracted_json=extracted_json,
+                        markdown_summary=markdown_summary,
+                        confidence=float(confidence or 0.0),
+                        warnings=list(validation.get("warnings") or []),
+                        errors=list(validation.get("errors") or []),
+                        skill_name="enterprise_credit_agent",
+                        skill_version="v1",
+                    )
+                except Exception:
+                    logger.exception("[EnterpriseCredit][Agent] failed, fallback to legacy parser")
             raw_pages = input_data.metadata.get("raw_pages") or []
             lines = [_clean_value(line) for line in raw_text.split("\n")]
             lines = [line for line in lines if line and not re.fullmatch(r"第?\s*\d+\s*页(?:/共\s*\d+\s*页)?", line)]

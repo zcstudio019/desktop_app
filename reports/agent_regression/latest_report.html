@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Agent Regression Report</title>
+<style>
+body { margin: 0; padding: 32px; background: #10141f; color: #e6edf7; font-family: 'Segoe UI', sans-serif; }
+.card { background: #171d2b; border: 1px solid #283248; border-radius: 16px; padding: 24px; margin-bottom: 20px; }
+h1, h2 { margin-top: 0; }
+.score { font-size: 42px; font-weight: 800; color: #64d68a; }
+table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 12px; }
+th, td { padding: 12px; border-bottom: 1px solid #2a344d; text-align: left; }
+th { color: #9fb3d9; background: #1e2638; }
+.ok { color: #64d68a; font-weight: 700; }
+.warn { color: #ffd166; font-weight: 700; }
+.bad { color: #ff6b6b; font-weight: 700; }
+pre { white-space: pre-wrap; background: #0c1019; border-radius: 12px; padding: 16px; color: #d9e6ff; }
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Agent Regression Report</h1>
+<div>Generated At: 2026-05-09T08:58:49.996019+00:00</div>
+<div>Mode: Rule</div>
+<div>Overall Stability Score</div>
+<div class="score">100</div>
+</div>
+<div class="card">
+<h2>Version Fingerprint</h2>
+<table><tr><th>Commit</th><td>ee2e6631f6f6a9e456788d9085825c6fb9c93cc2</td></tr><tr><th>Branch</th><td>main</td></tr><tr><th>App Version</th><td>1.1.6</td></tr><tr><th>Model</th><td>deepseek-chat</td></tr><tr><th>RiskAgent Prompt Hash</th><td>5627a31aa2b8</td></tr><tr><th>FinancingJudgementAgent Prompt Hash</th><td>440065fb082d</td></tr><tr><th>RiskAgent Schema Hash</th><td>d82e05b88210</td></tr><tr><th>FinancingJudgementAgent Schema Hash</th><td>96cbbf1f68be</td></tr><tr><th>RiskAgent Rule Hash</th><td>9c80e893d97f</td></tr><tr><th>Compliance Guard Hash</th><td>f3dd596b65dc</td></tr><tr><th>Snapshot Version</th><td>v1</td></tr></table>
+</div>
+<div class="card">
+<h2>Fingerprint Changes</h2>
+<table>
+<thead><tr><th>Item</th><th>Previous</th><th>Current</th><th>Changed</th></tr></thead>
+<tbody><tr><td>Model</td><td>deepseek-chat</td><td>deepseek-chat</td><td>—</td></tr><tr><td>RiskAgent Prompt</td><td>5627a31aa2b8</td><td>5627a31aa2b8</td><td>—</td></tr><tr><td>FinancingJudgementAgent Prompt</td><td>440065fb082d</td><td>440065fb082d</td><td>—</td></tr><tr><td>RiskAgent Schema</td><td>d82e05b88210</td><td>d82e05b88210</td><td>—</td></tr><tr><td>FinancingJudgementAgent Schema</td><td>96cbbf1f68be</td><td>96cbbf1f68be</td><td>—</td></tr><tr><td>RiskAgent Rule</td><td>9c80e893d97f</td><td>9c80e893d97f</td><td>—</td></tr><tr><td>Compliance Guard</td><td>f3dd596b65dc</td><td>f3dd596b65dc</td><td>—</td></tr></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Cases</h2>
+<table>
+<thead><tr><th>Case</th><th>Regression</th><th>Snapshot</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>Possible Causes</th></tr></thead>
+<tbody><tr><td>case_001_basic</td><td>PASS</td><td class='ok'>STABLE</td><td>0</td><td>0</td><td>0</td><td>0</td><td>-</td></tr><tr><td>case_002_high_risk</td><td>PASS</td><td class='ok'>STABLE</td><td>0</td><td>0</td><td>0</td><td>0</td><td>-</td></tr><tr><td>case_003_missing_materials</td><td>PASS</td><td class='ok'>STABLE</td><td>0</td><td>0</td><td>0</td><td>0</td><td>-</td></tr></tbody>
+</table>
+</div>
+<div class="card">
+<h2>Markdown Detail</h2>
+<pre># Agent Regression Report
+
+- Generated At: 2026-05-09T08:58:49.996019+00:00
+- Mode: Rule
+- Total Cases: 3
+- Passed: 3
+- Failed: 0
+- Drift Cases: 0
+- Overall Stability Score: **100**
+
+## Version Fingerprint
+
+| Item | Value |
+|------|-------|
+| Commit | ee2e6631f6f6a9e456788d9085825c6fb9c93cc2 |
+| Branch | main |
+| App Version | 1.1.6 |
+| Model | deepseek-chat |
+| RiskAgent Prompt Hash | 5627a31aa2b8 |
+| FinancingJudgementAgent Prompt Hash | 440065fb082d |
+| RiskAgent Schema Hash | d82e05b88210 |
+| FinancingJudgementAgent Schema Hash | 96cbbf1f68be |
+| RiskAgent Rule Hash | 9c80e893d97f |
+| Compliance Guard Hash | f3dd596b65dc |
+| Snapshot Version | v1 |
+
+## Fingerprint Changes
+
+| Item | Previous | Current | Changed |
+|------|----------|---------|---------|
+| Model | deepseek-chat | deepseek-chat | — |
+| RiskAgent Prompt | 5627a31aa2b8 | 5627a31aa2b8 | — |
+| FinancingJudgementAgent Prompt | 440065fb082d | 440065fb082d | — |
+| RiskAgent Schema | d82e05b88210 | d82e05b88210 | — |
+| FinancingJudgementAgent Schema | 96cbbf1f68be | 96cbbf1f68be | — |
+| RiskAgent Rule | 9c80e893d97f | 9c80e893d97f | — |
+| Compliance Guard | f3dd596b65dc | f3dd596b65dc | — |
+
+## Case List
+
+| Case | Regression | Snapshot | Critical | High | Medium | Low | Possible Causes |
+|------|------------|----------|----------|------|--------|-----|-----------------|
+| case_001_basic | ✅ PASS | 🟢 STABLE | 0 | 0 | 0 | 0 | - |
+| case_002_high_risk | ✅ PASS | 🟢 STABLE | 0 | 0 | 0 | 0 | - |
+| case_003_missing_materials | ✅ PASS | 🟢 STABLE | 0 | 0 | 0 | 0 | - |
+
+## Critical Drift
+
+- None
+
+## High Drift
+
+- None
+
+## Compliance Warnings
+
+- None
+
+## Validation Errors
+
+- None
+
+## LLM Usage Summary
+
+| Agent | LLM Used | Fallback Used | Retry Count |
+|-------|----------|---------------|-------------|
+| RiskAgent | False | False | 0 |
+| FinancingJudgementAgent | False | False | 0 |
+| RiskAgent | False | False | 0 |
+| FinancingJudgementAgent | False | False | 0 |
+| RiskAgent | False | False | 0 |
+| FinancingJudgementAgent | False | False | 0 |
+
+## Top Risks
+
+- case_002_high_risk: 授信使用率过高
+- case_002_high_risk: 多头授信
+- case_002_high_risk: 对外担保风险
+- case_002_high_risk: 逾期或分类异常
+
+## Fallback Summary
+
+- None
+</pre>
+</div>
+</body>
+</html>

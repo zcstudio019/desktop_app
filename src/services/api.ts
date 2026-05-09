@@ -961,6 +961,32 @@ export async function generateCustomerRiskReport(
   return handleResponse<CustomerRiskReportResponse>(response);
 }
 
+export async function runFinancingAgent(
+  customerId: string,
+  taskType = 'full',
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/agent/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ task_type: taskType }),
+    signal,
+  });
+  return handleResponse<Record<string, unknown>>(response);
+}
+
+export async function getLatestFinancingAgent(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/agent/latest`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<Record<string, unknown>>(response);
+}
+
 export async function createCustomerRiskReportJob(
   customerId: string,
   signal?: AbortSignal

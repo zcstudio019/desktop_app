@@ -50,6 +50,7 @@ from backend.services.markdown_profile_service import get_or_create_customer_pro
 from backend.services.product_cache_service import get_cache_content
 from backend.services.profile_sync_service import ProfileSyncService
 from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
+from backend.services.agents.agent_memory import build_customer_ai_context
 
 from ..middleware.auth import get_current_user_optional
 from ..models.schemas import (
@@ -1573,6 +1574,21 @@ async def _dispatch_intent(
             current_user=current_user,
         )
     else:
+        if request.customerId:
+            try:
+                agent_context = await build_customer_ai_context(request.customerId, storage_service)
+                conversation_history = [
+                    *conversation_history,
+                    {
+                        "role": "system",
+                        "content": (
+                            "客户Agent上下文（仅供参考，不要重新解析文件，不要承诺放款/利率）："
+                            + json.dumps(agent_context, ensure_ascii=False)[:4000]
+                        ),
+                    },
+                ]
+            except Exception as exc:
+                logger.warning("failed to attach agent context to chat: %s", exc)
         msg, reasoning = generate_chat_response(user_message, conversation_history)
         return {"message": msg, "data": None, "reasoning": reasoning}
 

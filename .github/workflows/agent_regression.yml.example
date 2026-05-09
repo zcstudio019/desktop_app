@@ -1,0 +1,60 @@
+name: Agent Regression
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "backend/services/agents/**"
+      - "backend/services/ai_service.py"
+      - "scripts/test_agent_regression.py"
+      - "tests/fixtures/agent_cases/**"
+      - "tests/snapshots/agent_cases/**"
+
+jobs:
+  agent-regression:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Python compile check
+        run: python -m compileall backend scripts tests
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Agent regression
+        env:
+          ENABLE_FINANCING_AGENT: "true"
+          ENABLE_AGENT_LLM: "false"
+          AGENT_DEBUG: "false"
+        run: python scripts/test_agent_regression.py --fail-on-drift --report --html-report --metrics
+
+      - name: Upload Agent reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-regression-reports
+          path: |
+            reports/agent_regression/
+            reports/agent_metrics/
+            data/agent_runs/

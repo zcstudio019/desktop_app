@@ -1,0 +1,13 @@
+{
+  "customer_profile": {
+    "customer_id": "case_003_missing_materials",
+    "name": "缺资料样本有限公司",
+    "legal_person": "王五"
+  },
+  "documents": {
+    "count": 0,
+    "items": []
+  },
+  "extractions": [],
+  "enterprise_credit": {}
+}

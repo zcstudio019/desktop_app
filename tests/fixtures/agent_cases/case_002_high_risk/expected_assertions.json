@@ -1,0 +1,8 @@
+{
+  "risk_level_in": ["high"],
+  "must_have_risk_types": ["多头授信", "授信使用率过高", "对外担保风险"],
+  "must_have_missing_materials": ["法人身份证", "近12个月银行流水", "近12个月纳税"],
+  "must_include_disclaimer": true,
+  "forbidden_terms": ["包过", "必下款", "保证放款", "无视征信", "最低利率"],
+  "estimated_amount_must_contain": ["粗略估算", "需结合银行政策复核"]
+}
