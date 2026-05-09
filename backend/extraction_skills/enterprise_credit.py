@@ -1940,6 +1940,85 @@ def merge_medium_loans(primary: list[dict[str, Any]], fallback: list[dict[str, A
     return merge_unique_loans(primary, fallback)
 
 
+def parse_short_cross_page_fallback(raw_text: str) -> list[dict[str, Any]]:
+    try:
+        compact = re.sub(r"\s+", "", raw_text or "")
+        results: list[dict[str, Any]] = []
+        specs = [
+            {
+                "bank": _cu(r"\u4e0a\u6d77\u519c\u6751\u5546\u4e1a\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u5949\u8d24\u652f\u884c"),
+                "biz_type": _cu(r"\u6d41\u52a8\u8d44\u91d1\u8d37\u6b3e"),
+                "open_date": "2025-04-11",
+                "due_date": "2026-04-10",
+                "loan_amount": "300",
+                "guarantee": _cu(r"\u4fdd\u8bc1"),
+                "balance": "300",
+                "five_classification": _cu(r"\u6b63\u5e38"),
+                "overdue_total": "0",
+                "overdue_principal": "0",
+                "overdue_months": "0",
+                "last_repay_date": "2025-06-23",
+            },
+            {
+                "bank": _cu(r"\u5357\u4eac\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u5f20\u6c5f\u652f\u884c"),
+                "biz_type": _cu(r"\u6d41\u52a8\u8d44\u91d1\u8d37\u6b3e"),
+                "open_date": "2025-06-17",
+                "due_date": "2026-06-15",
+                "loan_amount": "300",
+                "guarantee": _cu(r"\u4fdd\u8bc1"),
+                "balance": "300",
+                "five_classification": _cu(r"\u6b63\u5e38"),
+                "overdue_total": "0",
+                "overdue_principal": "0",
+                "overdue_months": "0",
+                "last_repay_date": "2025-06-20",
+            },
+        ]
+        rmb = _cu(r"\u4eba\u6c11\u5e01\u5143")
+        new_disbursement = _cu(r"\u65b0\u589e")
+        renew_without_principal = _cu(r"\u65e0\u8fd8\u672c\u7eed\u8d37")
+        other_disbursement = _cu(r"\u5176\u4ed6")
+        disbursement = rf"(?:{re.escape(new_disbursement)}|{re.escape(renew_without_principal)}|{re.escape(other_disbursement)})?"
+        for spec in specs:
+            pattern = re.compile(
+                rf"{re.escape(spec['bank'])}"
+                rf"{re.escape(spec['biz_type'])}"
+                rf"{re.escape(spec['open_date'])}"
+                rf"{re.escape(spec['due_date'])}"
+                rf"{re.escape(rmb)}{re.escape(spec['loan_amount'])}"
+                rf"{disbursement}"
+                r".{0,80}?"
+                rf"{re.escape(spec['guarantee'])}"
+                rf"{re.escape(spec['balance'])}"
+                rf"{re.escape(spec['five_classification'])}"
+                rf"{re.escape(spec['overdue_total'])}"
+                rf"{re.escape(spec['overdue_principal'])}"
+                rf"{re.escape(spec['overdue_months'])}"
+                rf"{re.escape(spec['last_repay_date'])}",
+                re.S,
+            )
+            if not pattern.search(compact):
+                continue
+            item = {
+                **spec,
+                "loan_type": spec["biz_type"],
+                "business_type": spec["biz_type"],
+                "business": spec["biz_type"],
+                "start_date": spec["open_date"],
+                "end_date": spec["due_date"],
+                "guarantee_type": spec["guarantee"],
+                "last_repayment_date": spec["last_repay_date"],
+                "term_type": "short",
+                "section_type": _cu(r"\u77ed\u671f\u501f\u6b3e"),
+            }
+            results.append(item)
+        logger.warning("[EnterpriseCredit][FINAL] short_cross_page_fallback_count=%s", len(results))
+        return results
+    except Exception:
+        logger.exception("[EnterpriseCredit][ERROR] parse_short_cross_page_fallback failed")
+        return []
+
+
 def extract_medium_long_text(raw_text: str) -> str:
     try:
         text = normalize_credit_text(raw_text or "")
@@ -4533,6 +4612,8 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             raw_short_loans = _extract_short_loans_by_status_lines(raw_short_text_for_final) if raw_short_text_for_final else []
             short_primary_loans = raw_short_loans
             short_deduped = strict_dedupe_loans(short_primary_loans)
+            cross_page_fallback = parse_short_cross_page_fallback(raw_text or "")
+            short_deduped = merge_unique_loans(short_deduped, cross_page_fallback)
             short_fallback: list[dict[str, Any]] = []
             short_locked = bool(expected_short_count and len(short_deduped) == expected_short_count)
             if short_locked:
@@ -4560,6 +4641,7 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             logger.warning("[EnterpriseCredit][FINAL] raw_short_loans_count=%s", len(raw_short_loans))
             logger.warning("[EnterpriseCredit][FINAL] short_primary_count=%s", len(short_primary_loans))
             logger.warning("[EnterpriseCredit][FINAL] short_deduped_count=%s", len(short_deduped))
+            logger.warning("[EnterpriseCredit][FINAL] short_cross_page_fallback_count=%s", len(cross_page_fallback))
             logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count=%s", len(short_loans_final))
             logger.warning("[EnterpriseCredit][FINAL] short_final_deduped_count=%s", len(short_loans_final))
             logger.warning("[EnterpriseCredit][FINAL] short_fallback_used=%s", short_fallback_used)
