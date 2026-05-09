@@ -1,5 +1,5 @@
 export const VERSION_META = {
-  version: "V1.1.8",
+  version: "V1.2.0",
   releaseDate: "2026/05/09",
-  buildTime: "2026/05/09 17:19:17",
+  buildTime: "2026/05/09 17:31:47",
 } as const;

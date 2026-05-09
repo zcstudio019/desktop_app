@@ -1211,6 +1211,52 @@ async def delete_customer_profile_markdown(
     return {"success": True}
 
 
+@router.post("/{customer_id}/parse-credit-report")
+async def force_reparse_credit_report_profile(
+    customer_id: str,
+    force: bool = Query(False),
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Force rebuild the customer profile from current parsed materials.
+
+    This endpoint intentionally bypasses the saved profile cache. It does not
+    re-run OCR when the original file is unavailable, but it does rebuild the
+    enterprise-credit display through the latest final normalization layer.
+    """
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="当前模式暂不支持资料汇总 Markdown")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+
+    try:
+        if force:
+            await storage_service.delete_customer_profile(customer_id)
+        profile = await regenerate_customer_profile(storage_service, customer_id)
+        await profile_sync_service.handle_profile_markdown_saved(storage_service, customer_id)
+        markdown_content = (profile or {}).get("markdown_content") or ""
+        debug = {
+            "credit_parser_version": "credit-parser-fix-2026-05-09",
+            "parser_path": "profile_markdown_cached_result",
+            "force": force,
+            "contains_finance_lease_in_short_term": "短期借款" in markdown_content and "融资型租赁" in markdown_content,
+            "contains_invalid_institution_company": "机构：公司" in markdown_content,
+        }
+        logger.warning("[EnterpriseCredit][FORCE_REPARSE] customer_id=%s debug=%s", customer_id, debug)
+        return {
+            "success": True,
+            "customer_id": customer_id,
+            "profile_version": (profile or {}).get("version") or 1,
+            "parser_version": debug["credit_parser_version"],
+            "parser_debug": debug,
+        }
+    except Exception as exc:
+        logger.error("Failed to force reparse credit report profile for %s: %s", customer_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="强制刷新企业征信资料汇总失败") from exc
+
+
 @router.post("/{customer_id}/rag-chat", response_model=CustomerRagChatResponse)
 async def customer_rag_chat(
     customer_id: str,

@@ -1213,6 +1213,35 @@ async def _build_single_document_section(
             f'- 来源文件：{file_name}',
             f'- 原件状态：{original_status}',
         ]
+        try:
+            extracted_json_for_profile = extracted_data.get('extracted_json') or extracted_data.get('data') or {}
+            if isinstance(extracted_json_for_profile, dict) and extracted_json_for_profile:
+                from backend.extraction_skills.enterprise_credit import (
+                    CREDIT_PARSER_VERSION,
+                    _build_markdown_summary_v2,
+                    final_normalize_credit_result,
+                )
+
+                raw_text_for_profile = (
+                    extracted_data.get('raw_text')
+                    or extracted_json_for_profile.get('raw_text')
+                    or extracted_json_for_profile.get('raw_text_preview')
+                    or ''
+                )
+                extracted_json_for_profile = final_normalize_credit_result(
+                    extracted_json_for_profile,
+                    raw_text=str(raw_text_for_profile or ''),
+                    parser_path='profile_markdown_cached_result',
+                )
+                extracted_data['extracted_json'] = extracted_json_for_profile
+                extracted_data['markdown_summary'] = _build_markdown_summary_v2(extracted_json_for_profile)
+                logger.warning(
+                    "[EnterpriseCredit][PROFILE_DEBUG] parser_version=%s debug=%s",
+                    CREDIT_PARSER_VERSION,
+                    extracted_json_for_profile.get('credit_parser_debug'),
+                )
+        except Exception:
+            logger.exception("[EnterpriseCredit][PROFILE_DEBUG] final normalization failed")
         summary = str(
             extracted_data.get('markdown_summary')
             or extracted_data.get('markdown')
