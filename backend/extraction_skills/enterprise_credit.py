@@ -2767,6 +2767,10 @@ def parse_credit_limit_amounts(block: str) -> tuple[str, str, str]:
     return "", "", ""
 
 
+def credit_limit_type_pattern() -> str:
+    return r"综合授信|贷款|贸易融资|银行承兑汇票|信用证|保函|其他|保理|循环额度"
+
+
 def _build_credit_limit_record_from_match(match: re.Match[str]) -> dict[str, Any]:
     groupdict = match.groupdict()
     credit_amount = _normalize_numeric(groupdict.get("credit_amount")) or ""
@@ -2889,9 +2893,10 @@ def _parse_credit_limits_impl(section_text: str, expected_count: int = 0) -> lis
     compact = re.sub(r"(?:授信信息共\d+笔|授信信息)", "", compact)
     # Fallback for PDFs where the protocol number is too fragmented to split blocks.
     institution_pattern = r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}银行股份有限公司[\u4e00-\u9fa5A-Za-z0-9（）()]{0,40})"
+    credit_type_pattern = credit_limit_type_pattern()
     common_prefix = (
         institution_pattern
-        + r"(?P<credit_type>贷款|贸易融资|保理|循环额度)"
+        + rf"(?P<credit_type>{credit_type_pattern})"
         + r"(?P<is_revolving>是|否)"
         + r"(?P<effective_date>\d{4}-\d{2}-\d{2})"
         + r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
@@ -2996,7 +3001,8 @@ def parse_one_credit_limit_block(block: str) -> dict[str, Any] | None:
     compact = re.sub(r"\s+", "", str(block or ""))
     if not compact:
         return None
-    if not any(keyword in compact for keyword in ("贷款", "贸易融资", "保理", "循环额度")):
+    credit_type_pattern = credit_limit_type_pattern()
+    if not re.search(credit_type_pattern, compact):
         return None
     if "人民币元" not in compact or not re.search(r"\d{4}-\d{2}-\d{2}|长期", compact):
         return None
@@ -3006,7 +3012,7 @@ def parse_one_credit_limit_block(block: str) -> dict[str, Any] | None:
         return None
     body = compact[bank_start.start():]
     match = re.search(
-        r"(?P<institution>.+?)(?P<credit_type>贷款|贸易融资|保理|循环额度)(?P<is_revolving>是|否)",
+        rf"(?P<institution>.+?)(?P<credit_type>{credit_type_pattern})(?P<is_revolving>是|否)",
         body,
     )
     if not match:
