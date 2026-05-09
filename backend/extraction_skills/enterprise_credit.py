@@ -1589,6 +1589,100 @@ def extract_section_text_from_raw(raw_text: str, start_keywords: list[str], end_
     return section[:end_pos]
 
 
+def extract_unsettled_section(raw_text: str) -> str:
+    text = normalize_credit_text(raw_text or "")
+    start = text.find("未结清信贷")
+    if start == -1:
+        return ""
+    end_candidates = [
+        text.find("已结清信贷", start + 1),
+        text.find("公共记录明细", start + 1),
+        text.find("非信贷交易明细", start + 1),
+    ]
+    ends = [pos for pos in end_candidates if pos != -1]
+    end = min(ends) if ends else len(text)
+    return text[start:end]
+
+
+def extract_loan_subsection(unsettled_text: str, title: str) -> tuple[str, int]:
+    text = normalize_credit_text(unsettled_text or "")
+    match = re.search(rf"{re.escape(title)}\s*共\s*(\d+)\s*笔", text)
+    if not match:
+        return "", 0
+    expected = int(match.group(1))
+    start = match.start()
+    next_titles = [
+        "中长期借款",
+        "短期借款",
+        "循环透支",
+        "银行承兑汇票和信用证",
+        "银行保函及其他业务",
+        "授信信息",
+    ]
+    end = len(text)
+    for next_title in next_titles:
+        if next_title == title:
+            continue
+        next_match = re.search(rf"{re.escape(next_title)}\s*共\s*\d+\s*笔", text[start + 1:])
+        if next_match:
+            end = min(end, start + 1 + next_match.start())
+    return text[start:end], expected
+
+
+def parse_loan_rows(text: str, term_type: str) -> list[dict[str, Any]]:
+    compact = re.sub(r"\s+", "", normalize_credit_text(text or ""))
+    if not compact:
+        return []
+    pattern = re.compile(
+        r"(?P<account_no>[A-Z]\d+[A-Z0-9_-]*)?"
+        r"(?P<bank>[\u4e00-\u9fa5A-Za-z（）()]{2,80}?(?:村镇银行股份有限公司|银行股份有限公司|银行|小额贷款|消费金融|金融租赁|融资租赁|租赁有限公司)[\u4e00-\u9fa5A-Za-z（）()]{0,40}?)"
+        r"(?P<biz_type>流动资金贷款|固定资产贷款|融资型租赁|融资租赁|循环透支|贷款)"
+        r"(?P<open_date>\d{4}-\d{2}-\d{2})"
+        r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
+        r"人民币元"
+        r"(?P<loan_amount>\d+(?:\.\d+)?)"
+        r"(?:新增|无还本续贷|其他)?"
+        r"(?P<guarantee>信用/无担保|保证/保证金|保证|组合|抵押|质押|信用)"
+        r"(?P<balance>\d+(?:\.\d+)?)"
+        r"(?P<five_classification>正常|关注|次级|可疑|损失)"
+        r"(?P<overdue_total>\d+(?:\.\d+)?)"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)"
+        r"(?P<overdue_months>\d+)"
+    )
+    loans: list[dict[str, Any]] = []
+    for match in pattern.finditer(compact):
+        item = match.groupdict()
+        bank = clean_loan_institution_strict(item.get("bank") or "") or item.get("bank") or ""
+        biz_type = item.get("biz_type") or ""
+        loans.append(
+            {
+                "account_no": item.get("account_no") or "",
+                "bank": bank,
+                "institution": bank,
+                "biz_type": biz_type,
+                "loan_type": biz_type,
+                "business_type": biz_type,
+                "business": biz_type,
+                "open_date": item.get("open_date") or "",
+                "start_date": item.get("open_date") or "",
+                "due_date": item.get("due_date") or "",
+                "end_date": item.get("due_date") or "",
+                "loan_amount": _normalize_numeric(item.get("loan_amount")) or item.get("loan_amount") or "",
+                "balance": _normalize_numeric(item.get("balance")) or item.get("balance") or "",
+                "guarantee": item.get("guarantee") or "",
+                "guarantee_type": item.get("guarantee") or "",
+                "five_classification": item.get("five_classification") or "",
+                "overdue_amount": _normalize_numeric(item.get("overdue_total")) or item.get("overdue_total") or "",
+                "overdue_total": _normalize_numeric(item.get("overdue_total")) or item.get("overdue_total") or "",
+                "overdue_principal": _normalize_numeric(item.get("overdue_principal")) or item.get("overdue_principal") or "",
+                "overdue_months": item.get("overdue_months") or "0",
+                "term_type": term_type,
+                "section_type": "短期借款" if term_type == "short" else term_type,
+            }
+        )
+    return loans
+
+
 def clean_loan_institution_strict(raw: str) -> str:
     try:
         value = re.sub(r"\s+", "", str(raw or ""))
@@ -5012,87 +5106,28 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
             logger.warning("[EnterpriseCredit][FINAL] leasing_fallback_count=%s", len(medium_leasing_fallback))
             logger.warning("[EnterpriseCredit][FINAL] medium_loans_final_count=%s", len(medium_loans_final))
             logger.warning("[EnterpriseCredit][FINAL] medium_source=medium_loans_plus_leasing count=%s", len(medium_loans_final))
-            expected_short_count = short_count
-            raw_short_text_for_final = extract_short_text(raw_text or "")
-            raw_short_loans = _extract_short_loans_by_status_lines(raw_short_text_for_final) if raw_short_text_for_final else []
-            short_primary_loans = raw_short_loans
-            short_deduped = strict_dedupe_loans(short_primary_loans)
-            cross_page_fallback = parse_short_cross_page_fallback(raw_text or "")
-            short_deduped = merge_unique_loans(short_deduped, cross_page_fallback)
-            short_fallback: list[dict[str, Any]] = []
-            short_locked = bool(expected_short_count and len(short_deduped) == expected_short_count)
-            if short_locked:
-                short_loans_final = short_deduped
-                short_fallback_used = False
+            unsettled_text = extract_unsettled_section(raw_text or "")
+            short_text, expected_short_count = extract_loan_subsection(unsettled_text, "短期借款")
+            short_loans = parse_loan_rows(short_text, term_type="short")
+            short_loans_final = strict_dedupe_loans(short_loans)
+            if expected_short_count and len(short_loans_final) != expected_short_count:
                 logger.warning(
-                    "[EnterpriseCredit][FINAL] short_locked_skip_postprocess count=%s",
-                    len(short_loans_final),
-                )
-            else:
-                short_loans_final = short_deduped
-                if expected_short_count and len(short_loans_final) < expected_short_count:
-                    short_fallback = parse_open_loans_fallback(
-                        raw_text,
-                        _cu(r"\u77ed\u671f\u501f\u6b3e \u5171"),
-                        expected_short_count,
-                        "short",
-                    )
-                short_fallback_used = bool(short_fallback)
-                short_loans_final = merge_unique_loans(short_loans_final, short_fallback)
-                if expected_short_count and len(short_loans_final) > expected_short_count:
-                    short_loans_final = short_loans_final[:expected_short_count]
-            short_loans_final = patch_missing_short_cross_page_loans(short_loans_final, raw_text or "")
-            if expected_short_count and len(short_loans_final) > expected_short_count:
-                short_loans_final = short_loans_final[:expected_short_count]
-            short_loans_final = patch_missing_short_loans_before_markdown(raw_text or "", short_loans_final)
-            if expected_short_count and len(short_loans_final) > expected_short_count:
-                required_short_keys = {
-                    (
-                        _cu(r"\u4e0a\u6d77\u519c\u6751\u5546\u4e1a\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u5949\u8d24\u652f\u884c"),
-                        "2025-04-11",
-                        "2026-04-10",
-                        "300",
-                    ),
-                    (
-                        _cu(r"\u5357\u4eac\u94f6\u884c\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e0a\u6d77\u5f20\u6c5f\u652f\u884c"),
-                        "2025-06-17",
-                        "2026-06-15",
-                        "300",
-                    ),
-                }
-                required = [
-                    loan
-                    for loan in short_loans_final
-                    if (
-                        str(loan.get("bank") or loan.get("institution") or ""),
-                        str(loan.get("open_date") or loan.get("start_date") or ""),
-                        str(loan.get("due_date") or loan.get("end_date") or ""),
-                        str(loan.get("loan_amount") or ""),
-                    )
-                    in required_short_keys
-                ]
-                others = [
-                    loan
-                    for loan in short_loans_final
-                    if loan not in required
-                ]
-                short_loans_final = [*required, *others][:expected_short_count]
-            if expected_short_count and len(short_loans_final) < expected_short_count:
-                logger.error(
-                    "[EnterpriseCredit][FINAL] short loans still missing expected=%s actual=%s",
+                    "[EnterpriseCredit][WARN] short count mismatch expected=%s actual=%s names=%s",
                     expected_short_count,
                     len(short_loans_final),
+                    [
+                        (
+                            loan.get("bank"),
+                            loan.get("open_date"),
+                            loan.get("due_date"),
+                            loan.get("loan_amount"),
+                        )
+                        for loan in short_loans_final
+                    ],
                 )
             logger.warning("[EnterpriseCredit][FINAL] expected_short_count=%s", expected_short_count)
-            logger.warning("[EnterpriseCredit][FINAL] short_locked=%s", short_locked)
-            logger.warning("[EnterpriseCredit][FINAL] raw_short_loans_count=%s", len(raw_short_loans))
-            logger.warning("[EnterpriseCredit][FINAL] short_primary_count=%s", len(short_primary_loans))
-            logger.warning("[EnterpriseCredit][FINAL] short_deduped_count=%s", len(short_deduped))
-            logger.warning("[EnterpriseCredit][FINAL] short_cross_page_fallback_count=%s", len(cross_page_fallback))
             logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count=%s", len(short_loans_final))
-            logger.warning("[EnterpriseCredit][FINAL] short_final_deduped_count=%s", len(short_loans_final))
-            logger.warning("[EnterpriseCredit][FINAL] short_fallback_used=%s", short_fallback_used)
-            logger.warning("[EnterpriseCredit][FINAL] short_loans_final_count_after_patch=%s", len(short_loans_final))
+            logger.warning("[EnterpriseCredit][FINAL] short_source=unsettled_short_section_only count=%s", len(short_loans_final))
             logger.warning(
                 "[EnterpriseCredit][FINAL] short_names_dates=%s",
                 [
@@ -5105,14 +5140,6 @@ class EnterpriseCreditSkill(BaseExtractionSkill):
                     for loan in short_loans_final
                 ],
             )
-            logger.warning(
-                "[EnterpriseCredit][FINAL] short_expected=%s primary=%s deduped=%s final=%s",
-                expected_short_count,
-                len(short_primary_loans),
-                len(short_deduped),
-                len(short_loans_final),
-            )
-            logger.warning("[EnterpriseCredit][FINAL] short_source=short_loans_only count=%s", len(short_loans_final))
             revolving_fallback_loans = parse_open_loans_fallback(raw_text, _cu(r"\u5faa\u73af\u900f\u652f \u5171"), revolving_count, "revolving_overdraft")
             active_loans = [*short_loans_final, *medium_loans_final, *revolving_fallback_loans]
             logger.info("[DEBUG] active_loans_count=%s", len(active_loans))
