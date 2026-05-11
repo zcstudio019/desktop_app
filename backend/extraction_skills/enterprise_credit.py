@@ -4409,6 +4409,25 @@ def build_clean_identity(identity: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def clean_company_name(value: Any) -> str:
+    text = str(value or "").strip().replace("(", "（").replace(")", "）")
+    compact = re.sub(r"\s+", "", text)
+    for label in (
+        "中征码", "统一社会信用代码", "组织机构代码", "工商注册号", "纳税人识别号", "查询机构", "报告时间",
+        "涓緛鐮?", "缁熶竴绀句細淇＄敤浠ｇ爜", "缁勭粐鏈烘瀯浠ｇ爜", "宸ュ晢娉ㄥ唽鍙?", "绾崇◣浜鸿瘑鍒彿", "鏌ヨ鏈烘瀯", "鎶ュ憡鏃堕棿",
+    ):
+        idx = compact.find(label)
+        if idx != -1:
+            compact = compact[:idx]
+    match = re.search(r"[\u4e00-\u9fa5A-Za-z0-9（）()·]{4,140}(?:股份有限公司|有限公司|合伙企业|分公司|个体工商户)", compact)
+    if match:
+        return match.group(0)
+    legacy_match = re.search(r"[\u4e00-\u9fa5A-Za-z0-9锛堬級()]{4,100}鏈夐檺鍏徃", compact)
+    if legacy_match:
+        return legacy_match.group(0)
+    return compact
+
+
 def _find_active_row(rows: list[dict[str, Any]], *names: str) -> dict[str, Any]:
     for item in rows:
         row_type = str(item.get("type") or "")
@@ -4965,6 +4984,106 @@ def _parse_short_window_loans_for_final(raw_text: str) -> list[dict[str, Any]]:
     return loans
 
 
+def _extract_company_name_from_raw_for_final(raw_text: str) -> str:
+    text = str(raw_text or "")
+    if not text:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    labels = ("企业名称", "浼佷笟鍚嶇О")
+    stops = (
+        "中征码", "统一社会信用代码", "组织机构代码", "工商注册号", "纳税人识别号", "查询机构", "报告时间",
+        "涓緛鐮?", "缁熶竴绀句細淇＄敤浠ｇ爜", "缁勭粐鏈烘瀯浠ｇ爜", "宸ュ晢娉ㄥ唽鍙?", "绾崇◣浜鸿瘑鍒彿", "鏌ヨ鏈烘瀯", "鎶ュ憡鏃堕棿",
+    )
+    suffix_re = re.compile(r"(?:股份有限公司|有限公司|合伙企业|分公司|个体工商户|鏈夐檺鍏徃)")
+    for idx, line in enumerate(lines):
+        if not any(label in line for label in labels):
+            continue
+        current = line
+        for label in labels:
+            current = re.sub(rf".*?{re.escape(label)}\s*[:：锛歖]?\s*", "", current)
+        parts = [current]
+        for nxt in lines[idx + 1: idx + 4]:
+            if any(stop in nxt for stop in stops):
+                break
+            parts.append(nxt)
+            if suffix_re.search(clean_company_name("".join(parts))):
+                break
+        company = clean_company_name("".join(parts))
+        if company:
+            return company
+    compact = _final_text(text)
+    match = re.search(r"(?:企业名称|浼佷笟鍚嶇О)[:：锛歖]?([\u4e00-\u9fa5A-Za-z0-9（）()·]{4,140}(?:股份有限公司|有限公司|合伙企业|分公司|个体工商户))", compact)
+    return clean_company_name(match.group(1)) if match else ""
+
+
+def _extract_revolving_window_for_final(raw_text: str) -> str:
+    start_keywords = ["循环透支 共", "循环透支", "循环贷款", "循环额度", "循环授信透支", "寰幆閫忔敮 鍏?", "寰幆閫忔敮"]
+    end_keywords = [
+        "关注类余额", "不良类余额", "对外担保", "银行保函及其他业务", "相关还款责任", "授信信息", "公共记录", "查询记录", "报告说明",
+        "鍏虫敞", "涓嶈壇", "瀵瑰鎷呬繚", "閾惰淇濆嚱", "鎺堜俊淇℃伅", "鍏叡璁板綍", "鏌ヨ璁板綍", "鎶ュ憡璇存槑",
+    ]
+    section = extract_section_text_from_raw(raw_text, start_keywords, end_keywords)
+    logger.warning("[EnterpriseCredit][REVOLVING_SECTION] len=%s", len(section or ""))
+    return section
+
+
+def _parse_revolving_window_for_final(raw_text: str) -> list[dict[str, Any]]:
+    section = _extract_revolving_window_for_final(raw_text)
+    compact = _final_text(section)
+    if not compact:
+        return []
+    pattern = re.compile(
+        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()锛堬級]{2,100}(?:银行股份有限公司|閾惰鑲′唤鏈夐檺鍏徃|银行|閾惰)[\u4e00-\u9fa5A-Za-z0-9（）()锛堬級]{0,50})"
+        r"(?P<business_type>循环透支|循环贷款|循环额度|循环授信透支|寰幆閫忔敮|流动资金贷款|娴佸姩璧勯噾璐锋|贷款|璐锋)"
+        r"(?P<open_date>\d{4}-\d{2}-\d{2})"
+        r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期|闀挎湡)"
+        r"(?:人民币元|浜烘皯甯佸厓)"
+        r"(?P<amount>\d+(?:\.\d+)?)"
+        r"(?:新增|鏂板|其他|鍏朵粬|无还本续贷|鏃犺繕鏈画璐?)?"
+        r".{0,80}?"
+        r"(?P<guarantee>信用/无担保|保证/保证金|保证|组合|抵押|质押|信用|淇＄敤/鏃犳媴淇?|淇濊瘉/淇濊瘉閲?|淇濊瘉|缁勫悎|鎶垫娂|璐ㄦ娂|淇＄敤|其他|鍏朵粬)?"
+        r"(?P<balance>\d+(?:\.\d+)?)"
+        r"(?P<classification>正常|姝ｅ父|关注|鍏虫敞|次级|娆＄骇|可疑|鍙枒|损失|鎹熷け|违约|杩濈害|未分类|鏈垎绫?)"
+        r"(?P<overdue_total>\d+(?:\.\d+)?)"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)"
+        r"(?P<overdue_months>\d+)",
+        re.S,
+    )
+    loans: list[dict[str, Any]] = []
+    for match in pattern.finditer(compact):
+        bank = _recover_institution_from_text(match.group("institution")) or match.group("institution")
+        biz = match.group("business_type")
+        loans.append(
+            _sync_loan_aliases(
+                {
+                    "bank": bank,
+                    "institution": bank,
+                    "institution_name": bank,
+                    "biz_type": "循环透支" if "循环" in biz else biz,
+                    "loan_type": "循环透支" if "循环" in biz else biz,
+                    "business_type": "循环透支" if "循环" in biz else biz,
+                    "loan_amount": match.group("amount"),
+                    "balance": match.group("balance"),
+                    "open_date": match.group("open_date"),
+                    "start_date": match.group("open_date"),
+                    "due_date": match.group("due_date"),
+                    "end_date": match.group("due_date"),
+                    "guarantee": match.group("guarantee") or "",
+                    "guarantee_type": match.group("guarantee") or "",
+                    "five_classification": match.group("classification"),
+                    "five_category": match.group("classification"),
+                    "overdue_months": match.group("overdue_months") or "0",
+                    "term_type": "revolving_overdraft",
+                    "section_type": "循环透支",
+                    "source_section": "revolving_overdraft",
+                    "evidence_text": match.group(0),
+                }
+            )
+        )
+    logger.warning("[EnterpriseCredit][REVOLVING_SECTION] parsed=%s", len(loans))
+    return _dedupe_final_loans(loans)
+
+
 def final_normalize_credit_result(
     result: dict[str, Any] | None,
     *,
@@ -4983,6 +5102,15 @@ def final_normalize_credit_result(
             validation = {}
         errors = list(validation.get("errors") or data.get("validation_errors") or [])
         warnings = list(validation.get("warnings") or data.get("validation_warnings") or [])
+
+        raw_company_name = _extract_company_name_from_raw_for_final(raw_text)
+        if raw_company_name:
+            report_basic = dict(data.get("report_basic") or {})
+            identity_info = dict(data.get("identity_info") or {})
+            report_basic["company_name"] = raw_company_name
+            identity_info["company_name"] = raw_company_name
+            data["report_basic"] = report_basic
+            data["identity_info"] = identity_info
 
         short_candidates = _merge_loan_candidates(
             data.get("short_loans_final"),
@@ -5137,15 +5265,39 @@ def final_normalize_credit_result(
             for loan in normalized_short + normalized_medium
         )
 
-        revolving_loans = [
-            loan for loan in active_candidates
-            if isinstance(loan, dict) and loan_term_type(loan) == "revolving_overdraft"
-        ]
+        revolving_loans = _merge_loan_candidates(
+            data.get("revolving_loans"),
+            data.get("revolving_overdrafts"),
+            [
+                loan for loan in active_candidates
+                if isinstance(loan, dict) and loan_term_type(loan) == "revolving_overdraft"
+            ],
+        )
+        if not revolving_loans:
+            revolving_loans = _parse_revolving_window_for_final(raw_text)
+        revolving_loans = _dedupe_final_loans(
+            [
+                _sync_loan_aliases(
+                    {
+                        **loan,
+                        "term_type": "revolving_overdraft",
+                        "section_type": loan.get("section_type") or "循环透支",
+                    }
+                )
+                for loan in revolving_loans
+                if isinstance(loan, dict)
+            ]
+        )
+        revolving_balance_value = _to_float((data.get("credit_summary") or {}).get("revolving_overdraft_balance"))
+        if revolving_balance_value and not revolving_loans and "revolving_balance_without_details" not in warnings:
+            warnings.append("revolving_balance_without_details")
         data["short_loans"] = normalized_short
         data["short_loans_final"] = normalized_short
         data["medium_loans"] = normalized_medium
         data["long_term_loans"] = normalized_medium
         data["medium_loans_final"] = normalized_medium
+        data["revolving_loans"] = revolving_loans
+        data["revolving_overdrafts"] = revolving_loans
         data["active_loans"] = normalized_short + normalized_medium + revolving_loans
         data["credit_parser_version"] = CREDIT_PARSER_VERSION
         data["parser_path"] = parser_path
@@ -5218,7 +5370,11 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     short_loans = short_loans_final or [loan for loan in active_loans if loan_term_type(loan) == "short"]
     medium_loans_final = extracted_json.get("medium_loans_final") or extracted_json.get("medium_loans") or extracted_json.get("long_term_loans") or []
     medium_long_loans = medium_loans_final or [loan for loan in active_loans if loan_term_type(loan) == "medium_long"]
-    revolving_loans = [loan for loan in active_loans if loan_term_type(loan) == "revolving_overdraft"]
+    revolving_loans = (
+        extracted_json.get("revolving_loans")
+        or extracted_json.get("revolving_overdrafts")
+        or [loan for loan in active_loans if loan_term_type(loan) == "revolving_overdraft"]
+    )
     logger.warning("[EnterpriseCredit][DEBUG] markdown_short_final_count=%s", len(short_loans))
     logger.warning("[EnterpriseCredit][DEBUG] markdown_active_loans_count=%s", len(active_loans))
     short_balance = short_term.get("total_balance") or credit_summary.get("short_term_loan_balance") or _sum_loan_balances(short_loans)
@@ -5300,6 +5456,8 @@ def _build_markdown_summary_v2(extracted_json: dict[str, Any]) -> str:
     lines.append(f"- 循环透支余额：{_display(revolving_balance)}")
     if revolving_loans:
         lines.extend(format_loan_detail_lines(revolving_loans))
+    elif _to_float(revolving_balance):
+        lines.append("  - 暂未识别到循环透支明细（已记录校验提示：revolving_balance_without_details）")
     lines.extend(
         [
             f"- 关注类余额：{_display(credit_summary.get('active_special_mention_balance'))}",

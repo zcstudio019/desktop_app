@@ -1,0 +1,12 @@
+{
+  "company_name_must_equal": "智富金融信息服务（上海）有限公司",
+  "revolving_balance_must_equal": 454.68,
+  "if_revolving_balance_positive_then": {
+    "must_have_details_or_warning": "revolving_balance_without_details"
+  },
+  "forbidden_company_name_values": [
+    "智富金融信息服务（上海",
+    "智富金融信息服务",
+    "上海"
+  ]
+}

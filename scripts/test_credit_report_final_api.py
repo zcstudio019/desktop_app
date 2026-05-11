@@ -38,7 +38,7 @@ def main() -> int:
     raw_text = raw_path.read_text(encoding="utf-8")
     expected_path = case_dir / "expected_assertions.json"
     expected = json.loads(expected_path.read_text(encoding="utf-8")) if expected_path.exists() else {}
-    stale_result = _build_stale_profile_result()
+    stale_result = _build_stale_profile_result(args.case)
     normalized = final_normalize_credit_result(
         stale_result,
         raw_text=raw_text,
@@ -59,6 +59,7 @@ def main() -> int:
     print(f"- parser_debug: {normalized.get('credit_parser_debug')}")
     print(f"- short_term_count: {len(normalized.get('short_loans_final') or [])}")
     print(f"- medium_long_term_count: {len(normalized.get('medium_loans_final') or [])}")
+    print(f"- revolving_overdraft_count: {len(normalized.get('revolving_overdrafts') or normalized.get('revolving_loans') or [])}")
     print(f"- result_json: {out_path}")
 
     if failures:
@@ -70,7 +71,30 @@ def main() -> int:
     return 0
 
 
-def _build_stale_profile_result() -> dict[str, Any]:
+def _build_stale_profile_result(case_name: str = "") -> dict[str, Any]:
+    if case_name == "case_company_name_and_revolving_overdraft":
+        return {
+            "schema_version": "enterprise_credit.v2",
+            "report_basic": {
+                "company_name": "智富金融信息服务（上海",
+            },
+            "identity_info": {
+                "company_name": "智富金融信息服务（上海",
+            },
+            "credit_summary": {
+                "short_term_loan_balance": "0",
+                "medium_long_term_loan_balance": "0",
+                "revolving_overdraft_balance": "454.68",
+                "revolving_overdraft_count": 1,
+            },
+            "short_loans": [],
+            "short_loans_final": [],
+            "medium_loans": [],
+            "medium_loans_final": [],
+            "active_loans": [],
+            "revolving_loans": [],
+            "revolving_overdrafts": [],
+        }
     return {
         "schema_version": "enterprise_credit.v2",
         "credit_summary": {
@@ -162,9 +186,27 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
     failures: list[str] = []
     short_loans = result.get("short_loans_final") or result.get("short_loans") or []
     medium_loans = result.get("medium_loans_final") or result.get("medium_loans") or []
+    revolving_loans = result.get("revolving_overdrafts") or result.get("revolving_loans") or []
+    validation = result.get("validation") or {}
+    warnings = validation.get("warnings") or []
+    summary = result.get("credit_summary") or {}
+    company_name = ((result.get("report_basic") or {}).get("company_name") or (result.get("identity_info") or {}).get("company_name") or "")
 
     if result.get("credit_parser_version") != CREDIT_PARSER_VERSION:
         failures.append("parser_version is not latest")
+    expected_company = (expected or {}).get("company_name_must_equal")
+    if expected_company and company_name != expected_company:
+        failures.append(f"company_name mismatch: {company_name!r} != {expected_company!r}")
+    if company_name.endswith("（上海") or company_name in set((expected or {}).get("forbidden_company_name_values") or []):
+        failures.append(f"company_name is truncated/forbidden: {company_name!r}")
+    if company_name and not any(suffix in company_name for suffix in ["有限公司", "股份有限公司", "合伙企业", "分公司", "个体工商户", "鏈夐檺鍏徃"]):
+        failures.append(f"company_name missing enterprise suffix: {company_name!r}")
+    expected_revolving = (expected or {}).get("revolving_balance_must_equal")
+    if expected_revolving is not None:
+        if not _same_number(summary.get("revolving_overdraft_balance"), expected_revolving):
+            failures.append(f"revolving_overdraft_balance mismatch: {summary.get('revolving_overdraft_balance')!r}")
+        if not revolving_loans and "revolving_balance_without_details" not in warnings:
+            failures.append("revolving balance positive but no details and no revolving_balance_without_details warning")
     if any("融资" in _biz(x) or "铻嶈祫" in _biz(x) for x in short_loans):
         failures.append("short_term_loans still contains finance lease")
     if any("华夏银行股份有限公司上海分行" in _bank(x) and (x.get("end_date") or x.get("due_date")) == "2027-04-08" for x in short_loans):

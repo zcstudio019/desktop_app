@@ -8,6 +8,7 @@ SECTION_KEYS = [
     "credit_summary",
     "short_term_loans",
     "medium_long_term_loans",
+    "revolving_overdrafts",
     "credit_lines",
     "bills",
     "letters_of_credit",
@@ -153,6 +154,7 @@ def segment_report(raw_text: str) -> dict[str, str | int | dict[str, int]]:
         "short_term_loans": short_text,
         "medium_long_term_loans": medium_text,
         "revolving_overdraft": revolving_text,
+        "revolving_overdrafts": revolving_text,
         "credit_lines": credit_line_text,
         "bills": bill_lc_text,
         "letters_of_credit": bill_lc_text,
@@ -165,6 +167,111 @@ def segment_report(raw_text: str) -> dict[str, str | int | dict[str, int]]:
             "short_term_loans": short_count,
             "medium_long_term_loans": medium_count,
             "revolving_overdraft": revolving_count,
+            "credit_lines": credit_line_count,
+        },
+    }
+
+
+# UTF-8 safe overrides for reports whose PDF text layer is not mojibake.
+def extract_unsettled_section(raw_text: str) -> str:
+    text = normalize_text(raw_text)
+    starts = [pos for key in ("未结清信贷", "鏈粨娓呬俊璐?") if (pos := text.find(key)) != -1]
+    if not starts:
+        return ""
+    start = min(starts)
+    end_candidates = []
+    for key in ("已结清信贷", "宸茬粨娓呬俊璐?", "公共记录明细", "鍏叡璁板綍鏄庣粏", "非信贷交易明细", "闈炰俊璐蜂氦鏄撴槑缁?", "附件1", "闄勪欢1"):
+        pos = text.find(key, start + 1)
+        if pos != -1:
+            end_candidates.append(pos)
+    end = min(end_candidates) if end_candidates else len(text)
+    return text[start:end].strip()
+
+
+def extract_loan_subsection(unsettled_text: str, title: str) -> tuple[str, int]:
+    text = normalize_text(unsettled_text)
+    title_variants = {
+        "短期借款": ["短期借款", "鐭湡鍊熸"],
+        "中长期借款": ["中长期借款", "涓暱鏈熷€熸"],
+        "循环透支": ["循环透支", "循环贷款", "循环额度", "循环授信透支", "寰幆閫忔敮"],
+        "鐭湡鍊熸": ["鐭湡鍊熸", "短期借款"],
+        "涓暱鏈熷€熸": ["涓暱鏈熷€熸", "中长期借款"],
+        "寰幆閫忔敮": ["寰幆閫忔敮", "循环透支", "循环贷款", "循环额度", "循环授信透支"],
+    }.get(title, [title])
+    match: re.Match[str] | None = None
+    for variant in title_variants:
+        match = re.search(rf"{re.escape(variant)}\s*(?:共|鍏?)[\s]*(\d+)\s*(?:笔|绗?)", text, re.S)
+        if match:
+            break
+    if not match:
+        return "", 0
+    expected = int(match.group(1))
+    start = match.start()
+    section = text[start:]
+    end = len(section)
+    next_titles = [
+        "中长期借款", "涓暱鏈熷€熸",
+        "短期借款", "鐭湡鍊熸",
+        "循环透支", "循环贷款", "循环额度", "循环授信透支", "寰幆閫忔敮",
+        "银行承兑汇票和信用证", "閾惰鎵垮厬姹囩エ鍜屼俊鐢ㄨ瘉",
+        "银行保函及其他业务", "閾惰淇濆嚱鍙婂叾浠栦笟鍔?",
+        "授信信息", "鎺堜俊淇℃伅",
+        "公共记录明细", "鍏叡璁板綍鏄庣粏",
+        "查询记录", "报告说明",
+    ]
+    for next_title in next_titles:
+        if next_title in title_variants:
+            continue
+        m = re.search(rf"{re.escape(next_title)}\s*(?:(?:共|鍏?)\s*\d+\s*(?:笔|绗?))?", section[1:], re.S)
+        if m:
+            end = min(end, 1 + m.start())
+    return section[:end].strip(), expected
+
+
+def segment_report(raw_text: str) -> dict[str, str | int | dict[str, int]]:
+    text = normalize_text(raw_text)
+    unsettled = extract_unsettled_section(text)
+    short_text, short_count = extract_loan_subsection(unsettled, "短期借款")
+    medium_text, medium_count = extract_loan_subsection(unsettled, "中长期借款")
+    revolving_text, revolving_count = extract_loan_subsection(unsettled, "循环透支")
+    if not revolving_text:
+        revolving_text, revolving_count = extract_loan_subsection(unsettled, "寰幆閫忔敮")
+    credit_line_text, credit_line_count = extract_credit_limit_section(text)
+    bill_lc_text = extract_section_by_title(
+        text,
+        [r"银行承兑汇票和信用证\s*共\s*\d+\s*笔", r"閾惰鎵垮厬姹囩エ鍜屼俊鐢ㄨ瘉\s*鍏?\s*\d+\s*绗?"],
+        [r"授信信息\s*共", r"鎺堜俊淇℃伅\s*鍏?", r"银行保函及其他业务\s*共", r"閾惰淇濆嚱鍙婂叾浠栦笟鍔?\s*鍏?", r"已结清信贷", r"宸茬粨娓呬俊璐?", r"公共记录明细", r"鍏叡璁板綍鏄庣粏", r"附件\s*1"],
+    )
+    guarantee_text = extract_section_by_title(
+        text,
+        [r"银行保函及其他业务\s*共\s*\d+\s*笔", r"閾惰淇濆嚱鍙婂叾浠栦笟鍔?\s*鍏?\s*\d+\s*绗?"],
+        [r"授信信息\s*共", r"鎺堜俊淇℃伅\s*鍏?", r"银行承兑汇票和信用证\s*共", r"已结清信贷", r"宸茬粨娓呬俊璐?", r"公共记录明细", r"附件\s*1"],
+    )
+    info_summary = extract_section_by_title(text, [r"信息概要", r"淇℃伅姒傝"], [r"基本信息", r"基本概况信息", r"信贷记录明细", r"淇¤捶璁板綍鏄庣粏"])
+    basic_info = extract_section_by_title(text, [r"身份标识", r"韬唤鏍囪瘑", r"基本信息", r"基本概况信息"], [r"信息概要", r"淇℃伅姒傝", r"信贷记录明细", r"淇¤捶璁板綍鏄庣粏"])
+    public_records = extract_section_by_title(text, [r"公共记录明细", r"鍏叡璁板綍鏄庣粏"], [r"附件\s*1", r"闄勪欢\s*1", r"信用记录补充信息"])
+    return {
+        "full_text": text,
+        "basic_info": basic_info or text[:5000],
+        "credit_summary": info_summary,
+        "unsettled_credit": unsettled,
+        "short_term_loans": short_text,
+        "medium_long_term_loans": medium_text,
+        "revolving_overdraft": revolving_text,
+        "revolving_overdrafts": revolving_text,
+        "credit_lines": credit_line_text,
+        "bills": bill_lc_text,
+        "letters_of_credit": bill_lc_text,
+        "guarantees": guarantee_text,
+        "external_guarantees": "",
+        "overdue_or_abnormal": "",
+        "public_records": public_records,
+        "unknown_sections": "",
+        "expected_counts": {
+            "short_term_loans": short_count,
+            "medium_long_term_loans": medium_count,
+            "revolving_overdraft": revolving_count,
+            "revolving_overdrafts": revolving_count,
             "credit_lines": credit_line_count,
         },
     }

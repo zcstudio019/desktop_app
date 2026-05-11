@@ -14,6 +14,7 @@ from .extractors import (
     extract_guarantees,
     extract_letters_of_credit,
     extract_medium_long_term_loans,
+    extract_revolving_overdrafts,
     extract_short_term_loans,
 )
 from .normalizer import normalize_agent_result
@@ -85,6 +86,7 @@ def extract_enterprise_credit_report_agent(
     result.credit_summary = extract_credit_summary(sections)
     result.short_term_loans = extract_short_term_loans(sections)
     result.medium_long_term_loans = extract_medium_long_term_loans(sections)
+    result.revolving_overdrafts = extract_revolving_overdrafts(sections)
     result.credit_lines = extract_credit_lines(sections)
     result.bills = extract_bills(sections)
     result.letters_of_credit = extract_letters_of_credit(sections)
@@ -102,6 +104,7 @@ def extract_enterprise_credit_report_agent(
         "basic_info": _section_confidence(str(sections.get("basic_info") or ""), 1 if result.report_meta.customer_name else 0),
         "short_term_loans": _section_confidence(str(sections.get("short_term_loans") or ""), len(result.short_term_loans)),
         "medium_long_term_loans": _section_confidence(str(sections.get("medium_long_term_loans") or ""), len(result.medium_long_term_loans)),
+        "revolving_overdrafts": _section_confidence(str(sections.get("revolving_overdrafts") or sections.get("revolving_overdraft") or ""), len(result.revolving_overdrafts)),
         "credit_lines": _section_confidence(str(sections.get("credit_lines") or ""), len(result.credit_lines)),
         "bills": _section_confidence(str(sections.get("bills") or ""), len(result.bills) + len(result.letters_of_credit)),
         "guarantees": _section_confidence(str(sections.get("guarantees") or ""), len(result.guarantees)),

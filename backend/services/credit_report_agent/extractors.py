@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from .schemas import BusinessRecord, CreditLineRecord, CreditSummary, LoanRecord, ReportMeta
+from .schemas import BusinessRecord, CreditLineRecord, CreditSummary, LoanRecord, ReportMeta, RevolvingOverdraftRecord
 from .segmenter import compact_text, normalize_text
 
 
@@ -374,3 +374,178 @@ def _dedupe_loans(loans: list[LoanRecord]) -> list[LoanRecord]:
         seen.add(key)
         result.append(loan)
     return result
+
+
+# ---------------------------------------------------------------------------
+# UTF-8 safe overrides added after the legacy mojibake-compatible extractors.
+# The module keeps the old names for compatibility; Python binds these later
+# definitions, so callers automatically use the hardened implementations below.
+
+COMPANY_SUFFIX_PATTERN_UTF8 = r"(?:股份有限公司|有限公司|合伙企业|分公司|个体工商户|鏈夐檺鍏徃|鑲′唤鏈夐檺鍏徃)"
+COMPANY_STOP_LABELS_UTF8 = [
+    "中征码",
+    "统一社会信用代码",
+    "组织机构代码",
+    "工商注册号",
+    "纳税人识别号",
+    "报告时间",
+    "查询机构",
+    "涓緛鐮?",
+    "缁熶竴绀句細淇＄敤浠ｇ爜",
+    "缁勭粐鏈烘瀯浠ｇ爜",
+    "宸ュ晢娉ㄥ唽鍙?",
+    "绾崇◣浜鸿瘑鍒彿",
+    "鎶ュ憡鏃堕棿",
+    "鏌ヨ鏈烘瀯",
+]
+
+
+def normalize_company_name(raw: str) -> str:
+    value = re.sub(r"\s+", "", str(raw or ""))
+    value = value.replace("(", "（").replace(")", "）")
+    for label in COMPANY_STOP_LABELS_UTF8:
+        idx = value.find(label)
+        if idx != -1:
+            value = value[:idx]
+    match = re.search(rf"[\u4e00-\u9fa5A-Za-z0-9（）()·]+?{COMPANY_SUFFIX_PATTERN_UTF8}", value)
+    return match.group(0) if match else value
+
+
+def _extract_company_name_from_lines_utf8(text: str) -> str:
+    labels = ("企业名称", "浼佷笟鍚嶇О")
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    for idx, line in enumerate(lines):
+        if not any(label in line for label in labels):
+            continue
+        current = line
+        for label in labels:
+            current = re.sub(rf".*?{re.escape(label)}\s*[:：锛歖]?\s*", "", current)
+        parts = [current]
+        for next_line in lines[idx + 1: idx + 4]:
+            if any(stop in next_line for stop in COMPANY_STOP_LABELS_UTF8):
+                break
+            parts.append(next_line)
+            if re.search(COMPANY_SUFFIX_PATTERN_UTF8, normalize_company_name("".join(parts))):
+                break
+        merged = normalize_company_name("".join(parts))
+        if merged:
+            return merged
+    compact = compact_text(text)
+    match = re.search(
+        rf"(?:企业名称|浼佷笟鍚嶇О)[:：锛歖]?([\u4e00-\u9fa5A-Za-z0-9（）()·]{{4,140}}?{COMPANY_SUFFIX_PATTERN_UTF8})",
+        compact,
+    )
+    return normalize_company_name(match.group(1)) if match else ""
+
+
+def extract_basic_info(sections: dict[str, Any]) -> ReportMeta:
+    text = normalize_text(str(sections.get("basic_info") or "") + "\n" + str(sections.get("full_text") or "")[:5000])
+    compact = compact_text(text)
+
+    def value_after(label: str, max_len: int = 120) -> str:
+        m = re.search(rf"{re.escape(label)}[:：锛歖]?\s*([^\n]+)", text)
+        if m:
+            return re.split(
+                r"\s{2,}|中征码|统一社会信用代码|组织机构代码|工商注册号|纳税人识别号|报告时间|查询机构|涓緛鐮?|缁熶竴绀句細淇＄敤浠ｇ爜|缁勭粐鏈烘瀯浠ｇ爜|宸ュ晢娉ㄥ唽鍙?|绾崇◣浜鸿瘑鍒彿|鎶ュ憡鏃堕棿|鏌ヨ鏈烘瀯",
+                m.group(1),
+            )[0].strip()
+        idx = compact.find(label)
+        if idx == -1:
+            return ""
+        return compact[idx + len(label): idx + len(label) + max_len]
+
+    company = _extract_company_name_from_lines_utf8(text) or value_after("企业名称") or value_after("浼佷笟鍚嶇О")
+    usc_match = re.search(r"[A-Z0-9]{18}", compact)
+    query = value_after("查询机构") or value_after("鏌ヨ鏈烘瀯")
+    query_name = normalize_institution_name(query)
+    report_match = re.search(r"(?:报告时间|报告日期|鎶ュ憡鏃堕棿|鎶ュ憡鏃ユ湡)[:：锛歖]?\s*(\d{4}-\d{2}-\d{2})(?:T\d{2}:\d{2}:\d{2})?", text)
+
+    return ReportMeta(
+        query_org=query_name or query,
+        report_time=report_match.group(1) if report_match else "",
+        customer_name=normalize_company_name(company),
+        unified_social_credit_code=usc_match.group(0) if usc_match else "",
+    )
+
+
+def extract_credit_summary(sections: dict[str, Any]) -> CreditSummary:
+    text = normalize_text(str(sections.get("credit_summary") or ""))
+    summary = CreditSummary()
+    patterns = [
+        ("中长期借款", "medium_long_term_loan_balance"),
+        ("涓暱鏈熷€熸", "medium_long_term_loan_balance"),
+        ("短期借款", "short_term_loan_balance"),
+        ("鐭湡鍊熸", "short_term_loan_balance"),
+        ("循环透支", "revolving_overdraft_balance"),
+        ("寰幆閫忔敮", "revolving_overdraft_balance"),
+    ]
+    count_total = 0
+    for label, attr in patterns:
+        m = re.search(rf"{re.escape(label)}\s+(\d+)\s+(\d+(?:\.\d+)?)", text)
+        if not m:
+            continue
+        count_total += to_int(m.group(1))
+        setattr(summary, attr, to_amount(m.group(2)))
+    if count_total:
+        summary.unsettled_credit_institution_count = count_total
+    m = re.search(r"(?:借贷交易|鍊熻捶浜ゆ槗).*?(?:余额|浣欓)\s*(\d+(?:\.\d+)?)", text, re.S)
+    if m:
+        summary.unsettled_credit_balance = to_amount(m.group(1))
+    m = re.search(r"(?:对外担保|瀵瑰鎷呬繚).*?(?:余额|浣欓)?\s*(\d+(?:\.\d+)?)", text, re.S)
+    if m:
+        summary.external_guarantee_balance = to_amount(m.group(1))
+    return summary
+
+
+def _extract_revolving_section_text(sections_or_text: dict[str, Any] | str) -> str:
+    if isinstance(sections_or_text, dict):
+        value = sections_or_text.get("revolving_overdrafts") or sections_or_text.get("revolving_overdraft") or ""
+        return str(value or "")
+    return str(sections_or_text or "")
+
+
+def extract_revolving_overdrafts(section_text: str | dict[str, Any]) -> list[RevolvingOverdraftRecord]:
+    text = normalize_text(_extract_revolving_section_text(section_text))
+    compact = compact_text(text)
+    if not compact:
+        return []
+    pattern = re.compile(
+        rf"(?P<institution>{INSTITUTION_PATTERN}|[\u4e00-\u9fa5A-Za-z0-9（）()]+?银行股份有限公司[\u4e00-\u9fa5]{{0,30}}(?:分行|支行)?|[\u4e00-\u9fa5A-Za-z0-9（）()]+?银行股份有限公司)"
+        rf"(?P<biz>循环透支|循环贷款|循环额度|循环授信透支|寰幆閫忔敮|流动资金贷款|娴佸姩璧勯噾璐锋|贷款|璐锋)"
+        rf"(?P<start>\d{{4}}-\d{{2}}-\d{{2}})"
+        rf"(?P<end>\d{{4}}-\d{{2}}-\d{{2}}|长期|闀挎湡)"
+        rf"(?:人民币元|浜烘皯甯佸厓)"
+        rf"(?P<amount>\d+(?:\.\d+)?)"
+        rf"(?:新增|鏂板|无还本续贷|鏃犺繕鏈画璐?|其他|鍏朵粬)?"
+        rf".{{0,80}}?"
+        rf"(?P<guarantee>信用/无担保|淇＄敤/鏃犳媴淇?|保证/保证金|淇濊瘉/淇濊瘉閲?|保证|淇濊瘉|组合|缁勫悎|抵押|鎶垫娂|质押|璐ㄦ娂|信用|淇＄敤|其他|鍏朵粬)?"
+        rf"(?P<balance>\d+(?:\.\d+)?)"
+        rf"(?P<five>正常|姝ｅ父|关注|鍏虫敞|次级|娆＄骇|可疑|鍙枒|损失|鎹熷け|违约|杩濈害|未分类|鏈垎绫?)"
+        rf"(?P<overdue_total>\d+(?:\.\d+)?)"
+        rf"(?P<overdue_principal>\d+(?:\.\d+)?)"
+        rf"(?P<overdue_months>\d+)",
+        re.S,
+    )
+    records: list[RevolvingOverdraftRecord] = []
+    for match in pattern.finditer(compact):
+        raw_evidence = evidence(compact, match.start(), match.end(), 80)
+        institution = normalize_institution_name(match.group("institution"), raw_evidence)
+        records.append(
+            RevolvingOverdraftRecord(
+                institution_name=institution,
+                business_type="循环透支" if "循环" in match.group("biz") else match.group("biz"),
+                credit_amount=to_amount(match.group("amount")),
+                used_amount=to_amount(match.group("balance")),
+                balance=to_amount(match.group("balance")),
+                start_date=format_date(match.group("start")),
+                end_date=format_date(match.group("end")),
+                currency="人民币",
+                guarantee_type=match.group("guarantee") or "",
+                five_category=match.group("five"),
+                overdue_months=to_int(match.group("overdue_months")),
+                evidence_text=raw_evidence,
+                source_section="revolving_overdraft",
+                confidence=0.78,
+            )
+        )
+    return records

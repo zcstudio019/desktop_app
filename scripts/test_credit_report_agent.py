@@ -49,12 +49,14 @@ def main() -> int:
     validation = result.get("validation") or {}
     short_loans = result.get("short_term_loans") or []
     medium_loans = result.get("medium_long_term_loans") or []
+    revolving_overdrafts = result.get("revolving_overdrafts") or []
     finance_like = [x for x in medium_loans if "融资" in (x.get("business_type") or "")]
 
     print("Enterprise credit agent result")
     print(f"- customer: {(result.get('report_meta') or {}).get('customer_name') or '未识别'}")
     print(f"- short loans: {len(short_loans)}, balance={summary.get('short_term_loan_balance')}")
     print(f"- medium/long loans: {len(medium_loans)}, balance={summary.get('medium_long_term_loan_balance')}")
+    print(f"- revolving overdrafts: {len(revolving_overdrafts)}, balance={summary.get('revolving_overdraft_balance')}")
     print(f"- finance leases: {len(finance_like)}")
     print(f"- credit lines: {len(result.get('credit_lines') or [])}")
     print(f"- bills: {len(result.get('bills') or [])}")
@@ -83,6 +85,9 @@ def _assert_expected(result: dict[str, Any], expected: dict[str, Any]) -> list[s
     failures: list[str] = []
     short_loans = result.get("short_term_loans") or []
     medium_loans = result.get("medium_long_term_loans") or []
+    revolving_overdrafts = result.get("revolving_overdrafts") or []
+    summary = result.get("credit_summary") or {}
+    validation = result.get("validation") or {}
     all_loans = [*short_loans, *medium_loans]
 
     for target in expected.get("short_term_must_include") or []:
@@ -101,6 +106,18 @@ def _assert_expected(result: dict[str, Any], expected: dict[str, Any]) -> list[s
     for loan in all_loans:
         if (loan.get("institution_name") or "") in forbidden_names:
             failures.append(f"invalid institution leaked: {loan.get('institution_name')}")
+    expected_company = expected.get("company_name_must_equal")
+    if expected_company and (result.get("report_meta") or {}).get("customer_name") != expected_company:
+        failures.append(f"company_name mismatch: {(result.get('report_meta') or {}).get('customer_name')!r}")
+    expected_revolving = expected.get("revolving_balance_must_equal")
+    if expected_revolving is not None:
+        try:
+            if abs(float(summary.get("revolving_overdraft_balance") or 0) - float(expected_revolving)) > 0.01:
+                failures.append(f"revolving_balance mismatch: {summary.get('revolving_overdraft_balance')!r}")
+        except Exception:
+            failures.append(f"revolving_balance not numeric: {summary.get('revolving_overdraft_balance')!r}")
+        if not revolving_overdrafts and "revolving_balance_without_details" not in (validation.get("warnings") or []):
+            failures.append("revolving balance positive but no details/warning")
     return failures
 
 

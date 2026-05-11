@@ -15,12 +15,15 @@ def _fmt_amount(value: float | None) -> str:
 def normalize_agent_result(result: AgentResult) -> AgentResult:
     short_sum = round(sum(float(x.balance or 0) for x in result.short_term_loans), 2)
     medium_sum = round(sum(float(x.balance or 0) for x in result.medium_long_term_loans), 2)
+    revolving_sum = round(sum(float(x.balance or 0) for x in result.revolving_overdrafts), 2)
     if result.credit_summary.short_term_loan_balance is None and result.short_term_loans:
         result.credit_summary.short_term_loan_balance = short_sum
     if result.credit_summary.medium_long_term_loan_balance is None and result.medium_long_term_loans:
         result.credit_summary.medium_long_term_loan_balance = medium_sum
-    if result.credit_summary.unsettled_credit_balance is None and (short_sum or medium_sum):
-        result.credit_summary.unsettled_credit_balance = round(short_sum + medium_sum, 2)
+    if result.credit_summary.revolving_overdraft_balance is None and result.revolving_overdrafts:
+        result.credit_summary.revolving_overdraft_balance = revolving_sum
+    if result.credit_summary.unsettled_credit_balance is None and (short_sum or medium_sum or revolving_sum):
+        result.credit_summary.unsettled_credit_balance = round(short_sum + medium_sum + revolving_sum, 2)
     if result.credit_summary.credit_line_count is None and result.credit_lines:
         result.credit_summary.credit_line_count = len(result.credit_lines)
     return result
@@ -31,6 +34,7 @@ def build_markdown(result: dict[str, Any]) -> str:
     summary = result.get("credit_summary") or {}
     short_loans = result.get("short_term_loans") or []
     medium_loans = result.get("medium_long_term_loans") or []
+    revolving_overdrafts = result.get("revolving_overdrafts") or []
     credit_lines = result.get("credit_lines") or []
     bills = result.get("bills") or []
     lcs = result.get("letters_of_credit") or []
@@ -200,3 +204,149 @@ def _legacy_from_agent_credit_line(item: dict[str, Any]) -> dict[str, Any]:
         "due_date": item.get("expiry_date"),
         "evidence_text": item.get("evidence_text"),
     }
+
+
+def _revolving_markdown_lines(items: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        lines.extend([
+            f"  - 机构：{item.get('institution_name') or '未识别'}",
+            f"    业务：{item.get('business_type') or '循环透支'}",
+            f"    担保方式：{item.get('guarantee_type') or '未识别'}",
+            f"    信用额度：{_fmt_amount(item.get('credit_amount'))} 万元",
+            f"    余额：{_fmt_amount(item.get('balance'))} 万元",
+            f"    开立日期：{item.get('start_date') or '未识别'}",
+            f"    到期日：{item.get('end_date') or '未识别'}",
+            f"    五级分类：{item.get('five_category') or '未识别'}",
+            f"    逾期月数：{item.get('overdue_months') if item.get('overdue_months') is not None else 0}",
+        ])
+    return lines
+
+
+def _legacy_from_agent_revolving(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "bank": item.get("institution_name"),
+        "institution": item.get("institution_name"),
+        "biz_type": item.get("business_type") or "循环透支",
+        "loan_type": item.get("business_type") or "循环透支",
+        "guarantee": item.get("guarantee_type"),
+        "guarantee_type": item.get("guarantee_type"),
+        "loan_amount": _fmt_amount(item.get("credit_amount")) if item.get("credit_amount") is not None else "",
+        "balance": _fmt_amount(item.get("balance")) if item.get("balance") is not None else "",
+        "open_date": item.get("start_date"),
+        "start_date": item.get("start_date"),
+        "due_date": item.get("end_date"),
+        "end_date": item.get("end_date"),
+        "five_classification": item.get("five_category"),
+        "overdue_months": str(item.get("overdue_months") or 0),
+        "term_type": "revolving_overdraft",
+        "section_type": "循环透支",
+        "evidence_text": item.get("evidence_text"),
+    }
+
+
+def build_markdown(result: dict[str, Any]) -> str:
+    meta = result.get("report_meta") or {}
+    summary = result.get("credit_summary") or {}
+    short_loans = result.get("short_term_loans") or []
+    medium_loans = result.get("medium_long_term_loans") or []
+    revolving_overdrafts = result.get("revolving_overdrafts") or []
+    credit_lines = result.get("credit_lines") or []
+    validation = result.get("validation") or {}
+
+    lines: list[str] = [
+        "## 企业征信摘要",
+        "",
+        "### 报告基础信息",
+        f"- 企业名称：{meta.get('customer_name') or '未识别'}",
+        f"- 统一社会信用代码：{meta.get('unified_social_credit_code') or '未识别'}",
+        f"- 查询机构：{meta.get('query_org') or '未识别'}",
+        f"- 报告时间：{meta.get('report_time') or '未识别'}",
+        "",
+        "### 信贷概要",
+        f"- 当前未结清借贷余额：{_fmt_amount(summary.get('unsettled_credit_balance'))}",
+        f"- 当前未结清信贷机构数：{summary.get('unsettled_credit_institution_count') if summary.get('unsettled_credit_institution_count') is not None else '未识别'}",
+        f"- 短期借款余额：{_fmt_amount(summary.get('short_term_loan_balance'))}",
+    ]
+    lines.extend(_loan_markdown_lines(short_loans) if short_loans else ["  - 暂未识别到短期借款明细"])
+    lines.append(f"- 中长期借款余额：{_fmt_amount(summary.get('medium_long_term_loan_balance'))}")
+    lines.extend(_loan_markdown_lines(medium_loans) if medium_loans else ["  - 暂未识别到中长期借款明细"])
+    lines.append(f"- 循环透支余额：{_fmt_amount(summary.get('revolving_overdraft_balance'))}")
+    if revolving_overdrafts:
+        lines.extend(_revolving_markdown_lines(revolving_overdrafts))
+    elif summary.get("revolving_overdraft_balance"):
+        lines.append("  - 暂未识别到循环透支明细（已记录校验提示：revolving_balance_without_details）")
+    lines.append(f"- 对外担保余额：{_fmt_amount(summary.get('external_guarantee_balance'))}")
+
+    lines.extend(["", "### 授信信息"])
+    if credit_lines:
+        for item in credit_lines:
+            lines.extend([
+                f"- 授信机构：{item.get('institution_name') or '未识别'}",
+                f"  授信额度类型：{item.get('credit_type') or '未识别'}",
+                f"  额度循环标志：{'是' if item.get('credit_revolving') else '否' if item.get('credit_revolving') is False else '未识别'}",
+                f"  授信额度：{_fmt_amount(item.get('credit_amount'))} 万元",
+                f"  已用额度：{_fmt_amount(item.get('used_amount'))} 万元",
+                f"  生效日期：{item.get('effective_date') or '未识别'}",
+                f"  到期日：{item.get('expiry_date') or '未识别'}",
+            ])
+    else:
+        lines.append("- 本报告未展示逐笔授信信息明细")
+
+    warnings = validation.get("warnings") or []
+    errors = validation.get("errors") or []
+    if warnings or errors:
+        lines.extend(["", "### 校验与异常"])
+        lines.extend(f"- 错误：{item}" for item in errors)
+        lines.extend(f"- 警告：{item}" for item in warnings)
+    return "\n".join(lines).strip()
+
+
+def agent_result_to_legacy_extraction(agent_result: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    meta = agent_result.get("report_meta") or {}
+    summary = agent_result.get("credit_summary") or {}
+    short_loans = agent_result.get("short_term_loans") or []
+    medium_loans = agent_result.get("medium_long_term_loans") or []
+    revolving_overdrafts = agent_result.get("revolving_overdrafts") or []
+    credit_lines = agent_result.get("credit_lines") or []
+    revolving_legacy = [_legacy_from_agent_revolving(x) for x in revolving_overdrafts]
+    extracted_json = {
+        "schema_version": "enterprise_credit.agent.v1",
+        "report_basic": {
+            "company_name": meta.get("customer_name"),
+            "credit_code": meta.get("unified_social_credit_code"),
+            "query_institution": meta.get("query_org"),
+            "report_date": meta.get("report_time"),
+        },
+        "identity_info": {
+            "company_name": meta.get("customer_name"),
+            "unified_social_credit_code": meta.get("unified_social_credit_code"),
+        },
+        "credit_summary": {
+            "active_borrowing_balance": summary.get("unsettled_credit_balance"),
+            "current_active_credit_institution_count": summary.get("unsettled_credit_institution_count"),
+            "short_term_loan_balance": summary.get("short_term_loan_balance"),
+            "medium_long_term_loan_balance": summary.get("medium_long_term_loan_balance"),
+            "revolving_overdraft_balance": summary.get("revolving_overdraft_balance"),
+            "guarantee_balance": summary.get("external_guarantee_balance"),
+        },
+        "short_loans": [_legacy_from_agent_loan(x, "short") for x in short_loans],
+        "short_loans_final": [_legacy_from_agent_loan(x, "short") for x in short_loans],
+        "medium_loans": [_legacy_from_agent_loan(x, "medium_long") for x in medium_loans],
+        "medium_loans_final": [_legacy_from_agent_loan(x, "medium_long") for x in medium_loans],
+        "long_term_loans": [_legacy_from_agent_loan(x, "medium_long") for x in medium_loans],
+        "revolving_overdrafts": revolving_overdrafts,
+        "revolving_loans": revolving_legacy,
+        "active_loans": [_legacy_from_agent_loan(x, "short") for x in short_loans]
+        + [_legacy_from_agent_loan(x, "medium_long") for x in medium_loans]
+        + revolving_legacy,
+        "credit_facilities": [_legacy_from_agent_credit_line(x) for x in credit_lines],
+        "bills": agent_result.get("bills") or [],
+        "letters_of_credit": agent_result.get("letters_of_credit") or [],
+        "bank_guarantee_other_business": agent_result.get("guarantees") or [],
+        "validation": agent_result.get("validation") or {},
+        "confidence": agent_result.get("confidence") or {},
+        "raw_evidence_map": agent_result.get("raw_evidence_map") or {},
+        "agent_result": agent_result,
+    }
+    return extracted_json, build_markdown(agent_result)

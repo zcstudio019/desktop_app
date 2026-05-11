@@ -18,6 +18,7 @@ class CreditSummary:
     unsettled_credit_institution_count: int | None = None
     short_term_loan_balance: float | None = None
     medium_long_term_loan_balance: float | None = None
+    revolving_overdraft_balance: float | None = None
     credit_line_count: int | None = None
     external_guarantee_balance: float | None = None
 
@@ -57,6 +58,24 @@ class CreditLineRecord:
 
 
 @dataclass(slots=True)
+class RevolvingOverdraftRecord:
+    institution_name: str = ""
+    business_type: str = "循环透支"
+    credit_amount: float | None = None
+    used_amount: float | None = None
+    balance: float | None = None
+    start_date: str = ""
+    end_date: str = ""
+    currency: str = "人民币"
+    guarantee_type: str = ""
+    five_category: str = ""
+    overdue_months: int = 0
+    evidence_text: str = ""
+    source_section: str = "revolving_overdraft"
+    confidence: float = 0.0
+
+
+@dataclass(slots=True)
 class BusinessRecord:
     institution_name: str = ""
     business_type: str = ""
@@ -88,6 +107,7 @@ class AgentResult:
     credit_summary: CreditSummary = field(default_factory=CreditSummary)
     short_term_loans: list[LoanRecord] = field(default_factory=list)
     medium_long_term_loans: list[LoanRecord] = field(default_factory=list)
+    revolving_overdrafts: list[RevolvingOverdraftRecord] = field(default_factory=list)
     credit_lines: list[CreditLineRecord] = field(default_factory=list)
     bills: list[BusinessRecord] = field(default_factory=list)
     letters_of_credit: list[BusinessRecord] = field(default_factory=list)
