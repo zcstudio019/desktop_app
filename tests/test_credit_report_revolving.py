@@ -54,7 +54,7 @@ def test_agent_result_has_revolving_details_and_no_empty_warning() -> None:
     assert reconciliation.get("revolving_balance_match") is True
 
 
-def test_summary_balance_fallback_detail_when_section_has_no_full_row() -> None:
+def test_summary_balance_without_full_row_keeps_warning_without_shell_detail() -> None:
     raw_text = """
 信息概要
 未结清信贷及授信信息概要
@@ -70,11 +70,9 @@ def test_summary_balance_fallback_detail_when_section_has_no_full_row() -> None:
     records = result.get("revolving_overdrafts") or []
     warnings = (result.get("validation") or {}).get("warnings") or []
 
-    assert records
-    assert records[0]["balance"] == 454.68
-    assert records[0]["warning"] == "summary_balance_fallback_detail"
-    assert "revolving_balance_without_details" not in warnings
-    assert "revolving_detail_low_confidence" in warnings
+    assert records == []
+    assert "revolving_balance_without_details" in warnings
+    assert "revolving_detail_low_confidence" not in warnings
 
 
 def test_frontend_legacy_field_path_contains_revolving_details() -> None:

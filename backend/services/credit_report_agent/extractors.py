@@ -517,6 +517,11 @@ def extract_revolving_summary_fallback_detail(
     amount = to_amount(str(balance))
     if amount is None or amount <= 0:
         return []
+    # Do not emit a summary-balance-only shell detail. It renders as
+    # institution=未识别 / guarantee=信用 and hides the real parsing failure.
+    # Validators will keep revolving_balance_without_details when no complete
+    # detail can be recovered from the revolving section.
+    return []
     institution = ""
     inst_match = re.search(INSTITUTION_PATTERN, compact)
     if inst_match:

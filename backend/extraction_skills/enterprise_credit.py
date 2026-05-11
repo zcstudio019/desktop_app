@@ -5550,6 +5550,86 @@ def _prefer_complete_revolving_details(loans: list[dict[str, Any]]) -> list[dict
     return [best_by_balance[key] for key in order]
 
 
+def _is_missing_revolving_value(value: Any) -> bool:
+    text = _final_text(value)
+    return text in {
+        "",
+        "未识别",
+        "未知",
+        "None",
+        "none",
+        "null",
+        "鏈瘑鍒?",
+        "鏈煡",
+        "閺堫亣鐦戦崚?",
+        "閺堫亞鐓?",
+    }
+
+
+def _is_empty_shell_revolving(loan: dict[str, Any]) -> bool:
+    """Detect summary-balance-only revolving fallback records.
+
+    These records were useful while tracing the chain, but they must not be
+    displayed as normal details because they surface as 机构=未识别 / 担保方式=信用.
+    """
+    if not isinstance(loan, dict):
+        return False
+    bank = _final_text(_final_loan_bank(loan))
+    credit_amount = loan.get("credit_amount") or loan.get("credit_limit") or _final_loan_amount(loan)
+    has_balance = not _is_missing_revolving_value(_final_loan_balance(loan) or loan.get("used_amount"))
+    bank_missing = bank in _FINAL_INVALID_INSTITUTION_NAMES or _is_missing_revolving_value(bank)
+    core_missing = (
+        bank_missing
+        and _is_missing_revolving_value(_final_loan_start(loan))
+        and _is_missing_revolving_value(_final_loan_end(loan))
+        and _is_missing_revolving_value(credit_amount)
+    )
+    return has_balance and core_missing
+
+
+def _clean_revolving_details_for_output(
+    loans: list[dict[str, Any]],
+    raw_text: str,
+    revolving_section: str,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    recovered = recover_revolving_overdraft_from_window(revolving_section, raw_text)
+    cleaned: list[dict[str, Any]] = []
+    recovered_used = False
+
+    for raw in loans or []:
+        if not isinstance(raw, dict):
+            continue
+        loan = _sync_loan_aliases(dict(raw))
+        if _is_empty_shell_revolving(loan):
+            if recovered and not recovered_used:
+                logger.warning("[REVOLVING][SHELL_REPLACED_BY_WINDOW_RECOVERY]")
+                cleaned.append(recovered)
+                recovered_used = True
+            else:
+                logger.warning("[REVOLVING][SHELL_REMOVED] loan=%s", loan)
+            continue
+
+        if (
+            recovered
+            and not recovered_used
+            and _final_same_amount(_final_loan_balance(loan) or loan.get("used_amount"), recovered.get("balance"))
+            and _revolving_detail_quality(recovered) > _revolving_detail_quality(loan)
+        ):
+            logger.warning("[REVOLVING][INCOMPLETE_REPLACED_BY_WINDOW_RECOVERY]")
+            cleaned.append(recovered)
+            recovered_used = True
+            continue
+
+        cleaned.append(loan)
+
+    if recovered and not recovered_used and not cleaned:
+        cleaned.append(recovered)
+
+    cleaned = _prefer_complete_revolving_details(cleaned)
+    return cleaned
+
+
 def _extract_revolving_window_for_final(raw_text: str) -> str:
     text = normalize_credit_text(raw_text or "")
     start_keywords = [
@@ -5840,18 +5920,18 @@ def final_normalize_credit_result(
         if recovered_from_window:
             parsed_revolving_from_window = _merge_loan_candidates(parsed_revolving_from_window, [recovered_from_window])
             revolving_loans = _merge_loan_candidates(revolving_loans, [recovered_from_window])
-        case_recovered = _case_specific_revolving_fallback(raw_text, revolving_section or raw_text)
+        case_recovered: list[dict[str, Any]] = []
         if case_recovered:
             logger.warning("[REVOLVING][CASE_FALLBACK] recovered=%s", len(case_recovered))
             parsed_revolving_from_window = _merge_loan_candidates(parsed_revolving_from_window, case_recovered)
             revolving_loans = _merge_loan_candidates(revolving_loans, case_recovered)
         if not revolving_loans:
-            case_recovered = _case_specific_revolving_fallback(raw_text, revolving_section)
+            case_recovered = []
             if case_recovered:
                 logger.warning("[REVOLVING][CASE_FALLBACK] recovered=%s", len(case_recovered))
                 parsed_revolving_from_window = _merge_loan_candidates(parsed_revolving_from_window, case_recovered)
                 revolving_loans = _merge_loan_candidates(revolving_loans, case_recovered)
-        if not revolving_loans and revolving_balance_value and revolving_section and _revolving_keyword_count_for_debug(revolving_section) > 0:
+        if False and not revolving_loans and revolving_balance_value and revolving_section and _revolving_keyword_count_for_debug(revolving_section) > 0:
             fallback_detail = {
                 "business_type": "循环透支",
                 "biz_type": "循环透支",
@@ -5878,6 +5958,19 @@ def final_normalize_credit_result(
                     }
                 )
                 for loan in revolving_loans
+                if isinstance(loan, dict)
+            ]
+        )
+        revolving_loans = _dedupe_final_loans(
+            [
+                _sync_loan_aliases(
+                    {
+                        **loan,
+                        "term_type": "revolving_overdraft",
+                        "section_type": loan.get("section_type") or "寰幆閫忔敮",
+                    }
+                )
+                for loan in _clean_revolving_details_for_output(revolving_loans, raw_text, revolving_section, warnings)
                 if isinstance(loan, dict)
             ]
         )
