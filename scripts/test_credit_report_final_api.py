@@ -201,8 +201,10 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
             failures.append(f"credit_debug.parser_version mismatch: {credit_debug.get('parser_version')!r}")
         if int(credit_debug.get("revolving_extracted_count") or 0) < 1:
             failures.append(f"credit_debug.revolving_extracted_count < 1: {credit_debug}")
-        if int(credit_debug.get("revolving_returned_count") or 0) < 1:
-            failures.append(f"credit_debug.revolving_returned_count < 1: {credit_debug}")
+        if int(credit_debug.get("revolving_returned_count") or 0) != 1:
+            failures.append(f"credit_debug.revolving_returned_count != 1: {credit_debug}")
+        if len(revolving_loans) != 1:
+            failures.append(f"revolving_overdrafts.length != 1: {len(revolving_loans)}")
     expected_company = (expected or {}).get("company_name_must_equal")
     if expected_company and company_name != expected_company:
         failures.append(f"company_name mismatch: {company_name!r} != {expected_company!r}")

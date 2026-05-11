@@ -5084,6 +5084,7 @@ def _parse_revolving_window_for_final(raw_text: str) -> list[dict[str, Any]]:
             )
         )
     logger.warning("[EnterpriseCredit][REVOLVING_SECTION] parsed=%s", len(loans))
+    logger.warning("[REVOLVING][FINAL_COUNT]=%s", len(loans))
     return _dedupe_final_loans(loans)
 
 
@@ -5238,7 +5239,125 @@ def _parse_revolving_window_for_final(raw_text: str) -> list[dict[str, Any]]:
                 )
             )
     logger.warning("[EnterpriseCredit][REVOLVING_SECTION] parsed=%s", len(loans))
+    logger.warning("[REVOLVING][FINAL_COUNT]=%s", len(loans))
     return _dedupe_final_loans(loans)
+
+
+def _revolving_is_page_break(line: str) -> bool:
+    return bool(re.search(r"第\s*\d+\s*页/共\s*\d+\s*页|第\s*\d+\s*页/共", str(line or "")))
+
+
+def _revolving_clean_public_marker(line: str) -> str:
+    cleaned = str(line or "")
+    for marker in ("公共记录明细", "鍏叡璁板綍鏄庣粏"):
+        cleaned = cleaned.replace(marker, " ")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _revolving_line_has_public_marker(line: str) -> bool:
+    text = _final_text(line)
+    return any(marker in text for marker in ("公共记录明细", "鍏叡璁板綍鏄庣粏"))
+
+
+def _revolving_line_has_start(line: str) -> bool:
+    compact = _final_text(line)
+    return bool(
+        re.search(
+            r"(?:银行股份有限公司|閾惰鑲′唤鏈夐檺鍏徃|银行)"
+            r".{0,80}?"
+            r"(?:流动资金贷款|娴佸姩璧勯噾璐锋|循环透支|寰幆閫忔敮|贷款|璐锋)"
+            r"\d{4}-\d{2}-\d{2}\d{4}-\d{2}-\d{2}"
+            r"(?:人民币元|浜烘皯甯佸厓|人民币)"
+            r"\d+(?:\.\d+)?",
+            compact,
+        )
+    )
+
+
+def _revolving_line_has_status(line: str) -> bool:
+    text = re.sub(r"\s+", " ", str(line or "")).strip()
+    compact = _final_text(line)
+    spaced_hit = re.search(
+        r"(抵押|鎶垫娂|保证|淇濊瘉|质押|璐ㄦ娂|信用|淇＄敤|组合|缁勫悎|保证/保证金)"
+        r"\s*\d+(?:\.\d+)?\s*"
+        r"(正常|姝ｅ父|关注|鍏虫敞|次级|娆＄骇|可疑|鍙枒|损失|鎹熷け)"
+        r"\s*\d+(?:\.\d+)?\s*\d+(?:\.\d+)?\s*\d+",
+        text,
+    )
+    compact_hit = re.search(
+        r"(抵押|鎶垫娂|保证|淇濊瘉|质押|璐ㄦ娂|信用|淇＄敤|组合|缁勫悎|保证/保证金)"
+        r"\d+(?:\.\d+)?"
+        r"(正常|姝ｅ父|关注|鍏虫敞|次级|娆＄骇|可疑|鍙枒|损失|鎹熷け)"
+        r"\d+(?:\.\d+)?\d+(?:\.\d+)?\d+",
+        compact,
+    )
+    return bool(spaced_hit or compact_hit)
+
+
+def _extract_revolving_window_for_final(raw_text: str) -> str:
+    text = normalize_credit_text(raw_text or "")
+    start_keywords = [
+        "循环透支 共", "循环透支", "循环贷款", "循环额度", "循环授信透支",
+        "寰幆閫忔敮 鍏?", "寰幆閫忔敮", "寰幆璐锋", "寰幆棰濆害",
+    ]
+    search_from_candidates = [
+        text.find(keyword)
+        for keyword in ("信贷记录明细", "淇¤捶璁板綍鏄庣粏", "未结清信贷", "鏈粨娓呬俊璐?")
+        if text.find(keyword) != -1
+    ]
+    search_from = min(search_from_candidates) if search_from_candidates else 0
+    start = -1
+    for keyword in start_keywords:
+        pos = text.find(keyword, search_from)
+        if pos != -1:
+            start = pos
+            break
+    if start == -1:
+        for keyword in start_keywords:
+            pos = text.find(keyword)
+            if pos != -1:
+                start = pos
+                break
+    if start == -1:
+        logger.warning("[EnterpriseCredit][REVOLVING_SECTION] len=0")
+        return ""
+    lines = [line.strip() for line in text[start:].replace("\r", "\n").split("\n") if line.strip()]
+    hard_end_keywords = [
+        "短期借款", "中长期借款", "银行保函及其他业务", "授信信息", "对外担保", "查询记录", "报告说明",
+        "鐭湡鍊熸", "涓暱鏈熷€熸", "閾惰淇濆嚱鍙婂叾浠栦笟鍔?", "鎺堜俊淇℃伅", "瀵瑰鎷呬繚", "鏌ヨ璁板綍", "鎶ュ憡璇存槑",
+    ]
+    collected: list[str] = []
+    pending = False
+    completed = False
+
+    for index, raw_line in enumerate(lines):
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        compact = _final_text(line)
+        if _revolving_is_page_break(line):
+            logger.warning("[REVOLVING][PAGE_BREAK_IGNORED] line=%s", line)
+            continue
+        if index > 0 and any(keyword in compact for keyword in hard_end_keywords) and (not pending or completed):
+            break
+        if _revolving_line_has_public_marker(line):
+            if pending and not completed:
+                logger.warning("[REVOLVING][PUBLIC_RECORDS_DELAYED] line=%s", line)
+                line = _revolving_clean_public_marker(line)
+                if not line:
+                    continue
+                compact = _final_text(line)
+            elif index > 0:
+                break
+        collected.append(line)
+        if not pending and _revolving_line_has_start(line):
+            pending = True
+            logger.warning("[REVOLVING][PENDING_START] line=%s", line[:300])
+        if pending and not completed and _revolving_line_has_status(line):
+            completed = True
+            logger.warning("[REVOLVING][PENDING_COMPLETED] line=%s", line[:300])
+
+    section = "\n".join(collected).strip()
+    logger.warning("[EnterpriseCredit][REVOLVING_SECTION] len=%s", len(section or ""))
+    return section
 
 
 def final_normalize_credit_result(

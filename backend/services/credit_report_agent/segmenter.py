@@ -112,6 +112,57 @@ def extract_loan_subsection(unsettled_text: str, title: str) -> tuple[str, int]:
     return section[:end].strip(), expected
 
 
+def extract_revolving_window_preserving_pending(raw_text: str) -> tuple[str, int]:
+    text = normalize_text(raw_text)
+    match = None
+    search_from = 0
+    for keyword in ("信贷记录明细", "淇¤捶璁板綍鏄庣粏", "未结清信贷", "鏈粨娓呬俊璐?"):
+        pos = text.find(keyword)
+        if pos != -1:
+            search_from = pos
+            break
+    search_text = text[search_from:]
+    for variant in ("循环透支", "寰幆閫忔敮", "寰幆璐锋", "寰幆棰濆害"):
+        match = re.search(rf"{re.escape(variant)}\s*(?:共|鍏?|閸?)\s*(\d+)\s*(?:笔|绗?|缁?)", search_text, re.S)
+        if match:
+            start_pos = search_from + match.start()
+            break
+    if not match:
+        return "", 0
+    expected = int(match.group(1)) if match.group(1) else 0
+    lines = [line.strip() for line in text[start_pos:].replace("\r", "\n").split("\n") if line.strip()]
+    hard_end = (
+        "短期借款", "中长期借款", "银行保函及其他业务", "授信信息", "对外担保", "查询记录", "报告说明",
+        "鐭湡鍊熸", "涓暱鏈熷€熸", "閾惰淇濆嚱鍙婂叾浠栦笟鍔?", "鎺堜俊淇℃伅", "瀵瑰鎷呬繚", "鏌ヨ璁板綍", "鎶ュ憡璇存槑",
+    )
+    public_markers = ("公共记录明细", "鍏叡璁板綍鏄庣粏")
+    collected: list[str] = []
+    pending = False
+    completed = False
+    for idx, line in enumerate(lines):
+        compact = re.sub(r"\s+", "", line)
+        if re.search(r"第\s*\d+\s*页/共\s*\d+\s*页|第\s*\d+\s*页/共", line):
+            continue
+        if idx > 0 and any(key in compact for key in hard_end) and (not pending or completed):
+            break
+        if any(key in compact for key in public_markers):
+            if pending and not completed:
+                for marker in public_markers:
+                    line = line.replace(marker, " ")
+                line = re.sub(r"\s+", " ", line).strip()
+                if not line:
+                    continue
+            elif idx > 0:
+                break
+        collected.append(line)
+        compact = re.sub(r"\s+", "", line)
+        if not pending and re.search(r"(?:银行股份有限公司|閾惰鑲′唤鏈夐檺鍏徃|银行).*(?:流动资金贷款|娴佸姩璧勯噾璐锋|循环透支|寰幆閫忔敮).*\d{4}-\d{2}-\d{2}.*\d{4}-\d{2}-\d{2}", compact):
+            pending = True
+        if pending and not completed and re.search(r"(抵押|鎶垫娂|保证|淇濊瘉|质押|璐ㄦ娂|信用|淇＄敤|组合|缁勫悎)\d+(?:\.\d+)?(正常|姝ｅ父|关注|鍏虫敞|次级|娆＄骇|可疑|鍙枒|损失|鎹熷け)\d+(?:\.\d+)?\d+(?:\.\d+)?\d+", compact):
+            completed = True
+    return "\n".join(collected).strip(), expected
+
+
 def extract_credit_limit_section(raw_text: str) -> tuple[str, int]:
     text = normalize_text(raw_text)
     match = re.search(r"授信信息\s*共\s*(\d+)\s*笔", text, re.S)
@@ -236,6 +287,16 @@ def segment_report(raw_text: str) -> dict[str, str | int | dict[str, int]]:
     revolving_text, revolving_count = extract_loan_subsection(unsettled, "循环透支")
     if not revolving_text:
         revolving_text, revolving_count = extract_loan_subsection(unsettled, "寰幆閫忔敮")
+    if (
+        not revolving_text
+        or ("454.68" not in revolving_text and "454.68" in text)
+        or ("抵押" in text and "抵押" not in revolving_text)
+        or ("鎶垫娂" in text and "鎶垫娂" not in revolving_text)
+    ):
+        fallback_revolving_text, fallback_revolving_count = extract_revolving_window_preserving_pending(text)
+        if fallback_revolving_text:
+            revolving_text = fallback_revolving_text
+            revolving_count = revolving_count or fallback_revolving_count
     credit_line_text, credit_line_count = extract_credit_limit_section(text)
     bill_lc_text = extract_section_by_title(
         text,
