@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
+
+logger = logging.getLogger(__name__)
 
 
 SECTION_KEYS = [
@@ -36,6 +40,43 @@ def normalize_text(text: str) -> str:
 
 def compact_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
+
+
+def _enterprise_credit_debug_enabled() -> bool:
+    return os.getenv("ENTERPRISE_CREDIT_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _line_range(full_text: str, section_text: str) -> tuple[int, int]:
+    if not full_text or not section_text:
+        return 0, 0
+    pos = full_text.find(section_text[:120])
+    if pos == -1:
+        return 0, 0
+    start_line = full_text[:pos].count("\n") + 1
+    end_line = start_line + section_text.count("\n")
+    return start_line, end_line
+
+
+def trace_credit_sections(sections: dict[str, str | int | dict[str, int]]) -> None:
+    if not _enterprise_credit_debug_enabled():
+        return
+    full_text = str(sections.get("full_text") or "")
+    for key in SECTION_KEYS:
+        value = sections.get(key)
+        if not isinstance(value, str):
+            continue
+        start_line, end_line = _line_range(full_text, value)
+        title = (value.splitlines()[0].strip() if value.splitlines() else "")
+        preview = value[:300].replace("\n", "\\n")
+        logger.warning(
+            "[EnterpriseCredit][SECTION_TRACE] section_type=%s title=%s start_line=%s end_line=%s entered_extractor=%s preview=%s",
+            key,
+            title,
+            start_line,
+            end_line,
+            bool(value),
+            preview,
+        )
 
 
 def _first_match(text: str, patterns: list[str], start: int = 0) -> re.Match[str] | None:
@@ -122,7 +163,7 @@ def extract_revolving_window_preserving_pending(raw_text: str) -> tuple[str, int
             search_from = pos
             break
     search_text = text[search_from:]
-    for variant in ("循环透支", "寰幆閫忔敮", "寰幆璐锋", "寰幆棰濆害"):
+    for variant in ("循环透支账户明细", "未结清循环透支", "循环透支账户", "循环透支余额", "循环透支", "循环额度", "透支余额", "寰幆閫忔敮", "寰幆璐锋", "寰幆棰濆害"):
         match = re.search(rf"{re.escape(variant)}\s*(?:共|鍏?|閸?)\s*(\d+)\s*(?:笔|绗?|缁?)", search_text, re.S)
         if match:
             start_pos = search_from + match.start()
@@ -197,7 +238,7 @@ def segment_report(raw_text: str) -> dict[str, str | int | dict[str, int]]:
     basic_info = extract_section_by_title(text, [r"身份标识", r"基本信息", r"基本概况信息"], [r"信息概要", r"信贷记录明细"])
     public_records = extract_section_by_title(text, [r"公共记录明细"], [r"附件\s*1", r"信用记录补充信息"])
 
-    return {
+    result = {
         "full_text": text,
         "basic_info": basic_info or text[:5000],
         "credit_summary": info_summary,
@@ -221,6 +262,8 @@ def segment_report(raw_text: str) -> dict[str, str | int | dict[str, int]]:
             "credit_lines": credit_line_count,
         },
     }
+    trace_credit_sections(result)
+    return result
 
 
 # UTF-8 safe overrides for reports whose PDF text layer is not mojibake.
@@ -244,10 +287,10 @@ def extract_loan_subsection(unsettled_text: str, title: str) -> tuple[str, int]:
     title_variants = {
         "短期借款": ["短期借款", "鐭湡鍊熸"],
         "中长期借款": ["中长期借款", "涓暱鏈熷€熸"],
-        "循环透支": ["循环透支", "循环贷款", "循环额度", "循环授信透支", "寰幆閫忔敮"],
+        "循环透支": ["循环透支", "循环透支账户", "循环透支账户明细", "未结清循环透支", "循环透支余额", "循环贷款", "循环额度", "循环授信透支", "透支余额", "寰幆閫忔敮"],
         "鐭湡鍊熸": ["鐭湡鍊熸", "短期借款"],
         "涓暱鏈熷€熸": ["涓暱鏈熷€熸", "中长期借款"],
-        "寰幆閫忔敮": ["寰幆閫忔敮", "循环透支", "循环贷款", "循环额度", "循环授信透支"],
+        "寰幆閫忔敮": ["寰幆閫忔敮", "循环透支", "循环透支账户", "循环透支账户明细", "未结清循环透支", "循环透支余额", "循环贷款", "循环额度", "循环授信透支", "透支余额"],
     }.get(title, [title])
     match: re.Match[str] | None = None
     for variant in title_variants:
@@ -263,7 +306,7 @@ def extract_loan_subsection(unsettled_text: str, title: str) -> tuple[str, int]:
     next_titles = [
         "中长期借款", "涓暱鏈熷€熸",
         "短期借款", "鐭湡鍊熸",
-        "循环透支", "循环贷款", "循环额度", "循环授信透支", "寰幆閫忔敮",
+        "循环透支", "循环透支账户", "循环透支账户明细", "未结清循环透支", "循环透支余额", "循环贷款", "循环额度", "循环授信透支", "透支余额", "寰幆閫忔敮",
         "银行承兑汇票和信用证", "閾惰鎵垮厬姹囩エ鍜屼俊鐢ㄨ瘉",
         "银行保函及其他业务", "閾惰淇濆嚱鍙婂叾浠栦笟鍔?",
         "授信信息", "鎺堜俊淇℃伅",
@@ -311,7 +354,17 @@ def segment_report(raw_text: str) -> dict[str, str | int | dict[str, int]]:
     info_summary = extract_section_by_title(text, [r"信息概要", r"淇℃伅姒傝"], [r"基本信息", r"基本概况信息", r"信贷记录明细", r"淇¤捶璁板綍鏄庣粏"])
     basic_info = extract_section_by_title(text, [r"身份标识", r"韬唤鏍囪瘑", r"基本信息", r"基本概况信息"], [r"信息概要", r"淇℃伅姒傝", r"信贷记录明细", r"淇¤捶璁板綍鏄庣粏"])
     public_records = extract_section_by_title(text, [r"公共记录明细", r"鍏叡璁板綍鏄庣粏"], [r"附件\s*1", r"闄勪欢\s*1", r"信用记录补充信息"])
-    return {
+    if revolving_text and public_records:
+        public_compact = compact_text(public_records)
+        revolving_compact = compact_text(revolving_text)
+        looks_like_revolving_tail = (
+            ("最近一次还款" in public_records or "授信协议编号" in public_records or "正常还款" in public_records)
+            and ("五级分类" in public_records or "抵押" in public_records or "保证" in public_records)
+        )
+        if looks_like_revolving_tail and any(marker in revolving_compact for marker in ["抵押", "保证", "454.68"]):
+            logger.warning("[EnterpriseCredit][SECTION_PRIORITY] public_records_tail_reassigned_to_revolving")
+            public_records = ""
+    result = {
         "full_text": text,
         "basic_info": basic_info or text[:5000],
         "credit_summary": info_summary,
@@ -336,3 +389,5 @@ def segment_report(raw_text: str) -> dict[str, str | int | dict[str, int]]:
             "credit_lines": credit_line_count,
         },
     }
+    trace_credit_sections(result)
+    return result

@@ -82,6 +82,7 @@ class RevolvingOverdraftRecord:
     evidence_text: str = ""
     source_section: str = "revolving_overdraft"
     confidence: float = 0.0
+    warning: str = ""
 
 
 @dataclass(slots=True)

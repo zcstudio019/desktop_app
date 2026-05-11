@@ -80,11 +80,21 @@ def validate_agent_result(result: AgentResult, expected_counts: dict[str, int] |
     if result.credit_summary.medium_long_term_loan_balance and not result.medium_long_term_loans:
         warnings.append("medium_long_term_balance_without_details")
     revolving_sum = _amount_sum(result.revolving_overdrafts, "balance")
+    low_confidence_revolving = any(
+        getattr(item, "warning", "") == "summary_balance_fallback_detail"
+        or float(getattr(item, "confidence", 0) or 0) < 0.5
+        for item in result.revolving_overdrafts
+    )
     if result.credit_summary.revolving_overdraft_balance and not result.revolving_overdrafts:
         warnings.append("revolving_balance_without_details")
+    elif result.credit_summary.revolving_overdraft_balance and low_confidence_revolving:
+        warnings.append("revolving_detail_low_confidence")
     reconciliation["revolving_overdraft_detail_balance_sum"] = revolving_sum
     if result.credit_summary.revolving_overdraft_balance is not None and result.revolving_overdrafts:
-        reconciliation["revolving_balance_match"] = abs(revolving_sum - float(result.credit_summary.revolving_overdraft_balance or 0)) <= 0.01
+        revolving_balance_match = abs(revolving_sum - float(result.credit_summary.revolving_overdraft_balance or 0)) <= 0.01
+        reconciliation["revolving_balance_match"] = revolving_balance_match
+        if not revolving_balance_match:
+            warnings.append("revolving_balance_mismatch")
 
     all_evidence = "\n".join(
         [loan.evidence_text for loan in [*result.short_term_loans, *result.medium_long_term_loans]]

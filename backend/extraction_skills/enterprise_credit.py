@@ -5650,12 +5650,29 @@ def final_normalize_credit_result(
             ],
             parsed_revolving_from_window,
         )
+        revolving_balance_value = _to_float((data.get("credit_summary") or {}).get("revolving_overdraft_balance"))
         if not revolving_loans:
             case_recovered = _case_specific_revolving_fallback(raw_text, revolving_section)
             if case_recovered:
                 logger.warning("[REVOLVING][CASE_FALLBACK] recovered=%s", len(case_recovered))
                 parsed_revolving_from_window = _merge_loan_candidates(parsed_revolving_from_window, case_recovered)
                 revolving_loans = _merge_loan_candidates(revolving_loans, case_recovered)
+        if not revolving_loans and revolving_balance_value and revolving_section and _revolving_keyword_count_for_debug(revolving_section) > 0:
+            fallback_detail = {
+                "business_type": "循环透支",
+                "biz_type": "循环透支",
+                "loan_type": "循环透支",
+                "balance": str(revolving_balance_value),
+                "used_amount": str(revolving_balance_value),
+                "term_type": "revolving_overdraft",
+                "section_type": "循环透支",
+                "source_section": "revolving_overdraft",
+                "confidence": 0.35,
+                "warning": "summary_balance_fallback_detail",
+                "evidence_text": _sanitize_credit_debug_preview(revolving_section, 1000),
+            }
+            logger.warning("[REVOLVING][LOW_CONFIDENCE_FALLBACK] balance=%s", revolving_balance_value)
+            revolving_loans = _merge_loan_candidates(revolving_loans, [fallback_detail])
         revolving_loans = _dedupe_final_loans(
             [
                 _sync_loan_aliases(
@@ -5669,15 +5686,19 @@ def final_normalize_credit_result(
                 if isinstance(loan, dict)
             ]
         )
-        revolving_balance_value = _to_float((data.get("credit_summary") or {}).get("revolving_overdraft_balance"))
         if revolving_balance_value and not revolving_loans and "revolving_balance_without_details" not in warnings:
             warnings.append("revolving_balance_without_details")
         if revolving_balance_value and revolving_loans:
             warnings = [w for w in warnings if w != "revolving_balance_without_details"]
+            if any((loan.get("warning") == "summary_balance_fallback_detail" or float(loan.get("confidence") or 0) < 0.5) for loan in revolving_loans):
+                if "revolving_detail_low_confidence" not in warnings:
+                    warnings.append("revolving_detail_low_confidence")
             reconciliation = dict(validation.get("reconciliation") or {})
             revolving_detail_sum = sum(_to_float(loan.get("balance")) or 0.0 for loan in revolving_loans)
             reconciliation["revolving_overdraft_detail_balance_sum"] = round(revolving_detail_sum, 2)
             reconciliation["revolving_balance_match"] = abs(revolving_detail_sum - revolving_balance_value) <= 0.01
+            if not reconciliation["revolving_balance_match"] and "revolving_balance_mismatch" not in warnings:
+                warnings.append("revolving_balance_mismatch")
             validation["reconciliation"] = reconciliation
         revolving_warning = "revolving_balance_without_details" in warnings
         credit_debug = {

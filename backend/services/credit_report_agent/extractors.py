@@ -504,6 +504,37 @@ def _extract_revolving_section_text(sections_or_text: dict[str, Any] | str) -> s
     return str(sections_or_text or "")
 
 
+def extract_revolving_summary_fallback_detail(
+    section_text: str | dict[str, Any],
+    balance: float | int | str | None,
+) -> list[RevolvingOverdraftRecord]:
+    text = normalize_text(_extract_revolving_section_text(section_text))
+    if balance is None or not text:
+        return []
+    compact = compact_text(text)
+    if not any(keyword in compact for keyword in ["循环透支", "循环贷款", "循环额度", "透支余额", "寰幆"]):
+        return []
+    amount = to_amount(str(balance))
+    if amount is None or amount <= 0:
+        return []
+    institution = ""
+    inst_match = re.search(INSTITUTION_PATTERN, compact)
+    if inst_match:
+        institution = normalize_institution_name(inst_match.group(0), text)
+    return [
+        RevolvingOverdraftRecord(
+            institution_name=institution,
+            business_type="循环透支",
+            used_amount=amount,
+            balance=amount,
+            evidence_text=text[:1000],
+            source_section="revolving_overdraft",
+            confidence=0.35,
+            warning="summary_balance_fallback_detail",
+        )
+    ]
+
+
 def extract_revolving_overdrafts(section_text: str | dict[str, Any]) -> list[RevolvingOverdraftRecord]:
     text = normalize_text(_extract_revolving_section_text(section_text))
     compact = compact_text(text)

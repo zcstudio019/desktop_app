@@ -15,6 +15,7 @@ from .extractors import (
     extract_letters_of_credit,
     extract_medium_long_term_loans,
     extract_revolving_overdrafts,
+    extract_revolving_summary_fallback_detail,
     extract_short_term_loans,
 )
 from .normalizer import normalize_agent_result
@@ -72,6 +73,21 @@ def _section_confidence(section: str, count: int) -> float:
     return 0.35
 
 
+def _debug_extractor_entry(sections: dict[str, Any], section_key: str, extractor_name: str) -> None:
+    import os
+
+    if os.getenv("ENTERPRISE_CREDIT_DEBUG", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    section_text = str(sections.get(section_key) or "")
+    logger.warning(
+        "[EnterpriseCredit][EXTRACTOR_TRACE] extractor=%s section_type=%s input_len=%s preview=%s",
+        extractor_name,
+        section_key,
+        len(section_text),
+        section_text[:300].replace("\n", "\\n"),
+    )
+
+
 def extract_enterprise_credit_report_agent(
     file_path: str | None = None,
     raw_text: str | None = None,
@@ -86,7 +102,13 @@ def extract_enterprise_credit_report_agent(
     result.credit_summary = extract_credit_summary(sections)
     result.short_term_loans = extract_short_term_loans(sections)
     result.medium_long_term_loans = extract_medium_long_term_loans(sections)
+    _debug_extractor_entry(sections, "revolving_overdrafts", "extract_revolving_overdrafts")
     result.revolving_overdrafts = extract_revolving_overdrafts(sections)
+    if result.credit_summary.revolving_overdraft_balance and not result.revolving_overdrafts:
+        result.revolving_overdrafts = extract_revolving_summary_fallback_detail(
+            sections,
+            result.credit_summary.revolving_overdraft_balance,
+        )
     result.credit_lines = extract_credit_lines(sections)
     result.bills = extract_bills(sections)
     result.letters_of_credit = extract_letters_of_credit(sections)
