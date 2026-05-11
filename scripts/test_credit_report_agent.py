@@ -118,6 +118,12 @@ def _assert_expected(result: dict[str, Any], expected: dict[str, Any]) -> list[s
             failures.append(f"revolving_balance not numeric: {summary.get('revolving_overdraft_balance')!r}")
         if not revolving_overdrafts and "revolving_balance_without_details" not in (validation.get("warnings") or []):
             failures.append("revolving balance positive but no details/warning")
+    for target in expected.get("revolving_overdrafts_must_include") or []:
+        if not _loan_matches(revolving_overdrafts, target):
+            failures.append(f"revolving_overdrafts_must_include missing: {target}")
+    for warning in expected.get("must_not_have_warnings") or []:
+        if warning in (validation.get("warnings") or []):
+            failures.append(f"unexpected validation warning: {warning}")
     return failures
 
 

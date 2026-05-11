@@ -70,6 +70,15 @@ class RevolvingOverdraftRecord:
     guarantee_type: str = ""
     five_category: str = ""
     overdue_months: int = 0
+    account_no: str = ""
+    issue_type: str = ""
+    last_repayment_date: str = ""
+    last_repayment_amount: float | None = None
+    last_repayment_type: str = ""
+    remaining_repayment_months: int | None = None
+    credit_agreement_no: str = ""
+    history_performance: str = ""
+    report_date: str = ""
     evidence_text: str = ""
     source_section: str = "revolving_overdraft"
     confidence: float = 0.0

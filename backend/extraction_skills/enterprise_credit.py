@@ -5084,6 +5084,160 @@ def _parse_revolving_window_for_final(raw_text: str) -> list[dict[str, Any]]:
     return _dedupe_final_loans(loans)
 
 
+def _parse_revolving_window_for_final(raw_text: str) -> list[dict[str, Any]]:
+    """Parse revolving overdraft details from the local revolving section only."""
+    section = _extract_revolving_window_for_final(raw_text)
+    if not section:
+        return []
+    lines = [re.sub(r"\s+", " ", line).strip() for line in str(section).splitlines() if line.strip()]
+    start_re = re.compile(
+        r"(?P<account>[A-Z]\d{5,}[A-Z0-9_-]*)?\s*"
+        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,100}?(?:银行股份有限公司|村镇银行股份有限公司|银行)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,40}?(?:分行|支行|营业部)?)\s*"
+        r"(?P<business_type>循环透支|循环贷款|循环额度|循环授信透支|流动资金贷款|贷款)\s*"
+        r"(?P<open_date>\d{4}-\d{2}-\d{2})\s*"
+        r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)\s*"
+        r"(?:人民币元|人民币)\s*"
+        r"(?P<amount>\d+(?:\.\d+)?)\s*"
+        r"(?P<issue>新增|无还本续贷|其他)?"
+    )
+    status_re = re.compile(
+        r"(?P<guarantee>信用/无担保|保证/保证金|保证金|保证|组合|抵押|质押|信用|其他)\s*"
+        r"(?P<balance>\d+(?:\.\d+)?)\s*"
+        r"(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)\s*"
+        r"(?P<overdue_total>\d+(?:\.\d+)?)\s*"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)\s*"
+        r"(?P<overdue_months>\d+)\s*"
+        r"(?P<last_repay_date>\d{4}-\d{2}-\d{2})?"
+    )
+    tail_re = re.compile(
+        r"(?P<last_amount>\d+(?:\.\d+)?)\s*"
+        r"(?P<last_type>正常还款|逾期还款|提前还款|--)?\s*"
+        r"(?P<remain>\d+)?\s*"
+        r"(?P<agreement>[A-Z]\d{5,}[A-Z0-9_-]*)?\s*"
+        r"(?P<history>见附件|--)?\s*"
+        r"(?P<report>\d{4}-\d{2}-\d{2})?"
+    )
+    loans: list[dict[str, Any]] = []
+    for idx, line in enumerate(lines):
+        first = start_re.search(re.sub(r"\s+", "", line))
+        if not first:
+            continue
+        window_lines = lines[idx: idx + 6]
+        evidence_text = "\n".join(window_lines)
+        status = None
+        status_idx = -1
+        for rel_idx, candidate in enumerate(window_lines[1:], start=1):
+            status = status_re.search(re.sub(r"\s+", " ", candidate).strip())
+            if status:
+                status_idx = rel_idx
+                break
+        if not status:
+            joined = re.sub(r"\s+", "", evidence_text)
+            status = status_re.search(joined[first.end():])
+        if not status:
+            continue
+        tail_source = "\n".join(window_lines[status_idx + 1:]) if status_idx != -1 else "\n".join(window_lines[2:])
+        tail = tail_re.search(re.sub(r"\s+", " ", tail_source).strip())
+        bank = first.group("institution")
+        recovered_bank = _recover_institution_from_text(first.group("institution"))
+        if recovered_bank and len(recovered_bank) > len(bank):
+            bank = recovered_bank
+        biz = first.group("business_type")
+        loans.append(
+            _sync_loan_aliases(
+                {
+                    "account_no": first.group("account") or "",
+                    "bank": bank,
+                    "institution": bank,
+                    "institution_name": bank,
+                    "biz_type": biz,
+                    "loan_type": biz,
+                    "business_type": biz,
+                    "loan_amount": first.group("amount"),
+                    "credit_amount": first.group("amount"),
+                    "used_amount": status.group("balance"),
+                    "balance": status.group("balance"),
+                    "open_date": first.group("open_date"),
+                    "start_date": first.group("open_date"),
+                    "due_date": first.group("due_date"),
+                    "end_date": first.group("due_date"),
+                    "currency": "人民币",
+                    "issue_type": first.group("issue") or "",
+                    "guarantee": status.group("guarantee") or "",
+                    "guarantee_type": status.group("guarantee") or "",
+                    "five_classification": status.group("classification"),
+                    "five_category": status.group("classification"),
+                    "overdue_amount": status.group("overdue_total") or "0",
+                    "overdue_total": status.group("overdue_total") or "0",
+                    "overdue_principal": status.group("overdue_principal") or "0",
+                    "overdue_months": status.group("overdue_months") or "0",
+                    "last_repay_date": status.group("last_repay_date") or "",
+                    "last_repayment_date": status.group("last_repay_date") or "",
+                    "last_repayment_amount": tail.group("last_amount") if tail else "",
+                    "last_repayment_type": tail.group("last_type") if tail else "",
+                    "remaining_repayment_months": tail.group("remain") if tail else "",
+                    "credit_agreement_no": tail.group("agreement") if tail else "",
+                    "history_performance": tail.group("history") if tail else "",
+                    "report_date": tail.group("report") if tail else "",
+                    "term_type": "revolving_overdraft",
+                    "section_type": "循环透支",
+                    "source_section": "revolving_overdraft",
+                    "evidence_text": evidence_text,
+                    "confidence": 0.88,
+                }
+            )
+        )
+
+    if not loans:
+        compact = _final_text(section)
+        pattern = re.compile(
+            r"(?P<account>[A-Z]\d{5,}[A-Z0-9_-]*)?"
+            r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,100}?(?:银行股份有限公司|村镇银行股份有限公司|银行)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,40}?(?:分行|支行|营业部)?)"
+            r"(?P<business_type>循环透支|循环贷款|循环额度|循环授信透支|流动资金贷款|贷款)"
+            r"(?P<open_date>\d{4}-\d{2}-\d{2})(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
+            r"(?:人民币元|人民币)(?P<amount>\d+(?:\.\d+)?)(?:新增|无还本续贷|其他)?"
+            r".{0,120}?"
+            r"(?P<guarantee>信用/无担保|保证/保证金|保证金|保证|组合|抵押|质押|信用|其他)"
+            r"(?P<balance>\d+(?:\.\d+)?)(?P<classification>正常|关注|次级|可疑|损失|违约|未分类)"
+            r"(?P<overdue_total>\d+(?:\.\d+)?)(?P<overdue_principal>\d+(?:\.\d+)?)(?P<overdue_months>\d+)"
+        )
+        for match in pattern.finditer(compact):
+            bank = _recover_institution_from_text(match.group("institution")) or match.group("institution")
+            loans.append(
+                _sync_loan_aliases(
+                    {
+                        "account_no": match.group("account") or "",
+                        "bank": bank,
+                        "institution": bank,
+                        "institution_name": bank,
+                        "biz_type": match.group("business_type"),
+                        "loan_type": match.group("business_type"),
+                        "business_type": match.group("business_type"),
+                        "loan_amount": match.group("amount"),
+                        "credit_amount": match.group("amount"),
+                        "used_amount": match.group("balance"),
+                        "balance": match.group("balance"),
+                        "open_date": match.group("open_date"),
+                        "start_date": match.group("open_date"),
+                        "due_date": match.group("due_date"),
+                        "end_date": match.group("due_date"),
+                        "guarantee": match.group("guarantee") or "",
+                        "guarantee_type": match.group("guarantee") or "",
+                        "five_classification": match.group("classification"),
+                        "five_category": match.group("classification"),
+                        "overdue_months": match.group("overdue_months") or "0",
+                        "term_type": "revolving_overdraft",
+                        "section_type": "循环透支",
+                        "source_section": "revolving_overdraft",
+                        "evidence_text": match.group(0),
+                        "confidence": 0.86,
+                    }
+                )
+            )
+    logger.warning("[EnterpriseCredit][REVOLVING_SECTION] parsed=%s", len(loans))
+    return _dedupe_final_loans(loans)
+
+
 def final_normalize_credit_result(
     result: dict[str, Any] | None,
     *,
@@ -5291,6 +5445,12 @@ def final_normalize_credit_result(
         revolving_balance_value = _to_float((data.get("credit_summary") or {}).get("revolving_overdraft_balance"))
         if revolving_balance_value and not revolving_loans and "revolving_balance_without_details" not in warnings:
             warnings.append("revolving_balance_without_details")
+        if revolving_balance_value and revolving_loans:
+            reconciliation = dict(validation.get("reconciliation") or {})
+            revolving_detail_sum = sum(_to_float(loan.get("balance")) or 0.0 for loan in revolving_loans)
+            reconciliation["revolving_overdraft_detail_balance_sum"] = round(revolving_detail_sum, 2)
+            reconciliation["revolving_balance_match"] = abs(revolving_detail_sum - revolving_balance_value) <= 0.01
+            validation["reconciliation"] = reconciliation
         data["short_loans"] = normalized_short
         data["short_loans_final"] = normalized_short
         data["medium_loans"] = normalized_medium

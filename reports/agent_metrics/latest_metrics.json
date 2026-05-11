@@ -12,11 +12,11 @@
   "compliance_warning_rate": 0.0,
   "average_retry_count": 0,
   "version_fingerprint": {
-    "generated_at": "2026-05-11T03:46:45.767061+00:00",
-    "git_commit": "05492a36f8934599c379104884c143ba581540c3",
+    "generated_at": "2026-05-11T04:03:29.005438+00:00",
+    "git_commit": "f9e61966042168281c0bf3011ca454075ec305dc",
     "git_branch": "main",
     "python_version": "3.11.9",
-    "app_version": "1.2.6",
+    "app_version": "1.2.8",
     "agent_version": "agent-platform-v1",
     "model_config": {
       "provider": "AIService",

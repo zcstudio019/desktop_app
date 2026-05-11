@@ -243,6 +243,12 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
     for target in (expected or {}).get("medium_long_or_lease_must_include") or []:
         if not _loan_matches(medium_loans, target):
             failures.append(f"medium_long_or_lease_must_include missing: {target}")
+    for target in (expected or {}).get("revolving_overdrafts_must_include") or []:
+        if not _loan_matches(revolving_loans, target):
+            failures.append(f"revolving_overdrafts_must_include missing: {target}")
+    for warning in (expected or {}).get("must_not_have_warnings") or []:
+        if warning in warnings:
+            failures.append(f"unexpected validation warning: {warning}")
     return failures
 
 
@@ -256,6 +262,8 @@ def _loan_matches(loans: list[dict[str, Any]], target: dict[str, Any]) -> bool:
                 value = _biz(loan)
             elif key == "guarantee_type":
                 value = _guarantee(loan)
+            elif key == "credit_amount":
+                value = loan.get("credit_amount") or loan.get("loan_amount")
             elif key == "start_date":
                 value = loan.get("start_date") or loan.get("open_date") or ""
             elif key == "end_date":

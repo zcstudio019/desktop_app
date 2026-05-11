@@ -79,9 +79,12 @@ def validate_agent_result(result: AgentResult, expected_counts: dict[str, int] |
         warnings.append("medium_long_balance_reconciliation_mismatch")
     if result.credit_summary.medium_long_term_loan_balance and not result.medium_long_term_loans:
         warnings.append("medium_long_term_balance_without_details")
+    revolving_sum = _amount_sum(result.revolving_overdrafts, "balance")
     if result.credit_summary.revolving_overdraft_balance and not result.revolving_overdrafts:
         warnings.append("revolving_balance_without_details")
-    reconciliation["revolving_overdraft_detail_balance_sum"] = _amount_sum(result.revolving_overdrafts, "balance")
+    reconciliation["revolving_overdraft_detail_balance_sum"] = revolving_sum
+    if result.credit_summary.revolving_overdraft_balance is not None and result.revolving_overdrafts:
+        reconciliation["revolving_balance_match"] = abs(revolving_sum - float(result.credit_summary.revolving_overdraft_balance or 0)) <= 0.01
 
     all_evidence = "\n".join(
         [loan.evidence_text for loan in [*result.short_term_loans, *result.medium_long_term_loans]]

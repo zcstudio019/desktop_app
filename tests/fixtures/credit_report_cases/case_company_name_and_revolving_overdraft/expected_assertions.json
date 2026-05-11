@@ -4,6 +4,22 @@
   "if_revolving_balance_positive_then": {
     "must_have_details_or_warning": "revolving_balance_without_details"
   },
+  "revolving_overdrafts_must_include": [
+    {
+      "institution_name": "中国建设银行股份有限公司上海五角场支行",
+      "business_type": "流动资金贷款",
+      "credit_amount": 460,
+      "balance": 454.68,
+      "guarantee_type": "抵押",
+      "start_date": "2024-02-22",
+      "end_date": "2025-08-21",
+      "five_category": "正常",
+      "overdue_months": 0
+    }
+  ],
+  "must_not_have_warnings": [
+    "revolving_balance_without_details"
+  ],
   "forbidden_company_name_values": [
     "智富金融信息服务（上海",
     "智富金融信息服务",

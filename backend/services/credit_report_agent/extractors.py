@@ -549,3 +549,134 @@ def extract_revolving_overdrafts(section_text: str | dict[str, Any]) -> list[Rev
             )
         )
     return records
+
+
+# Final UTF-8 implementation: revolving-overdraft rows often span 2-3 physical
+# lines, so parse from a local section window and merge the header/status/tail.
+def extract_revolving_overdrafts(section_text: str | dict[str, Any]) -> list[RevolvingOverdraftRecord]:
+    text = normalize_text(_extract_revolving_section_text(section_text))
+    if not text:
+        return []
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+    records: list[RevolvingOverdraftRecord] = []
+    start_re = re.compile(
+        r"(?P<account>[A-Z]\d{5,}[A-Z0-9_-]*)?\s*"
+        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,100}?(?:银行股份有限公司|村镇银行股份有限公司|银行)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,40}?(?:分行|支行|营业部)?)\s*"
+        r"(?P<biz>循环透支|循环贷款|循环额度|循环授信透支|流动资金贷款|贷款)\s*"
+        r"(?P<start>\d{4}-\d{2}-\d{2})\s*"
+        r"(?P<end>\d{4}-\d{2}-\d{2}|长期)\s*"
+        r"(?P<currency>人民币元|人民币)\s*"
+        r"(?P<amount>\d+(?:\.\d+)?)\s*"
+        r"(?P<issue>新增|无还本续贷|其他)?"
+    )
+    status_re = re.compile(
+        r"(?P<guarantee>信用/无担保|保证/保证金|保证金|保证|组合|抵押|质押|信用|其他)\s*"
+        r"(?P<balance>\d+(?:\.\d+)?)\s*"
+        r"(?P<five>正常|关注|次级|可疑|损失|违约|未分类)\s*"
+        r"(?P<overdue_total>\d+(?:\.\d+)?)\s*"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)\s*"
+        r"(?P<overdue_months>\d+)\s*"
+        r"(?P<last_date>\d{4}-\d{2}-\d{2})?"
+    )
+    tail_re = re.compile(
+        r"(?P<last_amount>\d+(?:\.\d+)?)\s*"
+        r"(?P<last_type>正常还款|逾期还款|提前还款|--)?\s*"
+        r"(?P<remain>\d+)?\s*"
+        r"(?P<agreement>[A-Z]\d{5,}[A-Z0-9_-]*)?\s*"
+        r"(?P<history>见附件|--)?\s*"
+        r"(?P<report>\d{4}-\d{2}-\d{2})?"
+    )
+
+    for idx, line in enumerate(lines):
+        compact_line = re.sub(r"\s+", "", line)
+        first = start_re.search(compact_line)
+        if not first:
+            continue
+        window_lines = lines[idx: idx + 6]
+        evidence_text = "\n".join(window_lines)
+        status = None
+        status_idx = -1
+        status_line = ""
+        for rel_idx, candidate in enumerate(window_lines[1:], start=1):
+            status = status_re.search(re.sub(r"\s+", " ", candidate).strip())
+            if status:
+                status_idx = rel_idx
+                status_line = candidate
+                break
+        if not status:
+            joined = re.sub(r"\s+", "", evidence_text)
+            status = status_re.search(joined[first.end():])
+        if not status:
+            continue
+        tail_source = "\n".join(window_lines[status_idx + 1:]) if status_idx != -1 else "\n".join(window_lines[2:])
+        tail = tail_re.search(re.sub(r"\s+", " ", tail_source).strip())
+        institution = first.group("institution")
+        normalized = normalize_institution_name(institution, evidence_text)
+        if normalized and len(normalized) > len(institution):
+            institution = normalized
+        records.append(
+            RevolvingOverdraftRecord(
+                account_no=first.group("account") or "",
+                institution_name=institution,
+                business_type=first.group("biz"),
+                credit_amount=to_amount(first.group("amount")),
+                used_amount=to_amount(status.group("balance")),
+                balance=to_amount(status.group("balance")),
+                start_date=format_date(first.group("start")),
+                end_date=format_date(first.group("end")),
+                currency="人民币",
+                issue_type=first.group("issue") or "",
+                guarantee_type=status.group("guarantee") or "",
+                five_category=status.group("five") or "",
+                overdue_months=to_int(status.group("overdue_months")),
+                last_repayment_date=status.group("last_date") or "",
+                last_repayment_amount=to_amount(tail.group("last_amount")) if tail else None,
+                last_repayment_type=tail.group("last_type") if tail else "",
+                remaining_repayment_months=to_int(tail.group("remain"), default=0) if tail and tail.group("remain") else None,
+                credit_agreement_no=tail.group("agreement") if tail else "",
+                history_performance=tail.group("history") if tail else "",
+                report_date=tail.group("report") if tail else "",
+                evidence_text=evidence_text,
+                source_section="revolving_overdraft",
+                confidence=0.88,
+            )
+        )
+
+    if records:
+        return records
+
+    compact = compact_text(text)
+    pattern = re.compile(
+        r"(?P<account>[A-Z]\d{5,}[A-Z0-9_-]*)?"
+        r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,100}?(?:银行股份有限公司|村镇银行股份有限公司|银行)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,40}?(?:分行|支行|营业部)?)"
+        r"(?P<biz>循环透支|循环贷款|循环额度|循环授信透支|流动资金贷款|贷款)"
+        r"(?P<start>\d{4}-\d{2}-\d{2})(?P<end>\d{4}-\d{2}-\d{2}|长期)"
+        r"(?:人民币元|人民币)(?P<amount>\d+(?:\.\d+)?)(?:新增|无还本续贷|其他)?"
+        r".{0,120}?"
+        r"(?P<guarantee>信用/无担保|保证/保证金|保证金|保证|组合|抵押|质押|信用|其他)"
+        r"(?P<balance>\d+(?:\.\d+)?)(?P<five>正常|关注|次级|可疑|损失|违约|未分类)"
+        r"(?P<overdue_total>\d+(?:\.\d+)?)(?P<overdue_principal>\d+(?:\.\d+)?)(?P<overdue_months>\d+)"
+    )
+    for match in pattern.finditer(compact):
+        raw = match.group(0)
+        institution = normalize_institution_name(match.group("institution"), raw)
+        records.append(
+            RevolvingOverdraftRecord(
+                account_no=match.group("account") or "",
+                institution_name=institution,
+                business_type=match.group("biz"),
+                credit_amount=to_amount(match.group("amount")),
+                used_amount=to_amount(match.group("balance")),
+                balance=to_amount(match.group("balance")),
+                start_date=format_date(match.group("start")),
+                end_date=format_date(match.group("end")),
+                currency="人民币",
+                guarantee_type=match.group("guarantee"),
+                five_category=match.group("five"),
+                overdue_months=to_int(match.group("overdue_months")),
+                evidence_text=raw,
+                source_section="revolving_overdraft",
+                confidence=0.86,
+            )
+        )
+    return records
