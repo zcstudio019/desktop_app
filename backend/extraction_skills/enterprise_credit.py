@@ -4592,6 +4592,7 @@ def format_loan_detail_lines(loans: list[dict[str, Any]]) -> list[str]:
 
 
 CREDIT_PARSER_VERSION = "credit-parser-fix-2026-05-09"
+REVOLVING_DEBUG_VERSION = "revolving-fix-v2"
 
 _FINAL_SHORT_FORBIDDEN_KEYWORDS = [
     "融资型租赁",
@@ -5019,6 +5020,8 @@ def _extract_company_name_from_raw_for_final(raw_text: str) -> str:
 def _extract_revolving_window_for_final(raw_text: str) -> str:
     start_keywords = ["循环透支 共", "循环透支", "循环贷款", "循环额度", "循环授信透支", "寰幆閫忔敮 鍏?", "寰幆閫忔敮"]
     end_keywords = [
+        "短期借款", "中长期借款", "银行保函及其他业务", "授信信息", "对外担保", "公共记录", "查询记录",
+        "鐭湡鍊熸", "涓暱鏈熷€熸",
         "关注类余额", "不良类余额", "对外担保", "银行保函及其他业务", "相关还款责任", "授信信息", "公共记录", "查询记录", "报告说明",
         "鍏虫敞", "涓嶈壇", "瀵瑰鎷呬繚", "閾惰淇濆嚱", "鎺堜俊淇℃伅", "鍏叡璁板綍", "鏌ヨ璁板綍", "鎶ュ憡璇存槑",
     ]
@@ -5419,6 +5422,9 @@ def final_normalize_credit_result(
             for loan in normalized_short + normalized_medium
         )
 
+        revolving_section = _extract_revolving_window_for_final(raw_text)
+        parsed_revolving_from_window = _parse_revolving_window_for_final(raw_text)
+        revolving_extractor_called = True
         revolving_loans = _merge_loan_candidates(
             data.get("revolving_loans"),
             data.get("revolving_overdrafts"),
@@ -5426,9 +5432,8 @@ def final_normalize_credit_result(
                 loan for loan in active_candidates
                 if isinstance(loan, dict) and loan_term_type(loan) == "revolving_overdraft"
             ],
+            parsed_revolving_from_window,
         )
-        if not revolving_loans:
-            revolving_loans = _parse_revolving_window_for_final(raw_text)
         revolving_loans = _dedupe_final_loans(
             [
                 _sync_loan_aliases(
@@ -5446,11 +5451,23 @@ def final_normalize_credit_result(
         if revolving_balance_value and not revolving_loans and "revolving_balance_without_details" not in warnings:
             warnings.append("revolving_balance_without_details")
         if revolving_balance_value and revolving_loans:
+            warnings = [w for w in warnings if w != "revolving_balance_without_details"]
             reconciliation = dict(validation.get("reconciliation") or {})
             revolving_detail_sum = sum(_to_float(loan.get("balance")) or 0.0 for loan in revolving_loans)
             reconciliation["revolving_overdraft_detail_balance_sum"] = round(revolving_detail_sum, 2)
             reconciliation["revolving_balance_match"] = abs(revolving_detail_sum - revolving_balance_value) <= 0.01
             validation["reconciliation"] = reconciliation
+        revolving_warning = "revolving_balance_without_details" in warnings
+        credit_debug = {
+            "parser_version": REVOLVING_DEBUG_VERSION,
+            "has_revolving_section": bool(revolving_section),
+            "revolving_section_len": len(revolving_section or ""),
+            "revolving_extractor_called": revolving_extractor_called,
+            "revolving_extracted_count": len(parsed_revolving_from_window),
+            "revolving_returned_count": len(revolving_loans),
+            "revolving_balance": revolving_balance_value,
+            "revolving_warning": revolving_warning,
+        }
         data["short_loans"] = normalized_short
         data["short_loans_final"] = normalized_short
         data["medium_loans"] = normalized_medium
@@ -5461,17 +5478,20 @@ def final_normalize_credit_result(
         data["active_loans"] = normalized_short + normalized_medium + revolving_loans
         data["credit_parser_version"] = CREDIT_PARSER_VERSION
         data["parser_path"] = parser_path
+        data["credit_debug"] = credit_debug
         validation["errors"] = errors
         validation["warnings"] = warnings
         data["validation"] = validation
         data["credit_parser_debug"] = {
             "credit_parser_version": CREDIT_PARSER_VERSION,
+            "parser_version": REVOLVING_DEBUG_VERSION,
             "parser_path": parser_path,
             "short_term_count": len(normalized_short),
             "medium_long_term_count": len(normalized_medium),
             "contains_finance_lease_in_short_term": contains_finance_lease_in_short,
             "contains_invalid_institution_company": contains_invalid_institution,
             "invalid_institution_seen_before_normalize": invalid_institution_found,
+            "credit_debug": credit_debug,
         }
         logger.warning(
             "[EnterpriseCredit][FINAL_NORMALIZE] version=%s path=%s short=%s medium=%s finance_in_short=%s invalid_company=%s",
@@ -5490,13 +5510,25 @@ def final_normalize_credit_result(
         fallback = dict(result or {})
         fallback["credit_parser_version"] = CREDIT_PARSER_VERSION
         fallback["parser_path"] = parser_path
+        fallback["credit_debug"] = {
+            "parser_version": REVOLVING_DEBUG_VERSION,
+            "has_revolving_section": False,
+            "revolving_section_len": 0,
+            "revolving_extractor_called": False,
+            "revolving_extracted_count": 0,
+            "revolving_returned_count": len(fallback.get("revolving_overdrafts") or fallback.get("revolving_loans") or []),
+            "revolving_balance": _to_float((fallback.get("credit_summary") or {}).get("revolving_overdraft_balance")),
+            "revolving_warning": "revolving_balance_without_details" in ((fallback.get("validation") or {}).get("warnings") or []),
+        }
         fallback["credit_parser_debug"] = {
             "credit_parser_version": CREDIT_PARSER_VERSION,
+            "parser_version": REVOLVING_DEBUG_VERSION,
             "parser_path": parser_path,
             "short_term_count": len(fallback.get("short_loans") or []),
             "medium_long_term_count": len(fallback.get("medium_loans") or fallback.get("long_term_loans") or []),
             "contains_finance_lease_in_short_term": False,
             "contains_invalid_institution_company": False,
+            "credit_debug": fallback["credit_debug"],
         }
         return fallback
 

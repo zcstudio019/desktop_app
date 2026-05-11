@@ -57,6 +57,7 @@ def main() -> int:
     print("Enterprise credit final API payload test")
     print(f"- parser_version: {normalized.get('credit_parser_version')}")
     print(f"- parser_debug: {normalized.get('credit_parser_debug')}")
+    print(f"- credit_debug: {normalized.get('credit_debug')}")
     print(f"- short_term_count: {len(normalized.get('short_loans_final') or [])}")
     print(f"- medium_long_term_count: {len(normalized.get('medium_loans_final') or [])}")
     print(f"- revolving_overdraft_count: {len(normalized.get('revolving_overdrafts') or normalized.get('revolving_loans') or [])}")
@@ -194,6 +195,14 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
 
     if result.get("credit_parser_version") != CREDIT_PARSER_VERSION:
         failures.append("parser_version is not latest")
+    credit_debug = result.get("credit_debug") or {}
+    if (expected or {}).get("revolving_overdrafts_must_include"):
+        if credit_debug.get("parser_version") != "revolving-fix-v2":
+            failures.append(f"credit_debug.parser_version mismatch: {credit_debug.get('parser_version')!r}")
+        if int(credit_debug.get("revolving_extracted_count") or 0) < 1:
+            failures.append(f"credit_debug.revolving_extracted_count < 1: {credit_debug}")
+        if int(credit_debug.get("revolving_returned_count") or 0) < 1:
+            failures.append(f"credit_debug.revolving_returned_count < 1: {credit_debug}")
     expected_company = (expected or {}).get("company_name_must_equal")
     if expected_company and company_name != expected_company:
         failures.append(f"company_name mismatch: {company_name!r} != {expected_company!r}")

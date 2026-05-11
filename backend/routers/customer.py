@@ -1092,6 +1092,7 @@ def _build_profile_response(
         updated_at=profile.get("updated_at"),
         rag_source_priority=profile.get("rag_source_priority") or get_rag_source_priority(),
         risk_report_schema=profile.get("risk_report_schema") or get_risk_report_schema_template(),
+        credit_debug=profile.get("credit_debug") or (profile.get("source_snapshot") or {}).get("credit_debug") or {},
     )
 
 

@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 
 from backend.document_types import get_document_display_name, should_store_original
@@ -741,7 +742,11 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     'is_latest': extraction.get('extraction_id') == latest_success.get('extraction_id'),
                     'schema_version': extracted_data.get('schema_version') or '',
                 })
-            section, _ = await _build_single_document_section(storage_service, customer_id, latest_success)
+            section, latest_source_document = await _build_single_document_section(storage_service, customer_id, latest_success)
+            if latest_source_document.get('credit_debug'):
+                for source_document in source_documents:
+                    if source_document.get('extraction_id') == latest_success.get('extraction_id'):
+                        source_document['credit_debug'] = latest_source_document.get('credit_debug')
             sections.append(section)
         except Exception as exc:
             logger.warning("profile_markdown enterprise_credit_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
@@ -1171,6 +1176,52 @@ def _build_bank_statement_section_lines(file_name: str, original_status: str, ex
     return lines
 
 
+def _read_profile_text_from_file(file_path: str) -> str:
+    """Best-effort text recovery when profile markdown is rebuilt from cache."""
+    path = Path(str(file_path or ""))
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        if path.suffix.lower() == ".pdf":
+            try:
+                import fitz  # type: ignore
+
+                with fitz.open(str(path)) as doc:
+                    return "\n".join(page.get_text("text") for page in doc)
+            except Exception:
+                try:
+                    from PyPDF2 import PdfReader  # type: ignore
+
+                    reader = PdfReader(str(path))
+                    return "\n".join(page.extract_text() or "" for page in reader.pages)
+                except Exception:
+                    logger.warning("profile_markdown enterprise_credit_pdf_text_failed file=%s", path, exc_info=True)
+                    return ""
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        logger.warning("profile_markdown enterprise_credit_file_text_failed file=%s", path, exc_info=True)
+        return ""
+
+
+def _enterprise_credit_raw_text_for_profile(
+    extracted_data: dict[str, Any],
+    extracted_json: dict[str, Any],
+    document: dict[str, Any] | None,
+) -> str:
+    raw_text = str(
+        extracted_data.get("raw_text")
+        or extracted_json.get("raw_text")
+        or extracted_json.get("raw_text_full")
+        or extracted_json.get("raw_text_preview")
+        or extracted_data.get("raw_text_preview")
+        or ""
+    )
+    if raw_text and len(raw_text) >= 5000:
+        return raw_text
+    file_text = _read_profile_text_from_file((document or {}).get("file_path") or "")
+    return file_text or raw_text
+
+
 async def _build_single_document_section(
     storage_service: Any,
     customer_id: str,
@@ -1222,11 +1273,10 @@ async def _build_single_document_section(
                     final_normalize_credit_result,
                 )
 
-                raw_text_for_profile = (
-                    extracted_data.get('raw_text')
-                    or extracted_json_for_profile.get('raw_text')
-                    or extracted_json_for_profile.get('raw_text_preview')
-                    or ''
+                raw_text_for_profile = _enterprise_credit_raw_text_for_profile(
+                    extracted_data,
+                    extracted_json_for_profile,
+                    document,
                 )
                 extracted_json_for_profile = final_normalize_credit_result(
                     extracted_json_for_profile,
@@ -1235,10 +1285,12 @@ async def _build_single_document_section(
                 )
                 extracted_data['extracted_json'] = extracted_json_for_profile
                 extracted_data['markdown_summary'] = _build_markdown_summary_v2(extracted_json_for_profile)
+                if extracted_json_for_profile.get('credit_debug'):
+                    source_document['credit_debug'] = extracted_json_for_profile.get('credit_debug')
                 logger.warning(
                     "[EnterpriseCredit][PROFILE_DEBUG] parser_version=%s debug=%s",
                     CREDIT_PARSER_VERSION,
-                    extracted_json_for_profile.get('credit_parser_debug'),
+                    extracted_json_for_profile.get('credit_debug') or extracted_json_for_profile.get('credit_parser_debug'),
                 )
         except Exception:
             logger.exception("[EnterpriseCredit][PROFILE_DEBUG] final normalization failed")
@@ -1466,6 +1518,15 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
         scheme_section,
     ]
 
+    credit_debug = next(
+        (
+            doc.get('credit_debug')
+            for doc in source_documents
+            if (doc.get('source_type') or '') == 'enterprise_credit' and isinstance(doc.get('credit_debug'), dict)
+        ),
+        {},
+    )
+
     payload = {
         'customer_id': customer_id,
         'customer_name': customer_name,
@@ -1476,8 +1537,10 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
             'customer_name': customer_name,
             'source_documents': source_documents,
             'application_summary': application_snapshot,
-        'scheme_summary': scheme_meta,
+            'scheme_summary': scheme_meta,
+            'credit_debug': credit_debug,
         },
+        'credit_debug': credit_debug,
         'rag_source_priority': get_rag_source_priority(),
         'risk_report_schema': get_risk_report_schema_template(),
     }
@@ -1488,6 +1551,34 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
 async def get_or_create_customer_profile(storage_service: Any, customer_id: str) -> tuple[dict[str, Any], bool]:
     existing = await storage_service.get_customer_profile(customer_id)
     if existing:
+        markdown = str(existing.get('markdown_content') or '')
+        snapshot = existing.get('source_snapshot') or {}
+        source_documents = snapshot.get('source_documents') or []
+        has_enterprise_credit = (
+            any((doc.get('source_type') or '') == 'enterprise_credit' for doc in source_documents if isinstance(doc, dict))
+            or '企业征信' in markdown
+            or '循环透支' in markdown
+            or 'revolving_balance_without_details' in markdown
+        )
+        debug = existing.get('credit_debug') or snapshot.get('credit_debug') or {}
+        if (
+            existing.get('source_mode') != 'manual'
+            and
+            has_enterprise_credit
+            and (
+                'revolving_balance_without_details' in markdown
+                or '暂未识别到循环透支明细' in markdown
+                or debug.get('parser_version') != 'revolving-fix-v2'
+            )
+        ):
+            logger.warning(
+                "[EnterpriseCredit][PROFILE_DEBUG] stale profile detected customer_id=%s debug=%s; regenerate",
+                customer_id,
+                debug,
+            )
+            generated = await build_auto_profile_payload(storage_service, customer_id)
+            saved = await storage_service.upsert_customer_profile(generated)
+            return saved, True
         return existing, False
 
     generated = await build_auto_profile_payload(storage_service, customer_id)
@@ -1661,7 +1752,11 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     'is_latest': extraction.get('extraction_id') == latest_success.get('extraction_id'),
                     'schema_version': extracted_data.get('schema_version') or '',
                 })
-            section, _ = await _build_single_document_section(storage_service, customer_id, latest_success)
+            section, latest_source_document = await _build_single_document_section(storage_service, customer_id, latest_success)
+            if latest_source_document.get('credit_debug'):
+                for source_document in source_documents:
+                    if source_document.get('extraction_id') == latest_success.get('extraction_id'):
+                        source_document['credit_debug'] = latest_source_document.get('credit_debug')
             sections.append(section)
         except Exception as exc:
             logger.warning("profile_markdown enterprise_credit_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)

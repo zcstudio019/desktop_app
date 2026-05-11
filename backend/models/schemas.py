@@ -618,6 +618,10 @@ class CustomerProfileMarkdownResponse(BaseModel):
         default_factory=dict,
         description="Reserved JSON schema structure for future risk assessment reports",
     )
+    credit_debug: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Enterprise credit final parser debug metadata",
+    )
 
 
 class UpdateCustomerProfileMarkdownRequest(BaseModel):

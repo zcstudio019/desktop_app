@@ -506,6 +506,7 @@ export interface CustomerProfileMarkdownResponse {
   updated_at?: string | null;
   rag_source_priority: string[];
   risk_report_schema: Record<string, unknown>;
+  credit_debug?: Record<string, unknown>;
 }
 
 export interface UpdateCustomerProfileMarkdownRequest {
