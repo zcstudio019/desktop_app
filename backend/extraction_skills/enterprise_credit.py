@@ -5384,17 +5384,33 @@ def _case_specific_revolving_fallback(raw_text: str, section_text: str) -> list[
 def _extract_revolving_window_for_final(raw_text: str) -> str:
     text = normalize_credit_text(raw_text or "")
     start_keywords = [
-        "循环透支 共", "循环透支", "循环贷款", "循环额度", "循环授信透支",
+        "循环透支 共", "循环透支账户明细", "未结清循环透支", "循环透支账户",
+        "循环透支", "循环贷款", "循环额度", "循环授信透支",
         "寰幆閫忔敮 鍏?", "寰幆閫忔敮", "寰幆璐锋", "寰幆棰濆害",
     ]
-    search_from_candidates = [
-        text.find(keyword)
-        for keyword in ("信贷记录明细", "淇¤捶璁板綍鏄庣粏", "未结清信贷", "鏈粨娓呬俊璐?")
-        if text.find(keyword) != -1
-    ]
-    search_from = min(search_from_candidates) if search_from_candidates else 0
+    search_from = 0
+    for keyword in ("信贷记录明细", "淇¤捶璁板綍鏄庣粏"):
+        pos = text.find(keyword)
+        if pos != -1:
+            search_from = pos
+            break
+    if search_from == 0:
+        for keyword in ("未结清信贷", "鏈粨娓呬俊璐?"):
+            pos = text.find(keyword)
+            if pos != -1:
+                search_from = pos
+                break
     start = -1
+    title_match = re.search(r"(循环透支|循环透支账户|循环透支账户明细|未结清循环透支)\s*(?:共\s*\d+\s*笔)?", text[search_from:], re.S)
+    if title_match:
+        start = search_from + title_match.start()
+    if start == -1:
+        mojibake_match = re.search(r"(寰幆閫忔敮|寰幆璐锋|寰幆棰濆害)\s*(?:鍏?.{0,6}?绗?)?", text[search_from:], re.S)
+        if mojibake_match:
+            start = search_from + mojibake_match.start()
     for keyword in start_keywords:
+        if start != -1:
+            break
         pos = text.find(keyword, search_from)
         if pos != -1:
             start = pos
