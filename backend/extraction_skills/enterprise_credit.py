@@ -5500,124 +5500,135 @@ def _recover_revolving_overdraft_from_window_legacy(section_text: str, raw_text:
 
 
 def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> dict[str, Any] | None:
-    """Recover a complete revolving overdraft row from a local OCR/text window."""
-    source = str(text or "")
-    raw = str(raw_text or "")
-    if source and raw:
-        pos = raw.find(source[:120])
-        if pos != -1:
-            continuation = "\n".join(raw[pos + len(source):].splitlines()[:20])
-            source = f"{source}\n{continuation}"
-    if not source and raw:
-        source = raw
-    if not source:
-        logger.warning("[REVOLVING_RECOVERY_FAIL] reason=empty_input")
-        return None
+    """Recover a complete revolving overdraft row from a local OCR/log window."""
 
-    cleaned = source.replace("\r", "\n")
-    cleaned = re.sub(r"第\s*\d+\s*页/共\s*\n?\s*\d+\s*页", "\n", cleaned)
-    cleaned = re.sub(r"第\s*\d+\s*页/共", "\n", cleaned)
-    cleaned = re.sub(r"\n\s*\d+\s*页\s*\n", "\n", cleaned)
-    cleaned = re.sub(r"[ \t]+", " ", cleaned)
-    compact = re.sub(r"\s+", "", cleaned)
+    def _clean_candidate(value: str) -> str:
+        cleaned = str(value or "").replace("\r", "\n")
+        cleaned = re.sub(r"^\s*\d{4}-\d{2}-\d{2}[^\\n]{0,80}?(?:INFO|WARNING|ERROR|DEBUG)\s*", "", cleaned, flags=re.M)
+        cleaned = re.sub(r"第\s*\d+\s*页/共\s*\n?\s*\d+\s*页", "\n", cleaned)
+        cleaned = re.sub(r"第\s*\d+\s*页/共", "\n", cleaned)
+        cleaned = re.sub(r"\n\s*\d+\s*页\s*\n", "\n", cleaned)
+        cleaned = re.sub(r"[ \t]+", " ", cleaned)
+        return cleaned
 
-    account_match = re.search(r"B10411000H[A-Z0-9]*", compact)
-    if not account_match:
-        logger.warning("[REVOLVING_RECOVERY_FAIL] reason=account_not_found")
-        return None
-    compact_window = compact[max(0, account_match.start() - 120): account_match.start() + 2200]
+    def _parse_candidate(candidate: str) -> tuple[dict[str, Any] | None, str]:
+        cleaned = _clean_candidate(candidate)
+        compact = re.sub(r"\s+", "", cleaned)
+        if not compact:
+            return None, "empty_input"
+        account_match = re.search(r"B10411000H[A-Z0-9]*", compact)
+        if not account_match:
+            return None, "account_not_found"
 
-    main_match = re.search(
-        r"(?P<institution>[\u4e00-\u9fa5]{2,80}?银行股份有限公司[\u4e00-\u9fa5]{0,30}(?:分行|支行))"
-        r"(?P<business_type>流动资金贷款|固定资产贷款|融资型租赁|循环透支|贷款)"
-        r"(?P<start_date>\d{4}-\d{2}-\d{2})"
-        r"(?P<end_date>\d{4}-\d{2}-\d{2}|长期)"
-        r"(?:人民币元|人民币)"
-        r"(?P<credit_amount>\d+(?:\.\d+)?)",
-        compact_window,
-    )
-    if not main_match:
-        logger.warning("[REVOLVING_RECOVERY_FAIL] reason=institution_line_not_found")
-        return None
+        compact_window = compact[max(0, account_match.start() - 120): account_match.start() + 2200]
+        main_match = re.search(
+            r"(?P<institution>[\u4e00-\u9fa5]{2,80}?银行股份有限公司[\u4e00-\u9fa5]{0,30}(?:分行|支行))"
+            r"(?P<business_type>流动资金贷款|固定资产贷款|融资型租赁|循环透支|贷款)"
+            r"(?P<start_date>\d{4}-\d{2}-\d{2})"
+            r"(?P<end_date>\d{4}-\d{2}-\d{2}|长期)"
+            r"(?:人民币元|人民币)"
+            r"(?P<credit_amount>\d+(?:\.\d+)?)",
+            compact_window,
+        )
+        if not main_match:
+            return None, "main_info_not_found"
 
-    status_match = re.search(
-        r"(?P<guarantee>抵押|保证/保证金|保证金|保证|质押|信用|组合)"
-        r"(?P<balance>\d+(?:\.\d+)?)"
-        r"(?P<five_category>正常|关注|次级|可疑|损失|未分类)"
-        r"(?P<overdue_total>\d+(?:\.\d+)?)"
-        r"(?P<overdue_principal>\d+(?:\.\d+)?)"
-        r"(?P<overdue_months>\d+)"
-        r"(?P<last_repayment_date>\d{4}-\d{2}-\d{2})",
-        compact_window,
-    )
-    if not status_match:
-        logger.warning("[REVOLVING_RECOVERY_FAIL] reason=guarantee_line_not_found")
-        return None
+        status_match = re.search(
+            r"(?P<guarantee>抵押|保证/保证金|保证金|保证|质押|信用|组合)"
+            r"(?P<balance>\d+(?:\.\d+)?)"
+            r"(?P<five_category>正常|关注|次级|可疑|损失|未分类)"
+            r"(?P<overdue_total>\d+(?:\.\d+)?)"
+            r"(?P<overdue_principal>\d+(?:\.\d+)?)"
+            r"(?P<overdue_months>\d+)"
+            r"(?P<last_repayment_date>\d{4}-\d{2}-\d{2})",
+            compact_window,
+        )
+        if not status_match:
+            return None, "guarantee_line_not_found"
 
-    repayment_source = compact_window[status_match.end():]
-    repayment_match = re.search(
-        r"(?P<last_repayment_amount>\d+(?:\.\d+)?)"
-        r"(?P<last_repayment_type>正常还款)"
-        r"(?P<remaining_repayment_months>\d+)"
-        r".*?见附件"
-        r"(?P<report_date>\d{4}-\d{2}-\d{2})",
-        repayment_source,
-    )
-    if not repayment_match:
-        logger.warning("[REVOLVING_RECOVERY_FAIL] reason=repayment_line_not_found")
+        repayment_match = re.search(
+            r"(?P<last_repayment_amount>\d+(?:\.\d+)?)"
+            r"(?P<last_repayment_type>正常还款)"
+            r"(?P<remaining_repayment_months>\d+)"
+            r".*?见附件"
+            r"(?P<report_date>\d{4}-\d{2}-\d{2})",
+            compact_window[status_match.end():],
+        )
+        reason = "" if repayment_match else "repayment_line_not_found"
 
-    credit_amount = _to_float(main_match.group("credit_amount"))
-    balance = _to_float(status_match.group("balance"))
-    last_repayment_amount = _to_float(repayment_match.group("last_repayment_amount")) if repayment_match else None
-    result = _sync_loan_aliases(
-        {
-            "account_no": account_match.group(0),
-            "institution_name": main_match.group("institution"),
-            "institution": main_match.group("institution"),
-            "bank": main_match.group("institution"),
-            "business_type": main_match.group("business_type"),
-            "biz_type": main_match.group("business_type"),
-            "loan_type": main_match.group("business_type"),
-            "credit_amount": int(credit_amount) if credit_amount is not None and credit_amount.is_integer() else credit_amount,
-            "loan_amount": int(credit_amount) if credit_amount is not None and credit_amount.is_integer() else credit_amount,
-            "used_amount": balance,
-            "balance": balance,
-            "start_date": main_match.group("start_date"),
-            "open_date": main_match.group("start_date"),
-            "end_date": main_match.group("end_date"),
-            "due_date": main_match.group("end_date"),
-            "currency": "人民币",
-            "guarantee_type": status_match.group("guarantee"),
-            "guarantee": status_match.group("guarantee"),
-            "five_category": status_match.group("five_category"),
-            "five_classification": status_match.group("five_category"),
-            "overdue_total": _to_float(status_match.group("overdue_total")) or 0,
-            "overdue_amount": _to_float(status_match.group("overdue_total")) or 0,
-            "overdue_principal": _to_float(status_match.group("overdue_principal")) or 0,
-            "overdue_months": int(status_match.group("overdue_months")),
-            "last_repayment_date": status_match.group("last_repayment_date"),
-            "last_repay_date": status_match.group("last_repayment_date"),
-            "last_repayment_amount": last_repayment_amount,
-            "last_repayment_type": repayment_match.group("last_repayment_type") if repayment_match else "",
-            "remaining_repayment_months": int(repayment_match.group("remaining_repayment_months")) if repayment_match else "",
-            "report_date": repayment_match.group("report_date") if repayment_match else "",
-            "source_section": "revolving_overdraft",
-            "term_type": "revolving_overdraft",
-            "section_type": "循环透支",
-            "confidence": 0.9,
-            "_recovered_by": "recover_revolving_overdraft_from_window",
-            "evidence_text": _sanitize_credit_debug_preview(cleaned, 1000),
-        }
-    )
-    result["credit_amount"] = int(credit_amount) if credit_amount is not None and credit_amount.is_integer() else credit_amount
-    result["loan_amount"] = result["credit_amount"]
-    result["balance"] = balance
-    result["used_amount"] = balance
-    result["overdue_months"] = int(status_match.group("overdue_months"))
-    result["last_repayment_amount"] = last_repayment_amount
-    result["remaining_repayment_months"] = int(repayment_match.group("remaining_repayment_months")) if repayment_match else ""
-    logger.warning("[REVOLVING_RECOVERY_SUCCESS] institution=%s balance=%s", main_match.group("institution"), balance)
-    return result
+        credit_amount = _to_float(main_match.group("credit_amount"))
+        balance = _to_float(status_match.group("balance"))
+        last_repayment_amount = _to_float(repayment_match.group("last_repayment_amount")) if repayment_match else None
+        result = _sync_loan_aliases(
+            {
+                "account_no": account_match.group(0),
+                "institution_name": main_match.group("institution"),
+                "institution": main_match.group("institution"),
+                "bank": main_match.group("institution"),
+                "business_type": main_match.group("business_type"),
+                "biz_type": main_match.group("business_type"),
+                "loan_type": main_match.group("business_type"),
+                "credit_amount": int(credit_amount) if credit_amount is not None and credit_amount.is_integer() else credit_amount,
+                "loan_amount": int(credit_amount) if credit_amount is not None and credit_amount.is_integer() else credit_amount,
+                "used_amount": balance,
+                "balance": balance,
+                "start_date": main_match.group("start_date"),
+                "open_date": main_match.group("start_date"),
+                "end_date": main_match.group("end_date"),
+                "due_date": main_match.group("end_date"),
+                "currency": "人民币",
+                "guarantee_type": status_match.group("guarantee"),
+                "guarantee": status_match.group("guarantee"),
+                "five_category": status_match.group("five_category"),
+                "five_classification": status_match.group("five_category"),
+                "overdue_total": _to_float(status_match.group("overdue_total")) or 0,
+                "overdue_amount": _to_float(status_match.group("overdue_total")) or 0,
+                "overdue_principal": _to_float(status_match.group("overdue_principal")) or 0,
+                "overdue_months": int(status_match.group("overdue_months")),
+                "last_repayment_date": status_match.group("last_repayment_date"),
+                "last_repay_date": status_match.group("last_repayment_date"),
+                "last_repayment_amount": last_repayment_amount,
+                "last_repayment_type": repayment_match.group("last_repayment_type") if repayment_match else "",
+                "remaining_repayment_months": int(repayment_match.group("remaining_repayment_months")) if repayment_match else "",
+                "report_date": repayment_match.group("report_date") if repayment_match else "",
+                "source_section": "revolving_overdraft",
+                "term_type": "revolving_overdraft",
+                "section_type": "循环透支",
+                "confidence": 0.9 if repayment_match else 0.82,
+                "_recovered_by": "revolving_window_recovery_v2",
+                "evidence_text": _sanitize_credit_debug_preview(cleaned, 1000),
+            }
+        )
+        result["credit_amount"] = int(credit_amount) if credit_amount is not None and credit_amount.is_integer() else credit_amount
+        result["loan_amount"] = result["credit_amount"]
+        result["balance"] = balance
+        result["used_amount"] = balance
+        result["overdue_months"] = int(status_match.group("overdue_months"))
+        result["last_repayment_amount"] = last_repayment_amount
+        result["remaining_repayment_months"] = int(repayment_match.group("remaining_repayment_months")) if repayment_match else ""
+        return result, reason
+
+    candidates: list[str] = []
+    if text:
+        candidates.append(str(text))
+    if raw_text and str(raw_text) not in candidates:
+        candidates.append(str(raw_text))
+
+    last_reason = "empty_input"
+    for candidate in candidates:
+        result, reason = _parse_candidate(candidate)
+        if result:
+            if reason:
+                logger.warning("[REVOLVING_RECOVERY_FAIL] reason=%s", reason)
+            logger.warning(
+                "[REVOLVING_RECOVERY_SUCCESS_V2] %s %s",
+                result.get("institution_name"),
+                result.get("balance"),
+            )
+            return result
+        last_reason = reason
+    logger.warning("[REVOLVING_RECOVERY_FAIL] reason=%s", last_reason)
+    return None
 
 
 def _revolving_detail_quality(loan: dict[str, Any]) -> int:

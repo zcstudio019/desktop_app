@@ -1,6 +1,6 @@
 # Agent Regression Report
 
-- Generated At: 2026-05-11T09:40:34.051945+00:00
+- Generated At: 2026-05-11T09:48:37.447016+00:00
 - Mode: Rule
 - Total Cases: 3
 - Passed: 3
@@ -12,9 +12,9 @@
 
 | Item | Value |
 |------|-------|
-| Commit | 59235e277f0c0c835bd2e1d6e061f1ad2c33b2b2 |
+| Commit | 721eaaa85681edab5eaf76f348ab48cc2166f57f |
 | Branch | main |
-| App Version | 1.3.8 |
+| App Version | 1.3.9 |
 | Model | deepseek-chat |
 | RiskAgent Prompt Hash | 5627a31aa2b8 |
 | FinancingJudgementAgent Prompt Hash | 440065fb082d |

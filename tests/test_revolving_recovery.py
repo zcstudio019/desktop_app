@@ -3,19 +3,8 @@ from __future__ import annotations
 from backend.extraction_skills.enterprise_credit import recover_revolving_overdraft_from_window
 
 
-def test_recover_revolving_overdraft_from_multiline_window() -> None:
+def test_recover_revolving_overdraft_from_real_log_window() -> None:
     text = """
-循环透支 共 1 笔
-账户
-编号授信机构 业务种类 开立日期 到期日 币种 信用额度 发放形式
-担保方式 余额 五级分类 逾期总额 逾期本金 逾期月数最近一次
-还款日期
-最近一次
-还款总额最近一次
-还款形式剩余还款
-月数特定交易
-提示授信协议
-编号历史表现 信息报告日期
 B10411000H
 00013104707
 15627312662中国建设银行
@@ -48,3 +37,4 @@ B10411000H
     assert record["last_repayment_amount"] == 78.06
     assert record["remaining_repayment_months"] == 5
     assert record["report_date"] == "2025-03-31"
+    assert record["_recovered_by"] == "revolving_window_recovery_v2"
