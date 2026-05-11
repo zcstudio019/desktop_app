@@ -197,7 +197,7 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
         failures.append("parser_version is not latest")
     credit_debug = result.get("credit_debug") or {}
     if (expected or {}).get("revolving_overdrafts_must_include"):
-        if credit_debug.get("parser_version") != "revolving-fix-v2":
+        if credit_debug.get("parser_version") != "revolving-trace-v3":
             failures.append(f"credit_debug.parser_version mismatch: {credit_debug.get('parser_version')!r}")
         if int(credit_debug.get("revolving_extracted_count") or 0) < 1:
             failures.append(f"credit_debug.revolving_extracted_count < 1: {credit_debug}")

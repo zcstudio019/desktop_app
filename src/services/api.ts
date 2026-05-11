@@ -899,9 +899,11 @@ export async function deleteCustomer(
 
 export async function getCustomerProfileMarkdown(
   customerId: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  force = false
 ): Promise<CustomerProfileMarkdownResponse> {
-  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/profile-markdown`, {
+  const query = force ? '?force=true' : '';
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/profile-markdown${query}`, {
     method: 'GET',
     headers: { ...getAuthHeaders() },
     signal,

@@ -36,6 +36,7 @@ from backend.services import get_storage_service, supports_structured_storage  #
 
 from backend.services.markdown_profile_service import (
     get_or_create_customer_profile,
+    get_or_reparse_customer_profile,
     get_rag_source_priority,
     get_risk_report_schema_template,
     regenerate_customer_profile,
@@ -1099,6 +1100,7 @@ def _build_profile_response(
 @router.get("/{customer_id}/profile-markdown", response_model=CustomerProfileMarkdownResponse)
 async def get_customer_profile_markdown(
     customer_id: str,
+    force: bool = Query(default=False, description="Force rebuild profile from current uploaded materials"),
     current_user: dict = Depends(get_current_user),
 ) -> CustomerProfileMarkdownResponse:
     """Get markdown profile for a customer."""
@@ -1111,7 +1113,11 @@ async def get_customer_profile_markdown(
     await _ensure_local_customer_access(customer, current_user)
 
     try:
-        profile, auto_generated = await get_or_create_customer_profile(storage_service, customer_id)
+        profile, auto_generated = await get_or_reparse_customer_profile(
+            storage_service,
+            customer_id,
+            force_reparse=force,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

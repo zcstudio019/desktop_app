@@ -2116,13 +2116,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   ]);
 
   const loadProfile = useCallback(
-    async (customerId: string) => {
+    async (customerId: string, force = false) => {
       setLoadingProfile(true);
       setError(null);
       setProfile(null);
       setDraft('');
       try {
-        const result = await getCustomerProfileMarkdown(customerId);
+        const result = await getCustomerProfileMarkdown(customerId, undefined, force);
         const sanitizedMarkdown = sanitizeProfileMarkdown(result.markdown_content);
         setProfile(result);
         setDraft(sanitizedMarkdown);
@@ -2967,6 +2967,14 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             </button>
             <button
               type="button"
+              onClick={() => selectedCustomerId && void loadProfile(selectedCustomerId, true)}
+              disabled={!selectedCustomerId || loadingProfile}
+              className="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm text-cyan-700 transition-colors hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              强制重析
+            </button>
+            <button
+              type="button"
               onClick={() => void handleRunAgent()}
               disabled={!selectedCustomerId || agentRunning}
               className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
@@ -3013,6 +3021,17 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             </span>
             <span>系统会先整理当前客户的核心资料，你也可以继续补充、修订，并保存为当前使用版本。</span>
           </div>
+          {profile?.credit_debug ? (
+            <details className="mt-3 rounded-xl border border-cyan-100 bg-white/80 px-3 py-2 text-xs text-slate-600">
+              <summary className="cursor-pointer font-medium text-cyan-700">企业征信解析 Debug</summary>
+              <div className="mt-2 grid gap-1 sm:grid-cols-2 xl:grid-cols-4">
+                <span>parser_version：{String(profile.credit_debug.parser_version ?? '未返回')}</span>
+                <span>from_cache：{String(profile.credit_debug.from_cache ?? 'unknown')}</span>
+                <span>api_return_revolving_count：{String(profile.credit_debug.api_return_revolving_count ?? profile.credit_debug.revolving_returned_count ?? 0)}</span>
+                <span>frontend_expected_field：{String(profile.credit_debug.frontend_expected_field ?? 'revolving_overdrafts')}</span>
+              </div>
+            </details>
+          ) : null}
         </div>
 
         {error && (

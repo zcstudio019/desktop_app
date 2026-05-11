@@ -1568,7 +1568,7 @@ async def get_or_create_customer_profile(storage_service: Any, customer_id: str)
             and (
                 'revolving_balance_without_details' in markdown
                 or '暂未识别到循环透支明细' in markdown
-                or debug.get('parser_version') != 'revolving-fix-v2'
+                or debug.get('parser_version') != 'revolving-trace-v3'
             )
         ):
             logger.warning(
@@ -1584,6 +1584,34 @@ async def get_or_create_customer_profile(storage_service: Any, customer_id: str)
     generated = await build_auto_profile_payload(storage_service, customer_id)
     saved = await storage_service.upsert_customer_profile(generated)
     return saved, True
+
+
+async def get_or_reparse_customer_profile(
+    storage_service: Any,
+    customer_id: str,
+    *,
+    force_reparse: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    if force_reparse:
+        generated = await build_auto_profile_payload(storage_service, customer_id)
+        saved = await storage_service.upsert_customer_profile(generated)
+        debug = dict(saved.get('credit_debug') or (saved.get('source_snapshot') or {}).get('credit_debug') or {})
+        debug['from_cache'] = False
+        debug['force_reparse'] = True
+        saved['credit_debug'] = debug
+        snapshot = dict(saved.get('source_snapshot') or {})
+        snapshot['credit_debug'] = debug
+        saved['source_snapshot'] = snapshot
+        return saved, True
+    profile, auto_generated = await get_or_create_customer_profile(storage_service, customer_id)
+    debug = dict(profile.get('credit_debug') or (profile.get('source_snapshot') or {}).get('credit_debug') or {})
+    debug.setdefault('from_cache', not auto_generated)
+    debug.setdefault('force_reparse', False)
+    profile['credit_debug'] = debug
+    snapshot = dict(profile.get('source_snapshot') or {})
+    snapshot['credit_debug'] = debug
+    profile['source_snapshot'] = snapshot
+    return profile, auto_generated
 
 
 async def regenerate_customer_profile(storage_service: Any, customer_id: str) -> dict[str, Any]:
