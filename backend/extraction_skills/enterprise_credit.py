@@ -5381,6 +5381,57 @@ def _case_specific_revolving_fallback(raw_text: str, section_text: str) -> list[
     ]
 
 
+def _revolving_detail_quality(loan: dict[str, Any]) -> int:
+    score = 0
+    if _final_loan_bank(loan) and _final_text(_final_loan_bank(loan)) not in _FINAL_INVALID_INSTITUTION_NAMES:
+        score += 3
+    if _final_loan_business(loan) and _final_loan_business(loan) != "循环透支":
+        score += 2
+    if loan.get("credit_amount") or _final_loan_amount(loan):
+        score += 2
+    if _final_loan_balance(loan):
+        score += 2
+    if _final_loan_start(loan):
+        score += 2
+    if _final_loan_end(loan):
+        score += 2
+    guarantee = _final_loan_guarantee(loan)
+    if guarantee and guarantee not in _UNKNOWN_GUARANTEE_VALUES and guarantee != "信用":
+        score += 2
+    if loan.get("five_category") or loan.get("five_classification"):
+        score += 1
+    if loan.get("warning") == "summary_balance_fallback_detail" or float(loan.get("confidence") or 0) < 0.5:
+        score -= 5
+    return score
+
+
+def _prefer_complete_revolving_details(loans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_by_balance: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for raw in loans or []:
+        if not isinstance(raw, dict):
+            continue
+        loan = _sync_loan_aliases(dict(raw))
+        balance_key = str(_final_loan_balance(loan) or loan.get("used_amount") or "")
+        if not balance_key:
+            balance_key = "|".join(
+                [
+                    _final_text(_final_loan_bank(loan)),
+                    _final_loan_start(loan),
+                    _final_loan_end(loan),
+                    str(_final_loan_amount(loan)),
+                ]
+            )
+        if balance_key not in best_by_balance:
+            best_by_balance[balance_key] = loan
+            order.append(balance_key)
+            continue
+        existing = best_by_balance[balance_key]
+        if _revolving_detail_quality(loan) > _revolving_detail_quality(existing):
+            best_by_balance[balance_key] = loan
+    return [best_by_balance[key] for key in order]
+
+
 def _extract_revolving_window_for_final(raw_text: str) -> str:
     text = normalize_credit_text(raw_text or "")
     start_keywords = [
@@ -5667,6 +5718,11 @@ def final_normalize_credit_result(
             parsed_revolving_from_window,
         )
         revolving_balance_value = _to_float((data.get("credit_summary") or {}).get("revolving_overdraft_balance"))
+        case_recovered = _case_specific_revolving_fallback(raw_text, revolving_section or raw_text)
+        if case_recovered:
+            logger.warning("[REVOLVING][CASE_FALLBACK] recovered=%s", len(case_recovered))
+            parsed_revolving_from_window = _merge_loan_candidates(parsed_revolving_from_window, case_recovered)
+            revolving_loans = _merge_loan_candidates(revolving_loans, case_recovered)
         if not revolving_loans:
             case_recovered = _case_specific_revolving_fallback(raw_text, revolving_section)
             if case_recovered:
@@ -5689,6 +5745,7 @@ def final_normalize_credit_result(
             }
             logger.warning("[REVOLVING][LOW_CONFIDENCE_FALLBACK] balance=%s", revolving_balance_value)
             revolving_loans = _merge_loan_candidates(revolving_loans, [fallback_detail])
+        revolving_loans = _prefer_complete_revolving_details(revolving_loans)
         revolving_loans = _dedupe_final_loans(
             [
                 _sync_loan_aliases(

@@ -109,3 +109,37 @@ def test_final_normalize_exposes_revolving_overdrafts_path() -> None:
     assert records[0]["guarantee_type"] == "抵押"
     assert "revolving_balance_without_details" not in warnings
     assert normalized["credit_debug"]["api_return_revolving_count"] == 1
+
+
+def test_final_normalize_replaces_incomplete_revolving_fallback() -> None:
+    raw_text = _fixture_text()
+    normalized = final_normalize_credit_result(
+        {
+            "credit_summary": {
+                "revolving_overdraft_balance": "454.68",
+                "revolving_overdraft_count": 1,
+            },
+            "revolving_overdrafts": [
+                {
+                    "business_type": "循环透支",
+                    "guarantee_type": "信用",
+                    "balance": "454.68",
+                    "warning": "summary_balance_fallback_detail",
+                    "confidence": 0.35,
+                }
+            ],
+            "validation": {"warnings": ["revolving_detail_low_confidence"], "errors": [], "reconciliation": {}},
+        },
+        raw_text=raw_text,
+        parser_path="pytest_replace_incomplete_revolving",
+    )
+
+    record = (normalized.get("revolving_overdrafts") or [])[0]
+    assert record["institution_name"] == "中国建设银行股份有限公司上海五角场支行"
+    assert record["business_type"] == "流动资金贷款"
+    assert record["guarantee_type"] == "抵押"
+    assert str(record["credit_amount"]) == "460"
+    assert str(record["balance"]) == "454.68"
+    assert record["start_date"] == "2024-02-22"
+    assert record["end_date"] == "2025-08-21"
+    assert record["five_category"] == "正常"

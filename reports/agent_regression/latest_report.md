@@ -1,6 +1,6 @@
 # Agent Regression Report
 
-- Generated At: 2026-05-11T08:44:18.544737+00:00
+- Generated At: 2026-05-11T09:08:40.278371+00:00
 - Mode: Rule
 - Total Cases: 3
 - Passed: 3
@@ -12,7 +12,7 @@
 
 | Item | Value |
 |------|-------|
-| Commit | 0ed5a05c68c238eafaff0b0cb3841de505898eac |
+| Commit | 62fa6c7d39a5031fa46b6240936817636b131d88 |
 | Branch | main |
 | App Version | 1.3.4 |
 | Model | deepseek-chat |
