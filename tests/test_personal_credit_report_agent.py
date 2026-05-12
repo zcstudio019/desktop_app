@@ -186,5 +186,46 @@ def test_profile_markdown_personal_credit_filters_metadata_and_enterprise_fields
         assert item not in markdown
     assert "姓名：沃志方" in markdown
     assert "证件类型：身份证" in markdown
-    assert "证件号码：310110198211172732" in markdown
+    assert "证件号码：310110********2732" in markdown
     assert "婚姻状况：未婚" in markdown
+
+
+def test_markdown_no_duplicate_header() -> None:
+    result = run_personal_credit_report_agent(SAMPLE_TEXT, source_file="sample.txt")
+    markdown = result["report_markdown"]
+    assert markdown.count("资料信息") == 1
+    assert "## 个人征信" not in markdown
+    for item in ("type", "title", "confidence", "markdown"):
+        assert item not in markdown
+
+
+def test_basic_info_id_number_cleanup() -> None:
+    text = """
+个人信用报告
+报告基础信息
+姓名：沃志方 证件类型：身份证 证件号码：310110198211172732 未婚
+报告编号：2025031104013907986945 报告时间：2025-03-11 04:01:39
+中征码：3201050001674346
+在中国建设银行股份有限公司办理业务
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    basic = report["basic_info"]
+    assert basic["name"] == "沃志方"
+    assert basic["id_type"] == "身份证"
+    assert basic["id_number"] == "310110198211172732"
+    assert "3201050001674346" not in basic["id_number"]
+
+
+def test_report_number_and_time_separate_lines() -> None:
+    text = """
+个人信用报告
+报告基础信息
+姓名：沃志方 证件类型：身份证 证件号码：310110198211172732 未婚
+报告编号：2025031104013907986945 报告时间：2025-03-11 04:01:39
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    report_no_line = "- 报告编号：2025031104013907986945"
+    report_time_line = "- 报告时间：2025-03-11 04:01:39"
+    assert report_no_line in markdown
+    assert report_time_line in markdown
+    assert markdown.index(report_no_line) < markdown.index(report_time_line)

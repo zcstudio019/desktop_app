@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+ID_CARD_PATTERN = re.compile(r"^(?:[1-9]\d{5}(?:(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|\d{9}))$")
+
 
 def _append_missing(missing: list[str], field: str, value: Any) -> None:
     if value in (None, ""):
@@ -38,6 +40,10 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
         path = f"basic_info.{field}"
         if path not in missing_fields:
             _append_missing(missing_fields, path, basic.get(field))
+    if not basic.get("id_number") or not ID_CARD_PATTERN.fullmatch(str(basic.get("id_number") or "")):
+        _warn_once(warnings, "证件号码未识别或格式异常")
+    if "报告时间" in str(basic.get("report_number") or ""):
+        _warn_once(warnings, "报告编号中混入报告时间，已尝试自动拆分")
 
     basic_pollution_keywords = (
         "查询记录",

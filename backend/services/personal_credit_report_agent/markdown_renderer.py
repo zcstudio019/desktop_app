@@ -73,7 +73,7 @@ def _dedupe_lines(items: list[str]) -> list[str]:
 
 
 def _append_field(lines: list[str], label: str, value: Any, empty: str = "未识别") -> None:
-    lines.append(f"- {label}: {_value(value, empty)}")
+    lines.append(f"- {label}：{_value(value, empty)}")
 
 
 def _append_account(lines: list[str], title: str, record: dict[str, Any], fields: tuple[tuple[str, str], ...]) -> None:
@@ -88,6 +88,8 @@ def _format_warning(item: Any) -> str:
         return ""
     if text in WARNING_LABELS:
         return WARNING_LABELS[text]
+    if text == "证件号码未识别或格式异常":
+        return text
     if text.startswith("loan_account_count_mismatch"):
         return "贷款账户概要数量与明细数量差异较大"
     if text.startswith("credit_card_account_count_mismatch"):
@@ -138,121 +140,117 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
         "# 个人征信报告",
         "",
         "## 一、资料信息",
-        f"- 资料类型: 个人征信报告",
-        f"- 来源文件: {_value(basic.get('source_file'))}",
+        "- 资料类型：个人征信报告",
+        f"- 来源文件：{_value(basic.get('source_file'))}",
+        "- 原件状态：可查看",
         "",
         "## 二、报告基础信息",
     ]
     _append_field(lines, "姓名", basic.get("name"))
     _append_field(lines, "证件类型", basic.get("id_type"))
-    lines.append(f"- 证件号码: {_mask_id_number(basic.get('id_number'))}")
+    lines.append(f"- 证件号码：{_mask_id_number(basic.get('id_number'))}")
+    _append_field(lines, "婚姻状况", basic.get("marital_status"))
     _append_field(lines, "报告编号", basic.get("report_number"))
     _append_field(lines, "报告时间", basic.get("report_time"))
-    _append_field(lines, "婚姻状况", basic.get("marital_status"))
 
     lines.extend([
         "",
         "## 三、信贷记录概要",
-        f"- 信用卡账户数: {_count(summary.get('credit_card_account_count'))}",
-        f"- 当前有效信用卡账户数: {_count(summary.get('credit_card_active_count'))}",
-        f"- 信用卡逾期账户数: {_count(summary.get('credit_card_overdue_count'))}",
-        f"- 信用卡90天以上逾期账户数: {_count(summary.get('credit_card_90d_overdue_count'))}",
-        f"- 购房贷款账户数: {_count(summary.get('housing_loan_account_count'))}",
-        f"- 未结清购房贷款账户数: {_count(summary.get('housing_loan_outstanding_count'))}",
-        f"- 其他贷款账户数: {_count(summary.get('other_loan_account_count'))}",
-        f"- 未结清其他贷款账户数: {_count(summary.get('other_loan_outstanding_count'))}",
-        f"- 其他业务账户数: {_count(summary.get('other_business_account_count'))}",
-        f"- 担保笔数: {_count(summary.get('guarantee_count'))}",
+        f"- 信用卡账户数：{_count(summary.get('credit_card_account_count'))}",
+        f"- 当前有效信用卡账户数：{_count(summary.get('credit_card_active_count'))}",
+        f"- 信用卡逾期账户数：{_count(summary.get('credit_card_overdue_count'))}",
+        f"- 信用卡90天以上逾期账户数：{_count(summary.get('credit_card_90d_overdue_count'))}",
+        f"- 购房贷款账户数：{_count(summary.get('housing_loan_account_count'))}",
+        f"- 未结清购房贷款账户数：{_count(summary.get('housing_loan_outstanding_count'))}",
+        f"- 其他贷款账户数：{_count(summary.get('other_loan_account_count'))}",
+        f"- 未结清其他贷款账户数：{_count(summary.get('other_loan_outstanding_count'))}",
+        f"- 其他业务账户数：{_count(summary.get('other_business_account_count'))}",
+        f"- 担保笔数：{_count(summary.get('guarantee_count'))}",
         "",
         "## 四、贷款账户明细",
     ])
     if loans:
         for index, item in enumerate(loans, start=1):
-            if not isinstance(item, dict):
-                continue
-            _append_account(lines, f"账户 {index}", item, (
-                ("account_no", "账户编号"),
-                ("institution", "机构"),
-                ("business_type", "业务类型"),
-                ("open_date", "发放/开户日期"),
-                ("due_date", "到期日期"),
-                ("amount", "发放金额"),
-                ("balance", "余额"),
-                ("account_status", "账户状态"),
-                ("five_category", "五级分类"),
-                ("overdue_amount", "当前逾期金额"),
-                ("overdue_months", "逾期月数"),
-                ("latest_repayment_date", "最近还款日期"),
-                ("latest_repayment_amount", "最近还款金额"),
-                ("history_performance", "历史表现"),
-                ("information_report_date", "信息报告日期"),
-            ))
+            if isinstance(item, dict):
+                _append_account(lines, f"账户 {index}", item, (
+                    ("account_no", "账户编号"),
+                    ("institution", "机构"),
+                    ("business_type", "业务类型"),
+                    ("open_date", "发放/开户日期"),
+                    ("due_date", "到期日期"),
+                    ("amount", "发放金额"),
+                    ("balance", "余额"),
+                    ("account_status", "账户状态"),
+                    ("five_category", "五级分类"),
+                    ("overdue_amount", "当前逾期金额"),
+                    ("overdue_months", "逾期月数"),
+                    ("latest_repayment_date", "最近还款日期"),
+                    ("latest_repayment_amount", "最近还款金额"),
+                    ("history_performance", "历史表现"),
+                    ("information_report_date", "信息报告日期"),
+                ))
     else:
         lines.append("- 暂无")
 
     lines.extend(["", "## 五、信用卡账户明细"])
     if cards:
         for index, item in enumerate(cards, start=1):
-            if not isinstance(item, dict):
-                continue
-            _append_account(lines, f"账户 {index}", item, (
-                ("account_no", "账户编号"),
-                ("institution", "发卡机构"),
-                ("card_type", "卡类型"),
-                ("currency", "币种"),
-                ("credit_limit", "授信额度"),
-                ("used_limit", "已用额度"),
-                ("account_status", "账户状态"),
-                ("overdue_amount", "当前逾期金额"),
-                ("overdue_months", "逾期月数"),
-                ("latest_repayment_date", "最近还款日期"),
-                ("latest_repayment_amount", "最近还款金额"),
-                ("history_performance", "历史表现"),
-                ("information_report_date", "信息报告日期"),
-            ))
+            if isinstance(item, dict):
+                _append_account(lines, f"账户 {index}", item, (
+                    ("account_no", "账户编号"),
+                    ("institution", "发卡机构"),
+                    ("card_type", "卡类型"),
+                    ("currency", "币种"),
+                    ("credit_limit", "授信额度"),
+                    ("used_limit", "已用额度"),
+                    ("account_status", "账户状态"),
+                    ("overdue_amount", "当前逾期金额"),
+                    ("overdue_months", "逾期月数"),
+                    ("latest_repayment_date", "最近还款日期"),
+                    ("latest_repayment_amount", "最近还款金额"),
+                    ("history_performance", "历史表现"),
+                    ("information_report_date", "信息报告日期"),
+                ))
     else:
         lines.append("- 暂无")
 
     lines.extend(["", "## 六、担保信息"])
     if guarantees:
         for index, item in enumerate(guarantees, start=1):
-            if not isinstance(item, dict):
-                continue
-            _append_account(lines, f"记录 {index}", item, (
-                ("guarantee_for", "被担保人"),
-                ("guarantee_amount", "担保金额"),
-                ("guarantee_balance", "担保余额"),
-                ("guarantee_status", "状态"),
-            ))
+            if isinstance(item, dict):
+                _append_account(lines, f"记录 {index}", item, (
+                    ("guarantee_for", "被担保人"),
+                    ("guarantee_amount", "担保金额"),
+                    ("guarantee_balance", "担保余额"),
+                    ("guarantee_status", "状态"),
+                ))
     else:
         lines.append("- 暂无")
 
     lines.extend(["", "## 七、公共记录"])
     if public_records:
         for index, item in enumerate(public_records, start=1):
-            if not isinstance(item, dict):
-                continue
-            _append_account(lines, f"记录 {index}", item, (
-                ("record_type", "记录类型"),
-                ("record_date", "日期"),
-                ("authority", "机构"),
-                ("amount", "金额"),
-                ("content", "内容"),
-            ))
+            if isinstance(item, dict):
+                _append_account(lines, f"记录 {index}", item, (
+                    ("record_type", "记录类型"),
+                    ("record_date", "日期"),
+                    ("authority", "机构"),
+                    ("amount", "金额"),
+                    ("content", "内容"),
+                ))
     else:
         lines.append("- 暂无")
 
     lines.extend(["", "## 八、查询记录"])
     if queries:
         for index, item in enumerate(queries, start=1):
-            if not isinstance(item, dict):
-                continue
-            _append_account(lines, f"记录 {index}", item, (
-                ("query_date", "查询日期"),
-                ("query_institution", "查询机构"),
-                ("query_reason", "查询原因"),
-                ("query_type", "查询类型"),
-            ))
+            if isinstance(item, dict):
+                _append_account(lines, f"记录 {index}", item, (
+                    ("query_date", "查询日期"),
+                    ("query_institution", "查询机构"),
+                    ("query_reason", "查询原因"),
+                    ("query_type", "查询类型"),
+                ))
     else:
         lines.append("- 暂无")
 
@@ -260,20 +258,17 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     lines.extend([
         "",
         "## 九、风险提示",
-        f"- 综合风险等级: {_risk_level(indicators.get('risk_level'))}",
-        f"- 当前逾期: {_yes_no(indicators.get('has_current_overdue'))}",
-        f"- 90天以上逾期: {_yes_no(indicators.get('has_90d_overdue'))}",
-        f"- 呆账/代偿/核销/强制执行: {_yes_no(indicators.get('has_bad_debt_or_compensation'))}",
-        f"- 近1个月贷款审批查询次数: {_count(indicators.get('loan_approval_queries_1m'))}",
-        f"- 近3个月贷款审批查询次数: {_count(indicators.get('loan_approval_queries_3m'))}",
-        f"- 近6个月贷款审批查询次数: {_count(indicators.get('loan_approval_queries_6m'))}",
-        f"- 近3个月信用卡审批查询次数: {_count(indicators.get('credit_card_approval_queries_3m'))}",
-        f"- 信用卡使用率: {_rate(indicators.get('credit_card_usage_rate'))}",
+        f"- 综合风险等级：{_risk_level(indicators.get('risk_level'))}",
+        f"- 当前逾期：{_yes_no(indicators.get('has_current_overdue'))}",
+        f"- 90天以上逾期：{_yes_no(indicators.get('has_90d_overdue'))}",
+        f"- 呆账/代偿/核销/强制执行：{_yes_no(indicators.get('has_bad_debt_or_compensation'))}",
+        f"- 近1个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_1m'))}",
+        f"- 近3个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_3m'))}",
+        f"- 近6个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_6m'))}",
+        f"- 近3个月信用卡审批查询次数：{_count(indicators.get('credit_card_approval_queries_3m'))}",
+        f"- 信用卡使用率：{_rate(indicators.get('credit_card_usage_rate'))}",
     ])
-    if risk_reasons:
-        lines.append("- 风险原因: " + "；".join(risk_reasons))
-    else:
-        lines.append("- 风险原因: 暂无")
+    lines.append("- 风险原因：" + ("；".join(risk_reasons) if risk_reasons else "暂无"))
 
     lines.extend(["", "## 十、待核验项"])
     if pending:
