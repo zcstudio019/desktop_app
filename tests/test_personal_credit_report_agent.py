@@ -186,7 +186,7 @@ def test_profile_markdown_personal_credit_filters_metadata_and_enterprise_fields
         assert item not in markdown
     assert "姓名：沃志方" in markdown
     assert "证件类型：身份证" in markdown
-    assert "证件号码：310110********2732" in markdown
+    assert "证件号码：310110198211172732" in markdown
     assert "婚姻状况：未婚" in markdown
 
 
@@ -229,3 +229,21 @@ def test_report_number_and_time_separate_lines() -> None:
     assert report_no_line in markdown
     assert report_time_line in markdown
     assert markdown.index(report_no_line) < markdown.index(report_time_line)
+
+
+def test_markdown_show_full_id_number() -> None:
+    text = """
+个人信用报告
+报告基础信息
+姓名：沃志方
+证件类型：身份证
+证件号码：310110198211172732
+报告编号：2025031104013907986945
+报告时间：2025-03-11 04:01:39
+婚姻状况：未婚
+"""
+    result = run_personal_credit_report_agent(text)
+    markdown = result["report_markdown"]
+    assert "证件号码：310110198211172732" in markdown
+    assert "310110********2732" not in markdown
+    assert result["report_json"]["basic_info"]["id_number"] == "310110198211172732"

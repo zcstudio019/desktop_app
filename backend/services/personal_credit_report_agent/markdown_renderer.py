@@ -51,15 +51,6 @@ def _risk_level(value: Any) -> str:
     return RISK_LEVEL_LABELS.get(str(value or "").lower(), _value(value))
 
 
-def _mask_id_number(value: Any) -> str:
-    text = re.sub(r"\s+", "", str(value or ""))
-    if not text:
-        return "未识别"
-    if len(text) <= 8:
-        return text[0:2] + "*" * max(0, len(text) - 4) + text[-2:]
-    return text[:6] + "*" * max(4, len(text) - 10) + text[-4:]
-
-
 def _dedupe_lines(items: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -148,7 +139,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     ]
     _append_field(lines, "姓名", basic.get("name"))
     _append_field(lines, "证件类型", basic.get("id_type"))
-    lines.append(f"- 证件号码：{_mask_id_number(basic.get('id_number'))}")
+    _append_field(lines, "证件号码", basic.get("id_number"))
     _append_field(lines, "婚姻状况", basic.get("marital_status"))
     _append_field(lines, "报告编号", basic.get("report_number"))
     _append_field(lines, "报告时间", basic.get("report_time"))

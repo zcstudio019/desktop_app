@@ -649,15 +649,6 @@ def _pc_display(value: Any, default: str = '未识别') -> str:
     return text or default
 
 
-def _pc_mask_id_number(value: Any) -> str:
-    text = re.sub(r'\s+', '', str(value or ''))
-    if not text:
-        return '未识别'
-    if len(text) <= 8:
-        return text[:2] + '*' * max(0, len(text) - 4) + text[-2:]
-    return text[:6] + '*' * max(4, len(text) - 10) + text[-4:]
-
-
 def _pc_clean_value(value: Any) -> str:
     text = re.sub(r'\s+', ' ', str(value or '')).strip(' ：:，,；;。')
     for term in PERSONAL_CREDIT_FORBIDDEN_TERMS:
@@ -834,7 +825,7 @@ def render_personal_credit_markdown(extracted_json: dict[str, Any], source_file:
         '## 二、报告基础信息',
         f"- 姓名：{_pc_display(basic.get('name'))}",
         f"- 证件类型：{_pc_display(basic.get('id_type'))}",
-        f"- 证件号码：{_pc_mask_id_number(basic.get('id_number'))}",
+        f"- 证件号码：{_pc_display(basic.get('id_number'))}",
         f"- 婚姻状况：{_pc_display(basic.get('marriage_status'))}",
         f"- 报告编号：{_pc_display(basic.get('report_no'))}",
         f"- 报告时间：{_pc_display(basic.get('report_time'))}",
