@@ -95,6 +95,9 @@ def _assert_expected(result: dict[str, Any], expected: dict[str, Any]) -> list[s
     for target in expected.get("short_term_must_include") or []:
         if not _loan_matches(short_loans, target):
             failures.append(f"short_term_must_include missing: {target}")
+    for target in expected.get("short_term_must_not_include") or []:
+        if _loan_matches(short_loans, target):
+            failures.append(f"short_term_must_not_include leaked: {target}")
 
     for keyword in expected.get("short_term_must_not_include_business_keywords") or []:
         if any(keyword in (loan.get("business_type") or "") for loan in short_loans):

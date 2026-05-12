@@ -14,7 +14,12 @@ INSTITUTION_PATTERN = (
     r"金融租赁有限公司|融资租赁[\u4e00-\u9fa5A-Za-z0-9（）()]*有限公司|租赁[\u4e00-\u9fa5A-Za-z0-9（）()]*有限公司)"
     r"[\u4e00-\u9fa5A-Za-z0-9（）()]{0,50}?"
 )
-BUSINESS_TYPES = "融资型租赁|中长期流动资金贷款|固定资产贷款|项目贷款|流动资金贷款|贸易融资贷款|融资租赁|循环透支|经营贷|周转贷|贷款"
+BUSINESS_TYPES = (
+    "有追索权的国内卖方保理融资|无追索权的国内卖方保理融资|国内保理融资|"
+    "供应链保理融资|应收账款保理|保理融资|"
+    "融资型租赁|中长期流动资金贷款|固定资产贷款|项目贷款|"
+    "流动资金贷款|贸易融资贷款|融资租赁|循环透支|经营贷|周转贷|贷款"
+)
 GUARANTEE_TYPES = "信用/无担保|保证/保证金|保证|组合|抵押|质押|信用|无担保|其他"
 CREDIT_TYPES = (
     "银行承兑汇票额度|商业承兑汇票额度|承兑汇票额度|信用证额度|"
@@ -22,10 +27,17 @@ CREDIT_TYPES = (
     "综合授信|贷款|贸易融资|银行承兑汇票|信用证|保函|其他|保理|循环额度"
 )
 FIVE_CATEGORIES = "正常|关注|次级|可疑|损失|违约|未分类"
-INVALID_INSTITUTION_FRAGMENTS = {"", "公司", "有限", "有限公司", "股份有限公司", "银行", "分行", "支行"}
+INVALID_INSTITUTION_FRAGMENTS = {
+    "", "公司", "有限", "有限公司", "股份有限公司", "银行", "分行", "支行",
+    "内卖方", "国内卖方", "保理融资", "有追索权", "无追索权", "流动资金", "贷款",
+}
 NON_LOAN_KEYWORDS = ["银行承兑汇票", "商业承兑汇票", "信用证", "保函", "银行保函", "保证金"]
 MEDIUM_KEYWORDS = ["融资型租赁", "融资租赁", "售后回租", "长期借款", "固定资产贷款", "项目贷款", "中长期流动资金贷款"]
-SHORT_KEYWORDS = ["流动资金贷款", "短期借款", "经营贷", "周转贷", "贸易融资贷款"]
+SHORT_KEYWORDS = [
+    "有追索权的国内卖方保理融资", "无追索权的国内卖方保理融资", "国内卖方保理",
+    "国内保理融资", "保理融资", "应收账款保理", "供应链保理融资",
+    "流动资金贷款", "短期借款", "经营贷", "周转贷", "贸易融资贷款",
+]
 
 
 def to_amount(value: Any) -> float | None:
@@ -90,6 +102,7 @@ def normalize_institution_name(raw: str, context: str = "") -> str:
     start_markers = [
         "远东", "永赢金融租赁", "长江联合金融租赁", "平安国际融资租赁", "海通恒信国际融资租赁",
         "浙江网商银行", "温州银行", "江苏银行", "南京银行", "上海松江民生村镇银行",
+        "浙商银行",
         "中国银行", "中国工商银行", "中国建设银行", "中国农业银行", "交通银行",
     ]
     marker_positions = [s.find(marker) for marker in start_markers if s.find(marker) != -1]
@@ -100,7 +113,22 @@ def normalize_institution_name(raw: str, context: str = "") -> str:
         candidates = _institution_candidates(ctx)
     if candidates:
         name = max(candidates, key=len)
-        for biz in ["融资型租赁", "中长期流动资金贷款", "固定资产贷款", "项目贷款", "流动资金贷款", "循环透支", "贸易融资贷款", "贷款"]:
+        for biz in [
+            "有追索权的国内卖方保理融资",
+            "无追索权的国内卖方保理融资",
+            "国内保理融资",
+            "供应链保理融资",
+            "应收账款保理",
+            "保理融资",
+            "融资型租赁",
+            "中长期流动资金贷款",
+            "固定资产贷款",
+            "项目贷款",
+            "流动资金贷款",
+            "循环透支",
+            "贸易融资贷款",
+            "贷款",
+        ]:
             idx = name.find(biz)
             if idx != -1:
                 name = name[:idx]
@@ -188,7 +216,8 @@ def parse_loan_rows(section: str, *, term_type: str, source_section: str) -> lis
         rf"(?P<five>{FIVE_CATEGORIES})"
         rf"(?P<overdue_total>\d+(?:\.\d+)?)"
         rf"(?P<overdue_principal>\d+(?:\.\d+)?)"
-        rf"(?P<overdue_months>\d+)",
+        rf"(?P<overdue_months>\d+)"
+        rf"(?P<last_repay_date>\d{{4}}-\d{{2}}-\d{{2}})",
         re.S,
     )
     records: list[LoanRecord] = []

@@ -78,6 +78,44 @@ def main() -> int:
 
 
 def _build_stale_profile_result(case_name: str = "") -> dict[str, Any]:
+    if case_name == "case_short_term_factoring_business_type":
+        return {
+            "schema_version": "enterprise_credit.v2",
+            "credit_summary": {
+                "short_term_loan_balance": "10",
+                "short_loan_count": 1,
+            },
+            "short_loans": [
+                {
+                    "bank": "内卖方",
+                    "institution": "内卖方",
+                    "institution_name": "内卖方",
+                    "biz_type": "流动资金贷款",
+                    "loan_type": "流动资金贷款",
+                    "business_type": "流动资金贷款",
+                    "loan_amount": "10",
+                    "balance": "10",
+                    "open_date": "2024-12-18",
+                    "start_date": "2024-12-18",
+                    "due_date": "2025-11-18",
+                    "end_date": "2025-11-18",
+                    "guarantee": "保证",
+                    "guarantee_type": "保证",
+                    "five_classification": "正常",
+                    "five_category": "正常",
+                    "overdue_total": "0",
+                    "overdue_principal": "0",
+                    "overdue_months": "0",
+                    "report_date": "2025-08-18",
+                    "term_type": "short",
+                    "evidence_text": "浙商银行股份有限公司济南分行 有追索权的国内卖方保理融资 2024-12-18 2025-11-18 人民币元 10 新增 保证 10 正常 0 0 0 2025-08-18",
+                }
+            ],
+            "short_loans_final": [],
+            "medium_loans": [],
+            "medium_loans_final": [],
+            "active_loans": [],
+        }
     if case_name == "case_no_revolving_but_revolving_credit_limit_summary":
         return {
             "schema_version": "enterprise_credit.v2",
@@ -293,7 +331,8 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
             failures.append(f"revolving_overdraft_balance mismatch: {summary.get('revolving_overdraft_balance')!r}")
         if not revolving_loans and "revolving_balance_without_details" not in warnings:
             failures.append("revolving balance positive but no details and no revolving_balance_without_details warning")
-    if any("融资" in _biz(x) or "铻嶈祫" in _biz(x) for x in short_loans):
+    finance_lease_keywords = ["融资型租赁", "融资租赁", "铻嶈祫鍨嬬璧", "铻嶈祫绉熻祦", "閾诲秷绁?"]
+    if any(any(keyword in _biz(x) for keyword in finance_lease_keywords) for x in short_loans):
         failures.append("short_term_loans still contains finance lease")
     if any("华夏银行股份有限公司上海分行" in _bank(x) and (x.get("end_date") or x.get("due_date")) == "2027-04-08" for x in short_loans):
         failures.append("short_term_loans contains medium-term 华夏银行 2027-04-08")
@@ -323,6 +362,9 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
     for target in (expected or {}).get("short_term_must_include") or []:
         if not _loan_matches(short_loans, target):
             failures.append(f"short_term_must_include missing: {target}")
+    for target in (expected or {}).get("short_term_must_not_include") or []:
+        if _loan_matches(short_loans, target):
+            failures.append(f"short_term_must_not_include leaked: {target}")
     for target in (expected or {}).get("short_term_must_not_include") or []:
         if _loan_matches(short_loans, target):
             failures.append(f"short_term_must_not_include leaked: {target}")

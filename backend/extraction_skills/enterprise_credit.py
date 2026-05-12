@@ -1644,7 +1644,7 @@ def parse_loan_rows(text: str, term_type: str) -> list[dict[str, Any]]:
     pattern = re.compile(
         r"(?P<account_no>[A-Z]\d+[A-Z0-9_-]*)?"
         r"(?P<bank>[\u4e00-\u9fa5A-Za-z（）()]{2,80}?(?:村镇银行股份有限公司|银行股份有限公司|银行|小额贷款|消费金融|金融租赁|融资租赁|租赁有限公司)[\u4e00-\u9fa5A-Za-z（）()]{0,40}?)"
-        r"(?P<biz_type>流动资金贷款|固定资产贷款|融资型租赁|融资租赁|循环透支|贷款)"
+        r"(?P<biz_type>有追索权的国内卖方保理融资|无追索权的国内卖方保理融资|国内保理融资|供应链保理融资|应收账款保理|保理融资|流动资金贷款|固定资产贷款|融资型租赁|融资租赁|循环透支|贷款)"
         r"(?P<open_date>\d{4}-\d{2}-\d{2})"
         r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
         r"人民币元"
@@ -1656,6 +1656,7 @@ def parse_loan_rows(text: str, term_type: str) -> list[dict[str, Any]]:
         r"(?P<overdue_total>\d+(?:\.\d+)?)"
         r"(?P<overdue_principal>\d+(?:\.\d+)?)"
         r"(?P<overdue_months>\d+)"
+        r"(?P<last_repay_date>\d{4}-\d{2}-\d{2})"
     )
     loans: list[dict[str, Any]] = []
     for match in pattern.finditer(compact):
@@ -1700,6 +1701,7 @@ def clean_loan_institution_strict(raw: str) -> str:
             "逾期总额", "逾期本金", "逾期月数", "最近一次还款日期",
             "最近一次还款总额", "最近一次还款形式", "特定交易提示",
             "授信协议编号", "历史表现", "信息报告日期",
+            "内卖方", "国内卖方", "有追索权", "无追索权", "保理融资", "流动资金", "贷款",
         ]
         for keyword in noise_keywords:
             value = value.replace(keyword, "")
@@ -1712,6 +1714,7 @@ def clean_loan_institution_strict(raw: str) -> str:
             "海通恒信国际融资租赁",
             "上海松江民生村镇银行",
             "江苏银行",
+            "浙商银行",
             "中国建设银行",
             "宁波银行",
             "浙江泰隆商业银行",
@@ -1734,7 +1737,20 @@ def clean_loan_institution_strict(raw: str) -> str:
                 if first_chinese:
                     value = value[first_chinese.start():]
 
-        for keyword in ["融资型租赁", "固定资产贷款", "流动资金贷款", "融资租赁", "循环透支", "贷款"]:
+        for keyword in [
+            "有追索权的国内卖方保理融资",
+            "无追索权的国内卖方保理融资",
+            "国内保理融资",
+            "供应链保理融资",
+            "应收账款保理",
+            "保理融资",
+            "融资型租赁",
+            "固定资产贷款",
+            "流动资金贷款",
+            "融资租赁",
+            "循环透支",
+            "贷款",
+        ]:
             index = value.find(keyword)
             if index != -1:
                 value = value[:index]
@@ -1769,6 +1785,12 @@ def extract_business_type_strict(block: str) -> str:
     try:
         value = re.sub(r"\s+", "", str(block or ""))
         business_keywords = [
+            "有追索权的国内卖方保理融资",
+            "无追索权的国内卖方保理融资",
+            "国内保理融资",
+            "供应链保理融资",
+            "应收账款保理",
+            "保理融资",
             "流动资金贷款",
             "固定资产贷款",
             "融资型租赁",
@@ -1810,7 +1832,7 @@ def parse_open_loans_fallback(raw_text: str, section_title: str, expected_count:
         compact = re.sub(r"\s+", "", section or "")
         pattern = re.compile(
             r"(?P<institution>[\u4e00-\u9fa5A-Za-z0-9（）()]{2,80}(?:银行|信用社|小额贷款|消费金融|财务公司|信托|金融租赁|融资租赁|租赁)[\u4e00-\u9fa5A-Za-z0-9（）()]{0,80})"
-            r"(?P<business_type>流动资金贷款|固定资产贷款|融资型租赁|融资租赁|循环透支|贷款)"
+            r"(?P<business_type>有追索权的国内卖方保理融资|无追索权的国内卖方保理融资|国内保理融资|供应链保理融资|应收账款保理|保理融资|流动资金贷款|固定资产贷款|融资型租赁|融资租赁|循环透支|贷款)"
             r"(?P<open_date>\d{4}-\d{2}-\d{2})"
             r"(?P<due_date>\d{4}-\d{2}-\d{2}|长期)"
             r"人民币元"
@@ -2480,6 +2502,7 @@ def extract_bank_from_context(context: Any) -> str:
         r"上海松江民生村镇银行股份有限公司",
         r"[\u4e00-\u9fa5]{2,30}村镇银行股份有限公司",
         r"[\u4e00-\u9fa5]{2,40}银行股份有限公司[\u4e00-\u9fa5]{0,20}(?:分行|支行)",
+        r"[\u4e00-\u9fa5]{2,40}银行股份有限公司[\u4e00-\u9fa5]{0,20}营业部",
         r"[\u4e00-\u9fa5]{2,40}银行股份有限公司",
     ]
     for pattern in patterns:
@@ -4620,6 +4643,13 @@ _FINAL_INVALID_INSTITUTION_NAMES = {
     "分行",
     "支行",
     "有限",
+    "内卖方",
+    "国内卖方",
+    "保理融资",
+    "有追索权",
+    "无追索权",
+    "流动资金",
+    "贷款",
     "鍏徃",
     "鏈夐檺鍏徃",
     "鑲′唤鏈夐檺鍏徃",
@@ -4746,6 +4776,20 @@ def _recover_institution_from_text(text: str) -> str:
         if matches:
             return matches[-1].group(0)
     return ""
+
+
+def _recover_business_from_loan_evidence(loan: dict[str, Any]) -> str:
+    """Recover the original business type from evidence when legacy fallback defaulted it."""
+    context = " ".join(
+        str(loan.get(key) or "")
+        for key in ("evidence_text", "_raw_block", "_raw_line", "raw_text")
+    )
+    recovered = extract_business_type_strict(context)
+    if not recovered:
+        return ""
+    if recovered in {"未识别", "鏈瘑鍒?"}:
+        return ""
+    return recovered
 
 
 def _sync_loan_aliases(loan: dict[str, Any]) -> dict[str, Any]:
@@ -4939,7 +4983,7 @@ def _parse_short_window_loans_for_final(raw_text: str) -> list[dict[str, Any]]:
     if not short_window:
         return []
     compact = _final_text(short_window)
-    business = r"(?:流动资金贷款|娴佸姩璧勯噾璐锋|贷款|璐锋)"
+    business = r"(?:有追索权的国内卖方保理融资|无追索权的国内卖方保理融资|国内保理融资|供应链保理融资|应收账款保理|保理融资|流动资金贷款|娴佸姩璧勯噾璐锋|贷款|璐锋)"
     guarantee = r"(?:信用/无担保|保证/保证金|保证|组合|抵押|质押|信用|淇＄敤/鏃犳媴淇?|淇濊瘉/淇濊瘉閲?|淇濊瘉|缁勫悎|鎶垫娂|璐ㄦ娂|淇＄敤)"
     pattern = re.compile(
         r"(?P<bank>[\u4e00-\u9fa5A-Za-z0-9（）()锛堬級]{2,80}?(?:银行股份有限公司|银行|閾惰鑲′唤鏈夐檺鍏徃|閾惰)[\u4e00-\u9fa5A-Za-z0-9（）()锛堬級]{0,40}?)"
@@ -4955,6 +4999,7 @@ def _parse_short_window_loans_for_final(raw_text: str) -> list[dict[str, Any]]:
         r"(?P<overdue_total>\d+(?:\.\d+)?)"
         r"(?P<overdue_principal>\d+(?:\.\d+)?)"
         r"(?P<overdue_months>\d+)"
+        r"(?P<last_repay_date>\d{4}-\d{2}-\d{2})"
     )
     loans: list[dict[str, Any]] = []
     for match in pattern.finditer(compact):
@@ -4979,6 +5024,9 @@ def _parse_short_window_loans_for_final(raw_text: str) -> list[dict[str, Any]]:
             "overdue_total": item.get("overdue_total") or "",
             "overdue_principal": item.get("overdue_principal") or "",
             "overdue_months": item.get("overdue_months") or "0",
+            "last_repay_date": item.get("last_repay_date") or "",
+            "last_repayment_date": item.get("last_repay_date") or "",
+            "report_date": item.get("last_repay_date") or "",
             "source_section": "short_term",
             "term_type": "short",
             "evidence_text": compact[max(0, match.start() - 80): match.end() + 80],
@@ -6147,6 +6195,11 @@ def final_normalize_credit_result(
                 else:
                     loan["bank"] = loan["institution"] = loan["institution_name"] = ""
                     errors.append(f"invalid_institution_name_in_short_term: {bank or '<empty>'}")
+            recovered_business = _recover_business_from_loan_evidence(loan)
+            if recovered_business:
+                current_business = _final_loan_business(loan)
+                if recovered_business != current_business:
+                    loan["biz_type"] = loan["loan_type"] = loan["business_type"] = loan["business"] = recovered_business
             if _is_forbidden_short_loan(loan):
                 loan["term_type"] = "medium_long"
                 loan["source_section"] = loan.get("source_section") or "short_term_reclassified"
