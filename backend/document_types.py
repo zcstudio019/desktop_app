@@ -26,6 +26,14 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         aliases=("企业征信", "企业征信提取", "企业信用报告"),
     ),
     DocumentTypeDefinition(
+        code="personal_credit_report",
+        name="个人征信",
+        storage_label="个人征信提取",
+        formats=("pdf", "image"),
+        aliases=("个人征信", "个人征信提取", "个人信用报告", "个人征信报告", "personal_credit_report"),
+        customer_scope="personal",
+    ),
+    DocumentTypeDefinition(
         code="personal_credit",
         name="个人征信",
         storage_label="个人征信提取",

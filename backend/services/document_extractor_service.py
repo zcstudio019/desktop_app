@@ -18,6 +18,7 @@ from backend.document_types import (
 )
 from backend.extraction_skills.enterprise_credit import build_enterprise_credit_content
 from backend.services.extraction_utils import normalize_amount, normalize_text, only_digits
+from backend.services.personal_credit_report_agent import run_personal_credit_report_agent
 from prompts import get_prompt_for_type, load_prompts
 from utils.json_parser import parse_json
 
@@ -70,6 +71,9 @@ def detect_document_type_code(
     bank_header_type = _detect_bank_type_from_headers(header_names)
     if bank_header_type:
         return bank_header_type
+
+    if _looks_like_personal_credit_report(text_content):
+        return "personal_credit_report"
 
     lower_text = (text_content or "").lower()
     for code, keywords in TYPE_KEYWORD_RULES:
@@ -2960,6 +2964,9 @@ def detect_document_type_code(
     bank_header_type = _detect_bank_type_from_headers(header_names)
     if bank_header_type:
         return bank_header_type
+
+    if _looks_like_personal_credit_report(text_content):
+        return "personal_credit_report"
 
     lower_text = (text_content or "").lower()
     for code, keywords in TYPE_KEYWORD_RULES:
@@ -6231,6 +6238,76 @@ PROPERTY_LABELS = (
     "用途", "土地面积", "建筑面积", "面积", "使用期限", "权利其他状况",
 )
 
+PERSONAL_CREDIT_KEYWORDS = (
+    "个人信用报告",
+    "个人征信报告",
+    "中国人民银行征信中心",
+    "报告编号",
+    "报告时间",
+    "姓名",
+    "证件号码",
+    "婚姻状况",
+    "信贷记录概要",
+    "贷记卡",
+    "准贷记卡",
+    "购房贷款",
+    "其他贷款",
+    "查询记录",
+)
+
+ENTERPRISE_CREDIT_PRIORITY_KEYWORDS = (
+    "企业信用报告",
+    "企业征信报告",
+    "企业名称",
+    "统一社会信用代码",
+    "中征码",
+    "组织机构代码",
+)
+
+
+def _looks_like_personal_credit_report(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if any(keyword in compact for keyword in ENTERPRISE_CREDIT_PRIORITY_KEYWORDS):
+        return False
+    score = sum(1 for keyword in PERSONAL_CREDIT_KEYWORDS if keyword in compact)
+    has_identity = "姓名" in compact and ("证件号码" in compact or "身份证号码" in compact)
+    has_credit_terms = any(keyword in compact for keyword in ("贷记卡", "准贷记卡", "购房贷款", "其他贷款", "信贷记录概要"))
+    return score >= 4 and (has_identity or has_credit_terms)
+
+
+def build_personal_credit_report_content(text: str, filename: str = "") -> dict[str, Any]:
+    result = run_personal_credit_report_agent(text, source_file=filename, debug=True)
+    report_json = result.get("report_json") or {}
+    markdown = result.get("report_markdown") or ""
+    basic = report_json.get("basic_info") or {}
+    return {
+        "type": "personal_credit_report",
+        "name": "个人征信报告",
+        "title": "个人征信报告",
+        "document_type_code": "personal_credit_report",
+        "document_type_name": get_document_display_name("personal_credit_report") or "个人征信",
+        "storage_label": get_document_storage_label("personal_credit_report") or "个人征信提取",
+        "skill_name": "personal_credit_report_agent",
+        "skill_version": "v1",
+        "schema_version": report_json.get("schema_version") or "personal_credit_report.agent.v1",
+        "extraction_status": "success",
+        "extraction_error": "",
+        "confidence": 0.75,
+        "warnings": result.get("warnings") or [],
+        "errors": [],
+        "markdown": markdown,
+        "markdown_summary": markdown,
+        "summary": markdown,
+        "extracted_json": report_json,
+        "data": report_json,
+        "customer_name": basic.get("name") or "",
+        "name": basic.get("name") or "",
+        "id_number": basic.get("id_number") or "",
+        "report_no": basic.get("report_number") or "",
+        "report_date": basic.get("report_time") or "",
+        "raw_text_preview": str(text or "")[:3000],
+    }
+
 
 def _pc_lines(text: str) -> list[str]:
     return [re.sub(r"\s+", " ", str(line or "")).strip() for line in str(text or "").replace("\r", "\n").split("\n") if str(line or "").strip()]
@@ -8900,6 +8977,11 @@ def build_structured_extraction(
             raw_pages=raw_pages,
         )
         print("[enterprise_credit] 提取完成:", list((content.get("extracted_json") or {}).keys()))
+        content["raw_text"] = str(text_content or "")
+        if raw_pages:
+            content["raw_pages"] = raw_pages
+    elif normalized_code in {"personal_credit_report", "personal_credit"}:
+        content = build_personal_credit_report_content(str(text_content or ""), filename=filename)
         content["raw_text"] = str(text_content or "")
         if raw_pages:
             content["raw_pages"] = raw_pages
