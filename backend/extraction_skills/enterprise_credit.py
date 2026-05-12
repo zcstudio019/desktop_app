@@ -5516,13 +5516,13 @@ def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> di
         compact = re.sub(r"\s+", "", cleaned)
         if not compact:
             return None, "empty_input"
-        account_match = re.search(r"B10411000H[A-Z0-9]*", compact)
+        account_match = re.search(r"[A-Z]\d{5,}[A-Za-z0-9_-]{6,}", compact)
         if not account_match:
             return None, "account_not_found"
 
         compact_window = compact[max(0, account_match.start() - 120): account_match.start() + 2200]
         main_match = re.search(
-            r"(?P<institution>[\u4e00-\u9fa5]{2,80}?银行股份有限公司[\u4e00-\u9fa5]{0,30}(?:分行|支行))"
+            r"(?P<institution>[\u4e00-\u9fa5]{2,80}?(?:银行股份有限公司[\u4e00-\u9fa5]{0,30}(?:分行|支行)?|银行总行营业部))"
             r"(?P<business_type>流动资金贷款|固定资产贷款|融资型租赁|循环透支|贷款)"
             r"(?P<start_date>\d{4}-\d{2}-\d{2})"
             r"(?P<end_date>\d{4}-\d{2}-\d{2}|长期)"
@@ -5533,14 +5533,21 @@ def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> di
         if not main_match:
             return None, "main_info_not_found"
 
+        guarantee_re = (
+            "(?P<guarantee>"
+            "\u62b5\u62bc|\u4fe1\u7528/\u65e0\u62c5\u4fdd|"
+            "\u4fdd\u8bc1/\u4fdd\u8bc1\u91d1|\u4fdd\u8bc1\u91d1|"
+            "\u4fdd\u8bc1|\u8d28\u62bc|\u4fe1\u7528|\u7ec4\u5408)"
+        )
+        five_re = "(?P<five_category>\u6b63\u5e38|\u5173\u6ce8|\u6b21\u7ea7|\u53ef\u7591|\u635f\u5931|\u672a\u5206\u7c7b)"
         status_match = re.search(
-            r"(?P<guarantee>抵押|保证/保证金|保证金|保证|质押|信用|组合)"
-            r"(?P<balance>\d+(?:\.\d+)?)"
-            r"(?P<five_category>正常|关注|次级|可疑|损失|未分类)"
-            r"(?P<overdue_total>\d+(?:\.\d+)?)"
-            r"(?P<overdue_principal>\d+(?:\.\d+)?)"
-            r"(?P<overdue_months>\d+)"
-            r"(?P<last_repayment_date>\d{4}-\d{2}-\d{2})",
+            guarantee_re
+            + r"(?P<balance>\d+(?:\.\d+)?)"
+            + five_re
+            + r"(?P<overdue_total>\d+(?:\.\d+)?)"
+            + r"(?P<overdue_principal>\d+(?:\.\d+)?)"
+            + r"(?P<overdue_months>\d+)"
+            + r"(?P<last_repayment_date>\d{4}-\d{2}-\d{2})",
             compact_window,
         )
         if not status_match:
@@ -5556,18 +5563,21 @@ def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> di
         )
         reason = "" if repayment_match else "repayment_line_not_found"
 
+        business_type = main_match.group("business_type")
+        if "流动资金贷款" in compact_window:
+            business_type = "流动资金贷款"
         credit_amount = _to_float(main_match.group("credit_amount"))
         balance = _to_float(status_match.group("balance"))
         last_repayment_amount = _to_float(repayment_match.group("last_repayment_amount")) if repayment_match else None
         result = _sync_loan_aliases(
             {
                 "account_no": account_match.group(0),
-                "institution_name": main_match.group("institution"),
-                "institution": main_match.group("institution"),
-                "bank": main_match.group("institution"),
-                "business_type": main_match.group("business_type"),
-                "biz_type": main_match.group("business_type"),
-                "loan_type": main_match.group("business_type"),
+                "institution_name": clean_revolving_institution_name(main_match.group("institution")),
+                "institution": clean_revolving_institution_name(main_match.group("institution")),
+                "bank": clean_revolving_institution_name(main_match.group("institution")),
+                "business_type": business_type,
+                "biz_type": business_type,
+                "loan_type": business_type,
                 "credit_amount": int(credit_amount) if credit_amount is not None and credit_amount.is_integer() else credit_amount,
                 "loan_amount": int(credit_amount) if credit_amount is not None and credit_amount.is_integer() else credit_amount,
                 "used_amount": balance,
@@ -5680,6 +5690,57 @@ def _prefer_complete_revolving_details(loans: list[dict[str, Any]]) -> list[dict
         if _revolving_detail_quality(loan) > _revolving_detail_quality(existing):
             best_by_balance[balance_key] = loan
     return [best_by_balance[key] for key in order]
+
+
+def clean_revolving_institution_name(raw: str) -> str:
+    s = re.sub(r"\s+", "", str(raw or ""))
+    if not s:
+        return ""
+    s = re.sub(r"^[0-9]*[A-Z]\d{5,}[A-Za-z0-9_-]{6,}", "", s)
+    s = re.sub(r"^[A-Za-z0-9_-]{12,}(?=[\u4e00-\u9fa5])", "", s)
+
+    start_patterns = [
+        "中国农业发展银行",
+        "深圳前海微众银行",
+        "中国建设银行",
+        "中国农业银行",
+        "中国工商银行",
+        "中国银行",
+        "交通银行",
+        "银行",
+    ]
+    positions = [s.find(pattern) for pattern in start_patterns if s.find(pattern) != -1]
+    if positions:
+        s = s[min(positions):]
+
+    for biz in ["流动资金贷款", "固定资产贷款", "融资型租赁", "循环透支", "贷款"]:
+        idx = s.find(biz)
+        if idx != -1:
+            s = s[:idx]
+            break
+
+    for suffix in ["总行营业部", "营业部", "分行", "支行"]:
+        idx = s.rfind(suffix)
+        if idx != -1:
+            return s[:idx + len(suffix)]
+    for suffix in ["银行股份有限公司", "股份有限公司", "有限公司"]:
+        idx = s.rfind(suffix)
+        if idx != -1:
+            return s[:idx + len(suffix)]
+    return s
+
+
+def _clean_revolving_institution_fields(loan: dict[str, Any], warnings: list[str] | None = None) -> dict[str, Any]:
+    cleaned = clean_revolving_institution_name(_final_loan_bank(loan))
+    if cleaned:
+        loan["bank"] = cleaned
+        loan["institution"] = cleaned
+        loan["institution_name"] = cleaned
+    bank = _final_text(_final_loan_bank(loan))
+    if re.search(r"[A-Z]\d{5,}[A-Za-z0-9_-]{6,}", bank):
+        if warnings is not None and "institution_name_contains_account_no" not in warnings:
+            warnings.append("institution_name_contains_account_no")
+    return loan
 
 
 def _is_missing_revolving_value(value: Any) -> bool:
@@ -6106,6 +6167,11 @@ def final_normalize_credit_result(
                 if isinstance(loan, dict)
             ]
         )
+        revolving_loans = [
+            _clean_revolving_institution_fields(loan, warnings)
+            for loan in revolving_loans
+            if isinstance(loan, dict)
+        ]
         if revolving_balance_value and not revolving_loans and "revolving_balance_without_details" not in warnings:
             warnings.append("revolving_balance_without_details")
         if revolving_balance_value and revolving_loans:
