@@ -70,10 +70,17 @@ def format_date(value: str) -> str:
 
 def classify_credit_business(record: dict[str, Any]) -> str:
     biz = str(record.get("business_type") or record.get("biz_type") or "")
+    source_section = str(record.get("_source_section") or record.get("source_section") or "").lower()
     start_date = str(record.get("start_date") or record.get("open_date") or "")
     end_date = str(record.get("end_date") or record.get("due_date") or "")
     if any(keyword in biz for keyword in NON_LOAN_KEYWORDS):
         return "non_loan"
+    if "short_term" in source_section or "short" in source_section:
+        if any(keyword in biz for keyword in MEDIUM_KEYWORDS):
+            return "medium_long_term_loan"
+        return "short_term_loan"
+    if "medium_long" in source_section or "medium" in source_section:
+        return "medium_long_term_loan"
     if any(keyword in biz for keyword in MEDIUM_KEYWORDS):
         return "medium_long_term_loan"
     days = _duration_days(start_date, end_date)
@@ -231,6 +238,7 @@ def parse_loan_rows(section: str, *, term_type: str, source_section: str) -> lis
             "business_type": biz,
             "start_date": match.group("start"),
             "end_date": match.group("end"),
+            "source_section": source_section,
         })
         if term_type == "short_term_loan" and record_type != "short_term_loan":
             continue

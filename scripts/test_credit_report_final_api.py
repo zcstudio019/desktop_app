@@ -78,6 +78,64 @@ def main() -> int:
 
 
 def _build_stale_profile_result(case_name: str = "") -> dict[str, Any]:
+    if case_name == "case_short_record_duration_over_365_should_stay_short":
+        return {
+            "schema_version": "enterprise_credit.v2",
+            "credit_summary": {
+                "medium_long_term_loan_balance": "750",
+                "medium_long_loan_count": 1,
+                "short_term_loan_balance": "5574",
+                "short_loan_count": 9,
+            },
+            "short_loans": [],
+            "short_loans_final": [],
+            "medium_loans": [
+                {
+                    "bank": "广发银行股份有限公司上海世纪大道支行",
+                    "institution": "广发银行股份有限公司上海世纪大道支行",
+                    "institution_name": "广发银行股份有限公司上海世纪大道支行",
+                    "biz_type": "流动资金贷款",
+                    "loan_type": "流动资金贷款",
+                    "business_type": "流动资金贷款",
+                    "loan_amount": "1000",
+                    "balance": "750",
+                    "open_date": "2023-05-22",
+                    "start_date": "2023-05-22",
+                    "due_date": "2026-05-22",
+                    "end_date": "2026-05-22",
+                    "guarantee": "保证",
+                    "guarantee_type": "保证",
+                    "five_classification": "正常",
+                    "five_category": "正常",
+                    "overdue_months": "0",
+                    "term_type": "medium_long",
+                    "source_section": "medium_long_term",
+                },
+                {
+                    "bank": "中国建设银行股份有限公司上海自贸试验区分行",
+                    "institution": "中国建设银行股份有限公司上海自贸试验区分行",
+                    "institution_name": "中国建设银行股份有限公司上海自贸试验区分行",
+                    "biz_type": "流动资金贷款",
+                    "loan_type": "流动资金贷款",
+                    "business_type": "流动资金贷款",
+                    "loan_amount": "1000",
+                    "balance": "1000",
+                    "open_date": "2025-12-17",
+                    "start_date": "2025-12-17",
+                    "due_date": "2027-03-17",
+                    "end_date": "2027-03-17",
+                    "guarantee": "保证",
+                    "guarantee_type": "保证",
+                    "five_classification": "正常",
+                    "five_category": "正常",
+                    "overdue_months": "0",
+                    "term_type": "medium_long",
+                    "source_section": "short_term",
+                },
+            ],
+            "medium_loans_final": [],
+            "active_loans": [],
+        }
     if case_name == "case_short_term_factoring_business_type":
         return {
             "schema_version": "enterprise_credit.v2",
@@ -371,6 +429,9 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
     for target in (expected or {}).get("medium_long_or_lease_must_include") or []:
         if not _loan_matches(medium_loans, target):
             failures.append(f"medium_long_or_lease_must_include missing: {target}")
+    for target in (expected or {}).get("medium_long_must_not_include") or []:
+        if _loan_matches(medium_loans, target):
+            failures.append(f"medium_long_must_not_include leaked: {target}")
     for target in (expected or {}).get("revolving_overdrafts_must_include") or []:
         if not _loan_matches(revolving_loans, target):
             failures.append(f"revolving_overdrafts_must_include missing: {target}")
@@ -389,6 +450,9 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
     for warning in (expected or {}).get("must_not_have_warnings") or []:
         if warning in warnings:
             failures.append(f"unexpected validation warning: {warning}")
+    for warning in (expected or {}).get("must_have_warnings") or []:
+        if not any(warning in str(item) for item in warnings):
+            failures.append(f"missing validation warning: {warning}")
     return failures
 
 

@@ -164,7 +164,7 @@ def extract_revolving_window_preserving_pending(raw_text: str) -> tuple[str, int
             break
     search_text = text[search_from:]
     for variant in ("循环透支账户明细", "未结清循环透支", "循环透支账户", "循环透支余额", "循环透支", "循环额度", "透支余额", "寰幆閫忔敮", "寰幆璐锋", "寰幆棰濆害"):
-        match = re.search(rf"{re.escape(variant)}\s*(?:共|鍏?|閸?)\s*(\d+)\s*(?:笔|绗?|缁?)", search_text, re.S)
+        match = re.search(rf"{re.escape(variant)}\s*(?:共|鍏.|閸.)\s*(\d+)\s*(?:笔|绗.|缁.)", search_text, re.S)
         if match:
             start_pos = search_from + match.start()
             break
@@ -294,7 +294,7 @@ def extract_loan_subsection(unsettled_text: str, title: str) -> tuple[str, int]:
     }.get(title, [title])
     match: re.Match[str] | None = None
     for variant in title_variants:
-        match = re.search(rf"{re.escape(variant)}\s*(?:共|鍏?)[\s]*(\d+)\s*(?:笔|绗?)", text, re.S)
+        match = re.search(rf"{re.escape(variant)}\s*(?:共|鍏.)[\s]*(\d+)\s*(?:笔|绗.)", text, re.S)
         if match:
             break
     if not match:

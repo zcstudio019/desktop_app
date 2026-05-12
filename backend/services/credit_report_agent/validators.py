@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime
 
 from .schemas import AgentResult, ValidationResult
 
@@ -28,6 +29,15 @@ def _loan_key(loan: Any) -> tuple[Any, ...]:
         getattr(loan, "balance", None),
         getattr(loan, "guarantee_type", ""),
     )
+
+
+def _duration_days(start_date: str, end_date: str) -> int | None:
+    try:
+        start = datetime.strptime(str(start_date or ""), "%Y-%m-%d")
+        end = datetime.strptime(str(end_date or ""), "%Y-%m-%d")
+        return (end - start).days
+    except Exception:
+        return None
 
 
 def validate_agent_result(result: AgentResult, expected_counts: dict[str, int] | None = None) -> ValidationResult:
@@ -65,6 +75,9 @@ def validate_agent_result(result: AgentResult, expected_counts: dict[str, int] |
     for loan in result.short_term_loans:
         if any(keyword in (loan.business_type or "") for keyword in FORBIDDEN_SHORT_KEYWORDS):
             errors.append(f"forbidden_business_in_short_term_loans: {loan.business_type}")
+        days = _duration_days(loan.start_date, loan.end_date)
+        if days is not None and days > 366 and not any(keyword in (loan.business_type or "") for keyword in FORBIDDEN_SHORT_KEYWORDS):
+            warnings.append(f"short_term_duration_over_365_days: {loan.institution_name} {loan.start_date}-{loan.end_date}")
 
     if duplicates:
         warnings.append(f"duplicate_loan_records_detected: {duplicates}")

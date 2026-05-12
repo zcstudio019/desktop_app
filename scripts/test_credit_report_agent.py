@@ -106,6 +106,9 @@ def _assert_expected(result: dict[str, Any], expected: dict[str, Any]) -> list[s
     for target in expected.get("medium_long_or_lease_must_include") or []:
         if not _loan_matches(medium_loans, target):
             failures.append(f"medium_long_or_lease_must_include missing: {target}")
+    for target in expected.get("medium_long_must_not_include") or []:
+        if _loan_matches(medium_loans, target):
+            failures.append(f"medium_long_must_not_include leaked: {target}")
 
     forbidden_names = set(expected.get("invalid_institution_names_forbidden") or [])
     for loan in all_loans:
@@ -138,6 +141,9 @@ def _assert_expected(result: dict[str, Any], expected: dict[str, Any]) -> list[s
     for warning in expected.get("must_not_have_warnings") or []:
         if warning in (validation.get("warnings") or []):
             failures.append(f"unexpected validation warning: {warning}")
+    for warning in expected.get("must_have_warnings") or []:
+        if not any(warning in str(item) for item in (validation.get("warnings") or [])):
+            failures.append(f"missing validation warning: {warning}")
     return failures
 
 

@@ -4560,6 +4560,7 @@ def risk_level_zh(level: Any) -> str:
 def loan_term_type(loan: dict[str, Any]) -> str:
     biz = str(loan.get("biz_type") or loan.get("loan_type") or "")
     section_type = str(loan.get("section_type") or "")
+    source_section = str(loan.get("source_section") or loan.get("_source_section") or "").lower()
     explicit_term_type = str(loan.get("term_type") or "")
     due_date = str(loan.get("due_date") or loan.get("end_date") or "")
     open_date = str(loan.get("open_date") or loan.get("start_date") or "")
@@ -4574,6 +4575,10 @@ def loan_term_type(loan: dict[str, Any]) -> str:
         return "revolving_overdraft"
 
     if "融资型租赁" in biz or "中长期" in biz:
+        return "medium_long"
+    if "short_term" in source_section or "short" in source_section:
+        return "short"
+    if "medium_long" in source_section or "medium" in source_section:
         return "medium_long"
 
     try:
@@ -4761,6 +4766,17 @@ def _final_same_amount(left: Any, right: Any) -> bool:
         return _final_text(left) == _final_text(right)
 
 
+def _final_duration_days(start_date: Any, end_date: Any) -> int | None:
+    try:
+        from datetime import datetime
+
+        start = datetime.strptime(str(start_date or ""), "%Y-%m-%d")
+        end = datetime.strptime(str(end_date or ""), "%Y-%m-%d")
+        return (end - start).days
+    except Exception:
+        return None
+
+
 def _recover_institution_from_text(text: str) -> str:
     compact = _final_text(text)
     if not compact:
@@ -4828,6 +4844,10 @@ def _is_forbidden_short_loan(loan: dict[str, Any]) -> bool:
     biz = _final_loan_business(loan)
     if any(keyword in biz for keyword in _FINAL_SHORT_FORBIDDEN_KEYWORDS):
         return True
+    source_section = str(loan.get("source_section") or loan.get("_source_section") or "").lower()
+    explicit_term_type = str(loan.get("term_type") or "").lower()
+    if explicit_term_type == "short" or "short_term" in source_section or "short" in source_section:
+        return False
     start = _final_loan_start(loan)
     end = _final_loan_end(loan)
     if start and end:
@@ -4843,9 +4863,14 @@ def _is_forbidden_short_loan(loan: dict[str, Any]) -> bool:
     return False
 
 
-def infer_term_type(start_date: Any, end_date: Any, business_type: Any) -> str:
+def infer_term_type(start_date: Any, end_date: Any, business_type: Any, source_section: Any = "") -> str:
     biz = str(business_type or "")
     if any(keyword in biz for keyword in _FINAL_SHORT_FORBIDDEN_KEYWORDS):
+        return "medium_long_term"
+    source = str(source_section or "").lower()
+    if "short_term" in source or "short" in source:
+        return "short_term"
+    if "medium_long" in source or "medium" in source:
         return "medium_long_term"
     try:
         from datetime import datetime
@@ -5031,7 +5056,7 @@ def _parse_short_window_loans_for_final(raw_text: str) -> list[dict[str, Any]]:
             "term_type": "short",
             "evidence_text": compact[max(0, match.start() - 80): match.end() + 80],
         }
-        if infer_term_type(loan["open_date"], loan["due_date"], loan["biz_type"]) == "short_term":
+        if infer_term_type(loan["open_date"], loan["due_date"], loan["biz_type"], "short_term") == "short_term":
             loans.append(_sync_loan_aliases(loan))
         else:
             logger.warning("[EnterpriseCredit][SECTION_POLLUTION_WARNING] short_window_medium_like_loan=%s", loan)
@@ -6294,10 +6319,40 @@ def final_normalize_credit_result(
             loan for loan in _dedupe_final_loans(normalized_short)
             if not _is_forbidden_short_loan(loan) and _final_text(_final_loan_bank(loan)) not in _FINAL_INVALID_INSTITUTION_NAMES
         ]
+        for loan in normalized_short:
+            days = _final_duration_days(_final_loan_start(loan), _final_loan_end(loan))
+            if days is not None and days > 366 and not any(keyword in _final_loan_business(loan) for keyword in _FINAL_SHORT_FORBIDDEN_KEYWORDS):
+                marker = "short_term_duration_over_365_days"
+                if marker not in warnings:
+                    warnings.append(marker)
         normalized_medium = [
             loan for loan in _dedupe_final_loans(normalized_medium)
             if _final_text(_final_loan_bank(loan)) not in _FINAL_INVALID_INSTITUTION_NAMES
         ]
+        rehome_short_from_medium: list[dict[str, Any]] = []
+        keep_medium: list[dict[str, Any]] = []
+        for loan in normalized_medium:
+            source = str(loan.get("source_section") or loan.get("_source_section") or "").lower()
+            if ("short_term" in source or "short" in source) and not any(keyword in _final_loan_business(loan) for keyword in _FINAL_SHORT_FORBIDDEN_KEYWORDS):
+                loan["term_type"] = "short"
+                rehome_short_from_medium.append(loan)
+                if "short_term_record_wrongly_moved_to_medium_long_term" not in warnings:
+                    warnings.append("short_term_record_wrongly_moved_to_medium_long_term")
+            else:
+                keep_medium.append(loan)
+        if rehome_short_from_medium:
+            normalized_short = _dedupe_final_loans([*normalized_short, *rehome_short_from_medium])
+            normalized_medium = keep_medium
+        credit_summary_for_balance = data.get("credit_summary") or {}
+        expected_medium_balance = _to_float(
+            credit_summary_for_balance.get("medium_long_term_loan_balance")
+            or credit_summary_for_balance.get("medium_long_loan_balance")
+            or credit_summary_for_balance.get("long_term_loan_balance")
+        )
+        if expected_medium_balance is not None:
+            actual_medium_balance = sum(_to_float(loan.get("balance")) or 0.0 for loan in normalized_medium)
+            if abs(actual_medium_balance - expected_medium_balance) > 1 and "medium_long_term_balance_mismatch" not in warnings:
+                warnings.append("medium_long_term_balance_mismatch")
 
         contains_finance_lease_in_short = any(
             any(keyword in _final_loan_business(loan) for keyword in _FINAL_SHORT_FORBIDDEN_KEYWORDS)

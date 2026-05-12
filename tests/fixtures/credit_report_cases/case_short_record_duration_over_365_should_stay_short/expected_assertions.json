@@ -1,0 +1,36 @@
+{
+  "short_term_must_include": [
+    {
+      "institution_name": "中国建设银行股份有限公司上海自贸试验区分行",
+      "business_type": "流动资金贷款",
+      "loan_amount": 1000,
+      "balance": 1000,
+      "guarantee_type": "保证",
+      "start_date": "2025-12-17",
+      "end_date": "2027-03-17"
+    }
+  ],
+  "medium_long_or_lease_must_include": [
+    {
+      "institution_name": "广发银行股份有限公司上海世纪大道支行",
+      "business_type": "流动资金贷款",
+      "loan_amount": 1000,
+      "balance": 750,
+      "guarantee_type": "保证",
+      "start_date": "2023-05-22",
+      "end_date": "2026-05-22"
+    }
+  ],
+  "medium_long_must_not_include": [
+    {
+      "institution_name": "中国建设银行股份有限公司上海自贸试验区分行",
+      "loan_amount": 1000,
+      "balance": 1000,
+      "start_date": "2025-12-17",
+      "end_date": "2027-03-17"
+    }
+  ],
+  "must_have_warnings": [
+    "short_term_duration_over_365_days"
+  ]
+}
