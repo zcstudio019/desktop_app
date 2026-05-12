@@ -127,7 +127,14 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
         if card_limit > 0:
             indicators["credit_card_usage_rate"] = round(card_used / card_limit, 4)
 
-        indicators["has_current_overdue"] = _has_positive_money([*loans, *cards, *overdue_records], ("overdue_amount", "amount"))
+        indicators["has_current_overdue"] = _has_positive_money([*loans, *cards], ("overdue_amount",))
+        if not indicators["has_current_overdue"]:
+            for item in overdue_records:
+                amount = parse_money(item.get("amount"))
+                status_text = str(item.get("status") or item.get("record_type") or item.get("evidence_text") or "")
+                if amount is not None and amount > 0 and "逾期" in status_text:
+                    indicators["has_current_overdue"] = True
+                    break
         risk_text = _joined_risk_text(report_json)
         indicators["has_90d_overdue"] = "90天以上逾期" in risk_text or "90 天以上逾期" in risk_text
         indicators["has_bad_debt_or_compensation"] = any(keyword in risk_text for keyword in ("呆账", "代偿", "核销", "强制执行"))

@@ -35,8 +35,6 @@ def _build_risk_flags(report: dict[str, Any]) -> list[str]:
         flags.append("存在90天以上信用卡逾期记录")
     if summary.get("housing_loan_overdue_count") or summary.get("other_loan_overdue_count"):
         flags.append("存在贷款逾期账户")
-    if report.get("overdue_records"):
-        flags.append("识别到逾期或异常记录")
     if report.get("guarantees"):
         flags.append("存在担保信息")
     return flags

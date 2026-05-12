@@ -108,8 +108,9 @@ def test_agent_output_schema_stable() -> None:
 def test_markdown_renderer_not_empty() -> None:
     report = run_personal_credit_report_agent(SAMPLE_TEXT)["report_json"]
     markdown = render_personal_credit_markdown(report)
-    assert "## 个人征信摘要" in markdown
-    assert "### 查询记录" in markdown
+    assert "# 个人征信报告" in markdown
+    assert "## 八、查询记录" in markdown
+    assert "## 十、待核验项" in markdown
 
 
 def test_fixture_basic_personal_credit_report() -> None:

@@ -103,7 +103,8 @@ def _extract_overdue_months(block: str) -> str:
 def _extract_account_no(block: str) -> str:
     value = _extract_label(block, ("账户编号", "账户号", "账号", "合同编号"), max_chars=80)
     if value:
-        return value
+        match = re.search(r"([A-Za-z0-9\-*]{4,40})", value)
+        return match.group(1) if match else value
     return first_match(block, (r"(?:账户编号|账户号|账号|合同编号)\s*[:：]?\s*([A-Za-z0-9\-*]{4,40})",))
 
 

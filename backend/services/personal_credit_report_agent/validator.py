@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -17,6 +18,16 @@ def _summary_count(summary: dict[str, Any], *keys: str) -> int:
     return total
 
 
+def _contains_any(value: Any, keywords: tuple[str, ...]) -> bool:
+    text = str(value or "")
+    return any(keyword in text for keyword in keywords)
+
+
+def _warn_once(warnings: list[str], warning: str) -> None:
+    if warning not in warnings:
+        warnings.append(warning)
+
+
 def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
     warnings = list(report.get("warnings") or [])
     missing_fields = list(report.get("missing_fields") or [])
@@ -27,6 +38,22 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
         path = f"basic_info.{field}"
         if path not in missing_fields:
             _append_missing(missing_fields, path, basic.get(field))
+
+    basic_pollution_keywords = (
+        "查询记录",
+        "查询记录明细",
+        "贷款账户明细",
+        "贷记卡账户明细",
+        "准贷记卡账户明细",
+        "信贷记录概要",
+        "机构",
+        "中征码",
+        "统一社会信用代码",
+        "企业名称",
+    )
+    for field in ("name", "id_type", "id_number", "report_number", "report_time", "marital_status"):
+        if _contains_any(basic.get(field), basic_pollution_keywords):
+            _warn_once(warnings, f"basic_info_contaminated: {field}")
 
     if not isinstance(report.get("loan_accounts"), list):
         warnings.append("loan_accounts_not_array")
@@ -51,6 +78,18 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
     actual_cards = len(report.get("credit_card_accounts") or [])
     if isinstance(expected_cards, int) and expected_cards and abs(expected_cards - actual_cards) >= 3:
         warnings.append(f"credit_card_account_count_mismatch: expected={expected_cards}, actual={actual_cards}")
+    if isinstance(expected_cards, int) and expected_cards >= 30:
+        _warn_once(warnings, f"credit_card_account_count_unusually_large: {expected_cards}")
+
+    for index, loan in enumerate(report.get("loan_accounts") or [], start=1):
+        if not isinstance(loan, dict):
+            continue
+        joined = " ".join(str(loan.get(key) or "") for key in ("business_type", "evidence", "evidence_text", "institution"))
+        if _contains_any(joined, ("贷记卡", "准贷记卡", "信用卡", "授信额度", "已用额度")):
+            _warn_once(warnings, f"loan_account_contains_card_terms: account={index}")
+        suspicious_text = str(loan.get("institution") or "")
+        if re.search(r"(查询记录|报告基础信息|信贷记录概要)", suspicious_text):
+            _warn_once(warnings, f"loan_account_section_title_mixed: account={index}")
 
     report["warnings"] = warnings
     report["missing_fields"] = missing_fields
