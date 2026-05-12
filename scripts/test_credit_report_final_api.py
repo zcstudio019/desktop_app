@@ -257,6 +257,9 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
     for target in (expected or {}).get("revolving_overdrafts_must_include") or []:
         if not _loan_matches(revolving_loans, target):
             failures.append(f"revolving_overdrafts_must_include missing: {target}")
+    for keyword in (expected or {}).get("revolving_institution_forbidden_keywords") or []:
+        if any(keyword in _bank(x) for x in revolving_loans):
+            failures.append(f"revolving institution contains forbidden keyword: {keyword}")
     for warning in (expected or {}).get("must_not_have_warnings") or []:
         if warning in warnings:
             failures.append(f"unexpected validation warning: {warning}")

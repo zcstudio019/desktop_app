@@ -1,0 +1,28 @@
+{
+  "revolving_overdrafts_must_include": [
+    {
+      "institution_name": "中国农业发展银行总行营业部",
+      "business_type": "流动资金贷款",
+      "credit_amount": 0,
+      "balance": 0,
+      "guarantee_type": "信用/无担保",
+      "start_date": "2023-05-06",
+      "end_date": "2026-02-08",
+      "five_category": "正常",
+      "overdue_total": 0,
+      "overdue_principal": 0,
+      "overdue_months": 0,
+      "last_repayment_date": "2024-12-16",
+      "last_repayment_amount": 7.31,
+      "remaining_repayment_months": 0,
+      "account_no": "A10311000H",
+      "credit_agreement_no": "A10311000H",
+      "report_date": "2025-03-31"
+    }
+  ],
+  "revolving_institution_forbidden_keywords": [
+    "A10311000H",
+    "EwzE",
+    "XS000004116"
+  ]
+}

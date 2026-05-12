@@ -5499,6 +5499,124 @@ def _recover_revolving_overdraft_from_window_legacy(section_text: str, raw_text:
     )
 
 
+def parse_revolving_overdue_line(line: str) -> dict[str, Any]:
+    """Parse the second layer of a revolving-overdraft row.
+
+    The overdue fields must only come from this layer:
+    guarantee + balance + five category + overdue total + overdue principal
+    + overdue months + last repayment date.
+    """
+    compact = re.sub(r"\s+", "", str(line or ""))
+    if not compact:
+        return {}
+    match = re.search(
+        r"(?P<guarantee_type>信用/无担保|保证/保证金|保证金|抵押|保证|质押|信用|组合|其他)"
+        r"(?P<balance>\d+(?:\.\d+)?)"
+        r"(?P<five_category>正常|关注|次级|可疑|损失|未分类)"
+        r"(?P<overdue_total>\d+(?:\.\d+)?)"
+        r"(?P<overdue_principal>\d+(?:\.\d+)?)"
+        r"(?P<overdue_months>\d+)"
+        r"(?P<last_repayment_date>\d{4}-\d{2}-\d{2})",
+        compact,
+    )
+    if not match:
+        return {}
+    def _number(value: Any) -> Any:
+        parsed = _to_float(value)
+        if parsed is None:
+            return 0
+        try:
+            return int(parsed) if float(parsed).is_integer() else parsed
+        except Exception:
+            return parsed
+
+    balance = _number(match.group("balance"))
+    overdue_total = _number(match.group("overdue_total"))
+    overdue_principal = _number(match.group("overdue_principal"))
+    return {
+        "guarantee_type": match.group("guarantee_type"),
+        "guarantee": match.group("guarantee_type"),
+        "balance": balance,
+        "used_amount": balance,
+        "five_category": match.group("five_category"),
+        "five_classification": match.group("five_category"),
+        "overdue_total": overdue_total,
+        "overdue_amount": overdue_total,
+        "overdue_principal": overdue_principal,
+        "overdue_months": int(match.group("overdue_months")),
+        "last_repayment_date": match.group("last_repayment_date"),
+        "last_repay_date": match.group("last_repayment_date"),
+    }
+
+
+def parse_revolving_repayment_line(line: str) -> dict[str, Any]:
+    """Parse the third layer of a revolving-overdraft row.
+
+    This layer contains repayment and agreement fields only. It must never
+    write overdue_months; the adjacent number is remaining repayment months.
+    """
+    compact = re.sub(r"\s+", "", str(line or ""))
+    if not compact:
+        return {}
+    match = re.search(
+        r"(?P<last_repayment_amount>\d+(?:\.\d+)?)"
+        r"(?P<last_repayment_type>正常还款)"
+        r"(?P<remaining_repayment_months>\d+)"
+        r"(?P<transaction_hint>--)?"
+        r"(?P<credit_agreement_no>[A-Z]\d{5,}[A-Za-z0-9_-]{6,})?"
+        r".*?见附件"
+        r"(?P<report_date>\d{4}-\d{2}-\d{2})",
+        compact,
+    )
+    if not match:
+        return {}
+    amount = _to_float(match.group("last_repayment_amount"))
+    return {
+        "last_repayment_amount": int(amount) if amount is not None and amount.is_integer() else amount,
+        "last_repayment_type": match.group("last_repayment_type"),
+        "remaining_repayment_months": int(match.group("remaining_repayment_months")),
+        "transaction_hint": match.group("transaction_hint") or "",
+        "credit_agreement_no": match.group("credit_agreement_no") or "",
+        "history_performance": "见附件",
+        "report_date": match.group("report_date"),
+    }
+
+
+def _find_revolving_layer_lines(cleaned: str, status_compact: str, repayment_compact: str = "") -> tuple[str, str]:
+    lines = [line.strip() for line in str(cleaned or "").splitlines() if line.strip()]
+    overdue_line = ""
+    repayment_line = ""
+    for i, line in enumerate(lines):
+        if not overdue_line and parse_revolving_overdue_line(line):
+            overdue_line = line
+        if not repayment_line:
+            if parse_revolving_overdue_line(line):
+                continue
+            candidate = line
+            if i + 1 < len(lines):
+                candidate += lines[i + 1].strip()
+            if i + 2 < len(lines):
+                candidate += lines[i + 2].strip()
+            if parse_revolving_repayment_line(candidate):
+                repayment_line = candidate
+        if overdue_line and repayment_line:
+            break
+    return overdue_line or status_compact, repayment_line or repayment_compact
+
+
+def _protect_revolving_overdue_fields(loan: dict[str, Any]) -> dict[str, Any]:
+    """Re-apply overdue fields from the stored second-layer line before output."""
+    if not isinstance(loan, dict):
+        return loan
+    overdue_line = str(loan.get("_overdue_line") or "")
+    parsed = parse_revolving_overdue_line(overdue_line)
+    if not parsed:
+        return loan
+    protected = dict(loan)
+    protected.update(parsed)
+    return protected
+
+
 def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> dict[str, Any] | None:
     """Recover a complete revolving overdraft row from a local OCR/log window."""
 
@@ -5553,22 +5671,43 @@ def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> di
         if not status_match:
             return None, "guarantee_line_not_found"
 
+        repayment_source = compact_window[status_match.end():]
         repayment_match = re.search(
             r"(?P<last_repayment_amount>\d+(?:\.\d+)?)"
             r"(?P<last_repayment_type>正常还款)"
             r"(?P<remaining_repayment_months>\d+)"
             r".*?见附件"
             r"(?P<report_date>\d{4}-\d{2}-\d{2})",
-            compact_window[status_match.end():],
+            repayment_source,
         )
         reason = "" if repayment_match else "repayment_line_not_found"
+        overdue_line, repayment_line = _find_revolving_layer_lines(
+            cleaned,
+            status_match.group(0),
+            repayment_match.group(0) if repayment_match else repayment_source[:300],
+        )
+        overdue_fields = parse_revolving_overdue_line(overdue_line) or {
+            "guarantee_type": status_match.group("guarantee"),
+            "guarantee": status_match.group("guarantee"),
+            "balance": _to_float(status_match.group("balance")),
+            "used_amount": _to_float(status_match.group("balance")),
+            "five_category": status_match.group("five_category"),
+            "five_classification": status_match.group("five_category"),
+            "overdue_total": _to_float(status_match.group("overdue_total")) or 0,
+            "overdue_amount": _to_float(status_match.group("overdue_total")) or 0,
+            "overdue_principal": _to_float(status_match.group("overdue_principal")) or 0,
+            "overdue_months": int(status_match.group("overdue_months")),
+            "last_repayment_date": status_match.group("last_repayment_date"),
+            "last_repay_date": status_match.group("last_repayment_date"),
+        }
+        repayment_fields = parse_revolving_repayment_line(repayment_line)
 
         business_type = main_match.group("business_type")
         if "流动资金贷款" in compact_window:
             business_type = "流动资金贷款"
         credit_amount = _to_float(main_match.group("credit_amount"))
-        balance = _to_float(status_match.group("balance"))
-        last_repayment_amount = _to_float(repayment_match.group("last_repayment_amount")) if repayment_match else None
+        balance = _to_float(overdue_fields.get("balance"))
+        last_repayment_amount = repayment_fields.get("last_repayment_amount")
         result = _sync_loan_aliases(
             {
                 "account_no": account_match.group(0),
@@ -5587,25 +5726,16 @@ def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> di
                 "end_date": main_match.group("end_date"),
                 "due_date": main_match.group("end_date"),
                 "currency": "人民币",
-                "guarantee_type": status_match.group("guarantee"),
-                "guarantee": status_match.group("guarantee"),
-                "five_category": status_match.group("five_category"),
-                "five_classification": status_match.group("five_category"),
-                "overdue_total": _to_float(status_match.group("overdue_total")) or 0,
-                "overdue_amount": _to_float(status_match.group("overdue_total")) or 0,
-                "overdue_principal": _to_float(status_match.group("overdue_principal")) or 0,
-                "overdue_months": int(status_match.group("overdue_months")),
-                "last_repayment_date": status_match.group("last_repayment_date"),
-                "last_repay_date": status_match.group("last_repayment_date"),
+                **overdue_fields,
                 "last_repayment_amount": last_repayment_amount,
-                "last_repayment_type": repayment_match.group("last_repayment_type") if repayment_match else "",
-                "remaining_repayment_months": int(repayment_match.group("remaining_repayment_months")) if repayment_match else "",
-                "report_date": repayment_match.group("report_date") if repayment_match else "",
+                **repayment_fields,
                 "source_section": "revolving_overdraft",
                 "term_type": "revolving_overdraft",
                 "section_type": "循环透支",
                 "confidence": 0.9 if repayment_match else 0.82,
                 "_recovered_by": "revolving_window_recovery_v2",
+                "_overdue_line": overdue_line,
+                "_repayment_line": repayment_line,
                 "evidence_text": _sanitize_credit_debug_preview(cleaned, 1000),
             }
         )
@@ -5613,9 +5743,10 @@ def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> di
         result["loan_amount"] = result["credit_amount"]
         result["balance"] = balance
         result["used_amount"] = balance
-        result["overdue_months"] = int(status_match.group("overdue_months"))
+        result["overdue_months"] = int(overdue_fields.get("overdue_months") or 0)
         result["last_repayment_amount"] = last_repayment_amount
-        result["remaining_repayment_months"] = int(repayment_match.group("remaining_repayment_months")) if repayment_match else ""
+        if "remaining_repayment_months" not in result:
+            result["remaining_repayment_months"] = ""
         return result, reason
 
     candidates: list[str] = []
@@ -5643,8 +5774,15 @@ def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> di
 
 def _revolving_detail_quality(loan: dict[str, Any]) -> int:
     score = 0
-    if _final_loan_bank(loan) and _final_text(_final_loan_bank(loan)) not in _FINAL_INVALID_INSTITUTION_NAMES:
+    bank_text = _final_text(_final_loan_bank(loan))
+    if _final_loan_bank(loan) and bank_text not in _FINAL_INVALID_INSTITUTION_NAMES:
         score += 3
+    if re.search(r"[A-Z]\d{5,}", bank_text) or any(keyword in bank_text for keyword in ("账户编号", "授信机构", "业务种类")):
+        score -= 8
+    if str(loan.get("_recovered_by") or "").startswith("revolving_window_recovery"):
+        score += 5
+    if loan.get("_overdue_line"):
+        score += 2
     if _final_loan_business(loan) and _final_loan_business(loan) != "循环透支":
         score += 2
     if loan.get("credit_amount") or _final_loan_amount(loan):
@@ -6168,7 +6306,7 @@ def final_normalize_credit_result(
             ]
         )
         revolving_loans = [
-            _clean_revolving_institution_fields(loan, warnings)
+            _protect_revolving_overdue_fields(_clean_revolving_institution_fields(loan, warnings))
             for loan in revolving_loans
             if isinstance(loan, dict)
         ]
