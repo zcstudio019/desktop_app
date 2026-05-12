@@ -51,6 +51,10 @@ class CreditLineRecord:
     available_amount: float | None = None
     effective_date: str = ""
     expiry_date: str = ""
+    report_date: str = ""
+    currency: str = "人民币"
+    credit_limit_no: str = ""
+    credit_agreement_no: str = ""
     status: str = ""
     evidence_text: str = ""
     source_section: str = "credit_lines"

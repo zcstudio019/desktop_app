@@ -50,6 +50,7 @@ def main() -> int:
     short_loans = result.get("short_term_loans") or []
     medium_loans = result.get("medium_long_term_loans") or []
     revolving_overdrafts = result.get("revolving_overdrafts") or []
+    credit_lines = result.get("credit_lines") or []
     finance_like = [x for x in medium_loans if "融资" in (x.get("business_type") or "")]
 
     print("Enterprise credit agent result")
@@ -86,6 +87,7 @@ def _assert_expected(result: dict[str, Any], expected: dict[str, Any]) -> list[s
     short_loans = result.get("short_term_loans") or []
     medium_loans = result.get("medium_long_term_loans") or []
     revolving_overdrafts = result.get("revolving_overdrafts") or []
+    credit_lines = result.get("credit_lines") or []
     summary = result.get("credit_summary") or {}
     validation = result.get("validation") or {}
     all_loans = [*short_loans, *medium_loans]
@@ -121,10 +123,41 @@ def _assert_expected(result: dict[str, Any], expected: dict[str, Any]) -> list[s
     for target in expected.get("revolving_overdrafts_must_include") or []:
         if not _loan_matches(revolving_overdrafts, target):
             failures.append(f"revolving_overdrafts_must_include missing: {target}")
+    expected_credit_count = expected.get("credit_lines_count")
+    if expected_credit_count is not None and len(credit_lines) != int(expected_credit_count):
+        failures.append(f"credit_lines_count mismatch: {len(credit_lines)} != {expected_credit_count}")
+    for target in expected.get("credit_lines_must_include") or []:
+        if not _credit_line_matches(credit_lines, target):
+            failures.append(f"credit_lines_must_include missing: {target}")
+    for target in expected.get("credit_lines_must_not_enter_short_term") or []:
+        if _loan_matches(short_loans, target):
+            failures.append(f"credit line leaked into short_term_loans: {target}")
     for warning in expected.get("must_not_have_warnings") or []:
         if warning in (validation.get("warnings") or []):
             failures.append(f"unexpected validation warning: {warning}")
     return failures
+
+
+def _credit_line_matches(items: list[dict[str, Any]], target: dict[str, Any]) -> bool:
+    for item in items:
+        ok = True
+        for key, expected_value in target.items():
+            if key == "expiry_date":
+                value = item.get("expiry_date") or item.get("due_date") or ""
+            else:
+                value = item.get(key)
+            if isinstance(expected_value, (int, float)):
+                try:
+                    ok = ok and abs(float(value) - float(expected_value)) < 0.001
+                except Exception:
+                    ok = False
+            elif isinstance(expected_value, bool):
+                ok = ok and bool(value) is expected_value
+            else:
+                ok = ok and str(expected_value) in str(value)
+        if ok:
+            return True
+    return False
 
 
 def _loan_matches(loans: list[dict[str, Any]], target: dict[str, Any]) -> bool:

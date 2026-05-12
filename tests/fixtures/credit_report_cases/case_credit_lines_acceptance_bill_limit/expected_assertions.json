@@ -1,0 +1,22 @@
+{
+  "credit_lines_count": 4,
+  "credit_lines_must_include": [
+    {
+      "institution_name": "浙江泰隆商业银行股份有限公司七宝支行",
+      "credit_type": "承兑汇票额度",
+      "credit_revolving": true,
+      "credit_amount": 1000,
+      "used_amount": 0,
+      "effective_date": "2023-08-17",
+      "expiry_date": "2025-08-17",
+      "report_date": "2024-03-26"
+    }
+  ],
+  "credit_lines_must_not_enter_short_term": [
+    {
+      "institution_name": "浙江泰隆商业银行股份有限公司七宝支行",
+      "business_type": "承兑汇票额度",
+      "loan_amount": 1000
+    }
+  ]
+}

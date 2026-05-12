@@ -16,7 +16,11 @@ INSTITUTION_PATTERN = (
 )
 BUSINESS_TYPES = "融资型租赁|中长期流动资金贷款|固定资产贷款|项目贷款|流动资金贷款|贸易融资贷款|融资租赁|循环透支|经营贷|周转贷|贷款"
 GUARANTEE_TYPES = "信用/无担保|保证/保证金|保证|组合|抵押|质押|信用|无担保|其他"
-CREDIT_TYPES = "综合授信|贷款|贸易融资|银行承兑汇票|信用证|保函|其他|保理|循环额度"
+CREDIT_TYPES = (
+    "银行承兑汇票额度|商业承兑汇票额度|承兑汇票额度|信用证额度|"
+    "保函额度|贸易融资额度|票据池额度|其他授信额度|"
+    "综合授信|贷款|贸易融资|银行承兑汇票|信用证|保函|其他|保理|循环额度"
+)
 FIVE_CATEGORIES = "正常|关注|次级|可疑|损失|违约|未分类"
 INVALID_INSTITUTION_FRAGMENTS = {"", "公司", "有限", "有限公司", "股份有限公司", "银行", "分行", "支行"}
 NON_LOAN_KEYWORDS = ["银行承兑汇票", "商业承兑汇票", "信用证", "保函", "银行保函", "保证金"]
@@ -95,7 +99,7 @@ def normalize_institution_name(raw: str, context: str = "") -> str:
     if not candidates and ctx:
         candidates = _institution_candidates(ctx)
     if candidates:
-        name = candidates[-1]
+        name = max(candidates, key=len)
         for biz in ["融资型租赁", "中长期流动资金贷款", "固定资产贷款", "项目贷款", "流动资金贷款", "循环透支", "贸易融资贷款", "贷款"]:
             idx = name.find(biz)
             if idx != -1:
@@ -247,21 +251,23 @@ def extract_credit_lines(sections: dict[str, Any]) -> list[CreditLineRecord]:
         rf"(?P<expiry>\d{{4}}-\d{{2}}-\d{{2}}|长期)"
         rf"(?P<report>\d{{4}}-\d{{2}}-\d{{2}})?"
         rf"人民币元"
-        rf"(?P<amount>\d+(?:\.\d+)?)"
-        rf"(?P<used>\d+(?:\.\d+)?)",
+        rf"(?P<amount_blob>\d+(?:\.\d+)?\d*(?:\.\d+)?)",
         re.S,
     )
     records: list[CreditLineRecord] = []
     for match in pattern.finditer(compact):
+        credit_amount, used_amount = _split_credit_line_amount_blob(match.group("amount_blob"))
         records.append(
             CreditLineRecord(
                 institution_name=normalize_institution_name(match.group("institution"), evidence(compact, match.start(), match.end(), 60)),
                 credit_type=match.group("credit_type"),
                 credit_revolving=match.group("revolving") == "是",
-                credit_amount=to_amount(match.group("amount")),
-                used_amount=to_amount(match.group("used")),
+                credit_amount=credit_amount,
+                used_amount=used_amount,
                 effective_date=format_date(match.group("effective")),
                 expiry_date=format_date(match.group("expiry")),
+                report_date=format_date(match.group("report") or ""),
+                currency="人民币",
                 status="",
                 evidence_text=evidence(compact, match.start(), match.end(), 60),
                 source_section="credit_lines",
@@ -269,6 +275,26 @@ def extract_credit_lines(sections: dict[str, Any]) -> list[CreditLineRecord]:
             )
         )
     return records
+
+
+def _split_credit_line_amount_blob(blob: str) -> tuple[float | None, float | None]:
+    text = str(blob or "").replace(",", "").strip()
+    if not text:
+        return None, None
+    if "." in text:
+        nums = re.findall(r"\d+(?:\.\d+)?", text)
+        if len(nums) >= 2:
+            return to_amount(nums[0]), to_amount(nums[1])
+    if len(text) % 2 == 0:
+        half = len(text) // 2
+        left, right = text[:half], text[half:]
+        if left == right:
+            return to_amount(left), to_amount(right)
+    for split_at in range(len(text) - 1, 0, -1):
+        left, right = text[:split_at], text[split_at:]
+        if right == "0" or (right.isdigit() and left.isdigit() and float(right) <= float(left)):
+            return to_amount(left), to_amount(right)
+    return to_amount(text), None
 
 
 def parse_business_summary(section: str, business_terms: str, source_section: str) -> list[BusinessRecord]:

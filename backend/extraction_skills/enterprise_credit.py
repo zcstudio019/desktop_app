@@ -2892,7 +2892,11 @@ def parse_credit_limit_amounts(block: str) -> tuple[str, str, str]:
 
 
 def credit_limit_type_pattern() -> str:
-    return r"综合授信|贷款|贸易融资|银行承兑汇票|信用证|保函|其他|保理|循环额度"
+    return (
+        r"银行承兑汇票额度|商业承兑汇票额度|承兑汇票额度|信用证额度|"
+        r"保函额度|贸易融资额度|票据池额度|其他授信额度|"
+        r"综合授信|贷款|贸易融资|银行承兑汇票|信用证|保函|其他|保理|循环额度"
+    )
 
 
 def _build_credit_limit_record_from_match(match: re.Match[str]) -> dict[str, Any]:

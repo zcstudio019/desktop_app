@@ -14,6 +14,7 @@ from backend.extraction_skills.enterprise_credit import (  # noqa: E402
     CREDIT_PARSER_VERSION,
     _build_markdown_summary_v2,
     final_normalize_credit_result,
+    safe_parse_credit_limits_from_raw,
 )
 
 
@@ -39,6 +40,10 @@ def main() -> int:
     expected_path = case_dir / "expected_assertions.json"
     expected = json.loads(expected_path.read_text(encoding="utf-8")) if expected_path.exists() else {}
     stale_result = _build_stale_profile_result(args.case)
+    if (expected or {}).get("credit_lines_must_include"):
+        _, _, credit_facilities = safe_parse_credit_limits_from_raw(raw_text)
+        stale_result["credit_facilities"] = credit_facilities
+        stale_result["credit_lines"] = credit_facilities
     normalized = final_normalize_credit_result(
         stale_result,
         raw_text=raw_text,
@@ -188,6 +193,7 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
     short_loans = result.get("short_loans_final") or result.get("short_loans") or []
     medium_loans = result.get("medium_loans_final") or result.get("medium_loans") or []
     revolving_loans = result.get("revolving_overdrafts") or result.get("revolving_loans") or []
+    credit_lines = result.get("credit_lines") or result.get("credit_facilities") or []
     validation = result.get("validation") or {}
     warnings = validation.get("warnings") or []
     summary = result.get("credit_summary") or {}
@@ -260,10 +266,44 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
     for keyword in (expected or {}).get("revolving_institution_forbidden_keywords") or []:
         if any(keyword in _bank(x) for x in revolving_loans):
             failures.append(f"revolving institution contains forbidden keyword: {keyword}")
+    expected_credit_count = (expected or {}).get("credit_lines_count")
+    if expected_credit_count is not None and len(credit_lines) != int(expected_credit_count):
+        failures.append(f"credit_lines_count mismatch: {len(credit_lines)} != {expected_credit_count}")
+    for target in (expected or {}).get("credit_lines_must_include") or []:
+        if not _credit_line_matches(credit_lines, target):
+            failures.append(f"credit_lines_must_include missing: {target}")
+    for target in (expected or {}).get("credit_lines_must_not_enter_short_term") or []:
+        if _loan_matches(short_loans, target):
+            failures.append(f"credit line leaked into short_term_loans: {target}")
     for warning in (expected or {}).get("must_not_have_warnings") or []:
         if warning in warnings:
             failures.append(f"unexpected validation warning: {warning}")
     return failures
+
+
+def _credit_line_matches(items: list[dict[str, Any]], target: dict[str, Any]) -> bool:
+    for item in items:
+        ok = True
+        for key, expected_value in target.items():
+            if key == "institution_name":
+                value = item.get("institution_name") or item.get("institution") or item.get("bank") or ""
+            elif key == "credit_revolving":
+                value = item.get("credit_revolving")
+                if value is None:
+                    value = str(item.get("is_revolving") or "") == "是"
+            elif key == "expiry_date":
+                value = item.get("expiry_date") or item.get("due_date") or item.get("end_date") or ""
+            else:
+                value = item.get(key)
+            if isinstance(expected_value, (int, float)):
+                ok = ok and _same_number(value, expected_value)
+            elif isinstance(expected_value, bool):
+                ok = ok and bool(value) is expected_value
+            else:
+                ok = ok and str(expected_value) in str(value)
+        if ok:
+            return True
+    return False
 
 
 def _loan_matches(loans: list[dict[str, Any]], target: dict[str, Any]) -> bool:
