@@ -5023,15 +5023,23 @@ def _extract_company_name_from_raw_for_final(raw_text: str) -> str:
     return clean_company_name(match.group(1)) if match else ""
 
 
+def _has_revolving_detail_title(text: str) -> bool:
+    return re.search(r"循环透支\s*共\s*\d+\s*笔", str(text or "")) is not None
+
+
 def _extract_revolving_window_for_final(raw_text: str) -> str:
-    start_keywords = ["循环透支 共", "循环透支", "循环贷款", "循环额度", "循环授信透支", "寰幆閫忔敮 鍏?", "寰幆閫忔敮"]
+    text = normalize_credit_text(raw_text or "")
+    if not _has_revolving_detail_title(text):
+        logger.warning("[EnterpriseCredit][REVOLVING_SECTION] no_detail_title")
+        return ""
+    start_keywords = ["循环透支 共"]
     end_keywords = [
         "短期借款", "中长期借款", "银行保函及其他业务", "授信信息", "对外担保", "公共记录", "查询记录",
         "鐭湡鍊熸", "涓暱鏈熷€熸",
         "关注类余额", "不良类余额", "对外担保", "银行保函及其他业务", "相关还款责任", "授信信息", "公共记录", "查询记录", "报告说明",
         "鍏虫敞", "涓嶈壇", "瀵瑰鎷呬繚", "閾惰淇濆嚱", "鎺堜俊淇℃伅", "鍏叡璁板綍", "鏌ヨ璁板綍", "鎶ュ憡璇存槑",
     ]
-    section = extract_section_text_from_raw(raw_text, start_keywords, end_keywords)
+    section = extract_section_text_from_raw(text, start_keywords, end_keywords)
     logger.warning("[EnterpriseCredit][REVOLVING_SECTION] len=%s", len(section or ""))
     return section
 
@@ -5621,8 +5629,27 @@ def _protect_revolving_overdue_fields(loan: dict[str, Any]) -> dict[str, Any]:
     return protected
 
 
+def _is_valid_revolving_source(loan: dict[str, Any], revolving_section: str, raw_text: str = "") -> bool:
+    if not isinstance(loan, dict):
+        return False
+    if not _has_revolving_detail_title(raw_text or revolving_section):
+        return False
+    if str(loan.get("source_section") or loan.get("_source_section") or "") != "revolving_overdraft":
+        return False
+    evidence_text = str(loan.get("evidence_text") or loan.get("_raw_block") or loan.get("_raw_line") or "")
+    if "循环透支" in evidence_text or "循环透支" in str(revolving_section or ""):
+        return True
+    return False
+
+
 def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> dict[str, Any] | None:
     """Recover a complete revolving overdraft row from a local OCR/log window."""
+    if raw_text and not text:
+        logger.warning("[REVOLVING_RECOVERY_FAIL] reason=no_revolving_detail_section")
+        return None
+    if raw_text and not _has_revolving_detail_title(raw_text) and not _has_revolving_detail_title(text):
+        logger.warning("[REVOLVING_RECOVERY_FAIL] reason=no_revolving_detail_title")
+        return None
 
     def _clean_candidate(value: str) -> str:
         cleaned = str(value or "").replace("\r", "\n")
@@ -5756,7 +5783,7 @@ def recover_revolving_overdraft_from_window(text: str, raw_text: str = "") -> di
     candidates: list[str] = []
     if text:
         candidates.append(str(text))
-    if raw_text and str(raw_text) not in candidates:
+    if raw_text and str(raw_text) not in candidates and _has_revolving_detail_title(raw_text):
         candidates.append(str(raw_text))
 
     last_reason = "empty_input"
@@ -6314,6 +6341,19 @@ def final_normalize_credit_result(
             for loan in revolving_loans
             if isinstance(loan, dict)
         ]
+        valid_revolving_loans: list[dict[str, Any]] = []
+        removed_invalid_revolving = 0
+        for loan in revolving_loans:
+            if _is_valid_revolving_source(loan, revolving_section, raw_text):
+                valid_revolving_loans.append(loan)
+            else:
+                removed_invalid_revolving += 1
+                logger.warning("[EnterpriseCredit][REVOLVING][INVALID_SOURCE_REMOVED] loan=%s", loan)
+        revolving_loans = valid_revolving_loans
+        if removed_invalid_revolving and "invalid_revolving_source_removed" not in warnings:
+            warnings.append("invalid_revolving_source_removed")
+        if not revolving_section and _revolving_keyword_count_for_debug(raw_text) > 0 and "no_revolving_detail_section" not in warnings:
+            warnings.append("no_revolving_detail_section")
         if revolving_balance_value and not revolving_loans and "revolving_balance_without_details" not in warnings:
             warnings.append("revolving_balance_without_details")
         if revolving_balance_value and revolving_loans:

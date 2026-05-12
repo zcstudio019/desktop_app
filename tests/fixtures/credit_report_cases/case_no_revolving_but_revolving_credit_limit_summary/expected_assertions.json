@@ -1,0 +1,24 @@
+{
+  "revolving_overdrafts_must_be_empty": true,
+  "revolving_overdrafts_must_not_include": [
+    {
+      "institution_name": "中国民生银行股份有限公司上海虹口支行",
+      "business_type": "流动资金贷款",
+      "credit_amount": 583,
+      "balance": 510.13,
+      "start_date": "2021-11-17",
+      "end_date": "2031-11-02"
+    }
+  ],
+  "medium_long_or_lease_must_include": [
+    {
+      "institution_name": "中国民生银行股份有限公司上海虹口支行",
+      "business_type": "流动资金贷款",
+      "loan_amount": 583,
+      "balance": 510.13,
+      "start_date": "2021-11-17",
+      "end_date": "2031-11-02",
+      "guarantee_type": "抵押"
+    }
+  ]
+}

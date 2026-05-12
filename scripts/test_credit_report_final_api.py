@@ -78,6 +78,70 @@ def main() -> int:
 
 
 def _build_stale_profile_result(case_name: str = "") -> dict[str, Any]:
+    if case_name == "case_no_revolving_but_revolving_credit_limit_summary":
+        return {
+            "schema_version": "enterprise_credit.v2",
+            "credit_summary": {
+                "medium_long_term_loan_balance": "1014.94",
+                "medium_long_loan_count": 3,
+                "short_term_loan_balance": "809",
+                "short_loan_count": 4,
+            },
+            "short_loans": [],
+            "short_loans_final": [],
+            "medium_loans": [
+                {
+                    "bank": "中国民生银行股份有限公司上海虹口支行",
+                    "institution": "中国民生银行股份有限公司上海虹口支行",
+                    "institution_name": "中国民生银行股份有限公司上海虹口支行",
+                    "biz_type": "流动资金贷款",
+                    "loan_type": "流动资金贷款",
+                    "business_type": "流动资金贷款",
+                    "loan_amount": "583",
+                    "credit_amount": "583",
+                    "balance": "510.13",
+                    "open_date": "2021-11-17",
+                    "start_date": "2021-11-17",
+                    "due_date": "2031-11-02",
+                    "end_date": "2031-11-02",
+                    "guarantee": "抵押",
+                    "guarantee_type": "抵押",
+                    "five_classification": "正常",
+                    "five_category": "正常",
+                    "overdue_months": "0",
+                    "term_type": "medium_long",
+                    "source_section": "medium_long_term",
+                }
+            ],
+            "medium_loans_final": [],
+            "active_loans": [],
+            "revolving_loans": [
+                {
+                    "bank": "中国民生银行股份有限公司上海虹口支行",
+                    "institution": "中国民生银行股份有限公司上海虹口支行",
+                    "institution_name": "中国民生银行股份有限公司上海虹口支行",
+                    "biz_type": "流动资金贷款",
+                    "loan_type": "流动资金贷款",
+                    "business_type": "流动资金贷款",
+                    "credit_amount": "583",
+                    "loan_amount": "583",
+                    "balance": "510.13",
+                    "open_date": "2021-11-17",
+                    "start_date": "2021-11-17",
+                    "due_date": "2031-11-02",
+                    "end_date": "2031-11-02",
+                    "guarantee": "抵押",
+                    "guarantee_type": "抵押",
+                    "five_classification": "正常",
+                    "five_category": "正常",
+                    "overdue_months": "0",
+                    "term_type": "revolving_overdraft",
+                    "source_section": "medium_long_term",
+                    "evidence_text": "中长期借款 共 3 笔 中国民生银行股份有限公司上海虹口支行 流动资金贷款 2021-11-17 2031-11-02 人民币元 583 新增 抵押 510.13 正常 0 0 0 2025-06-15",
+                }
+            ],
+            "revolving_overdrafts": [],
+        }
     if case_name == "case_company_name_and_revolving_overdraft":
         return {
             "schema_version": "enterprise_credit.v2",
@@ -211,6 +275,11 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
             failures.append(f"credit_debug.revolving_returned_count != 1: {credit_debug}")
         if len(revolving_loans) != 1:
             failures.append(f"revolving_overdrafts.length != 1: {len(revolving_loans)}")
+    if (expected or {}).get("revolving_overdrafts_must_be_empty") and revolving_loans:
+        failures.append(f"revolving_overdrafts should be empty: {revolving_loans}")
+    for target in (expected or {}).get("revolving_overdrafts_must_not_include") or []:
+        if _loan_matches(revolving_loans, target):
+            failures.append(f"revolving_overdrafts_must_not_include leaked: {target}")
     expected_company = (expected or {}).get("company_name_must_equal")
     if expected_company and company_name != expected_company:
         failures.append(f"company_name mismatch: {company_name!r} != {expected_company!r}")
@@ -230,7 +299,7 @@ def _assert_final_payload(result: dict[str, Any], expected: dict[str, Any] | Non
         failures.append("short_term_loans contains medium-term 华夏银行 2027-04-08")
     if any((_bank(x) or "").strip() == "公司" for x in [*short_loans, *medium_loans]):
         failures.append("invalid institution_name=公司 leaked")
-    if (not expected or (expected or {}).get("medium_long_or_lease_must_include")) and not any(
+    if (not expected) and not any(
         "融资型租赁" in _biz(x)
         and _same_number(x.get("loan_amount"), "400")
         and _same_number(x.get("balance"), "327.50")
