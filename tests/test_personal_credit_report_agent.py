@@ -9,6 +9,7 @@ from backend.services.personal_credit_report_agent.markdown_renderer import rend
 from backend.services.personal_credit_report_agent.orchestrator import run_personal_credit_report_agent
 from backend.services.personal_credit_report_agent.risk_analyzer import analyze_personal_credit_risk
 from backend.services.personal_credit_report_agent.segmenter import segment_report
+from backend.services.markdown_profile_service import normalize_personal_credit_result, render_personal_credit_markdown as render_profile_personal_credit_markdown
 
 
 SAMPLE_TEXT = """
@@ -153,3 +154,37 @@ def test_personal_credit_risk_analyzer() -> None:
     assert indicators["loan_approval_queries_6m"] >= 6
     assert indicators["credit_card_approval_queries_3m"] == 1
     assert indicators["risk_level"] == "high"
+
+
+def test_profile_markdown_personal_credit_filters_metadata_and_enterprise_fields() -> None:
+    raw = {
+        "type": "personal_credit_report",
+        "title": "个人征信报告",
+        "confidence": 0.75,
+        "markdown": "姓名：沃志方 证件类型：身份证 证件号码：310110198211172732 未婚\n报告编号：2025031104013907986945 报告时间：2025-03-11 04:01:39",
+        "raw_text": "证件类型：中征码，证件号码：320105123456789 开户行：中国银行\n姓名：沃志方 证件类型：身份证 证件号码：310110198211172732 未婚",
+        "extracted_json": {
+            "basic_info": {
+                "name": "沃志方 证件类型：身份证 证件号码：310110198211172732 未婚",
+                "id_type": "中征码",
+                "id_number": "322105****** 开户行 中国银行",
+            },
+            "credit_summary": {
+                "credit_card_account_count": 1,
+            },
+        },
+    }
+    normalized = normalize_personal_credit_result(raw)
+    assert normalized["basic_info"]["name"] == "沃志方"
+    assert normalized["basic_info"]["id_type"] == "身份证"
+    assert normalized["basic_info"]["id_number"] == "310110198211172732"
+    assert normalized["basic_info"]["marriage_status"] == "未婚"
+
+    markdown = render_profile_personal_credit_markdown(raw, "personal_credit.pdf", "可查看")
+    forbidden = ("type:", "confidence", "markdown:", "title:", "中征码", "开户行", "统一社会信用代码", "企业名称")
+    for item in forbidden:
+        assert item not in markdown
+    assert "姓名：沃志方" in markdown
+    assert "证件类型：身份证" in markdown
+    assert "证件号码：310110198211172732" in markdown
+    assert "婚姻状况：未婚" in markdown

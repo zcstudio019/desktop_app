@@ -623,6 +623,229 @@ def _format_field_label(key: str) -> str:
     return STRUCTURED_FIELD_LABELS.get(normalized, normalized.replace('_', ' ').strip())
 
 
+PERSONAL_CREDIT_FORBIDDEN_TERMS = (
+    '中征码',
+    '统一社会信用代码',
+    '企业名称',
+    '开户行',
+    '组织机构代码',
+    '纳税人识别号',
+)
+
+PERSONAL_ID_TYPES = (
+    '身份证',
+    '护照',
+    '军官证',
+    '港澳居民来往内地通行证',
+    '台湾居民来往大陆通行证',
+    '其他',
+)
+
+PERSONAL_MARRIAGE_VALUES = ('未婚', '已婚', '离异', '丧偶')
+
+
+def _pc_display(value: Any, default: str = '未识别') -> str:
+    text = re.sub(r'\s+', ' ', str(value or '')).strip(' ：:，,；;。')
+    return text or default
+
+
+def _pc_clean_value(value: Any) -> str:
+    text = re.sub(r'\s+', ' ', str(value or '')).strip(' ：:，,；;。')
+    for term in PERSONAL_CREDIT_FORBIDDEN_TERMS:
+        if term in text:
+            return ''
+    return text
+
+
+def _pc_contains_any(value: Any, keywords: tuple[str, ...]) -> bool:
+    text = str(value or '')
+    return any(keyword in text for keyword in keywords)
+
+
+def _pc_pick_allowed_id_type(value: Any) -> str:
+    text = str(value or '')
+    if '中征码' in text:
+        return ''
+    for item in PERSONAL_ID_TYPES:
+        if item in text:
+            return item
+    return ''
+
+
+def _pc_find(pattern: str, text: str) -> str:
+    match = re.search(pattern, text, flags=re.S)
+    return _pc_clean_value(match.group(1)) if match else ''
+
+
+def _pc_merge_text(raw: dict[str, Any]) -> str:
+    chunks: list[str] = []
+    for key in ('summary', 'markdown', 'raw_text'):
+        value = raw.get(key)
+        if isinstance(value, str):
+            chunks.append(value)
+    for key in ('basic_info', 'report_basic_info', '报告基础信息', 'credit_summary'):
+        value = raw.get(key)
+        if isinstance(value, dict):
+            chunks.append(json.dumps(value, ensure_ascii=False))
+        elif isinstance(value, str):
+            chunks.append(value)
+    return '\n'.join(chunks)
+
+
+def _pc_extract_basic_from_text(text: str) -> dict[str, str]:
+    result = {
+        'name': '',
+        'id_type': '',
+        'id_number': '',
+        'marriage_status': '',
+        'report_no': '',
+        'report_time': '',
+    }
+    compact = re.sub(r'[ \t]+', ' ', str(text or ''))
+    inline = re.search(
+        r'姓名\s*[:：]?\s*([\u4e00-\u9fff·]{2,20})\s+证件类型\s*[:：]?\s*([^，,；;\n\r ]+)\s+证件号码\s*[:：]?\s*([0-9A-Za-z*]{6,30})(?:\s+(未婚|已婚|离异|丧偶))?',
+        compact,
+    )
+    if inline:
+        result['name'] = _pc_clean_value(inline.group(1))
+        result['id_type'] = _pc_pick_allowed_id_type(inline.group(2))
+        result['id_number'] = _pc_clean_value(inline.group(3))
+        result['marriage_status'] = _pc_clean_value(inline.group(4))
+    if not result['name']:
+        result['name'] = _pc_find(r'姓名\s*[:：]?\s*([\u4e00-\u9fff·]{2,20})', compact)
+    if not result['id_type']:
+        result['id_type'] = _pc_pick_allowed_id_type(_pc_find(r'证件类型\s*[:：]?\s*([^，,；;\n\r ]{2,30})', compact))
+    if not result['id_number']:
+        result['id_number'] = _pc_find(r'证件号码\s*[:：]?\s*([0-9A-Za-z*]{6,30})', compact)
+    if not result['marriage_status']:
+        for value in PERSONAL_MARRIAGE_VALUES:
+            if value in compact:
+                result['marriage_status'] = value
+                break
+    result['report_no'] = _pc_find(r'报告编号\s*[:：]?\s*([A-Za-z0-9\-]{6,60})', compact)
+    result['report_time'] = _pc_find(r'报告时间\s*[:：]?\s*((?:19|20)\d{2}[-/年.]\d{1,2}[-/月.]\d{1,2}(?:日)?(?:\s+\d{1,2}:\d{1,2}:\d{1,2})?)', compact)
+    return result
+
+
+def _pc_get_count(summary: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = summary.get(key)
+        if value not in (None, ''):
+            return str(value)
+    return ''
+
+
+def _pc_first_clean(*values: Any) -> str:
+    for value in values:
+        cleaned = _pc_clean_value(value)
+        if cleaned:
+            return cleaned
+    return ''
+
+
+def normalize_personal_credit_result(raw: dict[str, Any]) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    extracted = source.get('extracted_json') if isinstance(source.get('extracted_json'), dict) else None
+    data = source.get('data') if isinstance(source.get('data'), dict) else None
+    base = extracted or data or source
+    if not isinstance(base, dict):
+        base = {}
+    text = _pc_merge_text({**source, **base})
+    text_basic = _pc_extract_basic_from_text(text)
+    raw_basic = (
+        base.get('basic_info')
+        or base.get('report_basic_info')
+        or base.get('报告基础信息')
+        or {}
+    )
+    if not isinstance(raw_basic, dict):
+        raw_basic = {}
+    raw_summary = base.get('credit_summary') or {}
+    if not isinstance(raw_summary, dict):
+        raw_summary = {}
+
+    raw_name = raw_basic.get('name') or raw_basic.get('姓名')
+    if _pc_contains_any(raw_name, ('证件类型', '证件号码', '查询记录', '开户行')):
+        raw_name = ''
+    name = _pc_first_clean(raw_name, text_basic.get('name'))
+
+    id_type = _pc_pick_allowed_id_type(raw_basic.get('id_type') or raw_basic.get('证件类型'))
+    if not id_type:
+        id_type = _pc_pick_allowed_id_type(text_basic.get('id_type'))
+
+    raw_id_number = raw_basic.get('id_number') or raw_basic.get('证件号码')
+    id_number = _pc_clean_value(raw_id_number)
+    if not id_number:
+        id_number = _pc_clean_value(text_basic.get('id_number'))
+    marriage_status = _pc_clean_value(
+        raw_basic.get('marriage_status')
+        or raw_basic.get('marital_status')
+        or raw_basic.get('婚姻状况')
+        or text_basic.get('marriage_status')
+    )
+    if marriage_status not in PERSONAL_MARRIAGE_VALUES:
+        marriage_status = ''
+
+    return {
+        'basic_info': {
+            'name': name,
+            'id_type': id_type,
+            'id_number': id_number,
+            'marriage_status': marriage_status,
+            'report_no': _pc_clean_value(raw_basic.get('report_no') or raw_basic.get('report_number') or raw_basic.get('报告编号') or text_basic.get('report_no')),
+            'report_time': _pc_clean_value(raw_basic.get('report_time') or raw_basic.get('报告时间') or text_basic.get('report_time')),
+        },
+        'credit_summary': {
+            'credit_card_total': _pc_get_count(raw_summary, 'credit_card_total', 'credit_card_account_count'),
+            'active_credit_card_count': _pc_get_count(raw_summary, 'active_credit_card_count', 'credit_card_active_count'),
+            'credit_card_overdue_count': _pc_get_count(raw_summary, 'credit_card_overdue_count'),
+            'credit_card_90_plus_overdue_count': _pc_get_count(raw_summary, 'credit_card_90_plus_overdue_count', 'credit_card_90d_overdue_count'),
+            'housing_loan_total': _pc_get_count(raw_summary, 'housing_loan_total', 'housing_loan_account_count'),
+            'active_housing_loan_count': _pc_get_count(raw_summary, 'active_housing_loan_count', 'housing_loan_outstanding_count'),
+            'other_loan_total': _pc_get_count(raw_summary, 'other_loan_total', 'other_loan_account_count'),
+            'active_other_loan_count': _pc_get_count(raw_summary, 'active_other_loan_count', 'other_loan_outstanding_count'),
+            'other_business_total': _pc_get_count(raw_summary, 'other_business_total', 'other_business_account_count'),
+            'guarantee_count': _pc_get_count(raw_summary, 'guarantee_count'),
+        },
+    }
+
+
+def render_personal_credit_markdown(extracted_json: dict[str, Any], source_file: str = '', original_status: str = '可查看') -> str:
+    normalized = normalize_personal_credit_result(extracted_json or {})
+    basic = normalized['basic_info']
+    summary = normalized['credit_summary']
+    return '\n'.join([
+        '## 个人征信',
+        '- 资料类型：个人征信',
+        f"- 来源文件：{_pc_display(source_file, '暂无')}",
+        f"- 原件状态：{_pc_display(original_status, '可查看')}",
+        '',
+        '## 一、资料信息',
+        '- 资料类型：个人征信报告',
+        f"- 来源文件：{_pc_display(source_file, '暂无')}",
+        '',
+        '## 二、报告基础信息',
+        f"- 姓名：{_pc_display(basic.get('name'))}",
+        f"- 证件类型：{_pc_display(basic.get('id_type'))}",
+        f"- 证件号码：{_pc_display(basic.get('id_number'))}",
+        f"- 婚姻状况：{_pc_display(basic.get('marriage_status'))}",
+        f"- 报告编号：{_pc_display(basic.get('report_no'))}",
+        f"- 报告时间：{_pc_display(basic.get('report_time'))}",
+        '',
+        '## 三、信贷记录概要',
+        f"- 信用卡账户数：{_pc_display(summary.get('credit_card_total'))}",
+        f"- 当前有效信用卡账户数：{_pc_display(summary.get('active_credit_card_count'))}",
+        f"- 信用卡逾期账户数：{_pc_display(summary.get('credit_card_overdue_count'))}",
+        f"- 信用卡90天以上逾期账户数：{_pc_display(summary.get('credit_card_90_plus_overdue_count'))}",
+        f"- 购房贷款账户数：{_pc_display(summary.get('housing_loan_total'))}",
+        f"- 未结清购房贷款账户数：{_pc_display(summary.get('active_housing_loan_count'))}",
+        f"- 其他贷款账户数：{_pc_display(summary.get('other_loan_total'))}",
+        f"- 未结清其他贷款账户数：{_pc_display(summary.get('active_other_loan_count'))}",
+        f"- 其他业务账户数：{_pc_display(summary.get('other_business_total'))}",
+        f"- 担保笔数：{_pc_display(summary.get('guarantee_count'))}",
+    ]).strip()
+
+
 async def _build_document_sections(storage_service: Any, customer_id: str) -> tuple[list[str], list[dict[str, Any]]]:
     get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
     if callable(get_business_extractions):
@@ -1258,6 +1481,9 @@ async def _build_single_document_section(
         lines = _build_property_section_lines([file_name], bool(store_original and file_path), extracted_data)
         source_document['source_type_name'] = property_title
         return _markdown_section(property_title, lines), source_document
+    if extraction_type in {'personal_credit', 'personal_credit_report'} and isinstance(extracted_data, dict):
+        source_document['source_type_name'] = '个人征信'
+        return render_personal_credit_markdown(extracted_data, file_name, original_status), source_document
     if extraction_type == 'enterprise_credit' and isinstance(extracted_data, dict):
         lines = [
             f'- 资料类型：{type_name}',
