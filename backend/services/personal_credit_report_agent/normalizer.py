@@ -10,6 +10,7 @@ from .schema import (
     OVERDUE_RECORD_FIELDS,
     PUBLIC_RECORD_FIELDS,
     QUERY_RECORD_FIELDS,
+    RELATED_REPAYMENT_RESPONSIBILITY_FIELDS,
     clone_default_report_json,
     default_basic_info,
     default_credit_summary,
@@ -19,6 +20,7 @@ from .schema import (
 LIST_FIELDS = (
     "loan_accounts",
     "credit_card_accounts",
+    "related_repayment_responsibilities",
     "guarantees",
     "overdue_records",
     "public_records",
@@ -31,6 +33,7 @@ LIST_FIELDS = (
 RECORD_FIELDS_BY_LIST = {
     "loan_accounts": LOAN_ACCOUNT_FIELDS,
     "credit_card_accounts": CREDIT_CARD_ACCOUNT_FIELDS,
+    "related_repayment_responsibilities": RELATED_REPAYMENT_RESPONSIBILITY_FIELDS,
     "guarantees": GUARANTEE_FIELDS,
     "overdue_records": OVERDUE_RECORD_FIELDS,
     "public_records": PUBLIC_RECORD_FIELDS,
@@ -48,6 +51,8 @@ AMOUNT_KEYS = {
     "amount",
     "used_limit",
     "latest_repayment_amount",
+    "responsibility_amount",
+    "loan_balance",
 }
 
 LOAN_CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
@@ -190,6 +195,28 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
     return True
 
 
+def _dedupe_related_repayment(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+    for item in records:
+        contract_no = str(item.get("contract_no") or "").strip()
+        if contract_no:
+            signature = ("contract", contract_no)
+        else:
+            signature = (
+                "fallback",
+                str(item.get("related_party") or "").strip(),
+                str(item.get("institution") or "").strip(),
+                str(item.get("as_of_date") or "").strip(),
+                str(item.get("loan_balance") or "").strip(),
+            )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        result.append(item)
+    return result
+
+
 def _clean_id_number(value: Any) -> str:
     text = re.sub(r"\s+", "", str(value or ""))
     text = re.split(r"[:：]", text)[-1] if "证件号码" in text else text
@@ -309,6 +336,8 @@ def normalize_report_json(report: dict[str, Any] | None) -> dict[str, Any]:
                 records = filtered_records
             elif field == "credit_card_accounts":
                 records = [item for item in records if _keep_card_record(item)]
+            elif field == "related_repayment_responsibilities":
+                records = _dedupe_related_repayment(records)
             normalized[field] = records
         else:
             normalized[field] = [item for item in value if item is not None]

@@ -9,6 +9,7 @@ from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.personal_credit_report_agent.extract_basic_info import extract_basic_info
 from backend.services.personal_credit_report_agent.extract_credit_summary import extract_credit_summary
 from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block
+from backend.services.personal_credit_report_agent.extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
 from backend.services.personal_credit_report_agent.extract_query_records import extract_query_records
 from backend.services.personal_credit_report_agent.markdown_renderer import render_personal_credit_markdown
 from backend.services.personal_credit_report_agent.orchestrator import run_personal_credit_report_agent
@@ -106,8 +107,8 @@ def test_markdown_renderer_not_empty() -> None:
     report = run_personal_credit_report_agent(SAMPLE_TEXT)["report_json"]
     markdown = render_personal_credit_markdown(report)
     assert "# 个人征信报告" in markdown
-    assert "## 八、查询记录" in markdown
-    assert "## 十、待核验项" in markdown
+    assert "## 九、查询记录" in markdown
+    assert "## 十一、待核验项" in markdown
 
 
 def test_personal_credit_risk_analyzer() -> None:
@@ -853,7 +854,66 @@ def test_credit_card_closed_list_all_filtered() -> None:
     markdown = result["report_markdown"]
     assert report["credit_card_accounts"] == []
     assert "暂无需要展示的当前有效信用卡账户" in markdown
-    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、担保信息", 1)[0]
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
     assert "中国建设银行股份有限公司上海市分行" not in card_section
     assert "授信额度：100元" not in card_section
     assert "账户状态：未销户" not in card_section
+
+
+RELATED_REPAYMENT_TEXT = """
+个人征信报告
+相关还款责任信息
+2024年04月01日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额5,000,000(保证合同编号:D10023010H00012024052800000716)。截至2025年02月20日，贷款余额5,000,000(人民币元)。
+"""
+
+
+def test_extract_related_repayment_responsibilities() -> None:
+    sections = segment_report(RELATED_REPAYMENT_TEXT)
+    records = extract_related_repayment_responsibilities(sections, RELATED_REPAYMENT_TEXT)
+    assert len(records) == 1
+    item = records[0]
+    assert item["related_party"] == "上海乐芙兰电子商务有限公司"
+    assert item["responsibility_type"] == "保证人"
+    assert item["institution"] == "南京银行股份有限公司上海虹口支行"
+    assert item["responsibility_amount"] == "5,000,000"
+    assert item["loan_balance"] == "5,000,000"
+    assert item["contract_no"] == "D10023010H00012024052800000716"
+    assert item["as_of_date"] in {"2025-02-20", "2025年02月20日"}
+
+
+def test_extract_multiple_related_repayment_responsibilities() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2023年11月02日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在中国建设银行股份有限公司上海浦东分行办理的贷款承担相关还款责任，责任人类型为共同借款人，相关还款责任金额--。截至2025年02月28日，贷款余额5,000,000(人民币元)。
+2024年04月01日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额5,000,000(保证合同编号:D10023010H00012024052800000716)。截至2025年02月20日，贷款余额5,000,000(人民币元)。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    records = report["related_repayment_responsibilities"]
+    assert len(records) == 2
+    assert {item["responsibility_type"] for item in records} == {"共同借款人", "保证人"}
+
+
+def test_related_repayment_not_in_loan_accounts() -> None:
+    report = run_personal_credit_report_agent(RELATED_REPAYMENT_TEXT)["report_json"]
+    assert report["loan_accounts"] == []
+    assert len(report["related_repayment_responsibilities"]) == 1
+
+
+def test_markdown_related_repayment_section() -> None:
+    markdown = run_personal_credit_report_agent(RELATED_REPAYMENT_TEXT)["report_markdown"]
+    assert "## 六、相关还款责任信息" in markdown
+    assert "被担保/相关企业" in markdown
+    assert "责任人类型" in markdown
+    assert "办理机构" in markdown
+    assert "相关还款责任金额" in markdown
+    assert "贷款余额" in markdown
+    assert "合同编号" in markdown
+    assert "截至日期" in markdown
+
+
+def test_related_repayment_risk_indicator() -> None:
+    report = run_personal_credit_report_agent(RELATED_REPAYMENT_TEXT)["report_json"]
+    indicators = report["personal_credit_indicators"]
+    assert indicators["has_related_repayment_responsibility"] is True
+    assert indicators["related_repayment_responsibility_count"] == 1

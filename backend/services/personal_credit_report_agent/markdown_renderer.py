@@ -157,6 +157,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     summary = report.get("credit_summary") if isinstance(report.get("credit_summary"), dict) else {}
     loans = report.get("loan_accounts") if isinstance(report.get("loan_accounts"), list) else []
     cards = report.get("credit_card_accounts") if isinstance(report.get("credit_card_accounts"), list) else []
+    related_repayments = report.get("related_repayment_responsibilities") if isinstance(report.get("related_repayment_responsibilities"), list) else []
     guarantees = report.get("guarantees") if isinstance(report.get("guarantees"), list) else []
     public_records = report.get("public_records") if isinstance(report.get("public_records"), list) else []
     queries = report.get("query_records") if isinstance(report.get("query_records"), list) else []
@@ -246,7 +247,23 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     else:
         lines.append("- 暂无需要展示的当前有效信用卡账户。")
 
-    lines.extend(["", "## 六、担保信息"])
+    lines.extend(["", "## 六、相关还款责任信息"])
+    if related_repayments:
+        for index, item in enumerate(related_repayments, start=1):
+            if isinstance(item, dict):
+                _append_account(lines, f"相关还款责任 {index}", item, (
+                    ("related_party", "被担保/相关企业"),
+                    ("responsibility_type", "责任人类型"),
+                    ("institution", "办理机构"),
+                    ("responsibility_amount", "相关还款责任金额"),
+                    ("loan_balance", "贷款余额"),
+                    ("contract_no", "合同编号"),
+                    ("as_of_date", "截至日期"),
+                ))
+    else:
+        lines.append("- 暂无相关还款责任信息。")
+
+    lines.extend(["", "## 七、担保信息"])
     if guarantees:
         for index, item in enumerate(guarantees, start=1):
             if isinstance(item, dict):
@@ -259,7 +276,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     else:
         lines.append("- 暂无")
 
-    lines.extend(["", "## 七、公共记录"])
+    lines.extend(["", "## 八、公共记录"])
     if public_records:
         for index, item in enumerate(public_records, start=1):
             if isinstance(item, dict):
@@ -273,7 +290,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     else:
         lines.append("- 暂无")
 
-    lines.extend(["", "## 八、查询记录"])
+    lines.extend(["", "## 九、查询记录"])
     if queries:
         for index, item in enumerate(queries, start=1):
             if isinstance(item, dict):
@@ -289,7 +306,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     risk_reasons = _dedupe_lines([*(str(x) for x in risk_flags), *(str(x) for x in indicators.get("risk_reasons") or [])])
     lines.extend([
         "",
-        "## 九、风险提示",
+        "## 十、风险提示",
         f"- 综合风险等级：{_risk_level(indicators.get('risk_level'))}",
         f"- 当前逾期：{_yes_no(indicators.get('has_current_overdue'))}",
         f"- 90天以上逾期：{_yes_no(indicators.get('has_90d_overdue'))}",
@@ -299,10 +316,12 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
         f"- 近 6 个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_6m'))}",
         f"- 近 3 个月信用卡审批查询次数：{_count(indicators.get('credit_card_approval_queries_3m'))}",
         f"- 信用卡使用率：{_rate(indicators.get('credit_card_usage_rate'))}",
+        f"- 相关还款责任：{_yes_no(indicators.get('has_related_repayment_responsibility'))}",
+        f"- 相关还款责任余额：{_value(indicators.get('related_repayment_total_balance'), '暂无')}",
     ])
     lines.append("- 风险原因：" + ("；".join(risk_reasons) if risk_reasons else "暂无"))
 
-    lines.extend(["", "## 十、待核验项"])
+    lines.extend(["", "## 十一、待核验项"])
     if pending:
         lines.extend(f"- {item}" for item in pending)
     else:

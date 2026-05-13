@@ -18,6 +18,9 @@ def _default_indicators() -> dict[str, Any]:
         "loan_approval_queries_3m": 0,
         "loan_approval_queries_6m": 0,
         "credit_card_approval_queries_3m": 0,
+        "related_repayment_responsibility_count": 0,
+        "related_repayment_total_balance": "",
+        "has_related_repayment_responsibility": False,
         "high_frequency_query_flag": False,
         "risk_level": "low",
         "risk_reasons": [],
@@ -95,7 +98,7 @@ def _reference_date(report_json: dict[str, Any], warnings: list[str]) -> date:
 
 def _joined_risk_text(report_json: dict[str, Any]) -> str:
     chunks: list[str] = []
-    for key in ("loan_accounts", "credit_card_accounts", "overdue_records", "public_records", "query_records", "risk_flags"):
+    for key in ("loan_accounts", "credit_card_accounts", "related_repayment_responsibilities", "overdue_records", "public_records", "query_records", "risk_flags"):
         value = report_json.get(key)
         if isinstance(value, list):
             chunks.extend(str(item) for item in value)
@@ -139,6 +142,7 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
         queries = [item for item in report_json.get("query_records") or [] if isinstance(item, dict)]
         overdue_records = [item for item in report_json.get("overdue_records") or [] if isinstance(item, dict)]
         public_records = [item for item in report_json.get("public_records") or [] if isinstance(item, dict)]
+        related = [item for item in report_json.get("related_repayment_responsibilities") or [] if isinstance(item, dict)]
         summary = report_json.get("credit_summary") if isinstance(report_json.get("credit_summary"), dict) else {}
 
         loan_balance = sum(value for item in loans if (value := parse_money(item.get("balance"))) is not None)
@@ -149,6 +153,11 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
         indicators["total_credit_card_used"] = _fmt_money(card_used)
         if card_limit > 0:
             indicators["credit_card_usage_rate"] = round(card_used / card_limit, 4)
+
+        related_balance = sum(value for item in related if (value := parse_money(item.get("loan_balance"))) is not None)
+        indicators["related_repayment_responsibility_count"] = len(related)
+        indicators["related_repayment_total_balance"] = _fmt_money(related_balance)
+        indicators["has_related_repayment_responsibility"] = len(related) > 0
 
         summary_current_overdue = (
             _summary_number(summary.get("credit_card_overdue_account_count") or summary.get("credit_card_overdue_count"))
@@ -211,6 +220,8 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
             reasons.append("存在为个人相关还款责任账户")
         if _summary_number(summary.get("enterprise_related_repayment_responsibility_account_count")) > 0:
             reasons.append("存在为企业相关还款责任账户")
+        if indicators["has_related_repayment_responsibility"]:
+            reasons.append("存在相关还款责任，可能影响银行对法人/实控人连带负债的判断")
 
         if indicators["has_current_overdue"] or indicators["has_90d_overdue"] or indicators["has_bad_debt_or_compensation"]:
             indicators["risk_level"] = "high"

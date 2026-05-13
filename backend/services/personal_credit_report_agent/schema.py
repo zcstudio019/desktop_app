@@ -107,6 +107,17 @@ OVERDUE_RECORD_FIELDS = (
     "evidence_text",
 )
 
+RELATED_REPAYMENT_RESPONSIBILITY_FIELDS = (
+    "related_party",
+    "responsibility_type",
+    "institution",
+    "responsibility_amount",
+    "loan_balance",
+    "contract_no",
+    "as_of_date",
+    "evidence",
+)
+
 
 def default_basic_info() -> dict[str, Any]:
     return {field: "" for field in BASIC_INFO_FIELDS}
@@ -123,6 +134,7 @@ def default_report_json() -> dict[str, Any]:
         "credit_summary": default_credit_summary(),
         "loan_accounts": [],
         "credit_card_accounts": [],
+        "related_repayment_responsibilities": [],
         "guarantees": [],
         "overdue_records": [],
         "public_records": [],

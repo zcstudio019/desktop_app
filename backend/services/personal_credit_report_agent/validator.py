@@ -82,6 +82,9 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
     if not isinstance(report.get("query_records"), list):
         warnings.append("query_records_not_array")
         report["query_records"] = []
+    if not isinstance(report.get("related_repayment_responsibilities"), list):
+        warnings.append("related_repayment_responsibilities_not_array")
+        report["related_repayment_responsibilities"] = []
 
     expected_loans = _summary_count(
         summary,
@@ -124,6 +127,13 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
         joined = " ".join(str(card.get(key) or "") for key in ("account_status", "evidence", "evidence_text", "history_performance"))
         if "未销户" not in joined and re.search(r"(销户|已销户|注销|已注销|关闭|已关闭)", joined):
             _warn_once(warnings, f"closed_credit_card_account_still_present: account={index}")
+
+    for item in report.get("related_repayment_responsibilities") or []:
+        if not isinstance(item, dict):
+            continue
+        if _summary_count(item, "loan_balance") > 0:
+            _warn_once(warnings, "存在相关还款责任余额，请关注个人对企业贷款承担的保证/共同借款责任。")
+            break
 
     report["warnings"] = warnings
     report["missing_fields"] = missing_fields
