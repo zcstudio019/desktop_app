@@ -329,3 +329,84 @@ def test_profile_sync_keeps_enterprise_and_personal_credit_sections() -> None:
     assert "购房贷款账户数" not in markdown
     assert "其他贷款账户数" not in markdown
     assert "担保笔数" not in markdown
+
+
+def test_credit_summary_does_not_take_90_from_label() -> None:
+    text = """
+个人信用报告
+信贷记录概要
+信用卡账户数 5
+当前有效信用卡账户数 0 / 未显示为有效
+贷款账户数 3
+未结清贷款账户数 1
+信用卡逾期账户数 0
+信用卡 90 天以上逾期账户数 0
+贷款逾期账户数 0
+贷款 90 天以上逾期账户数 0
+为个人相关还款责任账户数 0 / 未显示
+为企业相关还款责任账户数 9
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+    assert summary["loan_90d_overdue_account_count"] == "0"
+    assert summary["enterprise_related_repayment_responsibility_account_count"] == "9"
+
+
+def test_credit_summary_pipe_table() -> None:
+    text = """
+个人信用报告
+信贷记录概要
+| 项目 | 数量 / 状态 |
+| 信用卡账户数 | 5 |
+| 当前有效信用卡账户数 | 0 / 未显示为有效 |
+| 贷款账户数 | 3 |
+| 未结清贷款账户数 | 1 |
+| 信用卡 90 天以上逾期账户数 | 0 |
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["active_credit_card_account_count"] == "0 / 未显示为有效"
+    assert summary["loan_account_count"] == "3"
+    assert summary["outstanding_loan_account_count"] == "1"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+
+
+def test_skip_zero_balance_loan_without_abnormal() -> None:
+    text = """
+个人信用报告
+贷款账户明细
+1. 中国银行 消费贷款 发放金额：10000元 余额：0元 账户状态：已结清 五级分类：正常
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["loan_accounts"] == []
+
+
+def test_skip_zero_balance_unknown_status_without_abnormal() -> None:
+    text = """
+个人信用报告
+贷款账户明细
+1. 中国银行 消费贷款 发放金额：10000元 余额：0元 账户状态：未识别 五级分类：正常
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["loan_accounts"] == []
+
+
+def test_keep_abnormal_settled_loan() -> None:
+    text = """
+个人信用报告
+贷款账户明细
+1. 中国银行 消费贷款 发放金额：10000元 余额：0元 账户状态：已结清 五级分类：次级 当前逾期金额：100元
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert len(report["loan_accounts"]) == 1
+
+
+def test_skip_closed_credit_card_without_abnormal() -> None:
+    text = """
+个人信用报告
+贷记卡账户明细
+1. 招商银行信用卡 贷记卡 授信额度：50000元 已用额度：0元 账户状态：销户
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["credit_card_accounts"] == []

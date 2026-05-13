@@ -10,6 +10,10 @@ CARD_TYPES = ("准贷记卡", "贷记卡", "信用卡")
 STATUS_WORDS = ("未销户", "已销户", "正常", "逾期", "冻结", "止付", "呆账", "销户")
 CLOSED_STATUS_WORDS = ("销户", "已销户", "注销", "已注销")
 ABNORMAL_WORDS = ("当前逾期", "逾期", "90天以上逾期", "呆账", "代偿", "核销")
+ACTIVE_STATUS_WORDS = ("未销户", "正常", "当前有效")
+SUMMARY_ONLY_WORDS = ("信用卡账户数", "信用卡90天以上逾期账户数", "信用卡 90 天以上逾期账户数", "贷款账户数", "信贷记录概要")
+DETAIL_WORDS = ("贷记卡账户明细", "准贷记卡账户明细", "授信额度", "已用额度", "共享授信额度", "最近一次还款", "当前逾期", "发卡机构", "账户状态", "卡号")
+LOAN_DETAIL_WORDS = ("贷款", "消费贷款", "购房贷款", "其他贷款", "五级分类")
 
 
 def _normalize_block(block: str) -> str:
@@ -20,7 +24,11 @@ def _normalize_block(block: str) -> str:
 
 
 def _looks_like_card(block: str) -> bool:
-    return any(keyword in block for keyword in (*CARD_TYPES, "授信额度", "已用额度", "共享授信额度", "最近一次还款", "当前逾期"))
+    if any(keyword in block for keyword in SUMMARY_ONLY_WORDS) and not any(keyword in block for keyword in DETAIL_WORDS):
+        return False
+    if any(keyword in block for keyword in LOAN_DETAIL_WORDS) and not any(keyword in block for keyword in ("授信额度", "已用额度", "共享授信额度", "发卡机构", "信用卡")):
+        return False
+    return any(keyword in block for keyword in DETAIL_WORDS) or any(keyword in block for keyword in ("贷记卡", "准贷记卡"))
 
 
 def _extract_label(block: str, labels: tuple[str, ...], *, max_chars: int = 120) -> str:
@@ -106,12 +114,13 @@ def _amount_to_number(value: Any) -> float:
 
 def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
     combined = " ".join(str(item or "") for item in (
-        block,
         record.get("account_status"),
         record.get("overdue_amount"),
         record.get("overdue_months"),
         record.get("history_performance"),
     ))
+    if "信贷记录概要" not in block and "信用卡账户数" not in block and "贷款账户数" not in block:
+        combined = f"{combined} {block}"
     if any(word in combined for word in ABNORMAL_WORDS):
         return True
     return _amount_to_number(record.get("overdue_amount")) > 0
@@ -124,6 +133,22 @@ def _should_skip_closed_card(block: str, record: dict[str, Any]) -> bool:
     if not any(word in status_text for word in CLOSED_STATUS_WORDS):
         return False
     return not _is_abnormal_account(block, record)
+
+
+def _should_skip_inactive_card(block: str, record: dict[str, Any]) -> bool:
+    if _is_abnormal_account(block, record):
+        return False
+    if _should_skip_closed_card(block, record):
+        return True
+    status_text = " ".join(str(item or "") for item in (record.get("account_status"), block))
+    if any(word in status_text for word in ACTIVE_STATUS_WORDS):
+        return False
+    used_value = _amount_to_number(record.get("used_limit") or record.get("used_amount"))
+    if used_value > 0:
+        return False
+    if not record.get("account_status") or str(record.get("account_status")) in {"未识别", "未知", "不详"}:
+        return True
+    return False
 
 
 def _candidate_blocks(text: str) -> list[str]:
@@ -167,7 +192,7 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                 "evidence": normalized_block[:1000],
                 "evidence_text": normalized_block[:1000],
             }
-            if _should_skip_closed_card(block, record):
+            if _should_skip_inactive_card(block, record):
                 continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):
                 signature = tuple(str(record.get(key) or "") for key in ("institution", "card_type", "credit_limit", "used_limit", "account_status", "overdue_amount"))

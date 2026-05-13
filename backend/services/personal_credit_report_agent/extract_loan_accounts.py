@@ -12,6 +12,7 @@ FIVE_CATEGORY_WORDS = ("正常", "关注", "次级", "可疑", "损失")
 CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
 ABNORMAL_WORDS = ("逾期", "呆账", "代偿", "核销", "强制执行", "90天以上逾期")
 ABNORMAL_FIVE_CATEGORY_WORDS = ("关注", "次级", "可疑", "损失")
+ZERO_LIKE_STATUS_WORDS = ("未识别", "未知", "不详")
 
 
 def _normalize_block(block: str) -> str:
@@ -67,8 +68,18 @@ def _extract_money(block: str, labels: tuple[str, ...]) -> str:
     labeled = _extract_label(block, labels, max_chars=80)
     if labeled:
         money = first_match(labeled, (r"((?:人民币)?\s*[0-9][0-9,]*(?:\.\d+)?\s*(?:万?元|万元)?)",))
-        return clean_amount(money or labeled)
+        value = clean_amount(money or labeled)
+        if _looks_like_date_pollution(value, block):
+            return ""
+        return value
     return ""
+
+
+def _looks_like_date_pollution(value: Any, block: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not re.fullmatch(r"20[2-3]\d(?:年)?", text):
+        return False
+    return any(keyword in block for keyword in ("报告日期", "信息报告日期", "报告时间", "查询时间"))
 
 
 def _extract_status(block: str) -> str:
@@ -124,7 +135,6 @@ def _amount_to_number(value: Any) -> float:
 
 def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
     combined = " ".join(str(item or "") for item in (
-        block,
         record.get("account_status"),
         record.get("five_category"),
         record.get("overdue_amount"),
@@ -132,6 +142,8 @@ def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
         record.get("overdue_info"),
         record.get("history_performance"),
     ))
+    if "信贷记录概要" not in block and "信用卡账户数" not in block and "贷款账户数" not in block:
+        combined = f"{combined} {block}"
     if any(word in combined for word in ABNORMAL_WORDS):
         return True
     if any(word in str(record.get("five_category") or "") for word in ABNORMAL_FIVE_CATEGORY_WORDS):
@@ -141,14 +153,16 @@ def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
 
 def _should_skip_closed_loan(block: str, record: dict[str, Any]) -> bool:
     status_text = " ".join(str(item or "") for item in (record.get("account_status"), block))
-    if "未结清" in status_text:
-        return False
-    if not any(word in status_text for word in CLOSED_STATUS_WORDS):
-        return False
     if _is_abnormal_account(block, record):
         return False
-    balance_zero = not record.get("balance") or _amount_to_number(record.get("balance")) == 0
-    return balance_zero or any(word in str(record.get("account_status") or "") for word in CLOSED_STATUS_WORDS)
+    if any(word in status_text for word in CLOSED_STATUS_WORDS):
+        return True
+    balance_value = _amount_to_number(record.get("balance"))
+    if record.get("balance") and balance_value <= 0:
+        return True
+    if not record.get("balance") and any(word in str(record.get("account_status") or "") for word in ZERO_LIKE_STATUS_WORDS):
+        return True
+    return False
 
 
 def _candidate_blocks(text: str) -> list[str]:
@@ -166,7 +180,7 @@ def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
         seen: set[tuple[str, ...]] = set()
         for block in _candidate_blocks(text):
             normalized_block = _normalize_block(block)
-            amount = _extract_money(block, ("发放金额", "借款金额", "贷款金额", "授信金额", "金额"))
+            amount = _extract_money(block, ("发放金额", "借款金额", "贷款金额", "授信金额"))
             latest_date = _extract_date(block, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
             latest_amount = _extract_money(block, ("最近一次还款金额", "最近还款金额"))
             overdue_amount = _extract_money(block, ("当前逾期金额", "逾期金额"))

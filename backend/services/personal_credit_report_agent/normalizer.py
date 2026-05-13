@@ -50,6 +50,11 @@ AMOUNT_KEYS = {
     "latest_repayment_amount",
 }
 
+LOAN_CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
+CARD_CLOSED_STATUS_WORDS = ("销户", "已销户", "注销", "已注销")
+ABNORMAL_WORDS = ("逾期", "呆账", "代偿", "核销", "强制执行", "90天以上逾期")
+ABNORMAL_FIVE_CATEGORY_WORDS = ("关注", "次级", "可疑", "损失")
+
 ID_CARD_PATTERN = re.compile(
     r"(?<!\d)([1-9]\d{5}(?:(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|\d{9}))(?!\d)"
 )
@@ -86,6 +91,59 @@ def _normalize_record(record: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     for key, value in list(normalized.items()):
         normalized[key] = _clean_scalar(value, is_amount=key in AMOUNT_KEYS)
     return normalized
+
+
+def _amount_number(value: Any) -> float:
+    text = re.sub(r"[,\s，人民币元]", "", str(value or ""))
+    match = re.search(r"(-?\d+(?:\.\d+)?)", text)
+    if not match:
+        return 0.0
+    number = float(match.group(1))
+    if "万" in str(value or ""):
+        number *= 10000
+    return number
+
+
+def _record_has_abnormal(record: dict[str, Any]) -> bool:
+    combined = " ".join(
+        str(value or "")
+        for key, value in record.items()
+        if key not in {"evidence", "evidence_text"}
+    )
+    if any(word in combined for word in ABNORMAL_WORDS):
+        return True
+    if any(word in str(record.get("five_category") or "") for word in ABNORMAL_FIVE_CATEGORY_WORDS):
+        return True
+    return _amount_number(record.get("overdue_amount")) > 0
+
+
+def _keep_loan_record(record: dict[str, Any]) -> bool:
+    if _record_has_abnormal(record):
+        return True
+    status = str(record.get("account_status") or "")
+    if any(word in status for word in LOAN_CLOSED_STATUS_WORDS):
+        return False
+    balance = record.get("balance")
+    if balance not in (None, "") and _amount_number(balance) <= 0:
+        return False
+    if not status and not balance:
+        return False
+    return True
+
+
+def _keep_card_record(record: dict[str, Any]) -> bool:
+    if _record_has_abnormal(record):
+        return True
+    status = str(record.get("account_status") or "")
+    if "未销户" not in status and any(word in status for word in CARD_CLOSED_STATUS_WORDS):
+        return False
+    used = record.get("used_limit") or record.get("used_amount")
+    evidence = str(record.get("evidence") or record.get("evidence_text") or "")
+    if any(word in evidence for word in ("贷款", "五级分类", "消费贷款", "购房贷款")) and _amount_number(used) <= 0 and not record.get("credit_limit"):
+        return False
+    if not status and _amount_number(used) <= 0:
+        return False
+    return True
 
 
 def _clean_id_number(value: Any) -> str:
@@ -189,7 +247,12 @@ def normalize_report_json(report: dict[str, Any] | None) -> dict[str, Any]:
             value = []
         record_fields = RECORD_FIELDS_BY_LIST.get(field)
         if record_fields:
-            normalized[field] = [_normalize_record(item, record_fields) for item in value]
+            records = [_normalize_record(item, record_fields) for item in value]
+            if field == "loan_accounts":
+                records = [item for item in records if _keep_loan_record(item)]
+            elif field == "credit_card_accounts":
+                records = [item for item in records if _keep_card_record(item)]
+            normalized[field] = records
         else:
             normalized[field] = [item for item in value if item is not None]
 
