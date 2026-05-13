@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import re
+import logging
 from typing import Any
 
 from .evidence import clean_amount, clean_value
 from .schema import RELATED_REPAYMENT_RESPONSIBILITY_FIELDS, ensure_record_fields
+
+logger = logging.getLogger(__name__)
 
 STOP_SECTION_KEYWORDS = (
     "查询记录",
@@ -13,6 +16,9 @@ STOP_SECTION_KEYWORDS = (
     "公共信息",
     "本人声明",
     "异议标注",
+    "机构查询记录",
+    "本人查询记录",
+    "说明",
 )
 
 
@@ -44,12 +50,16 @@ def _normalize_date(value: str) -> str:
 
 
 def _section_text(sections: dict[str, Any], text: str) -> str:
-    source = _normalize_text(str(sections.get("full_text") or text or ""))
+    source = _normalize_text(str(text or sections.get("full_text") or ""))
     start = source.find("相关还款责任信息")
     if start < 0:
         start = source.find("相关还款责任")
     if start < 0:
-        return ""
+        marker = source.find("承担相关还款责任")
+        if marker < 0:
+            return ""
+        date_matches = list(re.finditer(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", source[:marker]))
+        start = date_matches[-1].start() if date_matches else marker
     tail = source[start:]
     stop_positions = [tail.find(keyword) for keyword in STOP_SECTION_KEYWORDS if tail.find(keyword) > 0]
     end = min(stop_positions) if stop_positions else len(tail)
@@ -91,6 +101,7 @@ def _extract_contract_no(block: str) -> str:
 def _parse_record(block: str) -> dict[str, Any]:
     raw_block = block
     block = clean_ocr_wrapped_text(block)
+    start_date = _normalize_date(_first(r"^.*?((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", block))
     related_party = _first(r"为\s*([^（(，,]+?)\s*[（(]\s*证件类型", block)
     if not related_party:
         related_party = _first(r"为\s*([^，,]+?)\s*在", block)
@@ -103,6 +114,7 @@ def _parse_record(block: str) -> dict[str, Any]:
     loan_balance = _first(r"贷款余额\s*([0-9][0-9,]*(?:\.\d+)?|--|——|-)", block)
     return ensure_record_fields(
         {
+            "start_date": start_date,
             "related_party": clean_ocr_wrapped_text(related_party),
             "responsibility_type": responsibility_type,
             "institution": clean_ocr_wrapped_text(institution),
@@ -119,23 +131,40 @@ def _parse_record(block: str) -> dict[str, Any]:
 def extract_related_repayment_responsibilities(sections: dict[str, Any], text: str) -> list[dict[str, Any]]:
     try:
         section = _section_text(sections, text)
+        logger.info("[PersonalCredit][RelatedRepayment] section_len=%s", len(section))
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
-        for block in _split_records(section):
+        blocks = _split_records(section)
+        logger.info("[PersonalCredit][RelatedRepayment] record_candidates=%s", len(blocks))
+        for block in blocks:
             record = _parse_record(block)
             if not any(record.get(key) for key in ("related_party", "institution", "contract_no", "loan_balance")):
                 continue
-            signature = (
-                str(record.get("contract_no") or ""),
-                str(record.get("related_party") or ""),
-                str(record.get("institution") or ""),
-                str(record.get("as_of_date") or ""),
-                str(record.get("loan_balance") or ""),
-            )
+            contract_no = str(record.get("contract_no") or "").strip()
+            if contract_no:
+                signature = ("contract", contract_no)
+            else:
+                signature = (
+                    "fallback",
+                    str(record.get("start_date") or ""),
+                    str(record.get("related_party") or ""),
+                    str(record.get("institution") or ""),
+                    str(record.get("responsibility_amount") or ""),
+                    str(record.get("loan_balance") or ""),
+                    str(record.get("as_of_date") or ""),
+                )
             if signature in seen:
                 continue
             seen.add(signature)
+            logger.info(
+                "[PersonalCredit][RelatedRepayment] parsed start_date=%s institution=%s contract_no=%s loan_balance=%s",
+                record.get("start_date"),
+                record.get("institution"),
+                record.get("contract_no"),
+                record.get("loan_balance"),
+            )
             records.append(record)
+        logger.info("[PersonalCredit][RelatedRepayment] parsed_count=%s", len(records))
         return records
     except Exception:
         return []

@@ -108,6 +108,7 @@ OVERDUE_RECORD_FIELDS = (
 )
 
 RELATED_REPAYMENT_RESPONSIBILITY_FIELDS = (
+    "start_date",
     "related_party",
     "responsibility_type",
     "institution",

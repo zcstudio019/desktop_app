@@ -260,6 +260,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
         for index, item in enumerate(related_repayments, start=1):
             if isinstance(item, dict):
                 _append_account(lines, f"相关还款责任 {index}", item, (
+                    ("start_date", "起始日期"),
                     ("related_party", "被担保/相关企业"),
                     ("responsibility_type", "责任人类型"),
                     ("institution", "办理机构"),

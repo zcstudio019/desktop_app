@@ -221,8 +221,10 @@ def _dedupe_related_repayment(records: list[dict[str, Any]]) -> list[dict[str, A
         else:
             signature = (
                 "fallback",
+                str(item.get("start_date") or "").strip(),
                 str(item.get("related_party") or "").strip(),
                 str(item.get("institution") or "").strip(),
+                str(item.get("responsibility_amount") or "").strip(),
                 str(item.get("as_of_date") or "").strip(),
                 str(item.get("loan_balance") or "").strip(),
             )

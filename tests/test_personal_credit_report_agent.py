@@ -982,3 +982,82 @@ def test_related_repayment_markdown_single_line_institution() -> None:
     markdown = run_personal_credit_report_agent(text)["report_markdown"]
     assert "办理机构：中国建设银行股份有限公司上海浦东分行" in markdown
     assert "中国建设银行股份有\n限公司" not in markdown
+
+
+RELATED_REPAYMENT_9_TEXT = """
+个人征信报告
+相关还款责任信息
+2023年11月02日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在中国建设银行股份有限公司上海浦东分行办理的贷款承担相关还款责任，责任人类型为共同借款人，相关还款责任金额--(保证合同编号：B10811000H00011881567)。截至2025年02月28日，贷款余额5,000,000(人民币元)。
+2024年02月23日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在华夏银行股份有限公司上海分行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额2,920,000(保证合同编号：B10711000H000120602403002084)。截至2025年02月21日，贷款余额2,920,000(人民币元)。
+2024年04月01日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额5,000,000(保证合同编号:
+D10023010H00012024032700000243)。截至2025年02月20日，贷款余额5,000,000(人民币元)。
+第 1 页,共 6 页
+4.
+2024年06月04日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额5,000,000(保证合同编号:D10023010H00012024052800000716)。截至2025年02月20日，贷款余额5,000,000(人民币元)。
+5.
+2024年08月22日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额1,450,000(保证合同编号:D10023010H00012024082200000111)。截至2025年02月20日，贷款余额1,450,000(人民币元)。
+6.
+2024年08月23日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额1,450,000(保证合同编号:D10023010H00012024082300000112)。截至2025年02月20日，贷款余额1,450,000(人民币元)。
+7.
+2024年09月26日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额1,450,000(保证合同编号:D10023010H00012024092600000113)。截至2025年02月20日，贷款余额1,450,000(人民币元)。
+8.
+2024年11月12日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额1,450,000(保证合同编号:D10023010H00012024111200000114)。截至2025年02月20日，贷款余额1,450,000(人民币元)。
+9.
+2025年02月20日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在华夏银行股份有限公司上海分行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额550,000（保证合同编号：B10811000H0001181567）。截至2025年02月21日，贷款余额1,370,000（人民币元）。
+查询记录
+"""
+
+
+def test_related_repayment_start_date_field() -> None:
+    report = run_personal_credit_report_agent(RELATED_REPAYMENT_9_TEXT)["report_json"]
+    first = report["related_repayment_responsibilities"][0]
+    assert first["start_date"] == "2023-11-02"
+    assert first["as_of_date"] == "2025-02-28"
+
+
+def test_related_repayment_extract_9_records() -> None:
+    report = run_personal_credit_report_agent(RELATED_REPAYMENT_9_TEXT)["report_json"]
+    records = report["related_repayment_responsibilities"]
+    assert len(records) == 9
+    assert [item["start_date"] for item in records] == [
+        "2023-11-02",
+        "2024-02-23",
+        "2024-04-01",
+        "2024-06-04",
+        "2024-08-22",
+        "2024-08-23",
+        "2024-09-26",
+        "2024-11-12",
+        "2025-02-20",
+    ]
+
+
+def test_related_repayment_keep_similar_contract_numbers() -> None:
+    report = run_personal_credit_report_agent(RELATED_REPAYMENT_9_TEXT)["report_json"]
+    contract_numbers = {item["contract_no"] for item in report["related_repayment_responsibilities"]}
+    assert "B10811000H00011881567" in contract_numbers
+    assert "B10811000H0001181567" in contract_numbers
+    assert len(report["related_repayment_responsibilities"]) == 9
+
+
+def test_related_repayment_last_record_huaxia() -> None:
+    report = run_personal_credit_report_agent(RELATED_REPAYMENT_9_TEXT)["report_json"]
+    last = report["related_repayment_responsibilities"][-1]
+    assert last["start_date"] == "2025-02-20"
+    assert last["institution"] == "华夏银行股份有限公司上海分行"
+    assert last["responsibility_amount"] == "550,000"
+    assert last["loan_balance"] == "1,370,000"
+    assert last["contract_no"] == "B10811000H0001181567"
+    assert last["as_of_date"] == "2025-02-21"
+
+
+def test_related_repayment_markdown_contains_start_date() -> None:
+    markdown = run_personal_credit_report_agent(RELATED_REPAYMENT_9_TEXT)["report_markdown"]
+    assert "- 起始日期：2025-02-20" in markdown
+    assert "被担保/相关企业" in markdown
+    assert "责任人类型" in markdown
+    assert "办理机构" in markdown
+    assert "相关还款责任金额" in markdown
+    assert "贷款余额" in markdown
+    assert "合同编号" in markdown
+    assert "截至日期" in markdown
