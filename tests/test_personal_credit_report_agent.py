@@ -335,6 +335,19 @@ def test_credit_summary_does_not_take_90_from_label() -> None:
     text = """
 个人信用报告
 信贷记录概要
+信用卡 90 天以上逾期账户数 0
+信用卡账户数 5
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+    assert summary["credit_card_account_count"] != "90"
+
+
+def test_credit_summary_inline_values() -> None:
+    text = """
+个人信用报告
+信贷记录概要
 信用卡账户数 5
 当前有效信用卡账户数 0 / 未显示为有效
 贷款账户数 3
@@ -348,8 +361,14 @@ def test_credit_summary_does_not_take_90_from_label() -> None:
 """
     summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
     assert summary["credit_card_account_count"] == "5"
+    assert summary["active_credit_card_account_count"] == "0 / 未显示为有效"
+    assert summary["loan_account_count"] == "3"
+    assert summary["outstanding_loan_account_count"] == "1"
+    assert summary["credit_card_overdue_account_count"] == "0"
     assert summary["credit_card_90d_overdue_account_count"] == "0"
+    assert summary["loan_overdue_account_count"] == "0"
     assert summary["loan_90d_overdue_account_count"] == "0"
+    assert summary["personal_related_repayment_responsibility_account_count"] == "0 / 未显示"
     assert summary["enterprise_related_repayment_responsibility_account_count"] == "9"
 
 
@@ -370,6 +389,69 @@ def test_credit_summary_pipe_table() -> None:
     assert summary["loan_account_count"] == "3"
     assert summary["outstanding_loan_account_count"] == "1"
     assert summary["credit_card_90d_overdue_account_count"] == "0"
+
+
+def test_credit_summary_multiline_table() -> None:
+    text = """
+个人信用报告
+信息概要
+项目
+数量 / 状态
+信用卡账户数
+5
+当前有效信用卡账户数
+0 / 未显示为有效
+贷款账户数
+3
+未结清贷款账户数
+1
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["active_credit_card_account_count"] == "0 / 未显示为有效"
+    assert summary["loan_account_count"] == "3"
+    assert summary["outstanding_loan_account_count"] == "1"
+
+
+def test_credit_summary_markdown_pipe_table() -> None:
+    text = """
+个人信用报告
+信贷概要
+| 项目 | 数量 / 状态 |
+| 信用卡账户数 | 5 |
+| 当前有效信用卡账户数 | 0 / 未显示为有效 |
+| 贷款账户数 | 3 |
+| 未结清贷款账户数 | 1 |
+| 信用卡 90 天以上逾期账户数 | 0 |
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["active_credit_card_account_count"] == "0 / 未显示为有效"
+    assert summary["loan_account_count"] == "3"
+    assert summary["outstanding_loan_account_count"] == "1"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+
+
+def test_personal_credit_agent_summary_not_all_unknown() -> None:
+    result = run_personal_credit_report_agent("""
+个人信用报告
+信贷记录概要
+信用卡 账 户 数        5
+当前 有效 信用卡 账户 数    0 / 未显示为有效
+贷款账户数
+3
+未结清贷款账户数
+1
+信用卡 90 天 以上 逾期 账户 数    0
+贷款 90 天 以上 逾期 账户 数    0
+""")
+    summary = result["report_json"]["credit_summary"]
+    assert any(summary.get(key) for key in ("credit_card_account_count", "loan_account_count", "outstanding_loan_account_count"))
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+    summary_markdown = result["report_markdown"].split("## 四、贷款账户明细", 1)[0]
+    assert "| 信用卡账户数 | 5 |" in summary_markdown
+    assert "| 贷款账户数 | 3 |" in summary_markdown
 
 
 def test_skip_zero_balance_loan_without_abnormal() -> None:

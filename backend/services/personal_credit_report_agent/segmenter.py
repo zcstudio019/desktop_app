@@ -8,7 +8,7 @@ from typing import Any
 SECTION_TITLES: dict[str, tuple[str, ...]] = {
     "report_basic_info": ("报告基础信息",),
     "personal_basic_info": ("个人基本信息",),
-    "credit_summary": ("信贷记录概要",),
+    "credit_summary": ("信贷记录概要", "信息概要", "信贷概要"),
     "credit_transaction_details": ("信贷交易信息明细",),
     "loan_accounts": ("贷款账户明细",),
     "credit_card_accounts": ("贷记卡账户明细", "准贷记卡账户明细"),
