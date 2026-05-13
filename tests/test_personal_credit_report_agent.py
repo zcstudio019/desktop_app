@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
+from backend.document_types import normalize_document_type_code
 from backend.services.document_extractor_service import build_structured_extraction
+from backend.services import markdown_profile_service
 from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.personal_credit_report_agent.extract_basic_info import extract_basic_info
 from backend.services.personal_credit_report_agent.extract_credit_summary import extract_credit_summary
@@ -492,3 +494,177 @@ def test_skip_closed_credit_card_without_abnormal() -> None:
 """
     report = run_personal_credit_report_agent(text)["report_json"]
     assert report["credit_card_accounts"] == []
+
+
+def test_normalize_personal_credit_document_type() -> None:
+    assert normalize_document_type_code("personal_credit") == "personal_credit_report"
+    assert normalize_document_type_code("个人征信") == "personal_credit_report"
+    assert normalize_document_type_code("个人征信报告") == "personal_credit_report"
+    assert normalize_document_type_code("personal_credit_report") == "personal_credit_report"
+    assert normalize_document_type_code("enterprise_credit") == "enterprise_credit_report"
+    assert normalize_document_type_code("企业征信") == "enterprise_credit_report"
+
+
+def test_personal_credit_uses_new_agent_markdown() -> None:
+    content = build_structured_extraction(SAMPLE_TEXT, "personal_credit", filename="personal.pdf")
+    markdown = content.get("markdown_summary") or ""
+    extracted_json = content.get("extracted_json") or {}
+    assert content["document_type_code"] == "personal_credit_report"
+    assert extracted_json.get("report_type") == "personal_credit_report"
+    assert "个人征信报告" in markdown
+    assert "| 项目 | 数量 / 状态 |" in markdown
+    assert "购房贷款账户数" not in markdown
+    assert "其他贷款账户数" not in markdown
+    assert "担保笔数" not in markdown
+
+
+def test_profile_sync_personal_credit_does_not_use_enterprise_renderer() -> None:
+    personal_content = build_structured_extraction(SAMPLE_TEXT, "personal_credit", filename="personal.pdf")
+    personal_content["markdown_summary"] = (personal_content.get("markdown_summary") or "") + "\n\n<!-- personal-credit-agent-markdown -->"
+    enterprise_content = {
+        "document_type_code": "enterprise_credit_report",
+        "markdown_summary": "## 企业征信\n- 企业征信摘要：已解析",
+        "extraction_status": "success",
+    }
+
+    class FakeStorage:
+        async def get_customer(self, customer_id: str) -> dict[str, str]:
+            return {"id": customer_id, "name": "测试客户", "customer_type": "enterprise"}
+
+        async def get_business_extractions_by_customer(self, customer_id: str) -> list[dict[str, object]]:
+            return [
+                {
+                    "extraction_id": "e1",
+                    "doc_id": "d-enterprise",
+                    "customer_id": customer_id,
+                    "extraction_type": "enterprise_credit_report",
+                    "extracted_data": enterprise_content,
+                    "extraction_status": "success",
+                },
+                {
+                    "extraction_id": "p1",
+                    "doc_id": "d-personal",
+                    "customer_id": customer_id,
+                    "extraction_type": "personal_credit_report",
+                    "extracted_data": personal_content,
+                    "extraction_status": "success",
+                },
+            ]
+
+        async def get_document(self, doc_id: str) -> dict[str, object]:
+            return {
+                "doc_id": doc_id,
+                "file_name": "enterprise.pdf" if doc_id == "d-enterprise" else "personal.pdf",
+                "file_path": f"/tmp/{doc_id}.pdf",
+            }
+
+        async def list_saved_applications(self, customer_id: str) -> list[dict[str, object]]:
+            return []
+
+        async def get_latest_scheme_snapshot(self, customer_id: str) -> None:
+            return None
+
+    markdown_profile_service.DEPRECATED_PERSONAL_CREDIT_RENDERER_CALLED = False
+    payload = asyncio.run(build_auto_profile_payload(FakeStorage(), "customer-legacy-isolation"))
+    markdown = payload["markdown_content"]
+    assert "## 企业征信" in markdown
+    assert "## 个人征信报告" in markdown
+    assert "<!-- personal-credit-agent-markdown -->" in markdown
+    assert "| 项目 | 数量 / 状态 |" in markdown
+    assert not markdown_profile_service.DEPRECATED_PERSONAL_CREDIT_RENDERER_CALLED
+
+
+def test_legacy_personal_credit_renderer_not_called_for_new_upload() -> None:
+    markdown_profile_service.DEPRECATED_PERSONAL_CREDIT_RENDERER_CALLED = False
+    content = build_structured_extraction(SAMPLE_TEXT, "personal_credit", filename="personal.pdf")
+    assert content["document_type_code"] == "personal_credit_report"
+    assert content.get("markdown_summary")
+    assert not markdown_profile_service.DEPRECATED_PERSONAL_CREDIT_RENDERER_CALLED
+
+
+def _assert_full_new_summary(summary: dict[str, object]) -> None:
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["active_credit_card_account_count"] == "0 / 未显示为有效"
+    assert summary["loan_account_count"] == "3"
+    assert summary["outstanding_loan_account_count"] == "1"
+    assert summary["credit_card_overdue_account_count"] == "0"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+    assert summary["loan_overdue_account_count"] == "0"
+    assert summary["loan_90d_overdue_account_count"] == "0"
+    assert summary["personal_related_repayment_responsibility_account_count"] == "0 / 未显示"
+    assert summary["enterprise_related_repayment_responsibility_account_count"] == "9"
+
+
+def test_credit_summary_columnar_ocr_table() -> None:
+    text = """
+个人征信报告
+信贷记录概要
+项目 数量 / 状态
+信用卡账户数 当前有效信用卡账户数 贷款账户数 未结清贷款账户数 信用卡逾期账户数 信用卡90天以上逾期账户数 贷款逾期账户数 贷款90天以上逾期账户数 为个人相关还款责任账户数 为企业相关还款责任账户数
+5 0 / 未显示为有效 3 1 0 0 0 0 0 / 未显示 9
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    _assert_full_new_summary(summary)
+
+
+def test_credit_summary_multiline_labels_then_values() -> None:
+    text = """
+个人征信报告
+信贷记录概要
+信用卡账户数
+当前有效信用卡账户数
+贷款账户数
+未结清贷款账户数
+信用卡逾期账户数
+信用卡90天以上逾期账户数
+贷款逾期账户数
+贷款90天以上逾期账户数
+为个人相关还款责任账户数
+为企业相关还款责任账户数
+5
+0 / 未显示为有效
+3
+1
+0
+0
+0
+0
+0 / 未显示
+9
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    _assert_full_new_summary(summary)
+
+
+def test_credit_summary_no_label_90_pollution_columnar() -> None:
+    text = """
+个人征信报告
+信贷记录概要
+信用卡账户数 信用卡90天以上逾期账户数 贷款账户数 贷款90天以上逾期账户数 当前有效信用卡账户数 未结清贷款账户数
+5 0 3 0 0 / 未显示为有效 1
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["credit_card_account_count"] != "90"
+    assert summary["loan_account_count"] != "90"
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+
+
+def test_credit_summary_current_realistic_values_not_all_unknown() -> None:
+    text = """
+个人信用报告
+中国人民银行征信中心
+报告编号：2025031104013907986945
+信贷记录概要
+项目 数量 / 状态
+信用卡账户数 当前有效信用卡账户数 贷款账户数 未结清贷款账户数
+信用卡逾期账户数 信用卡 90 天以上逾期账户数 贷款逾期账户数
+贷款 90 天以上逾期账户数 为个人相关还款责任账户数 为企业相关还款责任账户数
+5 0 / 未显示为有效 3 1 0 0 0 0 0 / 未显示 9
+查询记录
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    recognized = [value for value in summary.values() if value not in (None, "", "未识别")]
+    assert len(recognized) >= 6
+    assert summary["enterprise_related_repayment_responsibility_account_count"] == "9"
+    assert summary["credit_card_account_count"] == "5"

@@ -34,7 +34,7 @@ LEGACY_SAVE_FAILED_MESSAGE = "资料保存失败，请稍后重试。"
 DOCUMENT_TYPE_CONFIG_MISSING_MESSAGE = "资料类型配置缺失，请联系管理员检查配置。"
 
 _PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
-    "personal_credit",
+    "personal_credit_report",
     "personal_flow",
     "personal_tax",
     "id_card",
@@ -46,7 +46,7 @@ _PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
 _MULTI_INSTANCE_DOCUMENT_TYPE_CODES = frozenset({
     "id_card",
     "bank_statement",
-    "enterprise_credit",
+    "enterprise_credit_report",
 })
 
 _PROPERTY_MULTI_FILE_DOCUMENT_TYPE_CODES = frozenset({
@@ -91,9 +91,6 @@ def _normalize_storage_document_type(document_type: str | None) -> str:
     raw_value = str(document_type or "").strip()
     normalized = normalize_document_type_code(raw_value)
     if normalized:
-        if normalized == "personal_credit":
-            logger.info("[Local Save] normalized document_type=%s -> personal_credit_report", raw_value)
-            return "personal_credit_report"
         if normalized != raw_value:
             logger.info("[Local Save] normalized document_type=%s -> %s", raw_value, normalized)
         return normalized
@@ -105,6 +102,11 @@ def _normalize_storage_document_type(document_type: str | None) -> str:
 
     logger.warning("[Local Save] could not normalize document_type=%s, using raw value", raw_value)
     return raw_value
+
+
+def _is_enterprise_credit_document_type(document_type: str | None) -> bool:
+    normalized = normalize_document_type_code(document_type or "") or str(document_type or "").strip()
+    return normalized == "enterprise_credit_report"
 
 
 async def save_to_storage(
@@ -397,7 +399,7 @@ async def _save_doc_and_extraction(
     document_type_code = _normalize_storage_document_type(document_type)
     if not isinstance(content, dict):
         content = {"raw_result": str(content or "")}
-    if document_type_code == "enterprise_credit":
+    if _is_enterprise_credit_document_type(document_type_code):
         if not content.get("markdown_summary") and content.get("markdown"):
             content["markdown_summary"] = content.get("markdown")
         if not content.get("markdown") and content.get("markdown_summary"):
@@ -461,10 +463,10 @@ async def _save_doc_and_extraction(
         "file_size": file_size,
         "uploader": (current_user.get("username") or "") if current_user else "",
         "file_hash": hashlib.sha256(file_bytes).hexdigest() if file_bytes else "",
-        "is_active": 0 if document_type_code == "enterprise_credit" else 1,
+        "is_active": 0 if _is_enterprise_credit_document_type(document_type_code) else 1,
         "archived_at": None,
         "replaced_by_document_id": "",
-        "version_policy": "single_active" if document_type_code == "enterprise_credit" else "",
+        "version_policy": "single_active" if _is_enterprise_credit_document_type(document_type_code) else "",
         "report_date": _normalize_enterprise_credit_report_date(
             ((content.get("extracted_json") or {}).get("report_basic") or {}).get("report_date")
             or content.get("report_date")
@@ -472,7 +474,7 @@ async def _save_doc_and_extraction(
         "valid_until": _compute_enterprise_credit_valid_until(
             ((content.get("extracted_json") or {}).get("report_basic") or {}).get("report_date")
             or content.get("report_date")
-        ) if document_type_code == "enterprise_credit" else "",
+        ) if _is_enterprise_credit_document_type(document_type_code) else "",
     }
     await storage_service.save_document(doc_data)
     logger.info(
@@ -509,7 +511,7 @@ async def _save_doc_and_extraction(
     await storage_service.save_extraction(extraction_data)
     logger.info("[Local Save] Saved extraction: %s", extraction_id)
 
-    if document_type_code == "enterprise_credit" and extraction_data["extraction_status"] == "success":
+    if _is_enterprise_credit_document_type(document_type_code) and extraction_data["extraction_status"] == "success":
         activate_single_active = getattr(storage_service, "activate_single_active_document", None)
         if callable(activate_single_active):
             await activate_single_active(

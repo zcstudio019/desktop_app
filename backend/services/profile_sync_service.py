@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from backend.document_types import normalize_document_type_code
+
 from .index_rebuild_service import IndexRebuildService
 from .markdown_profile_service import regenerate_customer_profile
 
@@ -93,11 +95,11 @@ class ProfileSyncService:
             logger.info("[Profile Sync] extractions count=%s", len(extractions))
             logger.info(
                 "[Profile Sync] enterprise_credit active found=%s",
-                any((item.get("extraction_type") or "") == "enterprise_credit" for item in extractions if isinstance(item, dict)),
+                any(normalize_document_type_code(item.get("extraction_type") or "") == "enterprise_credit_report" for item in extractions if isinstance(item, dict)),
             )
             logger.info(
                 "[Profile Sync][PersonalCredit] active found=%s",
-                any((item.get("extraction_type") or "") in {"personal_credit", "personal_credit_report", "个人征信", "个人征信报告"} for item in extractions if isinstance(item, dict)),
+                any(normalize_document_type_code(item.get("extraction_type") or "") == "personal_credit_report" for item in extractions if isinstance(item, dict)),
             )
             try:
                 await regenerate_customer_profile(storage_service, customer_id)

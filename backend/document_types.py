@@ -19,11 +19,11 @@ class DocumentTypeDefinition:
 
 DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
     DocumentTypeDefinition(
-        code="enterprise_credit",
+        code="enterprise_credit_report",
         name="企业征信",
         storage_label="企业征信提取",
         formats=("pdf", "image"),
-        aliases=("企业征信", "企业征信提取", "企业信用报告"),
+        aliases=("企业征信", "企业征信提取", "企业信用报告", "企业征信报告", "enterprise_credit", "enterprise_credit_report"),
     ),
     DocumentTypeDefinition(
         code="personal_credit_report",
@@ -31,14 +31,6 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         storage_label="个人征信提取",
         formats=("pdf", "image"),
         aliases=("个人征信", "个人征信提取", "个人信用报告", "个人征信报告", "personal_credit_report"),
-        customer_scope="personal",
-    ),
-    DocumentTypeDefinition(
-        code="personal_credit",
-        name="个人征信",
-        storage_label="个人征信提取",
-        formats=("pdf", "image"),
-        aliases=("个人征信", "个人征信提取", "个人信用报告"),
         customer_scope="personal",
     ),
     DocumentTypeDefinition(
@@ -191,6 +183,21 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
 
 DOCUMENT_TYPES_BY_CODE = {item.code: item for item in DOCUMENT_TYPE_DEFINITIONS}
 
+DOCUMENT_TYPE_CANONICAL_ALIASES = {
+    "personal_credit": "personal_credit_report",
+    "personal_credit_report": "personal_credit_report",
+    "个人征信": "personal_credit_report",
+    "个人征信报告": "personal_credit_report",
+    "个人信用报告": "personal_credit_report",
+    "个人征信提取": "personal_credit_report",
+    "enterprise_credit": "enterprise_credit_report",
+    "enterprise_credit_report": "enterprise_credit_report",
+    "企业征信": "enterprise_credit_report",
+    "企业征信报告": "enterprise_credit_report",
+    "企业信用报告": "enterprise_credit_report",
+    "企业征信提取": "enterprise_credit_report",
+}
+
 _ALIASES_TO_CODE: dict[str, str] = {}
 for item in DOCUMENT_TYPE_DEFINITIONS:
     _ALIASES_TO_CODE[item.code.lower()] = item.code
@@ -212,7 +219,13 @@ def get_document_type_definition(code: str | None) -> DocumentTypeDefinition | N
 def normalize_document_type_code(value: str | None) -> str | None:
     if not value:
         return None
-    return _ALIASES_TO_CODE.get(str(value).strip().lower())
+    raw = str(value).strip()
+    if raw in DOCUMENT_TYPE_CANONICAL_ALIASES:
+        return DOCUMENT_TYPE_CANONICAL_ALIASES[raw]
+    lowered = raw.lower()
+    if lowered in DOCUMENT_TYPE_CANONICAL_ALIASES:
+        return DOCUMENT_TYPE_CANONICAL_ALIASES[lowered]
+    return _ALIASES_TO_CODE.get(lowered) or raw
 
 
 def get_document_storage_label(value: str | None) -> str:

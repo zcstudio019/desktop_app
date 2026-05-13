@@ -13,6 +13,7 @@ from sqlalchemy import delete, desc, inspect, select, text, update
 from sqlalchemy.exc import DataError, SQLAlchemyError
 
 from backend.database import Base, SessionLocal, engine
+from backend.document_types import normalize_document_type_code
 from backend.db_models import (
     AsyncJobRecord,
     ChatMessageRecord,
@@ -935,8 +936,8 @@ class SQLAlchemyStorageService:
                     latest_by_doc[row.doc_id] = row
             filtered_rows: list[Extraction] = []
             for row in latest_by_doc.values():
-                extraction_type = (row.extraction_type or "").strip()
-                if extraction_type != "enterprise_credit":
+                extraction_type = normalize_document_type_code(row.extraction_type or "") or (row.extraction_type or "").strip()
+                if extraction_type != "enterprise_credit_report":
                     filtered_rows.append(row)
                     continue
                 document = document_map.get(row.doc_id)
@@ -991,11 +992,12 @@ class SQLAlchemyStorageService:
     async def save_extraction(self, extraction_data: dict) -> dict:
         with self._session_factory() as db:
             payload = extraction_data.copy()
+            payload["extraction_type"] = normalize_document_type_code(payload.get("extraction_type") or "") or payload.get("extraction_type")
             payload["extracted_data"] = self._dumps(payload.get("extracted_data"), "{}")
             logger.info(
-                "[Local Save] extracted_data length=%s document_type=%s",
-                len(payload["extracted_data"]),
+                "[document_extraction] 写入 extracted_json document_type=%s extracted_data length=%s",
                 payload.get("extraction_type") or "",
+                len(payload["extracted_data"]),
             )
             row = Extraction(**{k: v for k, v in payload.items() if hasattr(Extraction, k)})
             db.add(row)

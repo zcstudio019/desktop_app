@@ -764,7 +764,7 @@ def _extract_structured_data(
 
     try:
         raw_pages_for_log = raw_pages
-        if document_type_code == "enterprise_credit":
+        if normalize_document_type_code(document_type_code) == "enterprise_credit_report":
             print("[enterprise_credit] 上传 document_type:", document_type_code)
             logger.info("[enterprise_credit] raw_text_preview=%s", (text_content or "")[:3000])
             for item in raw_pages_for_log:

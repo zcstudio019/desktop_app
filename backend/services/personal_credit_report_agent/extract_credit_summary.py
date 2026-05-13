@@ -37,6 +37,19 @@ FIELD_LABELS: dict[str, tuple[str, ...]] = {
     "enterprise_related_repayment_responsibility_account_count": ("为企业相关还款责任账户数", "企业相关还款责任账户数"),
 }
 
+SUMMARY_FIELD_ORDER: tuple[str, ...] = (
+    "credit_card_account_count",
+    "active_credit_card_account_count",
+    "loan_account_count",
+    "outstanding_loan_account_count",
+    "credit_card_overdue_account_count",
+    "credit_card_90d_overdue_account_count",
+    "loan_overdue_account_count",
+    "loan_90d_overdue_account_count",
+    "personal_related_repayment_responsibility_account_count",
+    "enterprise_related_repayment_responsibility_account_count",
+)
+
 LEGACY_LABELS: dict[str, tuple[str, ...]] = {
     "housing_loan_account_count": ("购房贷款账户数", "住房贷款账户数", "购房贷款账户", "住房贷款账户"),
     "housing_loan_outstanding_count": ("未结清购房贷款账户数", "购房贷款未结清", "住房贷款未结清"),
@@ -145,6 +158,72 @@ def parse_summary_value(value_region: str) -> str:
     return value
 
 
+def _parse_value_sequence(value_region: str) -> list[str]:
+    text = _normalize_text(value_region)
+    text = re.sub(r"[|]+", " ", text)
+    text = re.sub(r"(?i)\b(?:item|project|status|count)\b", " ", text)
+    text = re.sub(r"(项目|数量|状态|数量\s*/\s*状态)", " ", text)
+    values: list[str] = []
+    for match in re.finditer(r"(?<!\d)(\d+)(?:\s*/\s*([^\d|,，；;。\n\r]{1,40}))?(?!\d)", text):
+        number = match.group(1).strip()
+        if re.fullmatch(r"20[2-3]\d", number):
+            continue
+        suffix = re.sub(r"\s+", "", (match.group(2) or "")).strip()
+        if suffix:
+            value = f"{number} / {suffix}"
+        else:
+            value = number
+        values.append(value)
+    if values:
+        return values
+    for match in re.finditer(r"(未显示为有效|未显示|未识别)", text):
+        values.append(match.group(1).strip())
+    return values
+
+
+def _strip_label_text(window: str, matches: list[LabelMatch]) -> str:
+    if not matches:
+        return window
+    parts: list[str] = []
+    cursor = 0
+    for match in sorted(matches, key=lambda item: item.start):
+        parts.append(window[cursor:match.start])
+        cursor = max(cursor, match.end)
+    parts.append(window[cursor:])
+    return "".join(parts)
+
+
+def extract_by_known_label_order_and_value_sequence(window: str) -> dict[str, str]:
+    """Fallback for OCR tables where labels are grouped before the value row."""
+    try:
+        matches = [match for match in _find_label_matches(window) if match.field in FIELD_LABELS]
+        found_fields = {match.field for match in matches}
+        if len(found_fields) < 6:
+            return {}
+
+        ordered_matches = sorted(matches, key=lambda item: item.start)
+        label_block_end = max(match.end for match in ordered_matches)
+        trailing_text = window[label_block_end:]
+        values = _parse_value_sequence(trailing_text)
+        if len(values) < 2:
+            values = _parse_value_sequence(_strip_label_text(window, ordered_matches))
+        if not values:
+            return {}
+
+        fields_by_position = list(dict.fromkeys(match.field for match in ordered_matches if match.field in FIELD_LABELS))
+        fixed_fields = [field for field in SUMMARY_FIELD_ORDER if field in found_fields]
+        ordered_fields = fixed_fields if fields_by_position == fixed_fields else fields_by_position
+        result: dict[str, str] = {}
+        for field, value in zip(ordered_fields, values):
+            if value:
+                result[field] = value
+                logger.info("[PersonalCredit][Summary][PARSED] key=%s value=%s", field, value)
+        return result
+    except Exception as exc:
+        logger.info("[PersonalCredit][Summary] value sequence fallback failed error=%s", exc)
+        return {}
+
+
 def extract_value_after_label(raw_text: str, label_start: int, label_end: int, next_label_start: int | None) -> str:
     del label_start
     end = next_label_start if next_label_start is not None else len(raw_text)
@@ -156,16 +235,32 @@ def fallback_extract_from_numeric_sequence(window: str) -> dict[str, str]:
     matches = _find_label_matches(window)
     for index, match in enumerate(matches):
         next_start = matches[index + 1].start if index + 1 < len(matches) else None
+        logger.info(
+            "[PersonalCredit][Summary][LABEL_POS] key=%s label=%s start=%s end=%s",
+            match.field,
+            match.label,
+            match.start,
+            match.end,
+        )
+        logger.info(
+            "[PersonalCredit][Summary][VALUE_REGION] key=%s region=%s",
+            match.field,
+            window[match.end:next_start if next_start is not None else len(window)][:300],
+        )
         value = extract_value_after_label(window, match.start, match.end, next_start)
         if value and not values.get(match.field):
             values[match.field] = value
+            logger.info("[PersonalCredit][Summary][PARSED] key=%s value=%s", match.field, value)
     return values
 
 
 def _extract_all_values(window: str) -> dict[str, str]:
     values = fallback_extract_from_numeric_sequence(window)
-    for field, value in values.items():
-        logger.info("[PersonalCredit][Summary] matched label=%s value=%s", field, value)
+    sequence_values = extract_by_known_label_order_and_value_sequence(window)
+    should_override = len(sequence_values) >= 6
+    for field, value in sequence_values.items():
+        if value and (should_override or not values.get(field)):
+            values[field] = value
     return values
 
 
@@ -186,6 +281,7 @@ def extract_credit_summary(sections: dict[str, Any]) -> dict[str, Any]:
         extracted: dict[str, str] = {}
         for source_name, source_text in _source_windows(sections):
             logger.info("[PersonalCredit][Summary] source=%s len=%s", source_name, len(source_text))
+            logger.info("[PersonalCredit][Summary][RAW_WINDOW_START]\n%s\n[PersonalCredit][Summary][RAW_WINDOW_END]", source_text[:2500])
             source_values = _extract_all_values(source_text)
             for field, value in source_values.items():
                 if value and not extracted.get(field):

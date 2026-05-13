@@ -86,7 +86,7 @@ def detect_document_type_code(
         if normalized_ai:
             return normalized_ai
 
-    return "enterprise_credit"
+    return "enterprise_credit_report"
 
 
 def build_structured_extraction(
@@ -2979,7 +2979,7 @@ def detect_document_type_code(
         if normalized_ai:
             return normalized_ai
 
-    return "enterprise_credit"
+    return "enterprise_credit_report"
 
 
 def build_structured_extraction(
@@ -8976,8 +8976,8 @@ def build_structured_extraction(
         content = extract_business_plan_fields(text_content)
     elif normalized_code == "financial_statement":
         content = extract_financial_statement_fields(text_content)
-    elif normalized_code == "enterprise_credit":
-        print("[enterprise_credit] 使用 skill:", normalized_code)
+    elif normalized_code == "enterprise_credit_report":
+        print("[document_extraction] 使用 enterprise_credit skill document_type=", normalized_code)
         content = build_enterprise_credit_content(
             text=str(text_content or ""),
             customer_id=customer_id,
@@ -8985,11 +8985,12 @@ def build_structured_extraction(
             file_name=filename,
             raw_pages=raw_pages,
         )
-        print("[enterprise_credit] 提取完成:", list((content.get("extracted_json") or {}).keys()))
+        content["document_type_code"] = "enterprise_credit_report"
+        print("[document_extraction] enterprise_credit 提取完成:", list((content.get("extracted_json") or {}).keys()))
         content["raw_text"] = str(text_content or "")
         if raw_pages:
             content["raw_pages"] = raw_pages
-    elif normalized_code in {"personal_credit_report", "personal_credit"}:
+    elif normalized_code == "personal_credit_report":
         content = build_personal_credit_report_content(str(text_content or ""), filename=filename)
         normalized_code = "personal_credit_report"
         content["raw_text"] = str(text_content or "")
@@ -10529,7 +10530,7 @@ def extract_enterprise_credit_fields(text: str) -> dict[str, Any]:
             company_name = match.group(1).strip().strip("：:，,；;。 ")
             break
     return {
-        "document_type_code": "enterprise_credit",
+        "document_type_code": "enterprise_credit_report",
         "document_type_name": "企业征信",
         "storage_label": "企业征信",
         "company_name": company_name,
