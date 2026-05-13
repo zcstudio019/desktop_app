@@ -217,10 +217,18 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
 def _dedupe_related_repayment(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, ...]] = set()
+    seen_contract_records: dict[str, list[dict[str, Any]]] = {}
     for item in records:
         contract_no = str(item.get("contract_no") or "").strip()
         if contract_no:
-            signature = ("contract", contract_no)
+            signature = (
+                "contract",
+                contract_no,
+                str(item.get("start_date") or "").strip(),
+                str(item.get("responsibility_amount") or "").strip(),
+                str(item.get("loan_balance") or "").strip(),
+                str(item.get("as_of_date") or "").strip(),
+            )
         else:
             signature = (
                 "fallback",
@@ -238,7 +246,26 @@ def _dedupe_related_repayment(records: list[dict[str, Any]]) -> list[dict[str, A
                 str(item.get("evidence") or "")[:300],
             )
             continue
+        if contract_no and contract_no in seen_contract_records:
+            for previous in seen_contract_records[contract_no]:
+                message = "合同编号与其他记录重复，但起始日期或贷款余额不同，已保留待核验"
+                previous["_duplicate_contract_no_warning"] = True
+                item["_duplicate_contract_no_warning"] = True
+                previous["duplicate_contract_no_warning"] = True
+                item["duplicate_contract_no_warning"] = True
+                previous["warning"] = message
+                item["warning"] = message
+                logger.info(
+                    "[PersonalCredit][RelatedRepayment][KEEP_DUP_CONTRACT] source=normalizer contract_no=%s start_dates=%s,%s balances=%s,%s",
+                    contract_no,
+                    previous.get("start_date"),
+                    item.get("start_date"),
+                    previous.get("loan_balance"),
+                    item.get("loan_balance"),
+                )
         seen.add(signature)
+        if contract_no:
+            seen_contract_records.setdefault(contract_no, []).append(item)
         result.append(item)
     return result
 

@@ -269,6 +269,8 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
                     ("contract_no", "合同编号"),
                     ("as_of_date", "截至日期"),
                 ))
+                if item.get("_duplicate_contract_no_warning") or item.get("duplicate_contract_no_warning"):
+                    _append_field(lines, "核验提示", item.get("warning") or "合同编号与其他记录重复，但起始日期或贷款余额不同，已保留待核验")
     else:
         lines.append("- 暂无相关还款责任信息。")
 

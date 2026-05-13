@@ -219,7 +219,14 @@ def _parse_record(block: str) -> dict[str, Any]:
 def _record_signature(record: dict[str, Any]) -> tuple[str, ...]:
     contract_no = str(record.get("contract_no") or "").strip()
     if contract_no:
-        return ("contract", contract_no)
+        return (
+            "contract",
+            contract_no,
+            str(record.get("start_date") or "").strip(),
+            str(record.get("responsibility_amount") or "").strip(),
+            str(record.get("loan_balance") or "").strip(),
+            str(record.get("as_of_date") or "").strip(),
+        )
     return (
         "fallback",
         str(record.get("start_date") or ""),
@@ -231,12 +238,31 @@ def _record_signature(record: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _mark_duplicate_contract(left: dict[str, Any], right: dict[str, Any]) -> None:
+    message = "合同编号与其他记录重复，但起始日期或贷款余额不同，已保留待核验"
+    left["_duplicate_contract_no_warning"] = True
+    right["_duplicate_contract_no_warning"] = True
+    left["duplicate_contract_no_warning"] = True
+    right["duplicate_contract_no_warning"] = True
+    left["warning"] = message
+    right["warning"] = message
+    logger.info(
+        "[PersonalCredit][RelatedRepayment][KEEP_DUP_CONTRACT] contract_no=%s start_dates=%s,%s balances=%s,%s",
+        left.get("contract_no") or right.get("contract_no"),
+        left.get("start_date"),
+        right.get("start_date"),
+        left.get("loan_balance"),
+        right.get("loan_balance"),
+    )
+
+
 def extract_related_repayment_responsibilities(sections: dict[str, Any], text: str) -> list[dict[str, Any]]:
     try:
         section = _section_text(sections, text)
         logger.info("[PersonalCredit][RelatedRepayment] section_len=%s", len(section))
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
+        seen_contract_records: dict[str, list[dict[str, Any]]] = {}
         blocks = _split_records(section)
         logger.info("[PersonalCredit][RelatedRepayment] section_candidates_count=%s", len(blocks))
         section_candidates: list[tuple[str, int, dict[str, Any]]] = []
@@ -308,7 +334,13 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
                     str(record.get("evidence") or "")[:300],
                 )
                 continue
+            contract_no = str(record.get("contract_no") or "").strip()
+            if contract_no and contract_no in seen_contract_records:
+                for previous in seen_contract_records[contract_no]:
+                    _mark_duplicate_contract(previous, record)
             seen.add(signature)
+            if contract_no:
+                seen_contract_records.setdefault(contract_no, []).append(record)
             logger.info(
                 "[PersonalCredit][RelatedRepayment] parsed start_date=%s institution=%s contract_no=%s loan_balance=%s",
                 record.get("start_date"),
@@ -328,7 +360,13 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
             if emergency_record:
                 signature = _record_signature(emergency_record)
                 if signature not in seen:
+                    contract_no = str(emergency_record.get("contract_no") or "").strip()
+                    if contract_no and contract_no in seen_contract_records:
+                        for previous in seen_contract_records[contract_no]:
+                            _mark_duplicate_contract(previous, emergency_record)
                     seen.add(signature)
+                    if contract_no:
+                        seen_contract_records.setdefault(contract_no, []).append(emergency_record)
                     records.append(emergency_record)
                     logger.info(
                         "[PersonalCredit][RelatedRepayment][EMERGENCY_APPEND] start_date=%s contract_no=%s",
@@ -345,7 +383,7 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
         logger.info("[PersonalCredit][RelatedRepayment] parsed_contracts=%s", [record.get("contract_no") for record in records])
         logger.info("[PersonalCredit][RelatedRepayment] parsed_count=%s", len(records))
         max_candidate_count = max(len(blocks), len(full_text_candidates))
-        if max_candidate_count and len(records) < max_candidate_count:
+        if max_candidate_count and len(records) < max_candidate_count and parse_failures:
             logger.warning(
                 "[PersonalCredit][RelatedRepayment][COUNT_MISMATCH] candidates=%s parsed=%s missing_candidates=%s",
                 max_candidate_count,
