@@ -95,6 +95,10 @@ class ProfileSyncService:
                 "[Profile Sync] enterprise_credit active found=%s",
                 any((item.get("extraction_type") or "") == "enterprise_credit" for item in extractions if isinstance(item, dict)),
             )
+            logger.info(
+                "[Profile Sync][PersonalCredit] active found=%s",
+                any((item.get("extraction_type") or "") in {"personal_credit", "personal_credit_report", "个人征信", "个人征信报告"} for item in extractions if isinstance(item, dict)),
+            )
             try:
                 await regenerate_customer_profile(storage_service, customer_id)
                 logger.info("profile_sync finish customer_id=%s operation_type=%s status=success", customer_id, operation_type)

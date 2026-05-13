@@ -91,6 +91,9 @@ def _normalize_storage_document_type(document_type: str | None) -> str:
     raw_value = str(document_type or "").strip()
     normalized = normalize_document_type_code(raw_value)
     if normalized:
+        if normalized == "personal_credit":
+            logger.info("[Local Save] normalized document_type=%s -> personal_credit_report", raw_value)
+            return "personal_credit_report"
         if normalized != raw_value:
             logger.info("[Local Save] normalized document_type=%s -> %s", raw_value, normalized)
         return normalized
@@ -493,7 +496,16 @@ async def _save_doc_and_extraction(
         "skill_version": str(content.get("skill_version") or ""),
         "schema_version": str(content.get("schema_version") or ""),
     }
-    print("[enterprise_credit] 写入 extracted_json", bool(extraction_data.get("extracted_data")))
+    logger.info(
+        "[document_extraction] ?? extracted_json document_type=%s has_data=%s",
+        document_type_code,
+        bool(extraction_data.get("extracted_data")),
+    )
+    if document_type_code == "personal_credit_report":
+        logger.info(
+            "[PersonalCredit] saved markdown_summary=%s",
+            bool(content.get("markdown_summary") or (content.get("extracted_json") or {}).get("markdown_summary")),
+        )
     await storage_service.save_extraction(extraction_data)
     logger.info("[Local Save] Saved extraction: %s", extraction_id)
 

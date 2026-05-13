@@ -6276,11 +6276,16 @@ def _looks_like_personal_credit_report(text: str) -> bool:
 
 
 def build_personal_credit_report_content(text: str, filename: str = "") -> dict[str, Any]:
+    logger.info("[PersonalCredit] agent called filename=%s", filename)
     result = run_personal_credit_report_agent(text, source_file=filename, debug=True)
     report_json = result.get("report_json") or {}
     markdown = result.get("report_markdown") or ""
+    if isinstance(report_json, dict):
+        report_json["report_markdown"] = markdown
+        report_json["markdown_summary"] = markdown
+        report_json["markdown"] = markdown
     basic = report_json.get("basic_info") or {}
-    return {
+    content = {
         "type": "personal_credit_report",
         "name": "个人征信报告",
         "title": "个人征信报告",
@@ -6295,6 +6300,7 @@ def build_personal_credit_report_content(text: str, filename: str = "") -> dict[
         "confidence": 0.75,
         "warnings": result.get("warnings") or [],
         "errors": [],
+        "report_markdown": markdown,
         "markdown": markdown,
         "markdown_summary": markdown,
         "summary": markdown,
@@ -6307,6 +6313,9 @@ def build_personal_credit_report_content(text: str, filename: str = "") -> dict[
         "report_date": basic.get("report_time") or "",
         "raw_text_preview": str(text or "")[:3000],
     }
+    logger.info("[PersonalCredit] markdown length=%s", len(markdown))
+    logger.info("[PersonalCredit] saved markdown_summary=%s", bool(content.get("markdown_summary")))
+    return content
 
 
 def _pc_lines(text: str) -> list[str]:
@@ -8982,6 +8991,7 @@ def build_structured_extraction(
             content["raw_pages"] = raw_pages
     elif normalized_code in {"personal_credit_report", "personal_credit"}:
         content = build_personal_credit_report_content(str(text_content or ""), filename=filename)
+        normalized_code = "personal_credit_report"
         content["raw_text"] = str(text_content or "")
         if raw_pages:
             content["raw_pages"] = raw_pages

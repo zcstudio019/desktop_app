@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
+from backend.services.document_extractor_service import build_structured_extraction
+from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.personal_credit_report_agent.extract_basic_info import extract_basic_info
 from backend.services.personal_credit_report_agent.extract_credit_summary import extract_credit_summary
 from backend.services.personal_credit_report_agent.extract_query_records import extract_query_records
@@ -244,3 +248,84 @@ def test_credit_summary_markdown_table() -> None:
     assert "未结清贷款账户数" in markdown
     assert "购房贷款账户数" not in markdown
     assert "其他贷款账户数" not in markdown
+
+
+def test_personal_credit_report_markdown_new_summary_table() -> None:
+    result = run_personal_credit_report_agent(SAMPLE_TEXT)
+    markdown = result["report_markdown"]
+    assert "| 项目 | 数量 / 状态 |" in markdown
+    assert "当前有效信用卡账户数" in markdown
+    assert "贷款账户数" in markdown
+    assert "未结清贷款账户数" in markdown
+    assert "为企业相关还款责任账户数" in markdown
+
+
+def test_document_extractor_personal_credit_markdown_summary() -> None:
+    content = build_structured_extraction(SAMPLE_TEXT, "personal_credit", filename="personal.pdf")
+    markdown = content.get("markdown_summary") or ""
+    extracted_json = content.get("extracted_json") or {}
+    data = content.get("data") or {}
+    assert content["document_type_code"] == "personal_credit_report"
+    assert "| 项目 | 数量 / 状态 |" in markdown
+    assert "| 项目 | 数量 / 状态 |" in (content.get("report_markdown") or "")
+    assert "| 项目 | 数量 / 状态 |" in (extracted_json.get("report_markdown") or "")
+    assert "| 项目 | 数量 / 状态 |" in (data.get("markdown_summary") or "")
+    assert "购房贷款账户数" not in markdown
+    assert "其他贷款账户数" not in markdown
+    assert "担保笔数" not in markdown
+
+
+def test_profile_sync_keeps_enterprise_and_personal_credit_sections() -> None:
+    personal_content = build_structured_extraction(SAMPLE_TEXT, "personal_credit", filename="personal.pdf")
+    enterprise_content = {
+        "document_type_code": "enterprise_credit",
+        "markdown_summary": "## 企业征信\n- 企业征信摘要：已解析",
+        "extraction_status": "success",
+    }
+
+    class FakeStorage:
+        async def get_customer(self, customer_id: str) -> dict[str, str]:
+            return {"id": customer_id, "name": "测试客户", "customer_type": "enterprise"}
+
+        async def get_business_extractions_by_customer(self, customer_id: str) -> list[dict[str, object]]:
+            return [
+                {
+                    "extraction_id": "e1",
+                    "doc_id": "d-enterprise",
+                    "customer_id": customer_id,
+                    "extraction_type": "enterprise_credit",
+                    "extracted_data": enterprise_content,
+                    "extraction_status": "success",
+                },
+                {
+                    "extraction_id": "p1",
+                    "doc_id": "d-personal",
+                    "customer_id": customer_id,
+                    "extraction_type": "personal_credit_report",
+                    "extracted_data": personal_content,
+                    "extraction_status": "success",
+                },
+            ]
+
+        async def get_document(self, doc_id: str) -> dict[str, object]:
+            return {
+                "doc_id": doc_id,
+                "file_name": "enterprise.pdf" if doc_id == "d-enterprise" else "personal.pdf",
+                "file_path": f"/tmp/{doc_id}.pdf",
+            }
+
+        async def list_saved_applications(self, customer_id: str) -> list[dict[str, object]]:
+            return []
+
+        async def get_latest_scheme_snapshot(self, customer_id: str) -> None:
+            return None
+
+    payload = asyncio.run(build_auto_profile_payload(FakeStorage(), "customer-1"))
+    markdown = payload["markdown_content"]
+    assert "## 企业征信" in markdown
+    assert "## 个人征信报告" in markdown
+    assert "| 项目 | 数量 / 状态 |" in markdown
+    assert "当前有效信用卡账户数" in markdown
+    assert "购房贷款账户数" not in markdown
+    assert "其他贷款账户数" not in markdown
+    assert "担保笔数" not in markdown

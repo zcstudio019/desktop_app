@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from backend.document_types import get_document_display_name, should_store_original
+from backend.document_types import get_document_display_name, normalize_document_type_code, should_store_original
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
 
 logger = logging.getLogger(__name__)
@@ -735,6 +735,48 @@ def _pc_get_count(summary: dict[str, Any], *keys: str) -> str:
     return ''
 
 
+def _is_personal_credit_type(value: Any) -> bool:
+    text = str(value or '').strip()
+    normalized = normalize_document_type_code(text) or text
+    return normalized in {'personal_credit', 'personal_credit_report'} or text in {'个人征信', '个人征信报告'}
+
+
+def _personal_credit_saved_markdown(extracted_data: dict[str, Any]) -> str:
+    if not isinstance(extracted_data, dict):
+        return ''
+    candidates: list[Any] = [
+        extracted_data.get('markdown_summary'),
+        extracted_data.get('report_markdown'),
+        extracted_data.get('markdown'),
+    ]
+    extracted_json = extracted_data.get('extracted_json')
+    if isinstance(extracted_json, dict):
+        candidates.extend([
+            extracted_json.get('markdown_summary'),
+            extracted_json.get('report_markdown'),
+            extracted_json.get('markdown'),
+        ])
+    data = extracted_data.get('data')
+    if isinstance(data, dict):
+        candidates.extend([
+            data.get('markdown_summary'),
+            data.get('report_markdown'),
+            data.get('markdown'),
+        ])
+    for item in candidates:
+        markdown = str(item or '').strip()
+        if markdown:
+            return markdown
+    return ''
+
+
+def _personal_credit_profile_markdown(markdown: str) -> str:
+    text = str(markdown or '').strip()
+    if text.startswith('# 个人征信报告'):
+        return re.sub(r'^# 个人征信报告', '## 个人征信报告', text, count=1)
+    return text
+
+
 def _pc_first_clean(*values: Any) -> str:
     for value in values:
         cleaned = _pc_clean_value(value)
@@ -811,6 +853,24 @@ def normalize_personal_credit_result(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_personal_credit_markdown(extracted_json: dict[str, Any], source_file: str = '', original_status: str = '可查看') -> str:
+    saved_markdown = _personal_credit_saved_markdown(extracted_json or {})
+    if saved_markdown:
+        return _personal_credit_profile_markdown(saved_markdown)
+    base = extracted_json.get('extracted_json') if isinstance(extracted_json.get('extracted_json'), dict) else extracted_json
+    if isinstance(base, dict) and ('basic_info' in base or 'credit_summary' in base):
+        try:
+            from backend.services.personal_credit_report_agent.markdown_renderer import (
+                render_personal_credit_markdown as render_agent_personal_credit_markdown,
+            )
+
+            report = dict(base)
+            basic = report.get('basic_info') if isinstance(report.get('basic_info'), dict) else {}
+            if source_file and isinstance(basic, dict):
+                basic = {**basic, 'source_file': basic.get('source_file') or source_file}
+                report['basic_info'] = basic
+            return _personal_credit_profile_markdown(render_agent_personal_credit_markdown(report))
+        except Exception as exc:
+            logger.warning("[Profile Sync][PersonalCredit] agent markdown fallback failed error=%s", exc)
     normalized = normalize_personal_credit_result(extracted_json or {})
     basic = normalized['basic_info']
     summary = normalized['credit_summary']
@@ -1479,9 +1539,17 @@ async def _build_single_document_section(
         lines = _build_property_section_lines([file_name], bool(store_original and file_path), extracted_data)
         source_document['source_type_name'] = property_title
         return _markdown_section(property_title, lines), source_document
-    if extraction_type in {'personal_credit', 'personal_credit_report'} and isinstance(extracted_data, dict):
+    if _is_personal_credit_type(extraction_type) and isinstance(extracted_data, dict):
+        source_document['source_type'] = 'personal_credit_report'
         source_document['source_type_name'] = '个人征信'
-        return render_personal_credit_markdown(extracted_data, file_name, original_status), source_document
+        saved_markdown = _personal_credit_saved_markdown(extracted_data)
+        if saved_markdown:
+            logger.info("[Profile Sync][PersonalCredit] using extraction markdown")
+            logger.info("[Profile Sync][PersonalCredit] markdown length=%s", len(saved_markdown))
+            return _personal_credit_profile_markdown(saved_markdown), source_document
+        markdown = render_personal_credit_markdown(extracted_data, file_name, original_status)
+        logger.info("[Profile Sync][PersonalCredit] markdown length=%s", len(markdown))
+        return _personal_credit_profile_markdown(markdown), source_document
     if extraction_type == 'enterprise_credit' and isinstance(extracted_data, dict):
         lines = [
             f'- 资料类型：{type_name}',
@@ -1698,6 +1766,10 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
             "[Profile Sync] enterprise_credit active found=%s",
             any((doc.get('source_type') or '') == 'enterprise_credit' for doc in source_documents),
         )
+        logger.info(
+            "[Profile Sync][PersonalCredit] active found=%s",
+            any((doc.get('source_type') or '') == 'personal_credit_report' for doc in source_documents),
+        )
     except Exception as exc:
         logger.warning("profile_markdown documents_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
         doc_sections, source_documents = [
@@ -1868,14 +1940,14 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
         extractions = await storage_service.get_extractions_by_customer(customer_id)
     sections: list[str] = []
     source_documents: list[dict[str, Any]] = []
-    id_card_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'id_card']
-    property_extractions = [item for item in extractions if (item.get('extraction_type') or '') in PROPERTY_DOCUMENT_TYPES]
-    enterprise_credit_extractions = [item for item in extractions if (item.get('extraction_type') or '') == 'enterprise_credit']
+    id_card_extractions = [item for item in extractions if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') == 'id_card']
+    property_extractions = [item for item in extractions if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') in PROPERTY_DOCUMENT_TYPES]
+    enterprise_credit_extractions = [item for item in extractions if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') == 'enterprise_credit']
     other_extractions = [
         item for item in extractions
-        if (item.get('extraction_type') or '') != 'id_card'
-        and (item.get('extraction_type') or '') not in PROPERTY_DOCUMENT_TYPES
-        and (item.get('extraction_type') or '') != 'enterprise_credit'
+        if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') != 'id_card'
+        and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in PROPERTY_DOCUMENT_TYPES
+        and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') != 'enterprise_credit'
     ]
 
     if id_card_extractions:
