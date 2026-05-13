@@ -118,6 +118,13 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
         if re.search(r"(相关还款责任|保证合同编号|保证人|共同借款人|查询记录明细|查询机构|贷款审批|信用卡审批|贷后管理)", evidence):
             _warn_once(warnings, f"loan_account_pollution_suspected: account={index}")
 
+    for index, card in enumerate(report.get("credit_card_accounts") or [], start=1):
+        if not isinstance(card, dict):
+            continue
+        joined = " ".join(str(card.get(key) or "") for key in ("account_status", "evidence", "evidence_text", "history_performance"))
+        if "未销户" not in joined and re.search(r"(销户|已销户|注销|已注销|关闭|已关闭)", joined):
+            _warn_once(warnings, f"closed_credit_card_account_still_present: account={index}")
+
     report["warnings"] = warnings
     report["missing_fields"] = missing_fields
     return warnings, missing_fields

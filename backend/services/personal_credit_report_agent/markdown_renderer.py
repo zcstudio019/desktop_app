@@ -130,6 +130,8 @@ def _format_warning(item: Any) -> str:
         return text
     if text.startswith("loan_account_pollution_suspected"):
         return "贷款账户明细疑似混入相关还款责任/查询记录内容，请核验"
+    if text.startswith("closed_credit_card_account_still_present"):
+        return "信用卡账户明细疑似仍包含销户账户，请核验"
     return text
 
 

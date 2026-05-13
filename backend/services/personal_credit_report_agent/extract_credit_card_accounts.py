@@ -6,9 +6,9 @@ from typing import Any
 from .evidence import clean_amount, clean_value, first_match, split_numbered_blocks, value_after_label
 from .schema import CREDIT_CARD_ACCOUNT_FIELDS, ensure_record_fields
 
+CLOSED_STATUS_WORDS = ("已销户", "销户", "已注销", "注销", "已关闭", "关闭")
 CARD_TYPES = ("准贷记卡", "贷记卡", "信用卡")
-STATUS_WORDS = ("未销户", "已销户", "正常", "逾期", "冻结", "止付", "呆账", "销户")
-CLOSED_STATUS_WORDS = ("销户", "已销户", "注销", "已注销")
+STATUS_WORDS = ("未销户", "已销户", "销户", "已注销", "注销", "已关闭", "关闭", "正常", "逾期", "冻结", "止付", "呆账")
 ABNORMAL_WORDS = ("当前逾期", "逾期", "90天以上逾期", "呆账", "代偿", "核销")
 ACTIVE_STATUS_WORDS = ("未销户", "正常", "当前有效")
 SUMMARY_ONLY_WORDS = ("信用卡账户数", "信用卡90天以上逾期账户数", "信用卡 90 天以上逾期账户数", "贷款账户数", "信贷记录概要")
@@ -58,22 +58,43 @@ def _extract_date(block: str, labels: tuple[str, ...]) -> str:
 
 
 def _extract_institution(block: str) -> str:
-    return (
+    value = (
         _extract_label(block, ("发卡机构", "机构", "授信机构", "管理机构"), max_chars=80)
         or first_match(block, (r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,50}(?:银行|信用社|金融公司|消费金融)[\u4e00-\u9fffA-Za-z0-9（）()·]{0,30})",))
     )
+    value = re.sub(r"^(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", "", value or "")
+    value = re.split(r"发放的(?:准贷记卡|贷记卡|信用卡)", value, maxsplit=1)[0]
+    return clean_value(value)
 
 
 def _extract_card_type(block: str) -> str:
     labeled = _extract_label(block, ("账户类型", "卡类型", "业务类型"), max_chars=40)
+    if "准贷记卡" in labeled or "准贷记卡" in block:
+        return "准贷记卡"
+    if "贷记卡" in labeled or "贷记卡" in block:
+        return "贷记卡"
     for item in CARD_TYPES:
         if item in labeled or item in block:
             return item
     return clean_value(labeled)
 
 
+def _extract_currency(block: str) -> str:
+    match = re.search(r"[（(]\s*(美元|人民币|欧元|港币|日元|英镑)\s*账户\s*[）)]", block)
+    if match:
+        return match.group(1)
+    labeled = _extract_label(block, ("币种", "账户币种"), max_chars=20)
+    if labeled:
+        return labeled
+    return "人民币" if "人民币" in block else ""
+
+
 def _extract_status(block: str) -> str:
     labeled = _extract_label(block, ("账户状态", "状态", "当前状态"), max_chars=50)
+    closed_text = f"{labeled} {block}"
+    for word in CLOSED_STATUS_WORDS:
+        if word in closed_text and "未销户" not in closed_text:
+            return "销户" if word in {"销户", "已销户"} else word
     for word in STATUS_WORDS:
         if word in labeled:
             return word
@@ -126,11 +147,19 @@ def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
     return _amount_to_number(record.get("overdue_amount")) > 0
 
 
+def is_closed_credit_card_account(record: dict[str, Any], evidence_text: str) -> bool:
+    combined = " ".join(str(item or "") for item in (
+        record.get("account_status"),
+        record.get("status"),
+        evidence_text,
+        record.get("raw_text"),
+        record.get("history_performance"),
+    ))
+    return "未销户" not in combined and any(word in combined for word in CLOSED_STATUS_WORDS)
+
+
 def _should_skip_closed_card(block: str, record: dict[str, Any]) -> bool:
-    status_text = " ".join(str(item or "") for item in (record.get("account_status"), block))
-    if "未销户" in status_text:
-        return False
-    if not any(word in status_text for word in CLOSED_STATUS_WORDS):
+    if not is_closed_credit_card_account(record, block):
         return False
     return not _is_abnormal_account(block, record)
 
@@ -156,7 +185,42 @@ def _candidate_blocks(text: str) -> list[str]:
     blocks = split_numbered_blocks(source)
     if not blocks:
         blocks = re.split(r"(?=(?:\d+[\.、)]\s*)?(?:[\u4e00-\u9fffA-Za-z0-9（）()·]{2,50})?(?:准贷记卡|贷记卡|信用卡))", source)
+    expanded: list[str] = []
+    for block in blocks:
+        pieces = re.split(r"(?=\s*\d+[\.、)]\s*(?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", block)
+        expanded.extend(piece for piece in pieces if piece.strip())
+    blocks = expanded or blocks
     return [block.strip() for block in blocks if block and _looks_like_card(block)]
+
+
+def parse_credit_card_account_block(block: str) -> dict[str, Any]:
+    normalized_block = _normalize_block(block)
+    institution = _extract_institution(block)
+    card_type = _extract_card_type(block)
+    used_limit = _extract_money(block, ("已用额度", "使用额度", "透支余额", "已用授信额度", "余额"))
+    latest_date = _extract_date(block, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
+    latest_amount = _extract_money(block, ("最近一次还款金额", "最近还款金额"))
+    return {
+        "account_no": _extract_account_no(block),
+        "institution": institution,
+        "issuer": institution,
+        "card_type": card_type,
+        "account_type": card_type,
+        "currency": _extract_currency(block),
+        "account_status": _extract_status(block),
+        "credit_limit": _extract_money(block, ("授信额度", "信用额度", "共享授信额度", "额度")),
+        "used_limit": used_limit,
+        "used_amount": used_limit,
+        "overdue_amount": _extract_money(block, ("当前逾期金额", "逾期金额")),
+        "overdue_months": _extract_overdue_months(block),
+        "latest_repayment_date": latest_date,
+        "latest_repayment_amount": latest_amount,
+        "last_repayment": " ".join(item for item in (latest_date, latest_amount) if item),
+        "history_performance": _extract_label(block, ("历史表现", "还款表现", "还款记录"), max_chars=160),
+        "information_report_date": _extract_date(block, ("信息报告日期", "报送日期")),
+        "evidence": normalized_block[:1000],
+        "evidence_text": normalized_block[:1000],
+    }
 
 
 def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
@@ -165,33 +229,7 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
         for block in _candidate_blocks(text):
-            normalized_block = _normalize_block(block)
-            institution = _extract_institution(block)
-            card_type = _extract_card_type(block)
-            used_limit = _extract_money(block, ("已用额度", "使用额度", "透支余额", "已用授信额度", "余额"))
-            latest_date = _extract_date(block, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
-            latest_amount = _extract_money(block, ("最近一次还款金额", "最近还款金额"))
-            record = {
-                "account_no": _extract_account_no(block),
-                "institution": institution,
-                "issuer": institution,
-                "card_type": card_type,
-                "account_type": card_type,
-                "currency": _extract_label(block, ("币种", "账户币种"), max_chars=20) or ("人民币" if "人民币" in block else ""),
-                "account_status": _extract_status(block),
-                "credit_limit": _extract_money(block, ("授信额度", "信用额度", "共享授信额度", "额度")),
-                "used_limit": used_limit,
-                "used_amount": used_limit,
-                "overdue_amount": _extract_money(block, ("当前逾期金额", "逾期金额")),
-                "overdue_months": _extract_overdue_months(block),
-                "latest_repayment_date": latest_date,
-                "latest_repayment_amount": latest_amount,
-                "last_repayment": " ".join(item for item in (latest_date, latest_amount) if item),
-                "history_performance": _extract_label(block, ("历史表现", "还款表现", "还款记录"), max_chars=160),
-                "information_report_date": _extract_date(block, ("信息报告日期", "报送日期")),
-                "evidence": normalized_block[:1000],
-                "evidence_text": normalized_block[:1000],
-            }
+            record = parse_credit_card_account_block(block)
             if _should_skip_inactive_card(block, record):
                 continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):

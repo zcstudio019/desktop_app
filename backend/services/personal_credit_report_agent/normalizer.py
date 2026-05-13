@@ -52,6 +52,7 @@ AMOUNT_KEYS = {
 
 LOAN_CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
 CARD_CLOSED_STATUS_WORDS = ("销户", "已销户", "注销", "已注销")
+CARD_CLOSED_EVIDENCE_WORDS = ("销户", "已销户", "注销", "已注销", "关闭", "已关闭")
 ABNORMAL_WORDS = ("逾期", "呆账", "代偿", "核销", "强制执行", "90天以上逾期")
 ABNORMAL_FIVE_CATEGORY_WORDS = ("关注", "次级", "可疑", "损失")
 NEGATIVE_ABNORMAL_PHRASES = ("当前无逾期", "无逾期", "未发生逾期", "没有逾期")
@@ -177,10 +178,11 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
     if _record_has_abnormal(record):
         return True
     status = str(record.get("account_status") or "")
-    if "未销户" not in status and any(word in status for word in CARD_CLOSED_STATUS_WORDS):
+    evidence = str(record.get("evidence") or record.get("evidence_text") or record.get("raw_text") or record.get("history_performance") or "")
+    closed_text = f"{status} {evidence}"
+    if "未销户" not in closed_text and any(word in closed_text for word in CARD_CLOSED_EVIDENCE_WORDS):
         return False
     used = record.get("used_limit") or record.get("used_amount")
-    evidence = str(record.get("evidence") or record.get("evidence_text") or "")
     if any(word in evidence for word in ("贷款", "五级分类", "消费贷款", "购房贷款")) and _amount_number(used) <= 0 and not record.get("credit_limit"):
         return False
     if not status and _amount_number(used) <= 0:

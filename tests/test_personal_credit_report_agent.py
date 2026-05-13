@@ -8,6 +8,7 @@ from backend.services import markdown_profile_service
 from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.personal_credit_report_agent.extract_basic_info import extract_basic_info
 from backend.services.personal_credit_report_agent.extract_credit_summary import extract_credit_summary
+from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block
 from backend.services.personal_credit_report_agent.extract_query_records import extract_query_records
 from backend.services.personal_credit_report_agent.markdown_renderer import render_personal_credit_markdown
 from backend.services.personal_credit_report_agent.orchestrator import run_personal_credit_report_agent
@@ -766,3 +767,72 @@ def test_loan_accounts_keep_abnormal_loan_real_sentence() -> None:
     assert len(loans) == 1
     assert "1,000" in loans[0]["overdue_amount"]
     assert "关注" in loans[0]["five_category"]
+
+
+def test_credit_card_skip_closed_accounts_from_list() -> None:
+    text = """
+个人征信报告
+信用卡
+从未逾期过的贷记卡及透支未超过60天的准贷记卡账户明细如下：
+1. 2006年08月25日中国建设银行股份有限公司上海市分行发放的贷记卡（美元账户），2009年09月销户。
+2. 2006年08月25日中国建设银行股份有限公司上海市分行发放的贷记卡（人民币账户），2009年09月销户。
+3. 2008年02月28日平安银行股份有限公司信用卡中心发放的贷记卡（美元账户），2018年10月销户。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["credit_card_accounts"] == []
+
+
+def test_credit_card_parse_closed_status_correctly() -> None:
+    text = "2006年08月25日中国建设银行股份有限公司上海市分行发放的贷记卡（美元账户），2009年09月销户。"
+    parsed = parse_credit_card_account_block(text)
+    assert parsed["account_status"] == "销户"
+    assert parsed["card_type"] == "贷记卡"
+    assert parsed["currency"] == "美元"
+    assert parsed["institution"] == "中国建设银行股份有限公司上海市分行"
+    records = extract_credit_card_accounts({"credit_card_accounts": text, "credit_transaction_details": "", "full_text": text})
+    assert records == []
+    report = run_personal_credit_report_agent(f"个人征信报告\n信用卡\n{text}")["report_json"]
+    assert report["credit_card_accounts"] == []
+
+
+def test_credit_card_keep_active_account() -> None:
+    text = """
+个人征信报告
+信用卡
+2024年01月01日某某银行股份有限公司发放的贷记卡（人民币账户），授信额度50,000元，已用额度10,000元，账户状态正常，当前无逾期。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    cards = report["credit_card_accounts"]
+    assert len(cards) == 1
+    assert "某某银行" in cards[0]["institution"]
+    assert cards[0]["card_type"] == "贷记卡"
+    assert cards[0]["currency"] == "人民币"
+    assert "50,000" in cards[0]["credit_limit"]
+    assert "10,000" in cards[0]["used_limit"]
+    assert "正常" in cards[0]["account_status"]
+
+
+def test_credit_card_keep_closed_abnormal_account() -> None:
+    text = """
+个人征信报告
+信用卡
+2020年01月01日某某银行发放的贷记卡（人民币账户），2023年01月销户，当前逾期金额1,000元。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    cards = report["credit_card_accounts"]
+    assert len(cards) == 1
+    assert "销户" in cards[0]["account_status"]
+    assert "1,000" in cards[0]["overdue_amount"]
+
+
+def test_credit_card_not_take_loan_credit_limit() -> None:
+    text = """
+个人征信报告
+信用卡
+2006年08月25日中国建设银行股份有限公司上海市分行发放的贷记卡（美元账户），2009年09月销户。
+
+贷款
+2023年01月15日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信，截至2025年02月，信用额度100元，余额为0，当前无逾期。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["credit_card_accounts"] == []
