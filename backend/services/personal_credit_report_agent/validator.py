@@ -17,7 +17,19 @@ def _summary_count(summary: dict[str, Any], *keys: str) -> int:
         value = summary.get(key)
         if isinstance(value, int):
             total += value
+        elif isinstance(value, str):
+            match = re.search(r"\d+", value)
+            if match:
+                total += int(match.group(0))
     return total
+
+
+def _first_summary_count(summary: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        count = _summary_count(summary, key)
+        if count:
+            return count
+    return 0
 
 
 def _contains_any(value: Any, keywords: tuple[str, ...]) -> bool:
@@ -73,18 +85,24 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
 
     expected_loans = _summary_count(
         summary,
-        "housing_loan_account_count",
-        "other_loan_account_count",
+        "outstanding_loan_account_count",
+        "housing_loan_outstanding_count",
+        "other_loan_outstanding_count",
     )
     actual_loans = len(report.get("loan_accounts") or [])
     if expected_loans and abs(expected_loans - actual_loans) >= 3:
         warnings.append(f"loan_account_count_mismatch: expected={expected_loans}, actual={actual_loans}")
 
-    expected_cards = summary.get("credit_card_account_count")
+    expected_cards = _first_summary_count(
+        summary,
+        "active_credit_card_account_count",
+        "credit_card_active_count",
+        "credit_card_account_count",
+    )
     actual_cards = len(report.get("credit_card_accounts") or [])
-    if isinstance(expected_cards, int) and expected_cards and abs(expected_cards - actual_cards) >= 3:
+    if expected_cards and abs(expected_cards - actual_cards) >= 3:
         warnings.append(f"credit_card_account_count_mismatch: expected={expected_cards}, actual={actual_cards}")
-    if isinstance(expected_cards, int) and expected_cards >= 30:
+    if expected_cards >= 30:
         _warn_once(warnings, f"credit_card_account_count_unusually_large: {expected_cards}")
 
     for index, loan in enumerate(report.get("loan_accounts") or [], start=1):

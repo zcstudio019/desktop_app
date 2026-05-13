@@ -29,7 +29,7 @@ def parse_money(value: Any) -> float | None:
     text = str(value or "").strip()
     if not text:
         return None
-    text = text.replace(",", "").replace("，", "")
+    text = text.replace(",", "").replace("，", "").replace("人民币", "").replace("元", "")
     multiplier = 10000.0 if "万" in text else 1.0
     match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
     if not match:
@@ -38,6 +38,11 @@ def parse_money(value: Any) -> float | None:
         return float(match.group(0)) * multiplier
     except Exception:
         return None
+
+
+def _summary_number(value: Any) -> int:
+    match = re.search(r"\d+", str(value or ""))
+    return int(match.group(0)) if match else 0
 
 
 def _fmt_money(value: float) -> str:
@@ -96,8 +101,24 @@ def _joined_risk_text(report_json: dict[str, Any]) -> str:
             chunks.extend(str(item) for item in value)
         else:
             chunks.append(str(value or ""))
-    chunks.append(str(report_json.get("credit_summary") or ""))
     return "\n".join(chunks)
+
+
+def _joined_structured_risk_text(items: list[dict[str, Any]]) -> str:
+    keys = (
+        "account_status",
+        "five_category",
+        "overdue_amount",
+        "overdue_months",
+        "overdue_info",
+        "history_performance",
+        "record_type",
+        "status",
+        "content",
+        "amount",
+        "months",
+    )
+    return "\n".join(" ".join(str(item.get(key) or "") for key in keys) for item in items)
 
 
 def _has_positive_money(items: list[dict[str, Any]], keys: tuple[str, ...]) -> bool:
@@ -117,6 +138,8 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
         cards = [item for item in report_json.get("credit_card_accounts") or [] if isinstance(item, dict)]
         queries = [item for item in report_json.get("query_records") or [] if isinstance(item, dict)]
         overdue_records = [item for item in report_json.get("overdue_records") or [] if isinstance(item, dict)]
+        public_records = [item for item in report_json.get("public_records") or [] if isinstance(item, dict)]
+        summary = report_json.get("credit_summary") if isinstance(report_json.get("credit_summary"), dict) else {}
 
         loan_balance = sum(value for item in loans if (value := parse_money(item.get("balance"))) is not None)
         card_limit = sum(value for item in cards if (value := parse_money(item.get("credit_limit"))) is not None)
@@ -127,7 +150,16 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
         if card_limit > 0:
             indicators["credit_card_usage_rate"] = round(card_used / card_limit, 4)
 
-        indicators["has_current_overdue"] = _has_positive_money([*loans, *cards], ("overdue_amount",))
+        summary_current_overdue = (
+            _summary_number(summary.get("credit_card_overdue_account_count") or summary.get("credit_card_overdue_count"))
+            + _summary_number(summary.get("loan_overdue_account_count"))
+        )
+        summary_90d_overdue = (
+            _summary_number(summary.get("credit_card_90d_overdue_account_count") or summary.get("credit_card_90d_overdue_count"))
+            + _summary_number(summary.get("loan_90d_overdue_account_count"))
+        )
+
+        indicators["has_current_overdue"] = summary_current_overdue > 0 or _has_positive_money([*loans, *cards], ("overdue_amount",))
         if not indicators["has_current_overdue"]:
             for item in overdue_records:
                 amount = parse_money(item.get("amount"))
@@ -135,8 +167,10 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
                 if amount is not None and amount > 0 and "逾期" in status_text:
                     indicators["has_current_overdue"] = True
                     break
+
+        structured_risk_text = _joined_structured_risk_text([*loans, *cards, *overdue_records, *public_records])
         risk_text = _joined_risk_text(report_json)
-        indicators["has_90d_overdue"] = "90天以上逾期" in risk_text or "90 天以上逾期" in risk_text
+        indicators["has_90d_overdue"] = summary_90d_overdue > 0 or "90天以上逾期" in structured_risk_text or "90 天以上逾期" in structured_risk_text
         indicators["has_bad_debt_or_compensation"] = any(keyword in risk_text for keyword in ("呆账", "代偿", "核销", "强制执行"))
 
         reference = _reference_date(report_json, warnings)
@@ -164,7 +198,7 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
         usage_rate = indicators.get("credit_card_usage_rate")
         reasons: list[str] = []
         if indicators["has_current_overdue"]:
-            reasons.append("存在当前逾期金额")
+            reasons.append("存在当前逾期")
         if indicators["has_90d_overdue"]:
             reasons.append("存在90天以上逾期")
         if indicators["has_bad_debt_or_compensation"]:
@@ -173,6 +207,10 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
             reasons.append("贷款审批查询频繁")
         if isinstance(usage_rate, (int, float)) and usage_rate >= 0.8:
             reasons.append("信用卡使用率过高")
+        if _summary_number(summary.get("personal_related_repayment_responsibility_account_count")) > 0:
+            reasons.append("存在为个人相关还款责任账户")
+        if _summary_number(summary.get("enterprise_related_repayment_responsibility_account_count")) > 0:
+            reasons.append("存在为企业相关还款责任账户")
 
         if indicators["has_current_overdue"] or indicators["has_90d_overdue"] or indicators["has_bad_debt_or_compensation"]:
             indicators["risk_level"] = "high"

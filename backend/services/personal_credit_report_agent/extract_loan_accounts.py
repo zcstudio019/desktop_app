@@ -9,6 +9,9 @@ from .schema import LOAN_ACCOUNT_FIELDS, ensure_record_fields
 LOAN_TYPES = ("购房贷款", "住房贷款", "经营性贷款", "经营贷款", "消费贷款", "汽车贷款", "其他贷款", "贷款")
 STATUS_WORDS = ("未结清", "已结清", "正常", "逾期", "结清", "关闭", "销户")
 FIVE_CATEGORY_WORDS = ("正常", "关注", "次级", "可疑", "损失")
+CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
+ABNORMAL_WORDS = ("逾期", "呆账", "代偿", "核销", "强制执行", "90天以上逾期")
+ABNORMAL_FIVE_CATEGORY_WORDS = ("关注", "次级", "可疑", "损失")
 
 
 def _normalize_block(block: str) -> str:
@@ -108,6 +111,46 @@ def _extract_account_no(block: str) -> str:
     return first_match(block, (r"(?:账户编号|账户号|账号|合同编号)\s*[:：]?\s*([A-Za-z0-9\-*]{4,40})",))
 
 
+def _amount_to_number(value: Any) -> float:
+    text = re.sub(r"[,\s，人民币元]", "", str(value or ""))
+    match = re.search(r"(-?\d+(?:\.\d+)?)", text)
+    if not match:
+        return 0.0
+    number = float(match.group(1))
+    if "万" in str(value or ""):
+        number *= 10000
+    return number
+
+
+def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
+    combined = " ".join(str(item or "") for item in (
+        block,
+        record.get("account_status"),
+        record.get("five_category"),
+        record.get("overdue_amount"),
+        record.get("overdue_months"),
+        record.get("overdue_info"),
+        record.get("history_performance"),
+    ))
+    if any(word in combined for word in ABNORMAL_WORDS):
+        return True
+    if any(word in str(record.get("five_category") or "") for word in ABNORMAL_FIVE_CATEGORY_WORDS):
+        return True
+    return _amount_to_number(record.get("overdue_amount")) > 0
+
+
+def _should_skip_closed_loan(block: str, record: dict[str, Any]) -> bool:
+    status_text = " ".join(str(item or "") for item in (record.get("account_status"), block))
+    if "未结清" in status_text:
+        return False
+    if not any(word in status_text for word in CLOSED_STATUS_WORDS):
+        return False
+    if _is_abnormal_account(block, record):
+        return False
+    balance_zero = not record.get("balance") or _amount_to_number(record.get("balance")) == 0
+    return balance_zero or any(word in str(record.get("account_status") or "") for word in CLOSED_STATUS_WORDS)
+
+
 def _candidate_blocks(text: str) -> list[str]:
     explicit = str(text or "")
     blocks = split_numbered_blocks(explicit)
@@ -120,6 +163,7 @@ def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         text = "\n".join(str(sections.get(key) or "") for key in ("loan_accounts", "credit_transaction_details"))
         records: list[dict[str, Any]] = []
+        seen: set[tuple[str, ...]] = set()
         for block in _candidate_blocks(text):
             normalized_block = _normalize_block(block)
             amount = _extract_money(block, ("发放金额", "借款金额", "贷款金额", "授信金额", "金额"))
@@ -148,7 +192,13 @@ def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
                 "evidence": normalized_block[:1000],
                 "evidence_text": normalized_block[:1000],
             }
+            if _should_skip_closed_loan(block, record):
+                continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):
+                signature = tuple(str(record.get(key) or "") for key in ("institution", "business_type", "amount", "balance", "account_status", "overdue_amount"))
+                if signature in seen:
+                    continue
+                seen.add(signature)
                 records.append(ensure_record_fields(record, LOAN_ACCOUNT_FIELDS))
         return records
     except Exception:

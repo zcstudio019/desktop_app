@@ -8,6 +8,8 @@ from .schema import CREDIT_CARD_ACCOUNT_FIELDS, ensure_record_fields
 
 CARD_TYPES = ("准贷记卡", "贷记卡", "信用卡")
 STATUS_WORDS = ("未销户", "已销户", "正常", "逾期", "冻结", "止付", "呆账", "销户")
+CLOSED_STATUS_WORDS = ("销户", "已销户", "注销", "已注销")
+ABNORMAL_WORDS = ("当前逾期", "逾期", "90天以上逾期", "呆账", "代偿", "核销")
 
 
 def _normalize_block(block: str) -> str:
@@ -91,6 +93,39 @@ def _extract_overdue_months(block: str) -> str:
     return match.group(1) if match else ""
 
 
+def _amount_to_number(value: Any) -> float:
+    text = re.sub(r"[,\s，人民币元]", "", str(value or ""))
+    match = re.search(r"(-?\d+(?:\.\d+)?)", text)
+    if not match:
+        return 0.0
+    number = float(match.group(1))
+    if "万" in str(value or ""):
+        number *= 10000
+    return number
+
+
+def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
+    combined = " ".join(str(item or "") for item in (
+        block,
+        record.get("account_status"),
+        record.get("overdue_amount"),
+        record.get("overdue_months"),
+        record.get("history_performance"),
+    ))
+    if any(word in combined for word in ABNORMAL_WORDS):
+        return True
+    return _amount_to_number(record.get("overdue_amount")) > 0
+
+
+def _should_skip_closed_card(block: str, record: dict[str, Any]) -> bool:
+    status_text = " ".join(str(item or "") for item in (record.get("account_status"), block))
+    if "未销户" in status_text:
+        return False
+    if not any(word in status_text for word in CLOSED_STATUS_WORDS):
+        return False
+    return not _is_abnormal_account(block, record)
+
+
 def _candidate_blocks(text: str) -> list[str]:
     source = str(text or "")
     blocks = split_numbered_blocks(source)
@@ -103,6 +138,7 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
     try:
         text = "\n".join(str(sections.get(key) or "") for key in ("credit_card_accounts", "credit_transaction_details"))
         records: list[dict[str, Any]] = []
+        seen: set[tuple[str, ...]] = set()
         for block in _candidate_blocks(text):
             normalized_block = _normalize_block(block)
             institution = _extract_institution(block)
@@ -131,7 +167,13 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                 "evidence": normalized_block[:1000],
                 "evidence_text": normalized_block[:1000],
             }
+            if _should_skip_closed_card(block, record):
+                continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):
+                signature = tuple(str(record.get(key) or "") for key in ("institution", "card_type", "credit_limit", "used_limit", "account_status", "overdue_amount"))
+                if signature in seen:
+                    continue
+                seen.add(signature)
                 records.append(ensure_record_fields(record, CREDIT_CARD_ACCOUNT_FIELDS))
         return records
     except Exception:

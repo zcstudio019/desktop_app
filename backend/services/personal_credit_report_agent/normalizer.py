@@ -55,6 +55,12 @@ ID_CARD_PATTERN = re.compile(
 )
 MARRIAGE_VALUES = ("未婚", "已婚", "离异", "丧偶")
 
+SUMMARY_ALIASES = {
+    "active_credit_card_account_count": ("credit_card_active_count",),
+    "credit_card_overdue_account_count": ("credit_card_overdue_count",),
+    "credit_card_90d_overdue_account_count": ("credit_card_90d_overdue_count",),
+}
+
 
 def _warn_once(report: dict[str, Any], warning: str) -> None:
     warnings = report.setdefault("warnings", [])
@@ -112,6 +118,47 @@ def _clean_marital_status(value: Any) -> str:
     return ""
 
 
+def _summary_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    match = re.search(r"\d+", str(value or ""))
+    return int(match.group(0)) if match else None
+
+
+def _summary_sum(*values: Any) -> str:
+    numbers = [_summary_int(value) for value in values]
+    numbers = [number for number in numbers if number is not None]
+    return str(sum(numbers)) if numbers else ""
+
+
+def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    normalized = {**default_credit_summary(), **summary}
+    for target, aliases in SUMMARY_ALIASES.items():
+        if normalized.get(target) in (None, ""):
+            for alias in aliases:
+                if summary.get(alias) not in (None, ""):
+                    normalized[target] = summary.get(alias)
+                    break
+    if normalized.get("loan_account_count") in (None, ""):
+        normalized["loan_account_count"] = _summary_sum(
+            summary.get("housing_loan_account_count"),
+            summary.get("other_loan_account_count"),
+        ) or None
+    if normalized.get("outstanding_loan_account_count") in (None, ""):
+        normalized["outstanding_loan_account_count"] = _summary_sum(
+            summary.get("housing_loan_outstanding_count"),
+            summary.get("other_loan_outstanding_count"),
+        ) or None
+    if normalized.get("loan_overdue_account_count") in (None, ""):
+        normalized["loan_overdue_account_count"] = _summary_sum(
+            summary.get("housing_loan_overdue_count"),
+            summary.get("other_loan_overdue_count"),
+        ) or None
+    for key, value in list(normalized.items()):
+        normalized[key] = value if isinstance(value, int) or value is None else _clean_scalar(value)
+    return normalized
+
+
 def normalize_report_json(report: dict[str, Any] | None) -> dict[str, Any]:
     normalized = clone_default_report_json()
     if isinstance(report, dict):
@@ -119,7 +166,7 @@ def normalize_report_json(report: dict[str, Any] | None) -> dict[str, Any]:
         basic = report.get("basic_info") if isinstance(report.get("basic_info"), dict) else {}
         summary = report.get("credit_summary") if isinstance(report.get("credit_summary"), dict) else {}
         normalized["basic_info"] = {**default_basic_info(), **basic}
-        normalized["credit_summary"] = {**default_credit_summary(), **summary}
+        normalized["credit_summary"] = _normalize_credit_summary(summary)
 
     for key, value in list(normalized["basic_info"].items()):
         normalized["basic_info"][key] = _clean_scalar(value) or ""
@@ -134,8 +181,7 @@ def normalize_report_json(report: dict[str, Any] | None) -> dict[str, Any]:
         _warn_once(normalized, "证件号码未识别或格式异常")
     normalized["basic_info"]["id_number"] = cleaned_id_number
     normalized["basic_info"]["marital_status"] = _clean_marital_status(normalized["basic_info"].get("marital_status"))
-    for key, value in list(normalized["credit_summary"].items()):
-        normalized["credit_summary"][key] = value if isinstance(value, int) or value is None else _clean_scalar(value)
+    normalized["credit_summary"] = _normalize_credit_summary(normalized["credit_summary"])
 
     for field in LIST_FIELDS:
         value = normalized.get(field)

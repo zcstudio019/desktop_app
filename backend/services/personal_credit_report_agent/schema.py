@@ -6,17 +6,15 @@ from typing import Any
 
 SUMMARY_FIELDS = (
     "credit_card_account_count",
-    "credit_card_active_count",
-    "credit_card_overdue_count",
-    "credit_card_90d_overdue_count",
-    "housing_loan_account_count",
-    "housing_loan_outstanding_count",
-    "housing_loan_overdue_count",
-    "other_loan_account_count",
-    "other_loan_outstanding_count",
-    "other_loan_overdue_count",
-    "other_business_account_count",
-    "guarantee_count",
+    "active_credit_card_account_count",
+    "loan_account_count",
+    "outstanding_loan_account_count",
+    "credit_card_overdue_account_count",
+    "credit_card_90d_overdue_account_count",
+    "loan_overdue_account_count",
+    "loan_90d_overdue_account_count",
+    "personal_related_repayment_responsibility_account_count",
+    "enterprise_related_repayment_responsibility_account_count",
 )
 
 BASIC_INFO_FIELDS = (

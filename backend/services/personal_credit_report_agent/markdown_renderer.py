@@ -22,6 +22,19 @@ WARNING_LABELS = {
     "query_records_not_array": "查询记录格式异常，已按空列表处理",
 }
 
+SUMMARY_ROWS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("信用卡账户数", "credit_card_account_count", ()),
+    ("当前有效信用卡账户数", "active_credit_card_account_count", ("credit_card_active_count",)),
+    ("贷款账户数", "loan_account_count", ("housing_loan_account_count", "other_loan_account_count")),
+    ("未结清贷款账户数", "outstanding_loan_account_count", ("housing_loan_outstanding_count", "other_loan_outstanding_count")),
+    ("信用卡逾期账户数", "credit_card_overdue_account_count", ("credit_card_overdue_count",)),
+    ("信用卡 90 天以上逾期账户数", "credit_card_90d_overdue_account_count", ("credit_card_90d_overdue_count",)),
+    ("贷款逾期账户数", "loan_overdue_account_count", ("housing_loan_overdue_count", "other_loan_overdue_count")),
+    ("贷款 90 天以上逾期账户数", "loan_90d_overdue_account_count", ()),
+    ("为个人相关还款责任账户数", "personal_related_repayment_responsibility_account_count", ()),
+    ("为企业相关还款责任账户数", "enterprise_related_repayment_responsibility_account_count", ()),
+)
+
 
 def _is_empty(value: Any) -> bool:
     return value is None or value == "" or value == []
@@ -35,6 +48,24 @@ def _value(value: Any, empty: str = "未识别") -> str:
 
 def _count(value: Any) -> str:
     return "未识别" if value is None or value == "" else str(value)
+
+
+def _summary_number(value: Any) -> int | None:
+    match = re.search(r"\d+", str(value or ""))
+    return int(match.group(0)) if match else None
+
+
+def _summary_sum(summary: dict[str, Any], keys: tuple[str, ...]) -> str:
+    numbers = [_summary_number(summary.get(key)) for key in keys]
+    numbers = [number for number in numbers if number is not None]
+    return str(sum(numbers)) if numbers else ""
+
+
+def _summary_value(summary: dict[str, Any], key: str, legacy_keys: tuple[str, ...] = ()) -> str:
+    value = summary.get(key)
+    if value not in (None, ""):
+        return _count(value)
+    return _count(_summary_sum(summary, legacy_keys))
 
 
 def _rate(value: Any) -> str:
@@ -147,18 +178,16 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     lines.extend([
         "",
         "## 三、信贷记录概要",
-        f"- 信用卡账户数：{_count(summary.get('credit_card_account_count'))}",
-        f"- 当前有效信用卡账户数：{_count(summary.get('credit_card_active_count'))}",
-        f"- 信用卡逾期账户数：{_count(summary.get('credit_card_overdue_count'))}",
-        f"- 信用卡90天以上逾期账户数：{_count(summary.get('credit_card_90d_overdue_count'))}",
-        f"- 购房贷款账户数：{_count(summary.get('housing_loan_account_count'))}",
-        f"- 未结清购房贷款账户数：{_count(summary.get('housing_loan_outstanding_count'))}",
-        f"- 其他贷款账户数：{_count(summary.get('other_loan_account_count'))}",
-        f"- 未结清其他贷款账户数：{_count(summary.get('other_loan_outstanding_count'))}",
-        f"- 其他业务账户数：{_count(summary.get('other_business_account_count'))}",
-        f"- 担保笔数：{_count(summary.get('guarantee_count'))}",
+        "| 项目 | 数量 / 状态 |",
+        "|---|---:|",
+    ])
+    for label, key, legacy_keys in SUMMARY_ROWS:
+        lines.append(f"| {label} | {_summary_value(summary, key, legacy_keys)} |")
+
+    lines.extend([
         "",
         "## 四、贷款账户明细",
+        "仅展示未结清、当前有效或存在异常的贷款账户；已结清贷款不展示。",
     ])
     if loans:
         for index, item in enumerate(loans, start=1):
@@ -181,9 +210,13 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
                     ("information_report_date", "信息报告日期"),
                 ))
     else:
-        lines.append("- 暂无")
+        lines.append("- 暂无需要展示的未结清贷款账户。")
 
-    lines.extend(["", "## 五、信用卡账户明细"])
+    lines.extend([
+        "",
+        "## 五、信用卡账户明细",
+        "仅展示当前有效、未销户或存在异常的信用卡账户；销户账户不展示。",
+    ])
     if cards:
         for index, item in enumerate(cards, start=1):
             if isinstance(item, dict):
@@ -203,7 +236,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
                     ("information_report_date", "信息报告日期"),
                 ))
     else:
-        lines.append("- 暂无")
+        lines.append("- 暂无需要展示的当前有效信用卡账户。")
 
     lines.extend(["", "## 六、担保信息"])
     if guarantees:
@@ -253,10 +286,10 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
         f"- 当前逾期：{_yes_no(indicators.get('has_current_overdue'))}",
         f"- 90天以上逾期：{_yes_no(indicators.get('has_90d_overdue'))}",
         f"- 呆账/代偿/核销/强制执行：{_yes_no(indicators.get('has_bad_debt_or_compensation'))}",
-        f"- 近1个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_1m'))}",
-        f"- 近3个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_3m'))}",
-        f"- 近6个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_6m'))}",
-        f"- 近3个月信用卡审批查询次数：{_count(indicators.get('credit_card_approval_queries_3m'))}",
+        f"- 近 1 个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_1m'))}",
+        f"- 近 3 个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_3m'))}",
+        f"- 近 6 个月贷款审批查询次数：{_count(indicators.get('loan_approval_queries_6m'))}",
+        f"- 近 3 个月信用卡审批查询次数：{_count(indicators.get('credit_card_approval_queries_3m'))}",
         f"- 信用卡使用率：{_rate(indicators.get('credit_card_usage_rate'))}",
     ])
     lines.append("- 风险原因：" + ("；".join(risk_reasons) if risk_reasons else "暂无"))
