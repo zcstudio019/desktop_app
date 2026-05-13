@@ -6,13 +6,50 @@ from typing import Any
 from .evidence import clean_amount, clean_value, first_match, split_numbered_blocks, value_after_label
 from .schema import LOAN_ACCOUNT_FIELDS, ensure_record_fields
 
-LOAN_TYPES = ("购房贷款", "住房贷款", "经营性贷款", "经营贷款", "消费贷款", "汽车贷款", "其他贷款", "贷款")
+LOAN_TYPES = ("购房贷款", "住房贷款", "经营性贷款", "经营贷款", "其他个人消费贷款", "个人消费贷款", "消费贷款", "汽车贷款", "其他贷款", "贷款")
 STATUS_WORDS = ("未结清", "已结清", "正常", "逾期", "结清", "关闭", "销户")
 FIVE_CATEGORY_WORDS = ("正常", "关注", "次级", "可疑", "损失")
 CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
 ABNORMAL_WORDS = ("逾期", "呆账", "代偿", "核销", "强制执行", "90天以上逾期")
 ABNORMAL_FIVE_CATEGORY_WORDS = ("关注", "次级", "可疑", "损失")
 ZERO_LIKE_STATUS_WORDS = ("未识别", "未知", "不详")
+STOP_SECTION_KEYWORDS = (
+    "相关还款责任信息",
+    "相关还款责任",
+    "担保信息",
+    "保证合同编号",
+    "查询记录",
+    "查询记录明细",
+    "机构查询记录明细",
+    "本人查询记录明细",
+    "公共记录",
+    "公共信息",
+    "说明",
+    "本人声明",
+    "异议标注",
+)
+POLLUTED_INSTITUTION_KEYWORDS = (
+    "查询记录",
+    "查询记录明细",
+    "机构查询",
+    "本人查询",
+    "相关还款责任",
+    "担保信息",
+    "公共记录",
+)
+POLLUTED_EVIDENCE_KEYWORDS = (
+    "为企业相关还款责任",
+    "为个人相关还款责任",
+    "相关还款责任信息",
+    "承担相关还款责任",
+    "责任人类型",
+    "保证合同编号",
+    "保证人",
+    "共同借款人",
+)
+QUERY_RECORD_KEYWORDS = ("查询记录明细", "查询日期", "查询机构", "查询原因", "贷款审批", "信用卡审批", "贷后管理")
+OWN_LOAN_HINTS = ("发放的", "发放贷款", "贷款授信", "为其他个人消费贷款授信", "余额为", "当前无逾期", "五级分类")
+NEGATIVE_ABNORMAL_PHRASES = ("当前无逾期", "无逾期", "未发生逾期", "没有逾期")
 
 
 def _normalize_block(block: str) -> str:
@@ -24,6 +61,15 @@ def _normalize_block(block: str) -> str:
 
 def _looks_like_loan(block: str) -> bool:
     return any(keyword in block for keyword in LOAN_TYPES)
+
+
+def _strip_stop_sections(text: str) -> str:
+    source = str(text or "")
+    stops = [source.find(keyword) for keyword in STOP_SECTION_KEYWORDS if keyword in source]
+    stops = [index for index in stops if index >= 0]
+    if not stops:
+        return source
+    return source[:min(stops)]
 
 
 def _extract_label(block: str, labels: tuple[str, ...], *, max_chars: int = 120) -> str:
@@ -40,10 +86,13 @@ def _extract_label(block: str, labels: tuple[str, ...], *, max_chars: int = 120)
 
 
 def _extract_institution(block: str) -> str:
-    return (
+    value = (
         _extract_label(block, ("机构", "贷款机构", "发放机构", "授信机构", "管理机构"), max_chars=80)
         or first_match(block, (r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,50}(?:银行|小额贷款|消费金融|汽车金融|信托|财务公司|信用社|金融公司)[\u4e00-\u9fffA-Za-z0-9（）()·]{0,30})",))
     )
+    value = re.sub(r"^(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", "", value or "")
+    value = re.split(r"(?:发放|为其他个人消费贷款授信|为个人消费贷款授信|为消费贷款授信)", value, maxsplit=1)[0]
+    return clean_value(value)
 
 
 def _extract_business_type(block: str) -> str:
@@ -53,7 +102,10 @@ def _extract_business_type(block: str) -> str:
             if item in direct:
                 return item
         return direct
-    return first_match(block, (r"(购房贷款|住房贷款|经营性贷款|经营贷款|消费贷款|汽车贷款|其他贷款|贷款)",))
+    for item in LOAN_TYPES:
+        if item != "贷款" and item in block:
+            return item
+    return first_match(block, (r"(购房贷款|住房贷款|经营性贷款|经营贷款|其他个人消费贷款|个人消费贷款|消费贷款|汽车贷款|其他贷款|贷款)",))
 
 
 def _extract_date(block: str, labels: tuple[str, ...]) -> str:
@@ -84,11 +136,16 @@ def _looks_like_date_pollution(value: Any, block: str) -> bool:
 
 def _extract_status(block: str) -> str:
     labeled = _extract_label(block, ("账户状态", "状态", "当前状态"), max_chars=40)
+    labeled_for_status = labeled
+    block_for_status = block
+    for phrase in NEGATIVE_ABNORMAL_PHRASES:
+        labeled_for_status = labeled_for_status.replace(phrase, "")
+        block_for_status = block_for_status.replace(phrase, "")
     for word in STATUS_WORDS:
-        if word in labeled:
+        if word in labeled_for_status:
             return word
     for word in STATUS_WORDS:
-        if word in block:
+        if word in block_for_status:
             return word
     return clean_value(labeled)
 
@@ -144,11 +201,37 @@ def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
     ))
     if "信贷记录概要" not in block and "信用卡账户数" not in block and "贷款账户数" not in block:
         combined = f"{combined} {block}"
+    for phrase in NEGATIVE_ABNORMAL_PHRASES:
+        combined = combined.replace(phrase, "")
     if any(word in combined for word in ABNORMAL_WORDS):
         return True
     if any(word in str(record.get("five_category") or "") for word in ABNORMAL_FIVE_CATEGORY_WORDS):
         return True
     return _amount_to_number(record.get("overdue_amount")) > 0
+
+
+def is_polluted_loan_account(record: dict[str, Any], evidence_text: str) -> bool:
+    institution = str(record.get("institution") or "").strip()
+    evidence = str(evidence_text or record.get("evidence") or record.get("evidence_text") or "")
+    account_no = str(record.get("account_no") or "").strip()
+    if any(keyword in institution for keyword in POLLUTED_INSTITUTION_KEYWORDS):
+        return True
+    if any(keyword in evidence for keyword in POLLUTED_EVIDENCE_KEYWORDS):
+        return True
+    if account_no.upper().startswith("D") and "保证合同编号" in evidence:
+        return True
+    if "相关还款责任金额" in evidence or "承担相关还款责任" in evidence:
+        return True
+    if institution == "查询记录明细":
+        return True
+    if (not institution or institution == "查询记录明细") and any(keyword in evidence for keyword in QUERY_RECORD_KEYWORDS):
+        return True
+    meaningful_keys = ("account_no", "institution", "business_type", "open_date", "due_date", "amount", "balance", "account_status", "five_category", "overdue_amount")
+    meaningful_count = sum(1 for key in meaningful_keys if str(record.get(key) or "").strip() and str(record.get(key) or "").strip() != "未识别")
+    has_only_money = bool(record.get("balance") or record.get("amount")) and meaningful_count <= 4
+    if has_only_money and not any(keyword in evidence for keyword in OWN_LOAN_HINTS):
+        return True
+    return False
 
 
 def _should_skip_closed_loan(block: str, record: dict[str, Any]) -> bool:
@@ -175,7 +258,10 @@ def _candidate_blocks(text: str) -> list[str]:
 
 def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
     try:
-        text = "\n".join(str(sections.get(key) or "") for key in ("loan_accounts", "credit_transaction_details"))
+        text = "\n".join(
+            _strip_stop_sections(str(sections.get(key) or ""))
+            for key in ("loan_accounts", "credit_transaction_details")
+        )
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
         for block in _candidate_blocks(text):
@@ -206,6 +292,8 @@ def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
                 "evidence": normalized_block[:1000],
                 "evidence_text": normalized_block[:1000],
             }
+            if is_polluted_loan_account(record, normalized_block):
+                continue
             if _should_skip_closed_loan(block, record):
                 continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):

@@ -114,6 +114,9 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
         suspicious_text = str(loan.get("institution") or "")
         if re.search(r"(查询记录|报告基础信息|信贷记录概要)", suspicious_text):
             _warn_once(warnings, f"loan_account_section_title_mixed: account={index}")
+        evidence = " ".join(str(loan.get(key) or "") for key in ("institution", "evidence", "evidence_text", "account_no"))
+        if re.search(r"(相关还款责任|保证合同编号|保证人|共同借款人|查询记录明细|查询机构|贷款审批|信用卡审批|贷后管理)", evidence):
+            _warn_once(warnings, f"loan_account_pollution_suspected: account={index}")
 
     report["warnings"] = warnings
     report["missing_fields"] = missing_fields

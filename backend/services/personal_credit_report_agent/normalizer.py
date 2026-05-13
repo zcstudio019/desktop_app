@@ -54,6 +54,25 @@ LOAN_CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
 CARD_CLOSED_STATUS_WORDS = ("销户", "已销户", "注销", "已注销")
 ABNORMAL_WORDS = ("逾期", "呆账", "代偿", "核销", "强制执行", "90天以上逾期")
 ABNORMAL_FIVE_CATEGORY_WORDS = ("关注", "次级", "可疑", "损失")
+NEGATIVE_ABNORMAL_PHRASES = ("当前无逾期", "无逾期", "未发生逾期", "没有逾期")
+POLLUTED_LOAN_INSTITUTION_KEYWORDS = ("查询记录", "查询记录明细", "机构查询", "本人查询", "相关还款责任", "担保信息", "公共记录")
+POLLUTED_LOAN_EVIDENCE_KEYWORDS = (
+    "为企业相关还款责任",
+    "为个人相关还款责任",
+    "相关还款责任信息",
+    "承担相关还款责任",
+    "责任人类型",
+    "保证合同编号",
+    "保证人",
+    "共同借款人",
+    "查询记录明细",
+    "查询日期",
+    "查询机构",
+    "查询原因",
+    "贷款审批",
+    "信用卡审批",
+    "贷后管理",
+)
 
 ID_CARD_PATTERN = re.compile(
     r"(?<!\d)([1-9]\d{5}(?:(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]|\d{9}))(?!\d)"
@@ -110,11 +129,34 @@ def _record_has_abnormal(record: dict[str, Any]) -> bool:
         for key, value in record.items()
         if key not in {"evidence", "evidence_text"}
     )
+    for phrase in NEGATIVE_ABNORMAL_PHRASES:
+        combined = combined.replace(phrase, "")
     if any(word in combined for word in ABNORMAL_WORDS):
         return True
     if any(word in str(record.get("five_category") or "") for word in ABNORMAL_FIVE_CATEGORY_WORDS):
         return True
     return _amount_number(record.get("overdue_amount")) > 0
+
+
+def is_polluted_loan_account(record: dict[str, Any], evidence_text: str = "") -> bool:
+    institution = str(record.get("institution") or "").strip()
+    evidence = str(evidence_text or record.get("evidence") or record.get("evidence_text") or "")
+    account_no = str(record.get("account_no") or "").strip()
+    if any(keyword in institution for keyword in POLLUTED_LOAN_INSTITUTION_KEYWORDS):
+        return True
+    if any(keyword in evidence for keyword in POLLUTED_LOAN_EVIDENCE_KEYWORDS):
+        return True
+    if account_no.upper().startswith("D") and "保证合同编号" in evidence:
+        return True
+    if "相关还款责任金额" in evidence or "承担相关还款责任" in evidence:
+        return True
+    meaningful_keys = ("account_no", "institution", "business_type", "open_date", "due_date", "amount", "balance", "account_status", "five_category", "overdue_amount")
+    meaningful_count = sum(1 for key in meaningful_keys if str(record.get(key) or "").strip() and str(record.get(key) or "").strip() != "未识别")
+    if bool(record.get("balance") or record.get("amount")) and meaningful_count <= 4:
+        own_loan_hints = ("发放的", "发放贷款", "贷款授信", "余额为", "当前无逾期", "五级分类")
+        if not any(keyword in evidence for keyword in own_loan_hints):
+            return True
+    return False
 
 
 def _keep_loan_record(record: dict[str, Any]) -> bool:
@@ -249,7 +291,20 @@ def normalize_report_json(report: dict[str, Any] | None) -> dict[str, Any]:
         if record_fields:
             records = [_normalize_record(item, record_fields) for item in value]
             if field == "loan_accounts":
-                records = [item for item in records if _keep_loan_record(item)]
+                filtered_records: list[dict[str, Any]] = []
+                filtered_count = 0
+                for item in records:
+                    if is_polluted_loan_account(item):
+                        filtered_count += 1
+                        account_no = str(item.get("account_no") or "").strip()
+                        suffix = f"：{account_no}" if account_no else ""
+                        _warn_once(normalized, f"已过滤疑似相关还款责任/查询记录污染的贷款账户{suffix}")
+                        continue
+                    if _keep_loan_record(item):
+                        filtered_records.append(item)
+                if filtered_count:
+                    _warn_once(normalized, f"已过滤疑似非本人贷款账户/相关还款责任污染记录 {filtered_count} 条")
+                records = filtered_records
             elif field == "credit_card_accounts":
                 records = [item for item in records if _keep_card_record(item)]
             normalized[field] = records

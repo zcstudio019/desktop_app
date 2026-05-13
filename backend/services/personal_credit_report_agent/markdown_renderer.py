@@ -124,6 +124,12 @@ def _format_warning(item: Any) -> str:
         return "贷款账户明细疑似混入信用卡信息，请核验"
     if text.startswith("credit_card_account_count_unusually_large"):
         return "信用卡账户数异常偏大，请核验 OCR 或分段结果"
+    if text.startswith("已过滤疑似相关还款责任/查询记录污染的贷款账户"):
+        return text
+    if text.startswith("已过滤疑似非本人贷款账户/相关还款责任污染记录"):
+        return text
+    if text.startswith("loan_account_pollution_suspected"):
+        return "贷款账户明细疑似混入相关还款责任/查询记录内容，请核验"
     return text
 
 

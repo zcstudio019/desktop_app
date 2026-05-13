@@ -698,3 +698,71 @@ def test_credit_summary_real_ocr_matrix() -> None:
     assert summary["loan_90d_overdue_account_count"] == "0"
     assert summary["personal_related_repayment_responsibility_account_count"] in {"0 / 未显示", "0"}
     assert summary["enterprise_related_repayment_responsibility_account_count"] == "9"
+
+
+def test_loan_accounts_skip_related_repayment_responsibility() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2024年04月01日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额5,000,000(保证合同编号:D10023010H00012024052800000716)。截至2025年02月20日，贷款余额5,000,000(人民币元)。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["loan_accounts"] == []
+    assert all(item.get("account_no") != "D10023010H00012024052800000716" for item in report["loan_accounts"])
+
+
+def test_loan_accounts_skip_query_record_pollution() -> None:
+    text = """
+个人征信报告
+查询记录明细
+2025年02月20日 南京银行股份有限公司上海虹口支行 贷款审批
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["loan_accounts"] == []
+
+
+def test_loan_accounts_skip_settled_loan() -> None:
+    text = """
+个人征信报告
+贷款
+2017年12月16日深圳前海微众银行股份有限公司发放的10,000元(人民币)其他个人消费贷款，2018年01月已结清。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["loan_accounts"] == []
+
+
+def test_loan_accounts_skip_zero_balance_no_abnormal_real_sentence() -> None:
+    text = """
+个人征信报告
+贷款
+2023年01月15日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信，额度有效期至2027年02月15日，可循环使用。截至2025年02月，信用额度100元(人民币)，余额为0，当前无逾期。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["loan_accounts"] == []
+
+
+def test_loan_accounts_keep_active_balance_own_loan() -> None:
+    text = """
+个人征信报告
+贷款
+2024年01月15日某某银行股份有限公司发放的100,000元(人民币)其他个人消费贷款，截至2025年02月，余额为50,000，当前无逾期。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    loans = report["loan_accounts"]
+    assert len(loans) == 1
+    assert "某某银行" in loans[0]["institution"]
+    assert loans[0]["balance"] == "50,000"
+    assert "其他个人消费贷款" in loans[0]["business_type"]
+
+
+def test_loan_accounts_keep_abnormal_loan_real_sentence() -> None:
+    text = """
+个人征信报告
+贷款
+2024年01月15日某某银行发放的100,000元其他个人消费贷款，截至2025年02月，余额为0，当前逾期金额1,000，五级分类关注。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    loans = report["loan_accounts"]
+    assert len(loans) == 1
+    assert "1,000" in loans[0]["overdue_amount"]
+    assert "关注" in loans[0]["five_category"]
