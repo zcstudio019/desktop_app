@@ -1167,3 +1167,26 @@ def test_related_repayment_9_candidates_9_parsed() -> None:
     records = extract_related_repayment_responsibilities({}, RELATED_REPAYMENT_9_TEXT)
     assert len(records) == 9
     assert any(item["start_date"] == "2025-02-20" for item in records)
+
+
+def test_parse_2025_02_20_related_repayment() -> None:
+    test_related_repayment_parse_2025_02_20_record()
+
+
+def test_keep_two_huaxia_records_not_deduped() -> None:
+    test_related_repayment_keep_two_huaxia_records()
+
+
+def test_related_repayment_emergency_append_9th() -> None:
+    records = extract_related_repayment_responsibilities({}, RELATED_REPAYMENT_9_TEXT)
+    assert any(
+        item["start_date"] == "2025-02-20"
+        and item["contract_no"] == "B10811000H0001181567"
+        and item["loan_balance"] == "1,370,000"
+        for item in records
+    )
+
+
+def test_related_repayment_candidate_count_equals_parsed_count_when_valid() -> None:
+    records = extract_related_repayment_responsibilities({}, RELATED_REPAYMENT_9_TEXT)
+    assert len(records) == 9
