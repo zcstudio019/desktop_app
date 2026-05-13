@@ -14,6 +14,22 @@ ACTIVE_STATUS_WORDS = ("未销户", "正常", "当前有效")
 SUMMARY_ONLY_WORDS = ("信用卡账户数", "信用卡90天以上逾期账户数", "信用卡 90 天以上逾期账户数", "贷款账户数", "信贷记录概要")
 DETAIL_WORDS = ("贷记卡账户明细", "准贷记卡账户明细", "授信额度", "已用额度", "共享授信额度", "最近一次还款", "当前逾期", "发卡机构", "账户状态", "卡号")
 LOAN_DETAIL_WORDS = ("贷款", "消费贷款", "购房贷款", "其他贷款", "五级分类")
+STOP_SECTION_HEADINGS = (
+    "贷款",
+    "相关还款责任信息",
+    "相关还款责任",
+    "查询记录",
+    "查询记录明细",
+    "公共信息",
+    "公共记录",
+    "担保信息",
+)
+CARD_WINDOW_ANCHORS = (
+    "信用卡",
+    "贷记卡账户明细",
+    "准贷记卡账户明细",
+    "从未逾期过的贷记卡",
+)
 
 
 def _normalize_block(block: str) -> str:
@@ -21,6 +37,25 @@ def _normalize_block(block: str) -> str:
     text = re.sub(r"[ \t\u3000]+", " ", text)
     text = re.sub(r"\n+", " ", text)
     return clean_value(text)
+
+
+def _extract_credit_card_window(text: str) -> str:
+    source = str(text or "")
+    if not source.strip():
+        return ""
+    starts = [source.find(anchor) for anchor in CARD_WINDOW_ANCHORS if source.find(anchor) >= 0]
+    if not starts:
+        return source
+    start = min(starts)
+    tail = source[start:]
+    stop_positions: list[int] = []
+    for heading in STOP_SECTION_HEADINGS:
+        pattern = rf"(?m)^\s*{re.escape(heading)}\s*[:：]?\s*$"
+        match = re.search(pattern, tail)
+        if match and match.start() > 0:
+            stop_positions.append(match.start())
+    end = min(stop_positions) if stop_positions else len(tail)
+    return tail[:end]
 
 
 def _looks_like_card(block: str) -> bool:
@@ -225,7 +260,16 @@ def parse_credit_card_account_block(block: str) -> dict[str, Any]:
 
 def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
     try:
-        text = "\n".join(str(sections.get(key) or "") for key in ("credit_card_accounts", "credit_transaction_details"))
+        explicit_text = str(sections.get("credit_card_accounts") or "").strip()
+        if explicit_text:
+            text = _extract_credit_card_window(explicit_text)
+        else:
+            source_text = "\n".join(
+                str(sections.get(key) or "")
+                for key in ("full_text", "credit_transaction_details")
+                if sections.get(key)
+            )
+            text = _extract_credit_card_window(source_text)
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
         for block in _candidate_blocks(text):

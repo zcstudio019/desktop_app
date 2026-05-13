@@ -836,3 +836,24 @@ def test_credit_card_not_take_loan_credit_limit() -> None:
 """
     report = run_personal_credit_report_agent(text)["report_json"]
     assert report["credit_card_accounts"] == []
+
+
+def test_credit_card_closed_list_all_filtered() -> None:
+    text = """
+个人征信报告
+信用卡
+从未逾期过的贷记卡及透支未超过60天的准贷记卡账户明细如下:
+1. 2006年08月25日中国建设银行股份有限公司上海市分行发放的贷记卡(美元账户),2009年09月销户。
+2. 2006年08月25日中国建设银行股份有限公司上海市分行发放的贷记卡(人民币账户),2009年09月销户。
+贷款
+2023年01月15日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信,截至2025年02月,信用额度100元(人民币),余额为0,当前无逾期。
+"""
+    result = run_personal_credit_report_agent(text)
+    report = result["report_json"]
+    markdown = result["report_markdown"]
+    assert report["credit_card_accounts"] == []
+    assert "暂无需要展示的当前有效信用卡账户" in markdown
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、担保信息", 1)[0]
+    assert "中国建设银行股份有限公司上海市分行" not in card_section
+    assert "授信额度：100元" not in card_section
+    assert "账户状态：未销户" not in card_section
