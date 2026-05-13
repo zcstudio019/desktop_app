@@ -1061,3 +1061,55 @@ def test_related_repayment_markdown_contains_start_date() -> None:
     assert "贷款余额" in markdown
     assert "合同编号" in markdown
     assert "截至日期" in markdown
+
+
+def test_related_repayment_extract_last_9th_record() -> None:
+    text = """
+个人征信报告
+2025年02月20日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在华夏银行股份有限公司上海分行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额550,000（保证合同编号：B10811000H0001181567）。截至2025年02月21日，贷款余额1,370,000（人民币元）。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    records = report["related_repayment_responsibilities"]
+    assert len(records) == 1
+    item = records[0]
+    assert item["start_date"] == "2025-02-20"
+    assert item["related_party"] == "上海乐芙兰电子商务有限公司"
+    assert item["institution"] == "华夏银行股份有限公司上海分行"
+    assert item["responsibility_type"] == "保证人"
+    assert item["responsibility_amount"] == "550,000"
+    assert item["contract_no"] == "B10811000H0001181567"
+    assert item["as_of_date"] == "2025-02-21"
+    assert item["loan_balance"] == "1,370,000"
+
+
+def test_related_repayment_keep_huaxia_two_similar_records() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2024年02月23日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在华夏银行股份有限公司上海分行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额5,500,000（保证合同编号：B10811000H00011881567）。截至2025年02月21日，贷款余额2,920,000（人民币元）。
+2025年02月20日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在华夏银行股份有限公司上海分行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额550,000（保证合同编号：B10811000H0001181567）。截至2025年02月21日，贷款余额1,370,000（人民币元）。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    records = report["related_repayment_responsibilities"]
+    contract_numbers = {item["contract_no"] for item in records}
+    assert len(records) == 2
+    assert "B10811000H00011881567" in contract_numbers
+    assert "B10811000H0001181567" in contract_numbers
+
+
+def test_related_repayment_extract_9_records_full_sample() -> None:
+    report = run_personal_credit_report_agent(RELATED_REPAYMENT_9_TEXT)["report_json"]
+    records = report["related_repayment_responsibilities"]
+    assert len(records) == 9
+    assert records[-1]["start_date"] == "2025-02-20"
+    assert records[-1]["loan_balance"] == "1,370,000"
+
+
+def test_related_repayment_markdown_contains_9th() -> None:
+    markdown = run_personal_credit_report_agent(RELATED_REPAYMENT_9_TEXT)["report_markdown"]
+    assert "### 相关还款责任 9" in markdown
+    assert "起始日期：2025-02-20" in markdown
+    assert "办理机构：华夏银行股份有限公司上海分行" in markdown
+    assert "相关还款责任金额：550,000" in markdown
+    assert "贷款余额：1,370,000" in markdown
+    assert "合同编号：B10811000H0001181567" in markdown
