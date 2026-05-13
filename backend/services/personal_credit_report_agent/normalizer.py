@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -16,6 +17,8 @@ from .schema import (
     default_credit_summary,
     ensure_record_fields,
 )
+
+logger = logging.getLogger(__name__)
 
 LIST_FIELDS = (
     "loan_accounts",
@@ -229,6 +232,11 @@ def _dedupe_related_repayment(records: list[dict[str, Any]]) -> list[dict[str, A
                 str(item.get("loan_balance") or "").strip(),
             )
         if signature in seen:
+            logger.info(
+                "[PersonalCredit][RelatedRepayment][DEDUP_DROP] source=normalizer reason=duplicate key=%s raw=%s",
+                signature,
+                str(item.get("evidence") or "")[:300],
+            )
             continue
         seen.add(signature)
         result.append(item)

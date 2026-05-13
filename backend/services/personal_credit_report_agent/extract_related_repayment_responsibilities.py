@@ -29,6 +29,7 @@ def _normalize_text(text: str) -> str:
 
 def clean_ocr_wrapped_text(text: str) -> str:
     source = _normalize_text(text)
+    source = source.replace("（", "(").replace("）", ")").replace("：", ":")
     source = re.sub(r"第\s*\d+\s*页\s*[,，]\s*共\s*\d+\s*页", " ", source)
     source = re.sub(r"(?m)^\s*\d+\.\s*$", " ", source)
     source = re.sub(r"(?<=[\u4e00-\u9fff])\n(?=[\u4e00-\u9fff])", "", source)
@@ -72,7 +73,7 @@ def _split_records(section: str) -> list[str]:
     source = re.sub(r"^相关还款责任信息\s*", "", source)
     matches = list(re.finditer(r"(?=(?:19|20)\d{2}年\d{1,2}月\d{1,2}日[，,]\s*为)", source))
     if not matches:
-        return [source] if "相关还款责任" in source else []
+        return []
     records: list[str] = []
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(source)
@@ -82,25 +83,49 @@ def _split_records(section: str) -> list[str]:
     return records
 
 
+def _is_related_candidate(block: str) -> bool:
+    compact = clean_ocr_wrapped_text(block)
+    return bool(
+        re.search(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", compact)
+        and "承担相关还款责任" in compact
+        and "责任人类型" in compact
+    )
+
+
+def _full_text_candidate_blocks(text: str) -> list[str]:
+    source = _normalize_text(text)
+    source = re.sub(r"第\s*\d+\s*页\s*[,，]\s*共\s*\d+\s*页", " ", source)
+    source = re.sub(r"(?m)^\s*\d+\.\s*$", " ", source)
+    starts = list(re.finditer(r"(?=(?:19|20)\d{2}年\d{1,2}月\d{1,2}日[，,]\s*为)", source))
+    blocks: list[str] = []
+    for index, match in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(source)
+        block = source[match.start():end].strip()
+        if _is_related_candidate(block):
+            blocks.append(block)
+    return blocks
+
+
 def extract_related_repayment_records_from_full_text(text: str) -> list[dict[str, Any]]:
     try:
-        source = _normalize_text(text)
-        source = re.sub(r"第\s*\d+\s*页\s*[,，]\s*共\s*\d+\s*页", " ", source)
-        source = re.sub(r"(?m)^\s*\d+\.\s*$", " ", source)
-        starts = list(re.finditer(r"(?=(?:19|20)\d{2}年\d{1,2}月\d{1,2}日[，,]\s*为)", source))
         records: list[dict[str, Any]] = []
-        for index, match in enumerate(starts):
-            end = starts[index + 1].start() if index + 1 < len(starts) else len(source)
-            block = source[match.start():end].strip()
-            if (
-                "办理的贷款承担相关还款责任" not in block
-                or "责任人类型" not in block
-                or not re.search(r"为\s*[^，,（(]+", block)
-            ):
-                continue
+        for index, block in enumerate(_full_text_candidate_blocks(text), start=1):
+            logger.info("[PersonalCredit][RelatedRepayment][CANDIDATE] source=full_text index=%s raw=%s", index, clean_ocr_wrapped_text(block)[:300])
             record = _parse_record(block)
-            if any(record.get(key) for key in ("related_party", "institution", "contract_no", "loan_balance")):
-                records.append(record)
+            if not record.get("start_date"):
+                logger.info(
+                    "[PersonalCredit][RelatedRepayment][PARSE_FAIL] source=full_text index=%s reason=missing_start_date raw=%s",
+                    index,
+                    clean_ocr_wrapped_text(block)[:300],
+                )
+                continue
+            logger.info(
+                "[PersonalCredit][RelatedRepayment][PARSE_OK] source=full_text index=%s start_date=%s contract_no=%s",
+                index,
+                record.get("start_date"),
+                record.get("contract_no"),
+            )
+            records.append(record)
         return records
     except Exception:
         return []
@@ -112,10 +137,11 @@ def _first(pattern: str, text: str) -> str:
 
 
 def _extract_contract_no(block: str) -> str:
-    match = re.search(r"(?:保证合同编号|合同编号)\s*[:：]?\s*([BDbd][A-Za-z0-9\s\r\n]{10,80})", block, flags=re.S)
+    block = block.replace("：", ":").replace("（", "(").replace("）", ")")
+    match = re.search(r"(?:保证合同编号|合同编号)\s*:\s*([A-Za-z0-9\s\r\n]{10,80})", block, flags=re.S)
     if match:
         value = re.sub(r"[^A-Za-z0-9]", "", match.group(1))
-        if re.fullmatch(r"[BDbd][A-Za-z0-9]{10,}", value):
+        if re.fullmatch(r"[A-Za-z0-9]{10,}", value):
             return value
     match = re.search(r"\b([BDbd][A-Za-z0-9]{10,})\b", block)
     return match.group(1) if match else ""
@@ -131,10 +157,10 @@ def _parse_record(block: str) -> dict[str, Any]:
     institution = _first(r"在\s*(.+?)\s*办理的贷款承担相关还款责任", block)
     institution = re.split(r"(?:办理的贷款承担相关还款责任|责任人类型|证件类型|证件号码)", institution, maxsplit=1)[0]
     responsibility_type = _first(r"责任人类型为\s*([^，,。.)）]+)", block)
-    responsibility_amount = _first(r"相关还款责任金额\s*([0-9][0-9,]*(?:\.\d+)?|--|——|-)", block)
+    responsibility_amount = _first(r"相关还款责任金额\s*([0-9,]+(?:\.\d+)?|--|——|-)", block)
     contract_no = _extract_contract_no(raw_block)
     as_of_date = _normalize_date(_first(r"截至\s*((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", block))
-    loan_balance = _first(r"贷款余额\s*([0-9][0-9,]*(?:\.\d+)?|--|——|-)", block)
+    loan_balance = _first(r"贷款余额\s*:?\s*([0-9,]+(?:\.\d+)?|--|——|-)", block)
     return ensure_record_fields(
         {
             "start_date": start_date,
@@ -175,19 +201,65 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
         blocks = _split_records(section)
         logger.info("[PersonalCredit][RelatedRepayment] section_candidates_count=%s", len(blocks))
         section_candidates: list[dict[str, Any]] = []
-        for block in blocks:
-            record = _parse_record(block)
-            if not any(record.get(key) for key in ("related_party", "institution", "contract_no", "loan_balance")):
+        parse_failures: list[str] = []
+        for index, block in enumerate(blocks, start=1):
+            logger.info("[PersonalCredit][RelatedRepayment][CANDIDATE] source=section index=%s raw=%s", index, clean_ocr_wrapped_text(block)[:300])
+            if not _is_related_candidate(block):
+                logger.info(
+                    "[PersonalCredit][RelatedRepayment][PARSE_FAIL] source=section index=%s reason=not_related_candidate raw=%s",
+                    index,
+                    clean_ocr_wrapped_text(block)[:300],
+                )
+                parse_failures.append(clean_ocr_wrapped_text(block)[:300])
                 continue
+            record = _parse_record(block)
+            if not record.get("start_date"):
+                logger.info(
+                    "[PersonalCredit][RelatedRepayment][PARSE_FAIL] source=section index=%s reason=missing_start_date raw=%s",
+                    index,
+                    clean_ocr_wrapped_text(block)[:300],
+                )
+                parse_failures.append(clean_ocr_wrapped_text(block)[:300])
+                continue
+            logger.info(
+                "[PersonalCredit][RelatedRepayment][PARSE_OK] source=section index=%s start_date=%s contract_no=%s",
+                index,
+                record.get("start_date"),
+                record.get("contract_no"),
+            )
             section_candidates.append(record)
 
-        full_text_candidates = extract_related_repayment_records_from_full_text(text or sections.get("full_text") or "")
+        full_text_blocks = _full_text_candidate_blocks(text or sections.get("full_text") or "")
+        full_text_candidates = []
+        for index, block in enumerate(full_text_blocks, start=1):
+            logger.info("[PersonalCredit][RelatedRepayment][CANDIDATE] source=full_text index=%s raw=%s", index, clean_ocr_wrapped_text(block)[:300])
+            record = _parse_record(block)
+            if not record.get("start_date"):
+                logger.info(
+                    "[PersonalCredit][RelatedRepayment][PARSE_FAIL] source=full_text index=%s reason=missing_start_date raw=%s",
+                    index,
+                    clean_ocr_wrapped_text(block)[:300],
+                )
+                parse_failures.append(clean_ocr_wrapped_text(block)[:300])
+                continue
+            logger.info(
+                "[PersonalCredit][RelatedRepayment][PARSE_OK] source=full_text index=%s start_date=%s contract_no=%s",
+                index,
+                record.get("start_date"),
+                record.get("contract_no"),
+            )
+            full_text_candidates.append(record)
         logger.info("[PersonalCredit][RelatedRepayment] full_text_candidates_count=%s", len(full_text_candidates))
         candidates = [*full_text_candidates, *section_candidates]
 
         for record in candidates:
             signature = _record_signature(record)
             if signature in seen:
+                logger.info(
+                    "[PersonalCredit][RelatedRepayment][DEDUP_DROP] reason=duplicate key=%s raw=%s",
+                    signature,
+                    str(record.get("evidence") or "")[:300],
+                )
                 continue
             seen.add(signature)
             logger.info(
@@ -202,6 +274,14 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
         logger.info("[PersonalCredit][RelatedRepayment] parsed_dates=%s", [record.get("start_date") for record in records])
         logger.info("[PersonalCredit][RelatedRepayment] parsed_contracts=%s", [record.get("contract_no") for record in records])
         logger.info("[PersonalCredit][RelatedRepayment] parsed_count=%s", len(records))
+        max_candidate_count = max(len(blocks), len(full_text_candidates))
+        if max_candidate_count and len(records) < max_candidate_count:
+            logger.warning(
+                "[PersonalCredit][RelatedRepayment][COUNT_MISMATCH] candidates=%s parsed=%s missing_candidates=%s",
+                max_candidate_count,
+                len(records),
+                parse_failures[:5],
+            )
         return records
     except Exception:
         return []
