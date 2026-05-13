@@ -668,3 +668,33 @@ def test_credit_summary_current_realistic_values_not_all_unknown() -> None:
     assert len(recognized) >= 6
     assert summary["enterprise_related_repayment_responsibility_account_count"] == "9"
     assert summary["credit_card_account_count"] == "5"
+
+
+def test_credit_summary_real_ocr_matrix() -> None:
+    text = """
+个人信用报告
+信贷记录
+这部分包含您的信用卡、贷款和其他信贷记录。金额类数据均以人民币计算,精确到元。
+信用卡贷款
+其他业务 逾期记录可能影响对您的信用评价。
+购房 其他
+账户数 5 -- 3 -- 购房贷款,包括个人住房贷款、个人商用
+房(包括商住两用)贷款和个人住房公积
+金贷款。未结清/未销户账户数 -- -- 1 --
+发生过逾期的账户数 -- -- -- -- 发生过逾期的信用卡账户,指曾经“未按
+时还最低还款额”的贷记卡账户和“透支
+超过60天”的准贷记卡账户。发生过90天以上逾期的账户数 -- -- -- --
+为个人 为企业
+相关还款责任账户数 -- 9
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["credit_card_account_count"] == "5"
+    assert summary["active_credit_card_account_count"] in {"0 / 未显示为有效", "0"}
+    assert summary["loan_account_count"] == "3"
+    assert summary["outstanding_loan_account_count"] == "1"
+    assert summary["credit_card_overdue_account_count"] == "0"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+    assert summary["loan_overdue_account_count"] == "0"
+    assert summary["loan_90d_overdue_account_count"] == "0"
+    assert summary["personal_related_repayment_responsibility_account_count"] in {"0 / 未显示", "0"}
+    assert summary["enterprise_related_repayment_responsibility_account_count"] == "9"
