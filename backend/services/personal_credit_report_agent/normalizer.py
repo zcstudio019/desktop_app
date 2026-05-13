@@ -109,12 +109,28 @@ def _clean_scalar(value: Any, *, is_amount: bool = False) -> Any:
     return value
 
 
+def _clean_ocr_wrapped_scalar(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?<=[\u4e00-\u9fff])\n(?=[\u4e00-\u9fff])", "", text)
+    text = re.sub(r"(?<=[A-Za-z0-9])\n(?=[A-Za-z0-9])", "", text)
+    text = re.sub(r"\n+", " ", text)
+    text = re.sub(r"股份有\s*限公司", "股份有限公司", text)
+    text = re.sub(r"有限公\s*司", "有限公司", text)
+    text = re.sub(r"支\s*行", "支行", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def _normalize_record(record: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(record, dict):
         record = {}
     normalized = ensure_record_fields(record, fields)
     for key, value in list(normalized.items()):
         normalized[key] = _clean_scalar(value, is_amount=key in AMOUNT_KEYS)
+        if key in {"related_party", "institution", "contract_no", "loan_balance", "responsibility_amount"}:
+            normalized[key] = _clean_ocr_wrapped_scalar(normalized[key])
     return normalized
 
 

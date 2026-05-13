@@ -917,3 +917,68 @@ def test_related_repayment_risk_indicator() -> None:
     indicators = report["personal_credit_indicators"]
     assert indicators["has_related_repayment_responsibility"] is True
     assert indicators["related_repayment_responsibility_count"] == 1
+
+
+def test_related_repayment_clean_wrapped_institution() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2023年11月02日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在中国建设银行股份有
+限公司上海浦东分行办理的贷款承担相关还款责任，责任人类型为共同借款人，相关还款责任金额--。截至2025年02月28日，贷款余额5,000,000(人民币元)。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    item = report["related_repayment_responsibilities"][0]
+    assert item["institution"] == "中国建设银行股份有限公司上海浦东分行"
+    assert item["responsibility_type"] == "共同借款人"
+    assert item["loan_balance"] == "5,000,000"
+    assert item["as_of_date"] == "2025-02-28"
+
+
+def test_related_repayment_contract_no_next_line() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2024年04月01日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额5,000,000(保证合同编号:
+D10023010H00012024032700000243)。截至2025年02月20日，贷款余额5,000,000(人民币元)。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    item = report["related_repayment_responsibilities"][0]
+    assert item["contract_no"] == "D10023010H00012024032700000243"
+    assert item["loan_balance"] == "5,000,000"
+    assert item["as_of_date"] == "2025-02-20"
+
+
+def test_related_repayment_multiple_records_with_page_noise() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+第 1 页,共 6 页
+4.
+2023年11月02日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在中国建设银行股份有
+限公司上海浦东分行办理的贷款承担相关还款责任，责任人类型为共同借款人，相关还款责任金额--(保证合同编号：
+B10811000H00011881567)。截至2025年02月28日，贷款余额5,000,000(人民币元)。
+5.
+2024年04月01日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在南京银行股份有限公司上海虹口支行办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额5,000,000(保证合同编号:
+D10023010H00012024032700000243)。截至2025年02月20日，贷款余额5,000,000(人民币元)。
+查询记录
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    records = report["related_repayment_responsibilities"]
+    assert len(records) == 2
+    assert records[0]["institution"] == "中国建设银行股份有限公司上海浦东分行"
+    assert records[0]["contract_no"] == "B10811000H00011881567"
+    assert records[0]["loan_balance"] == "5,000,000"
+    assert records[1]["contract_no"] == "D10023010H00012024032700000243"
+    assert records[1]["loan_balance"] == "5,000,000"
+
+
+def test_related_repayment_markdown_single_line_institution() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2023年11月02日，为上海乐芙兰电子商务有限公司(证件类型:中征码,证件号码:3201050001674346)在中国建设银行股份有
+限公司上海浦东分行办理的贷款承担相关还款责任，责任人类型为共同借款人，相关还款责任金额--。截至2025年02月28日，贷款余额5,000,000(人民币元)。
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    assert "办理机构：中国建设银行股份有限公司上海浦东分行" in markdown
+    assert "中国建设银行股份有\n限公司" not in markdown
