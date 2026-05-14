@@ -253,8 +253,8 @@ def test_credit_summary_markdown_table() -> None:
     assert "当前有效信用卡账户数" in markdown
     assert "贷款账户数" in markdown
     assert "未结清贷款账户数" in markdown
-    assert "购房贷款账户数" not in markdown
-    assert "其他贷款账户数" not in markdown
+    assert "购房贷款账户数" in markdown
+    assert "其他贷款账户数" in markdown
 
 
 def test_personal_credit_report_markdown_new_summary_table() -> None:
@@ -277,8 +277,8 @@ def test_document_extractor_personal_credit_markdown_summary() -> None:
     assert "| 项目 | 数量 / 状态 |" in (content.get("report_markdown") or "")
     assert "| 项目 | 数量 / 状态 |" in (extracted_json.get("report_markdown") or "")
     assert "| 项目 | 数量 / 状态 |" in (data.get("markdown_summary") or "")
-    assert "购房贷款账户数" not in markdown
-    assert "其他贷款账户数" not in markdown
+    assert "购房贷款账户数" in markdown
+    assert "其他贷款账户数" in markdown
     assert "担保笔数" not in markdown
 
 
@@ -333,8 +333,8 @@ def test_profile_sync_keeps_enterprise_and_personal_credit_sections() -> None:
     assert "## 个人征信报告" in markdown
     assert "| 项目 | 数量 / 状态 |" in markdown
     assert "当前有效信用卡账户数" in markdown
-    assert "购房贷款账户数" not in markdown
-    assert "其他贷款账户数" not in markdown
+    assert "购房贷款账户数" in markdown
+    assert "其他贷款账户数" in markdown
     assert "担保笔数" not in markdown
 
 
@@ -518,8 +518,8 @@ def test_personal_credit_uses_new_agent_markdown() -> None:
     assert extracted_json.get("report_type") == "personal_credit_report"
     assert "个人征信报告" in markdown
     assert "| 项目 | 数量 / 状态 |" in markdown
-    assert "购房贷款账户数" not in markdown
-    assert "其他贷款账户数" not in markdown
+    assert "购房贷款账户数" in markdown
+    assert "其他贷款账户数" in markdown
     assert "担保笔数" not in markdown
 
 
@@ -1453,3 +1453,61 @@ def test_query_markdown_personal_counts() -> None:
     assert "近1个月查询次数：2" in personal_section
     assert "近3个月查询次数：3" in personal_section
     assert "近6个月查询次数：4" in personal_section
+
+
+def test_credit_summary_matrix_with_housing_and_other_loans() -> None:
+    text = """
+信息概要
+信用卡 贷款 其他业务
+购房 其他
+账户数 11 3 38 --
+未结清/未销户账户数 5 -- 10 --
+发生过逾期的账户数 -- -- -- --
+发生过90天以上逾期的账户数 -- -- -- --
+为个人 为企业
+相关还款责任账户数 -- 7
+"""
+    summary = extract_credit_summary(segment_report(text))
+    assert summary["credit_card_account_count"] == "11"
+    assert summary["active_credit_card_account_count"] == "5"
+    assert summary["housing_loan_account_count"] == "3"
+    assert summary["other_loan_account_count"] == "38"
+    assert summary["loan_account_count"] == "41"
+    assert summary["housing_loan_outstanding_count"] in ["0 / 未显示", "0"]
+    assert summary["other_loan_outstanding_count"] == "10"
+    assert summary["outstanding_loan_account_count"] == "10"
+    assert summary["credit_card_overdue_account_count"] == "0"
+    assert summary["loan_overdue_account_count"] == "0"
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+    assert summary["loan_90d_overdue_account_count"] == "0"
+    assert summary["enterprise_related_repayment_responsibility_account_count"] == "7"
+
+
+def test_credit_summary_markdown_shows_housing_loan_count() -> None:
+    text = """
+信息概要
+账户数 11 3 38 --
+未结清/未销户账户数 5 -- 10 --
+发生过逾期的账户数 -- -- -- --
+发生过90天以上逾期的账户数 -- -- -- --
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    assert "| 购房贷款账户数 | 3 |" in markdown
+    assert "| 其他贷款账户数 | 38 |" in markdown
+    assert "| 贷款账户数 | 41 |" in markdown
+    assert "| 未结清其他贷款账户数 | 10 |" in markdown
+
+
+def test_credit_summary_old_matrix_still_compatible() -> None:
+    text = """
+信息概要
+账户数 5 -- 3 --
+未结清/未销户账户数 -- -- 1 --
+发生过逾期的账户数 -- -- -- --
+发生过90天以上逾期的账户数 -- -- -- --
+"""
+    summary = extract_credit_summary(segment_report(text))
+    assert summary["housing_loan_account_count"] in ["0 / 未显示", "0"]
+    assert summary["other_loan_account_count"] == "3"
+    assert summary["loan_account_count"] == "3"
+    assert summary["outstanding_loan_account_count"] == "1"

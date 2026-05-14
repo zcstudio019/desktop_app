@@ -307,6 +307,9 @@ def _clean_marital_status(value: Any) -> str:
 def _summary_int(value: Any) -> int | None:
     if isinstance(value, int):
         return value
+    text = str(value or "").strip()
+    if text in {"--", "——", "-", "未显示", "0 / 未显示", "0 / 未显示为有效"}:
+        return 0
     match = re.search(r"\d+", str(value or ""))
     return int(match.group(0)) if match else None
 
@@ -325,15 +328,23 @@ def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
                 if summary.get(alias) not in (None, ""):
                     normalized[target] = summary.get(alias)
                     break
+    for key in (
+        "housing_loan_account_count",
+        "other_loan_account_count",
+        "housing_loan_outstanding_count",
+        "other_loan_outstanding_count",
+    ):
+        if normalized.get(key) in {"--", "——", "-", "未显示"}:
+            normalized[key] = "0 / 未显示"
     if normalized.get("loan_account_count") in (None, ""):
         normalized["loan_account_count"] = _summary_sum(
-            summary.get("housing_loan_account_count"),
-            summary.get("other_loan_account_count"),
+            normalized.get("housing_loan_account_count"),
+            normalized.get("other_loan_account_count"),
         ) or None
     if normalized.get("outstanding_loan_account_count") in (None, ""):
         normalized["outstanding_loan_account_count"] = _summary_sum(
-            summary.get("housing_loan_outstanding_count"),
-            summary.get("other_loan_outstanding_count"),
+            normalized.get("housing_loan_outstanding_count"),
+            normalized.get("other_loan_outstanding_count"),
         ) or None
     if normalized.get("loan_overdue_account_count") in (None, ""):
         normalized["loan_overdue_account_count"] = _summary_sum(

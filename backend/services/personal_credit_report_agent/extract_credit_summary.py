@@ -41,7 +41,11 @@ SUMMARY_FIELD_ORDER: tuple[str, ...] = (
     "credit_card_account_count",
     "active_credit_card_account_count",
     "loan_account_count",
+    "housing_loan_account_count",
+    "other_loan_account_count",
     "outstanding_loan_account_count",
+    "housing_loan_outstanding_count",
+    "other_loan_outstanding_count",
     "credit_card_overdue_account_count",
     "credit_card_90d_overdue_account_count",
     "loan_overdue_account_count",
@@ -212,6 +216,20 @@ def _matrix_dash(token: str, *, active: bool = False, responsibility: bool = Fal
     return text
 
 
+def _token_int(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if text in {"--", "——", "-", "未显示", "0 / 未显示", "0 / 未显示为有效"}:
+        return 0
+    match = re.search(r"\d+", text)
+    return int(match.group(0)) if match else None
+
+
+def _sum_tokens(*values: Any) -> str:
+    numbers = [_token_int(value) for value in values]
+    numbers = [number for number in numbers if number is not None]
+    return str(sum(numbers)) if numbers else ""
+
+
 MATRIX_ROW_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("overdue_90d", "发生过90天以上逾期的账户数", _label_pattern("发生过90天以上逾期的账户数")),
     ("overdue", "发生过逾期的账户数", _label_pattern("发生过逾期的账户数")),
@@ -254,16 +272,22 @@ def extract_summary_matrix_from_ocr_window(window: str) -> dict[str, str]:
             logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=账户数 tokens=%s", account_tokens)
             if len(account_tokens) >= 1:
                 result["credit_card_account_count"] = _matrix_dash(account_tokens[0])
+            if len(account_tokens) >= 2:
+                result["housing_loan_account_count"] = _matrix_dash(account_tokens[1])
             if len(account_tokens) >= 3:
-                result["loan_account_count"] = _matrix_dash(account_tokens[2])
+                result["other_loan_account_count"] = _matrix_dash(account_tokens[2])
+                result["loan_account_count"] = _sum_tokens(account_tokens[1], account_tokens[2]) or f"购房 {_matrix_dash(account_tokens[1])} / 其他 {_matrix_dash(account_tokens[2])}"
 
         active_tokens = parse_matrix_tokens(row_regions.get("active", ""), 4)
         if active_tokens:
             logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=未结清/未销户账户数 tokens=%s", active_tokens)
             if len(active_tokens) >= 1:
                 result["active_credit_card_account_count"] = _matrix_dash(active_tokens[0], active=True)
+            if len(active_tokens) >= 2:
+                result["housing_loan_outstanding_count"] = _matrix_dash(active_tokens[1])
             if len(active_tokens) >= 3:
-                result["outstanding_loan_account_count"] = _matrix_dash(active_tokens[2])
+                result["other_loan_outstanding_count"] = _matrix_dash(active_tokens[2])
+                result["outstanding_loan_account_count"] = _sum_tokens(active_tokens[1], active_tokens[2]) or f"购房 {_matrix_dash(active_tokens[1])} / 其他 {_matrix_dash(active_tokens[2])}"
 
         overdue_tokens = parse_matrix_tokens(row_regions.get("overdue", ""), 4)
         if overdue_tokens:
@@ -416,7 +440,7 @@ def extract_credit_summary(sections: dict[str, Any]) -> dict[str, Any]:
             if all(extracted.get(field) for field in FIELD_LABELS):
                 break
 
-        for field in FIELD_LABELS:
+        for field in SUMMARY_FIELD_ORDER:
             result[field] = extracted.get(field) or None
             if not result[field]:
                 logger.info("[PersonalCredit][Summary] missing label=%s", field)
