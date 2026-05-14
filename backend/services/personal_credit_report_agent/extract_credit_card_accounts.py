@@ -39,6 +39,26 @@ def _normalize_block(block: str) -> str:
     return clean_value(text)
 
 
+def _normalize_date(value: str) -> str:
+    match = re.search(r"((?:19|20)\d{2})年(\d{1,2})月(\d{1,2})日", str(value or ""))
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+    match = re.search(r"((?:19|20)\d{2})[-./](\d{1,2})[-./](\d{1,2})", str(value or ""))
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+    return clean_value(value)
+
+
+def _normalize_year_month(value: str) -> str:
+    match = re.search(r"((?:19|20)\d{2})年(\d{1,2})月", str(value or ""))
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}"
+    match = re.search(r"((?:19|20)\d{2})[-./](\d{1,2})", str(value or ""))
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}"
+    return clean_value(value)
+
+
 def _extract_credit_card_window(text: str) -> str:
     source = str(text or "")
     if not source.strip():
@@ -56,6 +76,26 @@ def _extract_credit_card_window(text: str) -> str:
             stop_positions.append(match.start())
     end = min(stop_positions) if stop_positions else len(tail)
     return tail[:end]
+
+
+def _active_card_sentence_blocks(text: str) -> list[str]:
+    source = _normalize_block(text)
+    if not source:
+        return []
+    starts = [
+        match.start()
+        for match in re.finditer(
+            r"(?:\d+[\.、)]\s*)?(?:19|20)\d{2}年\d{1,2}月\d{1,2}日[^。；;]{0,120}?发放的(?:准贷记卡|贷记卡|信用卡)",
+            source,
+        )
+    ]
+    blocks: list[str] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(source)
+        block = source[start:end].strip()
+        if block:
+            blocks.append(block)
+    return blocks
 
 
 def _looks_like_card(block: str) -> bool:
@@ -93,6 +133,11 @@ def _extract_date(block: str, labels: tuple[str, ...]) -> str:
 
 
 def _extract_institution(block: str) -> str:
+    value = first_match(block, (
+        r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日\s*([\u4e00-\u9fffA-Za-z0-9（）()·]{2,80}?)\s*发放的(?:准贷记卡|贷记卡|信用卡)",
+    ))
+    if value:
+        return clean_value(value)
     value = (
         _extract_label(block, ("发卡机构", "机构", "授信机构", "管理机构"), max_chars=80)
         or first_match(block, (r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,50}(?:银行|信用社|金融公司|消费金融)[\u4e00-\u9fffA-Za-z0-9（）()·]{0,30})",))
@@ -115,7 +160,7 @@ def _extract_card_type(block: str) -> str:
 
 
 def _extract_currency(block: str) -> str:
-    match = re.search(r"[（(]\s*(美元|人民币|欧元|港币|日元|英镑)\s*账户\s*[）)]", block)
+    match = re.search(r"[（(]\s*(美元|人民币|欧元|港币|日元|英镑)\s*账户[^）)]*[）)]", block)
     if match:
         return match.group(1)
     labeled = _extract_label(block, ("币种", "账户币种"), max_chars=20)
@@ -136,6 +181,8 @@ def _extract_status(block: str) -> str:
     for word in STATUS_WORDS:
         if word in block:
             return word
+    if _looks_like_active_card(block):
+        return "当前有效"
     return clean_value(labeled)
 
 
@@ -145,6 +192,27 @@ def _extract_account_no(block: str) -> str:
         match = re.search(r"([A-Za-z0-9\-*]{4,40})", value)
         return match.group(1) if match else value
     return first_match(block, (r"(?:账户编号|账户号|卡号|账号)\s*[:：]?\s*([A-Za-z0-9\-*]{4,40})",))
+
+
+def _extract_open_date(block: str) -> str:
+    return _normalize_date(first_match(block, (r"((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)",)))
+
+
+def _extract_report_cutoff(block: str) -> str:
+    return _normalize_year_month(first_match(block, (r"截至\s*((?:19|20)\d{2}年\d{1,2}月)",)))
+
+
+def _extract_card_tail_no(block: str) -> str:
+    return first_match(block, (r"卡片尾号\s*[:：]\s*([A-Za-z0-9]{2,})",))
+
+
+def _looks_like_active_card(block: str) -> bool:
+    return bool(
+        re.search(r"截至\s*(?:19|20)\d{2}年\d{1,2}月", block)
+        and "信用额度" in block
+        and ("已使用额度" in block or "已用额度" in block or "使用额度" in block)
+        and not any(word in block for word in CLOSED_STATUS_WORDS)
+    )
 
 
 def _extract_overdue_months(block: str) -> str:
@@ -166,6 +234,11 @@ def _amount_to_number(value: Any) -> float:
     if "万" in str(value or ""):
         number *= 10000
     return number
+
+
+def _expected_active_credit_card_count(text: str) -> int:
+    match = re.search(r"当前有效信用卡账户数\s*[:：]?\s*(\d+)", str(text or ""))
+    return int(match.group(1)) if match else 0
 
 
 def _is_abnormal_account(block: str, record: dict[str, Any]) -> bool:
@@ -204,6 +277,8 @@ def _should_skip_inactive_card(block: str, record: dict[str, Any]) -> bool:
         return False
     if _should_skip_closed_card(block, record):
         return True
+    if _looks_like_active_card(block) or record.get("report_cutoff"):
+        return False
     status_text = " ".join(str(item or "") for item in (record.get("account_status"), block))
     if any(word in status_text for word in ACTIVE_STATUS_WORDS):
         return False
@@ -217,6 +292,7 @@ def _should_skip_inactive_card(block: str, record: dict[str, Any]) -> bool:
 
 def _candidate_blocks(text: str) -> list[str]:
     source = str(text or "")
+    sentence_blocks = _active_card_sentence_blocks(source)
     blocks = split_numbered_blocks(source)
     if not blocks:
         blocks = re.split(r"(?=(?:\d+[\.、)]\s*)?(?:[\u4e00-\u9fffA-Za-z0-9（）()·]{2,50})?(?:准贷记卡|贷记卡|信用卡))", source)
@@ -224,28 +300,42 @@ def _candidate_blocks(text: str) -> list[str]:
     for block in blocks:
         pieces = re.split(r"(?=\s*\d+[\.、)]\s*(?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", block)
         expanded.extend(piece for piece in pieces if piece.strip())
-    blocks = expanded or blocks
-    return [block.strip() for block in blocks if block and _looks_like_card(block)]
+    blocks = [*sentence_blocks, *(expanded or blocks)]
+    result: list[str] = []
+    seen: set[str] = set()
+    for block in blocks:
+        cleaned = block.strip()
+        signature = _normalize_block(cleaned)
+        if cleaned and signature not in seen and _looks_like_card(cleaned):
+            seen.add(signature)
+            result.append(cleaned)
+    return result
 
 
 def parse_credit_card_account_block(block: str) -> dict[str, Any]:
     normalized_block = _normalize_block(block)
     institution = _extract_institution(block)
     card_type = _extract_card_type(block)
-    used_limit = _extract_money(block, ("已用额度", "使用额度", "透支余额", "已用授信额度", "余额"))
+    used_limit = _extract_money(block, ("已使用额度", "已用额度", "使用额度", "透支余额", "已用授信额度"))
     latest_date = _extract_date(block, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
     latest_amount = _extract_money(block, ("最近一次还款金额", "最近还款金额"))
+    status = _extract_status(block)
+    is_closed = is_closed_credit_card_account({"account_status": status}, block)
     return {
         "account_no": _extract_account_no(block),
+        "open_date": _extract_open_date(block),
         "institution": institution,
         "issuer": institution,
         "card_type": card_type,
         "account_type": card_type,
         "currency": _extract_currency(block),
-        "account_status": _extract_status(block),
+        "card_tail_no": _extract_card_tail_no(block),
+        "account_status": status,
+        "is_closed": is_closed,
         "credit_limit": _extract_money(block, ("授信额度", "信用额度", "共享授信额度", "额度")),
         "used_limit": used_limit,
         "used_amount": used_limit,
+        "report_cutoff": _extract_report_cutoff(block),
         "overdue_amount": _extract_money(block, ("当前逾期金额", "逾期金额")),
         "overdue_months": _extract_overdue_months(block),
         "latest_repayment_date": latest_date,
@@ -261,14 +351,14 @@ def parse_credit_card_account_block(block: str) -> dict[str, Any]:
 def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         explicit_text = str(sections.get("credit_card_accounts") or "").strip()
+        source_text = "\n".join(
+            str(sections.get(key) or "")
+            for key in ("full_text", "credit_transaction_details", "credit_card_accounts")
+            if sections.get(key)
+        )
         if explicit_text:
             text = _extract_credit_card_window(explicit_text)
         else:
-            source_text = "\n".join(
-                str(sections.get(key) or "")
-                for key in ("full_text", "credit_transaction_details")
-                if sections.get(key)
-            )
             text = _extract_credit_card_window(source_text)
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
@@ -277,7 +367,18 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
             if _should_skip_inactive_card(block, record):
                 continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):
-                signature = tuple(str(record.get(key) or "") for key in ("institution", "card_type", "credit_limit", "used_limit", "account_status", "overdue_amount"))
+                signature = tuple(str(record.get(key) or "") for key in ("open_date", "institution", "card_type", "currency", "card_tail_no", "credit_limit", "used_limit", "account_status", "overdue_amount", "report_cutoff"))
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                records.append(ensure_record_fields(record, CREDIT_CARD_ACCOUNT_FIELDS))
+        if not records and _expected_active_credit_card_count(source_text) > 0:
+            fallback_window = _extract_credit_card_window(source_text)
+            for block in _active_card_sentence_blocks(fallback_window):
+                record = parse_credit_card_account_block(block)
+                if not _looks_like_active_card(block) or _should_skip_closed_card(block, record):
+                    continue
+                signature = tuple(str(record.get(key) or "") for key in ("open_date", "institution", "card_type", "currency", "card_tail_no", "credit_limit", "used_limit", "account_status", "report_cutoff"))
                 if signature in seen:
                     continue
                 seen.add(signature)

@@ -210,6 +210,12 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
     closed_text = f"{status} {evidence}"
     if "未销户" not in closed_text and any(word in closed_text for word in CARD_CLOSED_EVIDENCE_WORDS):
         return False
+    if record.get("is_closed") is True:
+        return False
+    if "当前有效" in status:
+        return True
+    if record.get("report_cutoff") and record.get("credit_limit") and (record.get("used_limit") or record.get("used_amount")) not in (None, ""):
+        return True
     used = record.get("used_limit") or record.get("used_amount")
     if any(word in evidence for word in ("贷款", "五级分类", "消费贷款", "购房贷款")) and _amount_number(used) <= 0 and not record.get("credit_limit"):
         return False

@@ -244,13 +244,15 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
         for index, item in enumerate(cards, start=1):
             if isinstance(item, dict):
                 _append_account(lines, f"账户 {index}", item, (
-                    ("account_no", "账户编号"),
+                    ("open_date", "发卡日期"),
                     ("institution", "发卡机构"),
                     ("card_type", "卡类型"),
                     ("currency", "币种"),
+                    ("card_tail_no", "卡片尾号"),
                     ("credit_limit", "授信额度"),
-                    ("used_limit", "已用额度"),
+                    ("used_limit", "已使用额度"),
                     ("account_status", "账户状态"),
+                    ("report_cutoff", "截至日期"),
                     ("overdue_amount", "当前逾期金额"),
                     ("overdue_months", "逾期月数"),
                     ("latest_repayment_date", "最近还款日期"),

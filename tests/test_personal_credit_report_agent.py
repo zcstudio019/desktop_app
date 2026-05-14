@@ -863,6 +863,60 @@ def test_credit_card_closed_list_all_filtered() -> None:
     assert "账户状态：未销户" not in card_section
 
 
+ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT = """
+个人征信报告
+信贷记录概要
+当前有效信用卡账户数 5
+信用卡
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡（人民币账户，卡片尾号：6049）。截至2026年03月，信用额度2,000，已使用额度0。
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡（美元账户，卡片尾号：6049）。截至2026年03月，信用额度2,000，已使用额度0。
+2012年10月24日中国光大银行股份有限公司信用卡中心发放的贷记卡（美元账户，卡片尾号：8186）。截至2026年03月，信用额度0，已使用额度0。
+2012年10月24日中国光大银行股份有限公司信用卡中心发放的贷记卡（人民币账户，卡片尾号：8186）。截至2026年03月，信用额度0，已使用额度0。
+2024年12月02日兴业银行股份有限公司发放的贷记卡（人民币账户）。截至2026年03月，信用额度15,000，已使用额度0。
+2008年01月29日上海银行股份有限公司信用卡中心发放的贷记卡（人民币账户），2021年01月销户。
+2008年01月29日上海银行股份有限公司信用卡中心发放的贷记卡（美元账户），2021年01月销户。
+2023年09月11日招商银行股份有限公司信用卡中心发放的贷记卡（人民币账户），2025年03月销户。
+贷款
+2023年01月15日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信，截至2025年02月，信用额度100元(人民币)，余额为0，当前无逾期。
+"""
+
+
+def test_active_credit_cards_are_extracted() -> None:
+    report = run_personal_credit_report_agent(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT)["report_json"]
+    cards = report["credit_card_accounts"]
+    assert len(cards) == 5
+    assert all(card["account_status"] == "当前有效" for card in cards)
+    assert all("销户" not in card["evidence"] for card in cards)
+    assert cards[0]["open_date"] == "2006-10-27"
+    assert cards[0]["institution"] == "中国建设银行股份有限公司上海宝钢宝山支行"
+    assert cards[0]["card_type"] == "贷记卡"
+    assert cards[0]["currency"] == "人民币"
+    assert cards[0]["card_tail_no"] == "6049"
+    assert cards[0]["credit_limit"] == "2,000"
+    assert cards[0]["used_limit"] == "0"
+    assert cards[0]["report_cutoff"] == "2026-03"
+
+
+def test_closed_credit_cards_are_filtered() -> None:
+    closed = "2008年01月29日上海银行股份有限公司信用卡中心发放的贷记卡（人民币账户），2021年01月销户。"
+    parsed = parse_credit_card_account_block(closed)
+    assert parsed["account_status"] == "销户"
+    assert parsed["is_closed"] is True
+    result = run_personal_credit_report_agent(f"个人征信报告\n信用卡\n{closed}")
+    assert result["report_json"]["credit_card_accounts"] == []
+    card_section = result["report_markdown"].split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "上海银行股份有限公司信用卡中心" not in card_section
+
+
+def test_credit_card_summary_consistency() -> None:
+    result = run_personal_credit_report_agent(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT)
+    markdown = result["report_markdown"]
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "暂无需要展示的当前有效信用卡账户" not in card_section
+    assert card_section.count("### 账户 ") >= 5
+    assert "授信额度：100元" not in card_section
+
+
 RELATED_REPAYMENT_TEXT = """
 个人征信报告
 相关还款责任信息
