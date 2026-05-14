@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from datetime import date
 from typing import Any
 
@@ -8,16 +9,16 @@ from .evidence import clean_value
 from .schema import QUERY_RECORD_FIELDS, ensure_record_fields
 
 DATE_PATTERN = r"(?:19|20)\d{2}[-./年]\d{1,2}[-./月]\d{1,2}日?"
-REASONS = ("贷款审批", "信用卡审批", "贷后管理", "担保资格审查", "本人查询", "异议查询")
-COUNTED_REASON_PATTERNS = (
-    "法人代表负责人高管等",
-    "担保资格审查",
-    "贷款审批",
-)
+REASONS = ("法人代表、负责人、高管等资信审查", "法人代表负责人高管等资信审查", "法人代表、负责人、高管等", "法人代表负责人高管等", "贷款审批", "信用卡审批", "贷后管理", "担保资格审查", "本人查询", "异议查询")
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_line(line: str) -> str:
-    return clean_value(re.sub(r"[ \t\u3000]+", " ", str(line or "")))
+    text = str(line or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"资信审\s*查", "资信审查", text)
+    text = re.sub(r"[ \t\u3000]+", " ", text)
+    return clean_value(text)
 
 
 def _query_type(line: str, current_section: str) -> str:
@@ -74,11 +75,15 @@ def _add_months(base: date, months: int) -> date:
     return date(year, month, day)
 
 
-def _is_counted_reason(value: Any) -> bool:
-    text = re.sub(r"[\s、/／,，]+", "", str(value or ""))
+def is_countable_query_reason(reason: str) -> bool:
+    text = re.sub(r"[\s、/／,，]+", "", _normalize_line(reason))
     if "贷后管理" in text or "异议查询" in text or "本人查询信用报告" in text:
         return False
-    return any(pattern in text for pattern in COUNTED_REASON_PATTERNS)
+    if "担保资格审查" in text or "贷款审批" in text:
+        return True
+    has_role = any(keyword in text for keyword in ("法人代表", "负责人", "高管"))
+    has_review = "资信审查" in text or "审查" in text
+    return has_role if "法人代表负责人高管等" in text else has_role and has_review
 
 
 def _query_bucket(record: dict[str, Any]) -> str:
@@ -105,11 +110,19 @@ def build_query_statistics(query_records: list[dict[str, Any]], report_time: str
             "last_3_months": _add_months(reference, -3),
             "last_6_months": _add_months(reference, -6),
         }
+        logger.info(
+            "[PersonalCredit][QueryStats] report_date=%s window_1m=%s window_3m=%s window_6m=%s",
+            reference,
+            thresholds["last_1_month"],
+            thresholds["last_3_months"],
+            thresholds["last_6_months"],
+        )
         for record in query_records or []:
             if not isinstance(record, dict):
                 continue
             reason = str(record.get("query_reason") or record.get("evidence") or record.get("evidence_text") or "")
-            if not _is_counted_reason(reason):
+            if not is_countable_query_reason(reason):
+                logger.info("[PersonalCredit][QueryStats] skipped reason=%s date=%s", _normalize_line(reason), record.get("query_date"))
                 continue
             query_date = _parse_date(record.get("query_date"))
             if not query_date:
@@ -121,9 +134,30 @@ def build_query_statistics(query_records: list[dict[str, Any]], report_time: str
             bucket = _query_bucket(record)
             if not bucket:
                 continue
+            in_1m = query_date >= thresholds["last_1_month"]
+            in_3m = query_date >= thresholds["last_3_months"]
+            in_6m = query_date >= thresholds["last_6_months"]
+            logger.info(
+                "[PersonalCredit][QueryStats] counted type=%s date=%s reason=%s in_1m=%s in_3m=%s in_6m=%s",
+                "institution" if bucket == "institution_query" else "personal",
+                query_date,
+                _normalize_line(reason),
+                in_1m,
+                in_3m,
+                in_6m,
+            )
             for key, threshold in thresholds.items():
                 if query_date >= threshold:
                     statistics[bucket][key] += 1
+        logger.info(
+            "[PersonalCredit][QueryStats] final institution=1m:%s 3m:%s 6m:%s personal=1m:%s 3m:%s 6m:%s",
+            statistics["institution_query"]["last_1_month"],
+            statistics["institution_query"]["last_3_months"],
+            statistics["institution_query"]["last_6_months"],
+            statistics["personal_query"]["last_1_month"],
+            statistics["personal_query"]["last_3_months"],
+            statistics["personal_query"]["last_6_months"],
+        )
         if warnings:
             statistics["warnings"] = warnings
         return statistics
@@ -137,20 +171,29 @@ def extract_query_records(sections: dict[str, Any]) -> list[dict[str, Any]]:
         text = str(sections.get("query_records") or sections.get("full_text") or "")
         records: list[dict[str, Any]] = []
         current_section = ""
+        merged_lines: list[str] = []
         for raw_line in text.splitlines():
             line = _normalize_line(raw_line)
+            if not line:
+                continue
+            if re.search(DATE_PATTERN, line) or "机构查询记录明细" in line or "本人查询记录明细" in line or "个人查询记录明细" in line:
+                merged_lines.append(line)
+            elif merged_lines:
+                merged_lines[-1] = f"{merged_lines[-1]} {line}".strip()
+        for line in merged_lines:
+            line = _normalize_line(line)
             if not line:
                 continue
             if "机构查询记录明细" in line:
                 current_section = "机构查询记录明细"
                 continue
-            if "本人查询记录明细" in line:
+            if "本人查询记录明细" in line or "个人查询记录明细" in line:
                 current_section = "本人查询记录明细"
                 continue
             date_match = re.search(DATE_PATTERN, line)
             if not date_match:
                 continue
-            if not any(keyword in line for keyword in ("查询", "审批", "贷后管理", "担保资格审查", "本人", "机构")):
+            if not any(keyword in line for keyword in ("查询", "审批", "审查", "贷后管理", "担保资格审查", "法人代表", "负责人", "高管", "本人", "机构")):
                 continue
             query_date = clean_value(date_match.group(0))
             tail = _normalize_line(line[date_match.end():])

@@ -11,7 +11,7 @@ from backend.services.personal_credit_report_agent.extract_credit_summary import
 from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block
 from backend.services.personal_credit_report_agent.extract_non_credit_transactions import extract_non_credit_transactions
 from backend.services.personal_credit_report_agent.extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
-from backend.services.personal_credit_report_agent.extract_query_records import build_query_statistics, extract_query_records
+from backend.services.personal_credit_report_agent.extract_query_records import build_query_statistics, extract_query_records, is_countable_query_reason
 from backend.services.personal_credit_report_agent.markdown_renderer import render_personal_credit_markdown
 from backend.services.personal_credit_report_agent.orchestrator import run_personal_credit_report_agent
 from backend.services.personal_credit_report_agent.risk_analyzer import analyze_personal_credit_risk
@@ -1341,3 +1341,67 @@ def test_query_markdown_summary_only() -> None:
     assert "查询机构：" not in markdown
     assert "查询原因：" not in markdown
     assert "查询类型：" not in markdown
+
+
+def test_query_statistics_month_boundary_inclusive() -> None:
+    query_records = [
+        {"query_date": "2025年03月09日", "query_type": "机构查询", "query_reason": "法人代表、负责人、高管等资信审查"},
+        {"query_date": "2025年02月25日", "query_type": "机构查询", "query_reason": "法人代表、负责人、高管等资信审查"},
+        {"query_date": "2025年02月19日", "query_type": "机构查询", "query_reason": "担保资格审查"},
+        {"query_date": "2025年02月12日", "query_type": "机构查询", "query_reason": "担保资格审查"},
+        {"query_date": "2025年02月11日", "query_type": "机构查询", "query_reason": "法人代表、负责人、高管等资信审查"},
+        {"query_date": "2025年02月10日", "query_type": "机构查询", "query_reason": "担保资格审查"},
+        {"query_date": "2025年02月09日", "query_type": "机构查询", "query_reason": "法人代表、负责人、高管等资信审查"},
+        {"query_date": "2025年01月21日", "query_type": "机构查询", "query_reason": "担保资格审查"},
+        {"query_date": "2025年01月09日", "query_type": "机构查询", "query_reason": "法人代表、负责人、高管等资信审查"},
+    ]
+    stats = build_query_statistics(query_records, "2025-03-11 04:01:39")
+    assert stats["institution_query"]["last_1_month"] == 5
+    assert stats["institution_query"]["last_3_months"] == 9
+    assert stats["institution_query"]["last_6_months"] == 9
+
+
+def test_query_statistics_exclude_before_boundary() -> None:
+    stats = build_query_statistics(
+        [{"query_date": "2025年02月10日", "query_type": "机构查询", "query_reason": "担保资格审查"}],
+        "2025-03-11 04:01:39",
+    )
+    assert stats["institution_query"]["last_1_month"] == 0
+    assert stats["institution_query"]["last_3_months"] == 1
+
+
+def test_query_statistics_include_boundary_date() -> None:
+    stats = build_query_statistics(
+        [{"query_date": "2025年02月11日", "query_type": "机构查询", "query_reason": "担保资格审查"}],
+        "2025-03-11 04:01:39",
+    )
+    assert stats["institution_query"]["last_1_month"] == 1
+
+
+def test_query_reason_legal_representative_credit_review() -> None:
+    assert is_countable_query_reason("法人代表、负责人、高管等资信审查") is True
+
+
+def test_query_reason_ocr_wrapped_credit_review() -> None:
+    query_records = [
+        {"query_date": "2025年02月25日", "query_type": "机构查询", "query_reason": "法人代表、负责人、高管等资信审\n查"}
+    ]
+    assert is_countable_query_reason(query_records[0]["query_reason"]) is True
+    stats = build_query_statistics(query_records, "2025-03-11 04:01:39")
+    assert stats["institution_query"]["last_1_month"] == 1
+
+
+def test_query_markdown_summary_counts() -> None:
+    markdown = render_personal_credit_markdown(
+        {
+            "basic_info": {},
+            "credit_summary": {},
+            "query_statistics": {
+                "institution_query": {"last_1_month": 5, "last_3_months": 9, "last_6_months": 9},
+                "personal_query": {"last_1_month": 0, "last_3_months": 0, "last_6_months": 0},
+            },
+        }
+    )
+    assert "近1个月查询次数：5" in markdown
+    assert "近3个月查询次数：9" in markdown
+    assert "近6个月查询次数：9" in markdown
