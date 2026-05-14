@@ -10,7 +10,7 @@ from .extract_loan_accounts import extract_loan_accounts
 from .extract_non_credit_transactions import extract_non_credit_transactions
 from .extract_overdue_records import extract_overdue_records
 from .extract_public_records import extract_public_records
-from .extract_query_records import extract_query_records
+from .extract_query_records import build_query_statistics, extract_query_records
 from .extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
 from .markdown_renderer import render_personal_credit_markdown
 from .normalizer import normalize_report_json
@@ -70,6 +70,13 @@ def run_personal_credit_report_agent(text: str, source_file: str | None = None, 
     report["overdue_records"] = _safe_call([], extract_overdue_records, sections)
     report["public_records"] = _safe_call([], extract_public_records, sections)
     report["query_records"] = _safe_call([], extract_query_records, sections)
+    report = normalize_report_json(report)
+    report["query_statistics"] = _safe_call(
+        report.get("query_statistics") or {},
+        build_query_statistics,
+        report.get("query_records") or [],
+        str((report.get("basic_info") or {}).get("report_time") or ""),
+    )
     report = normalize_report_json(report)
     indicators = _safe_call({}, analyze_personal_credit_risk, report)
     report["personal_credit_indicators"] = indicators if isinstance(indicators, dict) else {}

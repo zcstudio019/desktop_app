@@ -16,6 +16,7 @@ from .schema import (
     clone_default_report_json,
     default_basic_info,
     default_credit_summary,
+    default_query_statistics,
     ensure_record_fields,
 )
 
@@ -399,6 +400,20 @@ def normalize_report_json(report: dict[str, Any] | None) -> dict[str, Any]:
             normalized[field] = [item for item in value if item is not None]
 
     normalized["report_type"] = "personal_credit_report"
+    raw_query_statistics = normalized.get("query_statistics")
+    default_statistics = default_query_statistics()
+    if isinstance(raw_query_statistics, dict):
+        for group in ("institution_query", "personal_query"):
+            group_value = raw_query_statistics.get(group)
+            if isinstance(group_value, dict):
+                for key in ("last_1_month", "last_3_months", "last_6_months"):
+                    try:
+                        default_statistics[group][key] = int(group_value.get(key) or 0)
+                    except Exception:
+                        default_statistics[group][key] = 0
+        if isinstance(raw_query_statistics.get("warnings"), list):
+            normalized["warnings"] = [*list(normalized.get("warnings") or []), *raw_query_statistics["warnings"]]
+    normalized["query_statistics"] = default_statistics
     if not isinstance(normalized.get("personal_credit_indicators"), dict):
         normalized["personal_credit_indicators"] = {}
     return normalized

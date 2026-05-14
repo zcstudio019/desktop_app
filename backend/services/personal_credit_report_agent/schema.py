@@ -137,6 +137,21 @@ def default_credit_summary() -> dict[str, Any]:
     return {field: None for field in SUMMARY_FIELDS}
 
 
+def default_query_statistics() -> dict[str, dict[str, int]]:
+    return {
+        "institution_query": {
+            "last_1_month": 0,
+            "last_3_months": 0,
+            "last_6_months": 0,
+        },
+        "personal_query": {
+            "last_1_month": 0,
+            "last_3_months": 0,
+            "last_6_months": 0,
+        },
+    }
+
+
 def default_report_json() -> dict[str, Any]:
     return {
         "schema_version": "personal_credit_report.agent.v1",
@@ -150,6 +165,7 @@ def default_report_json() -> dict[str, Any]:
         "overdue_records": [],
         "public_records": [],
         "query_records": [],
+        "query_statistics": default_query_statistics(),
         "personal_credit_indicators": {},
         "risk_flags": [],
         "missing_fields": [],

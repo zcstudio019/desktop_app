@@ -11,7 +11,7 @@ from backend.services.personal_credit_report_agent.extract_credit_summary import
 from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block
 from backend.services.personal_credit_report_agent.extract_non_credit_transactions import extract_non_credit_transactions
 from backend.services.personal_credit_report_agent.extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
-from backend.services.personal_credit_report_agent.extract_query_records import extract_query_records
+from backend.services.personal_credit_report_agent.extract_query_records import build_query_statistics, extract_query_records
 from backend.services.personal_credit_report_agent.markdown_renderer import render_personal_credit_markdown
 from backend.services.personal_credit_report_agent.orchestrator import run_personal_credit_report_agent
 from backend.services.personal_credit_report_agent.risk_analyzer import analyze_personal_credit_risk
@@ -1266,3 +1266,78 @@ def test_markdown_section_order() -> None:
     public = markdown.index("## 九、公共记录")
     query = markdown.index("## 十、查询记录")
     assert guarantee < non_credit < public < query
+
+
+def test_query_statistics_from_report_time() -> None:
+    query_records = [
+        {"query_date": "2025年02月12日", "query_reason": "担保资格审查", "query_type": "机构查询"},
+        {"query_date": "2025年02月10日", "query_reason": "担保资格审查", "query_type": "机构查询"},
+        {"query_date": "2025年01月07日", "query_reason": "担保资格审查", "query_type": "机构查询"},
+        {"query_date": "2024年11月04日", "query_reason": "担保资格审查", "query_type": "机构查询"},
+        {"query_date": "2024年10月02日", "query_reason": "担保资格审查", "query_type": "机构查询"},
+        {"query_date": "2024年08月12日", "query_reason": "担保资格审查", "query_type": "机构查询"},
+        {"query_date": "2025年02月15日", "query_reason": "贷后管理", "query_type": "机构查询"},
+    ]
+    stats = build_query_statistics(query_records, "2025-03-11 04:01:39")
+    assert stats["institution_query"]["last_1_month"] == 1
+    assert stats["institution_query"]["last_3_months"] == 3
+    assert stats["institution_query"]["last_6_months"] == 5
+
+
+def test_query_statistics_exclude_post_loan_management() -> None:
+    query_records = [
+        {"query_date": "2025-03-01", "query_reason": "贷后管理", "query_type": "机构查询"},
+        {"query_date": "2025/02/20", "query_reason": "贷后管理", "query_type": "机构查询"},
+    ]
+    stats = build_query_statistics(query_records, "2025-03-11 04:01:39")
+    assert stats["institution_query"]["last_1_month"] == 0
+    assert stats["institution_query"]["last_3_months"] == 0
+    assert stats["institution_query"]["last_6_months"] == 0
+
+
+def test_query_statistics_include_allowed_reasons() -> None:
+    query_records = [
+        {"query_date": "2025.02.20", "query_reason": "法人代表、负责人、高管等", "query_type": "机构查询"},
+        {"query_date": "2025-02-21", "query_reason": "担保资格审查", "query_type": "机构查询"},
+        {"query_date": "2025/02/22", "query_reason": "贷款审批", "query_type": "机构查询"},
+    ]
+    stats = build_query_statistics(query_records, "2025-03-11 04:01:39")
+    assert stats["institution_query"]["last_1_month"] == 3
+    assert stats["institution_query"]["last_3_months"] == 3
+    assert stats["institution_query"]["last_6_months"] == 3
+
+
+def test_query_statistics_personal_query() -> None:
+    query_records = [
+        {"query_date": "2025-02-20", "query_reason": "贷款审批", "query_type": "本人查询"},
+        {"query_date": "2025-02-21", "query_reason": "担保资格审查", "query_type": "个人查询"},
+    ]
+    stats = build_query_statistics(query_records, "2025-03-11 04:01:39")
+    assert stats["personal_query"]["last_1_month"] == 2
+    assert stats["institution_query"]["last_1_month"] == 0
+
+
+def test_query_markdown_summary_only() -> None:
+    report = {
+        "basic_info": {},
+        "credit_summary": {},
+        "query_records": [
+            {"query_date": "2025-02-20", "query_institution": "某银行", "query_reason": "贷款审批", "query_type": "机构查询"}
+        ],
+        "query_statistics": {
+            "institution_query": {"last_1_month": 1, "last_3_months": 1, "last_6_months": 1},
+            "personal_query": {"last_1_month": 0, "last_3_months": 0, "last_6_months": 0},
+        },
+    }
+    markdown = render_personal_credit_markdown(report)
+    assert "## 十、查询记录" in markdown
+    assert "### 机构查询" in markdown
+    assert "近1个月查询次数" in markdown
+    assert "近3个月查询次数" in markdown
+    assert "近6个月查询次数" in markdown
+    assert "### 个人查询" in markdown
+    assert "### 记录 1" not in markdown
+    assert "查询日期：" not in markdown
+    assert "查询机构：" not in markdown
+    assert "查询原因：" not in markdown
+    assert "查询类型：" not in markdown

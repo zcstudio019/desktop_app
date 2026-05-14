@@ -18,6 +18,12 @@ def _default_indicators() -> dict[str, Any]:
         "loan_approval_queries_3m": 0,
         "loan_approval_queries_6m": 0,
         "credit_card_approval_queries_3m": 0,
+        "institution_query_last_1_month": 0,
+        "institution_query_last_3_months": 0,
+        "institution_query_last_6_months": 0,
+        "personal_query_last_1_month": 0,
+        "personal_query_last_3_months": 0,
+        "personal_query_last_6_months": 0,
         "related_repayment_responsibility_count": 0,
         "related_repayment_total_balance": "",
         "has_related_repayment_responsibility": False,
@@ -182,28 +188,42 @@ def analyze_personal_credit_risk(report_json: dict[str, Any]) -> dict[str, Any]:
         indicators["has_90d_overdue"] = summary_90d_overdue > 0 or "90天以上逾期" in structured_risk_text or "90 天以上逾期" in structured_risk_text
         indicators["has_bad_debt_or_compensation"] = any(keyword in risk_text for keyword in ("呆账", "代偿", "核销", "强制执行"))
 
-        reference = _reference_date(report_json, warnings)
-        for item in queries:
-            query_date = _parse_date(item.get("query_date"))
-            if not query_date:
-                if item.get("query_date"):
-                    warnings.append(f"query_date_parse_failed: {item.get('query_date')}")
-                continue
-            months = _months_between(reference, query_date)
-            if months < 0:
-                continue
-            reason = str(item.get("query_reason") or item.get("evidence") or item.get("evidence_text") or "")
-            if "贷款审批" in reason:
-                if months < 1:
-                    indicators["loan_approval_queries_1m"] += 1
-                if months < 3:
-                    indicators["loan_approval_queries_3m"] += 1
-                if months < 6:
-                    indicators["loan_approval_queries_6m"] += 1
-            if "信用卡审批" in reason and months < 3:
-                indicators["credit_card_approval_queries_3m"] += 1
+        query_statistics = report_json.get("query_statistics") if isinstance(report_json.get("query_statistics"), dict) else {}
+        institution_stats = query_statistics.get("institution_query") if isinstance(query_statistics.get("institution_query"), dict) else {}
+        personal_stats = query_statistics.get("personal_query") if isinstance(query_statistics.get("personal_query"), dict) else {}
+        if institution_stats or personal_stats:
+            indicators["institution_query_last_1_month"] = _summary_number(institution_stats.get("last_1_month"))
+            indicators["institution_query_last_3_months"] = _summary_number(institution_stats.get("last_3_months"))
+            indicators["institution_query_last_6_months"] = _summary_number(institution_stats.get("last_6_months"))
+            indicators["personal_query_last_1_month"] = _summary_number(personal_stats.get("last_1_month"))
+            indicators["personal_query_last_3_months"] = _summary_number(personal_stats.get("last_3_months"))
+            indicators["personal_query_last_6_months"] = _summary_number(personal_stats.get("last_6_months"))
+            indicators["loan_approval_queries_1m"] = indicators["institution_query_last_1_month"]
+            indicators["loan_approval_queries_3m"] = indicators["institution_query_last_3_months"]
+            indicators["loan_approval_queries_6m"] = indicators["institution_query_last_6_months"]
+        else:
+            reference = _reference_date(report_json, warnings)
+            for item in queries:
+                query_date = _parse_date(item.get("query_date"))
+                if not query_date:
+                    if item.get("query_date"):
+                        warnings.append(f"query_date_parse_failed: {item.get('query_date')}")
+                    continue
+                months = _months_between(reference, query_date)
+                if months < 0:
+                    continue
+                reason = str(item.get("query_reason") or item.get("evidence") or item.get("evidence_text") or "")
+                if "贷款审批" in reason:
+                    if months < 1:
+                        indicators["loan_approval_queries_1m"] += 1
+                    if months < 3:
+                        indicators["loan_approval_queries_3m"] += 1
+                    if months < 6:
+                        indicators["loan_approval_queries_6m"] += 1
+                if "信用卡审批" in reason and months < 3:
+                    indicators["credit_card_approval_queries_3m"] += 1
 
-        indicators["high_frequency_query_flag"] = indicators["loan_approval_queries_3m"] >= 4 or indicators["loan_approval_queries_6m"] >= 8
+        indicators["high_frequency_query_flag"] = indicators["institution_query_last_3_months"] >= 4 or indicators["institution_query_last_6_months"] >= 8 or indicators["loan_approval_queries_3m"] >= 4 or indicators["loan_approval_queries_6m"] >= 8
         usage_rate = indicators.get("credit_card_usage_rate")
         reasons: list[str] = []
         if indicators["has_current_overdue"]:

@@ -170,6 +170,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     non_credit_transactions = report.get("non_credit_transactions") if isinstance(report.get("non_credit_transactions"), list) else []
     public_records = report.get("public_records") if isinstance(report.get("public_records"), list) else []
     queries = report.get("query_records") if isinstance(report.get("query_records"), list) else []
+    query_statistics = report.get("query_statistics") if isinstance(report.get("query_statistics"), dict) else {}
     indicators = report.get("personal_credit_indicators") if isinstance(report.get("personal_credit_indicators"), dict) else {}
     risk_flags = report.get("risk_flags") if isinstance(report.get("risk_flags"), list) else []
     warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
@@ -317,17 +318,19 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
         lines.append("- 暂无")
 
     lines.extend(["", "## 十、查询记录"])
-    if queries:
-        for index, item in enumerate(queries, start=1):
-            if isinstance(item, dict):
-                _append_account(lines, f"记录 {index}", item, (
-                    ("query_date", "查询日期"),
-                    ("query_institution", "查询机构"),
-                    ("query_reason", "查询原因"),
-                    ("query_type", "查询类型"),
-                ))
-    else:
-        lines.append("- 暂无")
+    institution_query = query_statistics.get("institution_query") if isinstance(query_statistics.get("institution_query"), dict) else {}
+    personal_query = query_statistics.get("personal_query") if isinstance(query_statistics.get("personal_query"), dict) else {}
+    lines.extend([
+        "### 机构查询",
+        f"- 近1个月查询次数：{_count(institution_query.get('last_1_month'))}",
+        f"- 近3个月查询次数：{_count(institution_query.get('last_3_months'))}",
+        f"- 近6个月查询次数：{_count(institution_query.get('last_6_months'))}",
+        "",
+        "### 个人查询",
+        f"- 近1个月查询次数：{_count(personal_query.get('last_1_month'))}",
+        f"- 近3个月查询次数：{_count(personal_query.get('last_3_months'))}",
+        f"- 近6个月查询次数：{_count(personal_query.get('last_6_months'))}",
+    ])
 
     risk_reasons = _dedupe_lines([*(str(x) for x in risk_flags), *(str(x) for x in indicators.get("risk_reasons") or [])])
     lines.extend([
