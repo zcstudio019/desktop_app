@@ -121,9 +121,6 @@ def build_query_statistics(query_records: list[dict[str, Any]], report_time: str
             if not isinstance(record, dict):
                 continue
             reason = str(record.get("query_reason") or record.get("evidence") or record.get("evidence_text") or "")
-            if not is_countable_query_reason(reason):
-                logger.info("[PersonalCredit][QueryStats] skipped reason=%s date=%s", _normalize_line(reason), record.get("query_date"))
-                continue
             query_date = _parse_date(record.get("query_date"))
             if not query_date:
                 if record.get("query_date"):
@@ -134,11 +131,14 @@ def build_query_statistics(query_records: list[dict[str, Any]], report_time: str
             bucket = _query_bucket(record)
             if not bucket:
                 continue
+            if bucket == "institution_query" and not is_countable_query_reason(reason):
+                logger.info("[PersonalCredit][QueryStats] skipped institution reason=%s date=%s", _normalize_line(reason), record.get("query_date"))
+                continue
             in_1m = query_date >= thresholds["last_1_month"]
             in_3m = query_date >= thresholds["last_3_months"]
             in_6m = query_date >= thresholds["last_6_months"]
             logger.info(
-                "[PersonalCredit][QueryStats] counted type=%s date=%s reason=%s in_1m=%s in_3m=%s in_6m=%s",
+                "[PersonalCredit][QueryStats] counted %s date=%s reason=%s in_1m=%s in_3m=%s in_6m=%s",
                 "institution" if bucket == "institution_query" else "personal",
                 query_date,
                 _normalize_line(reason),

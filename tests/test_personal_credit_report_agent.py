@@ -1405,3 +1405,51 @@ def test_query_markdown_summary_counts() -> None:
     assert "近1个月查询次数：5" in markdown
     assert "近3个月查询次数：9" in markdown
     assert "近6个月查询次数：9" in markdown
+
+
+def test_personal_query_statistics_ignore_reason() -> None:
+    query_records = [
+        {"query_date": "2025年03月01日", "query_type": "个人查询", "query_reason": "本人查询信用报告"},
+        {"query_date": "2025年02月20日", "query_type": "本人查询", "query_reason": ""},
+        {"query_date": "2025年01月15日", "query_type": "个人查询", "query_reason": "互联网查询"},
+        {"query_date": "2024年10月01日", "query_type": "本人查询", "query_reason": "柜台查询"},
+        {"query_date": "2024年08月01日", "query_type": "本人查询", "query_reason": "本人查询"},
+    ]
+    stats = build_query_statistics(query_records, "2025-03-11 04:01:39")
+    assert stats["personal_query"]["last_1_month"] == 2
+    assert stats["personal_query"]["last_3_months"] == 3
+    assert stats["personal_query"]["last_6_months"] == 4
+    assert stats["institution_query"]["last_1_month"] == 0
+
+
+def test_personal_query_not_filtered_by_post_loan_management() -> None:
+    stats = build_query_statistics(
+        [{"query_date": "2025年03月01日", "query_type": "个人查询", "query_reason": "贷后管理"}],
+        "2025-03-11 04:01:39",
+    )
+    assert stats["personal_query"]["last_1_month"] == 1
+
+
+def test_institution_query_still_filters_reason() -> None:
+    stats = build_query_statistics(
+        [{"query_date": "2025年03月01日", "query_type": "机构查询", "query_reason": "贷后管理"}],
+        "2025-03-11 04:01:39",
+    )
+    assert stats["institution_query"]["last_1_month"] == 0
+
+
+def test_query_markdown_personal_counts() -> None:
+    markdown = render_personal_credit_markdown(
+        {
+            "basic_info": {},
+            "credit_summary": {},
+            "query_statistics": {
+                "institution_query": {"last_1_month": 0, "last_3_months": 0, "last_6_months": 0},
+                "personal_query": {"last_1_month": 2, "last_3_months": 3, "last_6_months": 4},
+            },
+        }
+    )
+    personal_section = markdown.split("### 个人查询", 1)[1]
+    assert "近1个月查询次数：2" in personal_section
+    assert "近3个月查询次数：3" in personal_section
+    assert "近6个月查询次数：4" in personal_section
