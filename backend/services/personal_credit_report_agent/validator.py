@@ -85,6 +85,9 @@ def validate_report_json(report: dict[str, Any]) -> tuple[list[str], list[str]]:
     if not isinstance(report.get("related_repayment_responsibilities"), list):
         warnings.append("related_repayment_responsibilities_not_array")
         report["related_repayment_responsibilities"] = []
+    if not isinstance(report.get("non_credit_transactions"), list):
+        warnings.append("non_credit_transactions_not_array")
+        report["non_credit_transactions"] = []
 
     expected_loans = _summary_count(
         summary,

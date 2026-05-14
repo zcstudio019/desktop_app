@@ -13,7 +13,8 @@ SECTION_TITLES: dict[str, tuple[str, ...]] = {
     "loan_accounts": ("贷款账户明细",),
     "credit_card_accounts": ("贷记卡账户明细", "准贷记卡账户明细"),
     "guarantees": ("担保信息",),
-    "public_records": ("公共信息",),
+    "non_credit_transactions": ("非信贷交易记录",),
+    "public_records": ("公共信息", "公共记录"),
     "query_records": ("查询记录", "机构查询记录明细", "本人查询记录明细"),
 }
 

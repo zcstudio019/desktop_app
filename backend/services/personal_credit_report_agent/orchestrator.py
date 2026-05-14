@@ -7,6 +7,7 @@ from .extract_credit_card_accounts import extract_credit_card_accounts
 from .extract_credit_summary import extract_credit_summary
 from .extract_guarantees import extract_guarantees
 from .extract_loan_accounts import extract_loan_accounts
+from .extract_non_credit_transactions import extract_non_credit_transactions
 from .extract_overdue_records import extract_overdue_records
 from .extract_public_records import extract_public_records
 from .extract_query_records import extract_query_records
@@ -65,6 +66,7 @@ def run_personal_credit_report_agent(text: str, source_file: str | None = None, 
     report["credit_card_accounts"] = _safe_call([], extract_credit_card_accounts, sections)
     report["related_repayment_responsibilities"] = _safe_call([], extract_related_repayment_responsibilities, sections, text)
     report["guarantees"] = _safe_call([], extract_guarantees, sections)
+    report["non_credit_transactions"] = _safe_call([], extract_non_credit_transactions, sections, text)
     report["overdue_records"] = _safe_call([], extract_overdue_records, sections)
     report["public_records"] = _safe_call([], extract_public_records, sections)
     report["query_records"] = _safe_call([], extract_query_records, sections)

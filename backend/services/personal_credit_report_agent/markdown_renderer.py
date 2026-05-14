@@ -167,6 +167,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     cards = report.get("credit_card_accounts") if isinstance(report.get("credit_card_accounts"), list) else []
     related_repayments = report.get("related_repayment_responsibilities") if isinstance(report.get("related_repayment_responsibilities"), list) else []
     guarantees = report.get("guarantees") if isinstance(report.get("guarantees"), list) else []
+    non_credit_transactions = report.get("non_credit_transactions") if isinstance(report.get("non_credit_transactions"), list) else []
     public_records = report.get("public_records") if isinstance(report.get("public_records"), list) else []
     queries = report.get("query_records") if isinstance(report.get("query_records"), list) else []
     indicators = report.get("personal_credit_indicators") if isinstance(report.get("personal_credit_indicators"), dict) else {}
@@ -287,7 +288,21 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     else:
         lines.append("- 暂无")
 
-    lines.extend(["", "## 八、公共记录"])
+    lines.extend(["", "## 八、非信贷交易记录"])
+    if non_credit_transactions:
+        for index, item in enumerate(non_credit_transactions, start=1):
+            if isinstance(item, dict):
+                _append_account(lines, f"非信贷交易记录 {index}", item, (
+                    ("record_type", "记录类型"),
+                    ("date", "日期"),
+                    ("institution", "机构"),
+                    ("amount", "金额"),
+                    ("content", "内容"),
+                ))
+    else:
+        lines.append("- 暂无")
+
+    lines.extend(["", "## 九、公共记录"])
     if public_records:
         for index, item in enumerate(public_records, start=1):
             if isinstance(item, dict):
@@ -301,7 +316,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     else:
         lines.append("- 暂无")
 
-    lines.extend(["", "## 九、查询记录"])
+    lines.extend(["", "## 十、查询记录"])
     if queries:
         for index, item in enumerate(queries, start=1):
             if isinstance(item, dict):
@@ -317,7 +332,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     risk_reasons = _dedupe_lines([*(str(x) for x in risk_flags), *(str(x) for x in indicators.get("risk_reasons") or [])])
     lines.extend([
         "",
-        "## 十、风险提示",
+        "## 十一、风险提示",
         f"- 综合风险等级：{_risk_level(indicators.get('risk_level'))}",
         f"- 当前逾期：{_yes_no(indicators.get('has_current_overdue'))}",
         f"- 90天以上逾期：{_yes_no(indicators.get('has_90d_overdue'))}",
@@ -332,7 +347,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     ])
     lines.append("- 风险原因：" + ("；".join(risk_reasons) if risk_reasons else "暂无"))
 
-    lines.extend(["", "## 十一、待核验项"])
+    lines.extend(["", "## 十二、待核验项"])
     if pending:
         lines.extend(f"- {item}" for item in pending)
     else:

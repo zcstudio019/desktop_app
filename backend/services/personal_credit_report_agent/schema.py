@@ -98,6 +98,15 @@ PUBLIC_RECORD_FIELDS = (
     "evidence_text",
 )
 
+NON_CREDIT_TRANSACTION_FIELDS = (
+    "record_type",
+    "date",
+    "institution",
+    "amount",
+    "content",
+    "evidence",
+)
+
 OVERDUE_RECORD_FIELDS = (
     "record_type",
     "institution",
@@ -137,6 +146,7 @@ def default_report_json() -> dict[str, Any]:
         "credit_card_accounts": [],
         "related_repayment_responsibilities": [],
         "guarantees": [],
+        "non_credit_transactions": [],
         "overdue_records": [],
         "public_records": [],
         "query_records": [],

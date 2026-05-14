@@ -9,6 +9,7 @@ from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.personal_credit_report_agent.extract_basic_info import extract_basic_info
 from backend.services.personal_credit_report_agent.extract_credit_summary import extract_credit_summary
 from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block
+from backend.services.personal_credit_report_agent.extract_non_credit_transactions import extract_non_credit_transactions
 from backend.services.personal_credit_report_agent.extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
 from backend.services.personal_credit_report_agent.extract_query_records import extract_query_records
 from backend.services.personal_credit_report_agent.markdown_renderer import render_personal_credit_markdown
@@ -89,6 +90,7 @@ def test_agent_output_schema_stable() -> None:
         "credit_summary",
         "loan_accounts",
         "credit_card_accounts",
+        "non_credit_transactions",
         "guarantees",
         "overdue_records",
         "public_records",
@@ -100,6 +102,7 @@ def test_agent_output_schema_stable() -> None:
         assert key in report
     assert isinstance(report["loan_accounts"], list)
     assert isinstance(report["credit_card_accounts"], list)
+    assert isinstance(report["non_credit_transactions"], list)
     assert isinstance(report["query_records"], list)
 
 
@@ -107,8 +110,8 @@ def test_markdown_renderer_not_empty() -> None:
     report = run_personal_credit_report_agent(SAMPLE_TEXT)["report_json"]
     markdown = render_personal_credit_markdown(report)
     assert "# 个人征信报告" in markdown
-    assert "## 九、查询记录" in markdown
-    assert "## 十一、待核验项" in markdown
+    assert "## 十、查询记录" in markdown
+    assert "## 十二、待核验项" in markdown
 
 
 def test_personal_credit_risk_analyzer() -> None:
@@ -1229,3 +1232,37 @@ def test_related_repayment_markdown_contains_9th_even_same_contract() -> None:
     assert "起始日期：2025-02-20" in markdown
     assert "贷款余额：1,370,000" in markdown
     assert "核验提示：合同编号与其他记录重复" in markdown
+
+
+def test_extract_no_non_credit_transactions() -> None:
+    text = """
+非信贷交易记录
+系统中没有您最近5年内的非信贷交易记录。
+"""
+    records = extract_non_credit_transactions(segment_report(text), text)
+    assert len(records) == 1
+    assert records[0]["record_type"] == "系统中没有您最近5年内的非信贷交易记录"
+
+
+def test_extract_non_credit_transactions_inline_ocr() -> None:
+    text = "非信贷交易记录系统中没有您最近5年内的非信贷交易记录。\n公共记录系统中没有您最近5年内的公共信息记录。"
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert any("系统中没有您最近5年内的非信贷交易记录" in item.get("record_type", "") for item in report["non_credit_transactions"])
+    assert any("系统中没有您最近5年内的公共信息记录" in item.get("record_type", "") for item in report["public_records"])
+    assert not any("非信贷交易记录" in str(item) for item in report["public_records"])
+
+
+def test_markdown_non_credit_transaction_section() -> None:
+    text = "非信贷交易记录\n系统中没有您最近5年内的非信贷交易记录。"
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    assert "## 八、非信贷交易记录" in markdown
+    assert "记录类型：系统中没有您最近5年内的非信贷交易记录" in markdown
+
+
+def test_markdown_section_order() -> None:
+    markdown = run_personal_credit_report_agent("非信贷交易记录\n系统中没有您最近5年内的非信贷交易记录。\n公共记录\n系统中没有您最近5年内的公共信息记录。")["report_markdown"]
+    guarantee = markdown.index("## 七、担保信息")
+    non_credit = markdown.index("## 八、非信贷交易记录")
+    public = markdown.index("## 九、公共记录")
+    query = markdown.index("## 十、查询记录")
+    assert guarantee < non_credit < public < query
