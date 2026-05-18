@@ -119,11 +119,23 @@ def _extract_loan_window(text: str) -> str:
     start = min(start_positions) if start_positions else 0
     tail = source[start:]
     stop_positions: list[int] = []
-    for heading in ("信用卡", "相关还款责任信息", "相关还款责任", "非信贷交易记录", "公共记录", "公共信息", "查询记录", "查询记录明细"):
+    for heading in ("相关还款责任信息", "相关还款责任", "非信贷交易记录", "公共记录", "公共信息", "查询记录", "查询记录明细", "机构查询记录", "本人查询记录", "说明", "本人声明", "异议标注"):
         match = re.search(rf"(?m)^\s*{re.escape(heading)}\s*[:：]?\s*$", tail)
         if match and match.start() > 0:
             stop_positions.append(match.start())
     return tail[:min(stop_positions)] if stop_positions else tail
+
+
+def _expected_loan_count(text: str) -> int:
+    for pattern in (
+        r"未结清贷款账户数\s*[:：]?\s*(\d+)",
+        r"未结清其他贷款账户数\s*[:：]?\s*(\d+)",
+        r"未结清/未销户账户数\s+(?:\d+|--)\s+(?:\d+|--)\s+(\d+)",
+    ):
+        match = re.search(pattern, str(text or ""))
+        if match:
+            return int(match.group(1))
+    return 0
 
 
 def _extract_label(block: str, labels: tuple[str, ...], *, max_chars: int = 120) -> str:
@@ -223,7 +235,7 @@ def parse_personal_loan_sentence(sentence: str) -> dict[str, Any]:
             "loan_amount": amount,
             "issued_amount": amount,
             "balance": balance,
-            "overdue_status": "无 / 当前无逾期",
+            "overdue_status": "无",
             "account_status": "未结清",
         })
         return base
@@ -411,17 +423,42 @@ def _candidate_blocks(text: str) -> list[str]:
     return [block.strip() for block in blocks if block and _looks_like_loan(block)]
 
 
+def _merge_candidate_blocks(*sources: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for source in sources:
+        for block in _candidate_blocks(source):
+            normalized = _normalize_block(block)
+            if not normalized or normalized in seen:
+                continue
+            if not (
+                ("发放的" in normalized and "贷款" in normalized and "截至" in normalized and "余额" in normalized)
+                or ("贷款授信" in normalized and "额度有效期至" in normalized and "可循环使用" in normalized and "余额" in normalized)
+                or ("为" in normalized and "授信" in normalized and "额度有效期至" in normalized and "可循环使用" in normalized and "余额" in normalized)
+                or ("发放金额" in normalized and "余额" in normalized and "账户状态" in normalized)
+                or ("当前逾期金额" in normalized and "余额" in normalized)
+            ):
+                continue
+            seen.add(normalized)
+            result.append(block)
+    return result
+
+
 def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
     try:
-        text = _extract_loan_window("\n".join(
-            _strip_stop_sections(str(sections.get(key) or ""))
+        source_text = "\n".join(
+            str(sections.get(key) or "")
             for key in ("loan_accounts", "credit_transaction_details", "full_text")
             if sections.get(key)
-        ))
+        )
+        text = _extract_loan_window(source_text)
         logger.info("[PersonalCredit][Loan][SECTION_LEN]=%s", len(text))
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
-        for index, block in enumerate(_candidate_blocks(text), start=1):
+        candidates = _merge_candidate_blocks(text, source_text)
+        fallback_count = max(0, len(candidates) - len(_candidate_blocks(text)))
+        logger.info("[PersonalCredit][Loan][FULLTEXT_FALLBACK_CANDIDATES]=%s", fallback_count)
+        for index, block in enumerate(candidates, start=1):
             logger.info("[PersonalCredit][Loan][CANDIDATE] index=%s raw_start=%s", index, _normalize_block(block)[:300])
             normalized_block = _normalize_block(block)
             parsed = parse_personal_loan_sentence(normalized_block)
@@ -445,7 +482,7 @@ def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
                     "loan_amount": amount,
                     "issued_amount": amount,
                     "balance": _extract_money(block, ("余额", "本金余额", "贷款余额")),
-                    "overdue_status": _extract_label(block, ("逾期", "逾期状态"), max_chars=80),
+                    "overdue_status": "当前逾期" if overdue_amount else _extract_label(block, ("逾期状态",), max_chars=80),
                     "account_status": _extract_status(block),
                     "five_category": _extract_five_category(block),
                     "overdue_amount": overdue_amount,
@@ -483,6 +520,9 @@ def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
                 seen.add(signature)
                 records.append(ensure_record_fields(record, LOAN_ACCOUNT_FIELDS))
         logger.info("[PersonalCredit][Loan][FINAL_COUNT]=%s", len(records))
+        expected = _expected_loan_count(source_text)
+        if expected and len(records) < expected:
+            logger.info("[PersonalCredit][Loan][COUNT_MISMATCH] expected_from_summary=%s parsed=%s", expected, len(records))
         return records
     except Exception:
         return []
