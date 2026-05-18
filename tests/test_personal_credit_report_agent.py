@@ -1451,6 +1451,125 @@ def test_credit_card_markdown_amounts_correct() -> None:
     assert "授信额度：102,006" not in card_section
 
 
+def test_credit_card_recovery_updates_missing_limit_and_appends_missing_cards() -> None:
+    text = """
+个人征信报告
+信用卡
+2020年11月27日广发银行股份有限公司信用卡中心发放的贷记卡（人民币账户，卡片尾号：1019）。截至2025年12月，信用额度38,000，已使用额度440。
+2021年09月10日上海农村商业银行股份有限公司发放的贷记卡（人民币账户）。截至2025年12月，信用额度30,000，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（人民币账户，卡片尾号：8222）。截至2026年01月，信用额度100,000，已使用额度0。
+"""
+    existing = [{
+        "open_date": "2020-11-27",
+        "institution": "广发银行股份有限公司信用卡中心",
+        "issuer": "广发银行股份有限公司信用卡中心",
+        "card_type": "贷记卡",
+        "currency": "人民币",
+        "card_tail_no": "1019",
+        "credit_limit": "",
+        "used_limit": "440",
+        "used_amount": "440",
+        "account_status": "",
+        "report_cutoff": "2025-12",
+    }]
+    recovered = recover_rmb_active_credit_cards(segment_report(text), existing, {"active_credit_card_account_count": "32"})
+    by_issuer = {item["institution"]: item for item in recovered}
+    assert len(recovered) == 3
+    assert by_issuer["广发银行股份有限公司信用卡中心"]["credit_limit"] == "38,000"
+    assert by_issuer["广发银行股份有限公司信用卡中心"]["used_amount"] == "440"
+    assert by_issuer["广发银行股份有限公司信用卡中心"]["account_status"] == "当前有效"
+    assert by_issuer["上海农村商业银行股份有限公司"]["credit_limit"] == "30,000"
+    assert by_issuer["中国工商银行股份有限公司上海市分行"]["credit_limit"] == "100,000"
+
+
+def test_credit_card_guangfa_limit_38000() -> None:
+    text = """
+个人征信报告
+信用卡
+2020年11月27日广发银行股份有限公司信用卡中心发放的贷记卡（人民币账户，卡片尾号：1019）。截至2025年12月，信用额度38,000，已使用额度440。
+"""
+    card = run_personal_credit_report_agent(text)["report_json"]["credit_card_accounts"][0]
+    assert card["issuer"] == "广发银行股份有限公司信用卡中心"
+    assert card["currency"] == "人民币"
+    assert card["card_tail_no"] == "1019"
+    assert card["credit_limit"] == "38,000"
+    assert card["used_amount"] == "440"
+    assert card["account_status"] == "当前有效"
+    assert card["report_cutoff"] == "2025-12"
+
+
+def test_credit_card_no_tail_number_should_display() -> None:
+    text = """
+个人征信报告
+信用卡
+2021年09月10日上海农村商业银行股份有限公司发放的贷记卡（人民币账户）。截至2025年12月，信用额度30,000，已使用额度0。
+"""
+    result = run_personal_credit_report_agent(text)
+    card = result["report_json"]["credit_card_accounts"][0]
+    assert card["issuer"] == "上海农村商业银行股份有限公司"
+    assert card["currency"] == "人民币"
+    assert card["card_tail_no"] in {"", "未识别", None}
+    assert card["credit_limit"] == "30,000"
+    assert card["used_amount"] == "0"
+    assert card["account_status"] == "当前有效"
+    assert "上海农村商业银行股份有限公司" in result["report_markdown"]
+
+
+def test_credit_card_icbc_rmb_8222_should_display_limit_100000() -> None:
+    text = """
+个人征信报告
+信用卡
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（日元账户，卡片尾号：8222）。截至2026年01月，信用额度74,383，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（美元账户，卡片尾号：8222）。截至2026年01月，信用额度102,006，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（人民币账户，卡片尾号：8222）。截至2026年01月，信用额度100,000，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（新加坡元账户，卡片尾号：8222）。截至2026年01月，信用额度105,968，已使用额度0。
+"""
+    result = run_personal_credit_report_agent(text)
+    card = result["report_json"]["credit_card_accounts"][0]
+    assert card["currency"] == "人民币"
+    assert card["card_tail_no"] == "8222"
+    assert card["credit_limit"] == "100,000"
+    assert card["used_amount"] == "0"
+    assert "币种：美元" not in result["report_markdown"]
+    assert "授信额度：102,006" not in result["report_markdown"]
+
+
+def test_credit_card_limit_not_unknown_when_used_amount_exists() -> None:
+    text = """
+个人征信报告
+信用卡
+2020年11月27日广发银行股份有限公司信用卡中心发放的贷记卡（人民币账户，卡片尾号：1019）。截至2025年12月，信用额度38,000，已使用额度440。
+"""
+    card = run_personal_credit_report_agent(text)["report_json"]["credit_card_accounts"][0]
+    assert card["credit_limit"] != ""
+    assert card["credit_limit"] != "未识别"
+    assert card["credit_limit"] != "440"
+    assert card["credit_limit"] == "38,000"
+
+
+def test_credit_card_markdown_contains_all_expected_rmb_cards() -> None:
+    text = """
+个人征信报告
+信用卡
+2020年11月27日广发银行股份有限公司信用卡中心发放的贷记卡（人民币账户，卡片尾号：1019）。截至2025年12月，信用额度38,000，已使用额度440。
+2021年09月10日上海农村商业银行股份有限公司发放的贷记卡（人民币账户）。截至2025年12月，信用额度30,000，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（人民币账户，卡片尾号：8222）。截至2026年01月，信用额度100,000，已使用额度0。
+2025年01月01日北京银行股份有限公司发放的贷记卡（人民币账户）。截至2026年01月，信用额度500,000，已使用额度0。
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    assert "广发银行股份有限公司信用卡中心" in markdown
+    assert "卡片尾号：1019" in markdown
+    assert "授信额度：38,000" in markdown
+    assert "已使用额度：440" in markdown
+    assert "上海农村商业银行股份有限公司" in markdown
+    assert "授信额度：30,000" in markdown
+    assert "中国工商银行股份有限公司上海市分行" in markdown
+    assert "卡片尾号：8222" in markdown
+    assert "授信额度：100,000" in markdown
+    assert "北京银行股份有限公司" in markdown
+    assert "授信额度：500,000" in markdown
+
+
 def test_credit_card_markdown_only_core_fields() -> None:
     markdown = render_personal_credit_markdown({
         "basic_info": {"source_file": "sample.txt"},

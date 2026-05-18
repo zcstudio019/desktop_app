@@ -309,41 +309,80 @@ def _dedupe_signature(record: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _recovery_match_key(record: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        str(record.get(key) or "")
+        for key in ("open_date", "institution", "currency", "card_tail_no", "report_cutoff")
+    )
+
+
+def _merge_recovered_card(existing: dict[str, Any], recovered: dict[str, Any]) -> None:
+    for key in ("credit_limit", "used_limit", "used_amount", "account_status", "report_cutoff", "card_type", "currency", "open_date"):
+        if not existing.get(key) and recovered.get(key):
+            existing[key] = recovered.get(key)
+    if str(existing.get("account_status") or "") in {"", "未识别", "未知", "不详"} and recovered.get("account_status"):
+        existing["account_status"] = recovered.get("account_status")
+    if recovered.get("credit_limit") and existing.get("credit_limit") == existing.get("used_amount"):
+        existing["credit_limit"] = recovered.get("credit_limit")
+    if recovered.get("used_amount"):
+        existing["used_amount"] = recovered.get("used_amount")
+        existing["used_limit"] = recovered.get("used_limit") or recovered.get("used_amount")
+
+
 def recover_rmb_active_credit_cards(
     sections: dict[str, Any],
     records: list[dict[str, Any]],
     credit_summary: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Append RMB active cards found in raw text when display records are under-extracted."""
+    """Append or repair RMB active cards found in raw text."""
     try:
-        expected = 0
-        if isinstance(credit_summary, dict):
-            match = re.search(r"\d+", str(credit_summary.get("active_credit_card_account_count") or ""))
-            expected = int(match.group(0)) if match else 0
+        del credit_summary
         source_text = "\n".join(
             str(sections.get(key) or "")
             for key in ("full_text", "credit_transaction_details", "credit_card_accounts")
             if sections.get(key)
         )
-        if expected < 5 or len(records) >= 3:
+        if not source_text.strip():
             return records
         text = _extract_credit_card_window(source_text)
         result = list(records)
         seen = {_dedupe_signature(item) for item in result if isinstance(item, dict)}
-        for block in _active_card_sentence_blocks(text):
+        index_by_key = {
+            _recovery_match_key(item): item
+            for item in result
+            if isinstance(item, dict) and str(item.get("currency") or "") == "人民币"
+        }
+        for block in _date_card_blocks(text) or _active_card_sentence_blocks(text):
             record = parse_credit_card_account_block(block)
             if not _is_rmb_active_card(record):
+                continue
+            match_key = _recovery_match_key(record)
+            if match_key in index_by_key:
+                existing = index_by_key[match_key]
+                before = (existing.get("credit_limit"), existing.get("used_amount"), existing.get("account_status"))
+                _merge_recovered_card(existing, record)
+                after = (existing.get("credit_limit"), existing.get("used_amount"), existing.get("account_status"))
+                if before != after:
+                    logger.info(
+                        "[PersonalCredit][CreditCard][RECOVERY_UPDATE] issuer=%s tail_no=%s credit_limit=%s used_amount=%s",
+                        existing.get("issuer") or existing.get("institution"),
+                        existing.get("card_tail_no") or "未识别",
+                        existing.get("credit_limit"),
+                        existing.get("used_amount") or existing.get("used_limit"),
+                    )
                 continue
             signature = _dedupe_signature(record)
             if signature in seen:
                 continue
             seen.add(signature)
+            index_by_key[match_key] = record
             logger.info(
-                "[PersonalCredit][CreditCard][RECOVERY_APPEND] issuer=%s currency=%s tail_no=%s credit_limit=%s",
+                "[PersonalCredit][CreditCard][RECOVERY_APPEND] issuer=%s currency=%s tail_no=%s credit_limit=%s used_amount=%s",
                 record.get("issuer") or record.get("institution"),
                 record.get("currency"),
-                record.get("card_tail_no"),
+                record.get("card_tail_no") or "未识别",
                 record.get("credit_limit"),
+                record.get("used_amount") or record.get("used_limit"),
             )
             result.append(ensure_record_fields(record, CREDIT_CARD_ACCOUNT_FIELDS))
         return result
