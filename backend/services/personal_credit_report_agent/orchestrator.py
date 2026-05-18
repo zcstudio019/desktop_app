@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .extract_basic_info import extract_basic_info
-from .extract_credit_card_accounts import extract_credit_card_accounts
+from .extract_credit_card_accounts import extract_credit_card_accounts, recover_rmb_active_credit_cards
 from .extract_credit_summary import extract_credit_summary
 from .extract_guarantees import extract_guarantees
 from .extract_loan_accounts import extract_loan_accounts
@@ -70,6 +70,14 @@ def run_personal_credit_report_agent(text: str, source_file: str | None = None, 
     report["overdue_records"] = _safe_call([], extract_overdue_records, sections)
     report["public_records"] = _safe_call([], extract_public_records, sections)
     report["query_records"] = _safe_call([], extract_query_records, sections)
+    report = normalize_report_json(report)
+    report["credit_card_accounts"] = _safe_call(
+        report.get("credit_card_accounts") or [],
+        recover_rmb_active_credit_cards,
+        sections,
+        report.get("credit_card_accounts") or [],
+        report.get("credit_summary") or {},
+    )
     report = normalize_report_json(report)
     report["query_statistics"] = _safe_call(
         report.get("query_statistics") or {},

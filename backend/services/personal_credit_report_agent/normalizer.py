@@ -256,7 +256,7 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
         return False
     if _record_has_abnormal(record):
         logger.info(
-            "[PersonalCredit][CreditCard][DISPLAYABLE] issuer=%s currency=%s tail_no=%s reason=abnormal",
+            "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s reason=abnormal",
             record.get("issuer") or record.get("institution"),
             record.get("currency"),
             record.get("card_tail_no"),
@@ -271,7 +271,7 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
         return False
     if "当前有效" in status:
         logger.info(
-            "[PersonalCredit][CreditCard][DISPLAYABLE] issuer=%s currency=%s tail_no=%s",
+            "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s",
             record.get("issuer") or record.get("institution"),
             record.get("currency"),
             record.get("card_tail_no"),
@@ -279,7 +279,7 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
         return True
     if record.get("report_cutoff") and record.get("credit_limit") and (record.get("used_limit") or record.get("used_amount")) not in (None, ""):
         logger.info(
-            "[PersonalCredit][CreditCard][DISPLAYABLE] issuer=%s currency=%s tail_no=%s reason=active_limit",
+            "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s reason=active_limit",
             record.get("issuer") or record.get("institution"),
             record.get("currency"),
             record.get("card_tail_no"),

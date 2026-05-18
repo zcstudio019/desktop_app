@@ -8,7 +8,7 @@ from backend.services import markdown_profile_service
 from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.personal_credit_report_agent.extract_basic_info import extract_basic_info
 from backend.services.personal_credit_report_agent.extract_credit_summary import extract_credit_summary
-from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block
+from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block, recover_rmb_active_credit_cards
 from backend.services.personal_credit_report_agent.extract_non_credit_transactions import extract_non_credit_transactions
 from backend.services.personal_credit_report_agent.extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
 from backend.services.personal_credit_report_agent.extract_query_records import build_query_statistics, extract_query_records, is_countable_query_reason
@@ -1013,6 +1013,76 @@ def test_credit_card_markdown_contains_ccb_6049() -> None:
     assert "授信额度：2,000" in card_section
     assert "币种：人民币" in card_section
     assert "币种：美元" not in card_section
+
+
+def test_credit_card_parse_wrapped_cutoff_date() -> None:
+    text = "2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡(人民币账户,卡片尾号:6049)。截至2026年\n03月,信用额度2,000,已使用额度0。"
+    parsed = parse_credit_card_account_block(text)
+    assert parsed["issuer"] == "中国建设银行股份有限公司上海宝钢宝山支行"
+    assert parsed["currency"] == "人民币"
+    assert parsed["card_tail_no"] == "6049"
+    assert parsed["credit_limit"] == "2,000"
+    assert parsed["used_amount"] == "0"
+    assert parsed["report_cutoff"] == "2026-03"
+
+
+def test_credit_card_keep_rmb_same_tail_as_usd() -> None:
+    text = """
+个人征信报告
+信用卡
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡(人民币账户,卡片尾号:6049)。截至2026年03月,信用额度2,000,已使用额度0。
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡(美元账户,卡片尾号:6049)。截至2026年03月,信用额度2,000,已使用额度0。
+"""
+    parsed = extract_credit_card_accounts({"full_text": text})
+    assert len(parsed) == 2
+    cards = run_personal_credit_report_agent(text)["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    assert cards[0]["currency"] == "人民币"
+    assert cards[0]["card_tail_no"] == "6049"
+    assert cards[0]["institution"] == "中国建设银行股份有限公司上海宝钢宝山支行"
+
+
+def test_credit_card_recovery_append_missing_ccb_6049() -> None:
+    existing = [
+        {
+            "open_date": "2012-10-24",
+            "institution": "中国光大银行股份有限公司信用卡中心",
+            "issuer": "中国光大银行股份有限公司信用卡中心",
+            "card_type": "贷记卡",
+            "currency": "人民币",
+            "card_tail_no": "8186",
+            "credit_limit": "0",
+            "used_limit": "0",
+            "used_amount": "0",
+            "account_status": "当前有效",
+            "report_cutoff": "2026-03",
+        },
+        {
+            "open_date": "2024-12-02",
+            "institution": "兴业银行股份有限公司",
+            "issuer": "兴业银行股份有限公司",
+            "card_type": "贷记卡",
+            "currency": "人民币",
+            "card_tail_no": "",
+            "credit_limit": "15,000",
+            "used_limit": "0",
+            "used_amount": "0",
+            "account_status": "当前有效",
+            "report_cutoff": "2026-03",
+        },
+    ]
+    recovered = recover_rmb_active_credit_cards(
+        segment_report(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT),
+        existing,
+        {"active_credit_card_account_count": "5"},
+    )
+    assert len(recovered) == 3
+    assert any(
+        item.get("institution") == "中国建设银行股份有限公司上海宝钢宝山支行"
+        and item.get("currency") == "人民币"
+        and item.get("card_tail_no") == "6049"
+        for item in recovered
+    )
 
 
 RELATED_REPAYMENT_TEXT = """
