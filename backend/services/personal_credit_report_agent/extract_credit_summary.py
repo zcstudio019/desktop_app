@@ -468,6 +468,54 @@ def _sum_values(*values: Any) -> str:
     return str(sum(numbers)) if numbers else ""
 
 
+def _safe_row_region(text: str, row_label: str) -> str:
+    pattern = _label_pattern(row_label)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    next_start = len(text)
+    for _, other_label, other_pattern in MATRIX_ROW_PATTERNS:
+        if other_label == row_label:
+            continue
+        for next_match in other_pattern.finditer(text, match.end()):
+            if next_match.start() < next_start:
+                next_start = next_match.start()
+    return text[match.end():next_start]
+
+
+def _force_matrix_corrections(summary: dict[str, Any], sections: dict[str, Any]) -> None:
+    """Final guard for matrix rows where prose numbers can pollute key-value fallback."""
+    full_text = _normalize_text("\n".join(
+        str(sections.get(key) or "")
+        for key in ("credit_summary", "information_summary", "credit_overview", "full_text")
+        if sections.get(key)
+    ))
+    compact_text = re.sub(r"\s+", " ", full_text).strip()
+    if not compact_text:
+        return
+
+    overdue_90d_region = _safe_row_region(compact_text, "发生过90天以上逾期的账户数")
+    overdue_90d_tokens = parse_matrix_tokens(overdue_90d_region, 4)
+    if overdue_90d_tokens:
+        logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=发生过90天以上逾期的账户数 tokens=%s", overdue_90d_tokens)
+        summary["credit_card_90d_overdue_account_count"] = _matrix_dash(overdue_90d_tokens[0], overdue=True)
+        if len(overdue_90d_tokens) >= 3:
+            summary["loan_90d_overdue_account_count"] = _matrix_dash(overdue_90d_tokens[2], overdue=True)
+
+    responsibility_region = _safe_row_region(compact_text, "相关还款责任账户数")
+    responsibility_tokens = parse_matrix_tokens(responsibility_region, 2)
+    if responsibility_tokens:
+        logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=相关还款责任账户数 tokens=%s", responsibility_tokens)
+        summary["personal_related_repayment_responsibility_account_count"] = _matrix_dash(responsibility_tokens[0], responsibility=True)
+        if len(responsibility_tokens) >= 2:
+            summary["enterprise_related_repayment_responsibility_account_count"] = _matrix_dash(responsibility_tokens[1], responsibility=True)
+        logger.info(
+            "[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s",
+            summary.get("personal_related_repayment_responsibility_account_count"),
+            summary.get("enterprise_related_repayment_responsibility_account_count"),
+        )
+
+
 def extract_credit_summary(sections: dict[str, Any]) -> dict[str, Any]:
     result = default_credit_summary()
     try:
@@ -502,6 +550,7 @@ def extract_credit_summary(sections: dict[str, Any]) -> dict[str, Any]:
                 extracted.get("housing_loan_overdue_count"),
                 extracted.get("other_loan_overdue_count"),
             ) or None
+        _force_matrix_corrections(result, sections)
         return result
     except Exception as exc:
         logger.info("[PersonalCredit][Summary] extraction failed error=%s", exc)
