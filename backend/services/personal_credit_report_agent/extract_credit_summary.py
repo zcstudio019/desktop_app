@@ -520,7 +520,9 @@ def extract_credit_summary(sections: dict[str, Any]) -> dict[str, Any]:
     result = default_credit_summary()
     try:
         extracted: dict[str, str] = {}
+        source_texts: list[str] = []
         for source_name, source_text in _source_windows(sections):
+            source_texts.append(source_text)
             logger.info("[PersonalCredit][Summary] source=%s len=%s", source_name, len(source_text))
             logger.info("[PersonalCredit][Summary][RAW_WINDOW_START]\n%s\n[PersonalCredit][Summary][RAW_WINDOW_END]", source_text[:2500])
             source_values = _extract_all_values(source_text)
@@ -551,6 +553,14 @@ def extract_credit_summary(sections: dict[str, Any]) -> dict[str, Any]:
                 extracted.get("other_loan_overdue_count"),
             ) or None
         _force_matrix_corrections(result, sections)
+        result["_summary_source_text"] = "\n".join(source_texts)[:12000]
+        logger.info(
+            "[PersonalCredit][Summary][AFTER_EXTRACT] credit_card_90d_overdue_account_count=%s loan_90d_overdue_account_count=%s personal_related=%s enterprise_related=%s",
+            result.get("credit_card_90d_overdue_account_count"),
+            result.get("loan_90d_overdue_account_count"),
+            result.get("personal_related_repayment_responsibility_account_count"),
+            result.get("enterprise_related_repayment_responsibility_account_count"),
+        )
         return result
     except Exception as exc:
         logger.info("[PersonalCredit][Summary] extraction failed error=%s", exc)

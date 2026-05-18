@@ -415,6 +415,12 @@ def _summary_sum(*values: Any) -> str:
 
 
 SUMMARY_ZERO_VALUES = {"", "--", "——", "-", "—", "未显示", "0 / 未显示", "0 / 未显示为有效"}
+SUMMARY_DIAGNOSTIC_FIELDS = (
+    "credit_card_90d_overdue_account_count",
+    "loan_90d_overdue_account_count",
+    "personal_related_repayment_responsibility_account_count",
+    "enterprise_related_repayment_responsibility_account_count",
+)
 
 
 def _normalize_summary_quantity(value: Any) -> str:
@@ -424,6 +430,101 @@ def _normalize_summary_quantity(value: Any) -> str:
         return str(value)
     cleaned = _clean_scalar(value)
     return "0" if str(cleaned or "").strip() in SUMMARY_ZERO_VALUES else str(cleaned).strip()
+
+
+def _summary_token_value(token: Any) -> str:
+    text = str(token or "").strip()
+    return "0" if text in SUMMARY_ZERO_VALUES else text
+
+
+def _summary_matrix_tokens(region: str, max_tokens: int) -> list[str]:
+    text = re.sub(r"[\r\n\t\u3000]+", " ", str(region or ""))
+    for marker in (
+        "逾期记录可能影响对您的信用评价",
+        "购房贷款,包括",
+        "购房贷款，包括",
+        "发生过逾期的信用卡账户",
+        "指曾经",
+        "透支超过",
+    ):
+        marker_index = text.find(marker)
+        if marker_index >= 0:
+            ignored_number = re.search(r"(?<!\d)(\d{1,3})(?!\d)", text[marker_index:])
+            if ignored_number:
+                logger.info(
+                    "[PersonalCredit][Summary][IGNORE_EXPLANATION_NUMBER] value=%s reason=right_side_explanation",
+                    ignored_number.group(1),
+                )
+            text = text[:marker_index]
+            break
+    text = text[:100]
+    tokens: list[str] = []
+    for match in re.finditer(r"(--|——|—|-|(?<!\d)\d{1,3}(?!\d))", text):
+        tokens.append(match.group(1).strip())
+        if len(tokens) >= max_tokens:
+            break
+    return tokens
+
+
+def _summary_row_region(source_text: str, row_pattern: str) -> str:
+    text = re.sub(r"\s+", " ", str(source_text or ""))
+    match = re.search(row_pattern, text)
+    if not match:
+        return ""
+    next_start = len(text)
+    for pattern in (
+        r"账户数",
+        r"未结清\s*/\s*未销户账户数",
+        r"发生过逾期的账户数",
+        r"发生过\s*90\s*天以上逾期的账户数",
+        r"相关还款责任账户数",
+        r"为个人\s+为企业",
+    ):
+        for next_match in re.finditer(pattern, text[match.end():]):
+            absolute_start = match.end() + next_match.start()
+            if absolute_start > match.start() and absolute_start < next_start:
+                next_start = absolute_start
+    return text[match.end():next_start]
+
+
+def _apply_summary_matrix_sanity(summary: dict[str, Any]) -> None:
+    source_text = str(summary.get("_summary_source_text") or "")
+    if not source_text:
+        return
+
+    overdue_region = _summary_row_region(source_text, r"发生过\s*90\s*天以上逾期的账户数")
+    overdue_tokens = _summary_matrix_tokens(overdue_region, 4)
+    if overdue_tokens:
+        logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=发生过90天以上逾期的账户数 tokens=%s", overdue_tokens)
+        summary["credit_card_90d_overdue_account_count"] = _summary_token_value(overdue_tokens[0])
+        if len(overdue_tokens) >= 3:
+            summary["loan_90d_overdue_account_count"] = _summary_token_value(overdue_tokens[2])
+
+    direct_responsibility = re.search(
+        r"为个人\s*(--|——|—|-|(?<!\d)\d{1,3}(?!\d))\s*为企业\s*(--|——|—|-|(?<!\d)\d{1,3}(?!\d))",
+        re.sub(r"\s+", " ", source_text),
+    )
+    if direct_responsibility:
+        personal_value = _summary_token_value(direct_responsibility.group(1))
+        enterprise_value = _summary_token_value(direct_responsibility.group(2))
+        summary["personal_related_repayment_responsibility_account_count"] = personal_value
+        summary["enterprise_related_repayment_responsibility_account_count"] = enterprise_value
+        logger.info("[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s", personal_value, enterprise_value)
+        return
+
+    responsibility_region = _summary_row_region(source_text, r"相关还款责任账户数")
+    responsibility_tokens = _summary_matrix_tokens(responsibility_region, 2)
+    if responsibility_tokens:
+        personal_value = _summary_token_value(responsibility_tokens[0])
+        summary["personal_related_repayment_responsibility_account_count"] = personal_value
+        if len(responsibility_tokens) >= 2:
+            enterprise_value = _summary_token_value(responsibility_tokens[1])
+            summary["enterprise_related_repayment_responsibility_account_count"] = enterprise_value
+        logger.info(
+            "[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s",
+            summary.get("personal_related_repayment_responsibility_account_count"),
+            summary.get("enterprise_related_repayment_responsibility_account_count"),
+        )
 
 
 def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
@@ -449,8 +550,19 @@ def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
             summary.get("housing_loan_overdue_count"),
             summary.get("other_loan_overdue_count"),
         ) or None
+    _apply_summary_matrix_sanity(normalized)
     for key, value in list(normalized.items()):
-        normalized[key] = _normalize_summary_quantity(value)
+        if key.startswith("_"):
+            normalized[key] = value
+        else:
+            normalized[key] = _normalize_summary_quantity(value)
+    logger.info(
+        "[PersonalCredit][Summary][AFTER_NORMALIZE] credit_card_90d_overdue_account_count=%s loan_90d_overdue_account_count=%s personal_related=%s enterprise_related=%s",
+        normalized.get("credit_card_90d_overdue_account_count"),
+        normalized.get("loan_90d_overdue_account_count"),
+        normalized.get("personal_related_repayment_responsibility_account_count"),
+        normalized.get("enterprise_related_repayment_responsibility_account_count"),
+    )
     return normalized
 
 

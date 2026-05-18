@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from .extract_basic_info import extract_basic_info
@@ -18,6 +19,8 @@ from .risk_analyzer import analyze_personal_credit_risk
 from .schema import clone_default_report_json
 from .segmenter import segment_report
 from .validator import validate_report_json
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_call(default: Any, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -62,6 +65,14 @@ def run_personal_credit_report_agent(text: str, source_file: str | None = None, 
     report = clone_default_report_json()
     report["basic_info"] = _safe_call(report["basic_info"], extract_basic_info, sections, source_file)
     report["credit_summary"] = _safe_call(report["credit_summary"], extract_credit_summary, sections)
+    summary_after_extract = report.get("credit_summary") if isinstance(report.get("credit_summary"), dict) else {}
+    logger.info(
+        "[PersonalCredit][Summary][AFTER_EXTRACT] credit_card_90d_overdue_account_count=%s loan_90d_overdue_account_count=%s personal_related=%s enterprise_related=%s",
+        summary_after_extract.get("credit_card_90d_overdue_account_count"),
+        summary_after_extract.get("loan_90d_overdue_account_count"),
+        summary_after_extract.get("personal_related_repayment_responsibility_account_count"),
+        summary_after_extract.get("enterprise_related_repayment_responsibility_account_count"),
+    )
     report["loan_accounts"] = _safe_call([], extract_loan_accounts, sections)
     report["credit_card_accounts"] = _safe_call([], extract_credit_card_accounts, sections)
     report["related_repayment_responsibilities"] = _safe_call([], extract_related_repayment_responsibilities, sections, text)
