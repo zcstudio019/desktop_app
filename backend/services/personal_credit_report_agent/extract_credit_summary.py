@@ -197,6 +197,13 @@ def parse_matrix_tokens(region: str, max_tokens: int) -> list[str]:
     ):
         marker_index = text.find(marker)
         if marker_index >= 0:
+            ignored_region = text[marker_index:]
+            ignored_number = re.search(r"(?<!\d)(\d{1,3})(?!\d)", ignored_region)
+            if ignored_number:
+                logger.info(
+                    "[PersonalCredit][Summary][IGNORE_EXPLANATION_NUMBER] value=%s reason=right_side_explanation",
+                    ignored_number.group(1),
+                )
             logger.info("[PersonalCredit][Summary][IGNORE_EXPLANATION_NUMBER] reason=right_side_explanation marker=%s", marker)
             text = text[:marker_index]
             break
@@ -257,6 +264,85 @@ def _find_matrix_rows(text: str) -> list[LabelMatch]:
     return sorted(rows, key=lambda item: item.start)
 
 
+def _matrix_row_regions(text: str, rows: list[LabelMatch]) -> dict[str, str]:
+    row_regions: dict[str, str] = {}
+    for index, row in enumerate(rows):
+        next_start = rows[index + 1].start if index + 1 < len(rows) else len(text)
+        row_regions[row.field] = text[row.end:next_start]
+    return row_regions
+
+
+def _apply_matrix_row_values(result: dict[str, str], row_regions: dict[str, str]) -> None:
+    account_tokens = parse_matrix_tokens(row_regions.get("account", ""), 4)
+    if account_tokens:
+        logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=账户数 tokens=%s", account_tokens)
+        if len(account_tokens) >= 1:
+            result["credit_card_account_count"] = _matrix_dash(account_tokens[0])
+        if len(account_tokens) >= 2:
+            result["housing_loan_account_count"] = _matrix_dash(account_tokens[1])
+        if len(account_tokens) >= 3:
+            result["other_loan_account_count"] = _matrix_dash(account_tokens[2])
+            result["loan_account_count"] = _sum_tokens(account_tokens[1], account_tokens[2]) or f"购房 {_matrix_dash(account_tokens[1])} / 其他 {_matrix_dash(account_tokens[2])}"
+
+    active_tokens = parse_matrix_tokens(row_regions.get("active", ""), 4)
+    if active_tokens:
+        logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=未结清/未销户账户数 tokens=%s", active_tokens)
+        if len(active_tokens) >= 1:
+            result["active_credit_card_account_count"] = _matrix_dash(active_tokens[0], active=True)
+        if len(active_tokens) >= 2:
+            result["housing_loan_outstanding_count"] = _matrix_dash(active_tokens[1])
+        if len(active_tokens) >= 3:
+            result["other_loan_outstanding_count"] = _matrix_dash(active_tokens[2])
+            result["outstanding_loan_account_count"] = _sum_tokens(active_tokens[1], active_tokens[2]) or f"购房 {_matrix_dash(active_tokens[1])} / 其他 {_matrix_dash(active_tokens[2])}"
+
+    overdue_tokens = parse_matrix_tokens(row_regions.get("overdue", ""), 4)
+    if overdue_tokens:
+        logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=发生过逾期的账户数 tokens=%s", overdue_tokens)
+        if len(overdue_tokens) >= 1:
+            result["credit_card_overdue_account_count"] = _matrix_dash(overdue_tokens[0], overdue=True)
+        if len(overdue_tokens) >= 3:
+            result["loan_overdue_account_count"] = _matrix_dash(overdue_tokens[2], overdue=True)
+
+    overdue_90d_tokens = parse_matrix_tokens(row_regions.get("overdue_90d", ""), 4)
+    if overdue_90d_tokens:
+        logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=发生过90天以上逾期的账户数 tokens=%s", overdue_90d_tokens)
+        if len(overdue_90d_tokens) >= 1:
+            result["credit_card_90d_overdue_account_count"] = _matrix_dash(overdue_90d_tokens[0], overdue=True)
+        if len(overdue_90d_tokens) >= 3:
+            result["loan_90d_overdue_account_count"] = _matrix_dash(overdue_90d_tokens[2], overdue=True)
+
+    responsibility_tokens = parse_matrix_tokens(row_regions.get("responsibility", ""), 2)
+    if responsibility_tokens:
+        logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=相关还款责任账户数 tokens=%s", responsibility_tokens)
+        if len(responsibility_tokens) >= 1:
+            result["personal_related_repayment_responsibility_account_count"] = _matrix_dash(responsibility_tokens[0], responsibility=True)
+        if len(responsibility_tokens) >= 2:
+            result["enterprise_related_repayment_responsibility_account_count"] = _matrix_dash(responsibility_tokens[1], responsibility=True)
+        logger.info(
+            "[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s",
+            result.get("personal_related_repayment_responsibility_account_count"),
+            result.get("enterprise_related_repayment_responsibility_account_count"),
+        )
+
+
+def _extract_partial_matrix_rows(text: str) -> dict[str, str]:
+    """Parse high-risk single matrix rows even when the full table is fragmented."""
+    result: dict[str, str] = {}
+    for row_key, _, pattern in MATRIX_ROW_PATTERNS:
+        if row_key not in {"overdue_90d", "responsibility"}:
+            continue
+        match = pattern.search(text)
+        if not match:
+            continue
+        next_start = len(text)
+        for other_key, _, other_pattern in MATRIX_ROW_PATTERNS:
+            for next_match in other_pattern.finditer(text, match.end()):
+                if next_match.start() < next_start:
+                    next_start = next_match.start()
+        _apply_matrix_row_values(result, {row_key: text[match.end():next_start]})
+    return result
+
+
 def extract_summary_matrix_from_ocr_window(window: str) -> dict[str, str]:
     try:
         compact_text = re.sub(r"\s+", " ", _normalize_text(window)).strip()
@@ -264,64 +350,12 @@ def extract_summary_matrix_from_ocr_window(window: str) -> dict[str, str]:
         detected = len({row.field for row in rows}) >= 3
         logger.info("[PersonalCredit][Summary][MATRIX] detected=%s", detected)
         if not detected:
-            return {}
+            return _extract_partial_matrix_rows(compact_text)
 
-        row_regions: dict[str, str] = {}
-        for index, row in enumerate(rows):
-            next_start = rows[index + 1].start if index + 1 < len(rows) else len(compact_text)
-            row_regions[row.field] = compact_text[row.end:next_start]
+        row_regions = _matrix_row_regions(compact_text, rows)
 
         result: dict[str, str] = {}
-        account_tokens = parse_matrix_tokens(row_regions.get("account", ""), 4)
-        if account_tokens:
-            logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=账户数 tokens=%s", account_tokens)
-            if len(account_tokens) >= 1:
-                result["credit_card_account_count"] = _matrix_dash(account_tokens[0])
-            if len(account_tokens) >= 2:
-                result["housing_loan_account_count"] = _matrix_dash(account_tokens[1])
-            if len(account_tokens) >= 3:
-                result["other_loan_account_count"] = _matrix_dash(account_tokens[2])
-                result["loan_account_count"] = _sum_tokens(account_tokens[1], account_tokens[2]) or f"购房 {_matrix_dash(account_tokens[1])} / 其他 {_matrix_dash(account_tokens[2])}"
-
-        active_tokens = parse_matrix_tokens(row_regions.get("active", ""), 4)
-        if active_tokens:
-            logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=未结清/未销户账户数 tokens=%s", active_tokens)
-            if len(active_tokens) >= 1:
-                result["active_credit_card_account_count"] = _matrix_dash(active_tokens[0], active=True)
-            if len(active_tokens) >= 2:
-                result["housing_loan_outstanding_count"] = _matrix_dash(active_tokens[1])
-            if len(active_tokens) >= 3:
-                result["other_loan_outstanding_count"] = _matrix_dash(active_tokens[2])
-                result["outstanding_loan_account_count"] = _sum_tokens(active_tokens[1], active_tokens[2]) or f"购房 {_matrix_dash(active_tokens[1])} / 其他 {_matrix_dash(active_tokens[2])}"
-
-        overdue_tokens = parse_matrix_tokens(row_regions.get("overdue", ""), 4)
-        if overdue_tokens:
-            logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=发生过逾期的账户数 tokens=%s", overdue_tokens)
-            if len(overdue_tokens) >= 1:
-                result["credit_card_overdue_account_count"] = _matrix_dash(overdue_tokens[0], overdue=True)
-            if len(overdue_tokens) >= 3:
-                result["loan_overdue_account_count"] = _matrix_dash(overdue_tokens[2], overdue=True)
-
-        overdue_90d_tokens = parse_matrix_tokens(row_regions.get("overdue_90d", ""), 4)
-        if overdue_90d_tokens:
-            logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=发生过90天以上逾期的账户数 tokens=%s", overdue_90d_tokens)
-            if len(overdue_90d_tokens) >= 1:
-                result["credit_card_90d_overdue_account_count"] = _matrix_dash(overdue_90d_tokens[0], overdue=True)
-            if len(overdue_90d_tokens) >= 3:
-                result["loan_90d_overdue_account_count"] = _matrix_dash(overdue_90d_tokens[2], overdue=True)
-
-        responsibility_tokens = parse_matrix_tokens(row_regions.get("responsibility", ""), 2)
-        if responsibility_tokens:
-            logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=相关还款责任账户数 tokens=%s", responsibility_tokens)
-            if len(responsibility_tokens) >= 1:
-                result["personal_related_repayment_responsibility_account_count"] = _matrix_dash(responsibility_tokens[0], responsibility=True)
-            if len(responsibility_tokens) >= 2:
-                result["enterprise_related_repayment_responsibility_account_count"] = _matrix_dash(responsibility_tokens[1], responsibility=True)
-            logger.info(
-                "[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s",
-                result.get("personal_related_repayment_responsibility_account_count"),
-                result.get("enterprise_related_repayment_responsibility_account_count"),
-            )
+        _apply_matrix_row_values(result, row_regions)
 
         logger.info(
             "[PersonalCredit][Summary][MATRIX_PARSED] credit_card_account_count=%s loan_account_count=%s outstanding_loan_account_count=%s enterprise_related=%s",
@@ -417,10 +451,9 @@ def _extract_all_values(window: str) -> dict[str, str]:
         if value and (should_override or not values.get(field)):
             values[field] = value
     matrix_values = extract_summary_matrix_from_ocr_window(window)
-    if sum(1 for value in matrix_values.values() if value) >= 4:
-        for field, value in matrix_values.items():
-            if value:
-                values[field] = value
+    for field, value in matrix_values.items():
+        if value:
+            values[field] = value
     return values
 
 

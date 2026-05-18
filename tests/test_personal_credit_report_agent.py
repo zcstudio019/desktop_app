@@ -788,6 +788,57 @@ def test_credit_summary_markdown_no_unrecognized_or_unshown() -> None:
     assert "| 为企业相关还款责任账户数 | 10 |" in summary_markdown
 
 
+def test_credit_summary_90d_overdue_not_extract_60_from_explanation() -> None:
+    text = """
+信息概要
+信用卡 贷款 其他业务
+购房 其他
+账户数 38 -- 8 --
+未结清/未销户账户数 32 -- 1 --
+发生过逾期的账户数 -- -- -- -- 发生过逾期的信用卡账户，指曾经“未按时还最低还款额”的贷记卡账户和“透支超过60天”的准贷记卡账户。
+发生过90天以上逾期的账户数 -- -- -- --
+相关还款责任账户数 -- 10
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+    assert summary["loan_90d_overdue_account_count"] == "0"
+    assert summary["credit_card_90d_overdue_account_count"] != "60"
+    assert summary["loan_90d_overdue_account_count"] != "60"
+
+
+def test_credit_summary_related_repayment_personal_enterprise_mapping_strict() -> None:
+    text = """
+信息概要
+为个人 -- 为企业 10
+相关还款责任账户数 -- 10
+"""
+    summary = run_personal_credit_report_agent(text)["report_json"]["credit_summary"]
+    assert summary["personal_related_repayment_responsibility_account_count"] == "0"
+    assert summary["enterprise_related_repayment_responsibility_account_count"] == "10"
+
+
+def test_credit_summary_markdown_expected_values_no_60_or_personal_copy() -> None:
+    text = """
+信息概要
+信用卡 贷款 其他业务
+购房 其他
+账户数 38 -- 8 --
+未结清/未销户账户数 32 -- 1 --
+发生过逾期的账户数 -- -- -- -- 发生过逾期的信用卡账户，指曾经“未按时还最低还款额”的贷记卡账户和“透支超过60天”的准贷记卡账户。
+发生过90天以上逾期的账户数 -- -- -- --
+为个人 为企业
+相关还款责任账户数 -- 10
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    summary_markdown = markdown.split("## 三、信贷记录概要", 1)[1].split("## 四、贷款账户明细", 1)[0]
+    assert "| 信用卡 90 天以上逾期账户数 | 0 |" in summary_markdown
+    assert "| 贷款 90 天以上逾期账户数 | 0 |" in summary_markdown
+    assert "| 为个人相关还款责任账户数 | 0 |" in summary_markdown
+    assert "| 为企业相关还款责任账户数 | 10 |" in summary_markdown
+    assert "| 信用卡 90 天以上逾期账户数 | 60 |" not in summary_markdown
+    assert "| 为个人相关还款责任账户数 | 10 |" not in summary_markdown
+
+
 def test_loan_accounts_skip_related_repayment_responsibility() -> None:
     text = """
 个人征信报告
