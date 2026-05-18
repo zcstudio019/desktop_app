@@ -253,12 +253,6 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
                     ("used_limit", "已使用额度"),
                     ("account_status", "账户状态"),
                     ("report_cutoff", "截至日期"),
-                    ("overdue_amount", "当前逾期金额"),
-                    ("overdue_months", "逾期月数"),
-                    ("latest_repayment_date", "最近还款日期"),
-                    ("latest_repayment_amount", "最近还款金额"),
-                    ("history_performance", "历史表现"),
-                    ("information_report_date", "信息报告日期"),
                 ))
     else:
         lines.append("- 暂无需要展示的当前有效人民币信用卡账户。")

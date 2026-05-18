@@ -1085,6 +1085,95 @@ def test_credit_card_recovery_append_missing_ccb_6049() -> None:
     )
 
 
+def test_credit_card_markdown_only_core_fields() -> None:
+    markdown = render_personal_credit_markdown({
+        "basic_info": {"source_file": "sample.txt"},
+        "credit_summary": {},
+        "credit_card_accounts": [{
+            "open_date": "2006-10-27",
+            "institution": "中国建设银行股份有限公司上海宝钢宝山支行",
+            "issuer": "中国建设银行股份有限公司上海宝钢宝山支行",
+            "card_type": "贷记卡",
+            "currency": "人民币",
+            "card_tail_no": "6049",
+            "credit_limit": "2,000",
+            "used_limit": "0",
+            "used_amount": "0",
+            "account_status": "当前有效",
+            "report_cutoff": "2026-03",
+            "current_overdue_amount": "",
+            "overdue_amount": "",
+            "overdue_months": "",
+            "recent_repayment_date": "",
+            "recent_repayment_amount": "",
+            "latest_repayment_date": "",
+            "latest_repayment_amount": "",
+            "history_performance": "",
+            "report_date": "",
+            "information_report_date": "",
+        }],
+    })
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "发卡日期：2006-10-27" in card_section
+    assert "发卡机构：中国建设银行股份有限公司上海宝钢宝山支行" in card_section
+    assert "卡类型：贷记卡" in card_section
+    assert "币种：人民币" in card_section
+    assert "卡片尾号：6049" in card_section
+    assert "授信额度：2,000" in card_section
+    assert "已使用额度：0" in card_section
+    assert "账户状态：当前有效" in card_section
+    assert "截至日期：2026-03" in card_section
+    assert "当前逾期金额" not in card_section
+    assert "逾期月数" not in card_section
+    assert "最近还款日期" not in card_section
+    assert "最近还款金额" not in card_section
+    assert "历史表现" not in card_section
+    assert "信息报告日期" not in card_section
+
+
+def test_credit_card_markdown_matches_compact_style() -> None:
+    markdown = render_personal_credit_markdown({
+        "basic_info": {"source_file": "sample.txt"},
+        "credit_summary": {},
+        "credit_card_accounts": [
+            {
+                "open_date": "2006-10-27",
+                "institution": "中国建设银行股份有限公司上海宝钢宝山支行",
+                "card_type": "贷记卡",
+                "currency": "人民币",
+                "card_tail_no": "6049",
+                "credit_limit": "2,000",
+                "used_limit": "0",
+                "account_status": "当前有效",
+                "report_cutoff": "2026-03",
+                "overdue_amount": "",
+                "history_performance": "",
+            },
+            {
+                "open_date": "2012-10-24",
+                "institution": "中国光大银行股份有限公司信用卡中心",
+                "card_type": "贷记卡",
+                "currency": "人民币",
+                "card_tail_no": "8186",
+                "credit_limit": "0",
+                "used_limit": "0",
+                "account_status": "当前有效",
+                "report_cutoff": "2026-03",
+                "overdue_amount": "",
+                "history_performance": "",
+            },
+        ],
+    })
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert card_section.count("### 账户 ") == 2
+    assert card_section.count("- ") == 18
+    assert "当前逾期金额" not in card_section
+    assert "逾期月数" not in card_section
+    assert "最近还款" not in card_section
+    assert "历史表现" not in card_section
+    assert "信息报告日期" not in card_section
+
+
 RELATED_REPAYMENT_TEXT = """
 个人征信报告
 相关还款责任信息
