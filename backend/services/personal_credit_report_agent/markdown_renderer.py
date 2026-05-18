@@ -126,6 +126,31 @@ def _append_account(lines: list[str], title: str, record: dict[str, Any], fields
         _append_field(lines, label, record.get(key))
 
 
+def _has_real_card_tail_no(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and text not in {"未识别", "--", "-", "无"}
+
+
+def _append_credit_card_account(lines: list[str], title: str, record: dict[str, Any]) -> None:
+    lines.append(f"### {title}")
+    for key, label in (
+        ("open_date", "发卡日期"),
+        ("institution", "发卡机构"),
+        ("card_type", "卡类型"),
+        ("currency", "币种"),
+    ):
+        _append_field(lines, label, record.get(key))
+    if _has_real_card_tail_no(record.get("card_tail_no")):
+        _append_field(lines, "卡片尾号", record.get("card_tail_no"))
+    for key, label in (
+        ("credit_limit", "信用额度"),
+        ("used_limit", "已使用额度"),
+        ("account_status", "账户状态"),
+        ("report_cutoff", "截至日期"),
+    ):
+        _append_field(lines, label, record.get(key))
+
+
 def _format_warning(item: Any) -> str:
     text = str(item or "").strip()
     if not text:
@@ -246,17 +271,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     if cards:
         for index, item in enumerate(cards, start=1):
             if isinstance(item, dict):
-                _append_account(lines, f"账户 {index}", item, (
-                    ("open_date", "发卡日期"),
-                    ("institution", "发卡机构"),
-                    ("card_type", "卡类型"),
-                    ("currency", "币种"),
-                    ("card_tail_no", "卡片尾号"),
-                    ("credit_limit", "授信额度"),
-                    ("used_limit", "已使用额度"),
-                    ("account_status", "账户状态"),
-                    ("report_cutoff", "截至日期"),
-                ))
+                _append_credit_card_account(lines, f"账户 {index}", item)
     else:
         lines.append("- 暂无需要展示的当前有效人民币信用卡账户。")
 

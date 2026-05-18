@@ -1272,7 +1272,7 @@ def test_credit_card_markdown_contains_ccb_6049() -> None:
     card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
     assert "中国建设银行股份有限公司上海宝钢宝山支行" in card_section
     assert "卡片尾号：6049" in card_section
-    assert "授信额度：2,000" in card_section
+    assert "信用额度：2,000" in card_section
     assert "币种：人民币" in card_section
     assert "币种：美元" not in card_section
 
@@ -1384,7 +1384,7 @@ def test_credit_card_shanghai_rural_commercial_bank_not_dropped() -> None:
     assert card["used_amount"] == "0"
     assert card["account_status"] == "当前有效"
     assert "上海农村商业银行股份有限公司" in result["report_markdown"]
-    assert "授信额度：30,000" in result["report_markdown"]
+    assert "信用额度：30,000" in result["report_markdown"]
 
 
 def test_credit_card_icbc_rmb_8222_limit_100000() -> None:
@@ -1439,16 +1439,16 @@ def test_credit_card_markdown_amounts_correct() -> None:
     markdown = run_personal_credit_report_agent(text)["report_markdown"]
     card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
     assert "发卡机构：广发银行股份有限公司信用卡中心" in card_section
-    assert "授信额度：38,000" in card_section
+    assert "信用额度：38,000" in card_section
     assert "已使用额度：440" in card_section
     assert "发卡机构：上海农村商业银行股份有限公司" in card_section
-    assert "授信额度：30,000" in card_section
+    assert "信用额度：30,000" in card_section
     assert "发卡机构：中国工商银行股份有限公司上海市分行" in card_section
     assert "卡片尾号：8222" in card_section
-    assert "授信额度：100,000" in card_section
-    assert "授信额度：440" not in card_section
-    assert "授信额度：87,186" not in card_section
-    assert "授信额度：102,006" not in card_section
+    assert "信用额度：100,000" in card_section
+    assert "信用额度：440" not in card_section
+    assert "信用额度：87,186" not in card_section
+    assert "信用额度：102,006" not in card_section
 
 
 def test_credit_card_recovery_updates_missing_limit_and_appends_missing_cards() -> None:
@@ -1559,15 +1559,15 @@ def test_credit_card_markdown_contains_all_expected_rmb_cards() -> None:
     markdown = run_personal_credit_report_agent(text)["report_markdown"]
     assert "广发银行股份有限公司信用卡中心" in markdown
     assert "卡片尾号：1019" in markdown
-    assert "授信额度：38,000" in markdown
+    assert "信用额度：38,000" in markdown
     assert "已使用额度：440" in markdown
     assert "上海农村商业银行股份有限公司" in markdown
-    assert "授信额度：30,000" in markdown
+    assert "信用额度：30,000" in markdown
     assert "中国工商银行股份有限公司上海市分行" in markdown
     assert "卡片尾号：8222" in markdown
-    assert "授信额度：100,000" in markdown
+    assert "信用额度：100,000" in markdown
     assert "北京银行股份有限公司" in markdown
-    assert "授信额度：500,000" in markdown
+    assert "信用额度：500,000" in markdown
 
 
 def test_credit_card_clean_candidate_text_handles_ocr_splits() -> None:
@@ -1596,7 +1596,7 @@ def test_credit_card_parse_used_amount_with_ocr_split_yishiyong_edu() -> None:
     assert card["used_amount"] == "0"
     assert card["account_status"] == "当前有效"
     assert card["card_tail_no"] in {"", "未识别", None}
-    assert "卡片尾号：未识别" in result["report_markdown"]
+    assert "卡片尾号：" not in result["report_markdown"]
 
 
 def test_credit_card_parse_icbc_rmb_credit_limit_with_split_xin_yong() -> None:
@@ -1668,7 +1668,7 @@ def test_credit_card_markdown_only_core_fields() -> None:
     assert "卡类型：贷记卡" in card_section
     assert "币种：人民币" in card_section
     assert "卡片尾号：6049" in card_section
-    assert "授信额度：2,000" in card_section
+    assert "信用额度：2,000" in card_section
     assert "已使用额度：0" in card_section
     assert "账户状态：当前有效" in card_section
     assert "截至日期：2026-03" in card_section
@@ -1721,6 +1721,72 @@ def test_credit_card_markdown_matches_compact_style() -> None:
     assert "最近还款" not in card_section
     assert "历史表现" not in card_section
     assert "信息报告日期" not in card_section
+
+
+def test_credit_card_markdown_uses_credit_limit_label() -> None:
+    markdown = render_personal_credit_markdown({
+        "basic_info": {},
+        "credit_summary": {},
+        "credit_card_accounts": [{
+            "open_date": "2004-11-18",
+            "institution": "招商银行股份有限公司信用卡中心",
+            "issuer": "招商银行股份有限公司信用卡中心",
+            "card_type": "贷记卡",
+            "currency": "人民币",
+            "card_tail_no": "",
+            "credit_limit": "96,000",
+            "used_limit": "0",
+            "used_amount": "0",
+            "account_status": "当前有效",
+            "report_cutoff": "2025-12",
+        }],
+    })
+    assert "信用额度：96,000" in markdown
+    assert "授信额度：96,000" not in markdown
+
+
+def test_credit_card_markdown_hides_missing_tail_no() -> None:
+    for tail_no in ("", "未识别", "--", "-", "无", None):
+        markdown = render_personal_credit_markdown({
+            "basic_info": {},
+            "credit_summary": {},
+            "credit_card_accounts": [{
+                "open_date": "2004-11-18",
+                "institution": "招商银行股份有限公司信用卡中心",
+                "card_type": "贷记卡",
+                "currency": "人民币",
+                "card_tail_no": tail_no,
+                "credit_limit": "96,000",
+                "used_limit": "0",
+                "account_status": "当前有效",
+                "report_cutoff": "2025-12",
+            }],
+        })
+        assert "卡片尾号：未识别" not in markdown
+        assert "卡片尾号：" not in markdown
+
+
+def test_credit_card_markdown_shows_existing_tail_no() -> None:
+    markdown = render_personal_credit_markdown({
+        "basic_info": {},
+        "credit_summary": {},
+        "credit_card_accounts": [{
+            "open_date": "2020-11-27",
+            "institution": "广发银行股份有限公司信用卡中心",
+            "issuer": "广发银行股份有限公司信用卡中心",
+            "card_type": "贷记卡",
+            "currency": "人民币",
+            "card_tail_no": "1019",
+            "credit_limit": "38,000",
+            "used_limit": "440",
+            "used_amount": "440",
+            "account_status": "当前有效",
+            "report_cutoff": "2025-12",
+        }],
+    })
+    assert "卡片尾号：1019" in markdown
+    assert "信用额度：38,000" in markdown
+    assert "授信额度：38,000" not in markdown
 
 
 RELATED_REPAYMENT_TEXT = """
