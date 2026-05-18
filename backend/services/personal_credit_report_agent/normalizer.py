@@ -251,6 +251,8 @@ def is_displayable_credit_card_account(record: dict[str, Any]) -> bool:
     )
     if is_closed:
         return _record_has_abnormal(record)
+    if "尚未激活" in combined:
+        return False
     if _is_rmb_credit_card(record):
         return True
     return not is_closed
@@ -258,8 +260,14 @@ def is_displayable_credit_card_account(record: dict[str, Any]) -> bool:
 
 def _keep_card_record(record: dict[str, Any]) -> bool:
     if not is_displayable_credit_card_account(record):
+        reason = "foreign_currency" if _is_foreign_currency_credit_card(record) else "not_displayable"
+        if any(word in _credit_card_combined_text(record) for word in CARD_CLOSED_EVIDENCE_WORDS):
+            reason = "closed"
+        if "尚未激活" in _credit_card_combined_text(record):
+            reason = "not_activated"
         logger.info(
-            "[PersonalCredit][CreditCard][FILTER_DROP] reason=not_displayable issuer=%s currency=%s tail_no=%s",
+            "[PersonalCredit][CreditCard][FILTER_DROP] reason=%s issuer=%s currency=%s tail_no=%s",
+            reason,
             record.get("issuer") or record.get("institution"),
             record.get("currency"),
             record.get("card_tail_no"),

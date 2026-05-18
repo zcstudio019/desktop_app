@@ -8,7 +8,7 @@ from backend.services import markdown_profile_service
 from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.personal_credit_report_agent.extract_basic_info import extract_basic_info
 from backend.services.personal_credit_report_agent.extract_credit_summary import extract_credit_summary
-from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block, recover_rmb_active_credit_cards
+from backend.services.personal_credit_report_agent.extract_credit_card_accounts import clean_credit_card_candidate_text, extract_credit_card_accounts, parse_credit_card_account_block, recover_rmb_active_credit_cards
 from backend.services.personal_credit_report_agent.extract_loan_accounts import parse_personal_loan_sentence
 from backend.services.personal_credit_report_agent.extract_non_credit_transactions import extract_non_credit_transactions
 from backend.services.personal_credit_report_agent.extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
@@ -1568,6 +1568,70 @@ def test_credit_card_markdown_contains_all_expected_rmb_cards() -> None:
     assert "授信额度：100,000" in markdown
     assert "北京银行股份有限公司" in markdown
     assert "授信额度：500,000" in markdown
+
+
+def test_credit_card_clean_candidate_text_handles_ocr_splits() -> None:
+    text = "截至2025年\n12月,信 用额 度38,000,已使用额 度440,尚未激 活,销 户"
+    cleaned = clean_credit_card_candidate_text(text)
+    assert "截至2025年12月" in cleaned
+    assert "信用额度38,000" in cleaned
+    assert "已使用额度440" in cleaned
+    assert "尚未激活" in cleaned
+    assert "销户" in cleaned
+
+
+def test_credit_card_parse_credit_limit_with_ocr_split_xinyong_edu() -> None:
+    text = "2020年11月27日广发银行股份有限公司信用卡中心发放的贷记卡(人民币账户,卡片尾号:1019)。截至2025年12月,信用额 度38,000,已使用额度440。"
+    parsed = parse_credit_card_account_block(text)
+    assert parsed["credit_limit"] == "38,000"
+    assert parsed["used_amount"] == "440"
+    assert parsed["account_status"] == "当前有效"
+
+
+def test_credit_card_parse_used_amount_with_ocr_split_yishiyong_edu() -> None:
+    text = "2021年09月10日上海农村商业银行股份有限公司发放的贷记卡(人民币账户)。截至2025年12月,信用额度30,000,已使用额 度0。"
+    result = run_personal_credit_report_agent(f"个人征信报告\n信用卡\n{text}")
+    card = result["report_json"]["credit_card_accounts"][0]
+    assert card["credit_limit"] == "30,000"
+    assert card["used_amount"] == "0"
+    assert card["account_status"] == "当前有效"
+    assert card["card_tail_no"] in {"", "未识别", None}
+    assert "卡片尾号：未识别" in result["report_markdown"]
+
+
+def test_credit_card_parse_icbc_rmb_credit_limit_with_split_xin_yong() -> None:
+    text = "2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡(人民币账户,卡片尾号:8222)。截至2026年01月,信 用额度100,000,已使用额度0。"
+    card = run_personal_credit_report_agent(f"个人征信报告\n信用卡\n{text}")["report_json"]["credit_card_accounts"][0]
+    assert card["credit_limit"] == "100,000"
+    assert card["used_amount"] == "0"
+    assert card["currency"] == "人民币"
+    assert card["account_status"] == "当前有效"
+
+
+def test_credit_card_display_filters_foreign_currency() -> None:
+    text = """
+个人征信报告
+信用卡
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（日元账户，卡片尾号：8222）。截至2026年01月，信用额度74,383，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（美元账户，卡片尾号：8222）。截至2026年01月，信用额度102,006，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（人民币账户，卡片尾号：8222）。截至2026年01月，信用额度100,000，已使用额度0。
+"""
+    result = run_personal_credit_report_agent(text)
+    cards = result["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    assert cards[0]["currency"] == "人民币"
+    assert "币种：日元" not in result["report_markdown"]
+    assert "币种：美元" not in result["report_markdown"]
+
+
+def test_credit_card_not_activated_not_displayed() -> None:
+    text = """
+个人征信报告
+信用卡
+2025年01月01日某某银行股份有限公司发放的贷记卡（人民币账户）。截至2025年12月，信用额度10,000，已使用额度0，尚未激 活。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["credit_card_accounts"] == []
 
 
 def test_credit_card_markdown_only_core_fields() -> None:

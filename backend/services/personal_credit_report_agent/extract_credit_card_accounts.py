@@ -36,16 +36,24 @@ CARD_WINDOW_ANCHORS = (
 )
 
 
+def clean_credit_card_candidate_text(text: str) -> str:
+    source = str(text or "").replace("\r", "\n")
+    source = re.sub(r"截至\s*((?:19|20)\d{2})年\s*\n+\s*(\d{1,2})月", lambda m: f"截至{m.group(1)}年{int(m.group(2)):02d}月", source)
+    source = re.sub(r"信\s*用\s*额\s*度", "信用额度", source)
+    source = re.sub(r"已\s*使用\s*额\s*度", "已使用额度", source)
+    source = re.sub(r"尚未激\s*活", "尚未激活", source)
+    source = re.sub(r"销\s*户", "销户", source)
+    source = re.sub(r"[ \t\u3000]+", " ", source)
+    return source
+
+
 def _normalize_block(block: str) -> str:
+    block = clean_credit_card_candidate_text(block)
     text = str(block or "").replace("\r", "\n")
     text = re.sub(r"[ \t\u3000]+", " ", text)
     text = re.sub(r"截至\s*((?:19|20)\d{2})年\s*\n+\s*(\d{1,2})月", lambda m: f"截至{m.group(1)}年{int(m.group(2)):02d}月", text)
-    text = re.sub(r"信用\s*\n+\s*额度", "信用额度", text)
-    text = re.sub(r"已\s*使用\s*\n+\s*额度", "已使用额度", text)
     text = re.sub(r"\n+", " ", text)
     text = re.sub(r"截至\s*((?:19|20)\d{2})年\s*(\d{1,2})月", lambda m: f"截至{m.group(1)}年{int(m.group(2)):02d}月", text)
-    text = re.sub(r"信用\s*额度", "信用额度", text)
-    text = re.sub(r"已\s*使用\s*额度", "已使用额度", text)
     text = re.sub(r"卡片尾号\s*[:：]\s*", "卡片尾号:", text)
     return clean_value(text)
 
@@ -287,6 +295,7 @@ def _is_rmb_active_card(record: dict[str, Any]) -> bool:
         and "销户" not in evidence
         and "注销" not in evidence
         and "关闭" not in evidence
+        and "尚未激活" not in evidence
         and (
             str(record.get("account_status") or "") in {"当前有效", "正常", "未销户"}
             or bool(record.get("report_cutoff") and record.get("credit_limit"))
@@ -551,7 +560,7 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                     continue
                 seen.add(signature)
                 logger.info(
-                    "[PersonalCredit][CreditCard][DISPLAY_KEEP] index=%s issuer=%s currency=%s tail_no=%s",
+                    "[PersonalCredit][CreditCard][CANDIDATE_KEEP] index=%s issuer=%s currency=%s tail_no=%s",
                     index,
                     record.get("issuer") or record.get("institution"),
                     record.get("currency"),
@@ -592,7 +601,7 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                     continue
                 seen.add(signature)
                 logger.info(
-                    "[PersonalCredit][CreditCard][DISPLAY_KEEP] index=fallback-%s issuer=%s currency=%s tail_no=%s",
+                    "[PersonalCredit][CreditCard][CANDIDATE_KEEP] index=fallback-%s issuer=%s currency=%s tail_no=%s",
                     index,
                     record.get("issuer") or record.get("institution"),
                     record.get("currency"),
