@@ -813,7 +813,7 @@ def test_personal_loan_parse_revolving_credit() -> None:
     assert parsed["start_date"] == "2023-03-23"
     assert parsed["institution"] == "重庆蚂蚁消费金融有限公司"
     assert parsed["amount"] == "35,200元"
-    assert parsed["loan_type"] == "其他个人消费贷款"
+    assert parsed["loan_type"] == "其他个人消费贷款授信"
     assert parsed["due_date"] == "2029-03-23"
     assert parsed["cutoff_date"] == "2026-03"
     assert parsed["balance"] == "18,253元"
@@ -863,6 +863,76 @@ def test_loan_section_not_truncated_by_page_noise() -> None:
     )
     report = run_personal_credit_report_agent(text)["report_json"]
     assert len(report["loan_accounts"]) == 10
+
+
+def test_direct_loan_2_parse_with_wrapped_due_date_and_noise() -> None:
+    text = """
+个人征信报告
+贷款
+2025年06月19日浙江泰隆商业银行股份有限公司宁波分行发放的1,500,000元(人民币)个人经营性贷款,2026年06月10日到
+期。截至2026年03月,余额1,500,000。
+报告编号:2026040116014183292476 报告时间:2026-04-01 16:01:41
+信贷记录
+账户数 11 3 38 --
+"""
+    account = run_personal_credit_report_agent(text)["report_json"]["loan_accounts"][0]
+    assert account["start_date"] == "2025-06-19"
+    assert account["institution"] == "浙江泰隆商业银行股份有限公司宁波分行"
+    assert account["amount"] == "1,500,000元"
+    assert account["loan_type"] == "个人经营性贷款"
+    assert account["due_date"] == "2026-06-10"
+    assert account["cutoff_date"] == "2026-03"
+    assert account["balance"] == "1,500,000元"
+    assert account["overdue_status"] == "无"
+
+
+def test_revolving_loan_20220121_should_not_be_dropped() -> None:
+    account = run_personal_credit_report_agent(
+        "个人征信报告\n贷款\n2022年01月21日浙江泰隆商业银行股份有限公司宁波分行为个人经营性贷款授信,额度有效期至2026年12月31日,可循环使用。截至2026年03月,信用额度500,000元(人民币),余额为500,000,当前无逾期。"
+    )["report_json"]["loan_accounts"][0]
+    assert account["start_date"] == "2022-01-21"
+    assert account["institution"] == "浙江泰隆商业银行股份有限公司宁波分行"
+    assert account["amount"] == "500,000元"
+    assert account["loan_type"] == "个人经营性贷款授信"
+    assert account["due_date"] == "2026-12-31"
+    assert account["cutoff_date"] == "2026-03"
+    assert account["balance"] == "500,000元"
+    assert account["overdue_status"] == "当前无逾期"
+
+
+def test_loan_type_keep_credit_grant_suffix() -> None:
+    samples = [
+        ("2022年01月21日浙江泰隆商业银行股份有限公司宁波分行为个人经营性贷款授信,额度有效期至2026年12月31日,可循环使用。截至2026年03月,信用额度500,000元(人民币),余额为500,000,当前无逾期。", "个人经营性贷款授信"),
+        ("2023年03月23日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信,额度有效期至2029年03月23日,可循环使用。截至2026年03月,信用额度35,200元(人民币),余额为18,253,当前无逾期。", "其他个人消费贷款授信"),
+        ("2024年09月10日江苏苏商银行股份有限公司为其他贷款授信,额度有效期至2026年09月05日,可循环使用。截至2026年02月,信用额度100,000元(人民币),余额为47,009,当前无逾期。", "其他贷款授信"),
+    ]
+    for text, expected in samples:
+        assert parse_personal_loan_sentence(text)["loan_type"] == expected
+
+
+def test_loan_extract_10_records_from_sample() -> None:
+    report = run_personal_credit_report_agent(ACTIVE_PERSONAL_LOAN_TEXT)["report_json"]
+    loans = report["loan_accounts"]
+    assert len(loans) == 10
+    assert any(item["start_date"] == "2022-01-21" and item["institution"] == "浙江泰隆商业银行股份有限公司宁波分行" for item in loans)
+    loan2 = loans[1]
+    assert loan2["start_date"] == "2025-06-19"
+    assert loan2["amount"] == "1,500,000元"
+    assert loan2["loan_type"] == "个人经营性贷款"
+    assert loan2["due_date"] == "2026-06-10"
+    assert loan2["cutoff_date"] == "2026-03"
+    assert loan2["balance"] == "1,500,000元"
+    assert "购房贷款" not in loan2["loan_type"]
+    assert "记录可能影响对您的信用评价" not in str(loans)
+
+
+def test_loan_markdown_no_noise() -> None:
+    markdown = run_personal_credit_report_agent(ACTIVE_PERSONAL_LOAN_TEXT)["report_markdown"]
+    loan_section = markdown.split("## 四、贷款账户明细", 1)[1].split("## 五、信用卡账户明细", 1)[0]
+    assert "报告编号" not in loan_section
+    assert "信贷记录" not in loan_section
+    assert "账户数 11 3 38" not in loan_section
+    assert "记录可能影响对您的信用评价" not in loan_section
 
 
 def test_direct_loan_overdue_status_from_section_title() -> None:
