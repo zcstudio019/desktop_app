@@ -9,6 +9,7 @@ from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.personal_credit_report_agent.extract_basic_info import extract_basic_info
 from backend.services.personal_credit_report_agent.extract_credit_summary import extract_credit_summary
 from backend.services.personal_credit_report_agent.extract_credit_card_accounts import extract_credit_card_accounts, parse_credit_card_account_block, recover_rmb_active_credit_cards
+from backend.services.personal_credit_report_agent.extract_loan_accounts import parse_personal_loan_sentence
 from backend.services.personal_credit_report_agent.extract_non_credit_transactions import extract_non_credit_transactions
 from backend.services.personal_credit_report_agent.extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
 from backend.services.personal_credit_report_agent.extract_query_records import build_query_statistics, extract_query_records, is_countable_query_reason
@@ -743,7 +744,8 @@ def test_loan_accounts_skip_zero_balance_no_abnormal_real_sentence() -> None:
 2023年01月15日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信，额度有效期至2027年02月15日，可循环使用。截至2025年02月，信用额度100元(人民币)，余额为0，当前无逾期。
 """
     report = run_personal_credit_report_agent(text)["report_json"]
-    assert report["loan_accounts"] == []
+    assert len(report["loan_accounts"]) == 1
+    assert report["loan_accounts"][0]["account_status"] == "当前有效"
 
 
 def test_loan_accounts_keep_active_balance_own_loan() -> None:
@@ -771,6 +773,86 @@ def test_loan_accounts_keep_abnormal_loan_real_sentence() -> None:
     assert len(loans) == 1
     assert "1,000" in loans[0]["overdue_amount"]
     assert "关注" in loans[0]["five_category"]
+
+
+ACTIVE_PERSONAL_LOAN_TEXT = """
+个人征信报告
+贷款
+2025年04月25日无锡锡商银行股份有限公司发放的1,000,000元（人民币）个人经营性贷款，2026年04月25日到期。截至2026年03月，余额1,000,000。
+2025年06月19日浙江泰隆商业银行股份有限公司宁波分行发放的1,500,000元（人民币）个人经营性贷款，2026年06月10日到期。截至2026年03月，余额1,500,000。
+2025年11月10日河南中原消费金融股份有限公司发放的49,180元（人民币）其他个人消费贷款，2026年11月10日到期。截至2026年03月，余额33,103。
+2021年01月21日浙江泰隆商业银行股份有限公司宁波分行为个人经营性贷款授信，额度有效期至2026年12月31日，可循环使用。截至2026年03月，信用额度500,000元（人民币），余额为500,000，当前无逾期。
+2023年03月23日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信，额度有效期至2029年03月23日，可循环使用。截至2026年03月，信用额度35,200元（人民币），余额为18,253，当前无逾期。
+2023年09月27日江苏苏商银行股份有限公司为个人经营性贷款授信，额度有效期至2026年09月25日，可循环使用。截至2026年02月，信用额度180,000元（人民币），余额为0，当前无逾期。
+2024年09月10日江苏苏商银行股份有限公司为个人经营性贷款授信，额度有效期至2026年09月05日，可循环使用。截至2026年02月，信用额度100,000元（人民币），余额为47,009，当前无逾期。
+2025年05月08日浙江网商银行股份有限公司为个人经营性贷款授信，额度有效期至2026年10月18日，可循环使用。截至2026年03月，信用额度161,667元（人民币），余额为161,667，当前无逾期。
+2025年10月10日武汉众邦银行股份有限公司为其他个人消费贷款授信，额度有效期至2026年10月10日，可循环使用。截至2026年03月，信用额度57,300元（人民币），余额为33,848，当前无逾期。
+2025年12月18日中信百信银行股份有限公司为其他个人消费贷款授信，额度有效期至2027年12月18日，可循环使用。截至2026年03月，信用额度116,100元（人民币），余额为20,689，当前无逾期。
+2006年03月31日中国建设银行股份有限公司上海市分行发放的500,000元（人民币）个人住房商业贷款，2009年05月已结清。
+"""
+
+
+def test_personal_loan_parse_direct_loan() -> None:
+    parsed = parse_personal_loan_sentence(
+        "2025年04月25日无锡锡商银行股份有限公司发放的1,000,000元（人民币）个人经营性贷款，2026年04月25日到期。截至2026年03月，余额1,000,000。"
+    )
+    assert parsed["start_date"] == "2025-04-25"
+    assert parsed["institution"] == "无锡锡商银行股份有限公司"
+    assert parsed["amount"] == "1,000,000元"
+    assert parsed["loan_type"] == "个人经营性贷款"
+    assert parsed["due_date"] == "2026-04-25"
+    assert parsed["cutoff_date"] == "2026-03"
+    assert parsed["balance"] == "1,000,000元"
+
+
+def test_personal_loan_parse_revolving_credit() -> None:
+    parsed = parse_personal_loan_sentence(
+        "2023年03月23日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信，额度有效期至2029年03月23日，可循环使用。截至2026年03月，信用额度35,200元（人民币），余额为18,253，当前无逾期。"
+    )
+    assert parsed["start_date"] == "2023-03-23"
+    assert parsed["institution"] == "重庆蚂蚁消费金融有限公司"
+    assert parsed["amount"] == "35,200元"
+    assert parsed["loan_type"] == "其他个人消费贷款"
+    assert parsed["due_date"] == "2029-03-23"
+    assert parsed["cutoff_date"] == "2026-03"
+    assert parsed["balance"] == "18,253元"
+    assert parsed["overdue_status"] == "当前无逾期"
+
+
+def test_personal_loan_extract_10_active_records() -> None:
+    report = run_personal_credit_report_agent(ACTIVE_PERSONAL_LOAN_TEXT)["report_json"]
+    assert len(report["loan_accounts"]) == 10
+    assert report["loan_accounts"][0]["institution"] == "无锡锡商银行股份有限公司"
+    assert report["loan_accounts"][5]["balance"] == "0元"
+
+
+def test_personal_loan_skip_settled_records() -> None:
+    text = """
+个人征信报告
+贷款
+2006年03月31日中国建设银行股份有限公司上海市分行发放的500,000元（人民币）个人住房商业贷款，2009年05月已结清。
+2009年05月14日浙江省象山县农村信用合作联社发放的800,000元（人民币）个人住房商业贷款，2010年05月已结清。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["loan_accounts"] == []
+
+
+def test_personal_loan_markdown_compact_fields() -> None:
+    markdown = run_personal_credit_report_agent(ACTIVE_PERSONAL_LOAN_TEXT)["report_markdown"]
+    loan_section = markdown.split("## 四、贷款账户明细", 1)[1].split("## 五、信用卡账户明细", 1)[0]
+    assert "起始日期：2025-04-25" in loan_section
+    assert "机构：无锡锡商银行股份有限公司" in loan_section
+    assert "金额：1,000,000元" in loan_section
+    assert "类型：个人经营性贷款" in loan_section
+    assert "到期日期：2026-04-25" in loan_section
+    assert "截止日期：2026-03" in loan_section
+    assert "余额：1,000,000元" in loan_section
+    assert "逾期：无 / 当前无逾期" in loan_section
+    assert "账户编号" not in loan_section
+    assert "五级分类" not in loan_section
+    assert "最近还款日期" not in loan_section
+    assert "历史表现" not in loan_section
+    assert "信息报告日期" not in loan_section
 
 
 def test_credit_card_skip_closed_accounts_from_list() -> None:

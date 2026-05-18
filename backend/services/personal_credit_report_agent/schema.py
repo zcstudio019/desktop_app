@@ -33,13 +33,18 @@ BASIC_INFO_FIELDS = (
 
 LOAN_ACCOUNT_FIELDS = (
     "account_no",
+    "start_date",
     "institution",
+    "loan_type",
     "business_type",
     "open_date",
     "due_date",
+    "cutoff_date",
     "amount",
+    "loan_amount",
     "issued_amount",
     "balance",
+    "overdue_status",
     "account_status",
     "five_category",
     "overdue_amount",

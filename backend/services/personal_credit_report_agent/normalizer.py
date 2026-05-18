@@ -60,6 +60,7 @@ AMOUNT_KEYS = {
     "latest_repayment_amount",
     "responsibility_amount",
     "loan_balance",
+    "loan_amount",
 }
 
 LOAN_CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
@@ -194,8 +195,13 @@ def _keep_loan_record(record: dict[str, Any]) -> bool:
     if _record_has_abnormal(record):
         return True
     status = str(record.get("account_status") or "")
-    if any(word in status for word in LOAN_CLOSED_STATUS_WORDS):
+    if "未结清" not in status and any(word in status for word in LOAN_CLOSED_STATUS_WORDS):
         return False
+    evidence = str(record.get("evidence") or record.get("evidence_text") or "")
+    if "授信" in evidence and record.get("due_date"):
+        return True
+    if status in {"当前有效", "未结清", "正常"} and record.get("due_date"):
+        return True
     balance = record.get("balance")
     if balance not in (None, "") and _amount_number(balance) <= 0:
         return False

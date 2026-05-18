@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from .evidence import clean_amount, clean_value, first_match, split_numbered_blocks, value_after_label
 from .schema import LOAN_ACCOUNT_FIELDS, ensure_record_fields
+
+logger = logging.getLogger(__name__)
 
 LOAN_TYPES = ("购房贷款", "住房贷款", "经营性贷款", "经营贷款", "其他个人消费贷款", "个人消费贷款", "消费贷款", "汽车贷款", "其他贷款", "贷款")
 STATUS_WORDS = ("未结清", "已结清", "正常", "逾期", "结清", "关闭", "销户")
@@ -50,13 +53,45 @@ POLLUTED_EVIDENCE_KEYWORDS = (
 QUERY_RECORD_KEYWORDS = ("查询记录明细", "查询日期", "查询机构", "查询原因", "贷款审批", "信用卡审批", "贷后管理")
 OWN_LOAN_HINTS = ("发放的", "发放贷款", "贷款授信", "为其他个人消费贷款授信", "余额为", "当前无逾期", "五级分类")
 NEGATIVE_ABNORMAL_PHRASES = ("当前无逾期", "无逾期", "未发生逾期", "没有逾期")
+PERSONAL_LOAN_TYPE_PATTERN = r"(?:个人经营性贷款|其他个人消费贷款|个人消费贷款|个人住房商业贷款|个人住房贷款|个人商用房贷款|住房公积金贷款|经营性贷款|消费贷款|汽车贷款|其他贷款)"
 
 
 def _normalize_block(block: str) -> str:
     text = str(block or "").replace("\r", "\n")
+    text = re.sub(r"第\s*\d+\s*页\s*[，,]\s*共\s*\d+\s*页", " ", text)
     text = re.sub(r"[ \t\u3000]+", " ", text)
     text = re.sub(r"\n+", " ", text)
+    text = re.sub(r"截至\s*((?:19|20)\d{2})年\s*(\d{1,2})月", lambda m: f"截至{m.group(1)}年{int(m.group(2)):02d}月", text)
+    text = re.sub(r"信用\s*额度", "信用额度", text)
+    text = re.sub(r"额度\s*有效期", "额度有效期", text)
     return clean_value(text)
+
+
+def _normalize_date(value: str) -> str:
+    match = re.search(r"((?:19|20)\d{2})年(\d{1,2})月(\d{1,2})日", str(value or ""))
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+    match = re.search(r"((?:19|20)\d{2})[-./](\d{1,2})[-./](\d{1,2})", str(value or ""))
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+    return clean_value(value)
+
+
+def _normalize_year_month(value: str) -> str:
+    match = re.search(r"((?:19|20)\d{2})年(\d{1,2})月", str(value or ""))
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}"
+    match = re.search(r"((?:19|20)\d{2})[-./](\d{1,2})", str(value or ""))
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}"
+    return clean_value(value)
+
+
+def _money_with_yuan(value: str) -> str:
+    text = clean_amount(value)
+    if not text or text in {"--", "-"}:
+        return text
+    return text if any(unit in text for unit in ("元", "万元")) else f"{text}元"
 
 
 def _looks_like_loan(block: str) -> bool:
@@ -70,6 +105,25 @@ def _strip_stop_sections(text: str) -> str:
     if not stops:
         return source
     return source[:min(stops)]
+
+
+def _extract_loan_window(text: str) -> str:
+    source = str(text or "")
+    if not source.strip():
+        return ""
+    start_positions = []
+    for anchor in ("从未发生过逾期的账户明细如下", "发生过逾期的账户明细如下", "贷款账户明细", "\n贷款\n", "\r\n贷款\r\n"):
+        index = source.find(anchor)
+        if index >= 0:
+            start_positions.append(index)
+    start = min(start_positions) if start_positions else 0
+    tail = source[start:]
+    stop_positions: list[int] = []
+    for heading in ("信用卡", "相关还款责任信息", "相关还款责任", "非信贷交易记录", "公共记录", "公共信息", "查询记录", "查询记录明细"):
+        match = re.search(rf"(?m)^\s*{re.escape(heading)}\s*[:：]?\s*$", tail)
+        if match and match.start() > 0:
+            stop_positions.append(match.start())
+    return tail[:min(stop_positions)] if stop_positions else tail
 
 
 def _extract_label(block: str, labels: tuple[str, ...], *, max_chars: int = 120) -> str:
@@ -114,6 +168,98 @@ def _extract_date(block: str, labels: tuple[str, ...]) -> str:
     if match:
         return clean_value(match.group(0))
     return ""
+
+
+def parse_personal_loan_sentence(sentence: str) -> dict[str, Any]:
+    source = _normalize_block(sentence)
+    base: dict[str, Any] = {
+        "account_no": "",
+        "start_date": "",
+        "institution": "",
+        "loan_type": "",
+        "business_type": "",
+        "open_date": "",
+        "due_date": "",
+        "cutoff_date": "",
+        "amount": "",
+        "loan_amount": "",
+        "issued_amount": "",
+        "balance": "",
+        "overdue_status": "",
+        "account_status": "",
+        "five_category": "",
+        "overdue_amount": "",
+        "overdue_months": "",
+        "latest_repayment_date": "",
+        "latest_repayment_amount": "",
+        "overdue_info": "",
+        "last_repayment": "",
+        "history_performance": "",
+        "information_report_date": "",
+        "evidence": source[:1000],
+        "evidence_text": source[:1000],
+    }
+    direct = re.search(
+        rf"(?P<start>(?:19|20)\d{{2}}年\d{{1,2}}月\d{{1,2}}日)\s*"
+        rf"(?P<institution>.+?)发放的\s*(?P<amount>[0-9][0-9,]*(?:\.\d+)?)\s*元\s*[（(]\s*人民币\s*[）)]\s*"
+        rf"(?P<loan_type>{PERSONAL_LOAN_TYPE_PATTERN})\s*[，,]\s*"
+        rf"(?P<due>(?:19|20)\d{{2}}年\d{{1,2}}月\d{{1,2}}日)\s*到期\s*[。.]?\s*"
+        rf"截至\s*(?P<cutoff>(?:19|20)\d{{2}}年\d{{1,2}}月)\s*[，,]\s*余额\s*(?P<balance>[0-9][0-9,]*(?:\.\d+)?)",
+        source,
+        flags=re.S,
+    )
+    if direct:
+        amount = _money_with_yuan(direct.group("amount"))
+        balance = _money_with_yuan(direct.group("balance"))
+        base.update({
+            "start_date": _normalize_date(direct.group("start")),
+            "open_date": _normalize_date(direct.group("start")),
+            "institution": clean_value(direct.group("institution")),
+            "loan_type": clean_value(direct.group("loan_type")),
+            "business_type": clean_value(direct.group("loan_type")),
+            "due_date": _normalize_date(direct.group("due")),
+            "cutoff_date": _normalize_year_month(direct.group("cutoff")),
+            "amount": amount,
+            "loan_amount": amount,
+            "issued_amount": amount,
+            "balance": balance,
+            "overdue_status": "无 / 当前无逾期",
+            "account_status": "未结清",
+        })
+        return base
+
+    revolving = re.search(
+        rf"(?P<start>(?:19|20)\d{{2}}年\d{{1,2}}月\d{{1,2}}日)\s*"
+        rf"(?P<institution>.+?)(?:为)?(?P<loan_type>{PERSONAL_LOAN_TYPE_PATTERN})授信\s*[，,]\s*"
+        rf"额度有效期至\s*(?P<due>(?:19|20)\d{{2}}年\d{{1,2}}月\d{{1,2}}日)\s*[，,]\s*可循环使用\s*[。.]?\s*"
+        rf"截至\s*(?P<cutoff>(?:19|20)\d{{2}}年\d{{1,2}}月)\s*[，,]\s*"
+        rf"信用额度\s*(?P<amount>[0-9][0-9,]*(?:\.\d+)?)\s*元\s*(?:[（(]\s*人民币\s*[）)])?\s*[，,]\s*"
+        rf"余额为?\s*(?P<balance>[0-9][0-9,]*(?:\.\d+)?)\s*[，,]?\s*(?P<overdue>当前无逾期|无逾期|当前有逾期|逾期[^。.]*)?",
+        source,
+        flags=re.S,
+    )
+    if revolving:
+        amount = _money_with_yuan(revolving.group("amount"))
+        balance = _money_with_yuan(revolving.group("balance"))
+        overdue = clean_value(revolving.group("overdue") or "当前无逾期")
+        base.update({
+            "start_date": _normalize_date(revolving.group("start")),
+            "open_date": _normalize_date(revolving.group("start")),
+            "institution": clean_value(revolving.group("institution")),
+            "loan_type": clean_value(revolving.group("loan_type")),
+            "business_type": clean_value(revolving.group("loan_type")),
+            "due_date": _normalize_date(revolving.group("due")),
+            "cutoff_date": _normalize_year_month(revolving.group("cutoff")),
+            "amount": amount,
+            "loan_amount": amount,
+            "issued_amount": amount,
+            "balance": balance,
+            "overdue_status": overdue,
+            "account_status": "当前有效",
+        })
+        return base
+
+    return base
 
 
 def _extract_money(block: str, labels: tuple[str, ...]) -> str:
@@ -238,8 +384,10 @@ def _should_skip_closed_loan(block: str, record: dict[str, Any]) -> bool:
     status_text = " ".join(str(item or "") for item in (record.get("account_status"), block))
     if _is_abnormal_account(block, record):
         return False
-    if any(word in status_text for word in CLOSED_STATUS_WORDS):
+    if "未结清" not in status_text and any(word in status_text for word in CLOSED_STATUS_WORDS):
         return True
+    if "授信" in str(record.get("evidence") or record.get("evidence_text") or block) and record.get("due_date"):
+        return False
     balance_value = _amount_to_number(record.get("balance"))
     if record.get("balance") and balance_value <= 0:
         return True
@@ -250,7 +398,14 @@ def _should_skip_closed_loan(block: str, record: dict[str, Any]) -> bool:
 
 def _candidate_blocks(text: str) -> list[str]:
     explicit = str(text or "")
-    blocks = split_numbered_blocks(explicit)
+    explicit = _normalize_block(explicit)
+    date_blocks = re.split(
+        r"(?=(?:\d+[\.、)]\s*)?(?:19|20)\d{2}年\d{1,2}月\d{1,2}日[^。；;]{0,120}(?:发放的|授信))",
+        explicit,
+    )
+    blocks = [block for block in date_blocks if block.strip()]
+    if not blocks:
+        blocks = split_numbered_blocks(explicit)
     if not blocks:
         blocks = re.split(r"(?=(?:\d+[\.、)]\s*)?(?:[\u4e00-\u9fffA-Za-z0-9（）()·]{2,50})?(?:购房贷款|住房贷款|经营性贷款|经营贷款|消费贷款|汽车贷款|其他贷款))", explicit)
     return [block.strip() for block in blocks if block and _looks_like_loan(block)]
@@ -258,50 +413,76 @@ def _candidate_blocks(text: str) -> list[str]:
 
 def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
     try:
-        text = "\n".join(
+        text = _extract_loan_window("\n".join(
             _strip_stop_sections(str(sections.get(key) or ""))
-            for key in ("loan_accounts", "credit_transaction_details")
-        )
+            for key in ("loan_accounts", "credit_transaction_details", "full_text")
+            if sections.get(key)
+        ))
+        logger.info("[PersonalCredit][Loan][SECTION_LEN]=%s", len(text))
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
-        for block in _candidate_blocks(text):
+        for index, block in enumerate(_candidate_blocks(text), start=1):
+            logger.info("[PersonalCredit][Loan][CANDIDATE] index=%s raw_start=%s", index, _normalize_block(block)[:300])
             normalized_block = _normalize_block(block)
-            amount = _extract_money(block, ("发放金额", "借款金额", "贷款金额", "授信金额"))
-            latest_date = _extract_date(block, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
-            latest_amount = _extract_money(block, ("最近一次还款金额", "最近还款金额"))
-            overdue_amount = _extract_money(block, ("当前逾期金额", "逾期金额"))
-            record = {
-                "account_no": _extract_account_no(block),
-                "institution": _extract_institution(block),
-                "business_type": _extract_business_type(block),
-                "open_date": _extract_date(block, ("发放日期", "开户日期", "开立日期", "起始日期")),
-                "due_date": _extract_date(block, ("到期日期", "结清日期", "结束日期")),
-                "amount": amount,
-                "issued_amount": amount,
-                "balance": _extract_money(block, ("余额", "本金余额", "贷款余额")),
-                "account_status": _extract_status(block),
-                "five_category": _extract_five_category(block),
-                "overdue_amount": overdue_amount,
-                "overdue_months": _extract_overdue_months(block),
-                "latest_repayment_date": latest_date,
-                "latest_repayment_amount": latest_amount,
-                "overdue_info": _extract_label(block, ("逾期信息", "逾期记录"), max_chars=120),
-                "last_repayment": " ".join(item for item in (latest_date, latest_amount) if item),
-                "history_performance": _extract_label(block, ("历史表现", "还款表现", "还款记录"), max_chars=160),
-                "information_report_date": _extract_date(block, ("信息报告日期", "报送日期")),
-                "evidence": normalized_block[:1000],
-                "evidence_text": normalized_block[:1000],
-            }
+            parsed = parse_personal_loan_sentence(normalized_block)
+            if parsed.get("institution") and parsed.get("balance"):
+                record = parsed
+            else:
+                amount = _extract_money(block, ("发放金额", "借款金额", "贷款金额", "授信金额"))
+                latest_date = _extract_date(block, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
+                latest_amount = _extract_money(block, ("最近一次还款金额", "最近还款金额"))
+                overdue_amount = _extract_money(block, ("当前逾期金额", "逾期金额"))
+                record = {
+                    "account_no": _extract_account_no(block),
+                    "start_date": _extract_date(block, ("起始日期", "发放日期", "开户日期", "开立日期")),
+                    "institution": _extract_institution(block),
+                    "loan_type": _extract_business_type(block),
+                    "business_type": _extract_business_type(block),
+                    "open_date": _extract_date(block, ("发放日期", "开户日期", "开立日期", "起始日期")),
+                    "due_date": _extract_date(block, ("到期日期", "结清日期", "结束日期")),
+                    "cutoff_date": _extract_date(block, ("截止日期", "截至日期")),
+                    "amount": amount,
+                    "loan_amount": amount,
+                    "issued_amount": amount,
+                    "balance": _extract_money(block, ("余额", "本金余额", "贷款余额")),
+                    "overdue_status": _extract_label(block, ("逾期", "逾期状态"), max_chars=80),
+                    "account_status": _extract_status(block),
+                    "five_category": _extract_five_category(block),
+                    "overdue_amount": overdue_amount,
+                    "overdue_months": _extract_overdue_months(block),
+                    "latest_repayment_date": latest_date,
+                    "latest_repayment_amount": latest_amount,
+                    "overdue_info": _extract_label(block, ("逾期信息", "逾期记录"), max_chars=120),
+                    "last_repayment": " ".join(item for item in (latest_date, latest_amount) if item),
+                    "history_performance": _extract_label(block, ("历史表现", "还款表现", "还款记录"), max_chars=160),
+                    "information_report_date": _extract_date(block, ("信息报告日期", "报送日期")),
+                    "evidence": normalized_block[:1000],
+                    "evidence_text": normalized_block[:1000],
+                }
+            if not record.get("institution") or not record.get("balance"):
+                logger.info("[PersonalCredit][Loan][PARSE_FAIL] index=%s reason=missing_core_fields raw_start=%s", index, normalized_block[:300])
+                continue
+            logger.info(
+                "[PersonalCredit][Loan][PARSE_OK] index=%s start_date=%s institution=%s amount=%s balance=%s",
+                index,
+                record.get("start_date") or record.get("open_date"),
+                record.get("institution"),
+                record.get("amount"),
+                record.get("balance"),
+            )
             if is_polluted_loan_account(record, normalized_block):
+                logger.info("[PersonalCredit][Loan][FILTER_DROP] index=%s reason=polluted", index)
                 continue
             if _should_skip_closed_loan(block, record):
+                logger.info("[PersonalCredit][Loan][FILTER_DROP] index=%s reason=settled", index)
                 continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):
-                signature = tuple(str(record.get(key) or "") for key in ("institution", "business_type", "amount", "balance", "account_status", "overdue_amount"))
+                signature = tuple(str(record.get(key) or "") for key in ("start_date", "institution", "business_type", "amount", "balance", "due_date", "cutoff_date"))
                 if signature in seen:
                     continue
                 seen.add(signature)
                 records.append(ensure_record_fields(record, LOAN_ACCOUNT_FIELDS))
+        logger.info("[PersonalCredit][Loan][FINAL_COUNT]=%s", len(records))
         return records
     except Exception:
         return []

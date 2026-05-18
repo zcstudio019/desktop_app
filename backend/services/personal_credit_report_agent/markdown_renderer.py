@@ -215,22 +215,15 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     if loans:
         for index, item in enumerate(loans, start=1):
             if isinstance(item, dict):
-                _append_account(lines, f"账户 {index}", item, (
-                    ("account_no", "账户编号"),
+                _append_account(lines, f"贷款 {index}", item, (
+                    ("start_date", "起始日期"),
                     ("institution", "机构"),
-                    ("business_type", "业务类型"),
-                    ("open_date", "发放/开户日期"),
+                    ("amount", "金额"),
+                    ("loan_type", "类型"),
                     ("due_date", "到期日期"),
-                    ("amount", "发放金额"),
+                    ("cutoff_date", "截止日期"),
                     ("balance", "余额"),
-                    ("account_status", "账户状态"),
-                    ("five_category", "五级分类"),
-                    ("overdue_amount", "当前逾期金额"),
-                    ("overdue_months", "逾期月数"),
-                    ("latest_repayment_date", "最近还款日期"),
-                    ("latest_repayment_amount", "最近还款金额"),
-                    ("history_performance", "历史表现"),
-                    ("information_report_date", "信息报告日期"),
+                    ("overdue_status", "逾期"),
                 ))
     else:
         lines.append("- 暂无需要展示的未结清贷款账户。")
