@@ -2141,6 +2141,66 @@ def test_related_repayment_markdown_finance_lease_balance() -> None:
     assert "贷款余额：未识别" not in markdown
 
 
+def test_related_repayment_related_party_with_chinese_parentheses() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2024年01月08日,为上海昭晟机电（江苏）有限公司（证件类型:中征码,证件号码:320681UMU76GD178)在远东国际融资租赁有限公司办理的融资租赁承担相关还款责任,责任人类型为保证人,相关还款责任金额30,000,000（保证合同编号: X3101010000173SH23DG1N2MU2-IFELC23DG1N2MU2-U-02).截至2026年01月08日,融资租赁余额0（人民币元）.
+"""
+    item = extract_related_repayment_responsibilities({}, text)[0]
+    assert item["related_party"] == "上海昭晟机电（江苏）有限公司"
+    assert item["institution"] == "远东国际融资租赁有限公司"
+    assert item["business_type"] == "融资租赁"
+    assert item["balance_type"] == "融资租赁余额"
+    assert item["loan_balance"] == "0"
+    assert item["contract_no"] == "X3101010000173SH23DG1N2MU2-IFELC23DG1N2MU2-U-02"
+
+
+def test_related_repayment_related_party_with_half_parentheses() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2024年01月08日,为上海昭晟机电(江苏)有限公司(证件类型:中征码,证件号码:320681UMU76GD178)在远东国际融资租赁有限公司办理的融资租赁承担相关还款责任,责任人类型为保证人,相关还款责任金额30,000,000（保证合同编号:X3101010000173SH23DG1N2MU2）。截至2026年01月08日,融资租赁余额0（人民币元）.
+"""
+    item = extract_related_repayment_responsibilities({}, text)[0]
+    assert item["related_party"] == "上海昭晟机电(江苏)有限公司"
+
+
+def test_related_repayment_related_party_mixed_parentheses() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2024年01月08日,为上海昭晟机电（江苏）有限公司(证件类型:中征码,证件号码:320681UMU76GD178)在远东国际融资租赁有限公司办理的融资租赁承担相关还款责任,责任人类型为保证人,相关还款责任金额30,000,000（保证合同编号:X3101010000173SH23DG1N2MU2）。截至2026年01月08日,融资租赁余额0（人民币元）.
+"""
+    item = extract_related_repayment_responsibilities({}, text)[0]
+    assert item["related_party"] == "上海昭晟机电（江苏）有限公司"
+
+
+def test_related_repayment_related_party_without_certificate_fallback() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2026年01月09日,为上海昭晟机电设备有限公司在北京银行股份有限公司上海奉贤支行办理的贷款承担相关还款责任,责任人类型为保证人,相关还款责任金额1,000,000（保证合同编号:B12345678901）。截至2026年01月09日,贷款余额1,000,000（人民币元）.
+"""
+    item = extract_related_repayment_responsibilities({}, text)[0]
+    assert item["related_party"] == "上海昭晟机电设备有限公司"
+    assert item["institution"] == "北京银行股份有限公司上海奉贤支行"
+
+
+def test_related_repayment_markdown_no_unknown_related_party() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2024年01月08日,为上海昭晟机电（江苏）有限公司（证件类型:中征码,证件号码:320681UMU76GD178)在远东国际融资租赁有限公司办理的融资租赁承担相关还款责任,责任人类型为保证人,相关还款责任金额30,000,000（保证合同编号: X3101010000173SH23DG1N2MU2-IFELC23DG1N2MU2-U-02).截至2026年01月08日,融资租赁余额0（人民币元）.
+2025年11月12日，为上海意川建筑科技有限公司（证件类型：中征码，证件号码：310118UE83L3F406）在远东宏信普惠融资租赁（天津）有限公司办理的融资租赁承担相关还款责任，责任人类型为保证人，相关还款责任金额4,000,000（保证合同编号：X1201010000462ydph201107）。截至2026年03月12日，融资租赁余额3,424,532（人民币元）。
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    related_section = markdown.split("## 六、相关还款责任信息", 1)[1].split("## 七、担保信息", 1)[0]
+    assert "被担保/相关企业：未识别" not in related_section
+    assert "被担保/相关企业：上海昭晟机电（江苏）有限公司" in related_section
+    assert "被担保/相关企业：上海意川建筑科技有限公司" in related_section
+
+
 def test_extract_no_non_credit_transactions() -> None:
     text = """
 非信贷交易记录

@@ -156,6 +156,7 @@ def extract_related_repayment_records_from_full_text(text: str) -> list[dict[str
                     clean_ocr_wrapped_text(block)[:300],
                 )
                 continue
+            _log_related_party_status("full_text", index, record, block)
             logger.info(
                 "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=full_text start_date=%s institution=%s business_type=%s balance_type=%s contract_no=%s loan_balance=%s",
                 index,
@@ -179,22 +180,30 @@ def _first(pattern: str, text: str) -> str:
 
 def _extract_contract_no(block: str) -> str:
     block = block.replace("：", ":").replace("（", "(").replace("）", ")")
-    match = re.search(r"(?:保证合同编号|合同编号)\s*:\s*([A-Za-z0-9\s\r\n]{10,80})", block, flags=re.S)
+    match = re.search(r"(?:保证合同编号|合同编号)\s*:\s*([A-Za-z0-9][A-Za-z0-9_\-\s\r\n]{9,120})", block, flags=re.S)
     if match:
-        value = re.sub(r"[^A-Za-z0-9]", "", match.group(1))
-        if re.fullmatch(r"[A-Za-z0-9]{10,}", value):
+        value = re.sub(r"\s+", "", match.group(1)).strip(" .。),)，")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{9,}", value):
             return value
-    match = re.search(r"\b([BDbd][A-Za-z0-9]{10,})\b", block)
+    match = re.search(r"\b([A-Za-z0-9][A-Za-z0-9_-]{10,})\b", block)
     return match.group(1) if match else ""
+
+
+def _extract_related_party(block: str) -> str:
+    match = re.search(r"为\s*(.+?)\s*[（(]\s*证件类型\s*[:：]", block, flags=re.S)
+    if match:
+        return clean_value(match.group(1)).rstrip("在,，、 ")
+    match = re.search(r"为\s*(.+?)\s*在\s*.+?\s*办理的", block, flags=re.S)
+    if match:
+        return clean_value(match.group(1)).rstrip("在,，、 ")
+    return ""
 
 
 def _parse_record(block: str) -> dict[str, Any]:
     raw_block = block
     block = clean_ocr_wrapped_text(block)
     start_date = _normalize_date(_first(r"^.*?((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", block))
-    related_party = _first(r"为\s*([^（(，,]+?)\s*[（(]\s*证件类型", block)
-    if not related_party:
-        related_party = _first(r"为\s*([^，,]+?)\s*在", block)
+    related_party = _extract_related_party(block)
     business_type = ""
     institution_match = re.search(
         r"在\s*(.+?)\s*办理的\s*(贷款|融资租赁|融资租赁业务|保理|票据|其他融资|[^，,。.;；]{1,30}?)\s*承担相关还款责任",
@@ -236,6 +245,24 @@ def _parse_record(block: str) -> dict[str, Any]:
         },
         RELATED_REPAYMENT_RESPONSIBILITY_FIELDS,
     )
+
+
+def _log_related_party_status(source: str, index: int | str, record: dict[str, Any], block: str) -> None:
+    related_party = str(record.get("related_party") or "").strip()
+    if related_party:
+        logger.info(
+            "[PersonalCredit][RelatedRepayment][RELATED_PARTY_PARSE_OK] index=%s source=%s related_party=%s",
+            index,
+            source,
+            related_party,
+        )
+    else:
+        logger.info(
+            "[PersonalCredit][RelatedRepayment][WARN_MISSING_RELATED_PARTY] index=%s source=%s raw_start=%s",
+            index,
+            source,
+            clean_ocr_wrapped_text(block)[:300],
+        )
 
 
 def _record_signature(record: dict[str, Any]) -> tuple[str, ...]:
@@ -309,6 +336,7 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
                 )
                 parse_failures.append(clean_ocr_wrapped_text(block)[:300])
                 continue
+            _log_related_party_status("section", index, record, block)
             logger.info(
                 "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=section start_date=%s institution=%s business_type=%s balance_type=%s contract_no=%s loan_balance=%s",
                 index,
@@ -335,6 +363,7 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
                 )
                 parse_failures.append(clean_ocr_wrapped_text(block)[:300])
                 continue
+            _log_related_party_status("full_text", index, record, block)
             logger.info(
                 "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=full_text start_date=%s institution=%s business_type=%s balance_type=%s contract_no=%s loan_balance=%s",
                 index,
