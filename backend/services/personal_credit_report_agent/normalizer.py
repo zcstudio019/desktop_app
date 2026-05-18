@@ -394,7 +394,7 @@ def _summary_int(value: Any) -> int | None:
     if isinstance(value, int):
         return value
     text = str(value or "").strip()
-    if text in {"--", "——", "-", "未显示", "0 / 未显示", "0 / 未显示为有效"}:
+    if text in SUMMARY_ZERO_VALUES:
         return 0
     match = re.search(r"\d+", str(value or ""))
     return int(match.group(0)) if match else None
@@ -406,6 +406,18 @@ def _summary_sum(*values: Any) -> str:
     return str(sum(numbers)) if numbers else ""
 
 
+SUMMARY_ZERO_VALUES = {"", "--", "——", "-", "—", "未显示", "0 / 未显示", "0 / 未显示为有效"}
+
+
+def _normalize_summary_quantity(value: Any) -> str:
+    if value is None:
+        return "0"
+    if isinstance(value, int):
+        return str(value)
+    cleaned = _clean_scalar(value)
+    return "0" if str(cleaned or "").strip() in SUMMARY_ZERO_VALUES else str(cleaned).strip()
+
+
 def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
     normalized = {**default_credit_summary(), **summary}
     for target, aliases in SUMMARY_ALIASES.items():
@@ -414,14 +426,6 @@ def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
                 if summary.get(alias) not in (None, ""):
                     normalized[target] = summary.get(alias)
                     break
-    for key in (
-        "housing_loan_account_count",
-        "other_loan_account_count",
-        "housing_loan_outstanding_count",
-        "other_loan_outstanding_count",
-    ):
-        if normalized.get(key) in {"--", "——", "-", "未显示"}:
-            normalized[key] = "0 / 未显示"
     if normalized.get("loan_account_count") in (None, ""):
         normalized["loan_account_count"] = _summary_sum(
             normalized.get("housing_loan_account_count"),
@@ -438,7 +442,7 @@ def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
             summary.get("other_loan_overdue_count"),
         ) or None
     for key, value in list(normalized.items()):
-        normalized[key] = value if isinstance(value, int) or value is None else _clean_scalar(value)
+        normalized[key] = _normalize_summary_quantity(value)
     return normalized
 
 

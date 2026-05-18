@@ -62,6 +62,16 @@ def _count(value: Any) -> str:
     return "未识别" if value is None or value == "" else str(value)
 
 
+SUMMARY_ZERO_VALUES = {"--", "——", "-", "—", "未显示", "0 / 未显示", "0 / 未显示为有效"}
+
+
+def _summary_count(value: Any) -> str:
+    if value is None or value == "":
+        return "0"
+    text = str(value).strip()
+    return "0" if text in SUMMARY_ZERO_VALUES else text
+
+
 def _summary_number(value: Any) -> int | None:
     match = re.search(r"\d+", str(value or ""))
     return int(match.group(0)) if match else None
@@ -76,8 +86,8 @@ def _summary_sum(summary: dict[str, Any], keys: tuple[str, ...]) -> str:
 def _summary_value(summary: dict[str, Any], key: str, legacy_keys: tuple[str, ...] = ()) -> str:
     value = summary.get(key)
     if value not in (None, ""):
-        return _count(value)
-    return _count(_summary_sum(summary, legacy_keys))
+        return _summary_count(value)
+    return _summary_count(_summary_sum(summary, legacy_keys))
 
 
 def _rate(value: Any) -> str:

@@ -186,7 +186,21 @@ def _parse_value_sequence(value_region: str) -> list[str]:
 
 
 def parse_matrix_tokens(region: str, max_tokens: int) -> list[str]:
-    text = _normalize_text(region)[:80]
+    text = _normalize_text(region)
+    for marker in (
+        "逾期记录可能影响对您的信用评价",
+        "购房贷款,包括",
+        "购房贷款，包括",
+        "发生过逾期的信用卡账户",
+        "指曾经",
+        "透支超过",
+    ):
+        marker_index = text.find(marker)
+        if marker_index >= 0:
+            logger.info("[PersonalCredit][Summary][IGNORE_EXPLANATION_NUMBER] reason=right_side_explanation marker=%s", marker)
+            text = text[:marker_index]
+            break
+    text = text[:80]
     tokens: list[str] = []
     for match in re.finditer(r"(--|——|-|未显示|0\s*/\s*未显示(?:为有效)?|(?<!\d)\d{1,3}(?!\d))", text):
         token = match.group(1).strip()
@@ -199,20 +213,11 @@ def parse_matrix_tokens(region: str, max_tokens: int) -> list[str]:
 
 
 def _matrix_dash(token: str, *, active: bool = False, responsibility: bool = False, overdue: bool = False) -> str:
+    del active, responsibility, overdue
     text = str(token or "").strip()
-    if text in {"--", "——", "-"}:
-        if overdue:
-            return "0"
-        if active:
-            return "0 / 未显示为有效"
-        if responsibility:
-            return "0 / 未显示"
-        return "0 / 未显示"
-    if text == "未显示":
-        if active:
-            return "0 / 未显示为有效"
-        if responsibility:
-            return "0 / 未显示"
+    if text in {"--", "——", "-", "未显示", "0 / 未显示", "0 / 未显示为有效"}:
+        logger.info("[PersonalCredit][Summary][NORMALIZE_DASH_TO_ZERO] raw=%s value=0", text)
+        return "0"
     return text
 
 
@@ -312,6 +317,11 @@ def extract_summary_matrix_from_ocr_window(window: str) -> dict[str, str]:
                 result["personal_related_repayment_responsibility_account_count"] = _matrix_dash(responsibility_tokens[0], responsibility=True)
             if len(responsibility_tokens) >= 2:
                 result["enterprise_related_repayment_responsibility_account_count"] = _matrix_dash(responsibility_tokens[1], responsibility=True)
+            logger.info(
+                "[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s",
+                result.get("personal_related_repayment_responsibility_account_count"),
+                result.get("enterprise_related_repayment_responsibility_account_count"),
+            )
 
         logger.info(
             "[PersonalCredit][Summary][MATRIX_PARSED] credit_card_account_count=%s loan_account_count=%s outstanding_loan_account_count=%s enterprise_related=%s",
@@ -406,12 +416,11 @@ def _extract_all_values(window: str) -> dict[str, str]:
     for field, value in sequence_values.items():
         if value and (should_override or not values.get(field)):
             values[field] = value
-    if sum(1 for field in SUMMARY_FIELD_ORDER if values.get(field)) < 6:
-        matrix_values = extract_summary_matrix_from_ocr_window(window)
-        if sum(1 for value in matrix_values.values() if value) >= 4:
-            for field, value in matrix_values.items():
-                if value and not values.get(field):
-                    values[field] = value
+    matrix_values = extract_summary_matrix_from_ocr_window(window)
+    if sum(1 for value in matrix_values.values() if value) >= 4:
+        for field, value in matrix_values.items():
+            if value:
+                values[field] = value
     return values
 
 
