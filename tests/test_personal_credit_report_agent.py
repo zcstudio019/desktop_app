@@ -1347,6 +1347,110 @@ def test_credit_card_recovery_append_missing_ccb_6049() -> None:
     )
 
 
+def test_credit_card_limit_not_use_used_amount() -> None:
+    text = """
+个人征信报告
+信用卡
+2020年11月27日广发银行股份有限公司信用卡中心发放的贷记卡（人民币账户，卡片尾号：1019）。截至2025年12月，信用额度38,000，已使用额度440。
+"""
+    cards = run_personal_credit_report_agent(text)["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["open_date"] == "2020-11-27"
+    assert card["institution"] == "广发银行股份有限公司信用卡中心"
+    assert card["card_type"] == "贷记卡"
+    assert card["currency"] == "人民币"
+    assert card["card_tail_no"] == "1019"
+    assert card["credit_limit"] == "38,000"
+    assert card["used_amount"] == "440"
+    assert card["account_status"] == "当前有效"
+    assert card["report_cutoff"] == "2025-12"
+
+
+def test_credit_card_shanghai_rural_commercial_bank_not_dropped() -> None:
+    text = """
+个人征信报告
+信用卡
+2021年09月10日上海农村商业银行股份有限公司发放的贷记卡（人民币账户）。截至2025年12月，信用额度30,000，已使用额度0。
+"""
+    result = run_personal_credit_report_agent(text)
+    cards = result["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["institution"] == "上海农村商业银行股份有限公司"
+    assert card["currency"] == "人民币"
+    assert card["card_tail_no"] == ""
+    assert card["credit_limit"] == "30,000"
+    assert card["used_amount"] == "0"
+    assert card["account_status"] == "当前有效"
+    assert "上海农村商业银行股份有限公司" in result["report_markdown"]
+    assert "授信额度：30,000" in result["report_markdown"]
+
+
+def test_credit_card_icbc_rmb_8222_limit_100000() -> None:
+    text = """
+个人征信报告
+信用卡
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（日元账户，卡片尾号：8222）。截至2026年01月，信用额度74,383，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（美元账户，卡片尾号：8222）。截至2026年01月，信用额度102,006，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（人民币账户，卡片尾号：8222）。截至2026年01月，信用额度100,000，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（新加坡元账户，卡片尾号：8222）。截至2026年01月，信用额度105,968，已使用额度0。
+"""
+    parsed = extract_credit_card_accounts({"full_text": text})
+    assert len(parsed) == 4
+    assert {item["currency"] for item in parsed} == {"日元", "美元", "人民币", "新加坡元"}
+    cards = run_personal_credit_report_agent(text)["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["institution"] == "中国工商银行股份有限公司上海市分行"
+    assert card["currency"] == "人民币"
+    assert card["card_tail_no"] == "8222"
+    assert card["credit_limit"] == "100,000"
+    assert card["used_amount"] == "0"
+    assert card["report_cutoff"] == "2026-01"
+    assert card["credit_limit"] not in {"74,383", "102,006", "105,968"}
+
+
+def test_credit_card_dedupe_keeps_same_tail_different_currency_until_filter() -> None:
+    text = """
+信用卡
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（美元账户，卡片尾号：8222）。截至2026年01月，信用额度102,006，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（人民币账户，卡片尾号：8222）。截至2026年01月，信用额度100,000，已使用额度0。
+"""
+    parsed = extract_credit_card_accounts({"full_text": text})
+    assert len(parsed) == 2
+    assert {item["currency"] for item in parsed} == {"美元", "人民币"}
+    cards = run_personal_credit_report_agent(f"个人征信报告\n{text}")["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    assert cards[0]["currency"] == "人民币"
+    assert cards[0]["credit_limit"] == "100,000"
+
+
+def test_credit_card_markdown_amounts_correct() -> None:
+    text = """
+个人征信报告
+信用卡
+2020年11月27日广发银行股份有限公司信用卡中心发放的贷记卡（人民币账户，卡片尾号：1019）。截至2025年12月，信用额度38,000，已使用额度440。
+2021年09月10日上海农村商业银行股份有限公司发放的贷记卡（人民币账户）。截至2025年12月，信用额度30,000，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（日元账户，卡片尾号：8222）。截至2026年01月，信用额度74,383，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（美元账户，卡片尾号：8222）。截至2026年01月，信用额度102,006，已使用额度0。
+2024年03月26日中国工商银行股份有限公司上海市分行发放的贷记卡（人民币账户，卡片尾号：8222）。截至2026年01月，信用额度100,000，已使用额度0。
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "发卡机构：广发银行股份有限公司信用卡中心" in card_section
+    assert "授信额度：38,000" in card_section
+    assert "已使用额度：440" in card_section
+    assert "发卡机构：上海农村商业银行股份有限公司" in card_section
+    assert "授信额度：30,000" in card_section
+    assert "发卡机构：中国工商银行股份有限公司上海市分行" in card_section
+    assert "卡片尾号：8222" in card_section
+    assert "授信额度：100,000" in card_section
+    assert "授信额度：440" not in card_section
+    assert "授信额度：87,186" not in card_section
+    assert "授信额度：102,006" not in card_section
+
+
 def test_credit_card_markdown_only_core_fields() -> None:
     markdown = render_personal_credit_markdown({
         "basic_info": {"source_file": "sample.txt"},

@@ -14,6 +14,7 @@ CARD_TYPES = ("准贷记卡", "贷记卡", "信用卡")
 STATUS_WORDS = ("未销户", "已销户", "销户", "已注销", "注销", "已关闭", "关闭", "正常", "逾期", "冻结", "止付", "呆账")
 ABNORMAL_WORDS = ("当前逾期", "逾期", "90天以上逾期", "呆账", "代偿", "核销")
 ACTIVE_STATUS_WORDS = ("未销户", "正常", "当前有效")
+FOREIGN_CURRENCY_WORDS = ("美元", "USD", "日元", "欧元", "澳大利亚元", "加元", "瑞士法郎", "新加坡元", "英镑", "新西兰元", "香港元", "港币", "外币")
 SUMMARY_ONLY_WORDS = ("信用卡账户数", "信用卡90天以上逾期账户数", "信用卡 90 天以上逾期账户数", "贷款账户数", "信贷记录概要")
 DETAIL_WORDS = ("贷记卡账户明细", "准贷记卡账户明细", "授信额度", "已用额度", "共享授信额度", "最近一次还款", "当前逾期", "发卡机构", "账户状态", "卡号")
 LOAN_DETAIL_WORDS = ("贷款", "消费贷款", "购房贷款", "其他贷款", "五级分类")
@@ -38,6 +39,9 @@ CARD_WINDOW_ANCHORS = (
 def _normalize_block(block: str) -> str:
     text = str(block or "").replace("\r", "\n")
     text = re.sub(r"[ \t\u3000]+", " ", text)
+    text = re.sub(r"截至\s*((?:19|20)\d{2})年\s*\n+\s*(\d{1,2})月", lambda m: f"截至{m.group(1)}年{int(m.group(2)):02d}月", text)
+    text = re.sub(r"信用\s*\n+\s*额度", "信用额度", text)
+    text = re.sub(r"已\s*使用\s*\n+\s*额度", "已使用额度", text)
     text = re.sub(r"\n+", " ", text)
     text = re.sub(r"截至\s*((?:19|20)\d{2})年\s*(\d{1,2})月", lambda m: f"截至{m.group(1)}年{int(m.group(2)):02d}月", text)
     text = re.sub(r"信用\s*额度", "信用额度", text)
@@ -105,6 +109,23 @@ def _active_card_sentence_blocks(text: str) -> list[str]:
     return blocks
 
 
+def _date_card_blocks(text: str) -> list[str]:
+    source = _normalize_block(text)
+    if not source:
+        return []
+    starts = [
+        match.start()
+        for match in re.finditer(r"(?:\d+[\.、)]\s*)?(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", source)
+    ]
+    blocks: list[str] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(source)
+        block = source[start:end].strip()
+        if "发放的" in block and any(card_type in block for card_type in CARD_TYPES):
+            blocks.append(block)
+    return blocks
+
+
 def _looks_like_card(block: str) -> bool:
     if any(keyword in block for keyword in SUMMARY_ONLY_WORDS) and not any(keyword in block for keyword in DETAIL_WORDS):
         return False
@@ -130,6 +151,15 @@ def _extract_money(block: str, labels: tuple[str, ...]) -> str:
     if labeled:
         money = first_match(labeled, (r"((?:人民币)?\s*[0-9][0-9,]*(?:\.\d+)?\s*(?:万?元|万元)?)",))
         return clean_amount(money or labeled)
+    return ""
+
+
+def _extract_amount_after_label(block: str, labels: tuple[str, ...]) -> str:
+    source = _normalize_block(block)
+    for label in labels:
+        match = re.search(rf"{re.escape(label)}\s*[:：]?\s*([0-9][0-9,]*(?:\.\d+)?)(?:\s*元)?", source)
+        if match:
+            return clean_amount(match.group(1))
     return ""
 
 
@@ -167,7 +197,7 @@ def _extract_card_type(block: str) -> str:
 
 
 def _extract_currency(block: str) -> str:
-    match = re.search(r"[（(]\s*(美元|人民币|欧元|港币|日元|英镑)\s*账户[^）)]*[）)]", block)
+    match = re.search(r"[（(]\s*(美元|人民币|欧元|港币|日元|英镑|澳大利亚元|加元|瑞士法郎|新加坡元|新西兰元|香港元)\s*账户[^）)]*[）)]", block)
     if match:
         return match.group(1)
     labeled = _extract_label(block, ("币种", "账户币种"), max_chars=20)
@@ -274,9 +304,6 @@ def _dedupe_signature(record: dict[str, Any]) -> tuple[str, ...]:
             "currency",
             "card_tail_no",
             "credit_limit",
-            "used_limit",
-            "account_status",
-            "overdue_amount",
             "report_cutoff",
         )
     )
@@ -375,6 +402,7 @@ def _should_skip_inactive_card(block: str, record: dict[str, Any]) -> bool:
 
 def _candidate_blocks(text: str) -> list[str]:
     source = str(text or "")
+    date_blocks = _date_card_blocks(source)
     sentence_blocks = _active_card_sentence_blocks(source)
     blocks = split_numbered_blocks(source)
     if not blocks:
@@ -383,7 +411,7 @@ def _candidate_blocks(text: str) -> list[str]:
     for block in blocks:
         pieces = re.split(r"(?=\s*\d+[\.、)]\s*(?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", block)
         expanded.extend(piece for piece in pieces if piece.strip())
-    blocks = [*sentence_blocks, *(expanded or blocks)]
+    blocks = [*date_blocks, *sentence_blocks, *(expanded or blocks)]
     result: list[str] = []
     seen: set[str] = set()
     for block in blocks:
@@ -400,7 +428,8 @@ def parse_credit_card_account_block(block: str) -> dict[str, Any]:
     source = normalized_block
     institution = _extract_institution(source)
     card_type = _extract_card_type(source)
-    used_limit = _extract_money(source, ("已使用额度", "已用额度", "使用额度", "透支余额", "已用授信额度"))
+    credit_limit = _extract_amount_after_label(source, ("信用额度", "授信额度", "共享授信额度")) or _extract_money(source, ("授信额度", "信用额度", "共享授信额度"))
+    used_limit = _extract_amount_after_label(source, ("已使用额度", "已用额度", "使用额度", "透支余额", "已用授信额度")) or _extract_money(source, ("已使用额度", "已用额度", "使用额度", "透支余额", "已用授信额度"))
     latest_date = _extract_date(source, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
     latest_amount = _extract_money(source, ("最近一次还款金额", "最近还款金额"))
     status = _extract_status(source)
@@ -416,7 +445,7 @@ def parse_credit_card_account_block(block: str) -> dict[str, Any]:
         "card_tail_no": _extract_card_tail_no(source),
         "account_status": status,
         "is_closed": is_closed,
-        "credit_limit": _extract_money(source, ("授信额度", "信用额度", "共享授信额度", "额度")),
+        "credit_limit": credit_limit,
         "used_limit": used_limit,
         "used_amount": used_limit,
         "report_cutoff": _extract_report_cutoff(source),
@@ -477,7 +506,7 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                 )
                 continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):
-                signature = tuple(str(record.get(key) or "") for key in ("open_date", "institution", "card_type", "currency", "card_tail_no", "credit_limit", "used_limit", "account_status", "overdue_amount", "report_cutoff"))
+                signature = _dedupe_signature(record)
                 if signature in seen:
                     logger.info("[PersonalCredit][CreditCard][DEDUP_DROP] index=%s reason=duplicate key=%s", index, signature)
                     continue
@@ -518,7 +547,7 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                         record.get("card_tail_no"),
                     )
                     continue
-                signature = tuple(str(record.get(key) or "") for key in ("open_date", "institution", "card_type", "currency", "card_tail_no", "credit_limit", "used_limit", "account_status", "report_cutoff"))
+                signature = _dedupe_signature(record)
                 if signature in seen:
                     logger.info("[PersonalCredit][CreditCard][DEDUP_DROP] index=fallback-%s reason=duplicate key=%s", index, signature)
                     continue
@@ -531,6 +560,17 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                     record.get("card_tail_no"),
                 )
                 records.append(ensure_record_fields(record, CREDIT_CARD_ACCOUNT_FIELDS))
+        rmb_records = [record for record in records if str(record.get("currency") or "") == "人民币"]
+        logger.info("[PersonalCredit][CreditCard][RMB_DISPLAY_COUNT]=%s", len(rmb_records))
+        for record in rmb_records:
+            logger.info(
+                "[PersonalCredit][CreditCard][RMB_DISPLAY] %s | %s | %s | %s | %s",
+                record.get("issuer") or record.get("institution"),
+                record.get("card_tail_no") or "未识别",
+                record.get("credit_limit"),
+                record.get("used_amount") or record.get("used_limit"),
+                record.get("report_cutoff"),
+            )
         return records
     except Exception:
         return []
