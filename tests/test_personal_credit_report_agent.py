@@ -1401,7 +1401,7 @@ def test_markdown_related_repayment_section() -> None:
     assert "责任人类型" in markdown
     assert "办理机构" in markdown
     assert "相关还款责任金额" in markdown
-    assert "贷款余额" in markdown
+    assert "贷款/融资余额" in markdown
     assert "合同编号" in markdown
     assert "截至日期" in markdown
 
@@ -1552,7 +1552,7 @@ def test_related_repayment_markdown_contains_start_date() -> None:
     assert "责任人类型" in markdown
     assert "办理机构" in markdown
     assert "相关还款责任金额" in markdown
-    assert "贷款余额" in markdown
+    assert "贷款/融资余额" in markdown
     assert "合同编号" in markdown
     assert "截至日期" in markdown
 
@@ -1605,7 +1605,7 @@ def test_related_repayment_markdown_contains_9th() -> None:
     assert "起始日期：2025-02-20" in markdown
     assert "办理机构：华夏银行股份有限公司上海分行" in markdown
     assert "相关还款责任金额：550,000" in markdown
-    assert "贷款余额：1,370,000" in markdown
+    assert "贷款/融资余额：1,370,000" in markdown
     assert "合同编号：B10811000H0001181567" in markdown
 
 
@@ -1721,8 +1721,55 @@ def test_related_repayment_markdown_contains_9th_even_same_contract() -> None:
     markdown = run_personal_credit_report_agent(text)["report_markdown"]
     assert "### 相关还款责任 9" in markdown
     assert "起始日期：2025-02-20" in markdown
-    assert "贷款余额：1,370,000" in markdown
+    assert "贷款/融资余额：1,370,000" in markdown
     assert "核验提示：合同编号与其他记录重复" in markdown
+
+
+def test_related_repayment_finance_lease_institution_and_balance() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2025年11月12日，为上海意川建筑科技有限公司（证件类型：中征码，证件号码：310118UE83L3F406）在远东宏信普惠融资租赁（天津）有限公司办理的融资租赁承担相关还款责任，责任人类型为保证人，相关还款责任金额4,000,000（保证合同编号：X1201010000462ydph201107）。截至2026年03月12日，融资租赁余额3,424,532（人民币元）。
+"""
+    item = extract_related_repayment_responsibilities({}, text)[0]
+    assert item["start_date"] == "2025-11-12"
+    assert item["related_party"] == "上海意川建筑科技有限公司"
+    assert item["responsibility_type"] == "保证人"
+    assert item["institution"] == "远东宏信普惠融资租赁（天津）有限公司"
+    assert item["business_type"] == "融资租赁"
+    assert item["responsibility_amount"] == "4,000,000"
+    assert item["contract_no"] == "X1201010000462ydph201107"
+    assert item["as_of_date"] == "2026-03-12"
+    assert item["balance_type"] == "融资租赁余额"
+    assert item["loan_balance"] == "3,424,532"
+    assert item["balance"] == "3,424,532"
+
+
+def test_related_repayment_normal_loan_still_works() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2025年11月11日，为上海意川建筑科技有限公司（证件类型：中征码，证件号码：310118UE83L3F406）在温州银行股份有限公司办理的贷款承担相关还款责任，责任人类型为保证人，相关还款责任金额3,000,000（保证合同编号：B12345678901）。截至2026年03月20日，贷款余额3,000,000（人民币元）。
+"""
+    item = extract_related_repayment_responsibilities({}, text)[0]
+    assert item["institution"] == "温州银行股份有限公司"
+    assert item["business_type"] == "贷款"
+    assert item["balance_type"] == "贷款余额"
+    assert item["loan_balance"] == "3,000,000"
+
+
+def test_related_repayment_markdown_finance_lease_balance() -> None:
+    text = """
+个人征信报告
+相关还款责任信息
+2025年11月12日，为上海意川建筑科技有限公司（证件类型：中征码，证件号码：310118UE83L3F406）在远东宏信普惠融资租赁（天津）有限公司办理的融资租赁承担相关还款责任，责任人类型为保证人，相关还款责任金额4,000,000（保证合同编号：X1201010000462ydph201107）。截至2026年03月12日，融资租赁余额3,424,532（人民币元）。
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    assert "办理机构：远东宏信普惠融资租赁（天津）有限公司" in markdown
+    assert "余额类型：融资租赁余额" in markdown
+    assert "贷款/融资余额：3,424,532" in markdown
+    assert "办理机构：未识别" not in markdown
+    assert "贷款余额：未识别" not in markdown
 
 
 def test_extract_no_non_credit_transactions() -> None:

@@ -29,7 +29,7 @@ def _normalize_text(text: str) -> str:
 
 def clean_ocr_wrapped_text(text: str) -> str:
     source = _normalize_text(text)
-    source = source.replace("（", "(").replace("）", ")").replace("：", ":")
+    source = source.replace("：", ":")
     source = source.replace("，", ",").replace("。", ".")
     source = re.sub(r"第\s*\d+\s*页\s*[,，]\s*共\s*\d+\s*页", " ", source)
     source = re.sub(r"(?m)^\s*\d+\.\s*$", " ", source)
@@ -157,10 +157,12 @@ def extract_related_repayment_records_from_full_text(text: str) -> list[dict[str
                 )
                 continue
             logger.info(
-                "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=full_text start_date=%s institution=%s contract_no=%s loan_balance=%s",
+                "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=full_text start_date=%s institution=%s business_type=%s balance_type=%s contract_no=%s loan_balance=%s",
                 index,
                 record.get("start_date"),
                 record.get("institution"),
+                record.get("business_type"),
+                record.get("balance_type"),
                 record.get("contract_no"),
                 record.get("loan_balance"),
             )
@@ -193,21 +195,41 @@ def _parse_record(block: str) -> dict[str, Any]:
     related_party = _first(r"为\s*([^（(，,]+?)\s*[（(]\s*证件类型", block)
     if not related_party:
         related_party = _first(r"为\s*([^，,]+?)\s*在", block)
-    institution = _first(r"在\s*(.+?)\s*办理的贷款承担相关还款责任", block)
-    institution = re.split(r"(?:办理的贷款承担相关还款责任|责任人类型|证件类型|证件号码)", institution, maxsplit=1)[0]
+    business_type = ""
+    institution_match = re.search(
+        r"在\s*(.+?)\s*办理的\s*(贷款|融资租赁|融资租赁业务|保理|票据|其他融资|[^，,。.;；]{1,30}?)\s*承担相关还款责任",
+        block,
+        flags=re.S,
+    )
+    if institution_match:
+        institution = clean_value(institution_match.group(1))
+        business_type = clean_value(institution_match.group(2))
+    else:
+        institution = _first(r"在\s*(.+?)\s*办理的贷款承担相关还款责任", block)
+    institution = re.split(r"(?:办理的.*?承担相关还款责任|责任人类型|证件类型|证件号码)", institution, maxsplit=1)[0]
+    if business_type == "融资租赁业务":
+        business_type = "融资租赁"
     responsibility_type = _first(r"责任人类型为\s*([^，,。.)）]+)", block)
     responsibility_amount = _first(r"相关还款责任金额\s*:?\s*([0-9,]+(?:\.\d+)?|--|——|-)", block)
     contract_no = _extract_contract_no(raw_block)
     as_of_date = _normalize_date(_first(r"截至\s*((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", block))
-    loan_balance = _first(r"贷款余额\s*:?\s*([0-9,]+(?:\.\d+)?|--|——|-)", block)
+    balance_type = ""
+    loan_balance = ""
+    balance_match = re.search(r"(贷款余额|融资租赁余额|融资余额|余额)\s*:?\s*([0-9,]+(?:\.\d+)?|--|——|-)", block)
+    if balance_match:
+        balance_type = clean_value(balance_match.group(1))
+        loan_balance = clean_value(balance_match.group(2))
     return ensure_record_fields(
         {
             "start_date": start_date,
             "related_party": clean_ocr_wrapped_text(related_party),
             "responsibility_type": responsibility_type,
             "institution": clean_ocr_wrapped_text(institution),
+            "business_type": business_type,
             "responsibility_amount": clean_amount(clean_ocr_wrapped_text(responsibility_amount)),
+            "balance_type": balance_type,
             "loan_balance": clean_amount(clean_ocr_wrapped_text(loan_balance)),
+            "balance": clean_amount(clean_ocr_wrapped_text(loan_balance)),
             "contract_no": contract_no,
             "as_of_date": as_of_date,
             "evidence": clean_ocr_wrapped_text(block)[:1200],
@@ -288,10 +310,12 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
                 parse_failures.append(clean_ocr_wrapped_text(block)[:300])
                 continue
             logger.info(
-                "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=section start_date=%s institution=%s contract_no=%s loan_balance=%s",
+                "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=section start_date=%s institution=%s business_type=%s balance_type=%s contract_no=%s loan_balance=%s",
                 index,
                 record.get("start_date"),
                 record.get("institution"),
+                record.get("business_type"),
+                record.get("balance_type"),
                 record.get("contract_no"),
                 record.get("loan_balance"),
             )
@@ -312,10 +336,12 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
                 parse_failures.append(clean_ocr_wrapped_text(block)[:300])
                 continue
             logger.info(
-                "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=full_text start_date=%s institution=%s contract_no=%s loan_balance=%s",
+                "[PersonalCredit][RelatedRepayment][PARSE_OK] index=%s source=full_text start_date=%s institution=%s business_type=%s balance_type=%s contract_no=%s loan_balance=%s",
                 index,
                 record.get("start_date"),
                 record.get("institution"),
+                record.get("business_type"),
+                record.get("balance_type"),
                 record.get("contract_no"),
                 record.get("loan_balance"),
             )
@@ -342,9 +368,11 @@ def extract_related_repayment_responsibilities(sections: dict[str, Any], text: s
             if contract_no:
                 seen_contract_records.setdefault(contract_no, []).append(record)
             logger.info(
-                "[PersonalCredit][RelatedRepayment] parsed start_date=%s institution=%s contract_no=%s loan_balance=%s",
+                "[PersonalCredit][RelatedRepayment] parsed start_date=%s institution=%s business_type=%s balance_type=%s contract_no=%s loan_balance=%s",
                 record.get("start_date"),
                 record.get("institution"),
+                record.get("business_type"),
+                record.get("balance_type"),
                 record.get("contract_no"),
                 record.get("loan_balance"),
             )

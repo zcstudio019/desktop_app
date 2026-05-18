@@ -259,8 +259,10 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
                     ("related_party", "被担保/相关企业"),
                     ("responsibility_type", "责任人类型"),
                     ("institution", "办理机构"),
+                    ("business_type", "业务类型"),
                     ("responsibility_amount", "相关还款责任金额"),
-                    ("loan_balance", "贷款余额"),
+                    ("balance_type", "余额类型"),
+                    ("loan_balance", "贷款/融资余额"),
                     ("contract_no", "合同编号"),
                     ("as_of_date", "截至日期"),
                 ))

@@ -139,8 +139,13 @@ def _normalize_record(record: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     normalized = ensure_record_fields(record, fields)
     for key, value in list(normalized.items()):
         normalized[key] = _clean_scalar(value, is_amount=key in AMOUNT_KEYS)
-        if key in {"related_party", "institution", "contract_no", "loan_balance", "responsibility_amount"}:
+        if key in {"related_party", "institution", "contract_no", "loan_balance", "responsibility_amount", "business_type", "balance_type", "balance"}:
             normalized[key] = _clean_ocr_wrapped_scalar(normalized[key])
+    if fields == RELATED_REPAYMENT_RESPONSIBILITY_FIELDS:
+        if not normalized.get("balance") and normalized.get("loan_balance"):
+            normalized["balance"] = normalized.get("loan_balance")
+        if not normalized.get("loan_balance") and normalized.get("balance"):
+            normalized["loan_balance"] = normalized.get("balance")
     return normalized
 
 
