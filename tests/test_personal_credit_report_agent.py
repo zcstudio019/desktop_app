@@ -963,6 +963,58 @@ def test_credit_card_markdown_no_usd() -> None:
     assert "兴业银行股份有限公司" in card_section
 
 
+def test_credit_card_keep_rmb_when_same_tail_usd_exists() -> None:
+    text = """
+个人征信报告
+信用卡
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡(人民币账户,卡片尾号:6049)。截至2026年03月,信用额度2,000,已使用额度0。
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡(美元账户,卡片尾号:6049)。截至2026年03月,信用额度2,000,已使用额度0。
+"""
+    cards = run_personal_credit_report_agent(text)["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    assert cards[0]["currency"] == "人民币"
+    assert cards[0]["institution"] == "中国建设银行股份有限公司上海宝钢宝山支行"
+    assert cards[0]["card_tail_no"] == "6049"
+    assert cards[0]["credit_limit"] == "2,000"
+    assert "美元账户" not in cards[0]["evidence_text"]
+
+
+def test_credit_card_active_rmb_sample_should_show_3() -> None:
+    cards = run_personal_credit_report_agent(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT)["report_json"]["credit_card_accounts"]
+    institutions = {card["institution"] for card in cards}
+    assert len(cards) == 3
+    assert "中国建设银行股份有限公司上海宝钢宝山支行" in institutions
+    assert "中国光大银行股份有限公司信用卡中心" in institutions
+    assert "兴业银行股份有限公司" in institutions
+    assert all(card["currency"] == "人民币" for card in cards)
+    assert all("美元" not in card["currency"] for card in cards)
+    assert all("销户" not in card["evidence_text"] for card in cards)
+
+
+def test_credit_card_dedupe_key_includes_currency() -> None:
+    text = """
+信用卡
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡(人民币账户,卡片尾号:6049)。截至2026年03月,信用额度2,000,已使用额度0。
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡(美元账户,卡片尾号:6049)。截至2026年03月,信用额度2,000,已使用额度0。
+"""
+    parsed = extract_credit_card_accounts({"full_text": text})
+    assert len(parsed) == 2
+    assert {item["currency"] for item in parsed} == {"人民币", "美元"}
+    cards = run_personal_credit_report_agent(f"个人征信报告\n{text}")["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    assert cards[0]["currency"] == "人民币"
+
+
+def test_credit_card_markdown_contains_ccb_6049() -> None:
+    markdown = run_personal_credit_report_agent(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT)["report_markdown"]
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "中国建设银行股份有限公司上海宝钢宝山支行" in card_section
+    assert "卡片尾号：6049" in card_section
+    assert "授信额度：2,000" in card_section
+    assert "币种：人民币" in card_section
+    assert "币种：美元" not in card_section
+
+
 RELATED_REPAYMENT_TEXT = """
 个人征信报告
 相关还款责任信息

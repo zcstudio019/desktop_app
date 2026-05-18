@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from .evidence import clean_amount, clean_value, first_match, split_numbered_blocks, value_after_label
 from .schema import CREDIT_CARD_ACCOUNT_FIELDS, ensure_record_fields
+
+logger = logging.getLogger(__name__)
 
 CLOSED_STATUS_WORDS = ("已销户", "销户", "已注销", "注销", "已关闭", "关闭")
 CARD_TYPES = ("准贷记卡", "贷记卡", "信用卡")
@@ -362,26 +365,65 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
             text = _extract_credit_card_window(source_text)
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
-        for block in _candidate_blocks(text):
+        for index, block in enumerate(_candidate_blocks(text), start=1):
+            logger.info("[PersonalCredit][CreditCard][CANDIDATE] index=%s raw=%s", index, _normalize_block(block)[:300])
             record = parse_credit_card_account_block(block)
+            logger.info(
+                "[PersonalCredit][CreditCard][PARSE_OK] index=%s issuer=%s currency=%s tail_no=%s credit_limit=%s",
+                index,
+                record.get("issuer") or record.get("institution"),
+                record.get("currency"),
+                record.get("card_tail_no"),
+                record.get("credit_limit"),
+            )
             if _should_skip_inactive_card(block, record):
+                reason = "closed_or_inactive"
+                if _should_skip_closed_card(block, record):
+                    reason = "closed_without_abnormal"
+                logger.info("[PersonalCredit][CreditCard][FILTER_DROP] index=%s reason=%s", index, reason)
                 continue
             if any(value for key, value in record.items() if key not in {"evidence", "evidence_text"}):
                 signature = tuple(str(record.get(key) or "") for key in ("open_date", "institution", "card_type", "currency", "card_tail_no", "credit_limit", "used_limit", "account_status", "overdue_amount", "report_cutoff"))
                 if signature in seen:
+                    logger.info("[PersonalCredit][CreditCard][DEDUP_DROP] index=%s reason=duplicate key=%s", index, signature)
                     continue
                 seen.add(signature)
+                logger.info(
+                    "[PersonalCredit][CreditCard][DISPLAYABLE] index=%s issuer=%s currency=%s tail_no=%s",
+                    index,
+                    record.get("issuer") or record.get("institution"),
+                    record.get("currency"),
+                    record.get("card_tail_no"),
+                )
                 records.append(ensure_record_fields(record, CREDIT_CARD_ACCOUNT_FIELDS))
         if not records and _expected_active_credit_card_count(source_text) > 0:
             fallback_window = _extract_credit_card_window(source_text)
-            for block in _active_card_sentence_blocks(fallback_window):
+            for index, block in enumerate(_active_card_sentence_blocks(fallback_window), start=1):
+                logger.info("[PersonalCredit][CreditCard][CANDIDATE] index=fallback-%s raw=%s", index, _normalize_block(block)[:300])
                 record = parse_credit_card_account_block(block)
+                logger.info(
+                    "[PersonalCredit][CreditCard][PARSE_OK] index=fallback-%s issuer=%s currency=%s tail_no=%s credit_limit=%s",
+                    index,
+                    record.get("issuer") or record.get("institution"),
+                    record.get("currency"),
+                    record.get("card_tail_no"),
+                    record.get("credit_limit"),
+                )
                 if not _looks_like_active_card(block) or _should_skip_closed_card(block, record):
+                    logger.info("[PersonalCredit][CreditCard][FILTER_DROP] index=fallback-%s reason=not_active_or_closed", index)
                     continue
                 signature = tuple(str(record.get(key) or "") for key in ("open_date", "institution", "card_type", "currency", "card_tail_no", "credit_limit", "used_limit", "account_status", "report_cutoff"))
                 if signature in seen:
+                    logger.info("[PersonalCredit][CreditCard][DEDUP_DROP] index=fallback-%s reason=duplicate key=%s", index, signature)
                     continue
                 seen.add(signature)
+                logger.info(
+                    "[PersonalCredit][CreditCard][DISPLAYABLE] index=fallback-%s issuer=%s currency=%s tail_no=%s",
+                    index,
+                    record.get("issuer") or record.get("institution"),
+                    record.get("currency"),
+                    record.get("card_tail_no"),
+                )
                 records.append(ensure_record_fields(record, CREDIT_CARD_ACCOUNT_FIELDS))
         return records
     except Exception:

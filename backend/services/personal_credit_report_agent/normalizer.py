@@ -247,8 +247,20 @@ def is_displayable_credit_card_account(record: dict[str, Any]) -> bool:
 
 def _keep_card_record(record: dict[str, Any]) -> bool:
     if not is_displayable_credit_card_account(record):
+        logger.info(
+            "[PersonalCredit][CreditCard][FILTER_DROP] reason=not_displayable issuer=%s currency=%s tail_no=%s",
+            record.get("issuer") or record.get("institution"),
+            record.get("currency"),
+            record.get("card_tail_no"),
+        )
         return False
     if _record_has_abnormal(record):
+        logger.info(
+            "[PersonalCredit][CreditCard][DISPLAYABLE] issuer=%s currency=%s tail_no=%s reason=abnormal",
+            record.get("issuer") or record.get("institution"),
+            record.get("currency"),
+            record.get("card_tail_no"),
+        )
         return True
     status = str(record.get("account_status") or "")
     evidence = str(record.get("evidence") or record.get("evidence_text") or record.get("raw_text") or record.get("history_performance") or "")
@@ -258,8 +270,20 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
     if record.get("is_closed") is True:
         return False
     if "当前有效" in status:
+        logger.info(
+            "[PersonalCredit][CreditCard][DISPLAYABLE] issuer=%s currency=%s tail_no=%s",
+            record.get("issuer") or record.get("institution"),
+            record.get("currency"),
+            record.get("card_tail_no"),
+        )
         return True
     if record.get("report_cutoff") and record.get("credit_limit") and (record.get("used_limit") or record.get("used_amount")) not in (None, ""):
+        logger.info(
+            "[PersonalCredit][CreditCard][DISPLAYABLE] issuer=%s currency=%s tail_no=%s reason=active_limit",
+            record.get("issuer") or record.get("institution"),
+            record.get("currency"),
+            record.get("card_tail_no"),
+        )
         return True
     used = record.get("used_limit") or record.get("used_amount")
     if any(word in evidence for word in ("贷款", "五级分类", "消费贷款", "购房贷款")) and _amount_number(used) <= 0 and not record.get("credit_limit"):
