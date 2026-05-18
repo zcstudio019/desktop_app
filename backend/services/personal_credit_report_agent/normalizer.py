@@ -65,6 +65,8 @@ AMOUNT_KEYS = {
 LOAN_CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
 CARD_CLOSED_STATUS_WORDS = ("销户", "已销户", "注销", "已注销")
 CARD_CLOSED_EVIDENCE_WORDS = ("销户", "已销户", "注销", "已注销", "关闭", "已关闭")
+CARD_FOREIGN_CURRENCY_WORDS = ("美元", "USD", "usd", "外币", "欧元", "港币", "日元", "英镑")
+CARD_RMB_CURRENCY_WORDS = ("人民币", "RMB", "rmb", "CNY", "cny")
 ABNORMAL_WORDS = ("逾期", "呆账", "代偿", "核销", "强制执行", "90天以上逾期")
 ABNORMAL_FIVE_CATEGORY_WORDS = ("关注", "次级", "可疑", "损失")
 NEGATIVE_ABNORMAL_PHRASES = ("当前无逾期", "无逾期", "未发生逾期", "没有逾期")
@@ -202,7 +204,50 @@ def _keep_loan_record(record: dict[str, Any]) -> bool:
     return True
 
 
+def _credit_card_combined_text(record: dict[str, Any]) -> str:
+    return " ".join(
+        str(record.get(key) or "")
+        for key in (
+            "currency",
+            "account_status",
+            "status",
+            "evidence",
+            "evidence_text",
+            "raw_text",
+            "card_description",
+            "history_performance",
+        )
+    )
+
+
+def _is_foreign_currency_credit_card(record: dict[str, Any]) -> bool:
+    combined = _credit_card_combined_text(record)
+    return any(word in combined for word in CARD_FOREIGN_CURRENCY_WORDS)
+
+
+def _is_rmb_credit_card(record: dict[str, Any]) -> bool:
+    combined = _credit_card_combined_text(record)
+    return any(word in combined for word in CARD_RMB_CURRENCY_WORDS)
+
+
+def is_displayable_credit_card_account(record: dict[str, Any]) -> bool:
+    """Return whether a credit-card record belongs in the user-facing detail list."""
+    combined = _credit_card_combined_text(record)
+    if _is_foreign_currency_credit_card(record):
+        return False
+    is_closed = bool(record.get("is_closed")) or (
+        "未销户" not in combined and any(word in combined for word in CARD_CLOSED_EVIDENCE_WORDS)
+    )
+    if is_closed:
+        return _record_has_abnormal(record)
+    if _is_rmb_credit_card(record):
+        return True
+    return not is_closed
+
+
 def _keep_card_record(record: dict[str, Any]) -> bool:
+    if not is_displayable_credit_card_account(record):
+        return False
     if _record_has_abnormal(record):
         return True
     status = str(record.get("account_status") or "")

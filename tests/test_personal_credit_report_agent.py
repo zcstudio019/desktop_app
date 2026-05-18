@@ -856,7 +856,7 @@ def test_credit_card_closed_list_all_filtered() -> None:
     report = result["report_json"]
     markdown = result["report_markdown"]
     assert report["credit_card_accounts"] == []
-    assert "暂无需要展示的当前有效信用卡账户" in markdown
+    assert "暂无需要展示的当前有效人民币信用卡账户" in markdown
     card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
     assert "中国建设银行股份有限公司上海市分行" not in card_section
     assert "授信额度：100元" not in card_section
@@ -884,9 +884,11 @@ ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT = """
 def test_active_credit_cards_are_extracted() -> None:
     report = run_personal_credit_report_agent(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT)["report_json"]
     cards = report["credit_card_accounts"]
-    assert len(cards) == 5
+    assert len(cards) == 3
     assert all(card["account_status"] == "当前有效" for card in cards)
+    assert all(card["currency"] == "人民币" for card in cards)
     assert all("销户" not in card["evidence"] for card in cards)
+    assert all("美元账户" not in card["evidence_text"] for card in cards)
     assert cards[0]["open_date"] == "2006-10-27"
     assert cards[0]["institution"] == "中国建设银行股份有限公司上海宝钢宝山支行"
     assert cards[0]["card_type"] == "贷记卡"
@@ -912,9 +914,53 @@ def test_credit_card_summary_consistency() -> None:
     result = run_personal_credit_report_agent(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT)
     markdown = result["report_markdown"]
     card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
-    assert "暂无需要展示的当前有效信用卡账户" not in card_section
-    assert card_section.count("### 账户 ") >= 5
+    assert "暂无需要展示的当前有效人民币信用卡账户" not in card_section
+    assert card_section.count("### 账户 ") >= 3
     assert "授信额度：100元" not in card_section
+
+
+def test_credit_card_filter_usd_accounts() -> None:
+    text = """
+个人征信报告
+信用卡
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡（美元账户，卡片尾号：6049）。截至2026年03月，信用额度2,000，已使用额度0。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["credit_card_accounts"] == []
+
+
+def test_credit_card_keep_rmb_accounts() -> None:
+    text = """
+个人征信报告
+信用卡
+2006年10月27日中国建设银行股份有限公司上海宝钢宝山支行发放的贷记卡（人民币账户，卡片尾号：6049）。截至2026年03月，信用额度2,000，已使用额度0。
+"""
+    cards = run_personal_credit_report_agent(text)["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    assert cards[0]["currency"] == "人民币"
+    assert cards[0]["card_tail_no"] == "6049"
+    assert cards[0]["credit_limit"] == "2,000"
+    assert cards[0]["used_amount"] == "0"
+
+
+def test_credit_card_keep_only_rmb_active_cards_from_sample() -> None:
+    cards = run_personal_credit_report_agent(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT)["report_json"]["credit_card_accounts"]
+    assert len(cards) == 3
+    assert all(card["currency"] == "人民币" for card in cards)
+    assert all(card["currency"] != "美元" for card in cards)
+    assert all("美元账户" not in card["evidence_text"] for card in cards)
+    assert all("销户" not in card["evidence_text"] for card in cards)
+
+
+def test_credit_card_markdown_no_usd() -> None:
+    markdown = run_personal_credit_report_agent(ACTIVE_AND_CLOSED_CREDIT_CARD_TEXT)["report_markdown"]
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "币种：美元" not in card_section
+    assert "美元账户" not in card_section
+    assert "币种：人民币" in card_section
+    assert "中国建设银行股份有限公司上海宝钢宝山支行" in card_section
+    assert "中国光大银行股份有限公司信用卡中心" in card_section
+    assert "兴业银行股份有限公司" in card_section
 
 
 RELATED_REPAYMENT_TEXT = """

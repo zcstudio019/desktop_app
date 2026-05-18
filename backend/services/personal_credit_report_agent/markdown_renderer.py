@@ -238,7 +238,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     lines.extend([
         "",
         "## 五、信用卡账户明细",
-        "仅展示当前有效、未销户或存在异常的信用卡账户；销户账户不展示。",
+        "仅展示当前有效、未销户且为人民币账户的信用卡；销户账户、外币账户不展示。",
     ])
     if cards:
         for index, item in enumerate(cards, start=1):
@@ -261,7 +261,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
                     ("information_report_date", "信息报告日期"),
                 ))
     else:
-        lines.append("- 暂无需要展示的当前有效信用卡账户。")
+        lines.append("- 暂无需要展示的当前有效人民币信用卡账户。")
 
     lines.extend(["", "## 六、相关还款责任信息"])
     if related_repayments:
