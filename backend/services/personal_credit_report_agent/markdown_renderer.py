@@ -160,11 +160,11 @@ def _append_credit_card_account(lines: list[str], title: str, record: dict[str, 
         _append_field(lines, label, record.get(key))
     if _has_real_card_tail_no(record.get("card_tail_no")):
         _append_field(lines, "卡片尾号", record.get("card_tail_no"))
-    for key, label in (
-        ("credit_limit", "信用额度"),
-        ("used_limit", "已使用额度"),
-    ):
-        _append_field(lines, label, record.get(key))
+    _append_field(lines, "信用额度", record.get("credit_limit"))
+    if str(record.get("card_type") or "") == "准贷记卡" and record.get("balance"):
+        _append_field(lines, "余额", record.get("balance"))
+    else:
+        _append_field(lines, "已使用额度", record.get("used_limit") or record.get("used_amount"))
     if record.get("special_installment_balance"):
         _append_field(lines, "大额专项分期余额", record.get("special_installment_balance"))
     _append_field(lines, "账户状态", record.get("account_status"))

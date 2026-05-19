@@ -291,18 +291,24 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
         return False
     if "当前有效" in status:
         logger.info(
-            "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s",
+            "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s card_type=%s credit_limit=%s balance=%s",
             record.get("issuer") or record.get("institution"),
             record.get("currency"),
             record.get("card_tail_no"),
+            record.get("card_type"),
+            record.get("credit_limit"),
+            record.get("balance"),
         )
         return True
     if record.get("report_cutoff") and record.get("credit_limit"):
         logger.info(
-            "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s reason=active_limit",
+            "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s card_type=%s credit_limit=%s balance=%s reason=active_limit",
             record.get("issuer") or record.get("institution"),
             record.get("currency"),
             record.get("card_tail_no"),
+            record.get("card_type"),
+            record.get("credit_limit"),
+            record.get("balance"),
         )
         return True
     used = record.get("used_limit") or record.get("used_amount")

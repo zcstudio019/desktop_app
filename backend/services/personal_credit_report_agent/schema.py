@@ -71,6 +71,7 @@ CREDIT_CARD_ACCOUNT_FIELDS = (
     "account_status",
     "is_closed",
     "credit_limit",
+    "balance",
     "used_limit",
     "used_amount",
     "special_installment_balance",

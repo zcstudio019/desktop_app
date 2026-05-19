@@ -1660,20 +1660,22 @@ def test_credit_card_limit_not_use_used_amount() -> None:
     assert card["report_cutoff"] == "2025-12"
 
 
-def test_credit_card_balance_as_used_amount() -> None:
+def test_credit_card_balance_record_is_quasi_credit_card() -> None:
     text = "2014年01月07日平安银行股份有限公司信用卡中心发放的贷记卡(人民币账户)。截至2025年09月,信用额度100,000,余额229,678(含未出单的大额专项分期余额162,764)。"
     card = parse_credit_card_account_block(text)
     assert card["open_date"] == "2014-01-07"
     assert card["issuer"] == "平安银行股份有限公司信用卡中心"
     assert card["currency"] == "人民币"
+    assert card["card_type"] == "准贷记卡"
     assert card["credit_limit"] == "100,000"
-    assert card["used_amount"] == "229,678"
+    assert card["balance"] == "229,678"
     assert card["special_installment_balance"] == "162,764"
+    assert not card["used_amount"]
     assert card["account_status"] == "当前有效"
     assert card["report_cutoff"] == "2025-09"
 
 
-def test_credit_card_markdown_shows_balance_record() -> None:
+def test_credit_card_markdown_balance_not_used_amount() -> None:
     text = """
 个人征信报告
 信用卡
@@ -1682,12 +1684,15 @@ def test_credit_card_markdown_shows_balance_record() -> None:
     markdown = run_personal_credit_report_agent(text)["report_markdown"]
     card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
     assert "发卡机构：平安银行股份有限公司信用卡中心" in card_section
+    assert "卡类型：准贷记卡" in card_section
     assert "信用额度：100,000" in card_section
-    assert "已使用额度：229,678" in card_section
+    assert "余额：229,678" in card_section
     assert "大额专项分期余额：162,764" in card_section
     assert "账户状态：当前有效" in card_section
     assert "截至日期：2025-09" in card_section
     assert "卡片尾号：未识别" not in card_section
+    assert "卡类型：贷记卡" not in card_section
+    assert "已使用额度：229,678" not in card_section
 
 
 def test_credit_card_used_amount_priority() -> None:
@@ -1699,7 +1704,29 @@ def test_credit_card_used_amount_priority() -> None:
 def test_credit_card_balance_fallback_when_no_used_amount() -> None:
     text = "2014年01月07日平安银行股份有限公司信用卡中心发放的贷记卡(人民币账户)。截至2025年09月,信用额度100,000,余额229,678。"
     card = parse_credit_card_account_block(text)
-    assert card["used_amount"] == "229,678"
+    assert card["card_type"] == "准贷记卡"
+    assert card["balance"] == "229,678"
+    assert not card["used_amount"]
+
+
+def test_credit_card_normal_used_amount_still_loan_card() -> None:
+    text = "2014年01月05日广发银行股份有限公司信用卡中心发放的贷记卡(人民币账户,卡片尾号:2721)。截至2025年09月,信用额度6,000,已使用额度0。"
+    result = run_personal_credit_report_agent(f"个人征信报告\n信用卡\n{text}")
+    card = result["report_json"]["credit_card_accounts"][0]
+    card_section = result["report_markdown"].split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert card["card_type"] == "贷记卡"
+    assert card["credit_limit"] == "6,000"
+    assert card["used_amount"] == "0"
+    assert "已使用额度：0" in card_section
+    assert "余额：0" not in card_section
+
+
+def test_credit_card_shanghai_bank_balance_record() -> None:
+    text = "2014年02月19日上海银行股份有限公司信用卡中心发放的贷记卡(人民币账户)。截至2025年09月,信用额度5,500,余额0(含未出单的大额专项分期余额0)。"
+    card = parse_credit_card_account_block(text)
+    assert card["card_type"] == "准贷记卡"
+    assert card["balance"] == "0"
+    assert card["special_installment_balance"] == "0"
 
 
 def test_credit_card_historical_overdue_not_current_overdue() -> None:
@@ -1708,7 +1735,7 @@ def test_credit_card_historical_overdue_not_current_overdue() -> None:
     assert card["account_status"] == "当前有效"
     assert card["overdue_description"] == "当前无逾期，最近5年内有2个月处于逾期状态，没有发生过90天以上逾期"
     assert card["credit_limit"] == "105,000"
-    assert card["used_amount"] == "0"
+    assert card["balance"] == "0"
     assert card["special_installment_balance"] == "0"
 
 
