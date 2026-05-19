@@ -79,6 +79,138 @@ export interface DocumentDetailResponse {
   store_original: boolean;
 }
 
+export interface EnterpriseBankAccountStatement {
+  account_id?: string;
+  bank_name?: string | null;
+  account_name?: string | null;
+  account_number?: string | null;
+  currency?: string | null;
+  sheet_name?: string | null;
+  opening_balance?: number | null;
+  ending_balance?: number | null;
+  total_inflow?: number;
+  total_outflow?: number;
+  net_cashflow?: number;
+  transaction_count?: number;
+}
+
+export interface EnterpriseBankStatementSummary {
+  total_inflow?: number;
+  total_outflow?: number;
+  net_cashflow?: number;
+  transaction_count?: number;
+  inflow_count?: number;
+  outflow_count?: number;
+  account_count?: number;
+  bank_count?: number;
+  average_monthly_inflow?: number | null;
+  average_monthly_outflow?: number | null;
+  average_monthly_net_cashflow?: number | null;
+  max_single_inflow?: number | null;
+  max_single_outflow?: number | null;
+  low_balance_transaction_count?: number | null;
+  low_balance_threshold?: number;
+  estimated_operating_inflow?: number | null;
+  estimated_operating_outflow?: number | null;
+  estimated_operating_net_cashflow?: number | null;
+  excluded_internal_transfer_amount?: number | null;
+  excluded_related_party_inflow?: number | null;
+  excluded_personal_inflow?: number | null;
+}
+
+export interface EnterpriseMonthlyCashflowSummary {
+  month?: string;
+  inflow?: number;
+  outflow?: number;
+  net_cashflow?: number;
+  inflow_count?: number;
+  outflow_count?: number;
+  ending_balance?: number | null;
+}
+
+export interface EnterpriseCounterpartyStat {
+  name?: string;
+  inflow?: number;
+  outflow?: number;
+  net?: number;
+  transaction_count?: number;
+  category_guess?: string | null;
+  is_related_party?: boolean;
+  is_personal_counterparty?: boolean;
+  risk_note?: string | null;
+}
+
+export interface EnterpriseCounterpartySummary {
+  top_inflow_counterparties?: EnterpriseCounterpartyStat[];
+  top_outflow_counterparties?: EnterpriseCounterpartyStat[];
+  related_party_counterparties?: EnterpriseCounterpartyStat[];
+  personal_counterparties?: EnterpriseCounterpartyStat[];
+  customer_concentration_top5_ratio?: number | null;
+  supplier_concentration_top5_ratio?: number | null;
+}
+
+export interface EnterpriseRiskSignal {
+  code?: string;
+  level?: 'low' | 'medium' | 'high' | string;
+  title?: string;
+  description?: string;
+  amount?: number | null;
+  ratio?: number | null;
+  evidence_refs?: string[];
+  suggestion?: string | null;
+}
+
+export interface EnterpriseBankStatementRiskAnalysis {
+  overall_level?: 'low' | 'medium' | 'high' | string;
+  overall_score?: number;
+  signals?: EnterpriseRiskSignal[];
+  strengths?: string[];
+  weaknesses?: string[];
+}
+
+export interface EnterpriseFinancingView {
+  bank_recognizable_inflow?: number | null;
+  adjusted_operating_inflow?: number | null;
+  excluded_internal_transfer_amount?: number | null;
+  excluded_related_party_inflow?: number | null;
+  excluded_personal_inflow?: number | null;
+  suggested_credit_products?: string[];
+  material_checklist?: string[];
+  bank_explanation?: string[];
+  conclusion?: string;
+}
+
+export interface EnterpriseBankTransaction {
+  transaction_id?: string;
+  transaction_date?: string | null;
+  counterparty_name?: string | null;
+  debit_amount?: number | null;
+  credit_amount?: number | null;
+  balance?: number | null;
+  category?: string | null;
+}
+
+export interface EnterpriseBankStatementExtraction {
+  document_type?: string;
+  normalized_document_type?: string;
+  company_name?: string | null;
+  source_file?: string | null;
+  statement_period?: {
+    start_date?: string | null;
+    end_date?: string | null;
+    months_count?: number | null;
+  };
+  accounts?: EnterpriseBankAccountStatement[];
+  transactions?: EnterpriseBankTransaction[];
+  summary?: EnterpriseBankStatementSummary;
+  monthly_summary?: EnterpriseMonthlyCashflowSummary[];
+  counterparty_summary?: EnterpriseCounterpartySummary;
+  risk_analysis?: EnterpriseBankStatementRiskAnalysis;
+  financing_view?: EnterpriseFinancingView;
+  evidence?: unknown[];
+  warnings?: string[];
+}
+
 export interface CustomerDocumentListItem {
   doc_id: string;
   customer_id: string;

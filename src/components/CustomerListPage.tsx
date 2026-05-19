@@ -16,6 +16,7 @@ import { listCustomers, getCustomerDetail } from '../services/api';
 import { ApiError } from '../services/types';
 import type { CustomerListItem, CustomerDetail } from '../services/types';
 import { DataSectionCard, ArrayDataCard, isArrayOfObjects } from './DataDisplayComponents';
+import EnterpriseBankStatementView, { looksLikeEnterpriseBankStatementData } from './documents/EnterpriseBankStatementView';
 
 interface CustomerListPageProps {
   userRole: string;
@@ -524,11 +525,22 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
                         }
 
                         if (typeof parsedValue === 'object' && parsedValue !== null && !Array.isArray(parsedValue)) {
+                          const parsedRecord = parsedValue as Record<string, unknown>;
+                          const extractedJson = (parsedRecord.extracted_json || parsedRecord.extractedJson || parsedRecord.data || parsedRecord) as Record<string, unknown>;
+                          if (looksLikeEnterpriseBankStatementData(extractedJson)) {
+                            return (
+                              <EnterpriseBankStatementView
+                                key={sectionName}
+                                data={extractedJson}
+                                markdown={String(parsedRecord.markdown_summary || parsedRecord.markdown || parsedRecord.summary || '')}
+                              />
+                            );
+                          }
                           return (
                             <DataSectionCard
                               key={sectionName}
                               title={sectionName}
-                              data={parsedValue as Record<string, unknown>}
+                              data={parsedRecord}
                             />
                           );
                         }
