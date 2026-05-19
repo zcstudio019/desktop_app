@@ -74,6 +74,7 @@ CREDIT_CARD_ACCOUNT_FIELDS = (
     "used_limit",
     "used_amount",
     "special_installment_balance",
+    "overdue_description",
     "report_cutoff",
     "overdue_amount",
     "overdue_months",

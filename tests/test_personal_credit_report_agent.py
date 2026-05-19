@@ -1277,7 +1277,7 @@ def test_credit_card_keep_active_account() -> None:
     assert cards[0]["currency"] == "人民币"
     assert "50,000" in cards[0]["credit_limit"]
     assert "10,000" in cards[0]["used_limit"]
-    assert "正常" in cards[0]["account_status"]
+    assert cards[0]["account_status"] == "当前有效"
 
 
 def test_credit_card_keep_closed_abnormal_account() -> None:
@@ -1609,6 +1609,43 @@ def test_credit_card_balance_fallback_when_no_used_amount() -> None:
     text = "2014年01月07日平安银行股份有限公司信用卡中心发放的贷记卡(人民币账户)。截至2025年09月,信用额度100,000,余额229,678。"
     card = parse_credit_card_account_block(text)
     assert card["used_amount"] == "229,678"
+
+
+def test_credit_card_historical_overdue_not_current_overdue() -> None:
+    text = "2021年04月09日上海农村商业银行股份有限公司发放的贷记卡(人民币账户)。截至2025年09月,信用额度105,000,余额0(含未出单的大额专项分期余额0),当前无逾期。最近5年内有2个月处于逾期状态,没有发生过90天以上逾期。"
+    card = parse_credit_card_account_block(text)
+    assert card["account_status"] == "当前有效"
+    assert card["overdue_description"] == "当前无逾期，最近5年内有2个月处于逾期状态，没有发生过90天以上逾期"
+    assert card["credit_limit"] == "105,000"
+    assert card["used_amount"] == "0"
+    assert card["special_installment_balance"] == "0"
+
+
+def test_credit_card_markdown_historical_overdue_display() -> None:
+    text = """
+个人征信报告
+信用卡
+2021年04月09日上海农村商业银行股份有限公司发放的贷记卡(人民币账户)。截至2025年09月,信用额度105,000,余额0(含未出单的大额专项分期余额0),当前无逾期。最近5年内有2个月处于逾期状态,没有发生过90天以上逾期。
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "账户状态：当前有效" in card_section
+    assert "逾期情况：当前无逾期，最近5年内有2个月处于逾期状态，没有发生过90天以上逾期" in card_section
+    assert "账户状态：逾期" not in card_section
+
+
+def test_credit_card_normal_current_valid_no_overdue_description() -> None:
+    text = """
+个人征信报告
+信用卡
+2010年05月14日中国建设银行股份有限公司上海新桥支行发放的贷记卡(人民币账户,卡片尾号:2268)。截至2025年09月,信用额度45,000,已使用额度17,802。
+"""
+    result = run_personal_credit_report_agent(text)
+    card = result["report_json"]["credit_card_accounts"][0]
+    card_section = result["report_markdown"].split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert card["account_status"] == "当前有效"
+    assert not card.get("overdue_description")
+    assert "逾期情况" not in card_section
 
 
 def test_credit_card_shanghai_rural_commercial_bank_not_dropped() -> None:

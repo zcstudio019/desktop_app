@@ -226,6 +226,12 @@ def _extract_status(block: str) -> str:
     for word in CLOSED_STATUS_WORDS:
         if word in closed_text and "未销户" not in closed_text:
             return "销户" if word in {"销户", "已销户"} else word
+    if "尚未激活" in closed_text:
+        return "尚未激活"
+    if "当前无逾期" in closed_text:
+        return "当前有效"
+    if "当前逾期" in closed_text or "当前有逾期" in closed_text:
+        return "当前逾期"
     for word in STATUS_WORDS:
         if word in labeled:
             return word
@@ -256,6 +262,24 @@ def _extract_report_cutoff(block: str) -> str:
 
 def _extract_card_tail_no(block: str) -> str:
     return first_match(block, (r"卡片尾号\s*[:：]\s*([A-Za-z0-9]{2,})",))
+
+
+def _extract_overdue_description(block: str) -> str:
+    source = _normalize_block(block)
+    parts: list[str] = []
+    if "当前无逾期" in source:
+        parts.append("当前无逾期")
+    elif "当前有逾期" in source:
+        parts.append("当前有逾期")
+    elif "当前逾期" in source:
+        parts.append("当前逾期")
+    history = first_match(source, (r"(最近\s*5\s*年内有\s*\d+\s*个月处于逾期状态)",))
+    if history:
+        parts.append(re.sub(r"\s+", "", history))
+    no_90d = first_match(source, (r"(没有发生过\s*90\s*天以上逾期)",))
+    if no_90d:
+        parts.append(re.sub(r"\s+", "", no_90d))
+    return "，".join(part for part in parts if part)
 
 
 def _looks_like_active_card(block: str) -> bool:
@@ -497,6 +521,9 @@ def parse_credit_card_account_block(block: str) -> dict[str, Any]:
     special_installment_balance = _extract_amount_after_label(source, ("大额专项分期余额",))
     if special_installment_balance:
         logger.info("[PersonalCredit][CreditCard][SPECIAL_INSTALLMENT_BALANCE] value=%s", special_installment_balance)
+    overdue_description = _extract_overdue_description(source)
+    if overdue_description:
+        logger.info("[PersonalCredit][CreditCard][OVERDUE_DESCRIPTION] value=%s", overdue_description)
     latest_date = _extract_date(source, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
     latest_amount = _extract_money(source, ("最近一次还款金额", "最近还款金额"))
     status = _extract_status(source)
@@ -516,6 +543,7 @@ def parse_credit_card_account_block(block: str) -> dict[str, Any]:
         "used_limit": used_limit,
         "used_amount": used_limit,
         "special_installment_balance": special_installment_balance,
+        "overdue_description": overdue_description,
         "report_cutoff": _extract_report_cutoff(source),
         "overdue_amount": _extract_money(source, ("当前逾期金额", "逾期金额")),
         "overdue_months": _extract_overdue_months(source),
@@ -572,6 +600,18 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                     "[PersonalCredit][CreditCard][SPECIAL_INSTALLMENT_BALANCE] index=%s value=%s",
                     index,
                     record.get("special_installment_balance"),
+                )
+            if record.get("overdue_description"):
+                logger.info(
+                    "[PersonalCredit][CreditCard][OVERDUE_DESCRIPTION] index=%s value=%s",
+                    index,
+                    record.get("overdue_description"),
+                )
+            if record.get("account_status") == "当前有效" and "当前无逾期" in str(record.get("evidence_text") or "") and "处于逾期状态" in str(record.get("evidence_text") or ""):
+                logger.info(
+                    "[PersonalCredit][CreditCard][ACCOUNT_STATUS] index=%s status=%s reason=current_no_overdue_with_historical_overdue",
+                    index,
+                    record.get("account_status"),
                 )
             if _should_skip_inactive_card(block, record):
                 reason = "closed_or_inactive"
@@ -631,6 +671,18 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                         "[PersonalCredit][CreditCard][SPECIAL_INSTALLMENT_BALANCE] index=fallback-%s value=%s",
                         index,
                         record.get("special_installment_balance"),
+                    )
+                if record.get("overdue_description"):
+                    logger.info(
+                        "[PersonalCredit][CreditCard][OVERDUE_DESCRIPTION] index=fallback-%s value=%s",
+                        index,
+                        record.get("overdue_description"),
+                    )
+                if record.get("account_status") == "当前有效" and "当前无逾期" in str(record.get("evidence_text") or "") and "处于逾期状态" in str(record.get("evidence_text") or ""):
+                    logger.info(
+                        "[PersonalCredit][CreditCard][ACCOUNT_STATUS] index=fallback-%s status=%s reason=current_no_overdue_with_historical_overdue",
+                        index,
+                        record.get("account_status"),
                     )
                 if not _looks_like_active_card(block) or _should_skip_closed_card(block, record):
                     logger.info(

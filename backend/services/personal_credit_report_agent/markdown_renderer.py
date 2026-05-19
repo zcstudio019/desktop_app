@@ -151,11 +151,10 @@ def _append_credit_card_account(lines: list[str], title: str, record: dict[str, 
         _append_field(lines, label, record.get(key))
     if record.get("special_installment_balance"):
         _append_field(lines, "大额专项分期余额", record.get("special_installment_balance"))
-    for key, label in (
-        ("account_status", "账户状态"),
-        ("report_cutoff", "截至日期"),
-    ):
-        _append_field(lines, label, record.get(key))
+    _append_field(lines, "账户状态", record.get("account_status"))
+    if record.get("overdue_description"):
+        _append_field(lines, "逾期情况", record.get("overdue_description"))
+    _append_field(lines, "截至日期", record.get("report_cutoff"))
 
 
 def _format_warning(item: Any) -> str:
