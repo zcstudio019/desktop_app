@@ -251,7 +251,7 @@ def is_displayable_credit_card_account(record: dict[str, Any]) -> bool:
         "未销户" not in combined and any(word in combined for word in CARD_CLOSED_EVIDENCE_WORDS)
     )
     if is_closed:
-        return _record_has_abnormal(record)
+        return False
     if "尚未激活" in combined:
         return False
     if _is_rmb_credit_card(record):
@@ -274,6 +274,13 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
             record.get("card_tail_no"),
         )
         return False
+    status = str(record.get("account_status") or "")
+    evidence = str(record.get("evidence") or record.get("evidence_text") or record.get("raw_text") or record.get("history_performance") or "")
+    closed_text = f"{status} {evidence}"
+    if "未销户" not in closed_text and any(word in closed_text for word in CARD_CLOSED_EVIDENCE_WORDS):
+        return False
+    if record.get("is_closed") is True:
+        return False
     if _record_has_abnormal(record):
         logger.info(
             "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s reason=abnormal",
@@ -282,13 +289,6 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
             record.get("card_tail_no"),
         )
         return True
-    status = str(record.get("account_status") or "")
-    evidence = str(record.get("evidence") or record.get("evidence_text") or record.get("raw_text") or record.get("history_performance") or "")
-    closed_text = f"{status} {evidence}"
-    if "未销户" not in closed_text and any(word in closed_text for word in CARD_CLOSED_EVIDENCE_WORDS):
-        return False
-    if record.get("is_closed") is True:
-        return False
     if "当前有效" in status:
         logger.info(
             "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s card_type=%s credit_limit=%s balance=%s",

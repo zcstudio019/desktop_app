@@ -394,6 +394,12 @@ def recover_rmb_active_credit_cards(
         for block in _date_card_blocks(text) or _active_card_sentence_blocks(text):
             record = parse_credit_card_account_block(block)
             if not _is_rmb_active_card(record):
+                if is_closed_credit_card_account(record, block):
+                    logger.info(
+                        "[PersonalCredit][CreditCard][RECOVERY_SKIP] reason=closed issuer=%s raw_start=%s",
+                        record.get("issuer") or record.get("institution"),
+                        _normalize_block(block)[:300],
+                    )
                 continue
             match_key = _recovery_match_key(record)
             if match_key in index_by_key:
@@ -455,16 +461,14 @@ def is_closed_credit_card_account(record: dict[str, Any], evidence_text: str) ->
 
 
 def _should_skip_closed_card(block: str, record: dict[str, Any]) -> bool:
-    if not is_closed_credit_card_account(record, block):
-        return False
-    return not _is_abnormal_account(block, record)
+    return is_closed_credit_card_account(record, block)
 
 
 def _should_skip_inactive_card(block: str, record: dict[str, Any]) -> bool:
-    if _is_abnormal_account(block, record):
-        return False
     if _should_skip_closed_card(block, record):
         return True
+    if _is_abnormal_account(block, record):
+        return False
     if _looks_like_active_card(block) or record.get("report_cutoff"):
         return False
     status_text = " ".join(str(item or "") for item in (record.get("account_status"), block))

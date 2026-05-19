@@ -149,6 +149,20 @@ def _has_real_card_tail_no(value: Any) -> bool:
     return bool(text) and text not in {"未识别", "--", "-", "无"}
 
 
+def _is_closed_or_inactive_credit_card(record: dict[str, Any]) -> bool:
+    combined = " ".join(str(record.get(key) or "") for key in (
+        "account_status",
+        "status",
+        "evidence",
+        "evidence_text",
+        "raw_text",
+        "history_performance",
+    ))
+    if "未销户" not in combined and any(word in combined for word in ("销户", "已销户", "注销", "已注销", "关闭", "已关闭")):
+        return True
+    return "尚未激活" in combined
+
+
 def _append_credit_card_account(lines: list[str], title: str, record: dict[str, Any]) -> None:
     lines.append(f"### {title}")
     for key, label in (
@@ -289,9 +303,20 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
         "仅展示当前有效、未销户且为人民币账户的信用卡；销户账户、外币账户不展示。",
     ])
     if cards:
-        for index, item in enumerate(cards, start=1):
+        display_index = 1
+        for item in cards:
             if isinstance(item, dict):
-                _append_credit_card_account(lines, f"账户 {index}", item)
+                if _is_closed_or_inactive_credit_card(item):
+                    logger.info(
+                        "[PersonalCredit][CreditCard][MARKDOWN_SKIP] reason=closed_or_inactive issuer=%s status=%s",
+                        item.get("issuer") or item.get("institution"),
+                        item.get("account_status"),
+                    )
+                    continue
+                _append_credit_card_account(lines, f"账户 {display_index}", item)
+                display_index += 1
+        if display_index == 1:
+            lines.append("- 暂无需要展示的当前有效人民币信用卡账户。")
     else:
         lines.append("- 暂无需要展示的当前有效人民币信用卡账户。")
 

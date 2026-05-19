@@ -245,7 +245,7 @@ def test_keep_abnormal_closed_or_settled_accounts() -> None:
     loan_report = run_personal_credit_report_agent(loan_text)["report_json"]
     card_report = run_personal_credit_report_agent(card_text)["report_json"]
     assert len(loan_report["loan_accounts"]) == 1
-    assert len(card_report["credit_card_accounts"]) == 1
+    assert card_report["credit_card_accounts"] == []
 
 
 def test_credit_summary_markdown_table() -> None:
@@ -1371,17 +1371,14 @@ def test_credit_card_keep_active_account() -> None:
     assert cards[0]["account_status"] == "当前有效"
 
 
-def test_credit_card_keep_closed_abnormal_account() -> None:
+def test_credit_card_drop_closed_abnormal_account() -> None:
     text = """
 个人征信报告
 信用卡
 2020年01月01日某某银行发放的贷记卡（人民币账户），2023年01月销户，当前逾期金额1,000元。
 """
     report = run_personal_credit_report_agent(text)["report_json"]
-    cards = report["credit_card_accounts"]
-    assert len(cards) == 1
-    assert "销户" in cards[0]["account_status"]
-    assert "1,000" in cards[0]["overdue_amount"]
+    assert report["credit_card_accounts"] == []
 
 
 def test_credit_card_not_take_loan_credit_limit() -> None:
@@ -2031,6 +2028,68 @@ def test_credit_card_not_activated_not_displayed() -> None:
 """
     report = run_personal_credit_report_agent(text)["report_json"]
     assert report["credit_card_accounts"] == []
+
+
+def test_credit_card_overdue_closed_account_should_not_display() -> None:
+    text = """
+个人征信报告
+信用卡
+发生过逾期的贷记卡账户明细如下：
+1. 2015年06月25日中信银行股份有限公司信用卡中心发放的贷记卡（人民币账户），2023年12月销户。最近5年内有3个月处于逾期状态，没有发生过90天以上逾期。
+"""
+    result = run_personal_credit_report_agent(text)
+    assert result["report_json"]["credit_card_accounts"] == []
+    card_section = result["report_markdown"].split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "中信银行股份有限公司信用卡中心" not in card_section
+    assert "账户状态：销户" not in card_section
+    assert "2015-06-25" not in card_section
+
+
+def test_credit_card_recovery_skip_closed_overdue_card() -> None:
+    text = """
+个人征信报告
+信用卡
+发生过逾期的贷记卡账户明细如下：
+1. 2015年06月25日中信银行股份有限公司信用卡中心发放的贷记卡（人民币账户），2023年12月销户。最近5年内有3个月处于逾期状态，没有发生过90天以上逾期。
+"""
+    recovered = recover_rmb_active_credit_cards({"full_text": text}, [], {"active_credit_card_account_count": "1"})
+    assert recovered == []
+
+
+def test_credit_card_current_valid_historical_overdue_still_display() -> None:
+    text = """
+个人征信报告
+信用卡
+2021年04月09日上海农村商业银行股份有限公司发放的贷记卡（人民币账户）。截至2025年09月，信用额度105,000，余额0（含未出单的大额专项分期余额0），当前无逾期。最近5年内有2个月处于逾期状态，没有发生过90天以上逾期。
+"""
+    result = run_personal_credit_report_agent(text)
+    cards = result["report_json"]["credit_card_accounts"]
+    assert len(cards) == 1
+    assert cards[0]["account_status"] == "当前有效"
+    assert cards[0]["overdue_description"] == "当前无逾期，最近5年内有2个月处于逾期状态，没有发生过90天以上逾期"
+    assert "账户状态：当前有效" in result["report_markdown"]
+    assert "逾期情况：当前无逾期，最近5年内有2个月处于逾期状态，没有发生过90天以上逾期" in result["report_markdown"]
+
+
+def test_credit_card_markdown_never_renders_closed_status() -> None:
+    markdown = render_personal_credit_markdown({
+        "basic_info": {"source_file": "sample.txt"},
+        "credit_summary": {},
+        "credit_card_accounts": [{
+            "open_date": "2015-06-25",
+            "institution": "中信银行股份有限公司信用卡中心",
+            "issuer": "中信银行股份有限公司信用卡中心",
+            "card_type": "贷记卡",
+            "currency": "人民币",
+            "account_status": "销户",
+            "evidence": "2015年06月25日中信银行股份有限公司信用卡中心发放的贷记卡（人民币账户），2023年12月销户。最近5年内有3个月处于逾期状态，没有发生过90天以上逾期。",
+            "overdue_description": "没有发生过90天以上逾期",
+        }],
+    })
+    card_section = markdown.split("## 五、信用卡账户明细", 1)[1].split("## 六、相关还款责任信息", 1)[0]
+    assert "中信银行股份有限公司信用卡中心" not in card_section
+    assert "账户状态：销户" not in card_section
+    assert "暂无需要展示的当前有效人民币信用卡账户" in card_section
 
 
 def test_credit_card_markdown_only_core_fields() -> None:
