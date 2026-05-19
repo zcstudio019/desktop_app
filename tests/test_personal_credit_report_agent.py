@@ -14,7 +14,7 @@ from backend.services.personal_credit_report_agent.extract_non_credit_transactio
 from backend.services.personal_credit_report_agent.extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
 from backend.services.personal_credit_report_agent.extract_query_records import build_query_statistics, extract_query_records, is_countable_query_reason
 from backend.services.personal_credit_report_agent.markdown_renderer import render_personal_credit_markdown
-from backend.services.personal_credit_report_agent.normalizer import normalize_report_json
+from backend.services.personal_credit_report_agent.normalizer import apply_credit_summary_matrix_corrections, normalize_report_json
 from backend.services.personal_credit_report_agent.orchestrator import run_personal_credit_report_agent
 from backend.services.personal_credit_report_agent.risk_analyzer import analyze_personal_credit_risk
 from backend.services.personal_credit_report_agent.segmenter import segment_report
@@ -907,6 +907,65 @@ def test_summary_markdown_uses_correct_fields() -> None:
     assert "| 为企业相关还款责任账户数 | 10 |" in markdown
     assert "| 为个人相关还款责任账户数 | 10 |" not in markdown
     assert "| 为企业相关还款责任账户数 | 0 |" not in markdown
+
+
+def test_summary_no_60_from_right_side_explanation_final_output() -> None:
+    text = """
+个人征信报告
+信息概要
+信用卡 贷款 其他业务
+购房 其他
+账户数 38 -- 8 --
+未结清/未销户账户数 32 -- 1 --
+发生过90天以上逾期的账户数 -- -- -- -- 发生过逾期的信用卡账户，指曾经“未按时还最低还款额”的贷记卡账户和“透支超过60天”的准贷记卡账户。
+为个人 为企业
+相关还款责任账户数 -- 10
+"""
+    result = run_personal_credit_report_agent(text)
+    summary = result["report_json"]["credit_summary"]
+    assert summary["credit_card_90d_overdue_account_count"] == "0"
+    assert summary["loan_90d_overdue_account_count"] == "0"
+    assert "| 信用卡 90 天以上逾期账户数 | 60 |" not in result["report_markdown"]
+
+
+def test_summary_related_repayment_personal_enterprise_final_mapping() -> None:
+    text = """
+个人征信报告
+信息概要
+为个人 为企业
+相关还款责任账户数 -- 10
+"""
+    result = run_personal_credit_report_agent(text)
+    summary = result["report_json"]["credit_summary"]
+    assert summary["personal_related_repayment_responsibility_account_count"] == "0"
+    assert summary["enterprise_related_repayment_responsibility_account_count"] == "10"
+    assert "| 为个人相关还款责任账户数 | 0 |" in result["report_markdown"]
+    assert "| 为企业相关还款责任账户数 | 10 |" in result["report_markdown"]
+    assert "| 为个人相关还款责任账户数 | 10 |" not in result["report_markdown"]
+    assert "| 为企业相关还款责任账户数 | 1 |" not in result["report_markdown"]
+    assert "| 为企业相关还款责任账户数 | 0 |" not in result["report_markdown"]
+
+
+def test_summary_final_correction_overrides_bad_intermediate_values() -> None:
+    raw_text = """
+信息概要
+发生过90天以上逾期的账户数 -- -- -- --
+为个人 为企业
+相关还款责任账户数 -- 10
+"""
+    corrected = apply_credit_summary_matrix_corrections(
+        {
+            "credit_card_90d_overdue_account_count": "60",
+            "loan_90d_overdue_account_count": "0",
+            "personal_related_repayment_responsibility_account_count": "10",
+            "enterprise_related_repayment_responsibility_account_count": "1",
+        },
+        raw_text,
+    )
+    assert corrected["credit_card_90d_overdue_account_count"] == "0"
+    assert corrected["loan_90d_overdue_account_count"] == "0"
+    assert corrected["personal_related_repayment_responsibility_account_count"] == "0"
+    assert corrected["enterprise_related_repayment_responsibility_account_count"] == "10"
 
 
 def test_loan_accounts_skip_related_repayment_responsibility() -> None:

@@ -14,7 +14,7 @@ from .extract_public_records import extract_public_records
 from .extract_query_records import build_query_statistics, extract_query_records
 from .extract_related_repayment_responsibilities import extract_related_repayment_responsibilities
 from .markdown_renderer import render_personal_credit_markdown
-from .normalizer import normalize_report_json
+from .normalizer import apply_credit_summary_matrix_corrections, normalize_report_json
 from .risk_analyzer import analyze_personal_credit_risk
 from .schema import clone_default_report_json
 from .segmenter import segment_report
@@ -67,7 +67,7 @@ def run_personal_credit_report_agent(text: str, source_file: str | None = None, 
     report["credit_summary"] = _safe_call(report["credit_summary"], extract_credit_summary, sections)
     summary_after_extract = report.get("credit_summary") if isinstance(report.get("credit_summary"), dict) else {}
     logger.info(
-        "[PersonalCredit][Summary][AFTER_EXTRACT] credit_card_90d_overdue_account_count=%s loan_90d_overdue_account_count=%s personal_related=%s enterprise_related=%s",
+        "[PersonalCredit][Summary][AFTER_EXTRACT] credit_card_90d=%s loan_90d=%s personal_related=%s enterprise_related=%s",
         summary_after_extract.get("credit_card_90d_overdue_account_count"),
         summary_after_extract.get("loan_90d_overdue_account_count"),
         summary_after_extract.get("personal_related_repayment_responsibility_account_count"),
@@ -104,6 +104,10 @@ def run_personal_credit_report_agent(text: str, source_file: str | None = None, 
         report["warnings"] = [*list(report.get("warnings") or []), *indicator_warnings]
     report["risk_flags"] = [*_build_risk_flags(report), *_indicator_risk_flags(report["personal_credit_indicators"])]
     report = normalize_report_json(report)
+    report["credit_summary"] = apply_credit_summary_matrix_corrections(
+        report.get("credit_summary") if isinstance(report.get("credit_summary"), dict) else {},
+        str(sections.get("full_text") or text or ""),
+    )
     warnings, missing_fields = validate_report_json(report)
     markdown = render_personal_credit_markdown(report)
     debug_payload: dict[str, Any] = {}

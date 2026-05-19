@@ -218,7 +218,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     missing = report.get("missing_fields") if isinstance(report.get("missing_fields"), list) else []
     pending = _pending_items(report, warnings, missing)
     logger.info(
-        "[PersonalCredit][Summary][BEFORE_MARKDOWN] credit_card_90d_overdue_account_count=%s loan_90d_overdue_account_count=%s personal_related=%s enterprise_related=%s",
+        "[PersonalCredit][Summary][BEFORE_MARKDOWN] credit_card_90d=%s loan_90d=%s personal_related=%s enterprise_related=%s",
         summary.get("credit_card_90d_overdue_account_count"),
         summary.get("loan_90d_overdue_account_count"),
         summary.get("personal_related_repayment_responsibility_account_count"),

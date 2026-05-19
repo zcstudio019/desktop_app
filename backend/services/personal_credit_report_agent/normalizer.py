@@ -487,18 +487,40 @@ def _summary_row_region(source_text: str, row_pattern: str) -> str:
     return text[match.end():next_start]
 
 
-def _apply_summary_matrix_sanity(summary: dict[str, Any]) -> None:
-    source_text = str(summary.get("_summary_source_text") or "")
+def apply_credit_summary_matrix_corrections(summary: dict[str, Any], raw_text: str = "") -> dict[str, Any]:
+    """Correct personal-credit summary fields from the original matrix rows."""
+    if not isinstance(summary, dict):
+        return {}
+    corrected = dict(summary)
+    source_text = str(raw_text or corrected.get("_summary_source_text") or "")
     if not source_text:
-        return
+        return corrected
 
     overdue_region = _summary_row_region(source_text, r"发生过\s*90\s*天以上逾期的账户数")
     overdue_tokens = _summary_matrix_tokens(overdue_region, 4)
     if overdue_tokens:
         logger.info("[PersonalCredit][Summary][MATRIX_ROW] row=发生过90天以上逾期的账户数 tokens=%s", overdue_tokens)
-        summary["credit_card_90d_overdue_account_count"] = _summary_token_value(overdue_tokens[0])
+        old_credit_card_90d = corrected.get("credit_card_90d_overdue_account_count")
+        credit_card_90d = _summary_token_value(overdue_tokens[0])
+        corrected["credit_card_90d_overdue_account_count"] = credit_card_90d
+        if str(old_credit_card_90d or "") != credit_card_90d:
+            reason = "right_side_explanation_60" if str(old_credit_card_90d) == "60" else "matrix_90d_row"
+            logger.info(
+                "[PersonalCredit][Summary][FINAL_CORRECTION] credit_card_90d %s -> %s reason=%s",
+                old_credit_card_90d,
+                credit_card_90d,
+                reason,
+            )
         if len(overdue_tokens) >= 3:
-            summary["loan_90d_overdue_account_count"] = _summary_token_value(overdue_tokens[2])
+            old_loan_90d = corrected.get("loan_90d_overdue_account_count")
+            loan_90d = _summary_token_value(overdue_tokens[2])
+            corrected["loan_90d_overdue_account_count"] = loan_90d
+            if str(old_loan_90d or "") != loan_90d:
+                logger.info(
+                    "[PersonalCredit][Summary][FINAL_CORRECTION] loan_90d %s -> %s reason=matrix_90d_row",
+                    old_loan_90d,
+                    loan_90d,
+                )
 
     direct_responsibility = re.search(
         r"为个人\s*(--|——|—|-|(?<!\d)\d{1,3}(?!\d))\s*为企业\s*(--|——|—|-|(?<!\d)\d{1,3}(?!\d))",
@@ -507,24 +529,60 @@ def _apply_summary_matrix_sanity(summary: dict[str, Any]) -> None:
     if direct_responsibility:
         personal_value = _summary_token_value(direct_responsibility.group(1))
         enterprise_value = _summary_token_value(direct_responsibility.group(2))
-        summary["personal_related_repayment_responsibility_account_count"] = personal_value
-        summary["enterprise_related_repayment_responsibility_account_count"] = enterprise_value
+        old_personal = corrected.get("personal_related_repayment_responsibility_account_count")
+        old_enterprise = corrected.get("enterprise_related_repayment_responsibility_account_count")
+        corrected["personal_related_repayment_responsibility_account_count"] = personal_value
+        corrected["enterprise_related_repayment_responsibility_account_count"] = enterprise_value
+        if str(old_personal or "") != personal_value:
+            logger.info(
+                "[PersonalCredit][Summary][FINAL_CORRECTION] personal_related %s -> %s reason=matrix_personal_dash",
+                old_personal,
+                personal_value,
+            )
+        if str(old_enterprise or "") != enterprise_value:
+            logger.info(
+                "[PersonalCredit][Summary][FINAL_CORRECTION] enterprise_related %s -> %s reason=matrix_enterprise_%s",
+                old_enterprise,
+                enterprise_value,
+                enterprise_value,
+            )
         logger.info("[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s", personal_value, enterprise_value)
-        return
+        return corrected
 
     responsibility_region = _summary_row_region(source_text, r"相关还款责任账户数")
     responsibility_tokens = _summary_matrix_tokens(responsibility_region, 2)
     if responsibility_tokens:
         personal_value = _summary_token_value(responsibility_tokens[0])
-        summary["personal_related_repayment_responsibility_account_count"] = personal_value
+        old_personal = corrected.get("personal_related_repayment_responsibility_account_count")
+        corrected["personal_related_repayment_responsibility_account_count"] = personal_value
+        if str(old_personal or "") != personal_value:
+            logger.info(
+                "[PersonalCredit][Summary][FINAL_CORRECTION] personal_related %s -> %s reason=matrix_personal_dash",
+                old_personal,
+                personal_value,
+            )
         if len(responsibility_tokens) >= 2:
+            old_enterprise = corrected.get("enterprise_related_repayment_responsibility_account_count")
             enterprise_value = _summary_token_value(responsibility_tokens[1])
-            summary["enterprise_related_repayment_responsibility_account_count"] = enterprise_value
+            corrected["enterprise_related_repayment_responsibility_account_count"] = enterprise_value
+            if str(old_enterprise or "") != enterprise_value:
+                logger.info(
+                    "[PersonalCredit][Summary][FINAL_CORRECTION] enterprise_related %s -> %s reason=matrix_enterprise_%s",
+                    old_enterprise,
+                    enterprise_value,
+                    enterprise_value,
+                )
         logger.info(
             "[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s",
-            summary.get("personal_related_repayment_responsibility_account_count"),
-            summary.get("enterprise_related_repayment_responsibility_account_count"),
+            corrected.get("personal_related_repayment_responsibility_account_count"),
+            corrected.get("enterprise_related_repayment_responsibility_account_count"),
         )
+    return corrected
+
+
+def _apply_summary_matrix_sanity(summary: dict[str, Any]) -> None:
+    corrected = apply_credit_summary_matrix_corrections(summary)
+    summary.update(corrected)
 
 
 def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
@@ -557,7 +615,7 @@ def _normalize_credit_summary(summary: dict[str, Any]) -> dict[str, Any]:
         else:
             normalized[key] = _normalize_summary_quantity(value)
     logger.info(
-        "[PersonalCredit][Summary][AFTER_NORMALIZE] credit_card_90d_overdue_account_count=%s loan_90d_overdue_account_count=%s personal_related=%s enterprise_related=%s",
+        "[PersonalCredit][Summary][AFTER_NORMALIZE] credit_card_90d=%s loan_90d=%s personal_related=%s enterprise_related=%s",
         normalized.get("credit_card_90d_overdue_account_count"),
         normalized.get("loan_90d_overdue_account_count"),
         normalized.get("personal_related_repayment_responsibility_account_count"),

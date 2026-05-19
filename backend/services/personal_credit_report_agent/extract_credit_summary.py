@@ -555,7 +555,7 @@ def extract_credit_summary(sections: dict[str, Any]) -> dict[str, Any]:
         _force_matrix_corrections(result, sections)
         result["_summary_source_text"] = "\n".join(source_texts)[:12000]
         logger.info(
-            "[PersonalCredit][Summary][AFTER_EXTRACT] credit_card_90d_overdue_account_count=%s loan_90d_overdue_account_count=%s personal_related=%s enterprise_related=%s",
+            "[PersonalCredit][Summary][AFTER_EXTRACT] credit_card_90d=%s loan_90d=%s personal_related=%s enterprise_related=%s",
             result.get("credit_card_90d_overdue_account_count"),
             result.get("loan_90d_overdue_account_count"),
             result.get("personal_related_repayment_responsibility_account_count"),
