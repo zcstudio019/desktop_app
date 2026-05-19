@@ -9,7 +9,7 @@ from .schema import LOAN_ACCOUNT_FIELDS, ensure_record_fields
 
 logger = logging.getLogger(__name__)
 
-LOAN_TYPES = ("购房贷款", "住房贷款", "经营性贷款", "经营贷款", "其他个人消费贷款", "个人消费贷款", "消费贷款", "汽车贷款", "其他贷款", "贷款")
+LOAN_TYPES = ("购房贷款", "个人住房商业贷款", "个人住房贷款", "住房贷款", "个人汽车消费贷款", "个人经营性贷款", "其他个人消费贷款", "个人消费贷款", "经营性贷款", "经营贷款", "消费贷款", "汽车贷款", "其他贷款", "贷款")
 STATUS_WORDS = ("未结清", "已结清", "正常", "逾期", "结清", "关闭", "销户")
 FIVE_CATEGORY_WORDS = ("正常", "关注", "次级", "可疑", "损失")
 CLOSED_STATUS_WORDS = ("已结清", "结清", "已关闭", "关闭")
@@ -53,7 +53,7 @@ POLLUTED_EVIDENCE_KEYWORDS = (
 QUERY_RECORD_KEYWORDS = ("查询记录明细", "查询日期", "查询机构", "查询原因", "贷款审批", "信用卡审批", "贷后管理")
 OWN_LOAN_HINTS = ("发放的", "发放贷款", "贷款授信", "为其他个人消费贷款授信", "余额为", "当前无逾期", "五级分类")
 NEGATIVE_ABNORMAL_PHRASES = ("当前无逾期", "无逾期", "未发生逾期", "没有逾期")
-PERSONAL_LOAN_TYPE_PATTERN = r"(?:个人经营性贷款|其他个人消费贷款|个人消费贷款|个人住房商业贷款|个人住房贷款|个人商用房贷款|住房公积金贷款|经营性贷款|消费贷款|汽车贷款|其他贷款)"
+PERSONAL_LOAN_TYPE_PATTERN = r"(?:个人住房商业贷款|个人住房贷款|个人商用房贷款|住房公积金贷款|个人汽车消费贷款|个人经营性贷款|其他个人消费贷款|个人消费贷款|经营性贷款|消费贷款|汽车贷款|其他贷款)"
 
 
 def _normalize_block(block: str) -> str:
@@ -70,7 +70,7 @@ def _normalize_block(block: str) -> str:
 
 
 def clean_loan_candidate_noise(text: str) -> str:
-    source = _normalize_block(text)
+    source = _strip_stop_sections(_normalize_block(text))
     source = re.sub(r"报告编号[:：]?[A-Za-z0-9\-]+", " ", source)
     source = re.sub(r"报告时间[:：]?.*?(?=(?:19|20)\d{2}年\d{1,2}月\d{1,2}日|$)", " ", source)
     source = re.sub(r"姓名[:：]?.*?证件号码[:：]?\S+", " ", source)
@@ -143,7 +143,8 @@ def _extract_loan_window(text: str) -> str:
         match = re.search(rf"(?m)^\s*{re.escape(heading)}\s*[:：]?\s*$", tail)
         if match and match.start() > 0:
             stop_positions.append(match.start())
-    return tail[:min(stop_positions)] if stop_positions else tail
+    window = tail[:min(stop_positions)] if stop_positions else tail
+    return _strip_stop_sections(window)
 
 
 def _expected_loan_count(text: str) -> int:
@@ -191,7 +192,7 @@ def _extract_business_type(block: str) -> str:
     for item in LOAN_TYPES:
         if item != "贷款" and item in block:
             return item
-    return first_match(block, (r"(购房贷款|住房贷款|经营性贷款|经营贷款|其他个人消费贷款|个人消费贷款|消费贷款|汽车贷款|其他贷款|贷款)",))
+    return first_match(block, (r"(购房贷款|个人住房商业贷款|个人住房贷款|住房贷款|个人汽车消费贷款|个人经营性贷款|其他个人消费贷款|个人消费贷款|经营性贷款|经营贷款|消费贷款|汽车贷款|其他贷款|贷款)",))
 
 
 def _extract_date(block: str, labels: tuple[str, ...]) -> str:
@@ -534,6 +535,14 @@ def extract_loan_accounts(sections: dict[str, Any]) -> list[dict[str, Any]]:
                 record.get("balance"),
                 record.get("overdue_status"),
             )
+            for field in ("start_date", "amount", "loan_type", "due_date", "cutoff_date", "overdue_status"):
+                if not record.get(field):
+                    logger.info(
+                        "[PersonalCredit][Loan][WARN_MISSING_FIELD] index=%s field=%s raw_start=%s",
+                        index,
+                        field,
+                        normalized_block[:300],
+                    )
             if is_polluted_loan_account(record, normalized_block):
                 logger.info("[PersonalCredit][Loan][FILTER_DROP] index=%s reason=polluted", index)
                 continue

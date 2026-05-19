@@ -1090,6 +1090,20 @@ def test_personal_loan_parse_direct_loan() -> None:
     assert parsed["overdue_status"] == "无"
 
 
+def test_loan_parse_personal_auto_consumption_loan() -> None:
+    parsed = parse_personal_loan_sentence(
+        "2025年02月10日平安银行股份有限公司汽车消费金融中心发放的160,000元(人民币)个人汽车消费贷款,2030年02月10日到期。截至2025年09月,余额141,333"
+    )
+    assert parsed["start_date"] == "2025-02-10"
+    assert parsed["institution"] == "平安银行股份有限公司汽车消费金融中心"
+    assert parsed["amount"] == "160,000元"
+    assert parsed["loan_type"] == "个人汽车消费贷款"
+    assert parsed["due_date"] == "2030-02-10"
+    assert parsed["cutoff_date"] == "2025-09"
+    assert parsed["balance"] == "141,333元"
+    assert parsed["overdue_status"] == "无"
+
+
 def test_personal_loan_parse_revolving_credit() -> None:
     parsed = parse_personal_loan_sentence(
         "2023年03月23日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信，额度有效期至2029年03月23日，可循环使用。截至2026年03月，信用额度35,200元（人民币），余额为18,253，当前无逾期。"
@@ -1186,6 +1200,7 @@ def test_revolving_loan_20220121_should_not_be_dropped() -> None:
 
 def test_loan_type_keep_credit_grant_suffix() -> None:
     samples = [
+        ("2025年02月10日平安银行股份有限公司汽车消费金融中心发放的160,000元(人民币)个人汽车消费贷款,2030年02月10日到期。截至2025年09月,余额141,333。", "个人汽车消费贷款"),
         ("2022年01月21日浙江泰隆商业银行股份有限公司宁波分行为个人经营性贷款授信,额度有效期至2026年12月31日,可循环使用。截至2026年03月,信用额度500,000元(人民币),余额为500,000,当前无逾期。", "个人经营性贷款授信"),
         ("2023年03月23日重庆蚂蚁消费金融有限公司为其他个人消费贷款授信,额度有效期至2029年03月23日,可循环使用。截至2026年03月,信用额度35,200元(人民币),余额为18,253,当前无逾期。", "其他个人消费贷款授信"),
         ("2024年09月10日江苏苏商银行股份有限公司为其他贷款授信,额度有效期至2026年09月05日,可循环使用。截至2026年02月,信用额度100,000元(人民币),余额为47,009,当前无逾期。", "其他贷款授信"),
@@ -1217,6 +1232,37 @@ def test_loan_markdown_no_noise() -> None:
     assert "信贷记录" not in loan_section
     assert "账户数 11 3 38" not in loan_section
     assert "记录可能影响对您的信用评价" not in loan_section
+
+
+def test_loan_section_stops_before_related_repayment() -> None:
+    text = """
+个人征信报告
+贷款
+2019年11月13日南京银行股份有限公司消费金融中心发放的1,092元(人民币)其他个人消费贷款,2021年11月已结清。
+相关还款责任信息
+2025年01月20日,为上海某某有限公司(证件类型:中征码,证件号码:3200000000000000)在某某银行办理的贷款承担相关还款责任,责任人类型为保证人,相关还款责任金额5,000,000(保证合同编号:D10023010H00012024052800000716)。截至2025年02月20日,贷款余额5,000,000(人民币元)。
+"""
+    report = run_personal_credit_report_agent(text)["report_json"]
+    assert report["loan_accounts"] == []
+    assert "相关还款责任信息" not in str(report["loan_accounts"])
+
+
+def test_loan_markdown_no_unknown_for_auto_loan() -> None:
+    text = """
+个人征信报告
+贷款
+2025年02月10日平安银行股份有限公司汽车消费金融中心发放的160,000元(人民币)个人汽车消费贷款,2030年02月10日到期。截至2025年09月,余额141,333
+"""
+    markdown = run_personal_credit_report_agent(text)["report_markdown"]
+    loan_section = markdown.split("## 四、贷款账户明细", 1)[1].split("## 五、信用卡账户明细", 1)[0]
+    assert "未识别" not in loan_section
+    assert "起始日期：2025-02-10" in loan_section
+    assert "金额：160,000元" in loan_section
+    assert "类型：个人汽车消费贷款" in loan_section
+    assert "到期日期：2030-02-10" in loan_section
+    assert "截止日期：2025-09" in loan_section
+    assert "余额：141,333元" in loan_section
+    assert "逾期：无" in loan_section
 
 
 def test_direct_loan_overdue_status_from_section_title() -> None:
