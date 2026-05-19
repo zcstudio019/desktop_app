@@ -128,6 +128,22 @@ def _append_account(lines: list[str], title: str, record: dict[str, Any], fields
         _append_field(lines, label, record.get(key))
 
 
+def _append_loan_account(lines: list[str], title: str, record: dict[str, Any]) -> None:
+    loan_type = str(record.get("loan_type") or record.get("type") or record.get("business_type") or "")
+    is_credit_line = "授信" in loan_type
+    amount_label = "信用额度" if is_credit_line else "放款金额"
+    balance_label = "余额" if is_credit_line else "贷款余额"
+    lines.append(f"### {title}")
+    _append_field(lines, "起始日期", record.get("start_date"))
+    _append_field(lines, "机构", record.get("institution"))
+    _append_field(lines, amount_label, record.get("amount"))
+    _append_field(lines, "类型", record.get("loan_type") or record.get("business_type") or record.get("type"))
+    _append_field(lines, "到期日期", record.get("due_date"))
+    _append_field(lines, "截止日期", record.get("cutoff_date"))
+    _append_field(lines, balance_label, record.get("balance"))
+    _append_field(lines, "逾期", record.get("overdue_status") or record.get("overdue"))
+
+
 def _has_real_card_tail_no(value: Any) -> bool:
     text = str(value or "").strip()
     return bool(text) and text not in {"未识别", "--", "-", "无"}
@@ -263,16 +279,7 @@ def render_personal_credit_markdown(report: dict[str, Any]) -> str:
     if loans:
         for index, item in enumerate(loans, start=1):
             if isinstance(item, dict):
-                _append_account(lines, f"贷款 {index}", item, (
-                    ("start_date", "起始日期"),
-                    ("institution", "机构"),
-                    ("amount", "金额"),
-                    ("loan_type", "类型"),
-                    ("due_date", "到期日期"),
-                    ("cutoff_date", "截止日期"),
-                    ("balance", "余额"),
-                    ("overdue_status", "逾期"),
-                ))
+                _append_loan_account(lines, f"贷款 {index}", item)
     else:
         lines.append("- 暂无需要展示的未结清贷款账户。")
 

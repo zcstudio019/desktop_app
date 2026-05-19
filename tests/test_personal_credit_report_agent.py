@@ -1141,11 +1141,11 @@ def test_personal_loan_markdown_compact_fields() -> None:
     loan_section = markdown.split("## 四、贷款账户明细", 1)[1].split("## 五、信用卡账户明细", 1)[0]
     assert "起始日期：2025-04-25" in loan_section
     assert "机构：无锡锡商银行股份有限公司" in loan_section
-    assert "金额：1,000,000元" in loan_section
+    assert "放款金额：1,000,000元" in loan_section
     assert "类型：个人经营性贷款" in loan_section
     assert "到期日期：2026-04-25" in loan_section
     assert "截止日期：2026-03" in loan_section
-    assert "余额：1,000,000元" in loan_section
+    assert "贷款余额：1,000,000元" in loan_section
     assert "逾期：无" in loan_section
     assert "账户编号" not in loan_section
     assert "五级分类" not in loan_section
@@ -1257,12 +1257,57 @@ def test_loan_markdown_no_unknown_for_auto_loan() -> None:
     loan_section = markdown.split("## 四、贷款账户明细", 1)[1].split("## 五、信用卡账户明细", 1)[0]
     assert "未识别" not in loan_section
     assert "起始日期：2025-02-10" in loan_section
-    assert "金额：160,000元" in loan_section
+    assert "放款金额：160,000元" in loan_section
     assert "类型：个人汽车消费贷款" in loan_section
     assert "到期日期：2030-02-10" in loan_section
     assert "截止日期：2025-09" in loan_section
-    assert "余额：141,333元" in loan_section
+    assert "贷款余额：141,333元" in loan_section
     assert "逾期：无" in loan_section
+
+
+def test_loan_markdown_normal_loan_labels() -> None:
+    markdown = render_personal_credit_markdown({
+        "basic_info": {},
+        "credit_summary": {},
+        "loan_accounts": [{
+            "start_date": "2025-06-09",
+            "institution": "深圳前海微众银行股份有限公司",
+            "amount": "500,000元",
+            "loan_type": "个人经营性贷款",
+            "due_date": "2028-06-09",
+            "cutoff_date": "2025-09",
+            "balance": "464,962元",
+            "overdue": "无",
+        }],
+    })
+    loan_section = markdown.split("## 四、贷款账户明细", 1)[1].split("## 五、信用卡账户明细", 1)[0]
+    assert "放款金额：500,000元" in loan_section
+    assert "贷款余额：464,962元" in loan_section
+    assert "- 金额：500,000元" not in loan_section
+    assert "- 余额：464,962元" not in loan_section
+
+
+def test_loan_markdown_credit_line_labels() -> None:
+    markdown = render_personal_credit_markdown({
+        "basic_info": {},
+        "credit_summary": {},
+        "loan_accounts": [{
+            "start_date": "2024-06-28",
+            "institution": "浙江泰隆商业银行股份有限公司上海新桥支行",
+            "amount": "600,000元",
+            "loan_type": "个人经营性贷款授信",
+            "due_date": "2029-05-31",
+            "cutoff_date": "2025-08",
+            "balance": "600,000元",
+            "overdue": "当前无逾期",
+        }],
+    })
+    loan_section = markdown.split("## 四、贷款账户明细", 1)[1].split("## 五、信用卡账户明细", 1)[0]
+    assert "信用额度：600,000元" in loan_section
+    assert "余额：600,000元" in loan_section
+    assert "- 金额：600,000元" not in loan_section
+    assert "- 放款金额：600,000元" not in loan_section
+    assert "- 贷款余额：600,000元" not in loan_section
 
 
 def test_direct_loan_overdue_status_from_section_title() -> None:
