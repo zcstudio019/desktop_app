@@ -14,22 +14,58 @@ type EnterpriseBankStatementViewProps = {
 };
 
 const EMPTY = '-';
+const ENTERPRISE_BANK_STATEMENT_TYPES = new Set([
+  'enterprise_flow',
+  'enterprise_bank_statement',
+  'bank_statement_enterprise',
+  'company_bank_statement',
+  '企业流水',
+  '银行流水',
+]);
 
 export function isEnterpriseBankStatementType(documentType?: string | null): boolean {
   const value = String(documentType || '').trim();
-  return [
-    'enterprise_flow',
-    'enterprise_bank_statement',
-    'bank_statement_enterprise',
-    'company_bank_statement',
-    '企业流水',
-    '银行流水',
-  ].includes(value);
+  return ENTERPRISE_BANK_STATEMENT_TYPES.has(value);
+}
+
+export function parseMaybeJson(value: unknown): Record<string, unknown> | null {
+  if (!value) return null;
+  if (typeof value === 'object') return value as Record<string, unknown>;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export function normalizeEnterpriseFlowData(raw: unknown): EnterpriseBankStatementExtraction | null {
+  const parsed = parseMaybeJson(raw);
+  if (!parsed) return null;
+  const direct = parsed as EnterpriseBankStatementExtraction;
+  if (direct.summary || direct.accounts || direct.monthly_summary || direct.counterparty_summary) {
+    return direct;
+  }
+  const nested =
+    parsed.extracted_json ??
+    parsed.extractedJson ??
+    parsed.structured_data ??
+    parsed.structuredData ??
+    parsed.data ??
+    null;
+  const nestedParsed = parseMaybeJson(nested) as EnterpriseBankStatementExtraction | null;
+  if (nestedParsed?.summary || nestedParsed?.accounts || nestedParsed?.monthly_summary || nestedParsed?.counterparty_summary) {
+    return nestedParsed;
+  }
+  return direct;
 }
 
 export function looksLikeEnterpriseBankStatementData(value: unknown): value is EnterpriseBankStatementExtraction {
-  if (!value || typeof value !== 'object') return false;
-  const data = value as EnterpriseBankStatementExtraction;
+  const data = normalizeEnterpriseFlowData(value);
+  if (!data) return false;
   return data.normalized_document_type === 'enterprise_bank_statement' || data.document_type === 'enterprise_flow' || !!data.summary?.total_inflow;
 }
 
@@ -127,7 +163,7 @@ function RelatedPartyTable({ title, items, emptyText }: { title: string; items: 
 }
 
 export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewProps> = ({ data, markdown }) => {
-  const statement = (data || {}) as EnterpriseBankStatementExtraction;
+  const statement = (normalizeEnterpriseFlowData(data) || {}) as EnterpriseBankStatementExtraction;
   const summary = statement.summary;
 
   if (!summary) {

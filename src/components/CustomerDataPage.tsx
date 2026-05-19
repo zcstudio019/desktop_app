@@ -19,6 +19,11 @@ import {
 import type { CustomerDocumentListItem, CustomerListItem, CustomerProfileMarkdownResponse, ExtractionGroup, ExtractionItem } from '../services/types';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard from './common/ProcessFeedbackCard';
+import EnterpriseBankStatementView, {
+  isEnterpriseBankStatementType,
+  normalizeEnterpriseFlowData,
+  parseMaybeJson,
+} from './documents/EnterpriseBankStatementView';
 
 interface CustomerDataPageProps {
   onBack?: () => void;
@@ -148,6 +153,15 @@ interface HukouInsight {
   completenessNote: string;
   members: Array<Record<string, unknown>>;
   document?: CustomerDocumentListItem;
+}
+
+interface EnterpriseFlowViewSource {
+  key: string;
+  documentType: string;
+  data: Record<string, unknown>;
+  markdown: string;
+  fileName: string;
+  createdAt: string;
 }
 
 const DOCUMENT_GROUPS = {
@@ -780,6 +794,74 @@ function getExtractionItemsByType(groups: ExtractionGroup[], documentType: strin
   return matchedGroups
     .flatMap((group) => group.items)
     .sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime());
+}
+
+function pickRecordField(source: Record<string, unknown> | null | undefined, keys: string[]): unknown {
+  if (!source) return undefined;
+  for (const key of keys) {
+    if (source[key] !== undefined && source[key] !== null && source[key] !== '') {
+      return source[key];
+    }
+  }
+  return undefined;
+}
+
+function buildEnterpriseFlowViewSources(extractionGroups: ExtractionGroup[]): EnterpriseFlowViewSource[] {
+  const sources: EnterpriseFlowViewSource[] = [];
+  for (const group of extractionGroups) {
+    const groupRecord = group as unknown as Record<string, unknown>;
+    const groupType = String(
+      pickRecordField(groupRecord, ['document_type', 'documentType', 'type', 'extraction_type']) || '',
+    );
+    for (const item of group.items || []) {
+      const extraction = item as unknown as Record<string, unknown>;
+      const extractedData = parseMaybeJson(item.extracted_data) || {};
+      const extractedJsonRaw =
+        pickRecordField(extractedData, ['extracted_json', 'extractedJson', 'structured_data', 'structuredData', 'data']) ??
+        pickRecordField(extraction, ['extracted_json', 'extractedJson', 'structured_data', 'structuredData', 'data']) ??
+        item.extracted_data ??
+        null;
+      const parsedExtractedJson = parseMaybeJson(extractedJsonRaw);
+      const documentType = String(
+        pickRecordField(extractedData, ['document_type', 'documentType', 'type']) ??
+        pickRecordField(extraction, ['document_type', 'documentType', 'type']) ??
+        parsedExtractedJson?.document_type ??
+        parsedExtractedJson?.type ??
+        groupType ??
+        '',
+      );
+      const isEnterpriseBankStatement =
+        isEnterpriseBankStatementType(documentType) ||
+        isEnterpriseBankStatementType(String(parsedExtractedJson?.document_type || '')) ||
+        isEnterpriseBankStatementType(String(parsedExtractedJson?.type || '')) ||
+        parsedExtractedJson?.normalized_document_type === 'enterprise_bank_statement';
+      const enterpriseData = normalizeEnterpriseFlowData(extractedJsonRaw);
+      if (import.meta.env.DEV) {
+        console.debug('[EnterpriseBankStatementView] documentType=', documentType);
+        console.debug('[EnterpriseBankStatementView] isEnterpriseBankStatement=', isEnterpriseBankStatement);
+        console.debug('[EnterpriseBankStatementView] hasSummary=', !!enterpriseData?.summary);
+        console.debug('[EnterpriseBankStatementView] accounts=', enterpriseData?.accounts?.length);
+        console.debug('[EnterpriseBankStatementView] monthly=', enterpriseData?.monthly_summary?.length);
+      }
+      if (!isEnterpriseBankStatement || !(enterpriseData?.summary || enterpriseData?.accounts || enterpriseData?.monthly_summary)) {
+        continue;
+      }
+      const markdownSummary = String(
+        pickRecordField(extractedData, ['markdown_summary', 'markdownSummary', 'summary_markdown', 'profile_markdown', 'markdown', 'summary']) ??
+        pickRecordField(extraction, ['markdown_summary', 'markdownSummary', 'summary_markdown', 'profile_markdown']) ??
+        '',
+      );
+      sources.push({
+        key: item.extraction_id || `${documentType}-${sources.length}`,
+        documentType,
+        data: enterpriseData as Record<string, unknown>,
+        markdown: markdownSummary,
+        fileName: String(pickRecordField(extractedData, ['source_file', 'file_name', 'filename']) || enterpriseData.source_file || documentType || '企业流水'),
+        createdAt: item.created_at || '',
+      });
+    }
+  }
+  return sources.sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
 }
 
 function getFirstValidFieldValueByTypes(
@@ -2450,6 +2532,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       hukouInsight,
     ),
     [draft, companyArticlesInsight, companyArticlesEquityRatioSummary, hukouInsight]
+  );
+  const enterpriseFlowViewSources = useMemo(
+    () => buildEnterpriseFlowViewSources(extractionGroups),
+    [extractionGroups]
   );
   const fieldSourceSummaries = useMemo(
     () => buildFieldSourceSummaries(renderedDraft, documents),
@@ -4285,6 +4371,27 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                 />
               ) : (
                 <div className="overflow-visible p-5">
+                  {enterpriseFlowViewSources.length > 0 ? (
+                    <div className="mb-6 space-y-4">
+                      {enterpriseFlowViewSources.map((source) => (
+                        <section key={`content-${source.key}`} className="rounded-2xl border border-blue-100 bg-blue-50/40 p-4">
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-semibold text-blue-900">企业流水结构化分析</div>
+                              <div className="mt-1 text-xs text-blue-700">
+                                {source.fileName}
+                                {source.createdAt ? ` · ${formatProfileDateTime(source.createdAt)}` : ''}
+                              </div>
+                            </div>
+                            <span className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-700">
+                              {source.documentType || 'enterprise_flow'}
+                            </span>
+                          </div>
+                          <EnterpriseBankStatementView data={source.data} markdown={source.markdown} />
+                        </section>
+                      ))}
+                    </div>
+                  ) : null}
                   <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
                     {draft || '暂无内容'}
                   </pre>
@@ -4300,6 +4407,27 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                 </div>
               </div>
               <div className="overflow-visible px-6 py-6">
+                {enterpriseFlowViewSources.length > 0 ? (
+                  <div className="mb-6 space-y-4">
+                    {enterpriseFlowViewSources.map((source) => (
+                      <section key={`preview-${source.key}`} className="rounded-[28px] border border-blue-100 bg-white/95 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <h3 className="text-base font-semibold text-slate-900">企业流水结构化分析</h3>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {source.fileName}
+                              {source.createdAt ? ` · ${formatProfileDateTime(source.createdAt)}` : ''}
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+                            {source.documentType || 'enterprise_flow'}
+                          </span>
+                        </div>
+                        <EnterpriseBankStatementView data={source.data} markdown={source.markdown} />
+                      </section>
+                    ))}
+                  </div>
+                ) : null}
                 <article className="prose prose-slate max-w-none rounded-[28px] border border-white/80 bg-white/95 p-7 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
                 </article>
