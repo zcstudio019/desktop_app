@@ -6,7 +6,9 @@ from typing import Any
 from backend.document_types import get_document_display_name, get_document_storage_label, normalize_document_type_code
 from backend.extraction_skills.enterprise_credit import build_enterprise_credit_content
 from backend.extraction_skills.personal_credit import build_personal_credit_report_content
-from backend.services.enterprise_bank_statement_agent import run_enterprise_bank_statement_agent
+from backend.services.enterprise_bank_statement_agent.adapter import (
+    EnterpriseBankStatementAgentAdapter as EnterpriseBankStatementAgentAdapterV2,
+)
 
 from .base import BaseDocumentAgent
 from .result import DocumentAgentResult
@@ -105,62 +107,21 @@ class PersonalCreditReportAgentAdapter(BaseDocumentAgent):
         )
 
 
-class EnterpriseBankStatementAgentAdapter(BaseDocumentAgent):
-    agent_name = "enterprise_bank_statement_agent"
-    supported_document_types = [
-        "enterprise_bank_statement",
-        "bank_statement_enterprise",
-        "company_bank_statement",
-    ]
-    schema_version = "enterprise_bank_statement.agent.v1"
-
-    def extract(
-        self,
-        *,
-        raw_text: str,
-        filename: str,
-        customer_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> DocumentAgentResult:
-        metadata = metadata or {}
-        content = run_enterprise_bank_statement_agent(
-            text=str(raw_text or ""),
-            document_type=str(metadata.get("document_type") or "enterprise_bank_statement"),
-            metadata={
-                **metadata,
-                "filename": filename,
-                "customer_id": customer_id or "",
-            },
-        )
-        extracted_json = content.get("extracted_json") if isinstance(content.get("extracted_json"), dict) else {}
-        markdown = str(content.get("markdown_summary") or content.get("markdown") or "")
-        evidence = content.get("evidence")
-        return DocumentAgentResult(
-            document_type="enterprise_bank_statement",
-            agent_name=self.agent_name,
-            schema_version=str(content.get("schema_version") or self.schema_version),
-            confidence=_as_float(content.get("confidence"), 0.0),
-            extracted_json=extracted_json,
-            markdown_summary=markdown,
-            evidence=evidence if isinstance(evidence, dict) else {"items": evidence or []},
-            warnings=list(content.get("warnings") or []),
-            debug={"skill_name": content.get("skill_name"), "legacy_type": content.get("type")},
-            raw_agent_result=content,
-        )
-
-
 _ENTERPRISE_CREDIT_AGENT = EnterpriseCreditReportAgentAdapter()
 _PERSONAL_CREDIT_AGENT = PersonalCreditReportAgentAdapter()
-_ENTERPRISE_BANK_STATEMENT_AGENT = EnterpriseBankStatementAgentAdapter()
+_ENTERPRISE_BANK_STATEMENT_AGENT = EnterpriseBankStatementAgentAdapterV2()
 
 DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "enterprise_credit_report": _ENTERPRISE_CREDIT_AGENT,
     "enterprise_credit": _ENTERPRISE_CREDIT_AGENT,
     "personal_credit_report": _PERSONAL_CREDIT_AGENT,
     "personal_credit": _PERSONAL_CREDIT_AGENT,
+    "enterprise_flow": _ENTERPRISE_BANK_STATEMENT_AGENT,
     "enterprise_bank_statement": _ENTERPRISE_BANK_STATEMENT_AGENT,
     "bank_statement_enterprise": _ENTERPRISE_BANK_STATEMENT_AGENT,
     "company_bank_statement": _ENTERPRISE_BANK_STATEMENT_AGENT,
+    "企业流水": _ENTERPRISE_BANK_STATEMENT_AGENT,
+    "银行流水": _ENTERPRISE_BANK_STATEMENT_AGENT,
 }
 
 # Future agents:

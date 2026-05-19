@@ -1543,6 +1543,40 @@ async def _build_single_document_section(
         fallback = '## 个人征信报告\n\n- 个人征信报告已上传，但结构化摘要暂不可用。'
         logger.info("[Profile Sync][PersonalCredit] markdown length=%s", len(fallback))
         return fallback, source_document
+    if extraction_type in {'enterprise_flow', 'enterprise_bank_statement', 'bank_statement_enterprise', 'company_bank_statement'} and isinstance(extracted_data, dict):
+        extracted_json = extracted_data.get('extracted_json') or extracted_data.get('data') or {}
+        if not isinstance(extracted_json, dict):
+            extracted_json = {}
+        summary = extracted_json.get('summary') or {}
+        period = extracted_json.get('statement_period') or {}
+        counterparties = extracted_json.get('counterparty_summary') or {}
+        risk = extracted_json.get('risk_analysis') or {}
+        financing = extracted_json.get('financing_view') or {}
+        top_inflow = ', '.join(str(item.get('name') or '') for item in (counterparties.get('top_inflow_counterparties') or [])[:5] if item.get('name'))
+        top_outflow = ', '.join(str(item.get('name') or '') for item in (counterparties.get('top_outflow_counterparties') or [])[:5] if item.get('name'))
+        risk_titles = ', '.join(str(item.get('title') or item.get('code') or '') for item in (risk.get('signals') or [])[:5])
+        checklist = ', '.join(str(item) for item in (financing.get('material_checklist') or [])[:6])
+        lines = [
+            '## 企业流水摘要',
+            '',
+            f"- 流水期间：{period.get('start_date') or '-'} 至 {period.get('end_date') or '-'}",
+            f"- 银行账户数量：{summary.get('account_count') or 0}",
+            f"- 总收入：{summary.get('total_inflow') or 0}",
+            f"- 总支出：{summary.get('total_outflow') or 0}",
+            f"- 净流入：{summary.get('net_cashflow') or 0}",
+            f"- 月均收入：{summary.get('average_monthly_inflow') or 0}",
+            f"- 银行认可经营性回款估算：{financing.get('bank_recognizable_inflow') or summary.get('estimated_operating_inflow') or 0}",
+            f"- 主要收入客户：{top_inflow or '-'}",
+            f"- 主要支出对象：{top_outflow or '-'}",
+            f"- 关联方往来：{summary.get('excluded_related_party_inflow') or 0}",
+            f"- 个人往来：{summary.get('excluded_personal_inflow') or 0}",
+            f"- 主要风险点：{risk_titles or '-'}",
+            f"- 建议补充材料：{checklist or '-'}",
+        ]
+        saved_markdown = str(extracted_data.get('markdown_summary') or extracted_data.get('markdown') or '').strip()
+        if saved_markdown:
+            lines.extend(['', saved_markdown])
+        return '\n'.join(lines), source_document
     if _is_enterprise_credit_type(extraction_type) and isinstance(extracted_data, dict):
         lines = [
             f'- 资料类型：{type_name}',

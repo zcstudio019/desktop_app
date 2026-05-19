@@ -1,104 +1,78 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from ..normalizer import normalize_account_number, normalize_amount, normalize_date
-from ..schema import empty_transaction
-
-DATE_TOKEN = r"(?:20\d{2}[年./-]?\d{1,2}[月./-]?\d{1,2}日?|\d{1,2}[./-]\d{1,2})"
-AMOUNT_TOKEN = r"(?:[-+]?￥?\d[\d,]*(?:\.\d+)?|\(|\)-?)"
+from ..normalizer import normalize_account_number, normalize_amount, normalize_currency, normalize_date, normalize_text, normalize_transaction_direction
 
 
-def _default_year(segments: dict[str, Any]) -> str | None:
-    match = re.search(r"(20\d{2})", str(segments.get("text") or ""))
-    return match.group(1) if match else None
+def _looks_like_placeholder_21(value: Any, row: dict[str, Any], column_values: list[Any]) -> bool:
+    # Some exported statements fill blank amount cells with "21". Only null it
+    # when this amount column has many 21 values and the paired debit/credit
+    # side or balance does not support treating it as a real transaction.
+    if normalize_text(value) != "21":
+        return False
+    count_21 = sum(1 for item in column_values if normalize_text(item) == "21")
+    if count_21 < 3:
+        return False
+    balance = normalize_amount(row.get("balance"))
+    other_amount = normalize_amount(row.get("credit_amount") if value == row.get("debit_amount") else row.get("debit_amount"))
+    return bool(balance is not None or other_amount not in (None, 0))
 
 
-def _looks_like_header(line: str) -> bool:
-    return sum(word in line for word in ("日期", "摘要", "借方", "贷方", "余额", "对方", "交易")) >= 3
-
-
-def _extract_amounts(line: str) -> list[tuple[str, float | None]]:
-    matches = []
-    for match in re.finditer(r"[-+]?￥?\d[\d,]*(?:\.\d+)?", line):
-        raw = match.group(0)
-        # Avoid treating account numbers as amounts.
-        if len(raw.replace(",", "").replace(".", "")) > 13:
-            continue
-        matches.append((raw, normalize_amount(raw)))
-    return matches
-
-
-def extract_transactions(segments: dict[str, Any], account_basic_info: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+def extract_transactions(workbook: dict[str, Any], accounts: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+    metadata = metadata or {}
     warnings: list[str] = []
+    account_by_sheet = {item.get("sheet_name"): item for item in accounts}
     transactions: list[dict[str, Any]] = []
-    default_year = _default_year(segments)
-    pending: dict[str, Any] | None = None
+    source_file = workbook.get("source_file") or metadata.get("filename")
 
-    for item in segments.get("lines") or []:
-        line = str(item.get("text") or "").strip()
-        if not line or _looks_like_header(line):
-            continue
-        date_match = re.search(DATE_TOKEN, line)
-        if not date_match:
-            if pending and line and not re.search(r"^\s*第?\d+\s*页", line):
-                pending["summary"] = " ".join(filter(None, [pending.get("summary"), line]))
-                pending["source_text"] = f"{pending.get('source_text', '')}\n{line}".strip()
-            continue
-        if pending:
-            transactions.append(pending)
-            pending = None
-
-        tx = empty_transaction()
-        tx["transaction_date"] = normalize_date(date_match.group(0), default_year=default_year)
-        tx["posting_date"] = tx["transaction_date"]
-        tx["source_page"] = item.get("page")
-        tx["source_text"] = line
-
-        tail = line[date_match.end() :].strip()
-        amounts = _extract_amounts(tail)
-        account_match = re.search(r"\b\d{8,32}\b", tail.replace(" ", ""))
-        if account_match:
-            tx["counterparty_account"] = normalize_account_number(account_match.group(0))
-
-        if len(amounts) >= 3:
-            tx["debit_amount"] = amounts[-3][1]
-            tx["credit_amount"] = amounts[-2][1]
-            tx["balance"] = amounts[-1][1]
-        elif len(amounts) == 2:
-            amount = amounts[0][1]
-            tx["balance"] = amounts[1][1]
-            if any(word in line for word in ("贷方", "收入", "转入", "收款", "存入")):
-                tx["credit_amount"] = amount
-            elif any(word in line for word in ("借方", "支出", "转出", "付款", "扣款")):
-                tx["debit_amount"] = amount
-            else:
-                tx["credit_amount"] = amount
-        elif len(amounts) == 1:
-            amount = amounts[0][1]
-            if any(word in line for word in ("余额", "结余")):
-                tx["balance"] = amount
-            elif any(word in line for word in ("贷方", "收入", "转入", "收款", "存入")):
-                tx["credit_amount"] = amount
-            else:
-                tx["debit_amount"] = amount
-
-        cleaned_tail = tail
-        for raw, _ in amounts:
-            cleaned_tail = cleaned_tail.replace(raw, " ")
-        cleaned_tail = re.sub(r"\b\d{8,32}\b", " ", cleaned_tail)
-        cleaned_tail = re.sub(r"\s+", " ", cleaned_tail).strip(" |,，")
-        parts = cleaned_tail.split()
-        if parts:
-            tx["summary"] = parts[0]
-            if len(parts) > 1:
-                tx["counterparty_name"] = parts[-1]
-                tx["usage"] = " ".join(parts[1:-1])
-        pending = tx
-
-    if pending:
-        transactions.append(pending)
+    for sheet in workbook.get("sheets") or []:
+        sheet_name = sheet.get("sheet_name")
+        rows = sheet.get("rows") or []
+        debit_values = [row.get("debit_amount") for row in rows]
+        credit_values = [row.get("credit_amount") for row in rows]
+        account = account_by_sheet.get(sheet_name) or {}
+        for row in rows:
+            debit = None if _looks_like_placeholder_21(row.get("debit_amount"), row, debit_values) else normalize_amount(row.get("debit_amount"))
+            credit = None if _looks_like_placeholder_21(row.get("credit_amount"), row, credit_values) else normalize_amount(row.get("credit_amount"))
+            if debit in (None, 0) and credit in (None, 0):
+                continue
+            direction = normalize_transaction_direction(debit, credit)
+            tags: list[str] = []
+            if debit not in (None, 0) and credit not in (None, 0):
+                tags.append("both_debit_credit_present")
+                warnings.append(f"{sheet_name} 第{row.get('row_number')}行同时存在借方和贷方金额，direction 标记为 unknown")
+            tx = {
+                "transaction_id": f"{sheet_name or 'sheet'}:{row.get('row_number') or len(transactions) + 1}",
+                "source_file": source_file,
+                "sheet_name": sheet_name,
+                "row_number": row.get("row_number"),
+                "bank_name": account.get("bank_name") or (sheet.get("meta") or {}).get("bank_name"),
+                "account_name": account.get("account_name") or (sheet.get("meta") or {}).get("account_name"),
+                "account_number": normalize_account_number(account.get("account_number") or (sheet.get("meta") or {}).get("account_number")),
+                "transaction_date": normalize_date(row.get("transaction_date") or row.get("post_date")),
+                "post_date": normalize_date(row.get("post_date")) or normalize_date(row.get("transaction_date")),
+                "summary": normalize_text(row.get("summary")),
+                "purpose": normalize_text(row.get("purpose")),
+                "counterparty_name": normalize_text(row.get("counterparty_name")) or None,
+                "counterparty_account": normalize_account_number(row.get("counterparty_account")),
+                "debit_amount": debit,
+                "credit_amount": credit,
+                "balance": normalize_amount(row.get("balance")),
+                "currency": normalize_currency(row.get("currency") or account.get("currency")),
+                "direction": direction,
+                "normalized_amount": float(credit or debit or 0),
+                "category": None,
+                "sub_category": None,
+                "is_internal_transfer": False,
+                "is_related_party": False,
+                "is_personal_counterparty": False,
+                "is_large_amount": False,
+                "is_suspicious": False,
+                "tags": tags,
+                "raw": row.get("raw") if isinstance(row.get("raw"), dict) else dict(row),
+            }
+            transactions.append(tx)
     if not transactions:
-        warnings.append("未识别到交易明细，未编造交易记录")
+        warnings.append("未识别到有效交易明细")
     return transactions, warnings

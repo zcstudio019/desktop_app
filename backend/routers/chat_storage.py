@@ -50,10 +50,13 @@ _PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
 
 _MULTI_INSTANCE_DOCUMENT_TYPE_CODES = frozenset({
     "id_card",
+    "enterprise_flow",
     "bank_statement",
     "enterprise_bank_statement",
     "bank_statement_enterprise",
     "company_bank_statement",
+    "企业流水",
+    "银行流水",
     "enterprise_credit_report",
 })
 
@@ -91,6 +94,12 @@ _DOCUMENT_TYPE_CODE_FALLBACKS = {
     "公司章程": "company_articles",
     "银行对账单": "bank_statement",
     "银行对账明细": "bank_statement_detail",
+    "enterprise_flow": "enterprise_flow",
+    "enterprise_bank_statement": "enterprise_flow",
+    "bank_statement_enterprise": "enterprise_flow",
+    "company_bank_statement": "enterprise_flow",
+    "企业流水": "enterprise_flow",
+    "银行流水": "enterprise_flow",
 }
 
 

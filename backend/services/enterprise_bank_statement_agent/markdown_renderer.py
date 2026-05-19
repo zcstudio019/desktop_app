@@ -4,7 +4,7 @@ from typing import Any
 
 
 def _money(value: Any) -> str:
-    if value is None or value == "":
+    if value is None:
         return "-"
     try:
         return f"{float(value):,.2f}"
@@ -12,73 +12,93 @@ def _money(value: Any) -> str:
         return str(value)
 
 
-def render_enterprise_bank_statement_markdown(result: dict[str, Any]) -> str:
-    basic = result.get("account_basic_info") or {}
-    summary = result.get("statement_summary") or {}
-    lines = ["# 企业银行流水解析结果", ""]
-    lines += [
-        "## 一、账户基础信息",
-        f"- 客户名称：{basic.get('company_name') or '-'}",
-        f"- 银行名称：{basic.get('bank_name') or '-'}",
-        f"- 开户行：{basic.get('branch_name') or '-'}",
-        f"- 账号：{basic.get('account_number') or '-'}",
-        f"- 币种：{basic.get('currency') or '-'}",
-        f"- 流水期间：{basic.get('statement_period_start') or '-'} 至 {basic.get('statement_period_end') or '-'}",
-        f"- 期初/期末余额：{_money(basic.get('opening_balance'))} / {_money(basic.get('closing_balance'))}",
+def render_enterprise_bank_statement_markdown(data: dict[str, Any]) -> str:
+    period = data.get("statement_period") or {}
+    summary = data.get("summary") or {}
+    counterparty = data.get("counterparty_summary") or {}
+    risk = data.get("risk_analysis") or {}
+    financing = data.get("financing_view") or {}
+    lines = [
+        "# 企业流水分析报告",
         "",
-        "## 二、流水汇总",
-        f"- 借方总金额：{_money(summary.get('total_debit_amount'))}，笔数：{summary.get('total_debit_count') if summary.get('total_debit_count') is not None else '-'}",
-        f"- 贷方总金额：{_money(summary.get('total_credit_amount'))}，笔数：{summary.get('total_credit_count') if summary.get('total_credit_count') is not None else '-'}",
-        f"- 总交易笔数：{summary.get('total_transaction_count') if summary.get('total_transaction_count') is not None else '-'}",
-        f"- 日均余额：{_money(summary.get('average_daily_balance'))}",
-        f"- 月均收入/支出：{_money(summary.get('monthly_average_credit'))} / {_money(summary.get('monthly_average_debit'))}",
+        "## 一、基础信息",
+        f"- 客户名称：{data.get('company_name') or '-'}",
+        f"- 流水期间：{period.get('start_date') or '-'} 至 {period.get('end_date') or '-'}",
+        f"- 银行账户数量：{summary.get('account_count') or 0}",
+        f"- 交易笔数：{summary.get('transaction_count') or 0}",
+        f"- 资料来源文件：{data.get('source_file') or '-'}",
         "",
-        "## 三、月度趋势",
-        "| 月份 | 收入 | 支出 | 净流入 | 笔数 | 月末余额 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "## 二、总体流水汇总",
+        "| 指标 | 金额/数值 |",
+        "| --- | ---: |",
+        f"| 总收入 | {_money(summary.get('total_inflow'))} |",
+        f"| 总支出 | {_money(summary.get('total_outflow'))} |",
+        f"| 净流入 | {_money(summary.get('net_cashflow'))} |",
+        f"| 月均收入 | {_money(summary.get('average_monthly_inflow'))} |",
+        f"| 月均支出 | {_money(summary.get('average_monthly_outflow'))} |",
+        f"| 月均净流入 | {_money(summary.get('average_monthly_net_cashflow'))} |",
+        f"| 银行可能认可经营性回款估算 | {_money(financing.get('bank_recognizable_inflow'))} |",
+        "",
+        "## 三、各银行账户汇总",
+        "| 银行 | 户名 | 账号 | 收入 | 支出 | 净流入 | 笔数 | 期末余额 |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for item in (result.get("monthly_trends") or [])[:12]:
-        lines.append(
-            f"| {item.get('month') or '-'} | {_money(item.get('credit_amount'))} | {_money(item.get('debit_amount'))} | {_money(item.get('net_inflow'))} | {item.get('transaction_count') or 0} | {_money(item.get('month_end_balance'))} |"
-        )
-    lines += ["", "## 四、主要对手方分析", "| 对手方 | 角色 | 收入 | 支出 | 笔数 | 集中度 |", "| --- | --- | ---: | ---: | ---: | ---: |"]
-    for item in (result.get("counterparty_analysis") or [])[:10]:
-        lines.append(f"| {item.get('counterparty_name') or '-'} | {item.get('role') or '-'} | {_money(item.get('credit_amount'))} | {_money(item.get('debit_amount'))} | {item.get('transaction_count') or 0} | {float(item.get('concentration') or 0):.2%} |")
-    lines += ["", "## 五、大额交易"]
-    for item in (result.get("large_transactions") or [])[:10]:
-        tx = item.get("transaction") if isinstance(item.get("transaction"), dict) else {}
-        lines.append(f"- {item.get('reason') or '-'}：{tx.get('transaction_date') or '-'} {tx.get('counterparty_name') or item.get('counterparty_name') or '-'} {_money(item.get('amount'))}")
-    if not (result.get("large_transactions") or []):
-        lines.append("- 暂未识别到大额交易")
-    lines += ["", "## 六、融资相关交易"]
-    for item in (result.get("loan_related_transactions") or [])[:10]:
-        tx = item.get("transaction") or {}
-        lines.append(f"- {tx.get('transaction_date') or '-'} {tx.get('summary') or '-'}，关键词：{', '.join(item.get('matched_keywords') or [])}")
-    if not (result.get("loan_related_transactions") or []):
-        lines.append("- 暂未识别到融资相关交易")
-    lines += ["", "## 七、风险信号"]
-    for item in result.get("risk_signals") or []:
-        lines.append(f"- [{item.get('level') or 'info'}] {item.get('type') or '-'}：{item.get('detail') or '-'}")
-    if not (result.get("risk_signals") or []):
+    for item in data.get("accounts") or []:
+        lines.append(f"| {item.get('bank_name') or '-'} | {item.get('account_name') or '-'} | {item.get('account_number') or '-'} | {_money(item.get('total_inflow'))} | {_money(item.get('total_outflow'))} | {_money(item.get('net_cashflow'))} | {item.get('transaction_count') or 0} | {_money(item.get('ending_balance'))} |")
+    lines += ["", "## 四、月度趋势分析", "| 月份 | 收入 | 支出 | 净流入 | 收入笔数 | 支出笔数 | 月末余额 |", "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    for item in data.get("monthly_summary") or []:
+        lines.append(f"| {item.get('month')} | {_money(item.get('inflow'))} | {_money(item.get('outflow'))} | {_money(item.get('net_cashflow'))} | {item.get('inflow_count') or 0} | {item.get('outflow_count') or 0} | {_money(item.get('ending_balance'))} |")
+    lines += ["", "## 五、主要收入来源", "| 对手方 | 收入 | 笔数 | 分类 | 风险提示 |", "| --- | ---: | ---: | --- | --- |"]
+    for item in counterparty.get("top_inflow_counterparties") or []:
+        lines.append(f"| {item.get('name')} | {_money(item.get('inflow'))} | {item.get('transaction_count') or 0} | {item.get('category_guess') or '-'} | {item.get('risk_note') or '-'} |")
+    lines += ["", "## 六、主要支出对象", "| 对手方 | 支出 | 笔数 | 分类 | 风险提示 |", "| --- | ---: | ---: | --- | --- |"]
+    for item in counterparty.get("top_outflow_counterparties") or []:
+        lines.append(f"| {item.get('name')} | {_money(item.get('outflow'))} | {item.get('transaction_count') or 0} | {item.get('category_guess') or '-'} | {item.get('risk_note') or '-'} |")
+    related_amount = sum(float(item.get("inflow") or 0) + float(item.get("outflow") or 0) for item in counterparty.get("related_party_counterparties") or [])
+    personal_amount = sum(float(item.get("inflow") or 0) + float(item.get("outflow") or 0) for item in counterparty.get("personal_counterparties") or [])
+    lines += [
+        "",
+        "## 七、关联方与个人往来分析",
+        f"- 关联方往来金额：{_money(related_amount)}",
+        f"- 个人往来金额：{_money(personal_amount)}",
+        "- 对银行授信的影响：关联方和个人往来通常需要补充业务背景，银行可能不按经营性收入全额认定。",
+        "",
+        "## 八、资金沉淀与余额分析",
+        f"- 低余额次数：{summary.get('low_balance_transaction_count') or 0}",
+        f"- 余额低位阈值：{_money(summary.get('low_balance_threshold'))}",
+        "- 大额进账后快速转出情况见风险信号。",
+        "",
+        "## 九、银行贷款审查风险点",
+    ]
+    for signal in risk.get("signals") or []:
+        refs = ", ".join(str(item) for item in signal.get("evidence_refs") or [])
+        lines.append(f"- [{signal.get('level')}] {signal.get('title')}：{signal.get('description')} 证据：{refs or '-'} 建议：{signal.get('suggestion') or '-'}")
+    if not (risk.get("signals") or []):
         lines.append("- 暂未识别到明确风险信号")
-    financing = result.get("financing_analysis") or {}
     lines += [
         "",
-        "## 八、银行融资视角分析",
-        f"- 现金流稳定性：{financing.get('cash_flow_stability') or '-'}",
-        f"- 经营真实性：{financing.get('business_reality') or '-'}",
-        f"- 还款能力：{financing.get('repayment_capacity') or '-'}",
-        f"- 异常流水风险：{financing.get('abnormal_flow_risk') or '-'}",
-        f"- 授信额度参考：{financing.get('suggested_credit_limit_reference') or '-'}",
-        f"- 综合摘要：{financing.get('summary') or '-'}",
-        "",
-        "## 九、数据质量与提醒",
+        "## 十、融资建议",
+        f"- 适合申请的产品类型：{', '.join(financing.get('suggested_credit_products') or []) or '-'}",
+        f"- 银行认可流水口径：{_money(financing.get('bank_recognizable_inflow'))}",
+        f"- 建议补充材料：{', '.join(financing.get('material_checklist') or []) or '-'}",
+        "- 对客户经理/融资顾问的话术：",
     ]
-    for warning in result.get("warnings") or []:
-        lines.append(f"- {warning}")
-    if not (result.get("warnings") or []):
-        lines.append("- 未发现明显数据质量提醒")
-    lines += ["", "### 交易明细预览（前20条）", "| 日期 | 摘要 | 对手方 | 借方 | 贷方 | 余额 |", "| --- | --- | --- | ---: | ---: | ---: |"]
-    for tx in (result.get("transactions") or [])[:20]:
-        lines.append(f"| {tx.get('transaction_date') or '-'} | {tx.get('summary') or '-'} | {tx.get('counterparty_name') or '-'} | {_money(tx.get('debit_amount'))} | {_money(tx.get('credit_amount'))} | {_money(tx.get('balance'))} |")
-    return "\n".join(lines).strip()
+    for item in financing.get("bank_explanation") or []:
+        lines.append(f"  - {item}")
+    lines += [
+        "",
+        "## 十一、综合结论",
+        f"- 流水规模评价：总进账 {_money(summary.get('total_inflow'))}，月均进账 {_money(summary.get('average_monthly_inflow'))}。",
+        f"- 经营真实性评价：银行认可经营性回款估算 {_money(summary.get('estimated_operating_inflow'))}，不把总进账直接等同销售收入。",
+        f"- 资金沉淀评价：净流入 {_money(summary.get('net_cashflow'))}，低余额次数 {summary.get('low_balance_transaction_count') or 0}。",
+        f"- 关联方风险评价：剔除关联方收入 {_money(summary.get('excluded_related_party_inflow'))}。",
+        f"- 个人往来风险评价：剔除个人往来收入 {_money(summary.get('excluded_personal_inflow'))}。",
+        f"- 综合融资可行性：{financing.get('conclusion') or '-'}",
+        "",
+        "### 交易明细预览（前20条）",
+        "| 日期 | 摘要 | 对手方 | 收入 | 支出 | 余额 | 分类 |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- |",
+    ]
+    for tx in (data.get("transactions") or [])[:20]:
+        lines.append(f"| {tx.get('transaction_date') or '-'} | {tx.get('summary') or tx.get('purpose') or '-'} | {tx.get('counterparty_name') or '-'} | {_money(tx.get('credit_amount'))} | {_money(tx.get('debit_amount'))} | {_money(tx.get('balance'))} | {tx.get('category') or '-'} |")
+    return "\n".join(lines)

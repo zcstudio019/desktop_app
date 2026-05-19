@@ -203,12 +203,14 @@ DOCUMENT_TYPE_CANONICAL_ALIASES = {
     "企业征信报告": "enterprise_credit_report",
     "企业信用报告": "enterprise_credit_report",
     "企业征信提取": "enterprise_credit_report",
+    "enterprise_flow": "enterprise_flow",
     "enterprise_bank_statement": "enterprise_bank_statement",
-    "bank_statement_enterprise": "enterprise_bank_statement",
-    "company_bank_statement": "enterprise_bank_statement",
-    "企业银行流水": "enterprise_bank_statement",
-    "企业流水": "enterprise_bank_statement",
-    "对公流水": "enterprise_bank_statement",
+    "bank_statement_enterprise": "enterprise_flow",
+    "company_bank_statement": "enterprise_flow",
+    "企业银行流水": "enterprise_flow",
+    "企业流水": "enterprise_flow",
+    "银行流水": "enterprise_flow",
+    "对公流水": "enterprise_flow",
 }
 
 _ALIASES_TO_CODE: dict[str, str] = {}
@@ -274,9 +276,12 @@ def should_append_same_type_document(value: str | None) -> bool:
     normalized = normalize_document_type_code(value) or str(value or "").strip()
     return normalized in {
         "id_card",
+        "enterprise_flow",
         "bank_statement",
         "enterprise_bank_statement",
         "bank_statement_enterprise",
         "company_bank_statement",
+        "企业流水",
+        "银行流水",
         "enterprise_credit_report",
     }

@@ -1,113 +1,146 @@
 from __future__ import annotations
 
-import re
+from pathlib import Path
 from typing import Any
 
+from .evidence import build_transaction_evidence
+from .excel_reader import read_excel_workbook
 from .extraction_skills import (
     analyze_counterparties,
     analyze_monthly_trends,
-    build_financing_summary,
+    build_account_summary,
+    build_financing_view,
+    classify_transactions,
     detect_large_transactions,
     detect_loan_related_transactions,
     detect_risk_signals,
     extract_account_basic_info,
-    extract_or_derive_account_summary,
     extract_transactions,
 )
 from .markdown_renderer import render_enterprise_bank_statement_markdown
-from .normalizer import normalize_transactions
-from .schema import empty_enterprise_bank_statement_result
-from .segmenter import segment_bank_statement_text
+from .schema import (
+    BankAccountStatement,
+    BankStatementRiskAnalysis,
+    BankStatementSummary,
+    BankTransaction,
+    CounterpartySummary,
+    EnterpriseBankStatementExtraction,
+    EvidenceItem,
+    FinancingView,
+    MonthlyCashflowSummary,
+    StatementPeriod,
+    to_plain_dict,
+)
 from .validator import validate_enterprise_bank_statement_result
 
 
-def _confidence(result: dict[str, Any]) -> float:
-    score = 0.35
-    basic = result.get("account_basic_info") or {}
-    if basic.get("company_name"):
-        score += 0.1
-    if basic.get("account_number"):
-        score += 0.1
-    if result.get("transactions"):
+SUPPORTED_TYPES = {"enterprise_flow", "enterprise_bank_statement", "bank_statement_enterprise", "company_bank_statement", "企业流水", "银行流水"}
+
+
+def _confidence(data: dict[str, Any]) -> float:
+    score = 0.45
+    if data.get("accounts"):
+        score += 0.15
+    if data.get("transactions"):
         score += 0.25
-    if result.get("statement_summary", {}).get("total_transaction_count"):
+    if (data.get("summary") or {}).get("total_inflow", 0) > 0:
         score += 0.1
-    if result.get("warnings"):
-        score -= min(0.2, len(result["warnings"]) * 0.03)
+    if data.get("warnings"):
+        score -= min(0.2, len(data["warnings"]) * 0.03)
     return round(max(0.0, min(score, 0.95)), 2)
 
 
-def _default_year(text: str) -> str | None:
-    match = re.search(r"(20\d{2})", str(text or ""))
-    return match.group(1) if match else None
+def _stable_extraction(
+    *,
+    document_type: str,
+    filename: str | None,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    model = EnterpriseBankStatementExtraction(
+        document_type=document_type or "enterprise_flow",
+        source_file=filename,
+        warnings=warnings or [],
+    )
+    return to_plain_dict(model)
 
 
 def run_enterprise_bank_statement_agent(
-    text: str,
-    document_type: str,
+    file_path: str | None = None,
+    filename: str | None = None,
+    text: str | None = None,
+    raw_text: str | None = None,
+    document_type: str = "enterprise_flow",
+    customer_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = metadata or {}
-    segments = segment_bank_statement_text(text, metadata)
-    result = empty_enterprise_bank_statement_result()
+    rows = metadata.get("rows") if isinstance(metadata.get("rows"), list) else None
+    source_text = text if text is not None else raw_text
+    source_file = filename or (Path(file_path).name if file_path else None)
     warnings: list[str] = []
 
-    account_basic_info, basic_warnings, evidence = extract_account_basic_info(segments)
+    if file_path or rows:
+        workbook = read_excel_workbook(file_path=file_path, rows=rows, filename=source_file)
+        warnings.extend(workbook.get("warnings") or [])
+    else:
+        workbook = {"source_file": source_file, "sheets": [], "warnings": ["未提供 Excel 文件路径，文本流水 fallback 暂返回稳定空结构"]}
+        warnings.extend(workbook["warnings"])
+
+    basic, accounts, basic_warnings = extract_account_basic_info(workbook, {**metadata, "customer_name": metadata.get("customer_name")})
     warnings.extend(basic_warnings)
-
-    raw_transactions, tx_warnings = extract_transactions(segments, account_basic_info)
+    transactions, tx_warnings = extract_transactions(workbook, accounts, {**metadata, "filename": source_file})
     warnings.extend(tx_warnings)
-    transactions = normalize_transactions(raw_transactions, default_year=_default_year(text))
-
-    statement_summary, summary_warnings = extract_or_derive_account_summary(segments, transactions, account_basic_info)
+    transactions = classify_transactions(transactions, basic.get("company_name"), metadata)
+    months_count = (basic.get("statement_period") or {}).get("months_count")
+    summary, accounts, summary_warnings = build_account_summary(transactions, accounts, months_count)
     warnings.extend(summary_warnings)
-
-    monthly_trends = analyze_monthly_trends(transactions)
-    counterparties = analyze_counterparties(transactions)
-    large_transactions = detect_large_transactions(transactions, statement_summary)
+    monthly_summary = analyze_monthly_trends(transactions)
+    counterparty_summary = analyze_counterparties(transactions, summary.get("total_inflow", 0), summary.get("total_outflow", 0))
+    large_transactions = detect_large_transactions(transactions, summary)
     loan_related_transactions = detect_loan_related_transactions(transactions)
-    risk_signals = detect_risk_signals(transactions, monthly_trends, counterparties, loan_related_transactions)
-    financing_analysis = build_financing_summary(
-        statement_summary,
-        monthly_trends,
-        counterparties,
-        risk_signals,
-        loan_related_transactions,
-    )
+    risk_analysis = detect_risk_signals(transactions, summary, monthly_summary, counterparty_summary, months_count)
+    financing_view = build_financing_view(summary, risk_analysis)
+    evidence = build_transaction_evidence(transactions)
 
-    result.update(
-        {
-            "document_type": "enterprise_bank_statement",
-            "account_basic_info": account_basic_info,
-            "statement_summary": statement_summary,
-            "monthly_trends": monthly_trends,
-            "transactions": transactions,
-            "counterparty_analysis": counterparties,
-            "large_transactions": large_transactions,
-            "loan_related_transactions": loan_related_transactions,
-            "risk_signals": risk_signals,
-            "financing_analysis": financing_analysis,
-            "evidence": evidence,
-        }
+    data = EnterpriseBankStatementExtraction(
+        document_type=document_type or "enterprise_flow",
+        normalized_document_type="enterprise_bank_statement",
+        company_name=basic.get("company_name"),
+        source_file=source_file,
+        statement_period=StatementPeriod(**(basic.get("statement_period") or {})),
+        accounts=[BankAccountStatement(**item) for item in accounts],
+        transactions=[BankTransaction(**item) for item in transactions],
+        summary=BankStatementSummary(**summary),
+        monthly_summary=[MonthlyCashflowSummary(**item) for item in monthly_summary],
+        counterparty_summary=CounterpartySummary(**counterparty_summary),
+        risk_analysis=BankStatementRiskAnalysis(**risk_analysis),
+        financing_view=FinancingView(**financing_view),
+        evidence=[EvidenceItem(**item) for item in evidence],
+        warnings=[],
     )
-    validation_warnings = validate_enterprise_bank_statement_result(result)
+    extracted_json = to_plain_dict(data)
+    validation_warnings = validate_enterprise_bank_statement_result(extracted_json)
     warnings.extend(validation_warnings)
-    result["warnings"] = list(dict.fromkeys(warnings))
-    markdown = render_enterprise_bank_statement_markdown(result)
-    confidence = _confidence(result)
+    extracted_json["warnings"] = list(dict.fromkeys(warnings))
+    markdown = render_enterprise_bank_statement_markdown(extracted_json)
+    confidence = _confidence(extracted_json)
     return {
-        "title": "企业银行流水解析结果",
-        "type": "enterprise_bank_statement",
-        "document_type_code": "enterprise_bank_statement",
-        "schema_version": "enterprise_bank_statement.agent.v1",
+        "title": "企业流水分析报告",
+        "type": document_type or "enterprise_flow",
+        "document_type": document_type or "enterprise_flow",
+        "document_type_code": document_type or "enterprise_flow",
+        "normalized_document_type": "enterprise_bank_statement",
+        "schema_version": "enterprise_bank_statement.agent.v2",
         "skill_name": "enterprise_bank_statement_agent",
-        "extracted_json": result,
+        "extracted_json": extracted_json,
         "markdown_summary": markdown,
         "markdown": markdown,
         "summary": markdown,
-        "data": result,
+        "data": extracted_json,
         "confidence": confidence,
-        "warnings": result["warnings"],
-        "evidence": evidence,
-        "raw_text_preview": str(text or "")[:3000],
+        "warnings": extracted_json["warnings"],
+        "evidence": extracted_json.get("evidence") or [],
+        "large_transactions": large_transactions,
+        "loan_related_transactions": loan_related_transactions,
+        "raw_text_preview": str(source_text or "")[:3000],
     }

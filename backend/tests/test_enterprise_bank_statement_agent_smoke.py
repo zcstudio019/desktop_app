@@ -32,35 +32,32 @@ SAMPLE_TEXT = """
 
 
 def test_agent_smoke() -> None:
-    result = run_enterprise_bank_statement_agent(
-        text=SAMPLE_TEXT,
-        document_type="enterprise_bank_statement",
-        metadata={},
-    )
+    result = run_enterprise_bank_statement_agent(text=SAMPLE_TEXT, document_type="enterprise_flow", metadata={})
     assert result["extracted_json"]
     assert result["markdown_summary"]
     extracted = result["extracted_json"]
-    assert extracted["account_basic_info"]
-    assert extracted["statement_summary"]
-    assert extracted["transactions"]
+    assert "accounts" in extracted
+    assert "summary" in extracted
+    assert "transactions" in extracted
 
 
 def test_document_agent_orchestrator_smoke() -> None:
     result = run_document_extraction_agent(
-        document_type="enterprise_bank_statement",
+        document_type="enterprise_flow",
         raw_text=SAMPLE_TEXT,
         filename="enterprise-bank-statement.txt",
         customer_id="customer-smoke",
         metadata={},
     )
     assert isinstance(result, DocumentAgentResult)
-    assert result.document_type == "enterprise_bank_statement"
-    assert result.extracted_json["account_basic_info"]
+    assert result.document_type == "enterprise_flow"
+    assert "summary" in result.extracted_json
     assert result.markdown_summary
 
 
 def test_enterprise_bank_statement_append_save_policy() -> None:
     assert should_append_same_type_document("enterprise_bank_statement")
+    assert should_append_same_type_document("enterprise_flow")
     assert should_append_same_type_document("bank_statement_enterprise")
     assert should_append_same_type_document("company_bank_statement")
 

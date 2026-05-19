@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 DOCUMENT_AGENT_DISPATCH_TYPES = {
     "enterprise_credit_report",
     "personal_credit_report",
+    "enterprise_flow",
     "enterprise_bank_statement",
 }
 
@@ -8944,6 +8945,7 @@ def build_structured_extraction(
     rows: list[dict[str, Any]] | None = None,
     raw_pages: list[dict[str, Any]] | None = None,
     filename: str = "",
+    file_path: str = "",
     customer_id: str = "",
     customer_name: str = "",
     ai_service: Any | None = None,
@@ -8971,6 +8973,9 @@ def build_structured_extraction(
             metadata={
                 "customer_name": customer_name,
                 "raw_pages": raw_pages,
+                "rows": rows,
+                "file_path": file_path,
+                "document_type": normalized_code,
             },
         )
         if isinstance(agent_result.raw_agent_result, dict):

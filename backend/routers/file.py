@@ -736,6 +736,7 @@ def _extract_structured_data(
     *,
     raw_pages: list[dict[str, Any]] | None = None,
     filename: str = "",
+    file_path: str = "",
     customer_id: str = "",
     customer_name: str = "",
 ) -> FileProcessResponse:
@@ -781,6 +782,7 @@ def _extract_structured_data(
             rows=rows,
             raw_pages=raw_pages,
             filename=filename,
+            file_path=file_path,
             customer_id=customer_id,
             customer_name=customer_name,
             ai_service=ai_service,
@@ -817,6 +819,7 @@ async def _process_file_bytes(
     *,
     customer_id: str = "",
     customer_name: str = "",
+    file_path: str = "",
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> FileProcessResponse:
     text_content, rows, raw_pages = await _extract_content_from_file(
@@ -825,7 +828,8 @@ async def _process_file_bytes(
         filename,
         progress_callback=progress_callback,
     )
-    if not text_content or not text_content.strip():
+    explicit_normalized = normalize_document_type_code(explicit_document_type)
+    if (not text_content or not text_content.strip()) and not rows and explicit_normalized not in {"enterprise_flow", "enterprise_bank_statement"}:
         raise HTTPException(status_code=400, detail=NO_TEXT_EXTRACTED_MESSAGE)
 
     document_type_code = _resolve_document_type_code(text_content, explicit_document_type, rows)
@@ -872,6 +876,7 @@ async def _process_file_bytes(
         rows,
         raw_pages=raw_pages,
         filename=filename,
+        file_path=file_path,
         customer_id=customer_id,
         customer_name=customer_name,
     )
@@ -930,6 +935,7 @@ async def _run_file_process_job(
             explicit_document_type or None,
             customer_id=requested_customer_id,
             customer_name=requested_customer_name,
+            file_path=str(temp_path),
             progress_callback=lambda message: _update_file_process_progress(job_id, message),
         )
 
