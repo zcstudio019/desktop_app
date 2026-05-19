@@ -147,6 +147,11 @@ def _append_credit_card_account(lines: list[str], title: str, record: dict[str, 
     for key, label in (
         ("credit_limit", "信用额度"),
         ("used_limit", "已使用额度"),
+    ):
+        _append_field(lines, label, record.get(key))
+    if record.get("special_installment_balance"):
+        _append_field(lines, "大额专项分期余额", record.get("special_installment_balance"))
+    for key, label in (
         ("account_status", "账户状态"),
         ("report_cutoff", "截至日期"),
     ):

@@ -171,6 +171,12 @@ def _extract_amount_after_label(block: str, labels: tuple[str, ...]) -> str:
     return ""
 
 
+def _extract_credit_card_balance_as_used(block: str) -> str:
+    source = _normalize_block(block)
+    match = re.search(r"(?<!专项分期)余额\s*[:：]?\s*为?\s*([0-9][0-9,]*(?:\.\d+)?)(?:\s*元)?", source)
+    return clean_amount(match.group(1)) if match else ""
+
+
 def _extract_date(block: str, labels: tuple[str, ...]) -> str:
     labeled = _extract_label(block, labels, max_chars=50)
     match = re.search(r"(?:19|20)\d{2}[-./年]\d{1,2}[-./月]\d{1,2}日?", labeled or "")
@@ -257,7 +263,7 @@ def _looks_like_active_card(block: str) -> bool:
     return bool(
         re.search(r"截至\s*(?:19|20)\d{2}年\d{1,2}月", source)
         and "信用额度" in source
-        and ("已使用额度" in source or "已用额度" in source or "使用额度" in source)
+        and ("已使用额度" in source or "已用额度" in source or "使用额度" in source or "余额" in source)
         and not any(word in source for word in CLOSED_STATUS_WORDS)
     )
 
@@ -326,7 +332,7 @@ def _recovery_match_key(record: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _merge_recovered_card(existing: dict[str, Any], recovered: dict[str, Any]) -> None:
-    for key in ("credit_limit", "used_limit", "used_amount", "account_status", "report_cutoff", "card_type", "currency", "open_date"):
+    for key in ("credit_limit", "used_limit", "used_amount", "special_installment_balance", "account_status", "report_cutoff", "card_type", "currency", "open_date"):
         if not existing.get(key) and recovered.get(key):
             existing[key] = recovered.get(key)
     if str(existing.get("account_status") or "") in {"", "未识别", "未知", "不详"} and recovered.get("account_status"):
@@ -478,6 +484,19 @@ def parse_credit_card_account_block(block: str) -> dict[str, Any]:
     card_type = _extract_card_type(source)
     credit_limit = _extract_amount_after_label(source, ("信用额度", "授信额度", "共享授信额度")) or _extract_money(source, ("授信额度", "信用额度", "共享授信额度"))
     used_limit = _extract_amount_after_label(source, ("已使用额度", "已用额度", "使用额度", "透支余额", "已用授信额度")) or _extract_money(source, ("已使用额度", "已用额度", "使用额度", "透支余额", "已用授信额度"))
+    balance_as_used = ""
+    if not used_limit:
+        balance_as_used = _extract_credit_card_balance_as_used(source)
+        used_limit = balance_as_used
+        if balance_as_used:
+            logger.info(
+                "[PersonalCredit][CreditCard][BALANCE_AS_USED_AMOUNT] issuer=%s balance=%s",
+                institution,
+                balance_as_used,
+            )
+    special_installment_balance = _extract_amount_after_label(source, ("大额专项分期余额",))
+    if special_installment_balance:
+        logger.info("[PersonalCredit][CreditCard][SPECIAL_INSTALLMENT_BALANCE] value=%s", special_installment_balance)
     latest_date = _extract_date(source, ("最近一次还款日期", "最近还款日期", "最近一次还款", "最近还款"))
     latest_amount = _extract_money(source, ("最近一次还款金额", "最近还款金额"))
     status = _extract_status(source)
@@ -496,6 +515,7 @@ def parse_credit_card_account_block(block: str) -> dict[str, Any]:
         "credit_limit": credit_limit,
         "used_limit": used_limit,
         "used_amount": used_limit,
+        "special_installment_balance": special_installment_balance,
         "report_cutoff": _extract_report_cutoff(source),
         "overdue_amount": _extract_money(source, ("当前逾期金额", "逾期金额")),
         "overdue_months": _extract_overdue_months(source),
@@ -540,6 +560,19 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                 record.get("used_amount"),
                 record.get("report_cutoff"),
             )
+            if record.get("used_amount") and "余额" in str(record.get("evidence_text") or "") and "已使用额度" not in str(record.get("evidence_text") or ""):
+                logger.info(
+                    "[PersonalCredit][CreditCard][BALANCE_AS_USED_AMOUNT] index=%s issuer=%s balance=%s",
+                    index,
+                    record.get("issuer") or record.get("institution"),
+                    record.get("used_amount"),
+                )
+            if record.get("special_installment_balance"):
+                logger.info(
+                    "[PersonalCredit][CreditCard][SPECIAL_INSTALLMENT_BALANCE] index=%s value=%s",
+                    index,
+                    record.get("special_installment_balance"),
+                )
             if _should_skip_inactive_card(block, record):
                 reason = "closed_or_inactive"
                 if _should_skip_closed_card(block, record):
@@ -586,6 +619,19 @@ def extract_credit_card_accounts(sections: dict[str, Any]) -> list[dict[str, Any
                     record.get("used_amount"),
                     record.get("report_cutoff"),
                 )
+                if record.get("used_amount") and "余额" in str(record.get("evidence_text") or "") and "已使用额度" not in str(record.get("evidence_text") or ""):
+                    logger.info(
+                        "[PersonalCredit][CreditCard][BALANCE_AS_USED_AMOUNT] index=fallback-%s issuer=%s balance=%s",
+                        index,
+                        record.get("issuer") or record.get("institution"),
+                        record.get("used_amount"),
+                    )
+                if record.get("special_installment_balance"):
+                    logger.info(
+                        "[PersonalCredit][CreditCard][SPECIAL_INSTALLMENT_BALANCE] index=fallback-%s value=%s",
+                        index,
+                        record.get("special_installment_balance"),
+                    )
                 if not _looks_like_active_card(block) or _should_skip_closed_card(block, record):
                     logger.info(
                         "[PersonalCredit][CreditCard][FILTER_DROP] index=fallback-%s reason=not_active_or_closed issuer=%s currency=%s tail_no=%s",

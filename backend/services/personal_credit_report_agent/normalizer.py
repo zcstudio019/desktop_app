@@ -52,6 +52,7 @@ AMOUNT_KEYS = {
     "balance",
     "credit_limit",
     "used_amount",
+    "special_installment_balance",
     "overdue_amount",
     "guarantee_amount",
     "guarantee_balance",
@@ -296,7 +297,7 @@ def _keep_card_record(record: dict[str, Any]) -> bool:
             record.get("card_tail_no"),
         )
         return True
-    if record.get("report_cutoff") and record.get("credit_limit") and (record.get("used_limit") or record.get("used_amount")) not in (None, ""):
+    if record.get("report_cutoff") and record.get("credit_limit"):
         logger.info(
             "[PersonalCredit][CreditCard][DISPLAY_KEEP] issuer=%s currency=%s tail_no=%s reason=active_limit",
             record.get("issuer") or record.get("institution"),
