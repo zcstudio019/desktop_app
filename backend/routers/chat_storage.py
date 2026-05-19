@@ -13,7 +13,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from backend.document_types import get_document_type_definition, normalize_document_type_code, should_store_original
+from backend.document_types import (
+    get_document_type_definition,
+    normalize_document_type_code,
+    should_append_same_type_document,
+    should_store_original,
+)
 from config import DATA_TYPE_CONFIG, STORE_ORIGINAL_UPLOAD_FILES
 
 from .feishu import dict_to_markdown
@@ -46,6 +51,9 @@ _PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
 _MULTI_INSTANCE_DOCUMENT_TYPE_CODES = frozenset({
     "id_card",
     "bank_statement",
+    "enterprise_bank_statement",
+    "bank_statement_enterprise",
+    "company_bank_statement",
     "enterprise_credit_report",
 })
 
@@ -569,7 +577,7 @@ async def _replace_existing_documents_of_same_type(
         )
         return
 
-    if document_type_code in _MULTI_INSTANCE_DOCUMENT_TYPE_CODES:
+    if should_append_same_type_document(document_type_code):
         logger.info(
             "[Local Save] Skip replacement for multi-instance document type customer_id=%s type=%s",
             customer_id,

@@ -34,6 +34,13 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         customer_scope="personal",
     ),
     DocumentTypeDefinition(
+        code="enterprise_bank_statement",
+        name="企业银行流水",
+        storage_label="企业银行流水解析",
+        formats=("pdf", "xlsx", "image"),
+        aliases=("企业银行流水", "企业流水", "对公流水", "enterprise_bank_statement", "bank_statement_enterprise", "company_bank_statement"),
+    ),
+    DocumentTypeDefinition(
         code="enterprise_flow",
         name="企业流水",
         storage_label="企业流水提取",
@@ -196,6 +203,12 @@ DOCUMENT_TYPE_CANONICAL_ALIASES = {
     "企业征信报告": "enterprise_credit_report",
     "企业信用报告": "enterprise_credit_report",
     "企业征信提取": "enterprise_credit_report",
+    "enterprise_bank_statement": "enterprise_bank_statement",
+    "bank_statement_enterprise": "enterprise_bank_statement",
+    "company_bank_statement": "enterprise_bank_statement",
+    "企业银行流水": "enterprise_bank_statement",
+    "企业流水": "enterprise_bank_statement",
+    "对公流水": "enterprise_bank_statement",
 }
 
 _ALIASES_TO_CODE: dict[str, str] = {}
@@ -254,3 +267,16 @@ def should_store_markdown(value: str | None) -> bool:
     if not definition:
         return True
     return definition.store_markdown
+
+
+def should_append_same_type_document(value: str | None) -> bool:
+    """Return True for document types that can have multiple active uploads per customer."""
+    normalized = normalize_document_type_code(value) or str(value or "").strip()
+    return normalized in {
+        "id_card",
+        "bank_statement",
+        "enterprise_bank_statement",
+        "bank_statement_enterprise",
+        "company_bank_statement",
+        "enterprise_credit_report",
+    }

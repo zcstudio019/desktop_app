@@ -17,12 +17,19 @@ from backend.document_types import (
     normalize_document_type_code,
 )
 from backend.extraction_skills.enterprise_credit import build_enterprise_credit_content
+from backend.services.document_agents import run_document_extraction_agent
 from backend.services.extraction_utils import normalize_amount, normalize_text, only_digits
 from backend.services.personal_credit_report_agent import run_personal_credit_report_agent
 from prompts import get_prompt_for_type, load_prompts
 from utils.json_parser import parse_json
 
 logger = logging.getLogger(__name__)
+
+DOCUMENT_AGENT_DISPATCH_TYPES = {
+    "enterprise_credit_report",
+    "personal_credit_report",
+    "enterprise_bank_statement",
+}
 
 DATE_PATTERN = re.compile(r"((?:19|20)\d{2}[年/\-.](?:0?[1-9]|1[0-2])[月/\-.](?:0?[1-9]|[12]\d|3[01])日?)")
 MONEY_PATTERN = re.compile(r"([+-]?(?:\d[\d,]*)(?:\.\d+)?)")
@@ -8955,7 +8962,44 @@ def build_structured_extraction(
                 str(item.get("text") or "")[:1500],
             )
 
-    if normalized_code == "business_license":
+    if normalized_code in DOCUMENT_AGENT_DISPATCH_TYPES:
+        agent_result = run_document_extraction_agent(
+            document_type=normalized_code,
+            raw_text=str(text_content or ""),
+            filename=filename,
+            customer_id=customer_id,
+            metadata={
+                "customer_name": customer_name,
+                "raw_pages": raw_pages,
+            },
+        )
+        if isinstance(agent_result.raw_agent_result, dict):
+            content = dict(agent_result.raw_agent_result)
+            content["document_type_code"] = normalized_code
+        else:
+            extracted_json = agent_result.extracted_json or {}
+            basic = extracted_json.get("basic_info") if isinstance(extracted_json.get("basic_info"), dict) else {}
+            content = {
+                **agent_result.to_legacy_content(),
+                "name": basic.get("name") or get_document_display_name(normalized_code),
+                "title": get_document_display_name(normalized_code),
+                "document_type_name": get_document_display_name(normalized_code),
+                "storage_label": get_document_storage_label(normalized_code),
+                "skill_version": "v1",
+                "extraction_status": "success",
+                "extraction_error": "",
+                "errors": [],
+                "report_markdown": agent_result.markdown_summary,
+                "customer_name": basic.get("name") or "",
+                "id_number": basic.get("id_number") or "",
+                "report_no": basic.get("report_number") or "",
+                "report_date": basic.get("report_time") or "",
+                "raw_text_preview": str(text_content or "")[:3000],
+            }
+        content["raw_text"] = str(text_content or "")
+        if raw_pages:
+            content["raw_pages"] = raw_pages
+    elif normalized_code == "business_license":
         content = extract_business_license(text_content)
     elif normalized_code == "account_license":
         content = extract_account_license(text_content)
@@ -8976,7 +9020,7 @@ def build_structured_extraction(
         content = extract_business_plan_fields(text_content)
     elif normalized_code == "financial_statement":
         content = extract_financial_statement_fields(text_content)
-    elif normalized_code == "enterprise_credit_report":
+    elif False and normalized_code == "enterprise_credit_report":
         print("[document_extraction] 使用 enterprise_credit skill document_type=", normalized_code)
         content = build_enterprise_credit_content(
             text=str(text_content or ""),
@@ -8990,7 +9034,7 @@ def build_structured_extraction(
         content["raw_text"] = str(text_content or "")
         if raw_pages:
             content["raw_pages"] = raw_pages
-    elif normalized_code == "personal_credit_report":
+    elif False and normalized_code == "personal_credit_report":
         content = build_personal_credit_report_content(str(text_content or ""), filename=filename)
         normalized_code = "personal_credit_report"
         content["raw_text"] = str(text_content or "")
