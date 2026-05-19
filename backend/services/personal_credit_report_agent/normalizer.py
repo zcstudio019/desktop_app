@@ -446,6 +446,8 @@ def _summary_matrix_tokens(region: str, max_tokens: int) -> list[str]:
         "发生过逾期的信用卡账户",
         "指曾经",
         "透支超过",
+        "超过60天",
+        "60天",
     ):
         marker_index = text.find(marker)
         if marker_index >= 0:
@@ -464,6 +466,66 @@ def _summary_matrix_tokens(region: str, max_tokens: int) -> list[str]:
         if len(tokens) >= max_tokens:
             break
     return tokens
+
+
+def _has_personal_enterprise_header(source_text: str, row_start: int) -> bool:
+    prefix = re.sub(r"\s+", " ", str(source_text or "")[max(0, row_start - 120):row_start])
+    return "为个人" in prefix and "为企业" in prefix
+
+
+def _parse_related_responsibility_values(source_text: str) -> tuple[str, str] | None:
+    compact = re.sub(r"\s+", " ", str(source_text or ""))
+    direct = re.search(
+        r"为个人\s*(--|——|—|-)?\s*为企业\s*(--|——|—|-|(?<!\d)\d{1,3}(?!\d))",
+        compact,
+    )
+    if direct and direct.group(2):
+        personal_raw = direct.group(1) or "--"
+        enterprise_raw = direct.group(2)
+        personal = _summary_token_value(personal_raw)
+        enterprise = _summary_token_value(enterprise_raw)
+        logger.info(
+            "[PersonalCredit][Summary][RELATED_RESPONSIBILITY_MATRIX] personal_raw=%s enterprise_raw=%s personal=%s enterprise=%s",
+            personal_raw,
+            enterprise_raw,
+            personal,
+            enterprise,
+        )
+        return personal, enterprise
+
+    row_match = None
+    for candidate in re.finditer(r"相关还款责任账户数", compact):
+        prefix = compact[max(0, candidate.start() - 4):candidate.start()]
+        if prefix.endswith("为个人") or prefix.endswith("为企业"):
+            continue
+        row_match = candidate
+        break
+    if not row_match:
+        return None
+    region = _summary_row_region(compact, r"相关还款责任账户数")
+    tokens = _summary_matrix_tokens(region, 2)
+    if not tokens:
+        return None
+    has_header = _has_personal_enterprise_header(compact, row_match.start())
+    if has_header and len(tokens) == 1 and re.fullmatch(r"\d{1,3}", tokens[0]):
+        personal_raw = "--"
+        enterprise_raw = tokens[0]
+    elif has_header and len(tokens) >= 2 and re.fullmatch(r"\d{1,3}", tokens[0]) and tokens[1] == "60" and re.search(r"(?:超过|透支超过)?\s*60\s*天", region):
+        personal_raw = "--"
+        enterprise_raw = tokens[0]
+    else:
+        personal_raw = tokens[0]
+        enterprise_raw = tokens[1] if len(tokens) >= 2 else ""
+    personal = _summary_token_value(personal_raw)
+    enterprise = _summary_token_value(enterprise_raw)
+    logger.info(
+        "[PersonalCredit][Summary][RELATED_RESPONSIBILITY_MATRIX] personal_raw=%s enterprise_raw=%s personal=%s enterprise=%s",
+        personal_raw,
+        enterprise_raw,
+        personal,
+        enterprise,
+    )
+    return personal, enterprise
 
 
 def _summary_row_region(source_text: str, row_pattern: str) -> str:
@@ -522,13 +584,9 @@ def apply_credit_summary_matrix_corrections(summary: dict[str, Any], raw_text: s
                     loan_90d,
                 )
 
-    direct_responsibility = re.search(
-        r"为个人\s*(--|——|—|-|(?<!\d)\d{1,3}(?!\d))\s*为企业\s*(--|——|—|-|(?<!\d)\d{1,3}(?!\d))",
-        re.sub(r"\s+", " ", source_text),
-    )
-    if direct_responsibility:
-        personal_value = _summary_token_value(direct_responsibility.group(1))
-        enterprise_value = _summary_token_value(direct_responsibility.group(2))
+    responsibility_values = _parse_related_responsibility_values(source_text)
+    if responsibility_values:
+        personal_value, enterprise_value = responsibility_values
         old_personal = corrected.get("personal_related_repayment_responsibility_account_count")
         old_enterprise = corrected.get("enterprise_related_repayment_responsibility_account_count")
         corrected["personal_related_repayment_responsibility_account_count"] = personal_value
@@ -548,35 +606,6 @@ def apply_credit_summary_matrix_corrections(summary: dict[str, Any], raw_text: s
             )
         logger.info("[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s", personal_value, enterprise_value)
         return corrected
-
-    responsibility_region = _summary_row_region(source_text, r"相关还款责任账户数")
-    responsibility_tokens = _summary_matrix_tokens(responsibility_region, 2)
-    if responsibility_tokens:
-        personal_value = _summary_token_value(responsibility_tokens[0])
-        old_personal = corrected.get("personal_related_repayment_responsibility_account_count")
-        corrected["personal_related_repayment_responsibility_account_count"] = personal_value
-        if str(old_personal or "") != personal_value:
-            logger.info(
-                "[PersonalCredit][Summary][FINAL_CORRECTION] personal_related %s -> %s reason=matrix_personal_dash",
-                old_personal,
-                personal_value,
-            )
-        if len(responsibility_tokens) >= 2:
-            old_enterprise = corrected.get("enterprise_related_repayment_responsibility_account_count")
-            enterprise_value = _summary_token_value(responsibility_tokens[1])
-            corrected["enterprise_related_repayment_responsibility_account_count"] = enterprise_value
-            if str(old_enterprise or "") != enterprise_value:
-                logger.info(
-                    "[PersonalCredit][Summary][FINAL_CORRECTION] enterprise_related %s -> %s reason=matrix_enterprise_%s",
-                    old_enterprise,
-                    enterprise_value,
-                    enterprise_value,
-                )
-        logger.info(
-            "[PersonalCredit][Summary][RELATED_RESPONSIBILITY] personal=%s enterprise=%s",
-            corrected.get("personal_related_repayment_responsibility_account_count"),
-            corrected.get("enterprise_related_repayment_responsibility_account_count"),
-        )
     return corrected
 
 

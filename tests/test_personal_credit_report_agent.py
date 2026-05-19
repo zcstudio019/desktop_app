@@ -968,6 +968,28 @@ def test_summary_final_correction_overrides_bad_intermediate_values() -> None:
     assert corrected["enterprise_related_repayment_responsibility_account_count"] == "10"
 
 
+def test_summary_related_responsibility_missing_dash_not_use_60() -> None:
+    raw_text = """
+信息概要
+发生过90天以上逾期的账户数 -- -- -- --
+为个人 为企业
+相关还款责任账户数 10 发生过逾期的信用卡账户，指曾经“未按时还最低还款额”的贷记卡账户和“透支超过60天”的准贷记卡账户。
+"""
+    corrected = apply_credit_summary_matrix_corrections(
+        {
+            "credit_card_90d_overdue_account_count": "60",
+            "loan_90d_overdue_account_count": "0",
+            "personal_related_repayment_responsibility_account_count": "10",
+            "enterprise_related_repayment_responsibility_account_count": "60",
+        },
+        raw_text,
+    )
+    assert corrected["credit_card_90d_overdue_account_count"] == "0"
+    assert corrected["loan_90d_overdue_account_count"] == "0"
+    assert corrected["personal_related_repayment_responsibility_account_count"] == "0"
+    assert corrected["enterprise_related_repayment_responsibility_account_count"] == "10"
+
+
 def test_loan_accounts_skip_related_repayment_responsibility() -> None:
     text = """
 个人征信报告

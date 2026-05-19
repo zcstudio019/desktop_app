@@ -194,6 +194,8 @@ def parse_matrix_tokens(region: str, max_tokens: int) -> list[str]:
         "发生过逾期的信用卡账户",
         "指曾经",
         "透支超过",
+        "超过60天",
+        "60天",
     ):
         marker_index = text.find(marker)
         if marker_index >= 0:
