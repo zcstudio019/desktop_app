@@ -2269,7 +2269,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [profile, setProfile] = useState<CustomerProfileMarkdownResponse | null>(null);
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<EditorMode>('edit');
-  const [showRawMarkdownEditor, setShowRawMarkdownEditor] = useState(false);
   const [loadingCustomers, setLoadingCustomers] = useState(true);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
@@ -2450,10 +2449,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   useEffect(() => {
     void loadCustomers();
   }, [loadCustomers]);
-
-  useEffect(() => {
-    setShowRawMarkdownEditor(false);
-  }, [selectedCustomerId]);
 
   useEffect(() => {
     if (!customerIdFromUrl) {
@@ -3314,12 +3309,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-1">
               <button
                 type="button"
-                onClick={() => {
-                  setMode('edit');
-                  setShowRawMarkdownEditor(true);
-                }}
+                onClick={() => setMode('edit')}
                 className={`rounded-lg px-3 py-1.5 text-sm ${
-                  mode === 'edit' && showRawMarkdownEditor ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'
+                  mode === 'edit' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'
                 }`}
               >
                 <span className="inline-flex items-center gap-1">
@@ -3329,12 +3321,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setMode('preview');
-                  setShowRawMarkdownEditor(false);
-                }}
+                onClick={() => setMode('preview')}
                 className={`rounded-lg px-3 py-1.5 text-sm ${
-                  mode === 'preview' || (hasEnterpriseStructuredData && !showRawMarkdownEditor) ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'
+                  mode === 'preview' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'
                 }`}
               >
                 <span className="inline-flex items-center gap-1">
@@ -4663,46 +4652,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                   资料内容
                 </div>
               </div>
-              {hasEnterpriseStructuredData && !showRawMarkdownEditor ? (
-                <div className="space-y-4 p-5">
-                  <div className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50 to-white p-5">
-                    <div className="text-sm font-semibold text-blue-900">当前资料已完成结构化解析</div>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      企业流水已从原始资料汇总中提取为结构化指标、账户汇总、月度趋势、对手方分析和风险信号。右侧为结构化阅读预览；原始 Markdown 默认收起。
-                    </p>
-                    {enterpriseFlowViewSources[0] ? (
-                      <div className="mt-4 grid gap-3 text-sm">
-                        <div>
-                          <div className="text-xs text-slate-500">数据来源文件</div>
-                          <div className="mt-1 break-words font-medium text-slate-800">{enterpriseFlowViewSources[0].fileName || '企业流水'}</div>
-                        </div>
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <div>
-                            <div className="text-xs text-slate-500">资料类型</div>
-                            <div className="mt-1 font-medium text-slate-800">{enterpriseFlowViewSources[0].documentType || 'enterprise_flow'}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-slate-500">最近更新时间</div>
-                            <div className="mt-1 font-medium text-slate-800">{enterpriseFlowViewSources[0].createdAt ? formatProfileDateTime(enterpriseFlowViewSources[0].createdAt) : formatProfileDateTime(profile?.updated_at)}</div>
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMode('edit');
-                        setShowRawMarkdownEditor(true);
-                      }}
-                      className="mt-5 inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-50"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                      编辑资料汇总
-                    </button>
-                  </div>
-                  <RawMarkdownPanel markdown={renderedDraft || draft} />
-                </div>
-              ) : mode === 'edit' ? (
+              {mode === 'edit' ? (
                 <textarea
                   value={renderedDraft}
                   onChange={(e) => setDraft(e.target.value)}
@@ -4711,7 +4661,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                 />
               ) : (
                 <div className="overflow-visible p-5">
-                  <RawMarkdownPanel markdown={renderedDraft || draft} />
+                  <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
+                    {draft || '暂无内容'}
+                  </pre>
                 </div>
               )}
             </section>
