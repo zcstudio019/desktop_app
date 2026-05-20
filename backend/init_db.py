@@ -30,6 +30,18 @@ def _mysql_column_exists(connection, table_name: str, column_name: str) -> bool:
     return any(column.get("name") == column_name for column in columns)
 
 
+def table_exists(connection, table_name: str) -> bool:
+    try:
+        return inspect(connection).has_table(table_name)
+    except Exception as exc:
+        logger.info("[DB Migration] skip table check %s: %s", table_name, exc)
+        return False
+
+
+def column_exists(connection, table_name: str, column_name: str) -> bool:
+    return _mysql_column_exists(connection, table_name, column_name)
+
+
 def _mysql_column_type(connection, table_name: str, column_name: str) -> str:
     inspector = inspect(connection)
     try:
@@ -42,31 +54,67 @@ def _mysql_column_type(connection, table_name: str, column_name: str) -> str:
     return ""
 
 
+def get_column_info(connection, table_name: str, column_name: str) -> dict[str, str] | None:
+    database_name = (getattr(engine.url, "database", None) or "").strip()
+    if not database_name:
+        return None
+    row = connection.execute(
+        text(
+            """
+            SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
+                   CHARACTER_SET_NAME, COLLATION_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = :database_name
+              AND TABLE_NAME = :table_name
+              AND COLUMN_NAME = :column_name
+            LIMIT 1
+            """
+        ),
+        {"database_name": database_name, "table_name": table_name, "column_name": column_name},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
 def _execute_mysql_ddl(connection, ddl: str, *, label: str) -> None:
     try:
         connection.execute(text(ddl))
     except Exception as exc:
-        logger.warning("[DB Migration] %s failed: %s", label, exc, exc_info=True)
+        logger.warning("[DB Migration] %s failed: %s", label, exc)
 
 
-def _ensure_mysql_longtext(connection, table_name: str, column_name: str) -> None:
+def alter_longtext_utf8mb4_if_exists(connection, table_name: str, column_name: str) -> None:
     try:
-        column_type = _mysql_column_type(connection, table_name, column_name)
-        if not column_type or "longtext" in column_type:
+        if not table_exists(connection, table_name):
+            logger.info("[DB Migration] skip missing table %s", table_name)
             return
-        _execute_mysql_ddl(
-            connection,
-            f"""
+        if not column_exists(connection, table_name, column_name):
+            logger.info("[DB Migration] skip missing column %s.%s", table_name, column_name)
+            return
+        column_info = get_column_info(connection, table_name, column_name)
+        if not column_info:
+            logger.info("[DB Migration] skip unavailable column info %s.%s", table_name, column_name)
+            return
+        column_type = str(column_info.get("COLUMN_TYPE") or "").lower()
+        charset = str(column_info.get("CHARACTER_SET_NAME") or "").lower()
+        collation = str(column_info.get("COLLATION_NAME") or "").lower()
+        if "longtext" in column_type and charset == "utf8mb4" and collation == "utf8mb4_unicode_ci":
+            logger.info("[DB Migration] skip unchanged %s.%s", table_name, column_name)
+            return
+        null_sql = "NULL" if str(column_info.get("IS_NULLABLE") or "").upper() == "YES" else "NOT NULL"
+        connection.execute(
+            text(
+                f"""
             ALTER TABLE `{table_name}`
             MODIFY COLUMN `{column_name}` LONGTEXT
             CHARACTER SET utf8mb4
             COLLATE utf8mb4_unicode_ci
-            NULL
+            {null_sql}
             """,
-            label=f"{table_name}.{column_name} LONGTEXT",
+            )
         )
+        logger.info("[DB Migration] altered %s.%s to LONGTEXT utf8mb4", table_name, column_name)
     except Exception as exc:
-        logger.warning("[DB Migration] failed to inspect %s.%s: %s", table_name, column_name, exc, exc_info=True)
+        logger.warning("[DB Migration] failed to alter %s.%s: %s", table_name, column_name, exc)
 
 
 def _repair_mysql_charset_and_text_columns(connection) -> None:
@@ -77,18 +125,15 @@ def _repair_mysql_charset_and_text_columns(connection) -> None:
             f"ALTER DATABASE `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
             label="database utf8mb4 conversion",
         )
-    for table_name in ("async_jobs", "documents", "extractions", "customer_profiles", "customer_document_chunks", "product_cache_entries"):
-        _execute_mysql_ddl(
-            connection,
-            f"ALTER TABLE `{table_name}` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
-            label=f"{table_name} utf8mb4 conversion",
-        )
     large_text_columns = {
         "async_jobs": ["request_json", "execution_payload_json", "result_json", "error_message"],
-        "extractions": ["extracted_data", "extraction_error"],
+        "documents": ["metadata_json", "raw_text", "content_text"],
+        "extractions": ["extracted_data", "extracted_json", "result_json", "markdown_summary", "raw_text", "extraction_error"],
         "customer_profiles": ["markdown_content", "source_snapshot_json", "rag_source_priority_json", "risk_report_schema_json"],
         "customer_document_chunks": ["chunk_text", "embedding_json", "metadata_json"],
+        "risk_reports": ["risk_json", "report_markdown"],
         "customer_risk_reports": ["report_json", "report_markdown"],
+        "application_records": ["application_json", "report_markdown"],
         "saved_applications": ["application_data", "stale_reason"],
         "activity_logs": ["description", "metadata_json"],
         "chat_messages": ["content"],
@@ -96,7 +141,7 @@ def _repair_mysql_charset_and_text_columns(connection) -> None:
     }
     for table_name, column_names in large_text_columns.items():
         for column_name in column_names:
-            _ensure_mysql_longtext(connection, table_name, column_name)
+            alter_longtext_utf8mb4_if_exists(connection, table_name, column_name)
 
 
 def init_database() -> None:
