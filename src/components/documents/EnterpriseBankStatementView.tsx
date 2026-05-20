@@ -36,7 +36,9 @@ export function parseMaybeJson(value: unknown): Record<string, unknown> | null {
       const parsed = JSON.parse(value);
       return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
     } catch (error) {
-      console.warn('[企业流水调试] JSON.parse failed', error, value.slice(0, 200));
+      if (import.meta.env.DEV) {
+        console.debug('[EnterpriseBankStatementView] JSON.parse failed', error, value.slice(0, 200));
+      }
       return null;
     }
   }
@@ -235,9 +237,6 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
 
   return (
     <div className="space-y-4">
-      <div style={{ background: 'green', color: 'white', padding: 12, fontWeight: 700 }}>
-        DEBUG: EnterpriseBankStatementView 已渲染
-      </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {metricCards.map((item) => (
           <div key={item.label} className={`rounded-xl border p-4 ${item.tone}`}>

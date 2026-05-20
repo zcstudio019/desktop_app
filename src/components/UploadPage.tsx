@@ -979,8 +979,9 @@ const UploadPage: React.FC = () => {
     const taskState = state.tasks.upload;
     if (taskState.status === 'processing' && taskState.queue.length > 0 && !isRecoveringRef.current) {
       isRecoveringRef.current = true;
-      // We can't recover the actual files, but we can notify the user
-      console.warn('Upload task was interrupted. Please re-upload the files.');
+      if (import.meta.env.DEV) {
+        console.debug('[UploadPage] cleared stale processing upload task state');
+      }
       // Reset the task status since we can't recover
       setUploadTaskStatus('idle', []);
       isRecoveringRef.current = false;
@@ -1451,9 +1452,10 @@ const UploadPage: React.FC = () => {
     setUploadQueue((prev) => prev.filter((item) => 
       item.status !== 'success' && item.status !== 'error'
     ));
+    setUploadTaskStatus('idle', []);
     setActiveBatchId(null);
     setAutoRedirectMessage(null);
-  }, []);
+  }, [setUploadTaskStatus]);
 
   const removeUploadedFile = useCallback((id: string) => {
     setUploadedFiles((prev) => prev.filter((file) => file.id !== id));

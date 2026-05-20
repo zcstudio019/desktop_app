@@ -173,6 +173,25 @@ interface EnterpriseFlowDebugState {
   source: EnterpriseFlowViewSource | null;
 }
 
+function RawMarkdownPanel({
+  title = '查看原始资料汇总 Markdown',
+  markdown,
+}: {
+  title?: string;
+  markdown: string;
+}) {
+  return (
+    <details className="rounded-[24px] border border-slate-200 bg-white shadow-sm">
+      <summary className="cursor-pointer px-5 py-4 text-sm font-semibold text-slate-700">
+        {title}
+      </summary>
+      <article className="prose prose-slate max-w-none border-t border-slate-100 p-5">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown || '暂无内容'}</ReactMarkdown>
+      </article>
+    </details>
+  );
+}
+
 function uniqueNonEmptyStrings(values: unknown[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -2250,6 +2269,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [profile, setProfile] = useState<CustomerProfileMarkdownResponse | null>(null);
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<EditorMode>('edit');
+  const [showRawMarkdownEditor, setShowRawMarkdownEditor] = useState(false);
   const [loadingCustomers, setLoadingCustomers] = useState(true);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
@@ -2390,12 +2410,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setLoadingDocuments(true);
     setDocuments([]);
     try {
-      console.log('[企业流水调试] loading documents for customerId=', customerId);
+      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] loading documents for customerId=', customerId);
       const result = await getCustomerDocuments(customerId);
-      console.log('[企业流水调试] documents api response=', result);
+      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] documents api response=', result);
       setDocuments(normalizeCustomerDocumentsResponse(result));
     } catch (err) {
-      console.error('[企业流水调试] load customer documents failed', err);
+      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load customer documents failed', err);
       setDocuments([]);
       setError(err instanceof Error ? err.message : '加载资料文件列表失败');
     } finally {
@@ -2406,12 +2426,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const loadExtractions = useCallback(async (customerId: string) => {
     setExtractionGroups([]);
     try {
-      console.log('[企业流水调试] loading extractions for customerId=', customerId);
+      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] loading extractions for customerId=', customerId);
       const result = await getCustomerExtractions(customerId);
-      console.log('[企业流水调试] extractions api response=', result);
+      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] extractions api response=', result);
       setExtractionGroups(normalizeExtractionGroupsResponse(result));
     } catch (err) {
-      console.error('[企业流水调试] load customer extractions failed', err);
+      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load customer extractions failed', err);
       setExtractionGroups([]);
       setError(err instanceof Error ? err.message : '加载结构化提取结果失败');
     }
@@ -2430,6 +2450,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   useEffect(() => {
     void loadCustomers();
   }, [loadCustomers]);
+
+  useEffect(() => {
+    setShowRawMarkdownEditor(false);
+  }, [selectedCustomerId]);
 
   useEffect(() => {
     if (!customerIdFromUrl) {
@@ -2497,15 +2521,19 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     async function loadCustomerDocumentsAndExtractions() {
       for (const customerId of customerIdCandidates) {
         try {
-          console.log('[企业流水调试] customerId=', customerId);
-          console.log('[企业流水调试] loading documents for customerId=', customerId);
+          if (import.meta.env.DEV) {
+            console.debug('[EnterpriseBankStatementView] customerId=', customerId);
+            console.debug('[EnterpriseBankStatementView] loading documents for customerId=', customerId);
+          }
           const [documentsResult, extractionsResult] = await Promise.allSettled([
             getCustomerDocuments(customerId),
             getCustomerExtractions(customerId),
           ]);
 
-          console.log('[企业流水调试] documents api response=', documentsResult);
-          console.log('[企业流水调试] extractions api response=', extractionsResult);
+          if (import.meta.env.DEV) {
+            console.debug('[EnterpriseBankStatementView] documents api response=', documentsResult);
+            console.debug('[EnterpriseBankStatementView] extractions api response=', extractionsResult);
+          }
 
           if (cancelled) return;
 
@@ -2526,16 +2554,18 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
           if (nextDocuments.length > 0 || extractionItemCount > 0 || isLastCandidate) {
             setDocuments(nextDocuments);
             setExtractionGroups(nextExtractions);
-            if (documentsResult.status === 'rejected') {
-              console.error('[企业流水调试] load customer documents failed', documentsResult.reason);
-            }
-            if (extractionsResult.status === 'rejected') {
-              console.error('[企业流水调试] load customer extractions failed', extractionsResult.reason);
+            if (import.meta.env.DEV) {
+              if (documentsResult.status === 'rejected') {
+                console.debug('[EnterpriseBankStatementView] load customer documents failed', documentsResult.reason);
+              }
+              if (extractionsResult.status === 'rejected') {
+                console.debug('[EnterpriseBankStatementView] load customer extractions failed', extractionsResult.reason);
+              }
             }
             return;
           }
         } catch (err) {
-          console.error('[企业流水调试] load customer documents/extractions failed', err);
+          if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load customer documents/extractions failed', err);
         }
       }
     }
@@ -2788,50 +2818,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     () => enterpriseFlowState.source ? [enterpriseFlowState.source] : [],
     [enterpriseFlowState]
   );
-  const enterpriseFlowDebugInfo = useMemo(() => {
-    const data = enterpriseFlowState.parsedEnterpriseData || {};
-    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
-    const monthly = Array.isArray(data.monthly_summary) ? data.monthly_summary : [];
-    return {
-      documentType: enterpriseFlowState.source?.documentType || getDocumentTypeFromRecord(enterpriseFlowState.selectedEnterpriseFlowDoc) || '-',
-      hasEnterpriseData: !!enterpriseFlowState.parsedEnterpriseData,
-      hasSummary: !!enterpriseFlowState.parsedEnterpriseData?.summary,
-      keys: Object.keys(enterpriseFlowState.parsedEnterpriseData || {}),
-      accountCount: accounts.length,
-      monthlyCount: monthly.length,
-      transactionCount: Array.isArray(data.transactions) ? data.transactions.length : 0,
-      documentCount: enterpriseFlowState.allDocs.length,
-      enterpriseFlowCount: enterpriseFlowState.enterpriseFlowDocs.length,
-      customerId: activeCustomerId || '-',
-      documentsCount: documents.length,
-      extractionGroupCount: extractionGroups.length,
-      extractedJson: enterpriseFlowState.rawExtractedJson,
-      parsedEnterpriseData: enterpriseFlowState.parsedEnterpriseData,
-    };
-  }, [activeCustomerId, documents.length, enterpriseFlowState, extractionGroups.length]);
+  const hasEnterpriseStructuredData = enterpriseFlowViewSources.length > 0;
   useEffect(() => {
-    console.log('[企业流水调试] page hit');
-    console.log('[企业流水调试] customerId=', activeCustomerId);
-    console.log('[企业流水调试] customerIdCandidates=', customerIdCandidates);
-    console.log('[企业流水调试] customer=', selectedCustomer);
-    console.log('[企业流水调试] profile=', profile);
-    console.log('[企业流水调试] documents=', documents);
-    console.log('[企业流水调试] extractions=', extractionGroups);
-    console.log('[企业流水调试] enterpriseFlowDocs=', enterpriseFlowState.enterpriseFlowDocs);
-    console.log('[企业流水调试] selectedEnterpriseFlowDoc=', enterpriseFlowState.selectedEnterpriseFlowDoc);
-    console.log('[企业流水调试] documentType=', enterpriseFlowDebugInfo.documentType);
-    console.log('[企业流水调试] rawExtractedJson=', enterpriseFlowState.rawExtractedJson);
-    console.log('[企业流水调试] parsedEnterpriseData=', enterpriseFlowState.parsedEnterpriseData);
-    console.log('[企业流水调试] parsedEnterpriseData keys=', Object.keys(enterpriseFlowState.parsedEnterpriseData || {}));
-    console.log('[企业流水调试] parsedEnterpriseData summary=', enterpriseFlowState.parsedEnterpriseData?.summary);
-    console.log('[企业流水调试] parsedEnterpriseData accounts=', enterpriseFlowState.parsedEnterpriseData?.accounts);
-    console.log('[企业流水调试] parsedEnterpriseData monthly_summary=', enterpriseFlowState.parsedEnterpriseData?.monthly_summary);
-    console.log('[企业流水调试] parsedEnterpriseData extracted_json=', enterpriseFlowState.parsedEnterpriseData?.extracted_json);
-    console.log('[企业流水调试] parsedEnterpriseData data=', enterpriseFlowState.parsedEnterpriseData?.data);
-    console.log('[企业流水调试] hasSummary=', !!enterpriseFlowState.parsedEnterpriseData?.summary);
-    console.log('[企业流水调试] accounts=', enterpriseFlowDebugInfo.accountCount);
-    console.log('[企业流水调试] monthly=', enterpriseFlowDebugInfo.monthlyCount);
-  }, [activeCustomerId, customerIdCandidates, documents, enterpriseFlowDebugInfo, enterpriseFlowState, extractionGroups, profile, selectedCustomer]);
+    if (!import.meta.env.DEV) return;
+    console.debug('[EnterpriseBankStatementView] page hit', {
+      customerId: activeCustomerId,
+      customerIdCandidates,
+      documents: documents.length,
+      extractionGroups: extractionGroups.length,
+      enterpriseFlowDocs: enterpriseFlowState.enterpriseFlowDocs.length,
+      selectedEnterpriseFlowDoc: enterpriseFlowState.selectedEnterpriseFlowDoc,
+      hasParsedData: !!enterpriseFlowState.parsedEnterpriseData,
+      keys: Object.keys(enterpriseFlowState.parsedEnterpriseData || {}),
+    });
+  }, [activeCustomerId, customerIdCandidates, documents.length, enterpriseFlowState, extractionGroups.length]);
   const fieldSourceSummaries = useMemo(
     () => buildFieldSourceSummaries(renderedDraft, documents),
     [documents, renderedDraft]
@@ -3209,9 +3209,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
 
   return (
     <div className="flex h-full bg-slate-50">
-      <div style={{ background: 'red', color: 'white', padding: 12, fontWeight: 700, position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999 }}>
-        DEBUG: 当前页面已命中企业流水展示修复组件
-      </div>
       <aside className="w-72 border-r border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4">
           <div className="flex items-center gap-2">
@@ -3317,9 +3314,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-1">
               <button
                 type="button"
-                onClick={() => setMode('edit')}
+                onClick={() => {
+                  setMode('edit');
+                  setShowRawMarkdownEditor(true);
+                }}
                 className={`rounded-lg px-3 py-1.5 text-sm ${
-                  mode === 'edit' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'
+                  mode === 'edit' && showRawMarkdownEditor ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'
                 }`}
               >
                 <span className="inline-flex items-center gap-1">
@@ -3329,9 +3329,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               </button>
               <button
                 type="button"
-                onClick={() => setMode('preview')}
+                onClick={() => {
+                  setMode('preview');
+                  setShowRawMarkdownEditor(false);
+                }}
                 className={`rounded-lg px-3 py-1.5 text-sm ${
-                  mode === 'preview' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'
+                  mode === 'preview' || (hasEnterpriseStructuredData && !showRawMarkdownEditor) ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'
                 }`}
               >
                 <span className="inline-flex items-center gap-1">
@@ -4660,7 +4663,46 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                   资料内容
                 </div>
               </div>
-              {mode === 'edit' ? (
+              {hasEnterpriseStructuredData && !showRawMarkdownEditor ? (
+                <div className="space-y-4 p-5">
+                  <div className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50 to-white p-5">
+                    <div className="text-sm font-semibold text-blue-900">当前资料已完成结构化解析</div>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      企业流水已从原始资料汇总中提取为结构化指标、账户汇总、月度趋势、对手方分析和风险信号。右侧为结构化阅读预览；原始 Markdown 默认收起。
+                    </p>
+                    {enterpriseFlowViewSources[0] ? (
+                      <div className="mt-4 grid gap-3 text-sm">
+                        <div>
+                          <div className="text-xs text-slate-500">数据来源文件</div>
+                          <div className="mt-1 break-words font-medium text-slate-800">{enterpriseFlowViewSources[0].fileName || '企业流水'}</div>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div>
+                            <div className="text-xs text-slate-500">资料类型</div>
+                            <div className="mt-1 font-medium text-slate-800">{enterpriseFlowViewSources[0].documentType || 'enterprise_flow'}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500">最近更新时间</div>
+                            <div className="mt-1 font-medium text-slate-800">{enterpriseFlowViewSources[0].createdAt ? formatProfileDateTime(enterpriseFlowViewSources[0].createdAt) : formatProfileDateTime(profile?.updated_at)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('edit');
+                        setShowRawMarkdownEditor(true);
+                      }}
+                      className="mt-5 inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-50"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      编辑资料汇总
+                    </button>
+                  </div>
+                  <RawMarkdownPanel markdown={renderedDraft || draft} />
+                </div>
+              ) : mode === 'edit' ? (
                 <textarea
                   value={renderedDraft}
                   onChange={(e) => setDraft(e.target.value)}
@@ -4669,49 +4711,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                 />
               ) : (
                 <div className="overflow-visible p-5">
-                  <div className="mb-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                    企业流水调试：customerId: {enterpriseFlowDebugInfo.customerId} · documents:{' '}
-                    {enterpriseFlowDebugInfo.documentsCount} · extractionGroups:{' '}
-                    {enterpriseFlowDebugInfo.extractionGroupCount} · documentCount: {enterpriseFlowDebugInfo.documentCount} · enterpriseFlowCount:{' '}
-                    {enterpriseFlowDebugInfo.enterpriseFlowCount} · hasParsedData:{' '}
-                    {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · hasSummary:{' '}
-                    {enterpriseFlowDebugInfo.hasSummary ? 'true' : 'false'} · accounts:{' '}
-                    {enterpriseFlowDebugInfo.accountCount} · monthly: {enterpriseFlowDebugInfo.monthlyCount} · transactions:{' '}
-                    {enterpriseFlowDebugInfo.transactionCount} · keys: {enterpriseFlowDebugInfo.keys.join(', ') || '-'}
-                  </div>
-                  {enterpriseFlowViewSources.length > 0 ? (
-                    <div className="mb-6 space-y-4">
-                      {enterpriseFlowViewSources.map((source) => (
-                        <section key={`content-${source.key}`} className="rounded-2xl border border-blue-100 bg-blue-50/40 p-4">
-                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                              <div className="text-sm font-semibold text-blue-900">企业流水结构化分析</div>
-                              <div className="mt-1 text-xs text-blue-700">
-                                {source.fileName}
-                                {source.createdAt ? ` · ${formatProfileDateTime(source.createdAt)}` : ''}
-                              </div>
-                            </div>
-                            <span className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-700">
-                              {source.documentType || 'enterprise_flow'}
-                            </span>
-                          </div>
-                          <EnterpriseBankStatementView data={source.data} markdown={source.markdown} />
-                        </section>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ background: '#fff7ed', border: '1px solid #fdba74', padding: 12, marginBottom: 12 }}>
-                      已命中资料汇总页面，但没有拿到企业流水 extracted_json。请查看 Console 中 [企业流水调试] 输出。
-                    </div>
-                  )}
-                  <details className="rounded-xl border border-slate-200 bg-white">
-                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">
-                      查看原始资料汇总 Markdown
-                    </summary>
-                    <pre className="whitespace-pre-wrap break-words border-t border-slate-100 p-4 text-sm leading-6 text-slate-700">
-                      {draft || '暂无内容'}
-                    </pre>
-                  </details>
+                  <RawMarkdownPanel markdown={renderedDraft || draft} />
                 </div>
               )}
             </section>
@@ -4724,17 +4724,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                 </div>
               </div>
               <div className="overflow-visible px-6 py-6">
-                <div className="mb-3 rounded-lg border border-dashed border-slate-200 bg-white/80 px-3 py-2 text-xs text-slate-500">
-                  企业流水调试：customerId: {enterpriseFlowDebugInfo.customerId} · documents:{' '}
-                  {enterpriseFlowDebugInfo.documentsCount} · extractionGroups:{' '}
-                  {enterpriseFlowDebugInfo.extractionGroupCount} · documentCount: {enterpriseFlowDebugInfo.documentCount} · enterpriseFlowCount:{' '}
-                  {enterpriseFlowDebugInfo.enterpriseFlowCount} · hasParsedData:{' '}
-                  {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · hasSummary:{' '}
-                  {enterpriseFlowDebugInfo.hasSummary ? 'true' : 'false'} · accounts:{' '}
-                  {enterpriseFlowDebugInfo.accountCount} · monthly: {enterpriseFlowDebugInfo.monthlyCount} · transactions:{' '}
-                  {enterpriseFlowDebugInfo.transactionCount} · keys: {enterpriseFlowDebugInfo.keys.join(', ') || '-'}
-                </div>
-                {enterpriseFlowViewSources.length > 0 ? (
+                {hasEnterpriseStructuredData ? (
                   <div className="mb-6 space-y-4">
                     {enterpriseFlowViewSources.map((source) => (
                       <section key={`preview-${source.key}`} className="rounded-[28px] border border-blue-100 bg-white/95 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
@@ -4755,18 +4745,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     ))}
                   </div>
                 ) : (
-                  <div style={{ background: '#fff7ed', border: '1px solid #fdba74', padding: 12, marginBottom: 12 }}>
-                    已命中资料汇总页面，但没有拿到企业流水 extracted_json。请查看 Console 中 [企业流水调试] 输出。
-                  </div>
-                )}
-                <details className="rounded-[28px] border border-white/80 bg-white/95 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
-                  <summary className="cursor-pointer px-7 py-4 text-sm font-semibold text-slate-700">
-                    查看原始资料汇总 Markdown
-                  </summary>
-                  <article className="prose prose-slate max-w-none border-t border-slate-100 p-7">
+                  <article className="prose prose-slate max-w-none rounded-[28px] border border-white/80 bg-white/95 p-7 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
                   </article>
-                </details>
+                )}
+                {hasEnterpriseStructuredData ? (
+                  <RawMarkdownPanel markdown={renderedDraft || draft} />
+                ) : null}
               </div>
             </section>
           </div>
