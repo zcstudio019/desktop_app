@@ -935,12 +935,16 @@ function buildEnterpriseFlowDebugState(
     String(parsedEnterpriseData?.document_type || '') ||
     String(parsedEnterpriseData?.type || '') ||
     'enterprise_flow';
-  const hasDisplayableData = !!(
-    parsedEnterpriseData?.summary ||
-    parsedEnterpriseData?.accounts ||
-    parsedEnterpriseData?.monthly_summary
+  const hasEnterpriseStructuredData = !!(
+    parsedEnterpriseData &&
+    (
+      Object.keys((parsedEnterpriseData.summary as Record<string, unknown>) || {}).length > 0 ||
+      (Array.isArray(parsedEnterpriseData.accounts) && parsedEnterpriseData.accounts.length > 0) ||
+      (Array.isArray(parsedEnterpriseData.monthly_summary) && parsedEnterpriseData.monthly_summary.length > 0) ||
+      (Array.isArray(parsedEnterpriseData.transactions) && parsedEnterpriseData.transactions.length > 0)
+    )
   );
-  const source = selectedEnterpriseFlowDoc && hasDisplayableData
+  const source = selectedEnterpriseFlowDoc && hasEnterpriseStructuredData
     ? {
         key: String(selectedEnterpriseFlowDoc.extraction_id || selectedEnterpriseFlowDoc.doc_id || selectedEnterpriseFlowDoc.id || documentType),
         documentType,
@@ -2644,8 +2648,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       documentType: enterpriseFlowState.source?.documentType || getDocumentTypeFromRecord(enterpriseFlowState.selectedEnterpriseFlowDoc) || '-',
       hasEnterpriseData: !!enterpriseFlowState.parsedEnterpriseData,
       hasSummary: !!enterpriseFlowState.parsedEnterpriseData?.summary,
+      keys: Object.keys(enterpriseFlowState.parsedEnterpriseData || {}),
       accountCount: accounts.length,
       monthlyCount: monthly.length,
+      transactionCount: Array.isArray(data.transactions) ? data.transactions.length : 0,
       documentCount: enterpriseFlowState.allDocs.length,
       enterpriseFlowCount: enterpriseFlowState.enterpriseFlowDocs.length,
       extractedJson: enterpriseFlowState.rawExtractedJson,
@@ -2663,6 +2669,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     console.log('[企业流水调试] documentType=', enterpriseFlowDebugInfo.documentType);
     console.log('[企业流水调试] rawExtractedJson=', enterpriseFlowState.rawExtractedJson);
     console.log('[企业流水调试] parsedEnterpriseData=', enterpriseFlowState.parsedEnterpriseData);
+    console.log('[企业流水调试] parsedEnterpriseData keys=', Object.keys(enterpriseFlowState.parsedEnterpriseData || {}));
+    console.log('[企业流水调试] parsedEnterpriseData summary=', enterpriseFlowState.parsedEnterpriseData?.summary);
+    console.log('[企业流水调试] parsedEnterpriseData accounts=', enterpriseFlowState.parsedEnterpriseData?.accounts);
+    console.log('[企业流水调试] parsedEnterpriseData monthly_summary=', enterpriseFlowState.parsedEnterpriseData?.monthly_summary);
+    console.log('[企业流水调试] parsedEnterpriseData extracted_json=', enterpriseFlowState.parsedEnterpriseData?.extracted_json);
+    console.log('[企业流水调试] parsedEnterpriseData data=', enterpriseFlowState.parsedEnterpriseData?.data);
     console.log('[企业流水调试] hasSummary=', !!enterpriseFlowState.parsedEnterpriseData?.summary);
     console.log('[企业流水调试] accounts=', enterpriseFlowDebugInfo.accountCount);
     console.log('[企业流水调试] monthly=', enterpriseFlowDebugInfo.monthlyCount);
@@ -4509,7 +4521,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     {enterpriseFlowDebugInfo.enterpriseFlowCount} · hasParsedData:{' '}
                     {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · hasSummary:{' '}
                     {enterpriseFlowDebugInfo.hasSummary ? 'true' : 'false'} · accounts:{' '}
-                    {enterpriseFlowDebugInfo.accountCount} · monthly: {enterpriseFlowDebugInfo.monthlyCount}
+                    {enterpriseFlowDebugInfo.accountCount} · monthly: {enterpriseFlowDebugInfo.monthlyCount} · transactions:{' '}
+                    {enterpriseFlowDebugInfo.transactionCount} · keys: {enterpriseFlowDebugInfo.keys.join(', ') || '-'}
                   </div>
                   {enterpriseFlowViewSources.length > 0 ? (
                     <div className="mb-6 space-y-4">
@@ -4561,7 +4574,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                   {enterpriseFlowDebugInfo.enterpriseFlowCount} · hasParsedData:{' '}
                   {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · hasSummary:{' '}
                   {enterpriseFlowDebugInfo.hasSummary ? 'true' : 'false'} · accounts:{' '}
-                  {enterpriseFlowDebugInfo.accountCount} · monthly: {enterpriseFlowDebugInfo.monthlyCount}
+                  {enterpriseFlowDebugInfo.accountCount} · monthly: {enterpriseFlowDebugInfo.monthlyCount} · transactions:{' '}
+                  {enterpriseFlowDebugInfo.transactionCount} · keys: {enterpriseFlowDebugInfo.keys.join(', ') || '-'}
                 </div>
                 {enterpriseFlowViewSources.length > 0 ? (
                   <div className="mb-6 space-y-4">

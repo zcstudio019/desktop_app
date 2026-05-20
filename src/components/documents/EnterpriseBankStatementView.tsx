@@ -43,40 +43,65 @@ export function parseMaybeJson(value: unknown): Record<string, unknown> | null {
   return null;
 }
 
-export function normalizeEnterpriseFlowData(raw: unknown): EnterpriseBankStatementExtraction | null {
+export function hasEnterpriseFlowShape(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return Boolean(
+    obj.summary ||
+    obj.accounts ||
+    obj.monthly_summary ||
+    obj.monthlySummary ||
+    obj.counterparty_summary ||
+    obj.counterpartySummary ||
+    obj.risk_analysis ||
+    obj.riskAnalysis ||
+    obj.financing_view ||
+    obj.financingView ||
+    obj.transactions
+  );
+}
+
+export function normalizeEnterpriseFlowFieldNames(data: unknown): EnterpriseBankStatementExtraction | null {
+  if (!data || typeof data !== 'object') return null;
+  const obj = data as Record<string, unknown>;
+  return {
+    ...obj,
+    summary: obj.summary ?? obj.statement_summary ?? obj.statementSummary ?? {},
+    accounts: obj.accounts ?? obj.account_statements ?? obj.accountStatements ?? [],
+    monthly_summary: obj.monthly_summary ?? obj.monthlySummary ?? obj.monthly_trends ?? obj.monthlyTrends ?? [],
+    counterparty_summary: obj.counterparty_summary ?? obj.counterpartySummary ?? {},
+    risk_analysis: obj.risk_analysis ?? obj.riskAnalysis ?? {},
+    financing_view: obj.financing_view ?? obj.financingView ?? {},
+    transactions: obj.transactions ?? [],
+    warnings: obj.warnings ?? [],
+  } as EnterpriseBankStatementExtraction;
+}
+
+export function normalizeEnterpriseFlowData(raw: unknown, depth = 0): EnterpriseBankStatementExtraction | null {
+  if (!raw || depth > 5) return null;
   const parsed = parseMaybeJson(raw);
-  if (!parsed) return null;
-  const direct = parsed as EnterpriseBankStatementExtraction;
-  if (
-    direct.summary ||
-    direct.accounts ||
-    direct.monthly_summary ||
-    direct.counterparty_summary ||
-    direct.risk_analysis ||
-    direct.financing_view
-  ) {
-    return direct;
+  if (!parsed || typeof parsed !== 'object') return null;
+  if (hasEnterpriseFlowShape(parsed)) {
+    return normalizeEnterpriseFlowFieldNames(parsed);
   }
-  const nested =
-    parsed.extracted_json ??
-    parsed.extractedJson ??
-    parsed.structured_data ??
-    parsed.structuredData ??
-    parsed.data ??
-    parsed.result ??
-    null;
-  const nestedParsed = parseMaybeJson(nested) as EnterpriseBankStatementExtraction | null;
-  if (
-    nestedParsed?.summary ||
-    nestedParsed?.accounts ||
-    nestedParsed?.monthly_summary ||
-    nestedParsed?.counterparty_summary ||
-    nestedParsed?.risk_analysis ||
-    nestedParsed?.financing_view
-  ) {
-    return nestedParsed;
+  const nestedCandidates = [
+    parsed.extracted_json,
+    parsed.extractedJson,
+    parsed.extracted_data,
+    parsed.extractedData,
+    parsed.structured_data,
+    parsed.structuredData,
+    parsed.data,
+    parsed.result,
+    parsed.payload,
+  ];
+  for (const candidate of nestedCandidates) {
+    const normalized = normalizeEnterpriseFlowData(candidate, depth + 1);
+    if (normalized && hasEnterpriseFlowShape(normalized)) {
+      return normalized;
+    }
   }
-  return direct;
+  return parsed as EnterpriseBankStatementExtraction;
 }
 
 export function looksLikeEnterpriseBankStatementData(value: unknown): value is EnterpriseBankStatementExtraction {
@@ -210,6 +235,9 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
 
   return (
     <div className="space-y-4">
+      <div style={{ background: 'green', color: 'white', padding: 12, fontWeight: 700 }}>
+        DEBUG: EnterpriseBankStatementView 已渲染
+      </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {metricCards.map((item) => (
           <div key={item.label} className={`rounded-xl border p-4 ${item.tone}`}>
