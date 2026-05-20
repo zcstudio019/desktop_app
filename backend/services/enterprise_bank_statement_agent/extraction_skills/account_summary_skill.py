@@ -14,14 +14,11 @@ def build_account_summary(
     months_count: int | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
-    total_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions)
-    total_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions)
-    inflow_count = sum(1 for tx in transactions if tx.get("direction") == "inflow")
-    outflow_count = sum(1 for tx in transactions if tx.get("direction") == "outflow")
     month_divisor = max(1, int(months_count or 1))
     by_account: dict[str, dict[str, Any]] = {item["account_id"]: dict(item) for item in accounts}
+    tx_totals_by_account: dict[str, dict[str, Any]] = {}
     for tx in transactions:
-        account_id = tx.get("account_number") or f"sheet:{tx.get('sheet_name')}"
+        account_id = tx.get("account_id") or f"{tx.get('bank_name') or tx.get('sheet_name')}:{tx.get('account_number') or tx.get('sheet_name')}"
         account = by_account.setdefault(
             account_id,
             {
@@ -39,19 +36,52 @@ def build_account_summary(
                 "transaction_count": 0,
             },
         )
-        account["total_inflow"] += float(tx.get("credit_amount") or 0)
-        account["total_outflow"] += float(tx.get("debit_amount") or 0)
-        account["transaction_count"] += 1
+        tx_total = tx_totals_by_account.setdefault(account_id, {"inflow": 0.0, "outflow": 0.0, "count": 0})
+        tx_total["inflow"] += float(tx.get("credit_amount") or 0)
+        tx_total["outflow"] += float(tx.get("debit_amount") or 0)
+        tx_total["count"] += 1
         if tx.get("balance") is not None:
             if account.get("opening_balance") is None:
                 account["opening_balance"] = tx.get("balance")
             account["ending_balance"] = tx.get("balance")
     normalized_accounts = []
     for account in by_account.values():
+        tx_total = tx_totals_by_account.get(account["account_id"], {})
+        tx_inflow = float(tx_total.get("inflow") or 0)
+        tx_outflow = float(tx_total.get("outflow") or 0)
+        tx_count = int(tx_total.get("count") or 0)
+        summary_inflow = account.get("summary_inflow")
+        summary_outflow = account.get("summary_outflow")
+        summary_count = int(account.get("summary_inflow_count") or 0) + int(account.get("summary_outflow_count") or 0)
+        if summary_inflow is not None or summary_outflow is not None:
+            if tx_count > 0 and (
+                abs(float(summary_inflow or 0) - tx_inflow) > 1
+                or abs(float(summary_outflow or 0) - tx_outflow) > 1
+            ):
+                warnings.append(f"{account.get('bank_name') or account.get('sheet_name')} 顶部汇总与明细反算不一致，账户汇总优先采用顶部累计发生额。")
+            account["total_inflow"] = float(summary_inflow or 0)
+            account["total_outflow"] = float(summary_outflow or 0)
+            if summary_count > 0:
+                account["transaction_count"] = summary_count
+        elif tx_count > 0:
+            account["total_inflow"] = tx_inflow
+            account["total_outflow"] = tx_outflow
+            account["transaction_count"] = tx_count
+        elif (summary_inflow or summary_outflow) and account.get("transaction_count"):
+            warnings.append(f"{account.get('bank_name') or account.get('sheet_name')} 交易明细未完整识别，账户汇总采用顶部累计发生额。")
         account["total_inflow"] = _round(account.get("total_inflow") or 0) or 0.0
         account["total_outflow"] = _round(account.get("total_outflow") or 0) or 0.0
         account["net_cashflow"] = _round(account["total_inflow"] - account["total_outflow"]) or 0.0
         normalized_accounts.append(account)
+
+    total_inflow = sum(float(account.get("total_inflow") or 0) for account in normalized_accounts)
+    total_outflow = sum(float(account.get("total_outflow") or 0) for account in normalized_accounts)
+    inflow_count = sum(1 for tx in transactions if tx.get("direction") == "inflow")
+    outflow_count = sum(1 for tx in transactions if tx.get("direction") == "outflow")
+    for account in normalized_accounts:
+        if account["account_id"] not in tx_totals_by_account:
+            inflow_count += int(account.get("summary_inflow_count") or 0)
+            outflow_count += int(account.get("summary_outflow_count") or 0)
 
     internal_amount = sum(float(tx.get("credit_amount") or tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_internal_transfer"))
     related_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_related_party"))

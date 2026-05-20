@@ -24,6 +24,7 @@ class BankAccountStatement(BaseModel):
     bank_name: Optional[str] = None
     account_name: Optional[str] = None
     account_number: Optional[str] = None
+    branch_name: Optional[str] = None
     currency: Optional[str] = None
     sheet_name: Optional[str] = None
     opening_balance: Optional[float] = None
@@ -39,6 +40,7 @@ class BankTransaction(BaseModel):
     source_file: Optional[str] = None
     sheet_name: Optional[str] = None
     row_number: Optional[int] = None
+    account_id: Optional[str] = None
     bank_name: Optional[str] = None
     account_name: Optional[str] = None
     account_number: Optional[str] = None
@@ -48,6 +50,7 @@ class BankTransaction(BaseModel):
     purpose: Optional[str] = None
     counterparty_name: Optional[str] = None
     counterparty_account: Optional[str] = None
+    counterparty_bank: Optional[str] = None
     debit_amount: Optional[float] = None
     credit_amount: Optional[float] = None
     balance: Optional[float] = None
