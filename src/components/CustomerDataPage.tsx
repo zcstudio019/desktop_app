@@ -2589,13 +2589,15 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     };
   }, [enterpriseFlowViewSources]);
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    console.debug('[CurrentPage] document=', documents);
-    console.debug('[CurrentPage] extraction=', extractionGroups);
-    console.debug('[CurrentPage] profile=', profile);
-    console.debug('[CurrentPage] markdown=', draft);
-    console.debug('[CurrentPage] documentType=', enterpriseFlowDebugInfo.documentType);
-    console.debug('[CurrentPage] extracted_json=', enterpriseFlowDebugInfo.extractedJson);
+    const rawExtractedJson = enterpriseFlowDebugInfo.extractedJson;
+    const parsedExtractedJson = parseMaybeJson(rawExtractedJson);
+    console.log('[企业流水调试] current component hit');
+    console.log('[企业流水调试] document=', documents);
+    console.log('[企业流水调试] extraction=', extractionGroups);
+    console.log('[企业流水调试] profile=', profile);
+    console.log('[企业流水调试] documentType=', enterpriseFlowDebugInfo.documentType);
+    console.log('[企业流水调试] rawExtractedJson=', rawExtractedJson);
+    console.log('[企业流水调试] parsedExtractedJson=', parsedExtractedJson);
   }, [documents, draft, enterpriseFlowDebugInfo, extractionGroups, profile]);
   const fieldSourceSummaries = useMemo(
     () => buildFieldSourceSummaries(renderedDraft, documents),
@@ -2974,6 +2976,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
 
   return (
     <div className="flex h-full bg-slate-50">
+      <div style={{ background: 'red', color: 'white', padding: 12, fontWeight: 700, position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999 }}>
+        DEBUG: 当前页面已命中企业流水展示修复组件
+      </div>
       <aside className="w-72 border-r border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4">
           <div className="flex items-center gap-2">
@@ -4457,9 +4462,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                       ))}
                     </div>
                   ) : null}
-                  <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
-                    {draft || '暂无内容'}
-                  </pre>
+                  {enterpriseFlowViewSources.length > 0 ? (
+                    <details className="rounded-xl border border-slate-200 bg-white">
+                      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">
+                        查看原始资料汇总 Markdown
+                      </summary>
+                      <pre className="whitespace-pre-wrap break-words border-t border-slate-100 p-4 text-sm leading-6 text-slate-700">
+                        {draft || '暂无内容'}
+                      </pre>
+                    </details>
+                  ) : (
+                    <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
+                      {draft || '暂无内容'}
+                    </pre>
+                  )}
                 </div>
               )}
             </section>
@@ -4498,9 +4514,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     ))}
                   </div>
                 ) : null}
-                <article className="prose prose-slate max-w-none rounded-[28px] border border-white/80 bg-white/95 p-7 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
-                </article>
+                {enterpriseFlowViewSources.length > 0 ? (
+                  <details className="rounded-[28px] border border-white/80 bg-white/95 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
+                    <summary className="cursor-pointer px-7 py-4 text-sm font-semibold text-slate-700">
+                      查看原始资料汇总 Markdown
+                    </summary>
+                    <article className="prose prose-slate max-w-none border-t border-slate-100 p-7">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
+                    </article>
+                  </details>
+                ) : (
+                  <article className="prose prose-slate max-w-none rounded-[28px] border border-white/80 bg-white/95 p-7 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
+                  </article>
+                )}
               </div>
             </section>
           </div>
