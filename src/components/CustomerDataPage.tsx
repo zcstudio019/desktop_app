@@ -173,6 +173,72 @@ interface EnterpriseFlowDebugState {
   source: EnterpriseFlowViewSource | null;
 }
 
+function uniqueNonEmptyStrings(values: unknown[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  values.forEach((value) => {
+    const text = String(value ?? '').trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    result.push(text);
+  });
+  return result;
+}
+
+function getCustomerIdCandidates(
+  customer: CustomerListItem | null,
+  selectedCustomerId: string | null,
+  currentCustomerId?: string | null,
+): string[] {
+  const record = customer as unknown as Record<string, unknown> | null;
+  return uniqueNonEmptyStrings([
+    record?.customer_id,
+    record?.customerId,
+    record?.id,
+    selectedCustomerId,
+    currentCustomerId,
+    record?.record_id,
+  ]);
+}
+
+function normalizeCustomerDocumentsResponse(response: unknown): CustomerDocumentListItem[] {
+  const record = response as Record<string, unknown> | null;
+  const items =
+    Array.isArray(response)
+      ? response
+      : Array.isArray(record?.items)
+        ? record.items
+        : Array.isArray((record?.data as Record<string, unknown> | undefined)?.items)
+          ? ((record?.data as Record<string, unknown>).items as unknown[])
+          : Array.isArray(record?.documents)
+            ? record.documents
+            : Array.isArray((record?.data as Record<string, unknown> | undefined)?.documents)
+              ? ((record?.data as Record<string, unknown>).documents as unknown[])
+              : Array.isArray(record?.data)
+                ? (record.data as unknown[])
+                : [];
+  return items.filter((item): item is CustomerDocumentListItem => !!item && typeof item === 'object');
+}
+
+function normalizeExtractionGroupsResponse(response: unknown): ExtractionGroup[] {
+  const record = response as Record<string, unknown> | null;
+  const items =
+    Array.isArray(response)
+      ? response
+      : Array.isArray(record?.items)
+        ? record.items
+        : Array.isArray((record?.data as Record<string, unknown> | undefined)?.items)
+          ? ((record?.data as Record<string, unknown>).items as unknown[])
+          : Array.isArray(record?.extractions)
+            ? record.extractions
+            : Array.isArray((record?.data as Record<string, unknown> | undefined)?.extractions)
+              ? ((record?.data as Record<string, unknown>).extractions as unknown[])
+              : Array.isArray(record?.data)
+                ? (record.data as unknown[])
+                : [];
+  return items.filter((item): item is ExtractionGroup => !!item && typeof item === 'object');
+}
+
 const DOCUMENT_GROUPS = {
   enterprise: {
     title: '企业主体资料',
@@ -2324,9 +2390,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setLoadingDocuments(true);
     setDocuments([]);
     try {
+      console.log('[企业流水调试] loading documents for customerId=', customerId);
       const result = await getCustomerDocuments(customerId);
-      setDocuments(result);
+      console.log('[企业流水调试] documents api response=', result);
+      setDocuments(normalizeCustomerDocumentsResponse(result));
     } catch (err) {
+      console.error('[企业流水调试] load customer documents failed', err);
       setDocuments([]);
       setError(err instanceof Error ? err.message : '加载资料文件列表失败');
     } finally {
@@ -2337,13 +2406,26 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const loadExtractions = useCallback(async (customerId: string) => {
     setExtractionGroups([]);
     try {
+      console.log('[企业流水调试] loading extractions for customerId=', customerId);
       const result = await getCustomerExtractions(customerId);
-      setExtractionGroups(result);
+      console.log('[企业流水调试] extractions api response=', result);
+      setExtractionGroups(normalizeExtractionGroupsResponse(result));
     } catch (err) {
+      console.error('[企业流水调试] load customer extractions failed', err);
       setExtractionGroups([]);
       setError(err instanceof Error ? err.message : '加载结构化提取结果失败');
     }
   }, []);
+
+  const selectedCustomer = useMemo(
+    () => customers.find((item) => item.record_id === selectedCustomerId) ?? null,
+    [customers, selectedCustomerId]
+  );
+  const customerIdCandidates = useMemo(
+    () => getCustomerIdCandidates(selectedCustomer, selectedCustomerId, state.extraction.currentCustomerId),
+    [selectedCustomer, selectedCustomerId, state.extraction.currentCustomerId]
+  );
+  const activeCustomerId = customerIdCandidates[0] || '';
 
   useEffect(() => {
     void loadCustomers();
@@ -2381,27 +2463,93 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       clearCurrentCustomerData();
       return;
     }
-    void loadProfile(selectedCustomerId);
-    void loadDocuments(selectedCustomerId);
-    void loadExtractions(selectedCustomerId);
-    void loadLatestAgent(selectedCustomerId);
+    const requestCustomerId = activeCustomerId || selectedCustomerId;
+    void loadProfile(requestCustomerId);
+    void loadLatestAgent(requestCustomerId);
   }, [
+    activeCustomerId,
     clearCurrentCustomerData,
     clearCustomerUrlParams,
     customers,
     loadLatestAgent,
     loadingCustomers,
     selectedCustomerId,
-    loadDocuments,
-    loadExtractions,
     loadProfile,
     setCurrentCustomer,
   ]);
 
-  const selectedCustomer = useMemo(
-    () => customers.find((item) => item.record_id === selectedCustomerId) ?? null,
-    [customers, selectedCustomerId]
-  );
+  useEffect(() => {
+    if (!selectedCustomerId) {
+      return;
+    }
+    if (loadingCustomers) {
+      return;
+    }
+    if (customerIdCandidates.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingDocuments(true);
+    setDocuments([]);
+    setExtractionGroups([]);
+
+    async function loadCustomerDocumentsAndExtractions() {
+      for (const customerId of customerIdCandidates) {
+        try {
+          console.log('[企业流水调试] customerId=', customerId);
+          console.log('[企业流水调试] loading documents for customerId=', customerId);
+          const [documentsResult, extractionsResult] = await Promise.allSettled([
+            getCustomerDocuments(customerId),
+            getCustomerExtractions(customerId),
+          ]);
+
+          console.log('[企业流水调试] documents api response=', documentsResult);
+          console.log('[企业流水调试] extractions api response=', extractionsResult);
+
+          if (cancelled) return;
+
+          const nextDocuments =
+            documentsResult.status === 'fulfilled'
+              ? normalizeCustomerDocumentsResponse(documentsResult.value)
+              : [];
+          const nextExtractions =
+            extractionsResult.status === 'fulfilled'
+              ? normalizeExtractionGroupsResponse(extractionsResult.value)
+              : [];
+          const extractionItemCount = nextExtractions.reduce(
+            (sum, group) => sum + (Array.isArray(group.items) ? group.items.length : 0),
+            0,
+          );
+          const isLastCandidate = customerId === customerIdCandidates[customerIdCandidates.length - 1];
+
+          if (nextDocuments.length > 0 || extractionItemCount > 0 || isLastCandidate) {
+            setDocuments(nextDocuments);
+            setExtractionGroups(nextExtractions);
+            if (documentsResult.status === 'rejected') {
+              console.error('[企业流水调试] load customer documents failed', documentsResult.reason);
+            }
+            if (extractionsResult.status === 'rejected') {
+              console.error('[企业流水调试] load customer extractions failed', extractionsResult.reason);
+            }
+            return;
+          }
+        } catch (err) {
+          console.error('[企业流水调试] load customer documents/extractions failed', err);
+        }
+      }
+    }
+
+    void loadCustomerDocumentsAndExtractions().finally(() => {
+      if (!cancelled) {
+        setLoadingDocuments(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [customerIdCandidates, loadingCustomers, selectedCustomerId]);
 
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearch.trim().toLowerCase();
@@ -2654,12 +2802,17 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       transactionCount: Array.isArray(data.transactions) ? data.transactions.length : 0,
       documentCount: enterpriseFlowState.allDocs.length,
       enterpriseFlowCount: enterpriseFlowState.enterpriseFlowDocs.length,
+      customerId: activeCustomerId || '-',
+      documentsCount: documents.length,
+      extractionGroupCount: extractionGroups.length,
       extractedJson: enterpriseFlowState.rawExtractedJson,
       parsedEnterpriseData: enterpriseFlowState.parsedEnterpriseData,
     };
-  }, [enterpriseFlowState]);
+  }, [activeCustomerId, documents.length, enterpriseFlowState, extractionGroups.length]);
   useEffect(() => {
     console.log('[企业流水调试] page hit');
+    console.log('[企业流水调试] customerId=', activeCustomerId);
+    console.log('[企业流水调试] customerIdCandidates=', customerIdCandidates);
     console.log('[企业流水调试] customer=', selectedCustomer);
     console.log('[企业流水调试] profile=', profile);
     console.log('[企业流水调试] documents=', documents);
@@ -2678,7 +2831,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     console.log('[企业流水调试] hasSummary=', !!enterpriseFlowState.parsedEnterpriseData?.summary);
     console.log('[企业流水调试] accounts=', enterpriseFlowDebugInfo.accountCount);
     console.log('[企业流水调试] monthly=', enterpriseFlowDebugInfo.monthlyCount);
-  }, [documents, enterpriseFlowDebugInfo, enterpriseFlowState, extractionGroups, profile, selectedCustomer]);
+  }, [activeCustomerId, customerIdCandidates, documents, enterpriseFlowDebugInfo, enterpriseFlowState, extractionGroups, profile, selectedCustomer]);
   const fieldSourceSummaries = useMemo(
     () => buildFieldSourceSummaries(renderedDraft, documents),
     [documents, renderedDraft]
@@ -4517,7 +4670,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               ) : (
                 <div className="overflow-visible p-5">
                   <div className="mb-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                    企业流水调试：documentCount: {enterpriseFlowDebugInfo.documentCount} · enterpriseFlowCount:{' '}
+                    企业流水调试：customerId: {enterpriseFlowDebugInfo.customerId} · documents:{' '}
+                    {enterpriseFlowDebugInfo.documentsCount} · extractionGroups:{' '}
+                    {enterpriseFlowDebugInfo.extractionGroupCount} · documentCount: {enterpriseFlowDebugInfo.documentCount} · enterpriseFlowCount:{' '}
                     {enterpriseFlowDebugInfo.enterpriseFlowCount} · hasParsedData:{' '}
                     {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · hasSummary:{' '}
                     {enterpriseFlowDebugInfo.hasSummary ? 'true' : 'false'} · accounts:{' '}
@@ -4570,7 +4725,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               </div>
               <div className="overflow-visible px-6 py-6">
                 <div className="mb-3 rounded-lg border border-dashed border-slate-200 bg-white/80 px-3 py-2 text-xs text-slate-500">
-                  企业流水调试：documentCount: {enterpriseFlowDebugInfo.documentCount} · enterpriseFlowCount:{' '}
+                  企业流水调试：customerId: {enterpriseFlowDebugInfo.customerId} · documents:{' '}
+                  {enterpriseFlowDebugInfo.documentsCount} · extractionGroups:{' '}
+                  {enterpriseFlowDebugInfo.extractionGroupCount} · documentCount: {enterpriseFlowDebugInfo.documentCount} · enterpriseFlowCount:{' '}
                   {enterpriseFlowDebugInfo.enterpriseFlowCount} · hasParsedData:{' '}
                   {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · hasSummary:{' '}
                   {enterpriseFlowDebugInfo.hasSummary ? 'true' : 'false'} · accounts:{' '}
