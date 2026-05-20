@@ -164,6 +164,15 @@ interface EnterpriseFlowViewSource {
   createdAt: string;
 }
 
+interface EnterpriseFlowDebugState {
+  allDocs: Record<string, unknown>[];
+  enterpriseFlowDocs: Record<string, unknown>[];
+  selectedEnterpriseFlowDoc: Record<string, unknown> | null;
+  rawExtractedJson: unknown;
+  parsedEnterpriseData: Record<string, unknown> | null;
+  source: EnterpriseFlowViewSource | null;
+}
+
 const DOCUMENT_GROUPS = {
   enterprise: {
     title: '企业主体资料',
@@ -796,16 +805,6 @@ function getExtractionItemsByType(groups: ExtractionGroup[], documentType: strin
     .sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime());
 }
 
-function pickRecordField(source: Record<string, unknown> | null | undefined, keys: string[]): unknown {
-  if (!source) return undefined;
-  for (const key of keys) {
-    if (source[key] !== undefined && source[key] !== null && source[key] !== '') {
-      return source[key];
-    }
-  }
-  return undefined;
-}
-
 function getDocumentTypeFromRecord(item: Record<string, unknown> | null | undefined): string {
   if (!item) return '';
   const extractedJson = parseMaybeJson(item.extracted_json ?? item.extractedJson);
@@ -815,6 +814,8 @@ function getDocumentTypeFromRecord(item: Record<string, unknown> | null | undefi
     item.type ??
     item.doc_type ??
     item.docType ??
+    item.document_type_code ??
+    item.documentTypeCode ??
     item.extraction_type ??
     extractedJson?.document_type ??
     extractedJson?.type ??
@@ -832,6 +833,7 @@ function getExtractedJsonFromRecord(item: Record<string, unknown> | null | undef
     item.extracted_data ??
     item.extractedData ??
     item.data ??
+    item.result ??
     null
   );
 }
@@ -846,60 +848,115 @@ function getMarkdownSummaryFromRecord(item: Record<string, unknown> | null | und
     item.profile_markdown ??
     item.profileMarkdown ??
     item.markdown ??
+    item.markdown_content ??
     ''
   );
 }
 
-function buildEnterpriseFlowViewSources(extractionGroups: ExtractionGroup[]): EnterpriseFlowViewSource[] {
-  const sources: EnterpriseFlowViewSource[] = [];
+function flattenEnterpriseFlowCandidateDocs(
+  documents: CustomerDocumentListItem[],
+  extractionGroups: ExtractionGroup[],
+  customer: CustomerListItem | null,
+  profile: CustomerProfileMarkdownResponse | null,
+): Record<string, unknown>[] {
+  const allDocs: Record<string, unknown>[] = [];
+  allDocs.push(...documents.map((item) => item as unknown as Record<string, unknown>));
   for (const group of extractionGroups) {
     const groupRecord = group as unknown as Record<string, unknown>;
-    const groupType = getDocumentTypeFromRecord(groupRecord);
     for (const item of group.items || []) {
-      const extraction = item as unknown as Record<string, unknown>;
-      const extractedData = parseMaybeJson(item.extracted_data) || {};
-      const extractedJsonRaw =
-        getExtractedJsonFromRecord(extractedData) ??
-        getExtractedJsonFromRecord(extraction) ??
-        item.extracted_data ??
-        null;
-      const parsedExtractedJson = parseMaybeJson(extractedJsonRaw);
-      const documentType = String(
-        getDocumentTypeFromRecord(extractedData) ||
-        getDocumentTypeFromRecord(extraction) ||
-        String(parsedExtractedJson?.document_type || '') ||
-        String(parsedExtractedJson?.type || '') ||
-        groupType ||
-        '',
-      );
-      const isEnterpriseBankStatement =
-        isEnterpriseBankStatementType(documentType) ||
-        isEnterpriseBankStatementType(String(parsedExtractedJson?.document_type || '')) ||
-        isEnterpriseBankStatementType(String(parsedExtractedJson?.type || '')) ||
-        parsedExtractedJson?.normalized_document_type === 'enterprise_bank_statement';
-      const enterpriseData = normalizeEnterpriseFlowData(extractedJsonRaw);
-      if (import.meta.env.DEV) {
-        console.debug('[EnterpriseBankStatementView] documentType=', documentType);
-        console.debug('[EnterpriseBankStatementView] isEnterpriseBankStatement=', isEnterpriseBankStatement);
-        console.debug('[EnterpriseBankStatementView] hasSummary=', !!enterpriseData?.summary);
-        console.debug('[EnterpriseBankStatementView] accounts=', enterpriseData?.accounts?.length);
-        console.debug('[EnterpriseBankStatementView] monthly=', enterpriseData?.monthly_summary?.length);
-      }
-      if (!isEnterpriseBankStatement || !(enterpriseData?.summary || enterpriseData?.accounts || enterpriseData?.monthly_summary)) {
-        continue;
-      }
-      const markdownSummary = getMarkdownSummaryFromRecord(extractedData) || getMarkdownSummaryFromRecord(extraction);
-      sources.push({
-        key: item.extraction_id || `${documentType}-${sources.length}`,
-        documentType,
-        data: enterpriseData as Record<string, unknown>,
-        markdown: markdownSummary,
-        fileName: String(pickRecordField(extractedData, ['source_file', 'file_name', 'filename']) || enterpriseData.source_file || documentType || '企业流水'),
-        createdAt: item.created_at || '',
+      const itemRecord = item as unknown as Record<string, unknown>;
+      const extractedData = parseMaybeJson(item.extracted_data);
+      allDocs.push({
+        ...itemRecord,
+        extraction_type: item.extraction_type || group.extraction_type,
+        document_type: getDocumentTypeFromRecord(itemRecord) || group.extraction_type,
+        extracted_data: item.extracted_data,
+        extracted_json: extractedData?.extracted_json ?? extractedData?.extractedJson ?? extractedData,
+        markdown_summary: extractedData ? getMarkdownSummaryFromRecord(extractedData) : '',
       });
+      if (extractedData) {
+        allDocs.push({
+          ...extractedData,
+          extraction_id: item.extraction_id,
+          extraction_type: item.extraction_type || group.extraction_type,
+          document_type: getDocumentTypeFromRecord(extractedData) || group.extraction_type,
+          created_at: item.created_at,
+        });
+      }
     }
+    allDocs.push(groupRecord);
   }
-  return sources.sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
+  const customerRecord = customer as unknown as Record<string, unknown> | null;
+  const profileRecord = profile as unknown as Record<string, unknown> | null;
+  const customerDocs = customerRecord?.documents;
+  const customerExtractions = customerRecord?.extractions;
+  if (Array.isArray(customerDocs)) {
+    allDocs.push(...customerDocs.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object'));
+  }
+  if (Array.isArray(customerExtractions)) {
+    allDocs.push(...customerExtractions.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object'));
+  }
+  if (profileRecord) {
+    allDocs.push(profileRecord);
+  }
+  return allDocs;
+}
+
+function getRecordTime(item: Record<string, unknown> | null | undefined): number {
+  if (!item) return 0;
+  const value = item.updated_at ?? item.created_at ?? item.uploaded_at ?? item.upload_time ?? 0;
+  const time = new Date(String(value || 0)).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function buildEnterpriseFlowDebugState(
+  documents: CustomerDocumentListItem[],
+  extractionGroups: ExtractionGroup[],
+  customer: CustomerListItem | null,
+  profile: CustomerProfileMarkdownResponse | null,
+): EnterpriseFlowDebugState {
+  const allDocs = flattenEnterpriseFlowCandidateDocs(documents, extractionGroups, customer, profile);
+  const enterpriseFlowDocs = allDocs.filter((doc) => {
+    const type = getDocumentTypeFromRecord(doc);
+    const raw = getExtractedJsonFromRecord(doc);
+    const parsed = normalizeEnterpriseFlowData(raw);
+    return (
+      isEnterpriseBankStatementType(type) ||
+      isEnterpriseBankStatementType((parsed as Record<string, unknown> | null)?.document_type) ||
+      isEnterpriseBankStatementType((parsed as Record<string, unknown> | null)?.type) ||
+      parsed?.normalized_document_type === 'enterprise_bank_statement'
+    );
+  });
+  const selectedEnterpriseFlowDoc = [...enterpriseFlowDocs].sort((a, b) => getRecordTime(b) - getRecordTime(a))[0] || null;
+  const rawExtractedJson = getExtractedJsonFromRecord(selectedEnterpriseFlowDoc);
+  const parsedEnterpriseData = normalizeEnterpriseFlowData(rawExtractedJson) as Record<string, unknown> | null;
+  const documentType =
+    getDocumentTypeFromRecord(selectedEnterpriseFlowDoc) ||
+    String(parsedEnterpriseData?.document_type || '') ||
+    String(parsedEnterpriseData?.type || '') ||
+    'enterprise_flow';
+  const hasDisplayableData = !!(
+    parsedEnterpriseData?.summary ||
+    parsedEnterpriseData?.accounts ||
+    parsedEnterpriseData?.monthly_summary
+  );
+  const source = selectedEnterpriseFlowDoc && hasDisplayableData
+    ? {
+        key: String(selectedEnterpriseFlowDoc.extraction_id || selectedEnterpriseFlowDoc.doc_id || selectedEnterpriseFlowDoc.id || documentType),
+        documentType,
+        data: parsedEnterpriseData,
+        markdown: getMarkdownSummaryFromRecord(selectedEnterpriseFlowDoc) || getMarkdownSummaryFromRecord(parseMaybeJson(selectedEnterpriseFlowDoc.extracted_data)),
+        fileName: String(
+          selectedEnterpriseFlowDoc.file_name ||
+          selectedEnterpriseFlowDoc.filename ||
+          parsedEnterpriseData?.source_file ||
+          documentType ||
+          '企业流水',
+        ),
+        createdAt: String(selectedEnterpriseFlowDoc.updated_at || selectedEnterpriseFlowDoc.created_at || selectedEnterpriseFlowDoc.uploaded_at || ''),
+      }
+    : null;
+  return { allDocs, enterpriseFlowDocs, selectedEnterpriseFlowDoc, rawExtractedJson, parsedEnterpriseData, source };
 }
 
 function getFirstValidFieldValueByTypes(
@@ -2571,34 +2628,45 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     ),
     [draft, companyArticlesInsight, companyArticlesEquityRatioSummary, hukouInsight]
   );
+  const enterpriseFlowState = useMemo(
+    () => buildEnterpriseFlowDebugState(documents, extractionGroups, selectedCustomer, profile),
+    [documents, extractionGroups, selectedCustomer, profile]
+  );
   const enterpriseFlowViewSources = useMemo(
-    () => buildEnterpriseFlowViewSources(extractionGroups),
-    [extractionGroups]
+    () => enterpriseFlowState.source ? [enterpriseFlowState.source] : [],
+    [enterpriseFlowState]
   );
   const enterpriseFlowDebugInfo = useMemo(() => {
-    const latest = enterpriseFlowViewSources[0];
-    const data = latest?.data || {};
+    const data = enterpriseFlowState.parsedEnterpriseData || {};
     const accounts = Array.isArray(data.accounts) ? data.accounts : [];
     const monthly = Array.isArray(data.monthly_summary) ? data.monthly_summary : [];
     return {
-      documentType: latest?.documentType || '-',
-      hasEnterpriseData: !!latest,
+      documentType: enterpriseFlowState.source?.documentType || getDocumentTypeFromRecord(enterpriseFlowState.selectedEnterpriseFlowDoc) || '-',
+      hasEnterpriseData: !!enterpriseFlowState.parsedEnterpriseData,
+      hasSummary: !!enterpriseFlowState.parsedEnterpriseData?.summary,
       accountCount: accounts.length,
       monthlyCount: monthly.length,
-      extractedJson: latest?.data || null,
+      documentCount: enterpriseFlowState.allDocs.length,
+      enterpriseFlowCount: enterpriseFlowState.enterpriseFlowDocs.length,
+      extractedJson: enterpriseFlowState.rawExtractedJson,
+      parsedEnterpriseData: enterpriseFlowState.parsedEnterpriseData,
     };
-  }, [enterpriseFlowViewSources]);
+  }, [enterpriseFlowState]);
   useEffect(() => {
-    const rawExtractedJson = enterpriseFlowDebugInfo.extractedJson;
-    const parsedExtractedJson = parseMaybeJson(rawExtractedJson);
-    console.log('[企业流水调试] current component hit');
-    console.log('[企业流水调试] document=', documents);
-    console.log('[企业流水调试] extraction=', extractionGroups);
+    console.log('[企业流水调试] page hit');
+    console.log('[企业流水调试] customer=', selectedCustomer);
     console.log('[企业流水调试] profile=', profile);
+    console.log('[企业流水调试] documents=', documents);
+    console.log('[企业流水调试] extractions=', extractionGroups);
+    console.log('[企业流水调试] enterpriseFlowDocs=', enterpriseFlowState.enterpriseFlowDocs);
+    console.log('[企业流水调试] selectedEnterpriseFlowDoc=', enterpriseFlowState.selectedEnterpriseFlowDoc);
     console.log('[企业流水调试] documentType=', enterpriseFlowDebugInfo.documentType);
-    console.log('[企业流水调试] rawExtractedJson=', rawExtractedJson);
-    console.log('[企业流水调试] parsedExtractedJson=', parsedExtractedJson);
-  }, [documents, draft, enterpriseFlowDebugInfo, extractionGroups, profile]);
+    console.log('[企业流水调试] rawExtractedJson=', enterpriseFlowState.rawExtractedJson);
+    console.log('[企业流水调试] parsedEnterpriseData=', enterpriseFlowState.parsedEnterpriseData);
+    console.log('[企业流水调试] hasSummary=', !!enterpriseFlowState.parsedEnterpriseData?.summary);
+    console.log('[企业流水调试] accounts=', enterpriseFlowDebugInfo.accountCount);
+    console.log('[企业流水调试] monthly=', enterpriseFlowDebugInfo.monthlyCount);
+  }, [documents, enterpriseFlowDebugInfo, enterpriseFlowState, extractionGroups, profile, selectedCustomer]);
   const fieldSourceSummaries = useMemo(
     () => buildFieldSourceSummaries(renderedDraft, documents),
     [documents, renderedDraft]
@@ -4437,9 +4505,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               ) : (
                 <div className="overflow-visible p-5">
                   <div className="mb-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                    企业流水结构化展示：documentType: {enterpriseFlowDebugInfo.documentType} · hasEnterpriseData:{' '}
-                    {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · accountCount:{' '}
-                    {enterpriseFlowDebugInfo.accountCount} · monthlyCount: {enterpriseFlowDebugInfo.monthlyCount}
+                    企业流水调试：documentCount: {enterpriseFlowDebugInfo.documentCount} · enterpriseFlowCount:{' '}
+                    {enterpriseFlowDebugInfo.enterpriseFlowCount} · hasParsedData:{' '}
+                    {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · hasSummary:{' '}
+                    {enterpriseFlowDebugInfo.hasSummary ? 'true' : 'false'} · accounts:{' '}
+                    {enterpriseFlowDebugInfo.accountCount} · monthly: {enterpriseFlowDebugInfo.monthlyCount}
                   </div>
                   {enterpriseFlowViewSources.length > 0 ? (
                     <div className="mb-6 space-y-4">
@@ -4461,21 +4531,19 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         </section>
                       ))}
                     </div>
-                  ) : null}
-                  {enterpriseFlowViewSources.length > 0 ? (
-                    <details className="rounded-xl border border-slate-200 bg-white">
-                      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">
-                        查看原始资料汇总 Markdown
-                      </summary>
-                      <pre className="whitespace-pre-wrap break-words border-t border-slate-100 p-4 text-sm leading-6 text-slate-700">
-                        {draft || '暂无内容'}
-                      </pre>
-                    </details>
                   ) : (
-                    <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
+                    <div style={{ background: '#fff7ed', border: '1px solid #fdba74', padding: 12, marginBottom: 12 }}>
+                      已命中资料汇总页面，但没有拿到企业流水 extracted_json。请查看 Console 中 [企业流水调试] 输出。
+                    </div>
+                  )}
+                  <details className="rounded-xl border border-slate-200 bg-white">
+                    <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">
+                      查看原始资料汇总 Markdown
+                    </summary>
+                    <pre className="whitespace-pre-wrap break-words border-t border-slate-100 p-4 text-sm leading-6 text-slate-700">
                       {draft || '暂无内容'}
                     </pre>
-                  )}
+                  </details>
                 </div>
               )}
             </section>
@@ -4489,9 +4557,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               </div>
               <div className="overflow-visible px-6 py-6">
                 <div className="mb-3 rounded-lg border border-dashed border-slate-200 bg-white/80 px-3 py-2 text-xs text-slate-500">
-                  企业流水结构化展示：documentType: {enterpriseFlowDebugInfo.documentType} · hasEnterpriseData:{' '}
-                  {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · accountCount:{' '}
-                  {enterpriseFlowDebugInfo.accountCount} · monthlyCount: {enterpriseFlowDebugInfo.monthlyCount}
+                  企业流水调试：documentCount: {enterpriseFlowDebugInfo.documentCount} · enterpriseFlowCount:{' '}
+                  {enterpriseFlowDebugInfo.enterpriseFlowCount} · hasParsedData:{' '}
+                  {enterpriseFlowDebugInfo.hasEnterpriseData ? 'true' : 'false'} · hasSummary:{' '}
+                  {enterpriseFlowDebugInfo.hasSummary ? 'true' : 'false'} · accounts:{' '}
+                  {enterpriseFlowDebugInfo.accountCount} · monthly: {enterpriseFlowDebugInfo.monthlyCount}
                 </div>
                 {enterpriseFlowViewSources.length > 0 ? (
                   <div className="mb-6 space-y-4">
@@ -4513,21 +4583,19 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                       </section>
                     ))}
                   </div>
-                ) : null}
-                {enterpriseFlowViewSources.length > 0 ? (
-                  <details className="rounded-[28px] border border-white/80 bg-white/95 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
-                    <summary className="cursor-pointer px-7 py-4 text-sm font-semibold text-slate-700">
-                      查看原始资料汇总 Markdown
-                    </summary>
-                    <article className="prose prose-slate max-w-none border-t border-slate-100 p-7">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
-                    </article>
-                  </details>
                 ) : (
-                  <article className="prose prose-slate max-w-none rounded-[28px] border border-white/80 bg-white/95 p-7 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
+                  <div style={{ background: '#fff7ed', border: '1px solid #fdba74', padding: 12, marginBottom: 12 }}>
+                    已命中资料汇总页面，但没有拿到企业流水 extracted_json。请查看 Console 中 [企业流水调试] 输出。
+                  </div>
+                )}
+                <details className="rounded-[28px] border border-white/80 bg-white/95 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
+                  <summary className="cursor-pointer px-7 py-4 text-sm font-semibold text-slate-700">
+                    查看原始资料汇总 Markdown
+                  </summary>
+                  <article className="prose prose-slate max-w-none border-t border-slate-100 p-7">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
                   </article>
-                )}
+                </details>
               </div>
             </section>
           </div>

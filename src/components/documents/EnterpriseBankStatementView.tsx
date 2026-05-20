@@ -23,7 +23,7 @@ const ENTERPRISE_BANK_STATEMENT_TYPES = new Set([
   '银行流水',
 ]);
 
-export function isEnterpriseBankStatementType(documentType?: string | null): boolean {
+export function isEnterpriseBankStatementType(documentType?: unknown): boolean {
   const value = String(documentType || '').trim();
   return ENTERPRISE_BANK_STATEMENT_TYPES.has(value);
 }
@@ -35,7 +35,8 @@ export function parseMaybeJson(value: unknown): Record<string, unknown> | null {
     try {
       const parsed = JSON.parse(value);
       return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
-    } catch {
+    } catch (error) {
+      console.warn('[企业流水调试] JSON.parse failed', error, value.slice(0, 200));
       return null;
     }
   }
@@ -62,6 +63,7 @@ export function normalizeEnterpriseFlowData(raw: unknown): EnterpriseBankStateme
     parsed.structured_data ??
     parsed.structuredData ??
     parsed.data ??
+    parsed.result ??
     null;
   const nestedParsed = parseMaybeJson(nested) as EnterpriseBankStatementExtraction | null;
   if (
