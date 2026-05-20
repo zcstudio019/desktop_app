@@ -8,6 +8,28 @@ def _round(value: float | None) -> float | None:
     return round(float(value), 2) if value is not None else None
 
 
+def _has_positive_number(value: Any) -> bool:
+    try:
+        return value is not None and abs(float(value)) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _pick_amount(header_value: Any, transaction_value: float) -> float:
+    if _has_positive_number(header_value):
+        return float(header_value)
+    return float(transaction_value or 0)
+
+
+def _pick_count(header_value: Any, transaction_count: int) -> int:
+    try:
+        if header_value is not None and int(header_value) > 0:
+            return int(header_value)
+    except (TypeError, ValueError):
+        pass
+    return int(transaction_count or 0)
+
+
 def build_account_summary(
     transactions: list[dict[str, Any]],
     accounts: list[dict[str, Any]],
@@ -37,12 +59,14 @@ def build_account_summary(
             },
         )
         tx_total = tx_totals_by_account.setdefault(account_id, {"inflow": 0.0, "outflow": 0.0, "count": 0, "inflow_count": 0, "outflow_count": 0})
-        tx_total["inflow"] += float(tx.get("credit_amount") or 0)
-        tx_total["outflow"] += float(tx.get("debit_amount") or 0)
+        credit_amount = float(tx.get("credit_amount") or 0)
+        debit_amount = float(tx.get("debit_amount") or 0)
+        tx_total["inflow"] += credit_amount
+        tx_total["outflow"] += debit_amount
         tx_total["count"] += 1
-        if tx.get("direction") == "inflow":
+        if credit_amount > 0:
             tx_total["inflow_count"] += 1
-        elif tx.get("direction") == "outflow":
+        if debit_amount > 0:
             tx_total["outflow_count"] += 1
         if tx.get("balance") is not None:
             if account.get("opening_balance") is None:
@@ -56,24 +80,26 @@ def build_account_summary(
         tx_count = int(tx_total.get("count") or 0)
         summary_inflow = account.get("summary_inflow")
         summary_outflow = account.get("summary_outflow")
-        summary_count = int(account.get("summary_inflow_count") or 0) + int(account.get("summary_outflow_count") or 0)
         if summary_inflow is not None or summary_outflow is not None:
             account_label = str(account.get("bank_name") or account.get("sheet_name") or "")
-            if "泰隆" in account_label and summary_outflow is not None and tx_outflow == 0:
-                warnings.append("泰隆银行交易明细支出未完整识别，账户支出采用顶部总支出。")
-            if "泰隆" in account_label and summary_inflow is not None and tx_inflow == 0:
-                warnings.append("泰隆银行交易明细收入未完整识别，账户收入采用顶部总收入。")
-            if tx_count > 0 and (
-                abs(float(summary_inflow or 0) - tx_inflow) > 1
-                or abs(float(summary_outflow or 0) - tx_outflow) > 1
-            ):
-                warnings.append(f"{account.get('bank_name') or account.get('sheet_name')} 顶部汇总与明细反算不一致，账户汇总优先采用顶部累计发生额。")
-            account["total_inflow"] = float(summary_inflow or 0)
-            account["total_outflow"] = float(summary_outflow or 0)
-            if summary_count > 0:
-                account["transaction_count"] = summary_count
-            account["inflow_count"] = int(account.get("summary_inflow_count") or tx_total.get("inflow_count") or 0)
-            account["outflow_count"] = int(account.get("summary_outflow_count") or tx_total.get("outflow_count") or 0)
+            if _has_positive_number(summary_inflow) and tx_inflow > 0 and abs(float(summary_inflow) - tx_inflow) > 1:
+                warnings.append(f"{account.get('bank_name') or account.get('sheet_name')} 顶部总收入与明细收入合计不一致，收入采用顶部总收入。")
+            if _has_positive_number(summary_outflow) and tx_outflow > 0 and abs(float(summary_outflow) - tx_outflow) > 1:
+                warnings.append(f"{account.get('bank_name') or account.get('sheet_name')} 顶部总支出与明细支出合计不一致，支出采用顶部总支出。")
+            if "泰隆" in account_label and not _has_positive_number(summary_outflow) and tx_outflow > 0:
+                warnings.append(f"泰隆银行顶部总支出未识别，账户支出采用明细支出金额合计 {round(tx_outflow, 2)}。")
+            if "泰隆" in account_label and _has_positive_number(summary_inflow) and tx_inflow > 0 and abs(float(summary_inflow) - tx_inflow) <= 1:
+                warnings.append("泰隆银行收入采用顶部/明细一致结果。")
+
+            account["total_inflow"] = _pick_amount(summary_inflow, tx_inflow)
+            account["total_outflow"] = _pick_amount(summary_outflow, tx_outflow)
+            account["inflow_count"] = _pick_count(account.get("summary_inflow_count"), int(tx_total.get("inflow_count") or 0))
+            account["outflow_count"] = _pick_count(account.get("summary_outflow_count"), int(tx_total.get("outflow_count") or 0))
+            account["transaction_count"] = int(account.get("inflow_count") or 0) + int(account.get("outflow_count") or 0)
+
+            if "泰隆" in account_label and tx_outflow > 0 and float(account.get("total_outflow") or 0) == 0:
+                account["total_outflow"] = tx_outflow
+                warnings.append("泰隆银行顶部总支出未识别，账户支出采用明细支出金额合计。")
         elif tx_count > 0:
             account["total_inflow"] = tx_inflow
             account["total_outflow"] = tx_outflow

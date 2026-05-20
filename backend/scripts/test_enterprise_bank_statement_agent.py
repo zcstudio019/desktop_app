@@ -85,6 +85,7 @@ def main() -> None:
     assert tailong.get("total_outflow", 0) > 0, "泰隆银行 total_outflow > 0"
     if abs(float(tailong.get("total_inflow") or 0) - 3066903.45) < 0.01:
         assert abs(float(tailong.get("total_outflow") or 0) - 3069066.13) < 0.01, "泰隆银行 total_outflow should be 3069066.13"
+        assert abs(float(tailong.get("net_cashflow") or 0) - (-2162.68)) < 0.1, "泰隆银行 net_cashflow should be -2162.68"
         assert int(tailong.get("inflow_count") or 0) == 15, "泰隆银行 inflow_count should be 15"
         assert int(tailong.get("outflow_count") or 0) == 29, "泰隆银行 outflow_count should be 29"
 
