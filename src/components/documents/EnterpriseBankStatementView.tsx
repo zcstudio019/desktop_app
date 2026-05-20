@@ -46,7 +46,14 @@ export function normalizeEnterpriseFlowData(raw: unknown): EnterpriseBankStateme
   const parsed = parseMaybeJson(raw);
   if (!parsed) return null;
   const direct = parsed as EnterpriseBankStatementExtraction;
-  if (direct.summary || direct.accounts || direct.monthly_summary || direct.counterparty_summary) {
+  if (
+    direct.summary ||
+    direct.accounts ||
+    direct.monthly_summary ||
+    direct.counterparty_summary ||
+    direct.risk_analysis ||
+    direct.financing_view
+  ) {
     return direct;
   }
   const nested =
@@ -57,7 +64,14 @@ export function normalizeEnterpriseFlowData(raw: unknown): EnterpriseBankStateme
     parsed.data ??
     null;
   const nestedParsed = parseMaybeJson(nested) as EnterpriseBankStatementExtraction | null;
-  if (nestedParsed?.summary || nestedParsed?.accounts || nestedParsed?.monthly_summary || nestedParsed?.counterparty_summary) {
+  if (
+    nestedParsed?.summary ||
+    nestedParsed?.accounts ||
+    nestedParsed?.monthly_summary ||
+    nestedParsed?.counterparty_summary ||
+    nestedParsed?.risk_analysis ||
+    nestedParsed?.financing_view
+  ) {
     return nestedParsed;
   }
   return direct;
