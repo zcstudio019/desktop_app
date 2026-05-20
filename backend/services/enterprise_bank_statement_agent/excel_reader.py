@@ -134,6 +134,14 @@ def _clean_enterprise_account(value: Any) -> str | None:
     return normalize_account_number(text)
 
 
+def _summary_label(label: str) -> str:
+    text = _compact(label)
+    text = text.replace("（", "(").replace("）", ")")
+    text = re.sub(r"\((?:¥|￥|元|人民币)?\)", "", text)
+    text = text.replace("¥", "").replace("￥", "").replace("元", "")
+    return text
+
+
 def parse_sheet_account_info(sheet_name: str, rows: list[list[Any]], customer_name: str | None = None) -> dict[str, Any]:
     bank_name = infer_bank_from_sheet_name(sheet_name) or sheet_name
     account_info: dict[str, Any] = {
@@ -151,30 +159,31 @@ def parse_sheet_account_info(sheet_name: str, rows: list[list[Any]], customer_na
     }
 
     for label, value in _iter_label_value_pairs(rows):
-        if any(key in label for key in ("对方账号", "对方账户", "收付款方账号", "交易对手账号")):
+        normalized_label = _summary_label(label)
+        if any(key in normalized_label for key in ("对方账号", "对方账户", "收付款方账号", "交易对手账号")):
             continue
-        if any(key in label for key in ("对方开户行", "对方机构", "对方银行", "收付款方开户行")):
+        if any(key in normalized_label for key in ("对方开户行", "对方机构", "对方银行", "收付款方开户行")):
             continue
-        if label in {"账户名称", "户名", "企业名称", "客户名称", "单位名称"}:
+        if normalized_label in {"账户名称", "户名", "企业名称", "客户名称", "单位名称"}:
             account_info["account_name"] = normalize_text(value) or account_info["account_name"]
-        elif label in {"账号", "企业账号", "本方账号", "账户账号", "银行账号", "账户号码"}:
+        elif normalized_label in {"账号", "企业账号", "本方账号", "账户账号", "银行账号", "账户号码"}:
             account_info["account_number"] = _clean_enterprise_account(value)
-        elif label in {"开户机构", "开户行", "开户网点"}:
+        elif normalized_label in {"开户机构", "开户行", "开户网点"}:
             account_info["branch_name"] = normalize_text(value) or None
-        elif label in {"币种", "货币"}:
+        elif normalized_label in {"币种", "货币"}:
             account_info["currency"] = normalize_currency(value)
-        elif label in {"起始日期", "开始日期", "流水开始日期"}:
+        elif normalized_label in {"起始日期", "开始日期", "流水开始日期"}:
             account_info["period_start"] = normalize_date(value)
-        elif label in {"截止日期", "结束日期", "流水结束日期"}:
+        elif normalized_label in {"截止日期", "结束日期", "流水结束日期"}:
             account_info["period_end"] = normalize_date(value)
-        elif label in {"借方累计发生额", "总支出(¥)", "总支出", "贷方交易金额"}:
+        elif normalized_label in {"借方累计发生额", "总支出", "贷方交易金额"}:
             account_info["summary_outflow"] = normalize_amount(value)
-        elif label in {"贷方累计发生额", "总收入(¥)", "总收入", "借方交易金额"}:
+        elif normalized_label in {"贷方累计发生额", "总收入", "借方交易金额"}:
             account_info["summary_inflow"] = normalize_amount(value)
-        elif label in {"借方累计笔数", "总支出笔数", "贷方交易笔数"}:
+        elif normalized_label in {"借方累计笔数", "总支出笔数", "贷方交易笔数"}:
             amount = normalize_amount(value)
             account_info["summary_outflow_count"] = int(amount) if amount is not None else None
-        elif label in {"贷方累计笔数", "总收入笔数", "借方交易笔数"}:
+        elif normalized_label in {"贷方累计笔数", "总收入笔数", "借方交易笔数"}:
             amount = normalize_amount(value)
             account_info["summary_inflow_count"] = int(amount) if amount is not None else None
 

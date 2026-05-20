@@ -33,6 +33,8 @@ class BankAccountStatement(BaseModel):
     total_outflow: float = 0.0
     net_cashflow: float = 0.0
     transaction_count: int = 0
+    inflow_count: int = 0
+    outflow_count: int = 0
 
 
 class BankTransaction(BaseModel):

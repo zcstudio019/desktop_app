@@ -40,6 +40,8 @@ def main() -> None:
                     "total_inflow": account.get("total_inflow"),
                     "total_outflow": account.get("total_outflow"),
                     "transaction_count": account.get("transaction_count"),
+                    "inflow_count": account.get("inflow_count"),
+                    "outflow_count": account.get("outflow_count"),
                 },
                 ensure_ascii=False,
             )
@@ -71,6 +73,19 @@ def main() -> None:
     assert minsheng.get("total_outflow", 0) > 0, "民生银行 total_outflow > 0"
     if not minsheng.get("transaction_count"):
         assert any("民生银行" in warning and "顶部累计发生额" in warning for warning in extracted.get("warnings") or []), "民生银行明细缺失时必须输出顶部汇总 warning"
+
+    tailong = next((item for item in accounts if item.get("bank_name") == "泰隆银行"), None)
+    assert tailong, "missing 泰隆银行 account"
+    print("[EnterpriseFlow][Tailong] account_summary=", json.dumps(tailong, ensure_ascii=False))
+    tailong_transactions = [tx for tx in extracted.get("transactions") or [] if tx.get("bank_name") == "泰隆银行"]
+    print("[EnterpriseFlow][Tailong] transaction_count=", len(tailong_transactions))
+    print("[EnterpriseFlow][Tailong] inflow_sum=", round(sum(float(tx.get("credit_amount") or 0) for tx in tailong_transactions), 2))
+    print("[EnterpriseFlow][Tailong] outflow_sum=", round(sum(float(tx.get("debit_amount") or 0) for tx in tailong_transactions), 2))
+    assert tailong.get("total_outflow", 0) > 0, "泰隆银行 total_outflow > 0"
+    if abs(float(tailong.get("total_inflow") or 0) - 3066903.45) < 0.01:
+        assert abs(float(tailong.get("total_outflow") or 0) - 3069066.13) < 0.01, "泰隆银行 total_outflow should be 3069066.13"
+        assert int(tailong.get("inflow_count") or 0) == 15, "泰隆银行 inflow_count should be 15"
+        assert int(tailong.get("outflow_count") or 0) == 29, "泰隆银行 outflow_count should be 29"
 
     orchestrated = run_document_extraction_agent(
         document_type="enterprise_flow",

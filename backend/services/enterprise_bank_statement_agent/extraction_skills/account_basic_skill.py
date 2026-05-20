@@ -63,6 +63,8 @@ def extract_account_basic_info(workbook: dict[str, Any], metadata: dict[str, Any
                 "total_outflow": float(summary_outflow or 0),
                 "net_cashflow": float((summary_inflow or 0) - (summary_outflow or 0)),
                 "transaction_count": summary_inflow_count + summary_outflow_count,
+                "inflow_count": summary_inflow_count,
+                "outflow_count": summary_outflow_count,
                 "summary_inflow": summary_inflow,
                 "summary_outflow": summary_outflow,
                 "summary_inflow_count": summary_inflow_count or None,

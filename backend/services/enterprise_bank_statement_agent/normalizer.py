@@ -21,6 +21,7 @@ def normalize_amount(value: Any) -> float | None:
     text = normalize_text(value)
     if not text or text in {"-", "--", "—", "无", "None", "null"}:
         return None
+    text = text.replace("¥", "").replace("￥", "").replace("元", "")
     negative = False
     if text.startswith("(") and text.endswith(")"):
         negative = True
