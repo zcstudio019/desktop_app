@@ -2816,6 +2816,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const hasEnterpriseStructuredData = enterpriseFlowViewSources.length > 0;
   useEffect(() => {
     if (!import.meta.env.DEV) return;
+    const selectedDoc = enterpriseFlowState.selectedEnterpriseFlowDoc;
+    const accounts = Array.isArray(enterpriseFlowState.parsedEnterpriseData?.accounts)
+      ? enterpriseFlowState.parsedEnterpriseData.accounts
+      : [];
+    const tailongAccount = accounts.find((account) => String((account as Record<string, unknown>)?.bank_name || '').includes('泰隆'));
     console.debug('[EnterpriseBankStatementView] page hit', {
       customerId: activeCustomerId,
       customerIdCandidates,
@@ -2825,6 +2830,30 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       selectedEnterpriseFlowDoc: enterpriseFlowState.selectedEnterpriseFlowDoc,
       hasParsedData: !!enterpriseFlowState.parsedEnterpriseData,
       keys: Object.keys(enterpriseFlowState.parsedEnterpriseData || {}),
+    });
+    console.debug('[EnterpriseFlow][Frontend][SelectedDoc]', {
+      document_id:
+        selectedDoc?.document_id ||
+        selectedDoc?.doc_id ||
+        selectedDoc?.id ||
+        selectedDoc?.extraction_id,
+      created_at: selectedDoc?.created_at,
+      updated_at: selectedDoc?.updated_at,
+      uploaded_at: selectedDoc?.uploaded_at,
+      upload_time: selectedDoc?.upload_time,
+      file_name: selectedDoc?.file_name || selectedDoc?.filename,
+      selected_time: getRecordTime(selectedDoc),
+      enterpriseFlowDocs: enterpriseFlowState.enterpriseFlowDocs.map((doc) => ({
+        document_id: doc.document_id || doc.doc_id || doc.id || doc.extraction_id,
+        created_at: doc.created_at,
+        updated_at: doc.updated_at,
+        uploaded_at: doc.uploaded_at,
+        upload_time: doc.upload_time,
+        file_name: doc.file_name || doc.filename,
+        sort_time: getRecordTime(doc),
+      })),
+      tailong_total_outflow: (tailongAccount as Record<string, unknown> | undefined)?.total_outflow,
+      tailong_account: tailongAccount,
     });
   }, [activeCustomerId, customerIdCandidates, documents.length, enterpriseFlowState, extractionGroups.length]);
   const fieldSourceSummaries = useMemo(

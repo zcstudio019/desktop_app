@@ -58,6 +58,11 @@ def build_account_summary(
         summary_outflow = account.get("summary_outflow")
         summary_count = int(account.get("summary_inflow_count") or 0) + int(account.get("summary_outflow_count") or 0)
         if summary_inflow is not None or summary_outflow is not None:
+            account_label = str(account.get("bank_name") or account.get("sheet_name") or "")
+            if "泰隆" in account_label and summary_outflow is not None and tx_outflow == 0:
+                warnings.append("泰隆银行交易明细支出未完整识别，账户支出采用顶部总支出。")
+            if "泰隆" in account_label and summary_inflow is not None and tx_inflow == 0:
+                warnings.append("泰隆银行交易明细收入未完整识别，账户收入采用顶部总收入。")
             if tx_count > 0 and (
                 abs(float(summary_inflow or 0) - tx_inflow) > 1
                 or abs(float(summary_outflow or 0) - tx_outflow) > 1

@@ -76,6 +76,7 @@ def main() -> None:
 
     tailong = next((item for item in accounts if item.get("bank_name") == "泰隆银行"), None)
     assert tailong, "missing 泰隆银行 account"
+    print("TAILONG_ACCOUNT=", json.dumps(tailong, ensure_ascii=False))
     print("[EnterpriseFlow][Tailong] account_summary=", json.dumps(tailong, ensure_ascii=False))
     tailong_transactions = [tx for tx in extracted.get("transactions") or [] if tx.get("bank_name") == "泰隆银行"]
     print("[EnterpriseFlow][Tailong] transaction_count=", len(tailong_transactions))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ from openpyxl import load_workbook
 
 from .normalizer import normalize_account_number, normalize_amount, normalize_currency, normalize_date, normalize_text
 
+
+logger = logging.getLogger(__name__)
 
 COUNTERPARTY_ACCOUNT_HEADERS = ("对方账号", "对方账户", "收付款方账号", "交易对手账号", "对手方账号")
 COUNTERPARTY_BANK_HEADERS = ("对方开户行", "对方机构", "对方银行", "收付款方开户行", "对方账户开户行", "counterparty_bank")
@@ -208,8 +211,15 @@ def read_excel_workbook(file_path: str | None = None, rows: list[dict[str, Any]]
                     raw_rows = [[cell for cell in row] for row in ws.iter_rows(values_only=True)]
                     header_index, header_map = _find_header_row(raw_rows, warnings, ws.title)
                     data_rows: list[dict[str, Any]] = []
+                    detected_columns: list[str] = []
+                    column_mapping: dict[str, str] = {}
                     if header_index is not None and header_map:
                         header_row = raw_rows[header_index]
+                        detected_columns = [normalize_text(header_row[idx] or f"col_{idx + 1}") for idx in range(len(header_row))]
+                        column_mapping = {
+                            normalize_text(header_row[idx] or f"col_{idx + 1}"): field
+                            for idx, field in header_map.items()
+                        }
                         for row_number, raw_row in enumerate(raw_rows[header_index + 1 :], start=header_index + 2):
                             raw = {str(header_row[idx] or f"col_{idx + 1}"): raw_row[idx] if idx < len(raw_row) else None for idx in range(len(header_row))}
                             normalized = {field: raw_row[idx] if idx < len(raw_row) else None for idx, field in header_map.items()}
@@ -217,10 +227,28 @@ def read_excel_workbook(file_path: str | None = None, rows: list[dict[str, Any]]
                             normalized["row_number"] = row_number
                             data_rows.append(normalized)
                     meta = parse_sheet_account_info(ws.title, raw_rows)
+                    debug = {
+                        "header_index": header_index,
+                        "detected_columns": detected_columns,
+                        "column_mapping": column_mapping,
+                        "header_summary": {
+                            "total_inflow": meta.get("summary_inflow"),
+                            "total_outflow": meta.get("summary_outflow"),
+                            "inflow_count": meta.get("summary_inflow_count"),
+                            "outflow_count": meta.get("summary_outflow_count"),
+                        },
+                    }
+                    if "泰隆" in normalize_text(ws.title):
+                        logger.info(
+                            "[EnterpriseFlow][Tailong][COLUMNS] sheet=%s columns=%s mapping=%s",
+                            ws.title,
+                            detected_columns,
+                            column_mapping,
+                        )
                     if not meta.get("account_number"):
                         meta["account_number"] = _extract_account_from_column(data_rows)
                         meta["account_id"] = f"{meta['bank_name']}:{meta.get('account_number') or ws.title}"
-                    sheets.append({"sheet_name": ws.title, "meta": meta, "rows": data_rows})
+                    sheets.append({"sheet_name": ws.title, "meta": meta, "rows": data_rows, "debug": debug})
                 workbook.close()
                 return {"source_file": source_file, "sheets": sheets, "warnings": warnings}
             except Exception as exc:

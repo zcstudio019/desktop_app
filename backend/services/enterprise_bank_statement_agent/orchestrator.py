@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,8 @@ from .schema import (
 from .validator import validate_enterprise_bank_statement_result
 
 
+logger = logging.getLogger(__name__)
+
 SUPPORTED_TYPES = {"enterprise_flow", "enterprise_bank_statement", "bank_statement_enterprise", "company_bank_statement", "企业流水", "银行流水"}
 
 
@@ -62,6 +65,60 @@ def _stable_extraction(
         warnings=warnings or [],
     )
     return to_plain_dict(model)
+
+
+def _log_tailong_final_account(
+    workbook: dict[str, Any],
+    accounts: list[dict[str, Any]],
+    transactions: list[dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    tailong_sheets = [
+        sheet for sheet in workbook.get("sheets") or []
+        if "泰隆" in str(sheet.get("sheet_name") or sheet.get("meta", {}).get("bank_name") or "")
+    ]
+    tailong_account = next(
+        (
+            account for account in accounts
+            if "泰隆" in str(account.get("bank_name") or account.get("sheet_name") or "")
+        ),
+        None,
+    )
+    if not tailong_sheets and not tailong_account:
+        return
+
+    sheet = tailong_sheets[0] if tailong_sheets else {}
+    meta = sheet.get("meta") or {}
+    debug = sheet.get("debug") or {}
+    tailong_transactions = [
+        tx for tx in transactions
+        if "泰隆" in str(tx.get("bank_name") or tx.get("sheet_name") or "")
+    ]
+    inflow_sum = round(sum(float(tx.get("credit_amount") or 0) for tx in tailong_transactions), 2)
+    outflow_sum = round(sum(float(tx.get("debit_amount") or 0) for tx in tailong_transactions), 2)
+    payload = {
+        "bank_name": (tailong_account or meta).get("bank_name"),
+        "sheet_name": (tailong_account or meta).get("sheet_name") or sheet.get("sheet_name"),
+        "account_name": (tailong_account or meta).get("account_name"),
+        "account_number": (tailong_account or meta).get("account_number"),
+        "total_inflow": (tailong_account or {}).get("total_inflow"),
+        "total_outflow": (tailong_account or {}).get("total_outflow"),
+        "inflow_count": (tailong_account or {}).get("inflow_count"),
+        "outflow_count": (tailong_account or {}).get("outflow_count"),
+        "transaction_count": (tailong_account or {}).get("transaction_count") or len(tailong_transactions),
+        "header_summary": debug.get("header_summary") or {
+            "total_inflow": meta.get("summary_inflow"),
+            "total_outflow": meta.get("summary_outflow"),
+            "inflow_count": meta.get("summary_inflow_count"),
+            "outflow_count": meta.get("summary_outflow_count"),
+        },
+        "detected_columns": debug.get("detected_columns"),
+        "column_mapping": debug.get("column_mapping"),
+        "inflow_sum_from_transactions": inflow_sum,
+        "outflow_sum_from_transactions": outflow_sum,
+        "warnings": [item for item in warnings if "泰隆" in str(item)],
+    }
+    logger.info("[EnterpriseFlow][Tailong][FINAL_ACCOUNT] %s", payload)
 
 
 def run_enterprise_bank_statement_agent(
@@ -94,6 +151,7 @@ def run_enterprise_bank_statement_agent(
     months_count = (basic.get("statement_period") or {}).get("months_count")
     summary, accounts, summary_warnings = build_account_summary(transactions, accounts, months_count)
     warnings.extend(summary_warnings)
+    _log_tailong_final_account(workbook, accounts, transactions, warnings)
     monthly_summary = analyze_monthly_trends(transactions)
     counterparty_summary = analyze_counterparties(transactions, summary.get("total_inflow", 0), summary.get("total_outflow", 0))
     large_transactions = detect_large_transactions(transactions, summary)
