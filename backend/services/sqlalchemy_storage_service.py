@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, desc, inspect, select, text, update
-from sqlalchemy.exc import DataError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.database import Base, SessionLocal, engine
 from backend.document_types import normalize_document_type_code
@@ -29,6 +29,7 @@ from backend.db_models import (
     SavedApplicationRecord,
     TableField,
 )
+from backend.utils.text_sanitize import sanitize_payload_for_db, sanitize_text_for_db
 
 logger = logging.getLogger(__name__)
 JOB_PAYLOAD_PREVIEW_LIMIT = max(120, int(os.getenv("JOB_PAYLOAD_PREVIEW_LIMIT", "300")))
@@ -43,7 +44,13 @@ def sanitize_async_job_error_message(error_message: str | None) -> str:
     lowered = raw_message.lower()
 
     if "incorrect string value" in lowered or "pymysql.err.dataerror" in lowered:
-        return "任务结果保存失败，可能包含当前数据库暂不支持的特殊字符。请联系管理员检查数据库字符集后重试。"
+        return "任务结果保存失败：数据库字符集可能不是 utf8mb4，或结果中包含不兼容字符。请执行数据库字符集修复后重试。"
+
+    if "data too long" in lowered or "1406" in lowered:
+        return "任务结果保存失败：数据库字段长度不足，请将任务结果和资料提取字段调整为 LONGTEXT 后重试。"
+
+    if "not json serializable" in lowered or "is not json serializable" in lowered:
+        return "任务结果保存失败：结果中包含不可 JSON 序列化对象，请联系管理员检查解析结果。"
 
     if "duplicate entry" in lowered:
         return "任务保存失败，检测到重复记录，请刷新后重试。"
@@ -74,7 +81,13 @@ def normalize_async_job_error_message(error_message: str | None) -> str:
     lowered = raw_message.lower()
 
     if "incorrect string value" in lowered or "pymysql.err.dataerror" in lowered:
-        return "任务结果保存失败，可能包含当前数据库暂不支持的特殊字符。请联系管理员检查数据库字符集后重试。"
+        return "任务结果保存失败：数据库字符集可能不是 utf8mb4，或结果中包含不兼容字符。请执行数据库字符集修复后重试。"
+
+    if "data too long" in lowered or "1406" in lowered:
+        return "任务结果保存失败：数据库字段长度不足，请将任务结果和资料提取字段调整为 LONGTEXT 后重试。"
+
+    if "not json serializable" in lowered or "is not json serializable" in lowered:
+        return "任务结果保存失败：结果中包含不可 JSON 序列化对象，请联系管理员检查解析结果。"
 
     if "duplicate entry" in lowered:
         return "任务保存失败，检测到重复记录，请刷新后重试。"
@@ -116,6 +129,7 @@ class SQLAlchemyStorageService:
         self._ensure_document_hash_column()
         self._ensure_document_version_columns()
         self._ensure_extraction_data_longtext()
+        self._ensure_large_text_columns()
         self._ensure_extraction_metadata_columns()
 
     def _ensure_document_owner_columns(self) -> None:
@@ -206,6 +220,57 @@ class SQLAlchemyStorageService:
                 exc_info=True,
             )
 
+    def _ensure_large_text_columns(self) -> None:
+        if engine.dialect.name.lower() != "mysql":
+            return
+        table_columns = {
+            "async_jobs": ["request_json", "execution_payload_json", "result_json", "error_message"],
+            "extractions": ["extracted_data", "extraction_error"],
+            "customer_profiles": ["markdown_content", "source_snapshot_json", "rag_source_priority_json", "risk_report_schema_json"],
+            "customer_document_chunks": ["chunk_text", "embedding_json", "metadata_json"],
+            "customer_risk_reports": ["report_json", "report_markdown"],
+            "saved_applications": ["application_data", "stale_reason"],
+            "activity_logs": ["description", "metadata_json"],
+            "chat_messages": ["content"],
+            "product_cache_entries": ["content"],
+        }
+        try:
+            inspector = inspect(engine)
+            with engine.begin() as conn:
+                for table_name, column_names in table_columns.items():
+                    if not inspector.has_table(table_name):
+                        continue
+                    existing = {
+                        column["name"]: str(column.get("type") or "").lower()
+                        for column in inspector.get_columns(table_name)
+                    }
+                    for column_name in column_names:
+                        if column_name not in existing or "longtext" in existing[column_name]:
+                            continue
+                        try:
+                            conn.execute(
+                                text(
+                                    f"""
+                                    ALTER TABLE `{table_name}`
+                                    MODIFY COLUMN `{column_name}` LONGTEXT
+                                    CHARACTER SET utf8mb4
+                                    COLLATE utf8mb4_unicode_ci
+                                    NULL
+                                    """
+                                )
+                            )
+                            logger.info("[DB Migration] %s.%s upgraded to LONGTEXT", table_name, column_name)
+                        except Exception as exc:
+                            logger.warning(
+                                "[DB Migration] Failed to upgrade %s.%s to LONGTEXT: %s",
+                                table_name,
+                                column_name,
+                                exc,
+                                exc_info=True,
+                            )
+        except Exception as exc:
+            logger.warning("[DB Migration] Failed to inspect/upgrade large text columns: %s", exc, exc_info=True)
+
     def _ensure_extraction_metadata_columns(self) -> None:
         try:
             inspector = inspect(engine)
@@ -287,6 +352,10 @@ class SQLAlchemyStorageService:
 
         return value, False
 
+    def _db_error_detail(self, exc: BaseException) -> str:
+        original = getattr(exc, "orig", None)
+        return repr(original or exc)
+
     def _dump_json_for_async_job(
         self,
         field_name: str,
@@ -298,12 +367,13 @@ class SQLAlchemyStorageService:
         if value is None:
             return default
 
-        sanitized_value, replaced = self._sanitize_value_for_mysql(value, strip_non_bmp=strip_non_bmp)
+        sanitized_value = sanitize_payload_for_db(value)
+        sanitized_value, replaced = self._sanitize_value_for_mysql(sanitized_value, strip_non_bmp=strip_non_bmp)
         if isinstance(sanitized_value, str):
             dumped = sanitized_value
             original_length = len(str(value))
         else:
-            dumped = json.dumps(sanitized_value, ensure_ascii=False)
+            dumped = json.dumps(sanitized_value, ensure_ascii=False, default=str)
             original_length = len(json.dumps(value, ensure_ascii=False, default=str))
 
         if replaced or len(dumped) != original_length:
@@ -320,9 +390,10 @@ class SQLAlchemyStorageService:
     def _dumps(self, value: Any, default: str = "{}") -> str:
         if value is None:
             return default
-        if isinstance(value, str):
-            return value
-        return json.dumps(value, ensure_ascii=False)
+        sanitized = sanitize_payload_for_db(value)
+        if isinstance(sanitized, str):
+            return sanitized
+        return json.dumps(sanitized, ensure_ascii=False, default=str)
 
     def _loads(self, value: str | None, fallback: Any) -> Any:
         if not value:
@@ -994,6 +1065,19 @@ class SQLAlchemyStorageService:
             payload = extraction_data.copy()
             payload["extraction_type"] = normalize_document_type_code(payload.get("extraction_type") or "") or payload.get("extraction_type")
             payload["extracted_data"] = self._dumps(payload.get("extracted_data"), "{}")
+            extracted_json_text = payload["extracted_data"]
+            markdown_summary = ""
+            try:
+                extracted_payload = self._loads(extracted_json_text, {})
+                if isinstance(extracted_payload, dict):
+                    markdown_summary = str(
+                        extracted_payload.get("markdown_summary")
+                        or extracted_payload.get("markdown")
+                        or extracted_payload.get("summary")
+                        or ""
+                    )
+            except Exception:
+                markdown_summary = ""
             logger.info(
                 "[document_extraction] 写入 extracted_json document_type=%s extracted_data length=%s",
                 payload.get("extraction_type") or "",
@@ -1001,9 +1085,24 @@ class SQLAlchemyStorageService:
             )
             row = Extraction(**{k: v for k, v in payload.items() if hasattr(Extraction, k)})
             db.add(row)
-            db.commit()
-            db.refresh(row)
-            return self._row_to_extraction(row)
+            try:
+                db.commit()
+                db.refresh(row)
+                return self._row_to_extraction(row)
+            except SQLAlchemyError as exc:
+                db.rollback()
+                logger.exception(
+                    "[File Save Error] failed to persist extraction customer_id=%s document_type=%s document_id=%s extraction_id=%s field=%s json_len=%s markdown_len=%s db_error=%s",
+                    payload.get("customer_id") or "",
+                    payload.get("extraction_type") or "",
+                    payload.get("doc_id") or "",
+                    payload.get("extraction_id") or "",
+                    "extracted_data",
+                    len(extracted_json_text or ""),
+                    len(markdown_summary or ""),
+                    self._db_error_detail(exc),
+                )
+                raise
 
     async def get_extraction(self, extraction_id: str) -> dict | None:
         with self._session_factory() as db:
@@ -1044,7 +1143,21 @@ class SQLAlchemyStorageService:
             data = self._loads(row.extracted_data, {})
             data[field] = value
             row.extracted_data = self._dumps(data, "{}")
-            db.commit()
+            try:
+                db.commit()
+            except SQLAlchemyError as exc:
+                db.rollback()
+                logger.exception(
+                    "[File Save Error] failed to update extraction customer_id=%s document_type=%s document_id=%s extraction_id=%s field=%s json_len=%s db_error=%s",
+                    row.customer_id or "",
+                    row.extraction_type or "",
+                    row.doc_id or "",
+                    extraction_id,
+                    field,
+                    len(row.extracted_data or ""),
+                    self._db_error_detail(exc),
+                )
+                raise
             return True
 
     async def get_customer_profile(self, customer_id: str) -> dict | None:
@@ -1067,7 +1180,7 @@ class SQLAlchemyStorageService:
             )
             if row:
                 row.title = profile_data.get("title") or row.title
-                row.markdown_content = profile_data.get("markdown_content") or ""
+                row.markdown_content = sanitize_text_for_db(profile_data.get("markdown_content") or "") or ""
                 row.source_mode = profile_data.get("source_mode") or row.source_mode
                 row.source_snapshot_json = self._dumps(profile_data.get("source_snapshot"), "{}")
                 row.rag_source_priority_json = self._dumps(profile_data.get("rag_source_priority"), "[]")
@@ -1077,7 +1190,7 @@ class SQLAlchemyStorageService:
                 row = CustomerProfile(
                     customer_id=profile_data["customer_id"],
                     title=profile_data.get("title") or "",
-                    markdown_content=profile_data.get("markdown_content") or "",
+                    markdown_content=sanitize_text_for_db(profile_data.get("markdown_content") or "") or "",
                     source_mode=profile_data.get("source_mode") or "auto",
                     source_snapshot_json=self._dumps(profile_data.get("source_snapshot"), "{}"),
                     rag_source_priority_json=self._dumps(profile_data.get("rag_source_priority"), "[]"),
@@ -1085,9 +1198,20 @@ class SQLAlchemyStorageService:
                     version=int(profile_data.get("version") or 1),
                 )
                 db.add(row)
-            db.commit()
-            db.refresh(row)
-            return self._row_to_profile(row)
+            try:
+                db.commit()
+                db.refresh(row)
+                return self._row_to_profile(row)
+            except SQLAlchemyError as exc:
+                db.rollback()
+                logger.exception(
+                    "[File Save Error] failed to persist customer profile customer_id=%s field=%s markdown_len=%s db_error=%s",
+                    profile_data.get("customer_id") or "",
+                    "markdown_content",
+                    len(profile_data.get("markdown_content") or ""),
+                    self._db_error_detail(exc),
+                )
+                raise
 
     async def delete_customer_profile(self, customer_id: str) -> bool:
         with self._session_factory() as db:
@@ -1470,16 +1594,22 @@ class SQLAlchemyStorageService:
             if "finished_at" in updates:
                 row.finished_at = updates["finished_at"] or ""
 
+            result_text_len = len(row.result_json or "") if "result_json" in updates else 0
+            request_text_len = len(row.request_json or "") if "request_json" in updates else 0
             try:
                 db.commit()
-            except DataError as exc:
+            except SQLAlchemyError as exc:
                 db.rollback()
                 logger.exception(
-                    "[SQLAlchemyStorage] async job update failed job_id=%s status=%s has_result_json=%s error=%s",
+                    "[File Save Error] async job update failed job_id=%s customer_id=%s job_type=%s status=%s field=%s result_json_len=%s request_json_len=%s db_error=%s",
                     job_id,
+                    row.customer_id or "",
+                    row.job_type or "",
                     updates.get("status") or row.status,
-                    "result_json" in updates,
-                    exc,
+                    "result_json" if "result_json" in updates else ("request_json" if "request_json" in updates else "async_job"),
+                    result_text_len,
+                    request_text_len,
+                    self._db_error_detail(exc),
                 )
                 if "result_json" in updates:
                     fallback_error = normalize_async_job_error_message(str(exc))
