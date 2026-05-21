@@ -1,4 +1,5 @@
 ﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ArrowLeft, ChevronDown, ChevronRight, Download, Eye, FileText, Pencil, RefreshCw, Save, Trash2 } from 'lucide-react';
@@ -2285,6 +2286,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
   const [enterpriseFlowPreviewDoc, setEnterpriseFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
   const [documentStatusError, setDocumentStatusError] = useState<string | null>(null);
+  const [enterpriseFlowPreviewError, setEnterpriseFlowPreviewError] = useState<string | null>(null);
+  const [backgroundRefreshNotice, setBackgroundRefreshNotice] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentResult, setAgentResult] = useState<Record<string, unknown> | null>(null);
   const [collapsedDocumentGroups, setCollapsedDocumentGroups] = useState<Record<string, boolean>>({});
@@ -2300,6 +2303,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const highlightFileName = urlParams.get('highlight_file_name') || '';
   const currentAuthUsername = useMemo(() => localStorage.getItem('auth_username') || '', []);
   const currentAuthRole = useMemo(() => localStorage.getItem('auth_role') || '', []);
+  const documentStatusLoadingRef = useRef<string | null>(null);
 
   const loadLatestAgent = useCallback(async (customerId: string) => {
     try {
@@ -2411,31 +2415,47 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     [customers, setCurrentCustomer]
   );
 
-  const loadDocuments = useCallback(async (customerId: string) => {
-    setLoadingDocuments(true);
+  const loadDocuments = useCallback(async (customerId: string, options?: { silent?: boolean }) => {
+    if (documentStatusLoadingRef.current === customerId) {
+      return;
+    }
+    documentStatusLoadingRef.current = customerId;
+    if (!options?.silent) {
+      setLoadingDocuments(true);
+    }
     setDocumentStatusError(null);
-    setDocuments([]);
+    if (!options?.silent) {
+      setDocuments([]);
+    }
     try {
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] loading documents for customerId=', customerId);
       const result = await getCustomerDocumentStatus(customerId);
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] documents api response=', result);
       setDocuments(normalizeCustomerDocumentsResponse(result));
+      setBackgroundRefreshNotice(null);
     } catch (err) {
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load customer documents failed', err);
-      setDocuments([]);
+      if (!options?.silent) {
+        setDocuments([]);
+      }
       setDocumentStatusError(err instanceof Error ? err.message : '来源文档状态加载失败，请稍后重试');
     } finally {
-      setLoadingDocuments(false);
+      documentStatusLoadingRef.current = null;
+      if (!options?.silent) {
+        setLoadingDocuments(false);
+      }
     }
   }, []);
 
   const loadEnterpriseFlowPreview = useCallback(async (customerId: string) => {
     try {
+      setEnterpriseFlowPreviewError(null);
       const result = await getLatestEnterpriseFlowExtraction(customerId);
       setEnterpriseFlowPreviewDoc(result.item || null);
     } catch (err) {
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', err);
       setEnterpriseFlowPreviewDoc(null);
+      setEnterpriseFlowPreviewError('结构化预览暂时不可用，请稍后重试');
     }
   }, []);
 
@@ -2517,6 +2537,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setDocuments([]);
     setExtractionGroups([]);
     setEnterpriseFlowPreviewDoc(null);
+    setEnterpriseFlowPreviewError(null);
 
     async function loadCustomerDocumentsAndExtractions() {
       for (const customerId of customerIdCandidates) {
@@ -2558,6 +2579,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             setExtractionGroups(nextExtractions);
             setEnterpriseFlowPreviewDoc(
               enterpriseFlowResult.status === 'fulfilled' ? enterpriseFlowResult.value.item || null : null,
+            );
+            setEnterpriseFlowPreviewError(
+              enterpriseFlowResult.status === 'rejected' ? '结构化预览暂时不可用，请稍后重试' : null,
             );
             if (documentsResult.status === 'rejected' || extractionsResult.status === 'rejected') {
               setDocumentStatusError('来源文档状态加载失败，请稍后重试');
@@ -3116,16 +3140,19 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setDeletingDocumentId(document.doc_id);
       await deleteCustomerDocument(selectedCustomerId, document.doc_id);
       setDocuments((current) => current.filter((item) => item.doc_id !== document.doc_id));
+      setBackgroundRefreshNotice('删除成功，资料汇总将在后台刷新。当前页面暂显示上一版内容。');
       window.setTimeout(() => {
-        void loadDocuments(selectedCustomerId);
-        void loadEnterpriseFlowPreview(selectedCustomerId);
-      }, 2500);
+        void loadDocuments(selectedCustomerId, { silent: true });
+      }, 5000);
+      window.setTimeout(() => {
+        setBackgroundRefreshNotice(null);
+      }, 30000);
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除失败，请稍后重试');
     } finally {
       setDeletingDocumentId(null);
     }
-  }, [loadDocuments, loadEnterpriseFlowPreview, selectedCustomerId]);
+  }, [loadDocuments, selectedCustomerId]);
 
   const handleScrollToDocument = useCallback((document: CustomerDocumentListItem) => {
     setDocumentFilter('all');
@@ -3468,6 +3495,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
         {saveSuccess && !error && (
           <div className="border-b border-emerald-100 bg-emerald-50 px-6 py-3 text-sm text-emerald-700">
             已为当前客户保存最新资料整理内容，资料问答会优先读取这份版本。
+          </div>
+        )}
+
+        {backgroundRefreshNotice && !error && (
+          <div className="border-b border-sky-100 bg-sky-50 px-6 py-3 text-sm text-sky-700">
+            {backgroundRefreshNotice}
           </div>
         )}
 
@@ -4763,6 +4796,21 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         <EnterpriseBankStatementView data={source.data} markdown={source.markdown} />
                       </section>
                     ))}
+                  </div>
+                ) : enterpriseFlowPreviewError ? (
+                  <div className="mb-6 flex flex-col gap-3 rounded-[24px] border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between">
+                    <span>{enterpriseFlowPreviewError}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedCustomerId) {
+                          void loadEnterpriseFlowPreview(selectedCustomerId);
+                        }
+                      }}
+                      className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100"
+                    >
+                      重试
+                    </button>
                   </div>
                 ) : (
                   <article className="prose prose-slate max-w-none rounded-[28px] border border-white/80 bg-white/95 p-7 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
