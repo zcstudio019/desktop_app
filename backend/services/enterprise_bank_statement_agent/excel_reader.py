@@ -350,6 +350,24 @@ def _canonical_header(value: Any) -> str | None:
     label = _strip_label(value)
     if not label:
         return None
+    # Shanghai Bank "账户明细查询" exports use very stable Chinese headers.
+    # Check these first so "对手账号" never falls through to own account number.
+    if "对手账号" in label or "对方账号" in label or "交易对手账号" in label:
+        return "counterparty_account"
+    if "对手名称" in label or "对方户名" in label or "对方名称" in label:
+        return "counterparty_name"
+    if "借方发生额" in label or "借方金额" in label:
+        return "debit_amount"
+    if "贷方发生额" in label or "贷方金额" in label:
+        return "credit_amount"
+    if "交易流水号" in label:
+        return "serial_no"
+    if label == "交易时间":
+        return "transaction_date"
+    if label == "记账日期":
+        return "post_date"
+    if label == "交易方向":
+        return "transaction_direction"
     if any(name in label for name in HEADER_SYNONYMS_CN["counterparty_bank"]):
         return "counterparty_bank"
     if any(name in label for name in HEADER_SYNONYMS_CN["counterparty_account"]):
@@ -378,7 +396,14 @@ def _find_header_row(rows: list[list[Any]], warnings: list[str], sheet_name: str
                 seen.add(canonical)
         fields = set(mapping.values())
         score = 0
-        if {"serial_no", "transaction_date", "debit_amount", "credit_amount"}.issubset(fields):
+        row_text = _cn_compact(" ".join(_cn_text(cell) for cell in row if _cn_text(cell)))
+        is_shanghai_detail_header = all(
+            token in row_text
+            for token in ("交易流水号", "交易时间", "借方发生额", "贷方发生额", "余额")
+        ) and ("对手名称" in row_text or "对方名称" in row_text)
+        if is_shanghai_detail_header:
+            score = 12
+        elif {"serial_no", "transaction_date", "debit_amount", "credit_amount"}.issubset(fields):
             score = 10
         elif {"account_number", "account_name", "transaction_date", "debit_amount", "credit_amount"}.issubset(fields):
             score = 10
@@ -439,6 +464,25 @@ def _iter_label_value_pairs(rows: list[list[Any]], limit: int = 30) -> list[tupl
             next_value = cells[index + 1] if index + 1 < len(cells) else None
             if next_value not in (None, ""):
                 pairs.append((label, next_value))
+            else:
+                # Some bank exports place key/value pairs as "选择账号 | 空列 | 值"
+                # or "开户行 | 空列 | 值 | 币种 | 值". Look ahead a few cells,
+                # stopping when another label-like cell begins.
+                for offset in range(2, 6):
+                    candidate_index = index + offset
+                    if candidate_index >= len(cells):
+                        break
+                    candidate = cells[candidate_index]
+                    if candidate in (None, ""):
+                        continue
+                    candidate_text = _cn_text(candidate)
+                    if _canonical_header(candidate_text) or _strip_label(candidate_text) in {
+                        "选择账号", "户名", "开户行", "币种", "总笔数", "借方总笔数",
+                        "贷方总笔数", "借方总金额", "贷方总金额", "记账日期",
+                    }:
+                        break
+                    pairs.append((label, candidate))
+                    break
     return pairs
 
 
