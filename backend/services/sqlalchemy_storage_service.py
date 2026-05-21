@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -954,6 +955,7 @@ class SQLAlchemyStorageService:
 
     async def list_document_status(self, customer_id: str) -> list[dict[str, Any]]:
         with self._session_factory() as db:
+            started_at = time.perf_counter()
             document_rows = db.execute(
                 select(
                     Document.doc_id,
@@ -969,6 +971,15 @@ class SQLAlchemyStorageService:
                 .where(Document.customer_id == customer_id)
                 .order_by(desc(Document.upload_time), desc(Document.id))
             ).all()
+            documents_cost_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.info(
+                "[DocumentStatus] query_documents_done customer_id=%s count=%s cost_ms=%s",
+                customer_id,
+                len(document_rows),
+                documents_cost_ms,
+            )
+
+            extraction_started_at = time.perf_counter()
             extraction_doc_ids = {
                 row.doc_id
                 for row in db.execute(
@@ -978,6 +989,13 @@ class SQLAlchemyStorageService:
                 ).all()
                 if row.doc_id
             }
+            extractions_cost_ms = int((time.perf_counter() - extraction_started_at) * 1000)
+            logger.info(
+                "[DocumentStatus] query_extractions_done customer_id=%s count=%s cost_ms=%s",
+                customer_id,
+                len(extraction_doc_ids),
+                extractions_cost_ms,
+            )
             latest_extraction_by_doc = {
                 doc_id: True
                 for doc_id in extraction_doc_ids

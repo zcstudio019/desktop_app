@@ -2286,6 +2286,17 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const documentStatusLoadingRef = useRef<string | null>(null);
   const enterpriseFlowPreviewLoadingRef = useRef<string | null>(null);
   const agentLatestLoadingRef = useRef<string | null>(null);
+  const profileLoadingRef = useRef<string | null>(null);
+  const profileRef = useRef<CustomerProfileMarkdownResponse | null>(null);
+  const draftRef = useRef('');
+
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
   const loadLatestAgent = useCallback(async (customerId: string) => {
     if (agentLatestLoadingRef.current === customerId) {
@@ -2381,10 +2392,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
 
   const loadProfile = useCallback(
     async (customerId: string, force = false) => {
+      if (!force && profileLoadingRef.current === customerId) {
+        return;
+      }
+      profileLoadingRef.current = customerId;
       setLoadingProfile(true);
       setError(null);
-      setProfile(null);
-      setDraft('');
+      const currentProfile = profileRef.current;
+      const currentDraft = draftRef.current;
+      const canKeepPreviousProfile =
+        currentProfile?.customer_id === customerId && Boolean(currentDraft || currentProfile.markdown_content);
+      if (!canKeepPreviousProfile) {
+        setProfile(null);
+        setDraft('');
+      }
       try {
         const result = await getCustomerProfileMarkdown(customerId, undefined, force);
         const sanitizedMarkdown = sanitizeProfileMarkdown(result.markdown_content);
@@ -2393,10 +2414,15 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
         const matchedCustomer = customers.find((item) => item.record_id === customerId);
         setCurrentCustomer(matchedCustomer?.name ?? result.customer_name, customerId);
       } catch (err) {
-        setError(err instanceof Error ? err.message : '加载资料汇总失败');
-        setProfile(null);
-        setDraft('');
+        if (canKeepPreviousProfile) {
+          console.warn('加载资料汇总失败，继续展示上一版内容', err);
+        } else {
+          setError(err instanceof Error ? err.message : '加载资料汇总失败');
+          setProfile(null);
+          setDraft('');
+        }
       } finally {
+        profileLoadingRef.current = null;
         setLoadingProfile(false);
       }
     },
@@ -2525,80 +2551,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       return;
     }
 
-    let cancelled = false;
-    setLoadingDocuments(true);
-    setDocumentStatusError(null);
-    setDocuments([]);
+    const requestCustomerId = customerIdCandidates[0];
     setExtractionGroups([]);
-    setEnterpriseFlowPreviewDoc(null);
-    setEnterpriseFlowPreviewError(null);
-
-    async function loadCustomerDocumentsAndExtractions() {
-      for (const customerId of customerIdCandidates) {
-        try {
-          if (import.meta.env.DEV) {
-            console.debug('[EnterpriseBankStatementView] customerId=', customerId);
-            console.debug('[EnterpriseBankStatementView] loading documents for customerId=', customerId);
-          }
-          const [documentsResult, enterpriseFlowResult] = await Promise.allSettled([
-            getCustomerDocumentStatus(customerId),
-            getLatestEnterpriseFlowExtraction(customerId),
-          ]);
-
-          if (import.meta.env.DEV) {
-            console.debug('[EnterpriseBankStatementView] documents api response=', documentsResult);
-            console.debug('[EnterpriseBankStatementView] enterprise flow latest response=', enterpriseFlowResult);
-          }
-
-          if (cancelled) return;
-
-          const nextDocuments =
-            documentsResult.status === 'fulfilled'
-              ? normalizeCustomerDocumentsResponse(documentsResult.value)
-              : [];
-          const nextExtractions: ExtractionGroup[] = [];
-          const isLastCandidate = customerId === customerIdCandidates[customerIdCandidates.length - 1];
-
-          if (nextDocuments.length > 0 || isLastCandidate) {
-            setDocuments(nextDocuments);
-            setExtractionGroups(nextExtractions);
-            setEnterpriseFlowPreviewDoc(
-              enterpriseFlowResult.status === 'fulfilled' ? enterpriseFlowResult.value.item || null : null,
-            );
-            if (enterpriseFlowResult.status === 'rejected') {
-              setEnterpriseFlowPreviewError('结构化预览暂时不可用，请稍后重试');
-            } else {
-              setEnterpriseFlowPreviewError(null);
-            }
-            if (documentsResult.status === 'rejected') {
-              setDocumentStatusError('来源文档状态加载失败，请稍后重试');
-            }
-            if (import.meta.env.DEV) {
-              if (documentsResult.status === 'rejected') {
-                console.debug('[EnterpriseBankStatementView] load customer documents failed', documentsResult.reason);
-              }
-              if (enterpriseFlowResult.status === 'rejected') {
-                console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', enterpriseFlowResult.reason);
-              }
-            }
-            return;
-          }
-        } catch (err) {
-          if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load customer documents/extractions failed', err);
-        }
-      }
-    }
-
-    void loadCustomerDocumentsAndExtractions().finally(() => {
-      if (!cancelled) {
-        setLoadingDocuments(false);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [customerIdCandidates, loadingCustomers, selectedCustomerId]);
+    void loadDocuments(requestCustomerId);
+    void loadEnterpriseFlowPreview(requestCustomerId);
+  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadingCustomers, selectedCustomerId]);
 
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearch.trim().toLowerCase();

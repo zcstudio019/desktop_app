@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -1644,7 +1644,10 @@ async def get_customer_document_status(
         )
 
     cost_ms = int((time.perf_counter() - started_at) * 1000)
-    logger.info("[DocumentStatus] success customer_id=%s count=%s cost_ms=%s", customer_id, len(items), cost_ms)
+    if cost_ms > 1000:
+        logger.warning("[DocumentStatus] response_done customer_id=%s count=%s cost_ms=%s", customer_id, len(items), cost_ms)
+    else:
+        logger.info("[DocumentStatus] response_done customer_id=%s count=%s cost_ms=%s", customer_id, len(items), cost_ms)
     return {"items": items, "total": len(items)}
 
 
@@ -1994,7 +1997,6 @@ async def delete_customer(
 async def delete_customer_document(
     customer_id: str,
     doc_id: str,
-    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Delete a single uploaded document and its linked extraction records."""
@@ -2028,9 +2030,10 @@ async def delete_customer_document(
         raise HTTPException(status_code=404, detail="未找到该资料记录")
 
     cost_ms = int((time.perf_counter() - started_at) * 1000)
-    logger.info("[DocumentDelete] soft/hard deleted document_id=%s cost_ms=%s", doc_id, cost_ms)
-    background_tasks.add_task(_refresh_customer_after_document_delete, customer_id, doc_id)
-    logger.info("[DocumentDelete] scheduled background refresh customer_id=%s", customer_id)
+    logger.info("[DocumentDelete] db_delete_done customer_id=%s document_id=%s cost_ms=%s", customer_id, doc_id, cost_ms)
+    asyncio.create_task(_refresh_customer_after_document_delete(customer_id, doc_id))
+    logger.info("[DocumentDelete] scheduled_background_refresh customer_id=%s document_id=%s", customer_id, doc_id)
+    logger.info("[DocumentDelete] response_return customer_id=%s document_id=%s cost_ms=%s", customer_id, doc_id, cost_ms)
 
     return {
         "success": True,
