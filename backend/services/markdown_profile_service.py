@@ -2226,6 +2226,167 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             logger.warning("profile_markdown property_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
             sections.append(_markdown_section('房产证', ['- 提示：房产证资料整理失败，请查看来源文档列表或重新上传。']))
 
+    logger.info("[Profile Sync][EnterpriseFlow] found count=%s", len(enterprise_flow_extractions))
+    if enterprise_flow_extractions:
+        try:
+            enriched_flow_extractions: list[dict[str, Any]] = []
+            for extraction in enterprise_flow_extractions:
+                item = dict(extraction)
+                doc_id = item.get('doc_id')
+                document = None
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "profile_markdown enterprise_flow_document_meta_failed customer_id=%s doc_id=%s error=%s",
+                            customer_id,
+                            doc_id,
+                            exc,
+                        )
+
+                item['file_name'] = (document or {}).get('file_name') or item.get('file_name') or ''
+                item['file_path'] = (document or {}).get('file_path') or item.get('file_path') or ''
+                item['uploaded_at'] = (
+                    (document or {}).get('upload_time')
+                    or (document or {}).get('uploaded_at')
+                    or item.get('created_at')
+                    or ''
+                )
+                enriched_flow_extractions.append(item)
+
+            aggregated_flow = aggregate_customer_enterprise_flows(enriched_flow_extractions)
+            summary = aggregated_flow.get('summary') or {}
+            accounts = aggregated_flow.get('accounts') or []
+            monthly_summary = aggregated_flow.get('monthly_summary') or []
+            counterparty_summary = aggregated_flow.get('counterparty_summary') or {}
+            risk_analysis = aggregated_flow.get('risk_analysis') or {}
+            financing_view = aggregated_flow.get('financing_view') or {}
+            source_files = aggregated_flow.get('source_files') or []
+
+            for source in source_files:
+                source_documents.append({
+                    'source_type': source.get('document_type') or 'enterprise_flow',
+                    'source_type_name': get_document_display_name(source.get('document_type') or 'enterprise_flow'),
+                    'extraction_id': source.get('extraction_id'),
+                    'doc_id': source.get('document_id'),
+                    'file_name': source.get('file_name') or '企业流水',
+                    'original_status': '可查看' if source.get('file_path') else '原件文件不存在或已不可用',
+                    'original_available': bool(source.get('file_path')),
+                    'account_count': source.get('account_count') or 0,
+                    'total_inflow': source.get('total_inflow') or 0,
+                    'total_outflow': source.get('total_outflow') or 0,
+                })
+
+            logger.info(
+                "[Profile Sync][EnterpriseFlow] aggregated source_docs=%s accounts=%s total_inflow=%s total_outflow=%s",
+                aggregated_flow.get('source_document_count') or len(source_files),
+                len(accounts),
+                summary.get('total_inflow') or 0,
+                summary.get('total_outflow') or 0,
+            )
+
+            flow_lines = [
+                '### 总体流水汇总',
+                f"- 来源文件数：{aggregated_flow.get('source_document_count') or len(source_files)}",
+                f"- 覆盖账户数：{summary.get('account_count') or len(accounts)}",
+                f"- 覆盖银行数：{summary.get('bank_count') or len({str(account.get('bank_name') or '') for account in accounts if account.get('bank_name')})}",
+                f"- 总收入：{_format_amount_for_markdown(summary.get('total_inflow') or 0)}",
+                f"- 总支出：{_format_amount_for_markdown(summary.get('total_outflow') or 0)}",
+                f"- 净流入：{_format_amount_for_markdown(summary.get('net_cashflow') or 0)}",
+                f"- 交易笔数：{summary.get('transaction_count') or 0}",
+                f"- 月均收入：{_format_amount_for_markdown(summary.get('average_monthly_inflow') or 0)}",
+                f"- 月均支出：{_format_amount_for_markdown(summary.get('average_monthly_outflow') or 0)}",
+                '',
+                '### 各银行账户汇总',
+                '| 银行 | 户名 | 账号 | 收入 | 支出 | 净流入 | 笔数 |',
+                '| --- | --- | --- | ---: | ---: | ---: | ---: |',
+            ]
+
+            if accounts:
+                for account in accounts[:20]:
+                    flow_lines.append(
+                        '| {bank} | {name} | {number} | {inflow} | {outflow} | {net} | {count} |'.format(
+                            bank=account.get('bank_name') or '-',
+                            name=account.get('account_name') or '-',
+                            number=account.get('account_number') or '-',
+                            inflow=_format_amount_for_markdown(account.get('total_inflow') or 0),
+                            outflow=_format_amount_for_markdown(account.get('total_outflow') or 0),
+                            net=_format_amount_for_markdown(account.get('net_cashflow') or 0),
+                            count=account.get('transaction_count') or 0,
+                        )
+                    )
+            else:
+                flow_lines.append('| - | - | - | 0.00 元 | 0.00 元 | 0.00 元 | 0 |')
+
+            if monthly_summary:
+                flow_lines.extend([
+                    '',
+                    '### 月度趋势分析',
+                    '| 月份 | 收入 | 支出 | 净流入 | 笔数 |',
+                    '| --- | ---: | ---: | ---: | ---: |',
+                ])
+                for item in monthly_summary[:12]:
+                    tx_count = (
+                        (item.get('transaction_count') or 0)
+                        or (item.get('inflow_count') or 0) + (item.get('outflow_count') or 0)
+                    )
+                    flow_lines.append(
+                        '| {month} | {inflow} | {outflow} | {net} | {count} |'.format(
+                            month=item.get('month') or '-',
+                            inflow=_format_amount_for_markdown(item.get('inflow') or 0),
+                            outflow=_format_amount_for_markdown(item.get('outflow') or 0),
+                            net=_format_amount_for_markdown(item.get('net_cashflow') or 0),
+                            count=tx_count,
+                        )
+                    )
+
+            top_inflow = counterparty_summary.get('top_inflow_counterparties') or []
+            top_outflow = counterparty_summary.get('top_outflow_counterparties') or []
+            if top_inflow or top_outflow:
+                flow_lines.extend(['', '### 主要对手方'])
+                if top_inflow:
+                    inflow_names = '、'.join(str(item.get('name') or '-') for item in top_inflow[:5])
+                    flow_lines.append(f"- 主要收入客户：{inflow_names}")
+                if top_outflow:
+                    outflow_names = '、'.join(str(item.get('name') or '-') for item in top_outflow[:5])
+                    flow_lines.append(f"- 主要支出对象：{outflow_names}")
+
+            signals = risk_analysis.get('signals') or []
+            checklist = financing_view.get('material_checklist') or []
+            products = financing_view.get('suggested_credit_products') or []
+            bank_recognizable_inflow = (
+                financing_view.get('bank_recognizable_inflow')
+                or financing_view.get('adjusted_operating_inflow')
+                or summary.get('estimated_operating_inflow')
+                or 0
+            )
+            flow_lines.extend([
+                '',
+                '### 企业流水融资判断',
+                f"- 经营性回款估算：{_format_amount_for_markdown(bank_recognizable_inflow)}",
+                f"- 流水稳定性：{risk_analysis.get('overall_level') or '-'}",
+                f"- 大额及异常进出：{'、'.join(str(item.get('title') or item.get('code') or '-') for item in signals[:5]) or '-'}",
+                f"- 建议补充材料：{'、'.join(str(item) for item in checklist[:6]) or '-'}",
+                f"- 可匹配产品建议：{'、'.join(str(item) for item in products[:6]) or '-'}",
+            ])
+            conclusion = str(financing_view.get('conclusion') or '').strip()
+            if conclusion:
+                flow_lines.append(f"- 综合判断：{conclusion}")
+
+            sections.append('## 企业流水摘要\n' + '\n'.join(flow_lines))
+            logger.info("[Profile Sync][EnterpriseFlow] markdown section appended=true")
+        except Exception as exc:
+            logger.warning(
+                "profile_markdown enterprise_flow_aggregate_failed customer_id=%s error=%s",
+                customer_id,
+                exc,
+                exc_info=True,
+            )
+            sections.append(_markdown_section('企业流水摘要', ['- 企业流水客户级汇总暂时生成失败，请查看来源文档列表。']))
+    else:
+        logger.info("[Profile Sync][EnterpriseFlow] active found=false")
+
     for extraction in other_extractions:
         extraction_id = extraction.get('extraction_id') or ''
         extraction_type = extraction.get('extraction_type') or '未命名资料'
