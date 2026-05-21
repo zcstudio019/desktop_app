@@ -127,6 +127,8 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         payload = _extract_payload(extraction)
         if not payload:
             continue
+        if str(payload.get("extraction_status") or extraction.get("extraction_status") or "").lower() in {"failed", "partial_failed"}:
+            continue
         file_name = str(extraction.get("file_name") or payload.get("source_file") or "")
         doc_id = str(extraction.get("doc_id") or extraction.get("document_id") or "")
         extraction_id = str(extraction.get("extraction_id") or "")

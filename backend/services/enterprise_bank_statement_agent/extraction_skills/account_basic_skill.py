@@ -47,6 +47,7 @@ def extract_account_basic_info(workbook: dict[str, Any], metadata: dict[str, Any
         summary_outflow = normalize_amount(meta.get("summary_outflow"))
         summary_inflow_count = int(meta.get("summary_inflow_count") or 0)
         summary_outflow_count = int(meta.get("summary_outflow_count") or 0)
+        summary_transaction_count = int(meta.get("summary_transaction_count") or 0)
         account = accounts.setdefault(
             account_id,
             {
@@ -62,7 +63,7 @@ def extract_account_basic_info(workbook: dict[str, Any], metadata: dict[str, Any
                 "total_inflow": float(summary_inflow or 0),
                 "total_outflow": float(summary_outflow or 0),
                 "net_cashflow": float((summary_inflow or 0) - (summary_outflow or 0)),
-                "transaction_count": summary_inflow_count + summary_outflow_count,
+                "transaction_count": summary_transaction_count or summary_inflow_count + summary_outflow_count,
                 "inflow_count": summary_inflow_count,
                 "outflow_count": summary_outflow_count,
                 "summary_inflow": summary_inflow,

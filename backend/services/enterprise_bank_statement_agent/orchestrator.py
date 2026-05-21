@@ -140,8 +140,9 @@ def run_enterprise_bank_statement_agent(
         workbook = read_excel_workbook(file_path=file_path, rows=rows, filename=source_file)
         warnings.extend(workbook.get("warnings") or [])
         logger.info(
-            "[EnterpriseFlow][Workbook] file=%s sheet_count=%s",
+            "[EnterpriseFlow][Workbook] file=%s ext=%s sheet_count=%s",
             source_file or file_path or "",
+            Path(file_path).suffix.lower() if file_path else "",
             len(workbook.get("sheets") or []),
         )
         for sheet in workbook.get("sheets") or []:
@@ -202,8 +203,23 @@ def run_enterprise_bank_statement_agent(
     extracted_json = to_plain_dict(data)
     validation_warnings = validate_enterprise_bank_statement_result(extracted_json)
     warnings.extend(validation_warnings)
+    empty_result = not extracted_json.get("accounts") or all(
+        float(account.get("total_inflow") or 0) == 0
+        and float(account.get("total_outflow") or 0) == 0
+        and int(account.get("transaction_count") or 0) == 0
+        for account in extracted_json.get("accounts") or []
+    )
+    if empty_result:
+        reason = "未识别到有效企业流水交易，请检查银行模板适配"
+        warnings.append(reason)
+        extracted_json["extraction_status"] = "failed"
+        logger.warning("[EnterpriseFlow][ExtractionEmpty] file=%s reason=%s", source_file or file_path or "", reason)
+    else:
+        extracted_json["extraction_status"] = "success"
     extracted_json["warnings"] = list(dict.fromkeys(warnings))
     markdown = render_enterprise_bank_statement_markdown(extracted_json)
+    if empty_result:
+        markdown = "## 企业流水解析提示\n\n本文件未识别到有效交易明细，请检查银行模板适配或重新上传原始 Excel。\n\n" + markdown
     confidence = _confidence(extracted_json)
     return {
         "title": "企业流水分析报告",

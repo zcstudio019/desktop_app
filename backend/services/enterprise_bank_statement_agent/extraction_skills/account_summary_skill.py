@@ -141,11 +141,12 @@ def build_account_summary(
     low_balance_threshold = 5000.0
     low_balance_count = sum(1 for tx in transactions if tx.get("balance") is not None and float(tx.get("balance") or 0) < low_balance_threshold)
     banks = {item.get("bank_name") for item in normalized_accounts if item.get("bank_name")}
+    account_transaction_count = sum(int(account.get("transaction_count") or 0) for account in normalized_accounts)
     summary = {
         "total_inflow": _round(total_inflow) or 0.0,
         "total_outflow": _round(total_outflow) or 0.0,
         "net_cashflow": _round(total_inflow - total_outflow) or 0.0,
-        "transaction_count": len(transactions),
+        "transaction_count": max(len(transactions), account_transaction_count),
         "inflow_count": inflow_count,
         "outflow_count": outflow_count,
         "account_count": len(normalized_accounts),
