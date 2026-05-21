@@ -838,6 +838,18 @@ export async function getCustomerExtractions(
   return handleResponse<ExtractionGroup[]>(response);
 }
 
+export async function getCustomerDocumentStatus(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<{ items: CustomerDocumentListItem[]; total: number }> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/document-status`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<{ items: CustomerDocumentListItem[]; total: number }>(response);
+}
+
 export async function getCustomerDocuments(
   customerId: string,
   signal?: AbortSignal
@@ -848,6 +860,18 @@ export async function getCustomerDocuments(
     signal,
   });
   return handleResponse<CustomerDocumentListItem[]>(response);
+}
+
+export async function getLatestEnterpriseFlowExtraction(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<{ item: Record<string, unknown> | null }> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/enterprise-flow/latest`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<{ item: Record<string, unknown> | null }>(response);
 }
 
 export async function updateExtractionField(

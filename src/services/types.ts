@@ -771,9 +771,13 @@ export interface CustomerRiskReportHistoryResponse {
  */
 export interface ExtractionItem {
   extraction_id: string;
+  doc_id?: string;
   extraction_type: string;
   extracted_data: Record<string, string>;
   created_at: string;
+  extraction_status?: string;
+  has_extraction?: boolean;
+  summary_available?: boolean;
 }
 
 /**

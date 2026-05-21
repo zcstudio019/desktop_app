@@ -7,9 +7,10 @@ import {
   deleteCustomerDocument,
   deleteCustomerProfileMarkdown,
   downloadDocumentOriginal,
-  getCustomerDocuments,
+  getCustomerDocumentStatus,
   getCustomerExtractions,
   getCustomerProfileMarkdown,
+  getLatestEnterpriseFlowExtraction,
   getLatestFinancingAgent,
   listCustomers,
   previewDocumentOriginal,
@@ -943,9 +944,11 @@ function flattenEnterpriseFlowCandidateDocs(
   extractionGroups: ExtractionGroup[],
   customer: CustomerListItem | null,
   profile: CustomerProfileMarkdownResponse | null,
+  extraCandidates: Record<string, unknown>[] = [],
 ): Record<string, unknown>[] {
   const allDocs: Record<string, unknown>[] = [];
   allDocs.push(...documents.map((item) => item as unknown as Record<string, unknown>));
+  allDocs.push(...extraCandidates);
   for (const group of extractionGroups) {
     const groupRecord = group as unknown as Record<string, unknown>;
     for (const item of group.items || []) {
@@ -999,8 +1002,9 @@ function buildEnterpriseFlowDebugState(
   extractionGroups: ExtractionGroup[],
   customer: CustomerListItem | null,
   profile: CustomerProfileMarkdownResponse | null,
+  extraCandidates: Record<string, unknown>[] = [],
 ): EnterpriseFlowDebugState {
-  const allDocs = flattenEnterpriseFlowCandidateDocs(documents, extractionGroups, customer, profile);
+  const allDocs = flattenEnterpriseFlowCandidateDocs(documents, extractionGroups, customer, profile, extraCandidates);
   const enterpriseFlowDocs = allDocs.filter((doc) => {
     const type = getDocumentTypeFromRecord(doc);
     const raw = getExtractedJsonFromRecord(doc);
@@ -2279,6 +2283,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [documents, setDocuments] = useState<CustomerDocumentListItem[]>([]);
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
+  const [enterpriseFlowPreviewDoc, setEnterpriseFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
+  const [documentStatusError, setDocumentStatusError] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentResult, setAgentResult] = useState<Record<string, unknown> | null>(null);
   const [collapsedDocumentGroups, setCollapsedDocumentGroups] = useState<Record<string, boolean>>({});
@@ -2407,32 +2413,29 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
 
   const loadDocuments = useCallback(async (customerId: string) => {
     setLoadingDocuments(true);
+    setDocumentStatusError(null);
     setDocuments([]);
     try {
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] loading documents for customerId=', customerId);
-      const result = await getCustomerDocuments(customerId);
+      const result = await getCustomerDocumentStatus(customerId);
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] documents api response=', result);
       setDocuments(normalizeCustomerDocumentsResponse(result));
     } catch (err) {
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load customer documents failed', err);
       setDocuments([]);
-      setError(err instanceof Error ? err.message : '加载资料文件列表失败');
+      setDocumentStatusError(err instanceof Error ? err.message : '来源文档状态加载失败，请稍后重试');
     } finally {
       setLoadingDocuments(false);
     }
   }, []);
 
-  const loadExtractions = useCallback(async (customerId: string) => {
-    setExtractionGroups([]);
+  const loadEnterpriseFlowPreview = useCallback(async (customerId: string) => {
     try {
-      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] loading extractions for customerId=', customerId);
-      const result = await getCustomerExtractions(customerId);
-      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] extractions api response=', result);
-      setExtractionGroups(normalizeExtractionGroupsResponse(result));
+      const result = await getLatestEnterpriseFlowExtraction(customerId);
+      setEnterpriseFlowPreviewDoc(result.item || null);
     } catch (err) {
-      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load customer extractions failed', err);
-      setExtractionGroups([]);
-      setError(err instanceof Error ? err.message : '加载结构化提取结果失败');
+      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', err);
+      setEnterpriseFlowPreviewDoc(null);
     }
   }, []);
 
@@ -2510,8 +2513,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
 
     let cancelled = false;
     setLoadingDocuments(true);
+    setDocumentStatusError(null);
     setDocuments([]);
     setExtractionGroups([]);
+    setEnterpriseFlowPreviewDoc(null);
 
     async function loadCustomerDocumentsAndExtractions() {
       for (const customerId of customerIdCandidates) {
@@ -2520,14 +2525,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             console.debug('[EnterpriseBankStatementView] customerId=', customerId);
             console.debug('[EnterpriseBankStatementView] loading documents for customerId=', customerId);
           }
-          const [documentsResult, extractionsResult] = await Promise.allSettled([
-            getCustomerDocuments(customerId),
+          const [documentsResult, extractionsResult, enterpriseFlowResult] = await Promise.allSettled([
+            getCustomerDocumentStatus(customerId),
             getCustomerExtractions(customerId),
+            getLatestEnterpriseFlowExtraction(customerId),
           ]);
 
           if (import.meta.env.DEV) {
             console.debug('[EnterpriseBankStatementView] documents api response=', documentsResult);
             console.debug('[EnterpriseBankStatementView] extractions api response=', extractionsResult);
+            console.debug('[EnterpriseBankStatementView] enterprise flow latest response=', enterpriseFlowResult);
           }
 
           if (cancelled) return;
@@ -2549,12 +2556,21 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
           if (nextDocuments.length > 0 || extractionItemCount > 0 || isLastCandidate) {
             setDocuments(nextDocuments);
             setExtractionGroups(nextExtractions);
+            setEnterpriseFlowPreviewDoc(
+              enterpriseFlowResult.status === 'fulfilled' ? enterpriseFlowResult.value.item || null : null,
+            );
+            if (documentsResult.status === 'rejected' || extractionsResult.status === 'rejected') {
+              setDocumentStatusError('来源文档状态加载失败，请稍后重试');
+            }
             if (import.meta.env.DEV) {
               if (documentsResult.status === 'rejected') {
                 console.debug('[EnterpriseBankStatementView] load customer documents failed', documentsResult.reason);
               }
               if (extractionsResult.status === 'rejected') {
                 console.debug('[EnterpriseBankStatementView] load customer extractions failed', extractionsResult.reason);
+              }
+              if (enterpriseFlowResult.status === 'rejected') {
+                console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', enterpriseFlowResult.reason);
               }
             }
             return;
@@ -2806,8 +2822,14 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     [draft, companyArticlesInsight, companyArticlesEquityRatioSummary, hukouInsight]
   );
   const enterpriseFlowState = useMemo(
-    () => buildEnterpriseFlowDebugState(documents, extractionGroups, selectedCustomer, profile),
-    [documents, extractionGroups, selectedCustomer, profile]
+    () => buildEnterpriseFlowDebugState(
+      documents,
+      extractionGroups,
+      selectedCustomer,
+      profile,
+      enterpriseFlowPreviewDoc ? [enterpriseFlowPreviewDoc] : [],
+    ),
+    [documents, extractionGroups, selectedCustomer, profile, enterpriseFlowPreviewDoc]
   );
   const enterpriseFlowViewSources = useMemo(
     () => enterpriseFlowState.source ? [enterpriseFlowState.source] : [],
@@ -3094,16 +3116,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setDeletingDocumentId(document.doc_id);
       await deleteCustomerDocument(selectedCustomerId, document.doc_id);
       setDocuments((current) => current.filter((item) => item.doc_id !== document.doc_id));
-      await Promise.all([
-        loadDocuments(selectedCustomerId),
-        loadExtractions(selectedCustomerId),
-      ]);
+      window.setTimeout(() => {
+        void loadDocuments(selectedCustomerId);
+        void loadEnterpriseFlowPreview(selectedCustomerId);
+      }, 2500);
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除失败，请稍后重试');
     } finally {
       setDeletingDocumentId(null);
     }
-  }, [loadDocuments, loadExtractions, selectedCustomerId]);
+  }, [loadDocuments, loadEnterpriseFlowPreview, selectedCustomerId]);
 
   const handleScrollToDocument = useCallback((document: CustomerDocumentListItem) => {
     setDocumentFilter('all');
@@ -4459,6 +4481,23 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                   </span>
                 </div>
               </div>
+
+              {documentStatusError ? (
+                <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between">
+                  <span>{documentStatusError || '来源文档状态加载失败，请稍后重试'}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selectedCustomerId) {
+                        void loadDocuments(selectedCustomerId);
+                      }
+                    }}
+                    className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100"
+                  >
+                    重试
+                  </button>
+                </div>
+              ) : null}
 
               <div className="flex flex-wrap items-center gap-2">
                 {([

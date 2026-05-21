@@ -1436,9 +1436,13 @@ async def get_customer_risk_report_history(
 class ExtractionItem(BaseModel):
     """单条 extraction 记录"""
     extraction_id: str
+    doc_id: str = ""
     extraction_type: str
     extracted_data: dict[str, Any]
     created_at: str
+    extraction_status: str = "success"
+    has_extraction: bool = True
+    summary_available: bool = True
 
 
 class ExtractionGroup(BaseModel):
@@ -1456,6 +1460,7 @@ class UpdateExtractionRequest(BaseModel):
 @router.get("/{customer_id}/extractions", response_model=list[ExtractionGroup])
 async def get_customer_extractions(
     customer_id: str,
+    include_data: bool = Query(default=False, description="Whether to include extracted_data LONGTEXT payloads"),
     current_user: dict = Depends(get_current_user),
 ) -> list[ExtractionGroup]:
     """获取客户的所有 extraction 数据，按文档类型分组。
@@ -1478,10 +1483,14 @@ async def get_customer_extractions(
         raise HTTPException(status_code=404, detail="未找到该客户记录")
     await _ensure_local_customer_access(customer, current_user)
 
+    started_at = time.perf_counter()
     try:
-        extractions = await storage_service.get_extractions_by_customer(customer_id)
+        if not include_data and callable(getattr(storage_service, "list_extraction_status", None)):
+            extractions = await storage_service.list_extraction_status(customer_id)
+        else:
+            extractions = await storage_service.get_extractions_by_customer(customer_id)
     except Exception as e:
-        logger.error(f"Failed to fetch extractions for {customer_id}: {e}")
+        logger.exception("Failed to fetch extractions for %s", customer_id)
         raise HTTPException(status_code=500, detail="获取资料数据失败") from e
 
     groups: dict[str, list[ExtractionItem]] = {}
@@ -1499,16 +1508,23 @@ async def get_customer_extractions(
             extracted_data = _merge_company_articles_front_page_roles(extracted_data, document)
         item = ExtractionItem(
             extraction_id=ext.get("extraction_id") or "",
+            doc_id=ext.get("doc_id") or "",
             extraction_type=ext_type,
             extracted_data=extracted_data,
             created_at=ext.get("created_at") or "",
+            extraction_status=ext.get("extraction_status") or "success",
+            has_extraction=bool(ext.get("has_extraction", True)),
+            summary_available=bool(ext.get("summary_available", bool(extracted_data))),
         )
         groups.setdefault(ext_type, []).append(item)
 
-    return [
+    result = [
         ExtractionGroup(extraction_type=ext_type, items=items)
         for ext_type, items in groups.items()
     ]
+    cost_ms = int((time.perf_counter() - started_at) * 1000)
+    logger.info("[DocumentStatus] extractions success customer_id=%s count=%s include_data=%s cost_ms=%s", customer_id, sum(len(group.items) for group in result), include_data, cost_ms)
+    return result
 
 
 @router.get("/{customer_id}/documents", response_model=list[CustomerDocumentListItem])
@@ -1558,6 +1574,118 @@ async def get_customer_documents(
         )
 
     return items
+
+
+@router.get("/{customer_id}/document-status")
+async def get_customer_document_status(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return lightweight source document status without extracted_data LONGTEXT payloads."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+
+    started_at = time.perf_counter()
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+
+    try:
+        if callable(getattr(storage_service, "list_document_status", None)):
+            documents = await storage_service.list_document_status(customer_id)
+        else:
+            documents = await storage_service.list_documents(customer_id)
+    except Exception as exc:
+        logger.exception("[DocumentStatus] failed customer_id=%s", customer_id)
+        raise HTTPException(status_code=500, detail="获取来源文档状态失败") from exc
+
+    latest_seen_types: set[str] = set()
+    items: list[dict[str, Any]] = []
+    for document in documents:
+        document_type = str(document.get("file_type") or document.get("document_type") or "")
+        original_available, original_status = _build_document_original_status(document)
+        definition = get_document_type_definition(document_type)
+        is_latest = bool(document.get("is_active")) if document_type == "enterprise_credit" else document_type not in latest_seen_types
+        latest_seen_types.add(document_type)
+        items.append(
+            {
+                "document_id": document.get("doc_id") or document.get("document_id") or "",
+                "doc_id": document.get("doc_id") or document.get("document_id") or "",
+                "customer_id": document.get("customer_id") or customer_id,
+                "document_type": document_type,
+                "file_type": document_type,
+                "document_type_label": get_document_display_name(document_type),
+                "file_type_name": get_document_display_name(document_type),
+                "file_name": document.get("file_name") or "",
+                "original_filename": document.get("original_filename") or document.get("file_name") or "",
+                "file_size": document.get("file_size") or 0,
+                "uploaded_at": document.get("uploaded_at") or document.get("upload_time") or "",
+                "upload_time": document.get("upload_time") or document.get("uploaded_at") or "",
+                "updated_at": document.get("updated_at") or document.get("uploaded_at") or document.get("upload_time") or "",
+                "has_original_file": original_available,
+                "can_view_original": original_available,
+                "original_available": original_available,
+                "original_status": original_status,
+                "source_status": "available" if original_available else original_status,
+                "store_original": definition.store_original if definition else True,
+                "has_extraction": bool(document.get("has_extraction")),
+                "extraction_id": document.get("extraction_id") or "",
+                "extraction_status": document.get("extraction_status") or "",
+                "summary_available": bool(document.get("summary_available")),
+                "is_latest": is_latest,
+            }
+        )
+
+    cost_ms = int((time.perf_counter() - started_at) * 1000)
+    logger.info("[DocumentStatus] success customer_id=%s count=%s cost_ms=%s", customer_id, len(items), cost_ms)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/{customer_id}/enterprise-flow/latest")
+async def get_latest_enterprise_flow_extraction(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return only the latest enterprise_flow extraction payload for structured preview."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+
+    types = ["enterprise_flow", "enterprise_bank_statement", "bank_statement_enterprise", "company_bank_statement", "企业流水", "银行流水"]
+    try:
+        if callable(getattr(storage_service, "get_latest_extraction_by_types", None)):
+            extraction = await storage_service.get_latest_extraction_by_types(customer_id, types)
+        else:
+            extractions = await storage_service.get_extractions_by_customer(customer_id)
+            normalized_types = set(types)
+            extraction = next((item for item in extractions if (item.get("extraction_type") or "") in normalized_types), None)
+    except Exception as exc:
+        logger.exception("[EnterpriseFlowLatest] failed customer_id=%s", customer_id)
+        raise HTTPException(status_code=500, detail="获取企业流水结构化结果失败") from exc
+
+    if not extraction:
+        return {"item": None}
+
+    extracted_data = extraction.get("extracted_data") or {}
+    if not isinstance(extracted_data, dict):
+        extracted_data = {}
+    return {
+        "item": {
+            "extraction_id": extraction.get("extraction_id") or "",
+            "doc_id": extraction.get("doc_id") or "",
+            "document_id": extraction.get("doc_id") or "",
+            "document_type": extraction.get("extraction_type") or "enterprise_flow",
+            "extraction_type": extraction.get("extraction_type") or "enterprise_flow",
+            "created_at": extraction.get("created_at") or "",
+            "extracted_json": extracted_data.get("extracted_json") or extracted_data.get("data") or extracted_data,
+            "markdown_summary": extracted_data.get("markdown_summary") or extracted_data.get("markdown") or extracted_data.get("summary") or "",
+        }
+    }
 
 
 @documents_router.get("/{doc_id}")

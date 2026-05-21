@@ -952,6 +952,84 @@ class SQLAlchemyStorageService:
             ).scalars().all()
             return [self._row_to_document(row) for row in rows]
 
+    async def list_document_status(self, customer_id: str) -> list[dict[str, Any]]:
+        with self._session_factory() as db:
+            document_rows = db.execute(
+                select(
+                    Document.doc_id,
+                    Document.customer_id,
+                    Document.file_name,
+                    Document.file_path,
+                    Document.file_type,
+                    Document.file_size,
+                    Document.upload_time,
+                    Document.is_active,
+                    Document.version_policy,
+                )
+                .where(Document.customer_id == customer_id)
+                .order_by(desc(Document.upload_time), desc(Document.id))
+            ).all()
+            extraction_rows = db.execute(
+                select(
+                    Extraction.doc_id,
+                    Extraction.extraction_id,
+                    Extraction.extraction_type,
+                    Extraction.extraction_status,
+                    Extraction.created_at,
+                )
+                .where(Extraction.customer_id == customer_id)
+                .order_by(desc(Extraction.created_at), desc(Extraction.id))
+            ).all()
+            latest_extraction_by_doc: dict[str, Any] = {}
+            for row in extraction_rows:
+                if row.doc_id and row.doc_id not in latest_extraction_by_doc:
+                    latest_extraction_by_doc[row.doc_id] = row
+
+            items: list[dict[str, Any]] = []
+            for row in document_rows:
+                extraction = latest_extraction_by_doc.get(row.doc_id)
+                items.append(
+                    {
+                        "doc_id": row.doc_id,
+                        "document_id": row.doc_id,
+                        "customer_id": row.customer_id,
+                        "file_name": row.file_name or "",
+                        "original_filename": row.file_name or "",
+                        "file_type": row.file_type or "",
+                        "document_type": row.file_type or "",
+                        "file_size": row.file_size or 0,
+                        "upload_time": row.upload_time.isoformat() if row.upload_time else "",
+                        "uploaded_at": row.upload_time.isoformat() if row.upload_time else "",
+                        "updated_at": row.upload_time.isoformat() if row.upload_time else "",
+                        "file_path": row.file_path or "",
+                        "is_active": bool(row.is_active),
+                        "version_policy": row.version_policy or "",
+                        "extraction_id": extraction.extraction_id if extraction else "",
+                        "extraction_type": extraction.extraction_type if extraction else "",
+                        "extraction_status": extraction.extraction_status if extraction else "",
+                        "extraction_created_at": extraction.created_at.isoformat() if extraction and extraction.created_at else "",
+                        "has_extraction": extraction is not None,
+                        "summary_available": extraction is not None,
+                    }
+                )
+            return items
+
+    async def get_latest_extraction_by_types(self, customer_id: str, extraction_types: list[str]) -> dict | None:
+        normalized_types = [
+            normalize_document_type_code(item or "") or item
+            for item in extraction_types
+            if item
+        ]
+        with self._session_factory() as db:
+            row = db.execute(
+                select(Extraction)
+                .where(Extraction.customer_id == customer_id)
+                .where(Extraction.extraction_type.in_(normalized_types))
+                .order_by(desc(Extraction.created_at), desc(Extraction.id))
+                .limit(1)
+            ).scalars().first()
+            return self._row_to_extraction(row) if row else None
+
     async def activate_single_active_document(
         self,
         customer_id: str,
@@ -1119,6 +1197,39 @@ class SQLAlchemyStorageService:
                 select(Extraction).where(Extraction.customer_id == customer_id).order_by(desc(Extraction.created_at), desc(Extraction.id))
             ).scalars().all()
             return [self._row_to_extraction(row) for row in rows]
+
+    async def list_extraction_status(self, customer_id: str) -> list[dict[str, Any]]:
+        with self._session_factory() as db:
+            rows = db.execute(
+                select(
+                    Extraction.extraction_id,
+                    Extraction.doc_id,
+                    Extraction.customer_id,
+                    Extraction.extraction_type,
+                    Extraction.extraction_status,
+                    Extraction.extraction_error,
+                    Extraction.confidence,
+                    Extraction.created_at,
+                )
+                .where(Extraction.customer_id == customer_id)
+                .order_by(desc(Extraction.created_at), desc(Extraction.id))
+            ).all()
+            return [
+                {
+                    "extraction_id": row.extraction_id,
+                    "doc_id": row.doc_id,
+                    "customer_id": row.customer_id,
+                    "extraction_type": row.extraction_type or "",
+                    "extracted_data": {},
+                    "confidence": row.confidence or 0.0,
+                    "extraction_status": row.extraction_status or "success",
+                    "extraction_error": row.extraction_error or "",
+                    "has_extraction": True,
+                    "summary_available": True,
+                    "created_at": row.created_at.isoformat() if row.created_at else "",
+                }
+                for row in rows
+            ]
 
     async def get_extractions_by_doc(self, doc_id: str) -> list[dict]:
         with self._session_factory() as db:
