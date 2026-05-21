@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+from openpyxl.utils import range_boundaries
 
 from .normalizer import normalize_account_number, normalize_amount, normalize_currency, normalize_date, normalize_text
 
@@ -663,16 +664,144 @@ def parse_sheet_account_info(sheet_name: str, rows: list[list[Any]], customer_na
     return account_info
 
 
-def _read_xlsx_rows(path: Path) -> list[tuple[str, list[list[Any]]]]:
-    workbook = load_workbook(path, read_only=True, data_only=True)
+def _sheet_raw_stats(rows: list[list[Any]]) -> tuple[int, int]:
+    non_empty_cells = 0
+    non_empty_rows = 0
+    for row in rows:
+        row_has_value = False
+        for cell in row:
+            if _cn_text(cell):
+                non_empty_cells += 1
+                row_has_value = True
+        if row_has_value:
+            non_empty_rows += 1
+    return non_empty_cells, non_empty_rows
+
+
+def _sheet_preview(rows: list[list[Any]], limit: int = 15) -> list[str]:
+    preview: list[str] = []
+    for row in rows[:limit]:
+        text = " | ".join(_cn_text(cell) for cell in _expand_row_cells(list(row)) if _cn_text(cell))
+        preview.append(text)
+    return preview
+
+
+def _log_sheet_raw_diagnostics(
+    sheet_name: str,
+    rows: list[list[Any]],
+    *,
+    max_row: int | None = None,
+    max_column: int | None = None,
+    merged_ranges: int = 0,
+    strategy: str = "",
+) -> None:
+    non_empty_cells, non_empty_rows = _sheet_raw_stats(rows)
+    logger.info(
+        "[EnterpriseFlow][SheetRawStats] sheet=%s strategy=%s max_row=%s max_column=%s non_empty_cells=%s non_empty_rows=%s merged_ranges=%s",
+        sheet_name,
+        strategy,
+        max_row if max_row is not None else len(rows),
+        max_column if max_column is not None else max((len(row) for row in rows), default=0),
+        non_empty_cells,
+        non_empty_rows,
+        merged_ranges,
+    )
+    logger.info("[EnterpriseFlow][SheetRawPreview] sheet=%s rows=%s", sheet_name, _sheet_preview(rows))
+
+
+def _worksheet_rows_with_merged_values(ws: Any) -> list[list[Any]]:
+    max_row = int(getattr(ws, "max_row", 0) or 0)
+    max_column = int(getattr(ws, "max_column", 0) or 0)
+    if max_row <= 0 or max_column <= 0:
+        return []
+    merged_lookup: dict[tuple[int, int], Any] = {}
+    for merged_range in getattr(ws, "merged_cells", ()).ranges:
+        min_col, min_row, max_col, max_merged_row = range_boundaries(str(merged_range))
+        top_left_value = ws.cell(min_row, min_col).value
+        for row_index in range(min_row, max_merged_row + 1):
+            for col_index in range(min_col, max_col + 1):
+                merged_lookup[(row_index, col_index)] = top_left_value
+
+    rows: list[list[Any]] = []
+    for row_index in range(1, max_row + 1):
+        row: list[Any] = []
+        for col_index in range(1, max_column + 1):
+            value = ws.cell(row_index, col_index).value
+            if value in (None, "") and (row_index, col_index) in merged_lookup:
+                value = merged_lookup[(row_index, col_index)]
+            row.append(value)
+        rows.append(row)
+    return rows
+
+
+def _read_xlsx_rows_openpyxl(path: Path, *, data_only: bool, strategy: str) -> list[tuple[str, list[list[Any]]]]:
+    workbook = load_workbook(path, read_only=False, data_only=data_only)
+    result: list[tuple[str, list[list[Any]]]] = []
     try:
-        return [
-            (ws.title, [[cell for cell in row] for row in ws.iter_rows(values_only=True)])
-            for ws in workbook.worksheets
-            if getattr(ws, "sheet_state", "visible") == "visible"
-        ]
+        for ws in workbook.worksheets:
+            if getattr(ws, "sheet_state", "visible") != "visible":
+                continue
+            rows = _worksheet_rows_with_merged_values(ws)
+            merged_ranges = len(list(getattr(ws, "merged_cells", ()).ranges))
+            _log_sheet_raw_diagnostics(
+                ws.title,
+                rows,
+                max_row=getattr(ws, "max_row", None),
+                max_column=getattr(ws, "max_column", None),
+                merged_ranges=merged_ranges,
+                strategy=strategy,
+            )
+            result.append((ws.title, rows))
+        return result
     finally:
         workbook.close()
+
+
+def _read_xlsx_rows_pandas(path: Path) -> list[tuple[str, list[list[Any]]]]:
+    try:
+        import pandas as pd  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("pandas fallback unavailable") from exc
+    sheets = pd.read_excel(path, sheet_name=None, header=None, dtype=object, engine="openpyxl")
+    result: list[tuple[str, list[list[Any]]]] = []
+    for sheet_name, frame in sheets.items():
+        frame = frame.where(frame.notna(), None)
+        rows = frame.values.tolist()
+        _log_sheet_raw_diagnostics(sheet_name, rows, strategy="pandas-openpyxl")
+        result.append((str(sheet_name), rows))
+    return result
+
+
+def _total_non_empty_cells(raw_sheets: list[tuple[str, list[list[Any]]]]) -> int:
+    return sum(_sheet_raw_stats(rows)[0] for _, rows in raw_sheets)
+
+
+def _read_xlsx_rows(path: Path) -> list[tuple[str, list[list[Any]]]]:
+    attempts: list[tuple[str, Any]] = [
+        ("openpyxl-data-only", lambda: _read_xlsx_rows_openpyxl(path, data_only=True, strategy="openpyxl-data-only")),
+        ("openpyxl-formula", lambda: _read_xlsx_rows_openpyxl(path, data_only=False, strategy="openpyxl-formula")),
+        ("pandas-openpyxl", lambda: _read_xlsx_rows_pandas(path)),
+        ("html-fallback", lambda: _read_html_xls_rows(path)),
+    ]
+    errors: list[str] = []
+    best: list[tuple[str, list[list[Any]]]] = []
+    best_cells = 0
+    for name, reader in attempts:
+        try:
+            candidate = reader()
+            cells = _total_non_empty_cells(candidate)
+            if cells > best_cells:
+                best = candidate
+                best_cells = cells
+            if cells >= 5:
+                return candidate
+            logger.warning("[EnterpriseFlow][WorkbookReadEmpty] file=%s strategy=%s non_empty_cells=%s", path.name, name, cells)
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            logger.warning("[EnterpriseFlow][WorkbookReadFailed] file=%s strategy=%s reason=%s", path.name, name, exc)
+    if best_cells == 0 and errors:
+        logger.warning("[EnterpriseFlow][WorkbookReadFailed] file=%s strategies=%s", path.name, errors)
+    return best
 
 
 def _read_xls_rows(path: Path) -> list[tuple[str, list[list[Any]]]]:
@@ -684,6 +813,13 @@ def _read_xls_rows(path: Path) -> list[tuple[str, list[list[Any]]]]:
     result: list[tuple[str, list[list[Any]]]] = []
     for sheet in book.sheets():
         rows = [[sheet.cell_value(r, c) for c in range(sheet.ncols)] for r in range(sheet.nrows)]
+        _log_sheet_raw_diagnostics(
+            sheet.name,
+            rows,
+            max_row=sheet.nrows,
+            max_column=sheet.ncols,
+            strategy="xlrd",
+        )
         result.append((sheet.name, rows))
     return result
 
@@ -709,7 +845,45 @@ def _read_html_xls_rows(path: Path) -> list[tuple[str, list[list[Any]]]]:
             if any(clean_cells):
                 rows.append(clean_cells)
         if rows:
-            result.append((f"sheet{idx}", rows))
+            sheet_name = f"sheet{idx}"
+            _log_sheet_raw_diagnostics(sheet_name, rows, strategy="html-table")
+            result.append((sheet_name, rows))
+    if result:
+        return result
+
+    worksheets = re.findall(
+        r"<(?:\w+:)?Worksheet\b[^>]*(?:ss:)?Name=[\"']([^\"']+)[\"'][^>]*>([\s\S]*?)</(?:\w+:)?Worksheet>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for idx, (name, body) in enumerate(worksheets, start=1):
+        rows = []
+        for row_xml in re.findall(r"<(?:\w+:)?Row\b[^>]*>([\s\S]*?)</(?:\w+:)?Row>", body, flags=re.IGNORECASE):
+            cells = []
+            for cell_xml in re.findall(r"<(?:\w+:)?Cell\b[^>]*>([\s\S]*?)</(?:\w+:)?Cell>", row_xml, flags=re.IGNORECASE):
+                data_match = re.search(r"<(?:\w+:)?Data\b[^>]*>([\s\S]*?)</(?:\w+:)?Data>", cell_xml, flags=re.IGNORECASE)
+                value = data_match.group(1) if data_match else cell_xml
+                value = re.sub(r"<[^>]+>", "", value).replace("&nbsp;", " ").strip()
+                cells.append(value)
+            if any(cells):
+                rows.append(cells)
+        if rows:
+            sheet_name = re.sub(r"<[^>]+>", "", name).strip() or f"sheet{idx}"
+            _log_sheet_raw_diagnostics(sheet_name, rows, strategy="spreadsheetml")
+            result.append((sheet_name, rows))
+    if result:
+        return result
+
+    if "," in text or "\t" in text:
+        delimiter = "\t" if "\t" in text else ","
+        rows = [
+            [cell.strip().strip('"') for cell in line.split(delimiter)]
+            for line in text.splitlines()
+            if line.strip()
+        ]
+        if rows:
+            _log_sheet_raw_diagnostics("text-table", rows, strategy="text-delimited")
+            result.append(("text-table", rows))
     return result
 
 
@@ -795,6 +969,8 @@ def read_excel_workbook(file_path: str | None = None, rows: list[dict[str, Any]]
         except Exception as exc:
             logger.warning("[EnterpriseFlow][WorkbookReadFailed] file=%s ext=%s reason=%s", source_file, suffix, exc)
             warnings.append(f"Excel workbook 读取失败：{exc}")
+        if raw_sheets and _total_non_empty_cells(raw_sheets) == 0:
+            warnings.append("Excel读取为空或未识别到交易表头")
         for sheet_name, raw_rows in raw_sheets:
             sheets.append(_build_sheet(sheet_name, raw_rows, source_file, warnings))
         return {"source_file": source_file, "sheets": sheets, "warnings": warnings}
