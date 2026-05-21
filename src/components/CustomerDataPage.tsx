@@ -9,8 +9,8 @@ import {
   deleteCustomerProfileMarkdown,
   downloadDocumentOriginal,
   getCustomerDocumentStatus,
+  getCustomerEnterpriseFlowSummary,
   getCustomerProfileMarkdown,
-  getLatestEnterpriseFlowExtraction,
   getLatestFinancingAgent,
   listCustomers,
   previewDocumentOriginal,
@@ -2468,7 +2468,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     enterpriseFlowPreviewLoadingRef.current = customerId;
     try {
       setEnterpriseFlowPreviewError(null);
-      const result = await getLatestEnterpriseFlowExtraction(customerId);
+      const result = await getCustomerEnterpriseFlowSummary(customerId);
       setEnterpriseFlowPreviewDoc(result.item || null);
     } catch (err) {
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', err);

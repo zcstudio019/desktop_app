@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from backend.document_types import get_document_display_name, normalize_document_type_code, should_store_original
+from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator import (
+    ENTERPRISE_FLOW_TYPES,
+    aggregate_customer_enterprise_flows,
+)
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
 
 logger = logging.getLogger(__name__)
@@ -1024,6 +1028,71 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             logger.warning("profile_markdown enterprise_credit_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
             sections.append(_markdown_section('企业征信', ['- 提示：企业征信资料整理失败，请查看来源文档列表或重新提取。']))
 
+    if enterprise_flow_extractions:
+        try:
+            enriched_flow_extractions: list[dict[str, Any]] = []
+            for extraction in enterprise_flow_extractions:
+                item = dict(extraction)
+                doc_id = item.get('doc_id')
+                document = None
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning("profile_markdown enterprise_flow_document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
+                item['file_name'] = (document or {}).get('file_name') or item.get('file_name') or ''
+                item['file_path'] = (document or {}).get('file_path') or item.get('file_path') or ''
+                item['uploaded_at'] = (document or {}).get('upload_time') or item.get('created_at') or ''
+                enriched_flow_extractions.append(item)
+                source_documents.append({
+                    'source_type': item.get('extraction_type') or 'enterprise_flow',
+                    'source_type_name': get_document_display_name(item.get('extraction_type') or 'enterprise_flow'),
+                    'extraction_id': item.get('extraction_id'),
+                    'doc_id': doc_id,
+                    'file_name': item.get('file_name') or '企业流水',
+                    'original_status': '可查看' if item.get('file_path') else '原件文件不存在或已不可用',
+                    'original_available': bool(item.get('file_path')),
+                })
+            aggregated_flow = aggregate_customer_enterprise_flows(enriched_flow_extractions)
+            summary = aggregated_flow.get('summary') or {}
+            period = aggregated_flow.get('statement_period') or {}
+            counterparties = aggregated_flow.get('counterparty_summary') or {}
+            financing = aggregated_flow.get('financing_view') or {}
+            risk = aggregated_flow.get('risk_analysis') or {}
+            top_inflow = ', '.join(str(item.get('name') or '') for item in (counterparties.get('top_inflow_counterparties') or [])[:5] if item.get('name'))
+            top_outflow = ', '.join(str(item.get('name') or '') for item in (counterparties.get('top_outflow_counterparties') or [])[:5] if item.get('name'))
+            risk_titles = ', '.join(str(item.get('title') or item.get('code') or '') for item in (risk.get('signals') or [])[:5])
+            checklist = ', '.join(str(item) for item in (financing.get('material_checklist') or [])[:6])
+            account_lines = [
+                f"- {account.get('bank_name') or '-'} / {account.get('account_number') or '-'}：收入 {account.get('total_inflow') or 0}，支出 {account.get('total_outflow') or 0}，笔数 {account.get('transaction_count') or 0}"
+                for account in (aggregated_flow.get('accounts') or [])[:10]
+            ]
+            lines = [
+                '## 企业流水摘要',
+                '',
+                f"- 企业流水资料数量：{aggregated_flow.get('source_document_count') or 0}",
+                f"- 流水期间：{period.get('start_date') or '-'} 至 {period.get('end_date') or '-'}",
+                f"- 覆盖账户数：{summary.get('account_count') or 0}",
+                f"- 覆盖银行数：{summary.get('bank_count') or 0}",
+                f"- 覆盖月份：{period.get('months_count') or '-'}",
+                f"- 总收入：{summary.get('total_inflow') or 0}",
+                f"- 总支出：{summary.get('total_outflow') or 0}",
+                f"- 净流入：{summary.get('net_cashflow') or 0}",
+                f"- 月均收入：{summary.get('average_monthly_inflow') or 0}",
+                f"- 月均支出：{summary.get('average_monthly_outflow') or 0}",
+                f"- 银行认可经营性回款估算：{financing.get('bank_recognizable_inflow') or summary.get('estimated_operating_inflow') or 0}",
+                f"- 主要收入客户：{top_inflow or '-'}",
+                f"- 主要支出对象：{top_outflow or '-'}",
+                f"- 主要风险点：{risk_titles or '-'}",
+                f"- 建议补充材料：{checklist or '-'}",
+            ]
+            if account_lines:
+                lines.extend(['', '### 各账户汇总', *account_lines])
+            sections.append('\n'.join(lines))
+        except Exception as exc:
+            logger.warning("profile_markdown enterprise_flow_aggregate_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+            sections.append(_markdown_section('企业流水摘要', ['- 企业流水客户级汇总暂时生成失败，请查看来源文档列表。']))
+
     for extraction in other_extractions:
         extraction_id = extraction.get('extraction_id') or ''
         extraction_type = extraction.get('extraction_type') or '\u672a\u547d\u540d\u8d44\u6599'
@@ -1970,11 +2039,16 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
     id_card_extractions = [item for item in extractions if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') == 'id_card']
     property_extractions = [item for item in extractions if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') in PROPERTY_DOCUMENT_TYPES]
     enterprise_credit_extractions = [item for item in extractions if _is_enterprise_credit_type(item.get('extraction_type'))]
+    enterprise_flow_extractions = [
+        item for item in extractions
+        if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') in ENTERPRISE_FLOW_TYPES
+    ]
     other_extractions = [
         item for item in extractions
         if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') != 'id_card'
         and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in PROPERTY_DOCUMENT_TYPES
         and not _is_enterprise_credit_type(item.get('extraction_type'))
+        and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in ENTERPRISE_FLOW_TYPES
     ]
 
     if id_card_extractions:

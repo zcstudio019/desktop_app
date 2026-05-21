@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from collections import Counter
@@ -21,7 +22,12 @@ except Exception:
     pass
 
 from backend.services.enterprise_bank_statement_agent import run_enterprise_bank_statement_agent
+from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator import (
+    ENTERPRISE_FLOW_TYPES,
+    aggregate_customer_enterprise_flows,
+)
 from backend.services.enterprise_bank_statement_agent.normalizer import normalize_account_number, normalize_amount, normalize_text
+from backend.services import get_storage_service
 
 
 AMOUNT_TOLERANCE = 0.01
@@ -525,11 +531,79 @@ def save_report(excel_path: Path, table: str, diagnostics: list[str], system_acc
     return output_path
 
 
+async def _load_customer_flow_extractions(customer_id: str) -> list[dict[str, Any]]:
+    storage = get_storage_service()
+    if callable(getattr(storage, "list_extractions_by_types", None)):
+        return await storage.list_extractions_by_types(customer_id, list(ENTERPRISE_FLOW_TYPES))
+    extractions = await storage.get_extractions_by_customer(customer_id)
+    return [
+        item for item in extractions
+        if (item.get("extraction_type") or item.get("document_type") or "") in ENTERPRISE_FLOW_TYPES
+    ]
+
+
+def _run_customer_mode(customer_id: str) -> None:
+    extractions = asyncio.run(_load_customer_flow_extractions(customer_id))
+    aggregated = aggregate_customer_enterprise_flows(extractions)
+    original_summaries: list[dict[str, Any]] = []
+    for extraction in extractions:
+        file_path = Path(str(extraction.get("file_path") or ""))
+        if not file_path.exists():
+            continue
+        for item in extract_original_workbook_summary(file_path):
+            item["sheet_name"] = f"{file_path.name}/{item.get('sheet_name') or ''}"
+            item["source_file"] = file_path.name
+            original_summaries.append(item)
+    system_accounts = extract_system_accounts(aggregated)
+    compare_rows, diagnostics = compare_summaries(original_summaries, system_accounts)
+    table = render_markdown_table(compare_rows)
+    output_dir = ROOT / "data" / "debug"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = output_dir / f"enterprise_flow_consistency_customer_{timestamp}.md"
+    report_path.write_text(
+        "\n".join(
+            [
+                "# 企业流水客户级原件一致性校验",
+                "",
+                f"- customer_id：{customer_id}",
+                f"- 企业流水资料数：{len(extractions)}",
+                f"- 校验时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "",
+                table,
+                "",
+                "## 不一致诊断",
+                "",
+                "\n\n".join(diagnostics) if diagnostics else "未发现不一致。",
+                "",
+                "## 聚合 accounts 摘要",
+                "",
+                render_accounts_summary(system_accounts),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    print(table)
+    if diagnostics:
+        print("\n## 诊断\n")
+        print("\n\n".join(diagnostics))
+    print(f"\n客户级校验报告已保存：{report_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="校验企业流水 Agent 解析结果是否与 Excel 原件汇总一致")
-    parser.add_argument("excel_path", help="企业流水 Excel 文件路径")
+    parser.add_argument("excel_path", nargs="?", help="企业流水 Excel 文件路径")
+    parser.add_argument("--customer-id", dest="customer_id", help="客户级模式：从数据库读取该客户所有 enterprise_flow 文档并聚合校验")
     parser.add_argument("--json", dest="json_path", help="可选：已保存的 extracted_json JSON 文件路径")
     args = parser.parse_args()
+
+    if args.customer_id:
+        _run_customer_mode(args.customer_id)
+        return
+
+    if not args.excel_path:
+        raise SystemExit("请传入 Excel 文件路径，或使用 --customer-id 进入客户级校验模式。")
 
     excel_path = Path(args.excel_path).resolve()
     json_path = Path(args.json_path).resolve() if args.json_path else None

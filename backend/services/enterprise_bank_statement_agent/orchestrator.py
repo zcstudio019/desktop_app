@@ -139,6 +139,20 @@ def run_enterprise_bank_statement_agent(
     if file_path or rows:
         workbook = read_excel_workbook(file_path=file_path, rows=rows, filename=source_file)
         warnings.extend(workbook.get("warnings") or [])
+        logger.info(
+            "[EnterpriseFlow][Workbook] file=%s sheet_count=%s",
+            source_file or file_path or "",
+            len(workbook.get("sheets") or []),
+        )
+        for sheet in workbook.get("sheets") or []:
+            meta = sheet.get("meta") or {}
+            logger.info(
+                "[EnterpriseFlow][Sheet] sheet=%s detected_bank=%s account_number=%s rows=%s",
+                sheet.get("sheet_name") or meta.get("sheet_name") or "",
+                meta.get("bank_name") or "",
+                meta.get("account_number") or "",
+                len(sheet.get("rows") or []),
+            )
     else:
         workbook = {"source_file": source_file, "sheets": [], "warnings": ["未提供 Excel 文件路径，文本流水 fallback 暂返回稳定空结构"]}
         warnings.extend(workbook["warnings"])
@@ -151,6 +165,15 @@ def run_enterprise_bank_statement_agent(
     months_count = (basic.get("statement_period") or {}).get("months_count")
     summary, accounts, summary_warnings = build_account_summary(transactions, accounts, months_count)
     warnings.extend(summary_warnings)
+    for account in accounts:
+        logger.info(
+            "[EnterpriseFlow][SheetSummary] sheet=%s bank=%s inflow=%s outflow=%s tx_count=%s",
+            account.get("sheet_name") or "",
+            account.get("bank_name") or "",
+            account.get("total_inflow") or 0,
+            account.get("total_outflow") or 0,
+            account.get("transaction_count") or 0,
+        )
     _log_tailong_final_account(workbook, accounts, transactions, warnings)
     monthly_summary = analyze_monthly_trends(transactions)
     counterparty_summary = analyze_counterparties(transactions, summary.get("total_inflow", 0), summary.get("total_outflow", 0))

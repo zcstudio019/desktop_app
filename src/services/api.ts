@@ -874,6 +874,18 @@ export async function getLatestEnterpriseFlowExtraction(
   return handleResponse<{ item: Record<string, unknown> | null }>(response);
 }
 
+export async function getCustomerEnterpriseFlowSummary(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<{ item: Record<string, unknown> | null }> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/enterprise-flow/summary`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<{ item: Record<string, unknown> | null }>(response);
+}
+
 export async function updateExtractionField(
   customerId: string,
   extractionId: string,

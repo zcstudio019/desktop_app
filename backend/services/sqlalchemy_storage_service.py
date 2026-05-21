@@ -1042,6 +1042,36 @@ class SQLAlchemyStorageService:
             ).scalars().first()
             return self._row_to_extraction(row) if row else None
 
+    async def list_extractions_by_types(self, customer_id: str, extraction_types: list[str]) -> list[dict[str, Any]]:
+        normalized_types = [
+            normalize_document_type_code(item or "") or item
+            for item in extraction_types
+            if item
+        ]
+        with self._session_factory() as db:
+            rows = db.execute(
+                select(
+                    Extraction,
+                    Document.file_name,
+                    Document.file_path,
+                    Document.upload_time,
+                    Document.is_active,
+                )
+                .join(Document, Document.doc_id == Extraction.doc_id, isouter=True)
+                .where(Extraction.customer_id == customer_id)
+                .where(Extraction.extraction_type.in_(normalized_types))
+                .order_by(desc(Document.upload_time), desc(Extraction.created_at), desc(Extraction.id))
+            ).all()
+            items: list[dict[str, Any]] = []
+            for extraction, file_name, file_path, upload_time, is_active in rows:
+                item = self._row_to_extraction(extraction)
+                item["file_name"] = file_name or ""
+                item["file_path"] = file_path or ""
+                item["uploaded_at"] = upload_time.isoformat() if upload_time else item.get("created_at") or ""
+                item["is_active"] = bool(is_active) if is_active is not None else True
+                items.append(item)
+            return items
+
     async def activate_single_active_document(
         self,
         customer_id: str,
