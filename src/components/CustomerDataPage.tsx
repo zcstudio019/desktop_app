@@ -2304,14 +2304,22 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const currentAuthUsername = useMemo(() => localStorage.getItem('auth_username') || '', []);
   const currentAuthRole = useMemo(() => localStorage.getItem('auth_role') || '', []);
   const documentStatusLoadingRef = useRef<string | null>(null);
+  const enterpriseFlowPreviewLoadingRef = useRef<string | null>(null);
+  const agentLatestLoadingRef = useRef<string | null>(null);
 
   const loadLatestAgent = useCallback(async (customerId: string) => {
+    if (agentLatestLoadingRef.current === customerId) {
+      return;
+    }
+    agentLatestLoadingRef.current = customerId;
     try {
       const result = await getLatestFinancingAgent(customerId);
       setAgentResult(result);
     } catch (err) {
       console.warn('加载融资 Agent 结果失败', err);
       setAgentResult(null);
+    } finally {
+      agentLatestLoadingRef.current = null;
     }
   }, []);
 
@@ -2448,6 +2456,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   }, []);
 
   const loadEnterpriseFlowPreview = useCallback(async (customerId: string) => {
+    if (enterpriseFlowPreviewLoadingRef.current === customerId) {
+      return;
+    }
+    enterpriseFlowPreviewLoadingRef.current = customerId;
     try {
       setEnterpriseFlowPreviewError(null);
       const result = await getLatestEnterpriseFlowExtraction(customerId);
@@ -2456,6 +2468,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', err);
       setEnterpriseFlowPreviewDoc(null);
       setEnterpriseFlowPreviewError('结构化预览暂时不可用，请稍后重试');
+    } finally {
+      enterpriseFlowPreviewLoadingRef.current = null;
     }
   }, []);
 

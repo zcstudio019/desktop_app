@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.middleware.auth import get_current_user
@@ -10,6 +12,7 @@ from backend.services.agents.agent_memory import get_agent_run, get_latest_agent
 from backend.services.agents.orchestrator import financing_agent_enabled, run_financing_agent_workflow
 
 router = APIRouter(tags=["Financing Agent"])
+logger = logging.getLogger(__name__)
 
 
 class AgentRunRequest(BaseModel):
@@ -34,12 +37,26 @@ async def run_customer_agent(
 @router.get("/customers/{customer_id}/agent/latest")
 async def get_latest_customer_agent(
     customer_id: str,
+    include_run: bool = Query(default=False),
     _current_user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    logger.info("[LatestExtraction] start customer_id=%s document_type=%s", customer_id, "agent_latest")
     latest = get_latest_agent_run(customer_id)
     if not latest:
+        logger.info("[LatestExtraction] success customer_id=%s document_type=%s selected=false cost_ms=%s", customer_id, "agent_latest", int((time.perf_counter() - started_at) * 1000))
         return {"success": True, "report": None, "status": "not_found"}
-    return {"success": True, "report": latest.get("output_report") or {}, "run": latest}
+    report = latest.get("output_report") or {}
+    logger.info(
+        "[LatestExtraction] selected document_id=%s extraction_id=%s",
+        latest.get("customer_id") or customer_id,
+        latest.get("run_id") or "",
+    )
+    logger.info("[LatestExtraction] success customer_id=%s document_type=%s cost_ms=%s", customer_id, "agent_latest", int((time.perf_counter() - started_at) * 1000))
+    payload: dict[str, Any] = {"success": True, "report": report, "status": latest.get("status") or "success"}
+    if include_run:
+        payload["run"] = latest
+    return payload
 
 
 @router.get("/agent/runs/{run_id}")

@@ -1586,6 +1586,7 @@ async def get_customer_document_status(
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
     started_at = time.perf_counter()
+    logger.info("[DocumentStatus] start customer_id=%s", customer_id)
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
@@ -1604,7 +1605,12 @@ async def get_customer_document_status(
     items: list[dict[str, Any]] = []
     for document in documents:
         document_type = str(document.get("file_type") or document.get("document_type") or "")
-        original_available, original_status = _build_document_original_status(document)
+        if should_store_original(document_type) and bool(document.get("file_path")):
+            original_available, original_status = True, "可查看原件"
+        elif should_store_original(document_type):
+            original_available, original_status = False, DOCUMENT_FILE_MISSING_MESSAGE
+        else:
+            original_available, original_status = False, DOCUMENT_NOT_RETAINED_MESSAGE
         definition = get_document_type_definition(document_type)
         is_latest = bool(document.get("is_active")) if document_type == "enterprise_credit" else document_type not in latest_seen_types
         latest_seen_types.add(document_type)
@@ -1651,6 +1657,8 @@ async def get_latest_enterprise_flow_extraction(
     if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
 
+    started_at = time.perf_counter()
+    logger.info("[LatestExtraction] start customer_id=%s document_type=%s", customer_id, "enterprise_flow")
     customer = await storage_service.get_customer(customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="未找到该客户记录")
@@ -1669,11 +1677,21 @@ async def get_latest_enterprise_flow_extraction(
         raise HTTPException(status_code=500, detail="获取企业流水结构化结果失败") from exc
 
     if not extraction:
+        logger.info("[LatestExtraction] success customer_id=%s document_type=%s selected=false cost_ms=%s", customer_id, "enterprise_flow", int((time.perf_counter() - started_at) * 1000))
         return {"item": None}
 
     extracted_data = extraction.get("extracted_data") or {}
     if not isinstance(extracted_data, dict):
         extracted_data = {}
+    extracted_json = extracted_data.get("extracted_json") or extracted_data.get("data") or extracted_data
+    if isinstance(extracted_json, dict) and isinstance(extracted_json.get("transactions"), list):
+        extracted_json = {**extracted_json, "transactions": []}
+    logger.info(
+        "[LatestExtraction] selected document_id=%s extraction_id=%s",
+        extraction.get("doc_id") or "",
+        extraction.get("extraction_id") or "",
+    )
+    logger.info("[LatestExtraction] success customer_id=%s document_type=%s cost_ms=%s", customer_id, "enterprise_flow", int((time.perf_counter() - started_at) * 1000))
     return {
         "item": {
             "extraction_id": extraction.get("extraction_id") or "",
@@ -1682,7 +1700,7 @@ async def get_latest_enterprise_flow_extraction(
             "document_type": extraction.get("extraction_type") or "enterprise_flow",
             "extraction_type": extraction.get("extraction_type") or "enterprise_flow",
             "created_at": extraction.get("created_at") or "",
-            "extracted_json": extracted_data.get("extracted_json") or extracted_data.get("data") or extracted_data,
+            "extracted_json": extracted_json,
             "markdown_summary": extracted_data.get("markdown_summary") or extracted_data.get("markdown") or extracted_data.get("summary") or "",
         }
     }
