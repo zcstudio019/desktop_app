@@ -969,21 +969,19 @@ class SQLAlchemyStorageService:
                 .where(Document.customer_id == customer_id)
                 .order_by(desc(Document.upload_time), desc(Document.id))
             ).all()
-            extraction_rows = db.execute(
-                select(
-                    Extraction.doc_id,
-                    Extraction.extraction_id,
-                    Extraction.extraction_type,
-                    Extraction.extraction_status,
-                    Extraction.created_at,
-                )
-                .where(Extraction.customer_id == customer_id)
-                .order_by(desc(Extraction.created_at), desc(Extraction.id))
-            ).all()
-            latest_extraction_by_doc: dict[str, Any] = {}
-            for row in extraction_rows:
-                if row.doc_id and row.doc_id not in latest_extraction_by_doc:
-                    latest_extraction_by_doc[row.doc_id] = row
+            extraction_doc_ids = {
+                row.doc_id
+                for row in db.execute(
+                    select(Extraction.doc_id)
+                    .where(Extraction.customer_id == customer_id)
+                    .distinct()
+                ).all()
+                if row.doc_id
+            }
+            latest_extraction_by_doc = {
+                doc_id: True
+                for doc_id in extraction_doc_ids
+            }
 
             items: list[dict[str, Any]] = []
             for row in document_rows:
@@ -1004,12 +1002,8 @@ class SQLAlchemyStorageService:
                         "file_path": row.file_path or "",
                         "is_active": bool(row.is_active),
                         "version_policy": row.version_policy or "",
-                        "extraction_id": extraction.extraction_id if extraction else "",
-                        "extraction_type": extraction.extraction_type if extraction else "",
-                        "extraction_status": extraction.extraction_status if extraction else "",
-                        "extraction_created_at": extraction.created_at.isoformat() if extraction and extraction.created_at else "",
-                        "has_extraction": extraction is not None,
-                        "summary_available": extraction is not None,
+                        "has_extraction": bool(extraction),
+                        "summary_available": bool(extraction),
                     }
                 )
             return items

@@ -9,7 +9,6 @@ import {
   deleteCustomerProfileMarkdown,
   downloadDocumentOriginal,
   getCustomerDocumentStatus,
-  getCustomerExtractions,
   getCustomerProfileMarkdown,
   getLatestEnterpriseFlowExtraction,
   getLatestFinancingAgent,
@@ -239,25 +238,6 @@ function normalizeCustomerDocumentsResponse(response: unknown): CustomerDocument
                 ? (record.data as unknown[])
                 : [];
   return items.filter((item): item is CustomerDocumentListItem => !!item && typeof item === 'object');
-}
-
-function normalizeExtractionGroupsResponse(response: unknown): ExtractionGroup[] {
-  const record = response as Record<string, unknown> | null;
-  const items =
-    Array.isArray(response)
-      ? response
-      : Array.isArray(record?.items)
-        ? record.items
-        : Array.isArray((record?.data as Record<string, unknown> | undefined)?.items)
-          ? ((record?.data as Record<string, unknown>).items as unknown[])
-          : Array.isArray(record?.extractions)
-            ? record.extractions
-            : Array.isArray((record?.data as Record<string, unknown> | undefined)?.extractions)
-              ? ((record?.data as Record<string, unknown>).extractions as unknown[])
-              : Array.isArray(record?.data)
-                ? (record.data as unknown[])
-                : [];
-  return items.filter((item): item is ExtractionGroup => !!item && typeof item === 'object');
 }
 
 const DOCUMENT_GROUPS = {
@@ -2560,15 +2540,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             console.debug('[EnterpriseBankStatementView] customerId=', customerId);
             console.debug('[EnterpriseBankStatementView] loading documents for customerId=', customerId);
           }
-          const [documentsResult, extractionsResult, enterpriseFlowResult] = await Promise.allSettled([
+          const [documentsResult, enterpriseFlowResult] = await Promise.allSettled([
             getCustomerDocumentStatus(customerId),
-            getCustomerExtractions(customerId),
             getLatestEnterpriseFlowExtraction(customerId),
           ]);
 
           if (import.meta.env.DEV) {
             console.debug('[EnterpriseBankStatementView] documents api response=', documentsResult);
-            console.debug('[EnterpriseBankStatementView] extractions api response=', extractionsResult);
             console.debug('[EnterpriseBankStatementView] enterprise flow latest response=', enterpriseFlowResult);
           }
 
@@ -2578,34 +2556,26 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             documentsResult.status === 'fulfilled'
               ? normalizeCustomerDocumentsResponse(documentsResult.value)
               : [];
-          const nextExtractions =
-            extractionsResult.status === 'fulfilled'
-              ? normalizeExtractionGroupsResponse(extractionsResult.value)
-              : [];
-          const extractionItemCount = nextExtractions.reduce(
-            (sum, group) => sum + (Array.isArray(group.items) ? group.items.length : 0),
-            0,
-          );
+          const nextExtractions: ExtractionGroup[] = [];
           const isLastCandidate = customerId === customerIdCandidates[customerIdCandidates.length - 1];
 
-          if (nextDocuments.length > 0 || extractionItemCount > 0 || isLastCandidate) {
+          if (nextDocuments.length > 0 || isLastCandidate) {
             setDocuments(nextDocuments);
             setExtractionGroups(nextExtractions);
             setEnterpriseFlowPreviewDoc(
               enterpriseFlowResult.status === 'fulfilled' ? enterpriseFlowResult.value.item || null : null,
             );
-            setEnterpriseFlowPreviewError(
-              enterpriseFlowResult.status === 'rejected' ? '结构化预览暂时不可用，请稍后重试' : null,
-            );
-            if (documentsResult.status === 'rejected' || extractionsResult.status === 'rejected') {
+            if (enterpriseFlowResult.status === 'rejected') {
+              setEnterpriseFlowPreviewError('结构化预览暂时不可用，请稍后重试');
+            } else {
+              setEnterpriseFlowPreviewError(null);
+            }
+            if (documentsResult.status === 'rejected') {
               setDocumentStatusError('来源文档状态加载失败，请稍后重试');
             }
             if (import.meta.env.DEV) {
               if (documentsResult.status === 'rejected') {
                 console.debug('[EnterpriseBankStatementView] load customer documents failed', documentsResult.reason);
-              }
-              if (extractionsResult.status === 'rejected') {
-                console.debug('[EnterpriseBankStatementView] load customer extractions failed', extractionsResult.reason);
               }
               if (enterpriseFlowResult.status === 'rejected') {
                 console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', enterpriseFlowResult.reason);
