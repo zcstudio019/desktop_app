@@ -505,13 +505,6 @@ def parse_sheet_account_info(sheet_name: str, rows: list[list[Any]], customer_na
         account_info["bank_name"] = infer_bank_from_text(sheet_name) or "未知银行"
     account_id = f"{account_info['bank_name']}:{account_info.get('account_number') or source_file or sheet_name}"
     account_info["account_id"] = account_id
-    logger.info(
-        "[EnterpriseFlow][AccountInfo] sheet=%s bank=%s account_number=%s account_name=%s",
-        sheet_name,
-        account_info.get("bank_name"),
-        account_info.get("account_number") or "",
-        account_info.get("account_name") or "",
-    )
     return account_info
 
 
@@ -602,6 +595,13 @@ def _build_sheet(sheet_name: str, raw_rows: list[list[Any]], source_file: str, w
         currencies = [_cn_text(row.get("currency")) for row in data_rows if _cn_text(row.get("currency"))]
         if currencies:
             meta["currency"] = normalize_currency(Counter(currencies).most_common(1)[0][0])
+    logger.info(
+        "[EnterpriseFlow][AccountInfo] sheet=%s bank=%s account_number=%s account_name=%s",
+        sheet_name,
+        meta.get("bank_name") or "",
+        meta.get("account_number") or "",
+        meta.get("account_name") or "",
+    )
     debug = {
         "header_index": header_index,
         "detected_columns": detected_columns,
