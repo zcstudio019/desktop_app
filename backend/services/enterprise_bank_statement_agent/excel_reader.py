@@ -310,6 +310,37 @@ HEADER_SYNONYMS_CN: dict[str, tuple[str, ...]] = {
     "serial_no": ("交易流水号", "账户明细编号", "企业流水号", "凭证号"),
 }
 
+SHANGHAI_DETAIL_HEADERS = (
+    "交易流水号",
+    "交易时间",
+    "记账日期",
+    "交易方向",
+    "借方发生额",
+    "贷方发生额",
+    "余额",
+    "对手账号",
+    "对手名称",
+    "摘要",
+    "交易用途",
+    "备注",
+)
+
+TOP_KV_LABELS = (
+    "借方总笔数",
+    "贷方总笔数",
+    "借方总金额",
+    "贷方总金额",
+    "选择账号",
+    "选择帐号",
+    "企业账号",
+    "企业帐号",
+    "记账日期",
+    "开户行",
+    "总笔数",
+    "户名",
+    "币种",
+)
+
 
 def _cn_text(value: Any) -> str:
     return normalize_text(value).replace("\u3000", " ").strip()
@@ -325,6 +356,58 @@ def _strip_label(value: Any) -> str:
     text = text.replace("（", "(").replace("）", ")")
     text = re.sub(r"\((?:¥|￥|元|人民币)\)", "", text)
     return text
+
+
+def _split_compound_cell(value: Any) -> list[str]:
+    text = _cn_text(value)
+    if not text:
+        return []
+    # Some exports put the whole header row into one tab/newline/multi-space
+    # cell. Split those first; if the known Shanghai headers are merely
+    # concatenated, recover them in their expected order.
+    parts = [part.strip() for part in re.split(r"[\t\r\n]+|\s{2,}", text) if part.strip()]
+    if len(parts) > 1:
+        return parts
+    compact = _cn_compact(text)
+    if all(token in compact for token in ("交易流水号", "交易时间", "借方发生额", "贷方发生额", "余额")):
+        found = [token for token in SHANGHAI_DETAIL_HEADERS if token in compact]
+        if len(found) >= 6:
+            return found
+    return [text]
+
+
+def _expand_row_cells(row: list[Any]) -> list[Any]:
+    non_empty = [_cn_text(cell) for cell in row if _cn_text(cell)]
+    if len(non_empty) <= 2:
+        expanded: list[Any] = []
+        changed = False
+        for cell in row:
+            pieces = _split_compound_cell(cell)
+            if len(pieces) > 1:
+                changed = True
+                expanded.extend(pieces)
+            else:
+                expanded.append(cell)
+        if changed:
+            return expanded
+    return row
+
+
+def _extract_inline_top_kv(text: str) -> list[tuple[str, str]]:
+    normalized = _cn_text(text)
+    if not normalized:
+        return []
+    pattern = r"(" + "|".join(re.escape(label) for label in TOP_KV_LABELS) + r")\s*[:：]?"
+    matches = list(re.finditer(pattern, normalized))
+    pairs: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        label = _strip_label(match.group(1))
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
+        value = normalized[start:end].strip(" ：:\t\r\n")
+        if value:
+            pairs.append((label, value))
+    return pairs
 
 
 def infer_bank_from_text(*values: Any) -> str | None:
@@ -386,7 +469,9 @@ def _find_header_row(rows: list[list[Any]], warnings: list[str], sheet_name: str
     best_index: int | None = None
     best_mapping: dict[int, str] = {}
     best_score = 0
+    candidate_rows: list[dict[str, Any]] = []
     for index, row in enumerate(rows[:50]):
+        row = _expand_row_cells(list(row))
         mapping: dict[int, str] = {}
         seen: set[str] = set()
         for col_index, value in enumerate(row):
@@ -424,7 +509,15 @@ def _find_header_row(rows: list[list[Any]], warnings: list[str], sheet_name: str
             best_score = score
             best_index = index
             best_mapping = mapping
+        if score > 0:
+            candidate_rows.append({
+                "row": index + 1,
+                "score": score,
+                "fields": sorted(fields),
+                "text": row_text[:300],
+            })
         if score >= 8:
+            logger.info("[EnterpriseFlow][HeaderScan] sheet=%s candidate_rows=%s", sheet_name, candidate_rows[:8])
             logger.info(
                 "[EnterpriseFlow][HeaderDetect] sheet=%s header_row=%s columns=%s",
                 sheet_name,
@@ -433,21 +526,33 @@ def _find_header_row(rows: list[list[Any]], warnings: list[str], sheet_name: str
             )
             return index, mapping
     if best_mapping:
+        logger.info("[EnterpriseFlow][HeaderScan] sheet=%s candidate_rows=%s", sheet_name, candidate_rows[:8])
         logger.info(
             "[EnterpriseFlow][HeaderDetect] sheet=%s header_row=%s columns=%s",
             sheet_name,
             (best_index or 0) + 1,
-            [_cn_text(cell) for cell in rows[best_index or 0]],
+            [_cn_text(cell) for cell in _expand_row_cells(list(rows[best_index or 0]))],
         )
     else:
+        sample_rows = [
+            " | ".join(_cn_text(cell) for cell in _expand_row_cells(list(row)) if _cn_text(cell))[:500]
+            for row in rows[:10]
+        ]
+        logger.warning(
+            "[EnterpriseFlow][HeaderDetectFailed] sheet=%s sample_rows=%s",
+            sheet_name,
+            sample_rows,
+        )
         warnings.append(f"sheet {sheet_name} 未识别到交易表头")
     return best_index, best_mapping
 
 
-def _iter_label_value_pairs(rows: list[list[Any]], limit: int = 30) -> list[tuple[str, Any]]:
+def _iter_label_value_pairs(rows: list[list[Any]], limit: int = 30, sheet_name: str | None = None) -> list[tuple[str, Any]]:
     pairs: list[tuple[str, Any]] = []
     for row in rows[:limit]:
-        cells = list(row[:15])
+        cells = list(_expand_row_cells(list(row))[:15])
+        joined_text = " ".join(_cn_text(cell) for cell in cells if _cn_text(cell))
+        pairs.extend(_extract_inline_top_kv(joined_text))
         header_like_count = sum(1 for cell in cells if _canonical_header(cell))
         if header_like_count >= 4:
             continue
@@ -483,6 +588,12 @@ def _iter_label_value_pairs(rows: list[list[Any]], limit: int = 30) -> list[tupl
                         break
                     pairs.append((label, candidate))
                     break
+    found_keys = []
+    for label, value in pairs:
+        key = _strip_label(label)
+        if key and value not in (None, "") and key not in found_keys:
+            found_keys.append(key)
+    logger.info("[EnterpriseFlow][TopKVScan] sheet=%s found_keys=%s", sheet_name or "", found_keys)
     return pairs
 
 
@@ -511,13 +622,13 @@ def parse_sheet_account_info(sheet_name: str, rows: list[list[Any]], customer_na
         "summary_transaction_count": None,
     }
 
-    for label, value in _iter_label_value_pairs(rows):
+    for label, value in _iter_label_value_pairs(rows, sheet_name=sheet_name):
         label = _strip_label(label)
         if any(token in label for token in ("对方账号", "对手账号", "收付款方账号", "交易对手账号", "对方开户行", "对方银行")):
             continue
         if label in {"账户名称", "户名", "企业名称", "客户名称", "单位名称"}:
             account_info["account_name"] = _cn_text(value) or account_info["account_name"]
-        elif label in {"账号", "企业账号", "本方账号", "选择账号", "账户账号", "账户号码"}:
+        elif label in {"账号", "企业账号", "企业帐号", "本方账号", "选择账号", "选择帐号", "账户账号", "账户号码"}:
             account_info["account_number"] = _clean_enterprise_account(value)
         elif label in {"开户行", "开户机构", "开户网点"}:
             branch = _cn_text(value)
@@ -531,18 +642,18 @@ def parse_sheet_account_info(sheet_name: str, rows: list[list[Any]], customer_na
             account_info["period_end"] = end or account_info["period_end"]
         elif label in {"截止日期", "结束日期", "流水结束日期"}:
             account_info["period_end"] = normalize_date(value)
-        elif label in {"总笔数"}:
+        elif "总笔数" == label:
             amount = normalize_amount(value)
             account_info["summary_transaction_count"] = int(amount) if amount is not None else None
-        elif label in {"借方总笔数", "借方累计笔数", "总支出笔数", "贷方交易笔数"}:
+        elif "借方总笔数" in label or label in {"借方累计笔数", "总支出笔数", "贷方交易笔数"}:
             amount = normalize_amount(value)
             account_info["summary_outflow_count"] = int(amount) if amount is not None else None
-        elif label in {"贷方总笔数", "贷方累计笔数", "总收入笔数", "借方交易笔数"}:
+        elif "贷方总笔数" in label or label in {"贷方累计笔数", "总收入笔数", "借方交易笔数"}:
             amount = normalize_amount(value)
             account_info["summary_inflow_count"] = int(amount) if amount is not None else None
-        elif label in {"借方总金额", "借方累计发生额", "总支出", "贷方交易金额"}:
+        elif "借方总金额" in label or label in {"借方累计发生额", "总支出", "贷方交易金额"}:
             account_info["summary_outflow"] = normalize_amount(value)
-        elif label in {"贷方总金额", "贷方累计发生额", "总收入", "借方交易金额"}:
+        elif "贷方总金额" in label or label in {"贷方累计发生额", "总收入", "借方交易金额"}:
             account_info["summary_inflow"] = normalize_amount(value)
 
     if account_info["bank_name"] == "未知银行":
@@ -603,19 +714,20 @@ def _read_html_xls_rows(path: Path) -> list[tuple[str, list[list[Any]]]]:
 
 
 def _build_sheet(sheet_name: str, raw_rows: list[list[Any]], source_file: str, warnings: list[str]) -> dict[str, Any]:
-    header_index, header_map = _find_header_row(raw_rows, warnings, sheet_name)
+    expanded_rows = [_expand_row_cells(list(row)) for row in raw_rows]
+    header_index, header_map = _find_header_row(expanded_rows, warnings, sheet_name)
     data_rows: list[dict[str, Any]] = []
     detected_columns: list[str] = []
     column_mapping: dict[str, str] = {}
     if header_index is not None and header_map:
-        header_row = raw_rows[header_index]
+        header_row = expanded_rows[header_index]
         detected_columns = [_cn_text(header_row[idx] if idx < len(header_row) else f"col_{idx + 1}") for idx in range(len(header_row))]
         column_mapping = {
             _cn_text(header_row[idx] if idx < len(header_row) else f"col_{idx + 1}"): field
             for idx, field in header_map.items()
         }
         empty_streak = 0
-        for row_number, raw_row in enumerate(raw_rows[header_index + 1 :], start=header_index + 2):
+        for row_number, raw_row in enumerate(expanded_rows[header_index + 1 :], start=header_index + 2):
             if not any(_cn_text(cell) for cell in raw_row):
                 empty_streak += 1
                 if empty_streak >= 8:
@@ -627,7 +739,7 @@ def _build_sheet(sheet_name: str, raw_rows: list[list[Any]], source_file: str, w
             normalized["raw"] = raw
             normalized["row_number"] = row_number
             data_rows.append(normalized)
-    meta = parse_sheet_account_info(sheet_name, raw_rows, source_file=source_file)
+    meta = parse_sheet_account_info(sheet_name, expanded_rows, source_file=source_file)
     if not meta.get("account_number"):
         meta["account_number"] = _extract_account_from_column(data_rows)
         meta["account_id"] = f"{meta['bank_name']}:{meta.get('account_number') or source_file or sheet_name}"
