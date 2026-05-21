@@ -3093,17 +3093,17 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setError(null);
       setDeletingDocumentId(document.doc_id);
       await deleteCustomerDocument(selectedCustomerId, document.doc_id);
+      setDocuments((current) => current.filter((item) => item.doc_id !== document.doc_id));
       await Promise.all([
         loadDocuments(selectedCustomerId),
         loadExtractions(selectedCustomerId),
-        loadProfile(selectedCustomerId),
       ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '删除资料失败');
+      setError(err instanceof Error ? err.message : '删除失败，请稍后重试');
     } finally {
       setDeletingDocumentId(null);
     }
-  }, [loadDocuments, loadExtractions, loadProfile, selectedCustomerId]);
+  }, [loadDocuments, loadExtractions, selectedCustomerId]);
 
   const handleScrollToDocument = useCallback((document: CustomerDocumentListItem) => {
     setDocumentFilter('all');

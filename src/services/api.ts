@@ -873,7 +873,7 @@ export async function deleteCustomerDocument(
   customerId: string,
   docId: string,
   signal?: AbortSignal
-): Promise<{ success: boolean }> {
+): Promise<{ success: boolean; document_id?: string; message?: string }> {
   const response = await fetch(
     `${API_BASE}/api/customers/${encodeURIComponent(customerId)}/documents/${encodeURIComponent(docId)}`,
     {

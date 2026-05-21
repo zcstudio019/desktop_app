@@ -14,12 +14,13 @@ import logging
 import re
 import sys
 import uuid
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -77,6 +78,15 @@ documents_router = APIRouter(prefix="/documents", tags=["Documents"])
 feishu_service = FeishuService()
 storage_service = get_storage_service()  # 根据配置返回本地存储或飞书服务
 HAS_DB_STORAGE = supports_structured_storage(storage_service)
+
+
+async def _refresh_customer_after_document_delete(customer_id: str, doc_id: str) -> None:
+    try:
+        logger.info("[DocumentDelete] background refresh start customer_id=%s document_id=%s", customer_id, doc_id)
+        await profile_sync_service.handle_document_saved(storage_service, customer_id)
+        logger.info("[DocumentDelete] background refresh finish customer_id=%s document_id=%s", customer_id, doc_id)
+    except Exception:
+        logger.exception("[DocumentDelete] background refresh failed customer_id=%s document_id=%s", customer_id, doc_id)
 
 rag_service = RagService()
 risk_assessment_service = RiskAssessmentService(rag_service=rag_service)
@@ -1838,11 +1848,15 @@ async def delete_customer(
 async def delete_customer_document(
     customer_id: str,
     doc_id: str,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user),
-) -> dict[str, bool]:
+) -> dict[str, Any]:
     """Delete a single uploaded document and its linked extraction records."""
     if not HAS_DB_STORAGE:
         raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+
+    started_at = time.perf_counter()
+    logger.info("[DocumentDelete] start customer_id=%s document_id=%s", customer_id, doc_id)
 
     customer = await storage_service.get_customer(customer_id)
     if not customer:
@@ -1852,7 +1866,7 @@ async def delete_customer_document(
     try:
         document = await storage_service.get_document(doc_id)
     except Exception as e:
-        logger.error(f"Failed to fetch document {doc_id}: {e}")
+        logger.exception("[DocumentDelete] failed to fetch customer_id=%s document_id=%s", customer_id, doc_id)
         raise HTTPException(status_code=500, detail="删除资料失败") from e
 
     if not document or document.get("customer_id") != customer_id:
@@ -1861,16 +1875,20 @@ async def delete_customer_document(
     try:
         deleted = await storage_service.delete_document(doc_id)
     except Exception as e:
-        logger.error(f"Failed to delete document {doc_id}: {e}")
+        logger.exception("[DocumentDelete] failed customer_id=%s document_id=%s", customer_id, doc_id)
         raise HTTPException(status_code=500, detail="删除资料失败") from e
 
     if not deleted:
         raise HTTPException(status_code=404, detail="未找到该资料记录")
 
-    try:
-        await profile_sync_service.handle_document_saved(storage_service, customer_id)
-    except Exception as e:
-        logger.warning("Failed to refresh profile after deleting document customer_id=%s doc_id=%s error=%s", customer_id, doc_id, e)
+    cost_ms = int((time.perf_counter() - started_at) * 1000)
+    logger.info("[DocumentDelete] soft/hard deleted document_id=%s cost_ms=%s", doc_id, cost_ms)
+    background_tasks.add_task(_refresh_customer_after_document_delete, customer_id, doc_id)
+    logger.info("[DocumentDelete] scheduled background refresh customer_id=%s", customer_id)
 
-    return {"success": True}
+    return {
+        "success": True,
+        "document_id": doc_id,
+        "message": "删除成功，资料汇总和检索索引将在后台刷新",
+    }
 
