@@ -1701,7 +1701,7 @@ async def get_latest_enterprise_flow_extraction(
             "extraction_type": extraction.get("extraction_type") or "enterprise_flow",
             "created_at": extraction.get("created_at") or "",
             "extracted_json": extracted_json,
-            "markdown_summary": extracted_data.get("markdown_summary") or extracted_data.get("markdown") or extracted_data.get("summary") or "",
+            "markdown_summary": "",
         }
     }
 
