@@ -21,6 +21,7 @@ import type { CustomerDocumentListItem, CustomerListItem, CustomerProfileMarkdow
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard from './common/ProcessFeedbackCard';
 import EnterpriseBankStatementView, {
+  hasEnterpriseFlowShape,
   isEnterpriseBankStatementType,
   normalizeEnterpriseFlowData,
   parseMaybeJson,
@@ -879,6 +880,8 @@ function getDocumentTypeFromRecord(item: Record<string, unknown> | null | undefi
     item.document_type ??
     item.documentType ??
     item.type ??
+    item.normalized_document_type ??
+    item.normalizedDocumentType ??
     item.doc_type ??
     item.docType ??
     item.document_type_code ??
@@ -892,6 +895,9 @@ function getDocumentTypeFromRecord(item: Record<string, unknown> | null | undefi
 
 function getExtractedJsonFromRecord(item: Record<string, unknown> | null | undefined): unknown {
   if (!item) return null;
+  if (hasEnterpriseFlowShape(item)) {
+    return item;
+  }
   return (
     item.extracted_json ??
     item.extractedJson ??
@@ -2473,7 +2479,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     } catch (err) {
       if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', err);
       setEnterpriseFlowPreviewDoc(null);
-      setEnterpriseFlowPreviewError('结构化预览暂时不可用，请稍后重试');
+      setEnterpriseFlowPreviewError('企业流水结构化预览暂时不可用，请稍后重试');
     } finally {
       enterpriseFlowPreviewLoadingRef.current = null;
     }
@@ -2801,6 +2807,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     [enterpriseFlowState]
   );
   const hasEnterpriseStructuredData = enterpriseFlowViewSources.length > 0;
+  const profilePreviewRenderMode = hasEnterpriseStructuredData
+    ? 'enterprise_flow_structured'
+    : enterpriseFlowPreviewError
+      ? 'error_fallback'
+      : 'markdown_preview';
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const selectedDoc = enterpriseFlowState.selectedEnterpriseFlowDoc;
@@ -2842,7 +2853,19 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       tailong_total_outflow: (tailongAccount as Record<string, unknown> | undefined)?.total_outflow,
       tailong_account: tailongAccount,
     });
-  }, [activeCustomerId, customerIdCandidates, documents.length, enterpriseFlowState, extractionGroups.length]);
+    console.debug('[ProfilePreview] enterpriseFlowSummary', enterpriseFlowPreviewDoc);
+    console.debug('[ProfilePreview] shouldRenderEnterpriseFlow', hasEnterpriseStructuredData);
+    console.debug('[ProfilePreview] renderMode', profilePreviewRenderMode);
+  }, [
+    activeCustomerId,
+    customerIdCandidates,
+    documents.length,
+    enterpriseFlowState,
+    enterpriseFlowPreviewDoc,
+    extractionGroups.length,
+    hasEnterpriseStructuredData,
+    profilePreviewRenderMode,
+  ]);
   const fieldSourceSummaries = useMemo(
     () => buildFieldSourceSummaries(renderedDraft, documents),
     [documents, renderedDraft]
