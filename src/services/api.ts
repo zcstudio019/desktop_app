@@ -898,6 +898,9 @@ export async function getCustomerPersonalFlowSummary(
   return handleResponse<{ item: Record<string, unknown> | null }>(response);
 }
 
+// Alias kept for feature-specific imports.
+export const getPersonalFlowSummary = getCustomerPersonalFlowSummary;
+
 export async function getEnterpriseFlowRules(
   customerId: string,
   signal?: AbortSignal

@@ -2869,9 +2869,21 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const personalFlowSummaryAccounts = Array.isArray(personalFlowSummary?.accounts)
     ? personalFlowSummary.accounts
     : [];
+  const personalFlowDocumentCount = Number(
+    personalFlowSummary?.document_count ??
+    personalFlowSummary?.source_document_count ??
+    (Array.isArray(personalFlowSummary?.documents) ? personalFlowSummary.documents.length : 0) ??
+    (Array.isArray(personalFlowSummary?.source_files) ? personalFlowSummary.source_files.length : 0)
+  );
+  const personalFlowRawIncome = Number(
+    (personalFlowSummary?.income_verification as Record<string, unknown> | undefined)?.raw_total_income ??
+    (personalFlowSummary?.raw_summary as Record<string, unknown> | undefined)?.total_income ??
+    (personalFlowSummary?.customer_level_summary as Record<string, unknown> | undefined)?.raw_total_income ??
+    0
+  );
   const hasPersonalStructuredData = !!(
     personalFlowSummary &&
-    personalFlowSummaryAccounts.length > 0 &&
+    (personalFlowSummaryAccounts.length > 0 || personalFlowDocumentCount > 0 || personalFlowRawIncome > 0) &&
     (
       personalFlowSummary.document_type === 'personal_flow' ||
       personalFlowSummary.doc_type === 'personal_flow' ||
@@ -4828,7 +4840,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                           个人流水
                         </span>
                       </div>
-                      <PersonalBankStatementView data={personalFlowSummary} />
+                      <PersonalBankStatementView data={personalFlowSummary} error={personalFlowPreviewError} />
                     </section>
                     {hasEnterpriseStructuredData ? (
                       enterpriseFlowViewSources.map((source) => (
