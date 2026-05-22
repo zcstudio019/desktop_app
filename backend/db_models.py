@@ -69,6 +69,23 @@ class Extraction(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class CustomerFlowRule(Base):
+    __tablename__ = "customer_flow_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(String(64), unique=True, nullable=False, index=True)
+    related_company_names_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    self_account_numbers_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    internal_transfer_keywords_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    operating_counterparty_whitelist_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    internal_counterparty_blacklist_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    personal_counterparty_names_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    manual_overrides_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="{}")
+    updated_by = Column(String(128), default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class CustomerProfile(Base):
     __tablename__ = "customer_profiles"
 

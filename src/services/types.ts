@@ -129,6 +129,10 @@ export interface EnterpriseBankStatementSummary {
   operating_inflow?: number | null;
   operating_outflow?: number | null;
   operating_net_cashflow?: number | null;
+  excluded_inflow_total?: number | null;
+  excluded_outflow_total?: number | null;
+  reviewed_transaction_count?: number | null;
+  unreviewed_suspicious_count?: number | null;
 }
 
 export interface EnterpriseMonthlyCashflowSummary {
@@ -206,11 +210,44 @@ export interface EnterpriseFinancingView {
 export interface EnterpriseBankTransaction {
   transaction_id?: string;
   transaction_date?: string | null;
+  date?: string | null;
+  direction?: string | null;
   counterparty_name?: string | null;
+  counterparty_account?: string | null;
   debit_amount?: number | null;
   credit_amount?: number | null;
+  amount?: number | null;
   balance?: number | null;
   category?: string | null;
+  nature?: string | null;
+  exclude_from_operating?: boolean;
+  classification_reason?: string | null;
+  classification_confidence?: number | null;
+  manual_reviewed?: boolean;
+  review_status?: string | null;
+}
+
+export interface EnterpriseFlowRules {
+  customer_id?: string;
+  related_company_names?: string[];
+  self_account_numbers?: string[];
+  internal_transfer_keywords?: string[];
+  operating_counterparty_whitelist?: string[];
+  internal_counterparty_blacklist?: string[];
+  personal_counterparty_names?: string[];
+  manual_overrides?: Record<string, unknown>;
+}
+
+export interface EnterpriseFlowViewData {
+  inflow?: number;
+  outflow?: number;
+  transactions?: EnterpriseBankTransaction[];
+}
+
+export interface EnterpriseFlowClassificationSummaryItem {
+  count?: number;
+  inflow?: number;
+  outflow?: number;
 }
 
 export interface EnterpriseBankStatementExtraction {
@@ -225,6 +262,12 @@ export interface EnterpriseBankStatementExtraction {
   };
   accounts?: EnterpriseBankAccountStatement[];
   transactions?: EnterpriseBankTransaction[];
+  views?: {
+    raw?: EnterpriseFlowViewData;
+    operating?: EnterpriseFlowViewData;
+    excluded?: EnterpriseFlowViewData;
+  };
+  classification_summary?: Record<string, EnterpriseFlowClassificationSummaryItem>;
   summary?: EnterpriseBankStatementSummary;
   monthly_summary?: EnterpriseMonthlyCashflowSummary[];
   counterparty_summary?: EnterpriseCounterpartySummary;

@@ -5,6 +5,9 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
+from .extraction_skills.counterparty_analysis_skill import analyze_counterparties
+from .extraction_skills.transaction_classifier_skill import classify_transactions
+
 logger = logging.getLogger(__name__)
 
 ENTERPRISE_FLOW_TYPES = {
@@ -121,7 +124,72 @@ def _merge_counterparty(target: dict[str, dict[str, Any]], item: dict[str, Any])
     stat["is_personal_counterparty"] = bool(stat.get("is_personal_counterparty") or item.get("is_personal_counterparty"))
 
 
-def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> dict[str, Any]:
+def _classification_bucket() -> dict[str, Any]:
+    return {"count": 0, "inflow": 0.0, "outflow": 0.0}
+
+
+def _build_views_and_classification(transactions: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    classification_summary: dict[str, dict[str, Any]] = {
+        key: _classification_bucket()
+        for key in ("operating", "internal_transfer", "related_party", "personal_transfer", "fee_tax_salary", "unknown")
+    }
+    raw_transactions: list[dict[str, Any]] = []
+    operating_transactions: list[dict[str, Any]] = []
+    excluded_transactions: list[dict[str, Any]] = []
+    for tx in transactions:
+        nature = str(tx.get("nature") or "unknown")
+        bucket = classification_summary.setdefault(nature, _classification_bucket())
+        inflow = _num(tx.get("credit_amount"))
+        outflow = _num(tx.get("debit_amount"))
+        bucket["count"] += 1
+        bucket["inflow"] = round(bucket["inflow"] + inflow, 2)
+        bucket["outflow"] = round(bucket["outflow"] + outflow, 2)
+        slim = {
+            "transaction_id": tx.get("transaction_id"),
+            "date": tx.get("transaction_date") or tx.get("post_date"),
+            "direction": tx.get("direction"),
+            "amount": _num(tx.get("credit_amount") or tx.get("debit_amount")),
+            "counterparty_name": tx.get("counterparty_name") or tx.get("payee_name"),
+            "counterparty_account": tx.get("counterparty_account") or tx.get("payee_account"),
+            "purpose": tx.get("purpose"),
+            "summary": tx.get("summary"),
+            "nature": nature,
+            "exclude_from_operating": bool(tx.get("exclude_from_operating")),
+            "reason": tx.get("classification_reason") or tx.get("nature_reason"),
+            "confidence": tx.get("classification_confidence") or tx.get("nature_confidence"),
+            "manual_reviewed": bool(tx.get("manual_reviewed")),
+        }
+        if len(raw_transactions) < 100:
+            raw_transactions.append(slim)
+        if tx.get("exclude_from_operating"):
+            if len(excluded_transactions) < 200:
+                excluded_transactions.append(slim)
+        elif len(operating_transactions) < 100:
+            operating_transactions.append(slim)
+    for item in classification_summary.values():
+        item["inflow"] = round(item["inflow"], 2)
+        item["outflow"] = round(item["outflow"], 2)
+    views = {
+        "raw": {
+            "inflow": round(sum(_num(tx.get("credit_amount")) for tx in transactions), 2),
+            "outflow": round(sum(_num(tx.get("debit_amount")) for tx in transactions), 2),
+            "transactions": raw_transactions,
+        },
+        "operating": {
+            "inflow": round(sum(_num(tx.get("credit_amount")) for tx in transactions if not tx.get("exclude_from_operating")), 2),
+            "outflow": round(sum(_num(tx.get("debit_amount")) for tx in transactions if not tx.get("exclude_from_operating")), 2),
+            "transactions": operating_transactions,
+        },
+        "excluded": {
+            "inflow": round(sum(_num(tx.get("credit_amount")) for tx in transactions if tx.get("exclude_from_operating")), 2),
+            "outflow": round(sum(_num(tx.get("debit_amount")) for tx in transactions if tx.get("exclude_from_operating")), 2),
+            "transactions": excluded_transactions,
+        },
+    }
+    return views, classification_summary, excluded_transactions
+
+
+def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]], rules: dict[str, Any] | None = None) -> dict[str, Any]:
     accounts_by_key: dict[str, dict[str, Any]] = {}
     monthly_by_key: dict[str, dict[str, Any]] = {}
     counterparties: dict[str, dict[str, Any]] = {}
@@ -253,6 +321,27 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
 
     accounts = list(accounts_by_key.values())
     monthly_summary = [monthly_by_key[key] for key in sorted(monthly_by_key)]
+    if transactions:
+        transactions = classify_transactions(
+            transactions,
+            (rules or {}).get("customer_name") or (rules or {}).get("customer_id"),
+            {"enterprise_flow_rules": rules or {}, **(rules or {})},
+        )
+        raw_total_inflow = round(sum(_num(tx.get("credit_amount")) for tx in transactions), 2) or raw_total_inflow
+        raw_total_outflow = round(sum(_num(tx.get("debit_amount")) for tx in transactions), 2) or raw_total_outflow
+        internal_transfer_inflow = round(sum(_num(tx.get("credit_amount")) for tx in transactions if tx.get("is_internal_transfer")), 2)
+        internal_transfer_outflow = round(sum(_num(tx.get("debit_amount")) for tx in transactions if tx.get("is_internal_transfer")), 2)
+        related_party_inflow = round(sum(_num(tx.get("credit_amount")) for tx in transactions if tx.get("is_related_party")), 2)
+        related_party_outflow = round(sum(_num(tx.get("debit_amount")) for tx in transactions if tx.get("is_related_party")), 2)
+        personal_transfer_inflow = round(sum(_num(tx.get("credit_amount")) for tx in transactions if tx.get("is_personal_counterparty")), 2)
+        personal_transfer_outflow = round(sum(_num(tx.get("debit_amount")) for tx in transactions if tx.get("is_personal_counterparty")), 2)
+        excluded_related_party_inflow = round(sum(_num(tx.get("credit_amount")) for tx in transactions if tx.get("is_related_party") and tx.get("exclude_from_operating")), 2)
+        excluded_related_party_outflow = round(sum(_num(tx.get("debit_amount")) for tx in transactions if tx.get("is_related_party") and tx.get("exclude_from_operating")), 2)
+        excluded_personal_inflow = round(sum(_num(tx.get("credit_amount")) for tx in transactions if tx.get("is_personal_counterparty") and tx.get("exclude_from_operating")), 2)
+        excluded_personal_outflow = round(sum(_num(tx.get("debit_amount")) for tx in transactions if tx.get("is_personal_counterparty") and tx.get("exclude_from_operating")), 2)
+        counterparty_summary_from_tx = analyze_counterparties(transactions, raw_total_inflow, raw_total_outflow)
+    else:
+        counterparty_summary_from_tx = None
     total_inflow = round(sum(_num(item.get("total_inflow")) for item in accounts), 2)
     total_outflow = round(sum(_num(item.get("total_outflow")) for item in accounts), 2)
     transaction_count = sum(_int(item.get("transaction_count")) for item in accounts)
@@ -294,6 +383,10 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         "excluded_internal_transfer_amount": round(internal_transfer_inflow + internal_transfer_outflow, 2),
         "excluded_related_party_inflow": round(excluded_related_party_inflow, 2),
         "excluded_personal_inflow": round(excluded_personal_inflow, 2),
+        "excluded_inflow_total": round(internal_transfer_inflow + excluded_related_party_inflow + excluded_personal_inflow, 2),
+        "excluded_outflow_total": round(internal_transfer_outflow + excluded_related_party_outflow + excluded_personal_outflow, 2),
+        "reviewed_transaction_count": sum(1 for tx in transactions if tx.get("manual_reviewed")),
+        "unreviewed_suspicious_count": sum(1 for tx in transactions if not tx.get("manual_reviewed") and (tx.get("exclude_from_operating") or tx.get("nature") in {"related_party", "personal_transfer"})),
         "internal_transfer_inflow": round(internal_transfer_inflow, 2),
         "internal_transfer_outflow": round(internal_transfer_outflow, 2),
         "internal_transfer_total": round(internal_transfer_inflow + internal_transfer_outflow, 2),
@@ -306,18 +399,24 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         "operating_net_cashflow": round(operating_inflow - operating_outflow, 2),
     }
     cp_items = list(counterparties.values())
-    operating_cp_items = [item for item in cp_items if not item.get("exclude_from_operating")]
-    top_inflow = sorted(operating_cp_items, key=lambda item: _num(item.get("inflow")), reverse=True)[:10]
-    top_outflow = sorted(operating_cp_items, key=lambda item: _num(item.get("outflow")), reverse=True)[:10]
-    counterparty_summary = {
-        "top_inflow_counterparties": top_inflow,
-        "top_outflow_counterparties": top_outflow,
-        "internal_transfer_counterparties": [item for item in cp_items if item.get("is_internal_transfer")],
-        "related_party_counterparties": [item for item in cp_items if item.get("is_related_party")],
-        "personal_counterparties": [item for item in cp_items if item.get("is_personal_counterparty")],
-        "customer_concentration_top5_ratio": round(sum(_num(item.get("inflow")) for item in top_inflow[:5]) / total_inflow, 4) if total_inflow else None,
-        "supplier_concentration_top5_ratio": round(sum(_num(item.get("outflow")) for item in top_outflow[:5]) / total_outflow, 4) if total_outflow else None,
-    }
+    if counterparty_summary_from_tx:
+        counterparty_summary = counterparty_summary_from_tx
+        top_inflow = counterparty_summary.get("top_inflow_counterparties") or []
+        top_outflow = counterparty_summary.get("top_outflow_counterparties") or []
+    else:
+        operating_cp_items = [item for item in cp_items if not item.get("exclude_from_operating")]
+        top_inflow = sorted(operating_cp_items, key=lambda item: _num(item.get("inflow")), reverse=True)[:10]
+        top_outflow = sorted(operating_cp_items, key=lambda item: _num(item.get("outflow")), reverse=True)[:10]
+        counterparty_summary = {
+            "top_inflow_counterparties": top_inflow,
+            "top_outflow_counterparties": top_outflow,
+            "internal_transfer_counterparties": [item for item in cp_items if item.get("is_internal_transfer")],
+            "related_party_counterparties": [item for item in cp_items if item.get("is_related_party")],
+            "personal_counterparties": [item for item in cp_items if item.get("is_personal_counterparty")],
+            "customer_concentration_top5_ratio": round(sum(_num(item.get("inflow")) for item in top_inflow[:5]) / total_inflow, 4) if total_inflow else None,
+            "supplier_concentration_top5_ratio": round(sum(_num(item.get("outflow")) for item in top_outflow[:5]) / total_outflow, 4) if total_outflow else None,
+        }
+    views, classification_summary, excluded_transactions = _build_views_and_classification(transactions)
     signals = []
     if total_inflow > 0 and abs(summary["net_cashflow"]) / total_inflow < 0.03:
         signals.append(
@@ -365,6 +464,8 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         "summary": summary,
         "monthly_summary": monthly_summary,
         "counterparty_summary": counterparty_summary,
+        "views": views,
+        "classification_summary": classification_summary,
         "risk_analysis": risk_analysis,
         "financing_view": financing_view,
         "internal_transfer_summary": {
@@ -374,7 +475,11 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
             "count": len(internal_transfer_transactions),
             "top_counterparties": counterparty_summary.get("internal_transfer_counterparties", [])[:10],
         },
-        "internal_transfer_transactions": sorted(internal_transfer_transactions, key=lambda item: _num(item.get("amount")), reverse=True)[:200],
+        "internal_transfer_transactions": sorted(
+            [item for item in excluded_transactions if item.get("nature") == "internal_transfer"] or internal_transfer_transactions,
+            key=lambda item: _num(item.get("amount")),
+            reverse=True,
+        )[:200],
         "evidence": [],
         "warnings": warnings,
     }

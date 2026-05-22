@@ -36,6 +36,8 @@ from backend.celery_app import TASK_QUEUE_ENABLED
 from backend.routers.chat_helpers import get_customer_data_local
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.activity_service import add_activity, update_customer_status
+from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator import ENTERPRISE_FLOW_TYPES, aggregate_customer_enterprise_flows
+from backend.services.enterprise_bank_statement_agent.flow_rules import get_enterprise_flow_rules
 from backend.services.markdown_profile_service import get_or_create_customer_profile
 from backend.services.profile_sync_service import ProfileSyncService
 from services.ai_service import AIService, AIServiceError, validate_no_fabrication
@@ -604,6 +606,8 @@ def _enhance_enterprise_application_data(
 ) -> dict[str, dict[str, str]]:
     structured_sources = _build_structured_sources(customer_data)
     enhanced = {section: dict(fields) for section, fields in application_data.items()}
+    flow_summary = structured_sources.get("enterprise_flow_summary") if isinstance(structured_sources.get("enterprise_flow_summary"), dict) else {}
+    flow_metrics = flow_summary.get("summary") if isinstance(flow_summary.get("summary"), dict) else {}
 
     basic_info = enhanced.setdefault("企业基本信息", {})
     repayment_info = enhanced.setdefault("还款能力信息", {})
@@ -731,6 +735,19 @@ def _enhance_enterprise_application_data(
     for field_name, value in public_record_defaults.items():
         _set_field_if_missing(credit_info, field_name, value)
 
+    if flow_metrics:
+        flow_section = enhanced.setdefault("企业流水经营性口径", {})
+        flow_section["原始账面收入"] = _format_number(flow_metrics.get("raw_total_inflow") or flow_metrics.get("total_inflow") or 0, "元")
+        flow_section["原始账面支出"] = _format_number(flow_metrics.get("raw_total_outflow") or flow_metrics.get("total_outflow") or 0, "元")
+        flow_section["净化后经营性收入"] = _format_number(flow_metrics.get("operating_inflow") or 0, "元")
+        flow_section["净化后经营性支出"] = _format_number(flow_metrics.get("operating_outflow") or 0, "元")
+        flow_section["经营性净流入"] = _format_number(flow_metrics.get("operating_net_cashflow") or 0, "元")
+        flow_section["银行可认可经营性回款估算"] = _format_number(flow_metrics.get("operating_inflow") or 0, "元")
+        flow_section["剔除内部往来金额"] = _format_number(flow_metrics.get("internal_transfer_total") or 0, "元")
+        flow_section["复核说明"] = "已按关联公司/内部往来规则剔除左手倒右手流水"
+        repayment_info["银行可认可经营性回款估算"] = flow_section["银行可认可经营性回款估算"]
+        logger.info("[Application][EnterpriseFlow] bank_recognized_cashflow=%s", flow_metrics.get("operating_inflow") or 0)
+
     return enhanced
 
 
@@ -750,6 +767,25 @@ async def _load_customer_context(customer_name: str, customer_id: str | None) ->
             else:
                 extractions = await storage_service.get_extractions_by_customer(customer_id)
             customer_data = _merge_extraction_data(extractions)
+            try:
+                flow_rules = get_enterprise_flow_rules(customer_id)
+                flow_rules = {
+                    **flow_rules,
+                    "customer_name": customer.get("name") or customer_name or customer_id,
+                    "customer_id": customer_id,
+                }
+                if callable(getattr(storage_service, "list_extractions_by_types", None)):
+                    flow_extractions = await storage_service.list_extractions_by_types(customer_id, list(ENTERPRISE_FLOW_TYPES))
+                else:
+                    flow_extractions = [
+                        item for item in extractions
+                        if (item.get("extraction_type") or item.get("document_type") or "") in ENTERPRISE_FLOW_TYPES
+                    ]
+                flow_summary = aggregate_customer_enterprise_flows(flow_extractions, rules=flow_rules)
+                if flow_summary.get("source_document_count"):
+                    customer_data["enterprise_flow_summary"] = json.dumps(flow_summary, ensure_ascii=False, default=str)
+            except Exception as exc:
+                logger.warning("[Application][EnterpriseFlow] load_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
             profile, _ = await get_or_create_customer_profile(storage_service, customer_id)
             profile_markdown = (profile or {}).get("markdown_content") or ""
             if profile_markdown:

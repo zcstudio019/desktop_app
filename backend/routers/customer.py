@@ -46,6 +46,11 @@ from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator i
     ENTERPRISE_FLOW_TYPES,
     aggregate_customer_enterprise_flows,
 )
+from backend.services.enterprise_bank_statement_agent.flow_rules import (
+    get_enterprise_flow_rules,
+    save_enterprise_flow_rules,
+    update_transaction_review,
+)
 from backend.services.document_extractor_service import (
     extract_company_articles_management_roles,
     extract_company_articles_role_evidence_lines,
@@ -73,6 +78,30 @@ from ..models.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class EnterpriseFlowRulesPayload(BaseModel):
+    related_company_names: list[str] = []
+    self_account_numbers: list[str] = []
+    internal_transfer_keywords: list[str] = []
+    operating_counterparty_whitelist: list[str] = []
+    internal_counterparty_blacklist: list[str] = []
+    personal_counterparty_names: list[str] = []
+    manual_overrides: dict[str, Any] = {}
+
+
+class EnterpriseFlowTransactionReviewPayload(BaseModel):
+    nature: str
+    exclude_from_operating: bool = False
+    manual_reason: str = ""
+    reviewed_by: str = ""
+
+
+def _model_payload(model: BaseModel) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
 
 # Create router
 router = APIRouter(prefix="/customers", tags=["Customers"])
@@ -125,6 +154,42 @@ async def _build_customer_risk_report_payload(
 
     previous_report = await storage_service.get_latest_customer_risk_report(customer_id)
     result = await risk_assessment_service.generate_report(storage_service, customer_id)
+    try:
+        rules = {**get_enterprise_flow_rules(customer_id), "customer_name": customer.get("name") or customer_id, "customer_id": customer_id}
+        extractions = await storage_service.list_extractions_by_types(customer_id, list(ENTERPRISE_FLOW_TYPES)) if callable(getattr(storage_service, "list_extractions_by_types", None)) else []
+        flow_summary = aggregate_customer_enterprise_flows(extractions, rules=rules)
+        flow = flow_summary.get("summary") or {}
+        raw_total_flow = float(flow.get("raw_total_inflow") or 0) + float(flow.get("raw_total_outflow") or 0)
+        internal_total = float(flow.get("internal_transfer_total") or 0)
+        risk_flags = []
+        if raw_total_flow and internal_total / raw_total_flow > 0.2:
+            risk_flags.append("内部转账占比较高")
+        if float(flow.get("operating_inflow") or 0) < float(flow.get("raw_total_inflow") or 0) * 0.7:
+            risk_flags.append("原始流水与银行认可流水差异较大")
+        if float(flow.get("personal_transfer_inflow") or 0) + float(flow.get("personal_transfer_outflow") or 0) > 0:
+            risk_flags.append("个人往来较多")
+        if float(flow.get("operating_net_cashflow") or 0) < 0:
+            risk_flags.append("经营性净流入偏弱")
+        report_json = result.get("report_json") or {}
+        report_json["enterprise_flow_analysis"] = {
+            "raw_total_inflow": flow.get("raw_total_inflow"),
+            "raw_total_outflow": flow.get("raw_total_outflow"),
+            "operating_inflow": flow.get("operating_inflow"),
+            "operating_outflow": flow.get("operating_outflow"),
+            "operating_net_cashflow": flow.get("operating_net_cashflow"),
+            "internal_transfer_total": flow.get("internal_transfer_total"),
+            "related_party_total": float(flow.get("related_party_inflow") or 0) + float(flow.get("related_party_outflow") or 0),
+            "personal_transfer_total": float(flow.get("personal_transfer_inflow") or 0) + float(flow.get("personal_transfer_outflow") or 0),
+            "review_status": {
+                "manual_reviewed_count": flow.get("reviewed_transaction_count") or 0,
+                "unreviewed_suspicious_count": flow.get("unreviewed_suspicious_count") or 0,
+            },
+            "risk_flags": risk_flags,
+        }
+        result["report_json"] = report_json
+        logger.info("[RiskReport][EnterpriseFlow] operating_inflow=%s internal_transfer_total=%s", flow.get("operating_inflow"), flow.get("internal_transfer_total"))
+    except Exception as exc:
+        logger.warning("[RiskReport][EnterpriseFlow] attach_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
     await storage_service.save_customer_risk_report(
         {
             "report_id": uuid.uuid4().hex,
@@ -1739,7 +1804,10 @@ async def get_customer_enterprise_flow_summary(
                 if (item.get("extraction_type") or item.get("document_type") or "") in ENTERPRISE_FLOW_TYPES
             ]
         logger.info("[EnterpriseFlowSummary] loaded_extractions=%s customer_id=%s", len(extractions), customer_id)
-        aggregated = aggregate_customer_enterprise_flows(extractions)
+        rules = get_enterprise_flow_rules(customer_id)
+        customer_name = customer.get("name") or customer_id
+        rules = {**rules, "customer_name": customer_name, "customer_id": customer_id}
+        aggregated = aggregate_customer_enterprise_flows(extractions, rules=rules)
     except Exception as exc:
         logger.exception("[EnterpriseFlowSummary] failed customer_id=%s", customer_id)
         raise HTTPException(status_code=500, detail="获取客户级企业流水汇总失败") from exc
@@ -1754,6 +1822,108 @@ async def get_customer_enterprise_flow_summary(
         cost_ms,
     )
     return {"item": aggregated if aggregated.get("source_document_count") else None}
+
+
+def _ensure_flow_rule_editor(current_user: dict) -> None:
+    role = str(current_user.get("role") or "")
+    if role not in {"admin", "operator"}:
+        raise HTTPException(status_code=403, detail="当前账号无权编辑企业流水经营性口径")
+
+
+@router.get("/{customer_id}/enterprise-flow/rules")
+async def get_customer_enterprise_flow_rules(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+    return get_enterprise_flow_rules(customer_id)
+
+
+@router.put("/{customer_id}/enterprise-flow/rules")
+async def save_customer_enterprise_flow_rules(
+    customer_id: str,
+    payload: EnterpriseFlowRulesPayload,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ensure_flow_rule_editor(current_user)
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+    username = current_user.get("username") or ""
+    before = get_enterprise_flow_rules(customer_id)
+    saved = save_enterprise_flow_rules(customer_id, _model_payload(payload), updated_by=username)
+    add_activity(
+        "enterprise_flow_rules_update",
+        customer=customer.get("name") or "",
+        customer_id=customer_id,
+        username=username,
+        document_type="enterprise_flow",
+        title="企业流水经营性口径规则更新",
+        description="更新关联公司、本方账户、白名单/黑名单和人工复核规则",
+        metadata={"before": {k: before.get(k) for k in ("related_company_names", "self_account_numbers")}, "after": {k: saved.get(k) for k in ("related_company_names", "self_account_numbers")}},
+    )
+    return saved
+
+
+@router.post("/{customer_id}/enterprise-flow/transactions/{transaction_id}/review")
+async def review_enterprise_flow_transaction(
+    customer_id: str,
+    transaction_id: str,
+    payload: EnterpriseFlowTransactionReviewPayload,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    _ensure_flow_rule_editor(current_user)
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+    username = current_user.get("username") or payload.reviewed_by or ""
+    saved = update_transaction_review(customer_id, transaction_id, _model_payload(payload), reviewed_by=username)
+    add_activity(
+        "enterprise_flow_transaction_review",
+        customer=customer.get("name") or "",
+        customer_id=customer_id,
+        username=username,
+        document_type="enterprise_flow",
+        title="企业流水单笔交易人工复核",
+        description=f"交易 {transaction_id} 复核为 {payload.nature}",
+        metadata={"transaction_id": transaction_id, "nature": payload.nature, "exclude_from_operating": payload.exclude_from_operating},
+    )
+    return {"success": True, "rules": saved}
+
+
+@router.get("/{customer_id}/enterprise-flow/excluded-transactions")
+async def get_enterprise_flow_excluded_transactions(
+    customer_id: str,
+    nature: str = Query("all"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+    rules = {**get_enterprise_flow_rules(customer_id), "customer_name": customer.get("name") or customer_id, "customer_id": customer_id}
+    if callable(getattr(storage_service, "list_extractions_by_types", None)):
+        extractions = await storage_service.list_extractions_by_types(customer_id, list(ENTERPRISE_FLOW_TYPES))
+    else:
+        all_extractions = await storage_service.get_extractions_by_customer(customer_id)
+        extractions = [
+            item for item in all_extractions
+            if (item.get("extraction_type") or item.get("document_type") or "") in ENTERPRISE_FLOW_TYPES
+        ]
+    aggregated = aggregate_customer_enterprise_flows(extractions, rules=rules)
+    excluded = ((aggregated.get("views") or {}).get("excluded") or {}).get("transactions") or []
+    if nature and nature != "all":
+        excluded = [item for item in excluded if item.get("nature") == nature]
+    total = len(excluded)
+    logger.info("[EnterpriseFlowSummary] view=excluded counts=%s customer_id=%s", total, customer_id)
+    return {"items": excluded[offset : offset + limit], "total": total}
 
 
 @documents_router.get("/{doc_id}")

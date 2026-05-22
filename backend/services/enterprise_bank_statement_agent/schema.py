@@ -72,6 +72,10 @@ class BankTransaction(BaseModel):
     exclude_from_operating: bool = False
     nature_reason: Optional[str] = None
     nature_confidence: Optional[float] = None
+    classification_reason: Optional[str] = None
+    classification_confidence: Optional[float] = None
+    manual_reviewed: bool = False
+    review_status: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     raw: Dict[str, Any] = Field(default_factory=dict)
 
@@ -101,6 +105,10 @@ class BankStatementSummary(BaseModel):
     excluded_internal_transfer_amount: Optional[float] = None
     excluded_related_party_inflow: Optional[float] = None
     excluded_personal_inflow: Optional[float] = None
+    excluded_inflow_total: float = 0.0
+    excluded_outflow_total: float = 0.0
+    reviewed_transaction_count: int = 0
+    unreviewed_suspicious_count: int = 0
     internal_transfer_inflow: float = 0.0
     internal_transfer_outflow: float = 0.0
     internal_transfer_total: float = 0.0

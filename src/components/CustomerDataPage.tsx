@@ -4792,7 +4792,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                             {source.documentType || 'enterprise_flow'}
                           </span>
                         </div>
-                        <EnterpriseBankStatementView data={source.data} markdown={source.markdown} />
+                        <EnterpriseBankStatementView
+                          data={source.data}
+                          markdown={source.markdown}
+                          customerId={activeCustomerId || selectedCustomerId || undefined}
+                          onRulesSaved={() => activeCustomerId ? loadEnterpriseFlowPreview(activeCustomerId) : undefined}
+                        />
                       </section>
                     ))}
                   </div>

@@ -1,5 +1,10 @@
-import React from 'react';
-import { AlertTriangle, Banknote, Building2, FileText, TrendingDown, TrendingUp } from 'lucide-react';
+import React, { useState } from 'react';
+import { AlertTriangle, Banknote, Building2, FileText, Settings, TrendingDown, TrendingUp } from 'lucide-react';
+import {
+  getEnterpriseFlowRules,
+  reviewEnterpriseFlowTransaction,
+  saveEnterpriseFlowRules,
+} from '../../services/api';
 import type {
   EnterpriseBankAccountStatement,
   EnterpriseBankStatementExtraction,
@@ -11,6 +16,8 @@ import type {
 type EnterpriseBankStatementViewProps = {
   data?: EnterpriseBankStatementExtraction | Record<string, unknown> | null;
   markdown?: string;
+  customerId?: string;
+  onRulesSaved?: () => void | Promise<void>;
 };
 
 const EMPTY = '-';
@@ -24,8 +31,7 @@ const ENTERPRISE_BANK_STATEMENT_TYPES = new Set([
 ]);
 
 export function isEnterpriseBankStatementType(documentType?: unknown): boolean {
-  const value = String(documentType || '').trim();
-  return ENTERPRISE_BANK_STATEMENT_TYPES.has(value);
+  return ENTERPRISE_BANK_STATEMENT_TYPES.has(String(documentType || '').trim());
 }
 
 export function parseMaybeJson(value: unknown): Record<string, unknown> | null {
@@ -36,9 +42,7 @@ export function parseMaybeJson(value: unknown): Record<string, unknown> | null {
       const parsed = JSON.parse(value);
       return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
     } catch (error) {
-      if (import.meta.env.DEV) {
-        console.debug('[EnterpriseBankStatementView] JSON.parse failed', error, value.slice(0, 200));
-      }
+      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] JSON.parse failed', error);
       return null;
     }
   }
@@ -82,11 +86,9 @@ export function normalizeEnterpriseFlowFieldNames(data: unknown): EnterpriseBank
 export function normalizeEnterpriseFlowData(raw: unknown, depth = 0): EnterpriseBankStatementExtraction | null {
   if (!raw || depth > 5) return null;
   const parsed = parseMaybeJson(raw);
-  if (!parsed || typeof parsed !== 'object') return null;
-  if (hasEnterpriseFlowShape(parsed)) {
-    return normalizeEnterpriseFlowFieldNames(parsed);
-  }
-  const nestedCandidates = [
+  if (!parsed) return null;
+  if (hasEnterpriseFlowShape(parsed)) return normalizeEnterpriseFlowFieldNames(parsed);
+  const nested = [
     parsed.extracted_json,
     parsed.extractedJson,
     parsed.extracted_data,
@@ -97,11 +99,9 @@ export function normalizeEnterpriseFlowData(raw: unknown, depth = 0): Enterprise
     parsed.result,
     parsed.payload,
   ];
-  for (const candidate of nestedCandidates) {
+  for (const candidate of nested) {
     const normalized = normalizeEnterpriseFlowData(candidate, depth + 1);
-    if (normalized && hasEnterpriseFlowShape(normalized)) {
-      return normalized;
-    }
+    if (normalized && hasEnterpriseFlowShape(normalized)) return normalized;
   }
   return parsed as EnterpriseBankStatementExtraction;
 }
@@ -109,7 +109,7 @@ export function normalizeEnterpriseFlowData(raw: unknown, depth = 0): Enterprise
 export function looksLikeEnterpriseBankStatementData(value: unknown): value is EnterpriseBankStatementExtraction {
   const data = normalizeEnterpriseFlowData(value);
   if (!data) return false;
-  return data.normalized_document_type === 'enterprise_bank_statement' || data.document_type === 'enterprise_flow' || !!data.summary?.total_inflow;
+  return data.normalized_document_type === 'enterprise_bank_statement' || data.document_type === 'enterprise_flow' || Boolean(data.summary);
 }
 
 function asArray<T>(value: unknown): T[] {
@@ -124,20 +124,37 @@ function display(value: unknown): string {
 function formatMoney(value: unknown): string {
   const number = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(number)) return EMPTY;
-  const abs = Math.abs(number);
-  const formatted = new Intl.NumberFormat('zh-CN', {
+  const text = new Intl.NumberFormat('zh-CN', {
     style: 'currency',
     currency: 'CNY',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(abs);
-  return number < 0 ? `-${formatted}` : formatted;
+  }).format(Math.abs(number));
+  return number < 0 ? `-${text}` : text;
 }
 
 function formatRatio(value: unknown): string {
   const number = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(number)) return EMPTY;
-  return `${(number * 100).toFixed(2)}%`;
+  return `${(number * 100).toFixed(1)}%`;
+}
+
+function splitLines(value: string): string[] {
+  return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+}
+
+function joinLines(value: unknown): string {
+  return Array.isArray(value) ? value.map(String).join('\n') : '';
+}
+
+function natureLabel(value?: unknown): string {
+  const text = String(value || '');
+  if (text === 'operating') return '真实经营';
+  if (text === 'internal_transfer') return '内部转账';
+  if (text === 'related_party') return '关联方往来';
+  if (text === 'personal_transfer') return '个人往来';
+  if (text === 'fee_tax_salary') return '税费/工资/费用';
+  return text || '未知';
 }
 
 function riskMeta(level?: string) {
@@ -163,31 +180,23 @@ const MoneyCell: React.FC<{ value: unknown; strong?: boolean }> = ({ value, stro
 );
 
 function CounterpartyTable({ items }: { items: EnterpriseCounterpartyStat[] }) {
-  if (items.length === 0) {
-    return <div className="rounded-lg border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无数据</div>;
-  }
+  if (!items.length) return <div className="rounded-lg border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无数据</div>;
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm">
         <thead className="bg-slate-50 text-xs text-slate-500">
-          <tr>
-            {['对手方', '收入金额', '支出金额', '净额', '笔数', '分类判断', '关联方', '个人', '风险备注'].map((label) => (
-              <th key={label} className="whitespace-nowrap border-b border-slate-200 px-3 py-2 text-left font-medium">{label}</th>
-            ))}
-          </tr>
+          <tr>{['对手方', '收入金额', '支出金额', '净额', '笔数', '分类判断', '是否剔除'].map((label) => <th key={label} className="whitespace-nowrap border-b border-slate-200 px-3 py-2 text-left font-medium">{label}</th>)}</tr>
         </thead>
         <tbody>
           {items.slice(0, 10).map((item, index) => (
             <tr key={`${item.name || 'counterparty'}-${index}`} className="odd:bg-white even:bg-slate-50/60">
-              <td className="max-w-[220px] whitespace-normal break-words border-b border-slate-100 px-3 py-2 text-slate-800">{display(item.name)}</td>
+              <td className="max-w-[240px] whitespace-normal break-words border-b border-slate-100 px-3 py-2 text-slate-800">{display(item.name)}</td>
               <MoneyCell value={item.inflow} />
               <MoneyCell value={item.outflow} />
               <MoneyCell value={item.net} strong />
-              <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-700">{item.transaction_count ?? 0}</td>
-              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{display(item.category_guess)}</td>
-              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{item.is_related_party ? '是' : '否'}</td>
-              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{item.is_personal_counterparty ? '是' : '否'}</td>
-              <td className="min-w-[160px] whitespace-normal border-b border-slate-100 px-3 py-2 text-slate-600">{display(item.risk_note)}</td>
+              <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-700">{item.transaction_count ?? item.count ?? 0}</td>
+              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{display(item.category_guess || item.nature)}</td>
+              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{item.exclude_from_operating ? '是' : '否'}</td>
             </tr>
           ))}
         </tbody>
@@ -196,18 +205,87 @@ function CounterpartyTable({ items }: { items: EnterpriseCounterpartyStat[] }) {
   );
 }
 
-function RelatedPartyTable({ title, items, emptyText }: { title: string; items: EnterpriseCounterpartyStat[]; emptyText: string }) {
+function TransactionTable({
+  items,
+  customerId,
+  onReviewed,
+}: {
+  items: Record<string, unknown>[];
+  customerId?: string;
+  onReviewed?: () => void | Promise<void>;
+}) {
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const review = async (item: Record<string, unknown>, nature: string, exclude: boolean) => {
+    const transactionId = String(item.transaction_id || '');
+    if (!customerId || !transactionId) return;
+    setReviewingId(transactionId);
+    try {
+      await reviewEnterpriseFlowTransaction(customerId, transactionId, {
+        nature,
+        exclude_from_operating: exclude,
+        manual_reason: '前端人工复核',
+      });
+      await onReviewed?.();
+    } finally {
+      setReviewingId(null);
+    }
+  };
+  if (!items.length) return <div className="rounded-lg border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">暂无交易明细</div>;
   return (
-    <div>
-      <div className="mb-2 text-xs font-medium text-slate-500">{title}</div>
-      {items.length > 0 ? <CounterpartyTable items={items} /> : <div className="rounded-lg border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-500">{emptyText}</div>}
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead className="bg-slate-50 text-xs text-slate-500">
+          <tr>{['日期', '方向', '金额', '对方名称', '对方账号', '类型', '剔除原因', '置信度', '人工复核'].map((label) => <th key={label} className="whitespace-nowrap border-b border-slate-200 px-3 py-2 text-left font-medium">{label}</th>)}</tr>
+        </thead>
+        <tbody>
+          {items.slice(0, 50).map((item, index) => {
+            const transactionId = String(item.transaction_id || index);
+            return (
+              <tr key={transactionId} className="odd:bg-white even:bg-slate-50/60">
+                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">{display(item.date || item.transaction_date)}</td>
+                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">{display(item.direction)}</td>
+                <MoneyCell value={item.amount || item.credit_amount || item.debit_amount} />
+                <td className="max-w-[240px] whitespace-normal break-words border-b border-slate-100 px-3 py-2">{display(item.counterparty_name)}</td>
+                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 font-mono">{display(item.counterparty_account)}</td>
+                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">{natureLabel(item.nature)}</td>
+                <td className="min-w-[180px] whitespace-normal border-b border-slate-100 px-3 py-2">{display(item.reason || item.classification_reason)}</td>
+                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">{formatRatio(item.confidence || item.classification_confidence)}</td>
+                <td className="min-w-[260px] border-b border-slate-100 px-3 py-2">
+                  {customerId ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      <button type="button" disabled={reviewingId === transactionId} onClick={() => review(item, 'operating', false)} className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700">标记经营</button>
+                      <button type="button" disabled={reviewingId === transactionId} onClick={() => review(item, 'internal_transfer', true)} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-700">内部转账</button>
+                      <button type="button" disabled={reviewingId === transactionId} onClick={() => review(item, 'related_party', true)} className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-xs text-violet-700">关联方</button>
+                      <button type="button" disabled={reviewingId === transactionId} onClick={() => review(item, 'personal_transfer', false)} className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700">个人往来</button>
+                    </div>
+                  ) : <span className="text-xs text-slate-400">暂无客户ID</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewProps> = ({ data, markdown }) => {
+export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewProps> = ({ data, markdown, customerId, onRulesSaved }) => {
   const statement = (normalizeEnterpriseFlowData(data) || {}) as EnterpriseBankStatementExtraction;
   const summary = statement.summary;
+  const [viewMode, setViewMode] = useState<'raw' | 'operating' | 'excluded'>('operating');
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [rulesSaving, setRulesSaving] = useState(false);
+  const [rulesMessage, setRulesMessage] = useState('');
+  const [rulesDraft, setRulesDraft] = useState({
+    related_company_names: '',
+    self_account_numbers: '',
+    internal_transfer_keywords: '',
+    operating_counterparty_whitelist: '',
+    internal_counterparty_blacklist: '',
+    personal_counterparty_names: '',
+    manual_overrides: '{}',
+  });
 
   if (!summary) {
     return (
@@ -225,7 +303,6 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
   const counterparty = statement.counterparty_summary || {};
   const risk = statement.risk_analysis || {};
   const financing = statement.financing_view || {};
-  const riskBadge = riskMeta(risk.overall_level);
   const sourceFiles = asArray<Record<string, unknown>>((statement as Record<string, unknown>).source_files);
   const accountNameFallback = accounts.find((item) => item.account_name)?.account_name;
   const rawTotalInflow = summary.raw_total_inflow ?? summary.total_inflow;
@@ -233,9 +310,74 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
   const rawNetCashflow = summary.raw_net_cashflow ?? summary.net_cashflow;
   const operatingInflow = summary.operating_inflow ?? summary.estimated_operating_inflow ?? financing.bank_recognizable_inflow;
   const operatingOutflow = summary.operating_outflow ?? summary.estimated_operating_outflow;
-  const operatingNetCashflow = summary.operating_net_cashflow ?? summary.estimated_operating_net_cashflow;
-  const internalTransferExcluded = Number(summary.internal_transfer_inflow || 0) + Number(summary.internal_transfer_outflow || 0);
+  const viewData = statement.views || {};
+  const rawView = viewData.raw || {};
+  const operatingView = viewData.operating || {};
+  const excludedView = viewData.excluded || {};
+  const classificationSummary = statement.classification_summary || {};
   const internalTransferTransactions = asArray<Record<string, unknown>>(statement.internal_transfer_transactions);
+  const excludedTransactions = asArray<Record<string, unknown>>(excludedView.transactions).length
+    ? asArray<Record<string, unknown>>(excludedView.transactions)
+    : internalTransferTransactions;
+
+  const openRules = async () => {
+    setRulesOpen(true);
+    if (!customerId) {
+      setRulesMessage('当前页面缺少客户ID，暂不能保存规则。');
+      return;
+    }
+    setRulesLoading(true);
+    setRulesMessage('');
+    try {
+      const rules = await getEnterpriseFlowRules(customerId);
+      setRulesDraft({
+        related_company_names: joinLines(rules.related_company_names),
+        self_account_numbers: joinLines(rules.self_account_numbers),
+        internal_transfer_keywords: joinLines(rules.internal_transfer_keywords),
+        operating_counterparty_whitelist: joinLines(rules.operating_counterparty_whitelist),
+        internal_counterparty_blacklist: joinLines(rules.internal_counterparty_blacklist),
+        personal_counterparty_names: joinLines(rules.personal_counterparty_names),
+        manual_overrides: JSON.stringify(rules.manual_overrides || {}, null, 2),
+      });
+    } catch (error) {
+      setRulesMessage(error instanceof Error ? error.message : '规则加载失败');
+    } finally {
+      setRulesLoading(false);
+    }
+  };
+
+  const saveRules = async () => {
+    if (!customerId) return;
+    setRulesSaving(true);
+    setRulesMessage('');
+    try {
+      let manualOverrides: Record<string, unknown> = {};
+      try {
+        manualOverrides = JSON.parse(rulesDraft.manual_overrides || '{}');
+      } catch {
+        setRulesMessage('人工复核 JSON 格式不正确。');
+        setRulesSaving(false);
+        return;
+      }
+      await saveEnterpriseFlowRules(customerId, {
+        related_company_names: splitLines(rulesDraft.related_company_names),
+        self_account_numbers: splitLines(rulesDraft.self_account_numbers),
+        internal_transfer_keywords: splitLines(rulesDraft.internal_transfer_keywords),
+        operating_counterparty_whitelist: splitLines(rulesDraft.operating_counterparty_whitelist),
+        internal_counterparty_blacklist: splitLines(rulesDraft.internal_counterparty_blacklist),
+        personal_counterparty_names: splitLines(rulesDraft.personal_counterparty_names),
+        manual_overrides: manualOverrides,
+      });
+      setRulesMessage('经营性口径已更新。');
+      await onRulesSaved?.();
+    } catch (error) {
+      setRulesMessage(error instanceof Error ? error.message : '规则保存失败');
+    } finally {
+      setRulesSaving(false);
+    }
+  };
+
+  const riskBadge = riskMeta(risk.overall_level);
   const metricCards = [
     { label: '总收入', value: rawTotalInflow, icon: <TrendingUp className="h-4 w-4" />, tone: 'text-emerald-700 bg-emerald-50 border-emerald-100' },
     { label: '总支出', value: rawTotalOutflow, icon: <TrendingDown className="h-4 w-4" />, tone: 'text-rose-700 bg-rose-50 border-rose-100' },
@@ -247,6 +389,24 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
+          {[
+            ['raw', '原始流水'],
+            ['operating', '净化流水'],
+            ['excluded', '被剔除流水'],
+          ].map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setViewMode(key as 'raw' | 'operating' | 'excluded')} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${viewMode === key ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={openRules} className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100">
+          <Settings className="h-4 w-4" />
+          经营性口径配置
+        </button>
+      </div>
+
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {metricCards.map((item) => (
           <div key={item.label} className={`rounded-xl border p-4 ${item.tone}`}>
@@ -255,6 +415,41 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
           </div>
         ))}
       </div>
+
+      {viewMode === 'raw' ? (
+        <Section title="原始流水视图">
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">原始总收入</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(rawView.inflow ?? rawTotalInflow)}</div></div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">原始总支出</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(rawView.outflow ?? rawTotalOutflow)}</div></div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">原始净流入</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(Number(rawView.inflow ?? rawTotalInflow ?? 0) - Number(rawView.outflow ?? rawTotalOutflow ?? 0))}</div></div>
+          </div>
+        </Section>
+      ) : null}
+
+      {viewMode === 'operating' ? (
+        <Section title="净化流水视图">
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3"><div className="text-xs text-indigo-700">经营性回款</div><div className="mt-1 text-lg font-semibold text-indigo-900">{formatMoney(operatingView.inflow ?? operatingInflow)}</div></div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">经营性支出</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(operatingView.outflow ?? operatingOutflow)}</div></div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">经营性净流入</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(Number(operatingView.inflow ?? operatingInflow ?? 0) - Number(operatingView.outflow ?? operatingOutflow ?? 0))}</div></div>
+          </div>
+        </Section>
+      ) : null}
+
+      {viewMode === 'excluded' ? (
+        <Section title="被剔除流水视图">
+          <div className="mb-3 grid gap-3 md:grid-cols-4">
+            {Object.entries(classificationSummary).map(([key, value]) => (
+              <div key={key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="text-xs text-slate-500">{natureLabel(key)}</div>
+                <div className="mt-1 text-sm text-slate-700">笔数 {value?.count ?? 0}</div>
+                <div className="mt-1 text-sm font-semibold text-slate-800">{formatMoney((value?.inflow || 0) + (value?.outflow || 0))}</div>
+              </div>
+            ))}
+          </div>
+          <TransactionTable items={excludedTransactions} customerId={customerId} onReviewed={onRulesSaved} />
+        </Section>
+      ) : null}
 
       <Section title="基础信息" action={<span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${riskBadge.className}`}>{riskBadge.label} {risk.overall_score ?? 0}分</span>}>
         <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
@@ -275,35 +470,22 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
                 ['净流入', rawNetCashflow],
                 ['月均收入', summary.average_monthly_inflow],
                 ['月均支出', summary.average_monthly_outflow],
-                ['月均净流入', summary.average_monthly_net_cashflow],
                 ['银行可能认可经营性回款估算', operatingInflow],
                 ['剔除内部转账收入', summary.internal_transfer_inflow],
                 ['剔除内部转账支出', summary.internal_transfer_outflow],
                 ['剔除关联方收入', summary.related_party_inflow ?? summary.excluded_related_party_inflow],
                 ['剔除个人往来收入', summary.personal_transfer_inflow ?? summary.excluded_personal_inflow],
+                ['已人工复核交易数', summary.reviewed_transaction_count],
+                ['待复核可疑交易数', summary.unreviewed_suspicious_count],
               ].map(([label, value]) => (
                 <tr key={String(label)} className="odd:bg-white even:bg-slate-50/60">
                   <td className="border-b border-slate-100 px-3 py-2 text-slate-500">{label}</td>
-                  <td className="border-b border-slate-100 px-3 py-2 text-right font-medium text-slate-800">{formatMoney(value)}</td>
+                  <td className="border-b border-slate-100 px-3 py-2 text-right font-medium text-slate-800">{typeof value === 'number' || Number.isFinite(Number(value)) ? formatMoney(value) : display(value)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      </Section>
-
-      <Section title="经营性流水净化">
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">原始账面收入</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(rawTotalInflow)}</div></div>
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">内部往来剔除</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(internalTransferExcluded || summary.excluded_internal_transfer_amount)}</div></div>
-          <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3"><div className="text-xs text-indigo-700">经营性回款估算</div><div className="mt-1 text-lg font-semibold text-indigo-900">{formatMoney(operatingInflow)}</div></div>
-          <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-xs text-slate-500">原始账面支出</div><div className="mt-1 font-semibold text-slate-800">{formatMoney(rawTotalOutflow)}</div></div>
-          <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-xs text-slate-500">经营性支出估算</div><div className="mt-1 font-semibold text-slate-800">{formatMoney(operatingOutflow)}</div></div>
-          <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-xs text-slate-500">经营性净流入</div><div className="mt-1 font-semibold text-slate-800">{formatMoney(operatingNetCashflow)}</div></div>
-        </div>
-        {Number(internalTransferExcluded || summary.excluded_internal_transfer_amount || 0) <= 0 ? (
-          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">未识别到内部转账规则命中；请检查关联公司名单是否完整。</div>
-        ) : null}
       </Section>
 
       <Section title="各银行账户汇总">
@@ -361,46 +543,19 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
         <Section title="主要支出对象"><CounterpartyTable items={asArray<EnterpriseCounterpartyStat>(counterparty.top_outflow_counterparties)} /></Section>
       </div>
 
-      <Section title="关联方与个人往来">
-        <div className="grid gap-4 xl:grid-cols-2">
-          <RelatedPartyTable title="关联方往来" items={asArray<EnterpriseCounterpartyStat>(counterparty.related_party_counterparties)} emptyText="暂未识别到明显关联方往来" />
-          <RelatedPartyTable title="个人账户往来" items={asArray<EnterpriseCounterpartyStat>(counterparty.personal_counterparties)} emptyText="暂未识别到明显个人账户往来" />
+      <Section title="融资建议">
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">银行可能认可流水口径</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(financing.bank_recognizable_inflow ?? operatingInflow)}</div></div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">调整后经营性进账</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(financing.adjusted_operating_inflow ?? operatingInflow)}</div></div>
         </div>
-      </Section>
-
-      <Section title="内部往来/左手倒右手">
-        <RelatedPartyTable title="内部往来对象" items={asArray<EnterpriseCounterpartyStat>(counterparty.internal_transfer_counterparties)} emptyText="暂未识别到明显内部往来" />
-        {internalTransferTransactions.length > 0 ? (
-          <div className="mt-4 overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 text-xs text-slate-500">
-                <tr>{['日期', '方向', '金额', '对方名称', '对方账号', '收款人', '收款账号', '用途/摘要', '剔除原因'].map((label) => <th key={label} className="whitespace-nowrap border-b border-slate-200 px-3 py-2 text-left font-medium">{label}</th>)}</tr>
-              </thead>
-              <tbody>
-                {internalTransferTransactions.slice(0, 20).map((item, index) => (
-                  <tr key={index} className="odd:bg-white even:bg-slate-50/60">
-                    <td className="border-b border-slate-100 px-3 py-2">{display(item.date)}</td>
-                    <td className="border-b border-slate-100 px-3 py-2">{item.direction === 'inflow' ? '收入' : '支出'}</td>
-                    <MoneyCell value={item.amount} />
-                    <td className="border-b border-slate-100 px-3 py-2">{display(item.counterparty_name)}</td>
-                    <td className="border-b border-slate-100 px-3 py-2">{display(item.counterparty_account)}</td>
-                    <td className="border-b border-slate-100 px-3 py-2">{display(item.payee_name)}</td>
-                    <td className="border-b border-slate-100 px-3 py-2">{display(item.payee_account)}</td>
-                    <td className="border-b border-slate-100 px-3 py-2">{display(item.purpose || item.summary)}</td>
-                    <td className="min-w-[180px] border-b border-slate-100 px-3 py-2">{display(item.reason)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <div><div className="mb-2 text-xs font-medium text-slate-500">建议产品</div><div className="flex flex-wrap gap-2">{asArray<string>(financing.suggested_credit_products).map((item) => <span key={item} className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs text-blue-700">{item}</span>)}</div></div>
+          <div><div className="mb-2 text-xs font-medium text-slate-500">建议补充材料</div><div className="flex flex-wrap gap-2">{asArray<string>(financing.material_checklist).map((item) => <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700">{item}</span>)}</div></div>
+        </div>
+        <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm leading-6 text-indigo-800">{display(financing.conclusion)}</div>
       </Section>
 
       <Section title="风险信号">
-        <div className="mb-3 flex flex-wrap gap-2">
-          {asArray<string>(risk.strengths).map((item) => <span key={item} className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-700">{item}</span>)}
-          {asArray<string>(risk.weaknesses).map((item) => <span key={item} className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs text-amber-700">{item}</span>)}
-        </div>
         <div className="space-y-3">
           {asArray<EnterpriseRiskSignal>(risk.signals).length > 0 ? asArray<EnterpriseRiskSignal>(risk.signals).map((signal, index) => {
             const meta = riskMeta(signal.level);
@@ -411,32 +566,63 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
                   <span className="text-sm font-semibold text-slate-800">{display(signal.title)}</span>
                 </div>
                 <div className="mt-2 text-sm leading-6 text-slate-600">{display(signal.description)}</div>
-                <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
-                  <span>金额：{formatMoney(signal.amount)}</span>
-                  <span>占比：{formatRatio(signal.ratio)}</span>
-                </div>
-                {signal.suggestion ? <div className="mt-2 text-sm text-slate-700">建议：{signal.suggestion}</div> : null}
               </div>
             );
           }) : <div className="rounded-lg border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-500">暂未识别到明确风险信号</div>}
         </div>
       </Section>
 
-      <Section title="融资建议">
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">银行可能认可流水口径</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(financing.bank_recognizable_inflow)}</div></div>
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">调整后经营性进账</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(financing.adjusted_operating_inflow)}</div></div>
+      {rulesOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
+          <div className="max-h-[88vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">经营性口径配置</h3>
+                <p className="mt-1 text-sm text-slate-500">保存后会重新刷新客户级企业流水汇总。</p>
+              </div>
+              <button type="button" onClick={() => setRulesOpen(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">关闭</button>
+            </div>
+            {rulesLoading ? <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">规则加载中...</div> : null}
+            <div className="grid gap-3 md:grid-cols-2">
+              {[
+                ['related_company_names', '关联公司名称'],
+                ['self_account_numbers', '本方账户'],
+                ['internal_transfer_keywords', '内部转账关键词'],
+                ['operating_counterparty_whitelist', '经营性客户白名单'],
+                ['internal_counterparty_blacklist', '内部往来黑名单'],
+                ['personal_counterparty_names', '个人往来名单'],
+              ].map(([key, label]) => (
+                <label key={key} className="text-sm">
+                  <span className="mb-1 block font-medium text-slate-700">{label}</span>
+                  <textarea
+                    value={rulesDraft[key as keyof typeof rulesDraft] || ''}
+                    onChange={(event) => setRulesDraft((prev) => ({ ...prev, [key]: event.target.value }))}
+                    rows={5}
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    placeholder="一行一个，可用逗号分隔"
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="mt-3 block text-sm">
+              <span className="mb-1 block font-medium text-slate-700">人工复核覆盖 JSON</span>
+              <textarea
+                value={rulesDraft.manual_overrides || '{}'}
+                onChange={(event) => setRulesDraft((prev) => ({ ...prev, manual_overrides: event.target.value }))}
+                rows={6}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-xs outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
+            {rulesMessage ? <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{rulesMessage}</div> : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setRulesOpen(false)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50">取消</button>
+              <button type="button" disabled={rulesSaving || !customerId} onClick={saveRules} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300">
+                {rulesSaving ? '保存中...' : '保存并刷新'}
+              </button>
+            </div>
+          </div>
         </div>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <div><div className="mb-2 text-xs font-medium text-slate-500">建议产品</div><div className="flex flex-wrap gap-2">{asArray<string>(financing.suggested_credit_products).map((item) => <span key={item} className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs text-blue-700">{item}</span>)}</div></div>
-          <div><div className="mb-2 text-xs font-medium text-slate-500">建议补充材料</div><div className="flex flex-wrap gap-2">{asArray<string>(financing.material_checklist).map((item) => <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700">{item}</span>)}</div></div>
-        </div>
-        <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
-          <div className="mb-2 text-xs font-medium text-slate-500">客户经理说明话术</div>
-          <ul className="space-y-1 text-sm leading-6 text-slate-700">{asArray<string>(financing.bank_explanation).map((item) => <li key={item}>- {item}</li>)}</ul>
-        </div>
-        <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm leading-6 text-indigo-800">{display(financing.conclusion)}</div>
-      </Section>
+      ) : null}
 
       <details className="rounded-xl border border-slate-200 bg-white p-4">
         <summary className="cursor-pointer text-sm font-semibold text-slate-800"><FileText className="mr-2 inline h-4 w-4" />查看原始分析报告</summary>

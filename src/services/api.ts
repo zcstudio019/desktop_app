@@ -886,6 +886,66 @@ export async function getCustomerEnterpriseFlowSummary(
   return handleResponse<{ item: Record<string, unknown> | null }>(response);
 }
 
+export async function getEnterpriseFlowRules(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/enterprise-flow/rules`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<Record<string, unknown>>(response);
+}
+
+export async function saveEnterpriseFlowRules(
+  customerId: string,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/enterprise-flow/rules`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  return handleResponse<Record<string, unknown>>(response);
+}
+
+export async function reviewEnterpriseFlowTransaction(
+  customerId: string,
+  transactionId: string,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<Record<string, unknown>> {
+  const response = await fetch(
+    `${API_BASE}/api/customers/${encodeURIComponent(customerId)}/enterprise-flow/transactions/${encodeURIComponent(transactionId)}/review`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(payload),
+      signal,
+    }
+  );
+  return handleResponse<Record<string, unknown>>(response);
+}
+
+export async function getEnterpriseFlowExcludedTransactions(
+  customerId: string,
+  nature = 'all',
+  signal?: AbortSignal
+): Promise<{ items: Record<string, unknown>[]; total: number }> {
+  const response = await fetch(
+    `${API_BASE}/api/customers/${encodeURIComponent(customerId)}/enterprise-flow/excluded-transactions?nature=${encodeURIComponent(nature)}`,
+    {
+      method: 'GET',
+      headers: { ...getAuthHeaders() },
+      signal,
+    }
+  );
+  return handleResponse<{ items: Record<string, unknown>[]; total: number }>(response);
+}
+
 export async function updateExtractionField(
   customerId: string,
   extractionId: string,

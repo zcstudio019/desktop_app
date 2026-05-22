@@ -14,6 +14,7 @@ from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator i
     ENTERPRISE_FLOW_TYPES,
     aggregate_customer_enterprise_flows,
 )
+from backend.services.enterprise_bank_statement_agent.flow_rules import get_enterprise_flow_rules
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
 
 logger = logging.getLogger(__name__)
@@ -1053,7 +1054,9 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     'original_status': '可查看' if item.get('file_path') else '原件文件不存在或已不可用',
                     'original_available': bool(item.get('file_path')),
                 })
-            aggregated_flow = aggregate_customer_enterprise_flows(enriched_flow_extractions)
+            flow_rules = get_enterprise_flow_rules(customer_id)
+            flow_rules = {**flow_rules, "customer_id": customer_id}
+            aggregated_flow = aggregate_customer_enterprise_flows(enriched_flow_extractions, rules=flow_rules)
             summary = aggregated_flow.get('summary') or {}
             period = aggregated_flow.get('statement_period') or {}
             counterparties = aggregated_flow.get('counterparty_summary') or {}
@@ -1063,6 +1066,12 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             top_outflow = ', '.join(str(item.get('name') or '') for item in (counterparties.get('top_outflow_counterparties') or [])[:5] if item.get('name'))
             risk_titles = ', '.join(str(item.get('title') or item.get('code') or '') for item in (risk.get('signals') or [])[:5])
             checklist = ', '.join(str(item) for item in (financing.get('material_checklist') or [])[:6])
+            internal_transfer_transactions = aggregated_flow.get('internal_transfer_transactions') or []
+            excluded_lines = [
+                f"| {item.get('date') or '-'} | {item.get('nature') or 'internal_transfer'} | {item.get('direction') or '-'} | {item.get('amount') or 0} | {item.get('counterparty_name') or '-'} | {item.get('reason') or item.get('classification_reason') or '-'} |"
+                for item in internal_transfer_transactions[:20]
+                if isinstance(item, dict)
+            ]
             account_lines = [
                 f"- {account.get('bank_name') or '-'} / {account.get('account_number') or '-'}：收入 {account.get('total_inflow') or 0}，支出 {account.get('total_outflow') or 0}，笔数 {account.get('transaction_count') or 0}"
                 for account in (aggregated_flow.get('accounts') or [])[:10]
@@ -1088,6 +1097,37 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             ]
             if account_lines:
                 lines.extend(['', '### 各账户汇总', *account_lines])
+            lines.extend([
+                '',
+                '### 经营性流水复核状态',
+                '',
+                f"- 规则配置状态：{'已配置' if aggregated_flow.get('source_document_count') else '未配置'}",
+                f"- 关联公司数量：{len((flow_rules or {}).get('related_company_names') or [])}",
+                f"- 本方账户数量：{len((flow_rules or {}).get('self_account_numbers') or [])}",
+                f"- 已人工复核交易数：{summary.get('reviewed_transaction_count') or 0}",
+                f"- 待复核可疑交易数：{summary.get('unreviewed_suspicious_count') or 0}",
+                "- 当前经营性口径：自动规则 + 人工配置",
+                '',
+                '### 经营性流水净化结果',
+                '',
+                f"- 原始收入：{summary.get('raw_total_inflow') or summary.get('total_inflow') or 0}",
+                f"- 原始支出：{summary.get('raw_total_outflow') or summary.get('total_outflow') or 0}",
+                f"- 内部转账收入剔除：{summary.get('internal_transfer_inflow') or 0}",
+                f"- 内部转账支出剔除：{summary.get('internal_transfer_outflow') or 0}",
+                f"- 关联方收入列示：{summary.get('related_party_inflow') or 0}",
+                f"- 个人往来列示：{summary.get('personal_transfer_inflow') or 0}",
+                f"- 银行可能认可经营性回款：{summary.get('operating_inflow') or summary.get('estimated_operating_inflow') or 0}",
+                f"- 经营性净流入：{summary.get('operating_net_cashflow') or 0}",
+            ])
+            if excluded_lines:
+                lines.extend([
+                    '',
+                    '### 被剔除流水 Top 20',
+                    '',
+                    '| 日期 | 类型 | 方向 | 金额 | 对方名称 | 剔除原因 |',
+                    '| --- | --- | --- | ---: | --- | --- |',
+                    *excluded_lines,
+                ])
             sections.append('\n'.join(lines))
         except Exception as exc:
             logger.warning("profile_markdown enterprise_flow_aggregate_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
