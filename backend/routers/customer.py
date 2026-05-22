@@ -46,6 +46,10 @@ from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator i
     ENTERPRISE_FLOW_TYPES,
     aggregate_customer_enterprise_flows,
 )
+from backend.services.personal_bank_statement_agent.customer_flow_aggregator import (
+    PERSONAL_FLOW_TYPES,
+    aggregate_customer_personal_flows,
+)
 from backend.services.enterprise_bank_statement_agent.flow_rules import (
     get_enterprise_flow_rules,
     save_enterprise_flow_rules,
@@ -1819,6 +1823,48 @@ async def get_customer_enterprise_flow_summary(
         summary.get("account_count") or len(aggregated.get("accounts") or []),
         summary.get("total_inflow") or 0,
         summary.get("total_outflow") or 0,
+        cost_ms,
+    )
+    return {"item": aggregated if aggregated.get("source_document_count") else None}
+
+
+@router.get("/{customer_id}/personal-flow/summary")
+async def get_customer_personal_flow_summary(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return customer-level aggregation across all personal_flow extractions."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+
+    started_at = time.perf_counter()
+    logger.info("[PersonalFlowSummary] start customer_id=%s", customer_id)
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+
+    try:
+        if callable(getattr(storage_service, "list_extractions_by_types", None)):
+            extractions = await storage_service.list_extractions_by_types(customer_id, list(PERSONAL_FLOW_TYPES))
+        else:
+            all_extractions = await storage_service.get_extractions_by_customer(customer_id)
+            extractions = [
+                item for item in all_extractions
+                if (item.get("extraction_type") or item.get("document_type") or "") in PERSONAL_FLOW_TYPES
+            ]
+        aggregated = aggregate_customer_personal_flows(extractions)
+    except Exception as exc:
+        logger.exception("[PersonalFlowSummary] failed customer_id=%s", customer_id)
+        raise HTTPException(status_code=500, detail="获取客户级个人流水汇总失败") from exc
+
+    cost_ms = int((time.perf_counter() - started_at) * 1000)
+    summary = aggregated.get("customer_level_summary") or {}
+    logger.info(
+        "[PersonalFlowSummary] aggregated accounts=%s raw_income=%s raw_expense=%s cost_ms=%s",
+        summary.get("account_count") or len(aggregated.get("accounts") or []),
+        summary.get("raw_total_income") or 0,
+        summary.get("raw_total_expense") or 0,
         cost_ms,
     )
     return {"item": aggregated if aggregated.get("source_document_count") else None}

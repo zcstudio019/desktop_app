@@ -52,7 +52,7 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         name="个人流水",
         storage_label="个人流水提取",
         formats=("pdf", "xlsx", "image"),
-        aliases=("个人流水", "个人流水提取"),
+        aliases=("个人流水", "个人流水提取", "personal_flow", "personal_bank_statement", "bank_statement_personal", "individual_bank_statement", "个人银行流水"),
         customer_scope="personal",
     ),
     DocumentTypeDefinition(
@@ -211,6 +211,12 @@ DOCUMENT_TYPE_CANONICAL_ALIASES = {
     "企业流水": "enterprise_flow",
     "银行流水": "enterprise_flow",
     "对公流水": "enterprise_flow",
+    "personal_flow": "personal_flow",
+    "personal_bank_statement": "personal_flow",
+    "bank_statement_personal": "personal_flow",
+    "individual_bank_statement": "personal_flow",
+    "个人流水": "personal_flow",
+    "个人银行流水": "personal_flow",
 }
 
 _ALIASES_TO_CODE: dict[str, str] = {}
@@ -277,6 +283,12 @@ def should_append_same_type_document(value: str | None) -> bool:
     return normalized in {
         "id_card",
         "enterprise_flow",
+        "personal_flow",
+        "personal_bank_statement",
+        "bank_statement_personal",
+        "individual_bank_statement",
+        "个人流水",
+        "个人银行流水",
         "bank_statement",
         "enterprise_bank_statement",
         "bank_statement_enterprise",

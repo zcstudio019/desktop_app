@@ -9,6 +9,7 @@ from backend.extraction_skills.personal_credit import build_personal_credit_repo
 from backend.services.enterprise_bank_statement_agent.adapter import (
     EnterpriseBankStatementAgentAdapter as EnterpriseBankStatementAgentAdapterV2,
 )
+from backend.services.personal_bank_statement_agent.adapter import PersonalBankStatementAgentAdapter
 
 from .base import BaseDocumentAgent
 from .result import DocumentAgentResult
@@ -110,6 +111,7 @@ class PersonalCreditReportAgentAdapter(BaseDocumentAgent):
 _ENTERPRISE_CREDIT_AGENT = EnterpriseCreditReportAgentAdapter()
 _PERSONAL_CREDIT_AGENT = PersonalCreditReportAgentAdapter()
 _ENTERPRISE_BANK_STATEMENT_AGENT = EnterpriseBankStatementAgentAdapterV2()
+_PERSONAL_BANK_STATEMENT_AGENT = PersonalBankStatementAgentAdapter()
 
 DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "enterprise_credit_report": _ENTERPRISE_CREDIT_AGENT,
@@ -120,6 +122,12 @@ DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "enterprise_bank_statement": _ENTERPRISE_BANK_STATEMENT_AGENT,
     "bank_statement_enterprise": _ENTERPRISE_BANK_STATEMENT_AGENT,
     "company_bank_statement": _ENTERPRISE_BANK_STATEMENT_AGENT,
+    "personal_flow": _PERSONAL_BANK_STATEMENT_AGENT,
+    "personal_bank_statement": _PERSONAL_BANK_STATEMENT_AGENT,
+    "bank_statement_personal": _PERSONAL_BANK_STATEMENT_AGENT,
+    "individual_bank_statement": _PERSONAL_BANK_STATEMENT_AGENT,
+    "个人流水": _PERSONAL_BANK_STATEMENT_AGENT,
+    "个人银行流水": _PERSONAL_BANK_STATEMENT_AGENT,
     "企业流水": _ENTERPRISE_BANK_STATEMENT_AGENT,
     "银行流水": _ENTERPRISE_BANK_STATEMENT_AGENT,
 }

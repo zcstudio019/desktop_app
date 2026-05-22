@@ -886,6 +886,18 @@ export async function getCustomerEnterpriseFlowSummary(
   return handleResponse<{ item: Record<string, unknown> | null }>(response);
 }
 
+export async function getCustomerPersonalFlowSummary(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<{ item: Record<string, unknown> | null }> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/personal-flow/summary`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<{ item: Record<string, unknown> | null }>(response);
+}
+
 export async function getEnterpriseFlowRules(
   customerId: string,
   signal?: AbortSignal

@@ -10,6 +10,7 @@ import {
   downloadDocumentOriginal,
   getCustomerDocumentStatus,
   getCustomerEnterpriseFlowSummary,
+  getCustomerPersonalFlowSummary,
   getCustomerProfileMarkdown,
   getLatestFinancingAgent,
   listCustomers,
@@ -27,6 +28,7 @@ import EnterpriseBankStatementView, {
   normalizeEnterpriseFlowData,
   parseMaybeJson,
 } from './documents/EnterpriseBankStatementView';
+import PersonalBankStatementView from './documents/PersonalBankStatementView';
 
 interface CustomerDataPageProps {
   onBack?: () => void;
@@ -2272,8 +2274,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
   const [enterpriseFlowPreviewDoc, setEnterpriseFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
+  const [personalFlowPreviewDoc, setPersonalFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
   const [documentStatusError, setDocumentStatusError] = useState<string | null>(null);
   const [enterpriseFlowPreviewError, setEnterpriseFlowPreviewError] = useState<string | null>(null);
+  const [personalFlowPreviewError, setPersonalFlowPreviewError] = useState<string | null>(null);
   const [backgroundRefreshNotice, setBackgroundRefreshNotice] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentResult, setAgentResult] = useState<Record<string, unknown> | null>(null);
@@ -2292,6 +2296,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const currentAuthRole = useMemo(() => localStorage.getItem('auth_role') || '', []);
   const documentStatusLoadingRef = useRef<string | null>(null);
   const enterpriseFlowPreviewLoadingRef = useRef<string | null>(null);
+  const personalFlowPreviewLoadingRef = useRef<string | null>(null);
   const agentLatestLoadingRef = useRef<string | null>(null);
   const profileLoadingRef = useRef<string | null>(null);
   const profileRef = useRef<CustomerProfileMarkdownResponse | null>(null);
@@ -2492,6 +2497,24 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     }
   }, []);
 
+  const loadPersonalFlowPreview = useCallback(async (customerId: string) => {
+    if (personalFlowPreviewLoadingRef.current === customerId) {
+      return;
+    }
+    personalFlowPreviewLoadingRef.current = customerId;
+    try {
+      setPersonalFlowPreviewError(null);
+      const result = await getCustomerPersonalFlowSummary(customerId);
+      setPersonalFlowPreviewDoc(result.item || null);
+    } catch (err) {
+      console.warn('[ProfilePreview] personal-flow/summary failed', err);
+      setPersonalFlowPreviewDoc(null);
+      setPersonalFlowPreviewError('个人流水结构化预览暂时不可用，请稍后重试');
+    } finally {
+      personalFlowPreviewLoadingRef.current = null;
+    }
+  }, []);
+
   const selectedCustomer = useMemo(
     () => customers.find((item) => item.record_id === selectedCustomerId) ?? null,
     [customers, selectedCustomerId]
@@ -2567,8 +2590,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     const requestCustomerId = customerIdCandidates[0];
     setExtractionGroups([]);
     void loadDocuments(requestCustomerId);
+    void loadPersonalFlowPreview(requestCustomerId);
     void loadEnterpriseFlowPreview(requestCustomerId);
-  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadingCustomers, selectedCustomerId]);
+  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadPersonalFlowPreview, loadingCustomers, selectedCustomerId]);
 
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearch.trim().toLowerCase();
@@ -2841,9 +2865,24 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     [enterpriseFlowState, enterpriseFlowSummary, shouldRenderEnterpriseFlowSummary]
   );
   const hasEnterpriseStructuredData = enterpriseFlowViewSources.length > 0;
-  const profilePreviewRenderMode = hasEnterpriseStructuredData
+  const personalFlowSummary = personalFlowPreviewDoc;
+  const personalFlowSummaryAccounts = Array.isArray(personalFlowSummary?.accounts)
+    ? personalFlowSummary.accounts
+    : [];
+  const hasPersonalStructuredData = !!(
+    personalFlowSummary &&
+    personalFlowSummaryAccounts.length > 0 &&
+    (
+      personalFlowSummary.document_type === 'personal_flow' ||
+      personalFlowSummary.doc_type === 'personal_flow' ||
+      personalFlowSummary.normalized_document_type === 'personal_bank_statement'
+    )
+  );
+  const profilePreviewRenderMode = hasPersonalStructuredData
+    ? 'personal_flow_structured'
+    : hasEnterpriseStructuredData
     ? 'enterprise_flow_structured'
-    : enterpriseFlowPreviewError
+    : personalFlowPreviewError || enterpriseFlowPreviewError
       ? 'error_fallback'
       : 'markdown_preview';
   useEffect(() => {
@@ -4777,7 +4816,46 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                 </div>
               </div>
               <div className="overflow-visible px-6 py-6">
-                {hasEnterpriseStructuredData ? (
+                {hasPersonalStructuredData ? (
+                  <div className="mb-6 space-y-4">
+                    <section className="rounded-[28px] border border-emerald-100 bg-white/95 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
+                      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900">个人流水结构化分析</h3>
+                          <p className="mt-1 text-xs text-slate-500">客户级个人流水汇总</p>
+                        </div>
+                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                          个人流水
+                        </span>
+                      </div>
+                      <PersonalBankStatementView data={personalFlowSummary} />
+                    </section>
+                    {hasEnterpriseStructuredData ? (
+                      enterpriseFlowViewSources.map((source) => (
+                        <section key={`preview-${source.key}`} className="rounded-[28px] border border-blue-100 bg-white/95 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
+                          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <h3 className="text-base font-semibold text-slate-900">企业流水结构化分析</h3>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {source.fileName}
+                                {source.createdAt ? ` · ${formatProfileDateTime(source.createdAt)}` : ''}
+                              </p>
+                            </div>
+                            <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+                              {getDocumentTypeLabel(source.documentType || 'enterprise_flow')}
+                            </span>
+                          </div>
+                          <EnterpriseBankStatementView
+                            data={source.data}
+                            markdown={source.markdown}
+                            customerId={activeCustomerId || selectedCustomerId || undefined}
+                            onRulesSaved={() => activeCustomerId ? loadEnterpriseFlowPreview(activeCustomerId) : undefined}
+                          />
+                        </section>
+                      ))
+                    ) : null}
+                  </div>
+                ) : hasEnterpriseStructuredData ? (
                   <div className="mb-6 space-y-4">
                     {enterpriseFlowViewSources.map((source) => (
                       <section key={`preview-${source.key}`} className="rounded-[28px] border border-blue-100 bg-white/95 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
@@ -4802,13 +4880,14 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                       </section>
                     ))}
                   </div>
-                ) : enterpriseFlowPreviewError ? (
+                ) : (personalFlowPreviewError || enterpriseFlowPreviewError) ? (
                   <div className="mb-6 flex flex-col gap-3 rounded-[24px] border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between">
-                    <span>{enterpriseFlowPreviewError}</span>
+                    <span>{personalFlowPreviewError || enterpriseFlowPreviewError}</span>
                     <button
                       type="button"
                       onClick={() => {
                         if (selectedCustomerId) {
+                          void loadPersonalFlowPreview(selectedCustomerId);
                           void loadEnterpriseFlowPreview(selectedCustomerId);
                         }
                       }}
@@ -4822,7 +4901,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
                   </article>
                 )}
-                {hasEnterpriseStructuredData ? (
+                {hasPersonalStructuredData || hasEnterpriseStructuredData ? (
                   <RawMarkdownPanel markdown={renderedDraft || draft} />
                 ) : null}
               </div>
