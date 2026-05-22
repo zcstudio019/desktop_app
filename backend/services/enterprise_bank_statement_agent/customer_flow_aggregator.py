@@ -138,6 +138,11 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
     related_party_outflow = 0.0
     personal_transfer_inflow = 0.0
     personal_transfer_outflow = 0.0
+    excluded_related_party_inflow = 0.0
+    excluded_related_party_outflow = 0.0
+    excluded_personal_inflow = 0.0
+    excluded_personal_outflow = 0.0
+    internal_transfer_transactions: list[dict[str, Any]] = []
 
     for extraction in extractions:
         extraction_type = str(extraction.get("extraction_type") or extraction.get("document_type") or "")
@@ -161,6 +166,13 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         related_party_outflow += _num(source_summary.get("related_party_outflow"))
         personal_transfer_inflow += _num(source_summary.get("personal_transfer_inflow") or source_summary.get("excluded_personal_inflow"))
         personal_transfer_outflow += _num(source_summary.get("personal_transfer_outflow"))
+        excluded_related_party_inflow += _num(source_summary.get("excluded_related_party_inflow"))
+        excluded_related_party_outflow += _num(source_summary.get("excluded_related_party_outflow"))
+        excluded_personal_inflow += _num(source_summary.get("excluded_personal_inflow"))
+        excluded_personal_outflow += _num(source_summary.get("excluded_personal_outflow"))
+        for item in _list(payload.get("internal_transfer_transactions")):
+            if len(internal_transfer_transactions) < 200:
+                internal_transfer_transactions.append({**_dict(item), "source_file": file_name, "source_document_id": doc_id})
         period = _dict(payload.get("statement_period"))
         if period.get("start_date"):
             start_dates.append(_date_key(period.get("start_date")))
@@ -258,8 +270,8 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         raw_total_inflow = total_inflow
     if raw_total_outflow == 0 and total_outflow > 0:
         raw_total_outflow = total_outflow
-    operating_inflow = round(max(0.0, raw_total_inflow - internal_transfer_inflow - related_party_inflow - personal_transfer_inflow), 2)
-    operating_outflow = round(max(0.0, raw_total_outflow - internal_transfer_outflow - related_party_outflow - personal_transfer_outflow), 2)
+    operating_inflow = round(max(0.0, raw_total_inflow - internal_transfer_inflow - excluded_related_party_inflow - excluded_personal_inflow), 2)
+    operating_outflow = round(max(0.0, raw_total_outflow - internal_transfer_outflow - excluded_related_party_outflow - excluded_personal_outflow), 2)
     estimated_operating_inflow = operating_inflow
     summary = {
         "raw_total_inflow": round(raw_total_inflow, 2),
@@ -280,10 +292,11 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         "estimated_operating_outflow": operating_outflow,
         "estimated_operating_net_cashflow": round(estimated_operating_inflow - operating_outflow, 2),
         "excluded_internal_transfer_amount": round(internal_transfer_inflow + internal_transfer_outflow, 2),
-        "excluded_related_party_inflow": round(related_party_inflow, 2),
-        "excluded_personal_inflow": round(personal_transfer_inflow, 2),
+        "excluded_related_party_inflow": round(excluded_related_party_inflow, 2),
+        "excluded_personal_inflow": round(excluded_personal_inflow, 2),
         "internal_transfer_inflow": round(internal_transfer_inflow, 2),
         "internal_transfer_outflow": round(internal_transfer_outflow, 2),
+        "internal_transfer_total": round(internal_transfer_inflow + internal_transfer_outflow, 2),
         "related_party_inflow": round(related_party_inflow, 2),
         "related_party_outflow": round(related_party_outflow, 2),
         "personal_transfer_inflow": round(personal_transfer_inflow, 2),
@@ -354,6 +367,14 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         "counterparty_summary": counterparty_summary,
         "risk_analysis": risk_analysis,
         "financing_view": financing_view,
+        "internal_transfer_summary": {
+            "inflow_amount": round(internal_transfer_inflow, 2),
+            "outflow_amount": round(internal_transfer_outflow, 2),
+            "total_amount": round(internal_transfer_inflow + internal_transfer_outflow, 2),
+            "count": len(internal_transfer_transactions),
+            "top_counterparties": counterparty_summary.get("internal_transfer_counterparties", [])[:10],
+        },
+        "internal_transfer_transactions": sorted(internal_transfer_transactions, key=lambda item: _num(item.get("amount")), reverse=True)[:200],
         "evidence": [],
         "warnings": warnings,
     }

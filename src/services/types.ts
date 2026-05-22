@@ -121,6 +121,7 @@ export interface EnterpriseBankStatementSummary {
   excluded_personal_inflow?: number | null;
   internal_transfer_inflow?: number | null;
   internal_transfer_outflow?: number | null;
+  internal_transfer_total?: number | null;
   related_party_inflow?: number | null;
   related_party_outflow?: number | null;
   personal_transfer_inflow?: number | null;
@@ -229,6 +230,8 @@ export interface EnterpriseBankStatementExtraction {
   counterparty_summary?: EnterpriseCounterpartySummary;
   risk_analysis?: EnterpriseBankStatementRiskAnalysis;
   financing_view?: EnterpriseFinancingView;
+  internal_transfer_summary?: Record<string, unknown>;
+  internal_transfer_transactions?: Array<Record<string, unknown>>;
   evidence?: unknown[];
   warnings?: string[];
 }

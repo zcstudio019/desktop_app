@@ -95,8 +95,8 @@ def analyze_counterparties(transactions: list[dict[str, Any]], total_inflow: flo
         items.append(item)
 
     operating_items = [item for item in items if not item.get("exclude_from_operating")]
-    top_inflow = sorted(operating_items, key=lambda x: x["inflow"], reverse=True)[:10]
-    top_outflow = sorted(operating_items, key=lambda x: x["outflow"], reverse=True)[:10]
+    top_inflow = sorted([item for item in operating_items if item.get("inflow", 0) > 0], key=lambda x: x["inflow"], reverse=True)[:10]
+    top_outflow = sorted([item for item in operating_items if item.get("outflow", 0) > 0], key=lambda x: x["outflow"], reverse=True)[:10]
     internal_items = sorted([item for item in items if item.get("is_internal_transfer")], key=lambda x: x["amount"], reverse=True)
     related_items = sorted([item for item in items if item.get("is_related_party")], key=lambda x: x["amount"], reverse=True)
     personal_items = sorted([item for item in items if item.get("is_personal_counterparty")], key=lambda x: x["amount"], reverse=True)

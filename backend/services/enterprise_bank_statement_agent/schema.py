@@ -103,6 +103,7 @@ class BankStatementSummary(BaseModel):
     excluded_personal_inflow: Optional[float] = None
     internal_transfer_inflow: float = 0.0
     internal_transfer_outflow: float = 0.0
+    internal_transfer_total: float = 0.0
     related_party_inflow: float = 0.0
     related_party_outflow: float = 0.0
     personal_transfer_inflow: float = 0.0
@@ -207,5 +208,7 @@ class EnterpriseBankStatementExtraction(BaseModel):
     counterparty_summary: CounterpartySummary = Field(default_factory=CounterpartySummary)
     risk_analysis: BankStatementRiskAnalysis = Field(default_factory=BankStatementRiskAnalysis)
     financing_view: FinancingView = Field(default_factory=FinancingView)
+    internal_transfer_summary: Dict[str, Any] = Field(default_factory=dict)
+    internal_transfer_transactions: List[Dict[str, Any]] = Field(default_factory=list)
     evidence: List[EvidenceItem] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)

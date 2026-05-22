@@ -125,15 +125,29 @@ def build_account_summary(
             inflow_count += int(account.get("summary_inflow_count") or 0)
             outflow_count += int(account.get("summary_outflow_count") or 0)
 
-    internal_transfer_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_internal_transfer"))
-    internal_transfer_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_internal_transfer"))
+    internal_transfer_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_internal_transfer") and float(tx.get("credit_amount") or 0) > 0)
+    internal_transfer_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_internal_transfer") and float(tx.get("debit_amount") or 0) > 0)
     related_party_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_related_party") and not tx.get("is_internal_transfer"))
     related_party_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_related_party") and not tx.get("is_internal_transfer"))
     personal_transfer_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_personal_counterparty") and not tx.get("is_internal_transfer"))
     personal_transfer_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_personal_counterparty") and not tx.get("is_internal_transfer"))
+    excluded_related_party_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_related_party") and tx.get("exclude_from_operating") and not tx.get("is_internal_transfer"))
+    excluded_related_party_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_related_party") and tx.get("exclude_from_operating") and not tx.get("is_internal_transfer"))
+    excluded_personal_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_personal_counterparty") and tx.get("exclude_from_operating") and not tx.get("is_internal_transfer"))
+    excluded_personal_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_personal_counterparty") and tx.get("exclude_from_operating") and not tx.get("is_internal_transfer"))
     internal_amount = internal_transfer_inflow + internal_transfer_outflow
-    operating_inflow = max(0.0, total_inflow - internal_transfer_inflow - related_party_inflow - personal_transfer_inflow)
-    operating_outflow = max(0.0, total_outflow - internal_transfer_outflow - related_party_outflow - personal_transfer_outflow)
+    operating_inflow_raw = total_inflow - internal_transfer_inflow - excluded_related_party_inflow - excluded_personal_inflow
+    operating_outflow_raw = total_outflow - internal_transfer_outflow - excluded_related_party_outflow - excluded_personal_outflow
+    operating_inflow = max(0.0, operating_inflow_raw)
+    operating_outflow = max(0.0, operating_outflow_raw)
+    if operating_inflow_raw < 0:
+        logger.warning(
+            "[EnterpriseFlow][OperatingSummaryWarning] operating_inflow_clamped reason=exclusions_exceed_raw raw_inflow=%s internal_inflow=%s related_excluded=%s personal_excluded=%s",
+            round(total_inflow, 2),
+            round(internal_transfer_inflow, 2),
+            round(excluded_related_party_inflow, 2),
+            round(excluded_personal_inflow, 2),
+        )
     low_balance_threshold = 5000.0
     low_balance_count = sum(1 for tx in transactions if tx.get("balance") is not None and float(tx.get("balance") or 0) < low_balance_threshold)
     banks = {item.get("bank_name") for item in normalized_accounts if item.get("bank_name")}
@@ -161,10 +175,11 @@ def build_account_summary(
         "estimated_operating_outflow": _round(operating_outflow),
         "estimated_operating_net_cashflow": _round(operating_inflow - operating_outflow),
         "excluded_internal_transfer_amount": _round(internal_amount),
-        "excluded_related_party_inflow": _round(related_party_inflow),
-        "excluded_personal_inflow": _round(personal_transfer_inflow),
+        "excluded_related_party_inflow": _round(excluded_related_party_inflow),
+        "excluded_personal_inflow": _round(excluded_personal_inflow),
         "internal_transfer_inflow": _round(internal_transfer_inflow) or 0.0,
         "internal_transfer_outflow": _round(internal_transfer_outflow) or 0.0,
+        "internal_transfer_total": _round(internal_amount) or 0.0,
         "related_party_inflow": _round(related_party_inflow) or 0.0,
         "related_party_outflow": _round(related_party_outflow) or 0.0,
         "personal_transfer_inflow": _round(personal_transfer_inflow) or 0.0,
@@ -174,10 +189,26 @@ def build_account_summary(
         "operating_net_cashflow": _round(operating_inflow - operating_outflow) or 0.0,
     }
     logger.info(
-        "[EnterpriseFlow][OperatingSummary] raw_inflow=%s operating_inflow=%s raw_outflow=%s operating_outflow=%s",
+        "[EnterpriseFlow][InternalTransferSplit] inflow=%s outflow=%s total=%s count=%s",
+        summary["internal_transfer_inflow"],
+        summary["internal_transfer_outflow"],
+        summary["internal_transfer_total"],
+        sum(1 for tx in transactions if tx.get("is_internal_transfer")),
+    )
+    logger.info(
+        "[EnterpriseFlow][OperatingSummary] raw_inflow=%s internal_inflow=%s related_inflow=%s personal_inflow=%s operating_inflow=%s",
         summary["raw_total_inflow"],
+        summary["internal_transfer_inflow"],
+        summary["excluded_related_party_inflow"],
+        summary["excluded_personal_inflow"],
         summary["operating_inflow"],
+    )
+    logger.info(
+        "[EnterpriseFlow][OperatingSummary] raw_outflow=%s internal_outflow=%s related_outflow=%s personal_outflow=%s operating_outflow=%s",
         summary["raw_total_outflow"],
+        summary["internal_transfer_outflow"],
+        round(excluded_related_party_outflow, 2),
+        round(excluded_personal_outflow, 2),
         summary["operating_outflow"],
     )
     return summary, normalized_accounts, warnings

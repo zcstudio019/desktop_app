@@ -127,18 +127,32 @@ def classify_transaction_nature(
     known_accounts: set[str],
 ) -> dict[str, Any]:
     text = _blob(tx)
-    names = [normalize_text(tx.get("counterparty_name")), normalize_text(tx.get("payee_name"))]
-    names = [name for name in names if name]
-    accounts = [
-        normalize_account_number(tx.get("counterparty_account")),
-        normalize_account_number(tx.get("payee_account")),
-    ]
-    accounts = [item for item in accounts if item]
+    direction = tx.get("direction")
+    counterparty_name = normalize_text(tx.get("counterparty_name"))
+    payee_name = normalize_text(tx.get("payee_name"))
+    counterparty_account = normalize_account_number(tx.get("counterparty_account"))
+    payee_account = normalize_account_number(tx.get("payee_account"))
 
-    account_hit = any(account in known_accounts for account in accounts)
-    alias_hit = any(_matches_alias(name, aliases) for name in names)
+    names = [name for name in (counterparty_name, payee_name) if name]
+
+    # In Beijing Bank exports, incoming receipts often have payee_name/payee_account
+    # equal to the current company. That is normal receipt metadata, not proof of
+    # internal transfer. For inflow, only the payer/counterparty side can prove
+    # internal transfer; for outflow, the payee side can.
+    account_hit = bool(
+        (counterparty_account and counterparty_account in known_accounts)
+        or (direction == "outflow" and payee_account and payee_account in known_accounts)
+    )
+    alias_hit = bool(
+        (counterparty_name and _matches_alias(counterparty_name, aliases))
+        or (direction == "outflow" and payee_name and _matches_alias(payee_name, aliases))
+    )
     transfer_hint = any(word in text for word in TRANSFER_WORDS)
-    if account_hit or (alias_hit and (transfer_hint or len(aliases) > 0)):
+    # Internal transfer is intentionally strict: a transfer keyword alone is
+    # not enough, and a similar name alone is not enough. Normal customer
+    # receipts often contain "转账" or "货款", so require self-account/name
+    # evidence plus a transfer/collection hint.
+    if (account_hit and transfer_hint) or (alias_hit and transfer_hint):
         return {
             "nature": "internal_transfer",
             "exclude_from_operating": True,
@@ -148,15 +162,15 @@ def classify_transaction_nature(
     if alias_hit:
         return {
             "nature": "related_party",
-            "exclude_from_operating": True,
-            "reason": "对手方名称与客户核心字号相同，按关联方往来列示并暂不计入经营流水",
+            "exclude_from_operating": bool(False),
+            "reason": "对手方名称与客户核心字号相同，先按关联方往来列示，未强制剔除经营流水",
             "confidence": 0.75,
         }
     if any(is_probable_person_name(name) for name in names):
         return {
             "nature": "personal_transfer",
-            "exclude_from_operating": True,
-            "reason": "对手方疑似个人账户往来，需补充用途说明",
+            "exclude_from_operating": bool(False),
+            "reason": "对手方疑似个人账户往来，先标记为需补充用途说明，未默认全额剔除",
             "confidence": 0.7,
         }
     if any(word in text for word in ("工资", "薪资", "奖金", "社保", "公积金", "税务", "税款", "缴税", "国库", "手续费")):

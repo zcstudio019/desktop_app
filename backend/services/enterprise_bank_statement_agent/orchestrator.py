@@ -131,6 +131,46 @@ def _log_tailong_final_account(
     logger.info("[EnterpriseFlow][Tailong][FINAL_ACCOUNT] %s", payload)
 
 
+def _build_internal_transfer_details(transactions: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    internal = [tx for tx in transactions if tx.get("is_internal_transfer")]
+    details: list[dict[str, Any]] = []
+    counterparties: dict[str, dict[str, Any]] = {}
+    for tx in internal:
+        amount = float(tx.get("credit_amount") or tx.get("debit_amount") or 0)
+        direction = "inflow" if float(tx.get("credit_amount") or 0) > 0 else "outflow"
+        name = str(tx.get("counterparty_name") or tx.get("payee_name") or "未知对手方")
+        account = str(tx.get("counterparty_account") or tx.get("payee_account") or "")
+        key = f"{name}|{account}"
+        item = counterparties.setdefault(key, {"name": name, "account": account, "amount": 0.0, "count": 0})
+        item["amount"] = round(float(item["amount"]) + amount, 2)
+        item["count"] = int(item["count"]) + 1
+        details.append(
+            {
+                "date": tx.get("transaction_date") or tx.get("post_date"),
+                "direction": direction,
+                "amount": round(amount, 2),
+                "counterparty_name": tx.get("counterparty_name"),
+                "counterparty_account": tx.get("counterparty_account"),
+                "counterparty_bank": tx.get("counterparty_bank"),
+                "payee_name": tx.get("payee_name"),
+                "payee_account": tx.get("payee_account"),
+                "purpose": tx.get("purpose"),
+                "summary": tx.get("summary"),
+                "reason": tx.get("nature_reason"),
+                "confidence": tx.get("nature_confidence"),
+            }
+        )
+    details.sort(key=lambda item: float(item.get("amount") or 0), reverse=True)
+    summary = {
+        "inflow_amount": round(sum(float(tx.get("credit_amount") or 0) for tx in internal), 2),
+        "outflow_amount": round(sum(float(tx.get("debit_amount") or 0) for tx in internal), 2),
+        "total_amount": round(sum(float(tx.get("credit_amount") or tx.get("debit_amount") or 0) for tx in internal), 2),
+        "count": len(internal),
+        "top_counterparties": sorted(counterparties.values(), key=lambda item: float(item.get("amount") or 0), reverse=True)[:10],
+    }
+    return summary, details[:200]
+
+
 def run_enterprise_bank_statement_agent(
     file_path: str | None = None,
     filename: str | None = None,
@@ -196,6 +236,7 @@ def run_enterprise_bank_statement_agent(
     risk_analysis = detect_risk_signals(transactions, summary, monthly_summary, counterparty_summary, months_count)
     financing_view = build_financing_view(summary, risk_analysis)
     evidence = build_transaction_evidence(transactions)
+    internal_transfer_summary, internal_transfer_transactions = _build_internal_transfer_details(transactions)
 
     data = EnterpriseBankStatementExtraction(
         document_type=document_type or "enterprise_flow",
@@ -210,6 +251,8 @@ def run_enterprise_bank_statement_agent(
         counterparty_summary=CounterpartySummary(**counterparty_summary),
         risk_analysis=BankStatementRiskAnalysis(**risk_analysis),
         financing_view=FinancingView(**financing_view),
+        internal_transfer_summary=internal_transfer_summary,
+        internal_transfer_transactions=internal_transfer_transactions,
         evidence=[EvidenceItem(**item) for item in evidence],
         warnings=[],
     )

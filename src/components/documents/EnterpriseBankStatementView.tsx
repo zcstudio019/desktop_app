@@ -235,6 +235,7 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
   const operatingOutflow = summary.operating_outflow ?? summary.estimated_operating_outflow;
   const operatingNetCashflow = summary.operating_net_cashflow ?? summary.estimated_operating_net_cashflow;
   const internalTransferExcluded = Number(summary.internal_transfer_inflow || 0) + Number(summary.internal_transfer_outflow || 0);
+  const internalTransferTransactions = asArray<Record<string, unknown>>(statement.internal_transfer_transactions);
   const metricCards = [
     { label: '总收入', value: rawTotalInflow, icon: <TrendingUp className="h-4 w-4" />, tone: 'text-emerald-700 bg-emerald-50 border-emerald-100' },
     { label: '总支出', value: rawTotalOutflow, icon: <TrendingDown className="h-4 w-4" />, tone: 'text-rose-700 bg-rose-50 border-rose-100' },
@@ -369,6 +370,30 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
 
       <Section title="内部往来/左手倒右手">
         <RelatedPartyTable title="内部往来对象" items={asArray<EnterpriseCounterpartyStat>(counterparty.internal_transfer_counterparties)} emptyText="暂未识别到明显内部往来" />
+        {internalTransferTransactions.length > 0 ? (
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 text-xs text-slate-500">
+                <tr>{['日期', '方向', '金额', '对方名称', '对方账号', '收款人', '收款账号', '用途/摘要', '剔除原因'].map((label) => <th key={label} className="whitespace-nowrap border-b border-slate-200 px-3 py-2 text-left font-medium">{label}</th>)}</tr>
+              </thead>
+              <tbody>
+                {internalTransferTransactions.slice(0, 20).map((item, index) => (
+                  <tr key={index} className="odd:bg-white even:bg-slate-50/60">
+                    <td className="border-b border-slate-100 px-3 py-2">{display(item.date)}</td>
+                    <td className="border-b border-slate-100 px-3 py-2">{item.direction === 'inflow' ? '收入' : '支出'}</td>
+                    <MoneyCell value={item.amount} />
+                    <td className="border-b border-slate-100 px-3 py-2">{display(item.counterparty_name)}</td>
+                    <td className="border-b border-slate-100 px-3 py-2">{display(item.counterparty_account)}</td>
+                    <td className="border-b border-slate-100 px-3 py-2">{display(item.payee_name)}</td>
+                    <td className="border-b border-slate-100 px-3 py-2">{display(item.payee_account)}</td>
+                    <td className="border-b border-slate-100 px-3 py-2">{display(item.purpose || item.summary)}</td>
+                    <td className="min-w-[180px] border-b border-slate-100 px-3 py-2">{display(item.reason)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
       </Section>
 
       <Section title="风险信号">
