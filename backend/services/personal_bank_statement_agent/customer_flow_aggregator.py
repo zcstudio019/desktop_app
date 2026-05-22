@@ -93,23 +93,34 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 "document_id": doc_id,
                 "extraction_id": extraction_id,
                 "file_name": file_name,
+                "source_file": payload.get("source_file") or file_name,
                 "document_type": extraction_type or "personal_flow",
+                "bank_name": payload.get("bank_name") or (source_accounts[0].get("bank_name") if source_accounts else ""),
+                "account_no": payload.get("account_no") or (source_accounts[0].get("account_no") if source_accounts else ""),
+                "period": payload.get("statement_period") or {"start_date": summary.get("period_start") or "", "end_date": summary.get("period_end") or ""},
+                "flow_nature": payload.get("flow_nature") or {},
+                "verified_income": (payload.get("income_verification") or {}).get("verified_income") if isinstance(payload.get("income_verification"), dict) else summary.get("verified_income") or 0,
+                "unknown_inflow": (payload.get("income_verification") or {}).get("unknown_inflow") if isinstance(payload.get("income_verification"), dict) else summary.get("unknown_inflow") or 0,
+                "loan_repayment_expense": (payload.get("expense_analysis") or {}).get("loan_repayment_expense") if isinstance(payload.get("expense_analysis"), dict) else summary.get("loan_repayment_expense") or 0,
+                "risk_signals": payload.get("risk_signals") or [],
                 "account_count": len(source_accounts),
                 "raw_total_income": summary.get("raw_total_income") or 0,
                 "raw_total_expense": summary.get("raw_total_expense") or 0,
             }
         )
-        for key in (
-            "raw_total_income",
-            "raw_total_expense",
-            "salary_income",
-            "operating_income",
-            "stable_income",
-            "internal_transfer_income",
-            "loan_inflow",
-            "net_operating_cash_flow",
-        ):
-            sums[key] += float(summary.get(key) or 0)
+        income = _dict(payload.get("income_verification"))
+        expense = _dict(payload.get("expense_analysis"))
+        sums["raw_total_income"] += float(income.get("raw_total_income") or summary.get("raw_total_income") or 0)
+        sums["raw_total_expense"] += float(expense.get("raw_total_expense") or summary.get("raw_total_expense") or 0)
+        sums["salary_income"] += float(income.get("verified_salary_income") or summary.get("salary_income") or 0)
+        sums["operating_income"] += float(income.get("verified_operating_income") or summary.get("operating_income") or 0)
+        sums["stable_income"] += float(income.get("stable_income") or summary.get("stable_income") or 0)
+        sums["verified_income"] += float(income.get("verified_income") or summary.get("verified_income") or 0)
+        sums["unknown_inflow"] += float(income.get("unknown_inflow") or summary.get("unknown_inflow") or 0)
+        sums["loan_inflow"] += float(income.get("loan_inflow") or summary.get("loan_inflow") or 0)
+        sums["internal_transfer_income"] += float(income.get("internal_transfer_income") or summary.get("internal_transfer_income") or 0)
+        sums["loan_repayment_expense"] += float(expense.get("loan_repayment_expense") or summary.get("loan_repayment_expense") or 0)
+        sums["net_operating_cash_flow"] += float(summary.get("net_operating_cash_flow") or 0)
         if summary.get("period_start"):
             start_dates.append(_date(summary.get("period_start")))
         if summary.get("period_end"):
@@ -151,11 +162,53 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "avg_monthly_stable_income": round2(sums["stable_income"] / month_count),
         "income_stability_score": 0.0,
         "repayment_capacity_score": 0.0,
+        "verified_income": round2(sums["verified_income"]),
+        "unknown_inflow": round2(sums["unknown_inflow"]),
+        "loan_repayment_expense": round2(sums["loan_repayment_expense"]),
+        "customer_raw_total_income": round2(sums["raw_total_income"]),
+        "customer_verified_income": round2(sums["verified_income"]),
+        "customer_unknown_inflow": round2(sums["unknown_inflow"]),
+        "customer_loan_repayment_expense": round2(sums["loan_repayment_expense"]),
+        "customer_avg_monthly_verified_income": round2(sums["verified_income"] / month_count),
+        "customer_repayment_pressure": round(sums["loan_repayment_expense"] / sums["raw_total_income"], 6) if sums["raw_total_income"] else 0.0,
     }
     income_analysis = {"income_volatility": 0, "monthly_income": list(monthly.values())}
-    expense_analysis = {"has_frequent_loan_or_credit_card_repayment": False, "has_abnormal_large_expense": any("abnormal_large_expense" in (tx.get("risk_tags") or []) for tx in transactions)}
-    risk_signals = detect_risk_signals(summary, transactions, income_analysis, expense_analysis, month_count)
-    judgement = build_financing_judgement(summary, risk_signals, month_count)
+    expense_analysis = {
+        "raw_total_expense": summary["raw_total_expense"],
+        "loan_repayment_expense": summary["loan_repayment_expense"],
+        "loan_repayment_ratio": round(summary["loan_repayment_expense"] / summary["raw_total_expense"], 6) if summary["raw_total_expense"] else 0.0,
+        "has_frequent_loan_or_credit_card_repayment": False,
+        "has_abnormal_large_expense": any("abnormal_large_expense" in (tx.get("risk_tags") or []) for tx in transactions),
+    }
+    repayment_flow_count = sum(1 for item in source_files if (_dict(item.get("flow_nature")).get("primary_type") == "repayment_account_flow"))
+    salary_flow_count = sum(1 for item in source_files if (_dict(item.get("flow_nature")).get("primary_type") == "salary_flow"))
+    operating_flow_count = sum(1 for item in source_files if (_dict(item.get("flow_nature")).get("primary_type") == "operating_flow"))
+    customer_notes: list[str] = []
+    if source_files and repayment_flow_count == len(source_files):
+        customer_notes.append("当前资料主要为还款账户流水，缺少真实收入账户流水。")
+    elif repayment_flow_count and (salary_flow_count or operating_flow_count):
+        customer_notes.append("客户同时存在收入账户流水和还款账户流水，应区分收入证明与还款行为证明。")
+    flow_nature = {
+        "primary_type": "repayment_account_flow" if source_files and repayment_flow_count == len(source_files) else ("mixed_flow" if repayment_flow_count else "unknown"),
+        "confidence": 0.8 if repayment_flow_count else 0.4,
+        "reasons": customer_notes,
+    }
+    risk_signals = detect_risk_signals(
+        summary,
+        transactions,
+        {"raw_total_income": summary["raw_total_income"], "verified_income": summary["verified_income"], "unknown_inflow": summary["unknown_inflow"]},
+        expense_analysis,
+        month_count,
+        flow_nature=flow_nature,
+    )
+    judgement = build_financing_judgement(
+        summary,
+        risk_signals,
+        month_count,
+        income_verification={"raw_total_income": summary["raw_total_income"], "verified_income": summary["verified_income"], "unknown_inflow": summary["unknown_inflow"]},
+        expense_analysis=expense_analysis,
+        flow_nature=flow_nature,
+    )
     return {
         "doc_type": "personal_flow",
         "document_type": "personal_flow",
@@ -170,6 +223,8 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "top_income_counterparties": _merge_top(top_income),
         "top_expense_counterparties": _merge_top(top_expense),
         "customer_level_summary": summary,
+        "flow_nature": flow_nature,
+        "customer_level_notes": customer_notes,
         "risk_signals": risk_signals,
         "financing_judgement": judgement,
         "warnings": list(dict.fromkeys(warnings)),

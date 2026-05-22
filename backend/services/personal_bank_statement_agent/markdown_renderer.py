@@ -10,59 +10,82 @@ def _money(value: Any) -> str:
         return str(value or "-")
 
 
+def _pct(value: Any) -> str:
+    try:
+        return f"{float(value or 0) * 100:.2f}%"
+    except Exception:
+        return "-"
+
+
 def render_personal_bank_statement_markdown(data: dict[str, Any]) -> str:
-    owner = data.get("owner") or {}
-    summary = data.get("customer_level_summary") or {}
-    accounts = data.get("accounts") or []
-    first_account = accounts[0] if accounts else {}
+    summary = data.get("raw_summary") or {}
+    income = data.get("income_verification") or {}
+    expense = data.get("expense_analysis") or {}
+    retention = data.get("cash_retention_analysis") or {}
+    repayment = data.get("repayment_analysis") or {}
+    fast = data.get("fast_in_fast_out_analysis") or {}
+    nature = data.get("flow_nature") or {}
     judgement = data.get("financing_judgement") or {}
+    period = data.get("statement_period") or {}
     lines = [
         "# 个人流水摘要",
         "",
         "## 基础信息",
-        f"- 户名：{owner.get('name') or first_account.get('account_name') or '-'}",
-        f"- 银行：{first_account.get('bank_name') or '-'}",
-        f"- 账号：{first_account.get('account_no') or '-'}",
-        f"- 流水期间：{summary.get('period_start') or '-'} 至 {summary.get('period_end') or '-'}",
+        f"- 银行：{data.get('bank_name') or '-'}",
+        f"- 户名：{data.get('account_name') or (data.get('owner') or {}).get('name') or '-'}",
+        f"- 账号：{data.get('account_no') or '-'}",
+        f"- 流水期间：{period.get('start_date') or '-'} 至 {period.get('end_date') or '-'}",
+        f"- 币种：{data.get('currency') or '人民币'}",
         "",
         "## 总体流水",
-        f"- 原始收入：{_money(summary.get('raw_total_income'))}",
-        f"- 原始支出：{_money(summary.get('raw_total_expense'))}",
-        f"- 稳定收入：{_money(summary.get('stable_income'))}",
-        f"- 月均稳定收入：{_money(summary.get('avg_monthly_stable_income'))}",
-        f"- 净经营现金流：{_money(summary.get('net_operating_cash_flow'))}",
+        f"- 总收入：{_money(summary.get('total_income'))}",
+        f"- 总支出：{_money(summary.get('total_expense'))}",
+        f"- 净流入：{_money(summary.get('net_cash_flow'))}",
+        f"- 收入笔数：{summary.get('income_count') or 0}",
+        f"- 支出笔数：{summary.get('expense_count') or 0}",
+        f"- 账户沉淀率：{_pct(retention.get('retention_ratio'))}",
         "",
-        "## 收入分析",
-        f"- 工资收入：{_money(summary.get('salary_income'))}",
-        f"- 经营收入：{_money(summary.get('operating_income'))}",
-        f"- 其他稳定收入：{_money(sum(float((a.get('clean_summary') or {}).get('other_stable_income') or 0) for a in accounts if isinstance(a, dict)))}",
-        "- 主要收入来源：",
-    ]
-    for item in first_account.get("top_income_counterparties") or []:
-        lines.append(f"  - {item.get('name') or '-'}：{_money(item.get('amount'))}（{item.get('count') or 0}笔）")
-    income_analysis = data.get("income_analysis") or {}
-    lines += [
-        f"- 收入连续性：连续 {income_analysis.get('income_continuous_months') or 0} 个月识别到稳定收入",
+        "## 收入采信分析",
+        f"- 原始收入：{_money(income.get('raw_total_income'))}",
+        f"- 可采信工资收入：{_money(income.get('verified_salary_income'))}",
+        f"- 可采信经营收入：{_money(income.get('verified_operating_income'))}",
+        f"- 来源不明汇入：{_money(income.get('unknown_inflow'))}",
+        f"- 利息收入：{_money(income.get('interest_income'))}",
+        f"- 可采信稳定收入：{_money(income.get('stable_income'))}",
+        f"- 月均可采信收入：{_money(income.get('avg_monthly_verified_income'))}",
         "",
-        "## 支出分析",
+        "## 支出与还款分析",
+        f"- 总支出：{_money(expense.get('raw_total_expense'))}",
+        f"- 贷款还款支出：{_money(expense.get('loan_repayment_expense'))}",
+        f"- 信用卡还款支出：{_money(expense.get('credit_card_repayment_expense'))}",
+        f"- 快捷支付/消费支出：{_money(expense.get('quick_payment_expense'))}",
+        f"- 月均贷款还款：{_money(expense.get('avg_monthly_loan_repayment'))}",
+        f"- 贷款还款支出占比：{_pct(expense.get('loan_repayment_ratio'))}",
+        "",
+        "## 流水性质判断",
+        f"- 主要类型：{nature.get('primary_type') or 'unknown'}",
+        f"- 置信度：{_pct(nature.get('confidence'))}",
+        f"- 是否工资流水：{'是' if nature.get('primary_type') == 'salary_flow' else '否'}",
+        f"- 是否经营流水：{'是' if nature.get('primary_type') == 'operating_flow' else '否'}",
+        f"- 是否还款账户流水：{'是' if nature.get('primary_type') == 'repayment_account_flow' or repayment.get('is_repayment_account_flow') else '否'}",
+        "- 判断依据：",
     ]
-    clean = first_account.get("clean_summary") or {}
-    lines += [
-        f"- 生活支出：{_money(clean.get('living_expense'))}",
-        f"- 经营支出：{_money(clean.get('operating_expense'))}",
-        f"- 贷款还款：{_money(clean.get('loan_repayment_expense'))}",
-        f"- 信用卡还款：{_money(clean.get('credit_card_repayment_expense'))}",
-        "- 主要支出去向：",
-    ]
-    for item in first_account.get("top_expense_counterparties") or []:
-        lines.append(f"  - {item.get('name') or '-'}：{_money(item.get('amount'))}（{item.get('count') or 0}笔）")
+    for reason in nature.get("reasons") or []:
+        lines.append(f"  - {reason}")
     lines += [
         "",
-        "## 净化说明",
-        f"- 本人账户互转收入剔除：{_money(summary.get('internal_transfer_income'))}",
-        f"- 贷款流入剔除：{_money(summary.get('loan_inflow'))}",
-        f"- 理财/退款/非收入项按交易分类剔除或单列：{_money(sum(float((a.get('clean_summary') or {}).get('investment_transfer_income') or 0) + float((a.get('clean_summary') or {}).get('refund_income') or 0) + float((a.get('clean_summary') or {}).get('non_operating_income') or 0) for a in accounts if isinstance(a, dict)))}",
-        f"- 剔除后可采信收入：{_money(summary.get('stable_income'))}",
+        "## 快进快出分析",
+        f"- 是否存在快进快出：{'是' if fast.get('has_fast_in_fast_out') else '否'}",
+        f"- 匹配组数：{fast.get('matched_count') or 0}",
+        f"- 匹配金额：{_money(fast.get('matched_amount'))}",
+    ]
+    for match in (fast.get("matches") or [])[:10]:
+        lines.append(
+            f"- {match.get('income_date') or '-'} 汇入 {_money(match.get('income_amount'))}，"
+            f"{match.get('expense_date') or '-'} 支出/还贷 {_money(match.get('expense_amount'))}，"
+            f"间隔 {match.get('days_between') or 0} 天，匹配度 {_pct(match.get('match_ratio'))}"
+        )
+    lines += [
         "",
         "## 风险提示",
     ]
@@ -79,6 +102,13 @@ def render_personal_bank_statement_markdown(data: dict[str, Any]) -> str:
         f"- 还款能力：{judgement.get('repayment_capacity') or '无法判断'}",
         f"- 疑似刷流水风险：{judgement.get('suspicious_flow_risk') or '无法判断'}",
         f"- 建议用途：{judgement.get('recommended_usage') or '仅供参考'}",
-        f"- 建议补充材料：{', '.join(judgement.get('missing_materials') or []) or '-'}",
+        f"- 综合结论：{judgement.get('final_summary') or '-'}",
+        "- 建议补充材料：",
     ]
+    missing = judgement.get("missing_materials") or []
+    if missing:
+        for item in missing:
+            lines.append(f"  - {item}")
+    else:
+        lines.append("  - -")
     return "\n".join(lines)

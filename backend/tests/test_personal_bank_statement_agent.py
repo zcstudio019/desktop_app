@@ -43,6 +43,30 @@ def _sample_rows() -> list[list[object]]:
     ]
 
 
+def _repayment_account_rows() -> list[list[object]]:
+    return [
+        ["银行", "兴业银行"],
+        ["户名", "王敬培"],
+        ["账号", "622908****0319"],
+        ["交易日期", "摘要", "对方户名", "对方账号", "支出", "收入", "余额"],
+        ["2024-10-10", "汇款汇入", "", "", "", 14792.00, 14792.00],
+        ["2024-10-10", "个贷还款", "兴业银行", "loan-1", 14788.47, "", 3.53],
+        ["2024-11-10", "汇款汇入", "", "", "", 16800.00, 16803.53],
+        ["2024-11-11", "贷款回收", "兴业银行", "loan-1", 16795.00, "", 8.53],
+        ["2024-12-10", "汇款汇入", "", "", "", 15000.00, 15008.53],
+        ["2024-12-10", "快捷支付", "支付宝", "pay-1", 8625.86, "", 6382.67],
+        ["2024-12-10", "个贷还款", "兴业银行", "loan-1", 6374.14, "", 8.53],
+        ["2025-01-10", "汇款汇入", "", "", "", 17000.00, 17008.53],
+        ["2025-01-10", "贷款扣款", "兴业银行", "loan-1", 16995.00, "", 13.53],
+        ["2025-02-10", "汇款汇入", "", "", "", 18000.00, 18013.53],
+        ["2025-02-11", "个贷还款", "兴业银行", "loan-1", 17990.00, "", 23.53],
+        ["2025-03-20", "存款利息", "兴业银行", "", "", 31.31, 54.84],
+        ["2025-09-11", "汇款汇入", "", "", "", 15000.00, 15054.84],
+        ["2025-09-11", "快捷支付", "微信支付", "pay-2", 8625.86, "", 6428.98],
+        ["2025-09-11", "个贷还款", "兴业银行", "loan-1", 6374.14, "", 54.84],
+    ]
+
+
 def test_document_type_aliases_and_append_policy() -> None:
     for alias in ["personal_flow", "personal_bank_statement", "bank_statement_personal", "individual_bank_statement", "个人流水", "个人银行流水"]:
         assert normalize_document_type_code(alias) == "personal_flow"
@@ -118,3 +142,62 @@ def test_directional_counterparties_and_classification(tmp_path: Path) -> None:
     assert any(tx["is_internal_transfer"] for tx in txs)
     assert any(tx["is_loan_inflow"] for tx in txs)
     assert any(tx["is_credit_card_repayment"] and tx["direction"] == "expense" for tx in txs)
+
+
+def test_repayment_account_flow_xingye_sample(tmp_path: Path) -> None:
+    path = tmp_path / "xingye_repayment.xlsx"
+    _make_workbook(path, _repayment_account_rows())
+    data = run_personal_bank_statement_agent(file_path=str(path), filename=path.name)["extracted_json"]
+    income = data["income_verification"]
+    expense = data["expense_analysis"]
+    risk_codes = {item["code"] for item in data["risk_signals"]}
+    assert income["unknown_inflow"] > 0
+    assert income["verified_income"] == 0
+    assert income["stable_income"] == 0
+    assert expense["loan_repayment_ratio"] >= 0.6
+    assert data["flow_nature"]["primary_type"] == "repayment_account_flow"
+    assert {"income_source_unclear", "repayment_account_flow", "high_loan_repayment_ratio", "weak_cash_retention"}.issubset(risk_codes)
+    assert data["financing_judgement"]["recommended_usage"] in {"可作为还款账户流水", "仅供参考"}
+
+
+def test_fast_in_fast_out_single_and_combination_matches(tmp_path: Path) -> None:
+    path = tmp_path / "fast_in_fast_out.xlsx"
+    _make_workbook(path, _repayment_account_rows())
+    data = run_personal_bank_statement_agent(file_path=str(path), filename=path.name)["extracted_json"]
+    fast = data["fast_in_fast_out_analysis"]
+    assert fast["has_fast_in_fast_out"]
+    assert fast["matched_count"] >= 2
+    assert any(abs(item["income_amount"] - 14792.0) < 0.01 and abs(item["expense_amount"] - 14788.47) < 0.01 for item in fast["matches"])
+    assert any(abs(item["income_amount"] - 15000.0) < 0.01 and abs(item["expense_amount"] - 15000.0) < 0.01 for item in fast["matches"])
+
+
+def test_unknown_inflow_not_stable_income(tmp_path: Path) -> None:
+    path = tmp_path / "unknown_inflow.xlsx"
+    _make_workbook(path, [
+        ["户名", "张三"],
+        ["账号", "6222"],
+        ["交易日期", "摘要", "对方户名", "对方账号", "支出", "收入", "余额"],
+        ["2025-01-01", "汇款汇入", "", "", "", 10000, 10000],
+    ])
+    data = run_personal_bank_statement_agent(file_path=str(path), filename=path.name)["extracted_json"]
+    assert data["income_verification"]["unknown_inflow"] == 10000
+    assert data["income_verification"]["stable_income"] == 0
+
+
+def test_verified_salary_and_operating_income_enhanced(tmp_path: Path) -> None:
+    path = tmp_path / "verified_income.xlsx"
+    _make_workbook(path, [
+        ["户名", "张三"],
+        ["账号", "6222"],
+        ["交易日期", "摘要", "对方户名", "对方账号", "支出", "收入", "余额"],
+        ["2025-01-01", "代发工资", "某公司", "1001", "", 20000, 20000],
+        ["2025-01-05", "销售款", "客户A", "2001", "", 30000, 50000],
+        ["2025-01-06", "快捷支付", "商户", "3001", 500, "", 49500],
+    ])
+    data = run_personal_bank_statement_agent(file_path=str(path), filename=path.name)["extracted_json"]
+    income = data["income_verification"]
+    assert income["verified_salary_income"] == 20000
+    assert income["verified_operating_income"] == 30000
+    assert income["stable_income"] == 50000
+    assert data["top_income_counterparties"][0]["amount"] == 30000
+    assert data["top_expense_counterparties"][0]["amount"] == 500
