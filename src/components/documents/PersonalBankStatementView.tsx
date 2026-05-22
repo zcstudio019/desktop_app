@@ -33,10 +33,51 @@ function firstValue(...values: unknown[]): unknown {
   return values.find((value) => value !== undefined && value !== null && value !== '');
 }
 
+function toNumber(value: unknown): number {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const cleaned = value
+      .replace(/,/g, '')
+      .replace(/¥/g, '')
+      .replace(/￥/g, '')
+      .trim();
+    const number = Number(cleaned);
+    return Number.isFinite(number) ? number : 0;
+  }
+  return 0;
+}
+
+function absAmount(value: unknown): number {
+  return Math.abs(toNumber(value));
+}
+
 function numberValue(...values: unknown[]): number {
-  const value = firstValue(...values);
-  const number = Number(value);
-  return Number.isFinite(number) ? number : 0;
+  return toNumber(firstValue(...values));
+}
+
+function hasValue(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function pickNumber(...values: unknown[]): number {
+  const value = values.find(hasValue);
+  return toNumber(value);
+}
+
+function pickAbsNumber(...values: unknown[]): number {
+  const value = values.find(hasValue);
+  return absAmount(value);
+}
+
+function pickMeaningfulNumber(...values: unknown[]): number {
+  const value = values.find((item) => hasValue(item) && toNumber(item) !== 0);
+  return value === undefined ? pickNumber(...values) : toNumber(value);
+}
+
+function pickMeaningfulAbsNumber(...values: unknown[]): number {
+  const value = values.find((item) => hasValue(item) && absAmount(item) !== 0);
+  return value === undefined ? pickAbsNumber(...values) : absAmount(value);
 }
 
 function display(value: unknown): string {
@@ -132,6 +173,176 @@ function AlertBox({ tone = 'amber', children }: { tone?: 'amber' | 'rose' | 'blu
   return <div className={`rounded-lg border px-3 py-2 text-sm ${className}`}>{children}</div>;
 }
 
+type NormalizedTx = {
+  summary: string;
+  direction: string;
+  amount: number;
+  debitAmount: number;
+  creditAmount: number;
+};
+
+type NormalizedPersonalFlowSummary = {
+  totalIncome: number;
+  totalExpense: number;
+  netCashFlow: number;
+  incomeCount: number;
+  expenseCount: number;
+  avgMonthlyIncome: number;
+  avgMonthlyExpense: number;
+  verifiedIncome: number;
+  avgMonthlyVerifiedIncome: number;
+  verifiedSalaryIncome: number;
+  verifiedOperatingIncome: number;
+  verifiedOtherStableIncome: number;
+  unknownInflow: number;
+  interestIncome: number;
+  loanRepaymentExpense: number;
+  quickPaymentExpense: number;
+  creditCardRepaymentExpense: number;
+  transactions: NormalizedTx[];
+};
+
+const LOAN_REPAYMENT_KEYWORDS = ['个贷还款', '贷款回收', '贷款还款', '贷款扣款', '按揭', '房贷', '车贷', '小贷', '消费贷', '网贷还款', '还本', '还息'];
+const QUICK_PAYMENT_KEYWORDS = ['快捷支付', '消费', 'POS', '支付宝', '微信支付'];
+const UNKNOWN_INFLOW_KEYWORDS = ['汇款汇入', '转账收入', '跨行汇入', '他行汇入'];
+const INTEREST_INCOME_KEYWORDS = ['存款利息', '结息'];
+
+function containsAny(text: string, keywords: string[]): boolean {
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function getScaleSummary(raw: Record<string, unknown>): Record<string, unknown> {
+  const summary = asRecord(raw.summary);
+  const extractedJson = asRecord(raw.extracted_json);
+  return asRecord(
+    raw['收支规模汇总'] ||
+    summary['收支规模汇总'] ||
+    extractedJson['收支规模汇总']
+  );
+}
+
+function getTransactionList(raw: Record<string, unknown>): Record<string, unknown>[] {
+  const summary = asRecord(raw.summary);
+  const extractedJson = asRecord(raw.extracted_json);
+  return asArray<Record<string, unknown>>(
+    raw['交易明细列表'] ||
+    raw.transactions ||
+    summary['交易明细列表'] ||
+    extractedJson['交易明细列表'] ||
+    extractedJson.transactions
+  );
+}
+
+function normalizeTransaction(tx: Record<string, unknown>): NormalizedTx {
+  const summary = String(tx.summary || tx['摘要'] || tx.description || '').trim();
+  const rawDirection = String(tx.direction || tx['收支'] || tx.transaction_direction || '').trim();
+  const debit = absAmount(tx.debit_amount ?? tx.debitAmount);
+  const credit = absAmount(tx.credit_amount ?? tx.creditAmount);
+  const amount = absAmount(tx.amount ?? tx['金额'] ?? tx.transaction_amount ?? (credit || debit));
+  const direction = rawDirection || (credit > 0 ? '收' : debit > 0 ? '支' : '');
+  const isIncome = direction === '收' || direction === 'income' || direction === 'credit' || direction === 'inflow';
+  const isExpense = direction === '支' || direction === 'expense' || direction === 'debit' || direction === 'outflow';
+  return {
+    summary,
+    direction,
+    amount,
+    debitAmount: debit || (isExpense ? amount : 0),
+    creditAmount: credit || (isIncome ? amount : 0),
+  };
+}
+
+function sumTransactions(transactions: NormalizedTx[], predicate: (tx: NormalizedTx) => boolean, amountSelector: (tx: NormalizedTx) => number): number {
+  return transactions.reduce((sum, tx) => predicate(tx) ? sum + amountSelector(tx) : sum, 0);
+}
+
+function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedPersonalFlowSummary {
+  const rawSummary = asRecord(raw.raw_summary);
+  const customerSummary = asRecord(raw.customer_level_summary);
+  const income = asRecord(raw.income_verification);
+  const expense = asRecord(raw.expense_analysis);
+  const cash = asRecord(raw.cash_retention_analysis);
+  const repayment = asRecord(raw.repayment_analysis);
+  const scaleSummary = getScaleSummary(raw);
+  const transactions = getTransactionList(raw).map(normalizeTransaction);
+  const isIncome = (tx: NormalizedTx) => tx.creditAmount > 0 || tx.direction === '收';
+  const isExpense = (tx: NormalizedTx) => tx.debitAmount > 0 || tx.direction === '支';
+  const derivedLoanRepayment = sumTransactions(
+    transactions,
+    (tx) => isExpense(tx) && containsAny(tx.summary, LOAN_REPAYMENT_KEYWORDS),
+    (tx) => tx.debitAmount || tx.amount
+  );
+  const derivedQuickPayment = sumTransactions(
+    transactions,
+    (tx) => isExpense(tx) && containsAny(tx.summary, QUICK_PAYMENT_KEYWORDS),
+    (tx) => tx.debitAmount || tx.amount
+  );
+  const derivedUnknownInflow = sumTransactions(
+    transactions,
+    (tx) => isIncome(tx) && containsAny(tx.summary, UNKNOWN_INFLOW_KEYWORDS),
+    (tx) => tx.creditAmount || tx.amount
+  );
+  const derivedInterestIncome = sumTransactions(
+    transactions,
+    (tx) => isIncome(tx) && containsAny(tx.summary, INTEREST_INCOME_KEYWORDS),
+    (tx) => tx.creditAmount || tx.amount
+  );
+  const totalIncome = pickMeaningfulNumber(
+    income.raw_total_income,
+    rawSummary.total_income,
+    customerSummary.raw_total_income,
+    customerSummary.customer_raw_total_income,
+    raw['收支规模汇总'] && asRecord(raw['收支规模汇总'])['总收入金额'],
+    scaleSummary['总收入金额']
+  );
+  const totalExpense = pickMeaningfulAbsNumber(
+    expense.raw_total_expense,
+    rawSummary.total_expense,
+    customerSummary.raw_total_expense,
+    customerSummary.customer_raw_total_expense,
+    raw['收支规模汇总'] && asRecord(raw['收支规模汇总'])['总支出金额'],
+    scaleSummary['总支出金额']
+  );
+  const netCashFlow = pickMeaningfulNumber(
+    cash.net_cash_flow,
+    rawSummary.net_cash_flow,
+    customerSummary.net_cash_flow,
+    customerSummary.raw_total_income && customerSummary.raw_total_expense ? toNumber(customerSummary.raw_total_income) - absAmount(customerSummary.raw_total_expense) : undefined,
+    scaleSummary['净现金流'],
+    totalIncome - totalExpense
+  );
+  const loanRepaymentExpense = pickMeaningfulAbsNumber(expense.loan_repayment_expense, repayment.repayment_related_expense, customerSummary.loan_repayment_expense, customerSummary.customer_loan_repayment_expense, derivedLoanRepayment);
+  const quickPaymentExpense = hasValue(expense.quick_payment_expense)
+    ? pickMeaningfulAbsNumber(expense.quick_payment_expense, derivedQuickPayment)
+    : derivedQuickPayment;
+  const unknownInflow = hasValue(income.unknown_inflow) || hasValue(customerSummary.unknown_inflow) || hasValue(customerSummary.customer_unknown_inflow)
+    ? pickMeaningfulNumber(income.unknown_inflow, customerSummary.unknown_inflow, customerSummary.customer_unknown_inflow, derivedUnknownInflow)
+    : derivedUnknownInflow;
+  const interestIncome = hasValue(income.interest_income)
+    ? pickMeaningfulNumber(income.interest_income, derivedInterestIncome)
+    : derivedInterestIncome;
+
+  return {
+    totalIncome,
+    totalExpense,
+    netCashFlow,
+    incomeCount: pickMeaningfulNumber(rawSummary.income_count, scaleSummary['总收入笔数']),
+    expenseCount: pickMeaningfulNumber(rawSummary.expense_count, scaleSummary['总支出笔数']),
+    avgMonthlyIncome: pickMeaningfulNumber(income.avg_monthly_raw_income, customerSummary.avg_monthly_income, scaleSummary['月均收入']),
+    avgMonthlyExpense: pickMeaningfulAbsNumber(expense.avg_monthly_expense, scaleSummary['月均支出']),
+    verifiedIncome: pickNumber(income.verified_income, income.stable_income, customerSummary.verified_income, customerSummary.stable_income, customerSummary.customer_verified_income, customerSummary.customer_stable_income),
+    avgMonthlyVerifiedIncome: pickNumber(income.avg_monthly_verified_income, income.avg_monthly_stable_income, customerSummary.avg_monthly_verified_income, customerSummary.avg_monthly_stable_income, customerSummary.customer_avg_monthly_verified_income),
+    verifiedSalaryIncome: pickNumber(income.verified_salary_income, income.salary_income, customerSummary.salary_income),
+    verifiedOperatingIncome: pickNumber(income.verified_operating_income, income.operating_income, customerSummary.operating_income),
+    verifiedOtherStableIncome: pickNumber(income.verified_other_stable_income, income.other_stable_income),
+    unknownInflow,
+    interestIncome,
+    loanRepaymentExpense,
+    quickPaymentExpense,
+    creditCardRepaymentExpense: pickAbsNumber(expense.credit_card_repayment_expense),
+    transactions,
+  };
+}
+
 function normalizePersonalFlowData(raw: Record<string, unknown>) {
   const rawSummary = asRecord(raw.raw_summary);
   const customerSummary = asRecord(raw.customer_level_summary);
@@ -144,12 +355,13 @@ function normalizePersonalFlowData(raw: Record<string, unknown>) {
   const judgement = asRecord(raw.financing_judgement);
   const accounts = asArray<Record<string, unknown>>(raw.accounts);
   const firstAccount = accounts[0] || {};
+  const normalizedSummary = normalizePersonalFlowSummary(raw);
 
-  const rawIncome = numberValue(income.raw_total_income, rawSummary.total_income, customerSummary.raw_total_income, customerSummary.customer_raw_total_income);
-  const rawExpense = numberValue(expense.raw_total_expense, rawSummary.total_expense, customerSummary.raw_total_expense);
-  const netCashFlow = numberValue(cash.net_cash_flow, rawSummary.net_cash_flow, rawIncome - rawExpense);
-  const verifiedIncome = numberValue(income.verified_income, income.stable_income, customerSummary.verified_income, customerSummary.customer_verified_income, customerSummary.stable_income);
-  const loanRepaymentExpense = numberValue(expense.loan_repayment_expense, repayment.repayment_related_expense, customerSummary.loan_repayment_expense, customerSummary.customer_loan_repayment_expense);
+  const rawIncome = normalizedSummary.totalIncome;
+  const rawExpense = normalizedSummary.totalExpense;
+  const netCashFlow = normalizedSummary.netCashFlow;
+  const verifiedIncome = normalizedSummary.verifiedIncome;
+  const loanRepaymentExpense = normalizedSummary.loanRepaymentExpense;
   const monthlyTrend = asArray<Record<string, unknown>>(raw.monthly_trend).length
     ? asArray<Record<string, unknown>>(raw.monthly_trend)
     : asArray<Record<string, unknown>>(firstAccount.monthly_trend);
@@ -166,6 +378,7 @@ function normalizePersonalFlowData(raw: Record<string, unknown>) {
     judgement,
     accounts,
     firstAccount,
+    normalizedSummary,
     rawIncome,
     rawExpense,
     netCashFlow,
@@ -252,6 +465,11 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = ({ d
   }
   const statement = asRecord(data);
   const normalized = normalizePersonalFlowData(statement);
+  const normalizedSummary = normalized.normalizedSummary;
+  if (import.meta.env.DEV) {
+    console.debug('[PersonalBankStatementView] raw summary:', statement);
+    console.debug('[PersonalBankStatementView] normalized summary:', normalizedSummary);
+  }
   const hasData = Boolean(
     normalized.documentCount > 0 ||
     normalized.accountCount > 0 ||
@@ -269,7 +487,7 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = ({ d
     );
   }
 
-  const unknownInflow = numberValue(normalized.income.unknown_inflow);
+  const unknownInflow = normalizedSummary.unknownInflow;
   const unknownRatio = normalized.rawIncome ? unknownInflow / normalized.rawIncome : 0;
   const loanRepaymentRatio = numberValue(normalized.expense.loan_repayment_ratio, normalized.loanRepaymentExpense / Math.max(normalized.rawExpense, 1));
   const flowType = String(normalized.nature.primary_type || 'unknown');
@@ -293,30 +511,30 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = ({ d
         <Metric label="总支出" value={money(normalized.rawExpense)} icon={<TrendingDown className="h-4 w-4" />} tone="border-rose-100 bg-rose-50 text-rose-700" />
         <Metric label="净流入" value={money(normalized.netCashFlow)} icon={<WalletCards className="h-4 w-4" />} tone="border-blue-100 bg-blue-50 text-blue-700" />
         <Metric label="可采信收入" help="工资/经营/其他稳定收入" value={money(normalized.verifiedIncome)} icon={<BadgeCheck className="h-4 w-4" />} tone="border-violet-100 bg-violet-50 text-violet-700" />
-        <Metric label="月均可采信收入" value={money(normalized.income.avg_monthly_verified_income, normalized.income.avg_monthly_stable_income)} icon={<Banknote className="h-4 w-4" />} tone="border-indigo-100 bg-indigo-50 text-indigo-700" />
+        <Metric label="月均可采信收入" value={money(normalizedSummary.avgMonthlyVerifiedIncome)} icon={<Banknote className="h-4 w-4" />} tone="border-indigo-100 bg-indigo-50 text-indigo-700" />
         <Metric label="贷款还款支出" value={money(normalized.loanRepaymentExpense)} icon={<Landmark className="h-4 w-4" />} tone="border-orange-100 bg-orange-50 text-orange-700" />
       </div>
 
       <Section title="收入采信分析">
         <InfoGrid rows={[
-          ['原始收入', money(normalized.income.raw_total_income, normalized.rawIncome)],
-          ['工资收入', money(normalized.income.verified_salary_income)],
-          ['经营收入', money(normalized.income.verified_operating_income)],
-          ['其他稳定收入', money(normalized.income.verified_other_stable_income)],
+          ['原始收入', money(normalizedSummary.totalIncome)],
+          ['工资收入', money(normalizedSummary.verifiedSalaryIncome)],
+          ['经营收入', money(normalizedSummary.verifiedOperatingIncome)],
+          ['其他稳定收入', money(normalizedSummary.verifiedOtherStableIncome)],
           ['来源不明汇入', money(unknownInflow)],
-          ['利息收入', money(normalized.income.interest_income)],
+          ['利息收入', money(normalizedSummary.interestIncome)],
           ['可采信收入', money(normalized.verifiedIncome)],
-          ['月均可采信收入', money(normalized.income.avg_monthly_verified_income, normalized.income.avg_monthly_stable_income)],
+          ['月均可采信收入', money(normalizedSummary.avgMonthlyVerifiedIncome)],
         ]} />
         {unknownRatio >= 0.5 ? <div className="mt-3"><AlertBox>存在大量来源不明汇入，不建议直接作为稳定收入采信。</AlertBox></div> : null}
       </Section>
 
       <Section title="支出与还款分析">
         <InfoGrid rows={[
-          ['总支出', money(normalized.expense.raw_total_expense, normalized.rawExpense)],
+          ['总支出', money(normalizedSummary.totalExpense)],
           ['贷款还款支出', money(normalized.loanRepaymentExpense)],
-          ['信用卡还款支出', money(normalized.expense.credit_card_repayment_expense)],
-          ['快捷支付/消费', money(normalized.expense.quick_payment_expense, normalized.expense.living_expense)],
+          ['信用卡还款支出', money(normalizedSummary.creditCardRepaymentExpense)],
+          ['快捷支付/消费', money(normalizedSummary.quickPaymentExpense)],
           ['月均贷款还款', money(normalized.expense.avg_monthly_loan_repayment, normalized.repayment.monthly_repayment_estimate)],
           ['贷款还款占比', percent(loanRepaymentRatio)],
         ]} />
