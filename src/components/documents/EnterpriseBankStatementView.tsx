@@ -30,6 +30,63 @@ const ENTERPRISE_BANK_STATEMENT_TYPES = new Set([
   '银行流水',
 ]);
 
+const DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  enterprise_flow: '企业流水',
+  enterprise_bank_statement: '企业流水',
+  bank_statement_enterprise: '企业流水',
+  company_bank_statement: '企业流水',
+  enterprise_credit: '企业征信',
+  enterprise_credit_report: '企业征信',
+  personal_credit: '个人征信',
+  personal_credit_report: '个人征信',
+  personal_flow: '个人流水',
+  unknown: '未知类型',
+};
+
+const DIRECTION_LABELS: Record<string, string> = {
+  inflow: '流入',
+  outflow: '流出',
+  debit: '流出',
+  credit: '流入',
+  income: '流入',
+  expense: '流出',
+  unknown: '未知',
+};
+
+const CATEGORY_LABELS: Record<string, string> = {
+  operating: '真实经营',
+  real_business: '真实经营',
+  internal_transfer: '内部转账',
+  related_party: '关联方往来',
+  personal: '个人往来',
+  personal_transfer: '个人往来',
+  tax_salary_fee: '税费/工资/费用',
+  fee_tax_salary: '税费/工资/费用',
+  unknown: '未分类',
+};
+
+export function getDocumentTypeLabel(type?: unknown): string {
+  const text = String(type || '').trim();
+  if (!text) return '未知类型';
+  return DOCUMENT_TYPE_LABELS[text] || '未知类型';
+}
+
+export function getFlowDirectionLabel(direction?: unknown, label?: unknown): string {
+  const explicit = String(label || '').trim();
+  if (explicit) return explicit;
+  const text = String(direction || '').trim();
+  if (!text) return '未知';
+  return DIRECTION_LABELS[text] || '未知';
+}
+
+export function getExcludedCategoryLabel(category?: unknown, label?: unknown): string {
+  const explicit = String(label || '').trim();
+  if (explicit) return explicit;
+  const text = String(category || '').trim();
+  if (!text) return '未分类';
+  return CATEGORY_LABELS[text] || '未分类';
+}
+
 export function isEnterpriseBankStatementType(documentType?: unknown): boolean {
   return ENTERPRISE_BANK_STATEMENT_TYPES.has(String(documentType || '').trim());
 }
@@ -153,13 +210,7 @@ function joinLines(value: unknown): string {
 }
 
 function natureLabel(value?: unknown): string {
-  const text = String(value || '');
-  if (text === 'operating') return '真实经营';
-  if (text === 'internal_transfer') return '内部转账';
-  if (text === 'related_party') return '关联方往来';
-  if (text === 'personal_transfer') return '个人往来';
-  if (text === 'fee_tax_salary') return '税费/工资/费用';
-  return text || '未知';
+  return getExcludedCategoryLabel(value);
 }
 
 function riskMeta(level?: string) {
@@ -200,7 +251,7 @@ function CounterpartyTable({ items }: { items: EnterpriseCounterpartyStat[] }) {
               <MoneyCell value={item.outflow} />
               <MoneyCell value={item.net} strong />
               <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-700">{item.transaction_count ?? item.count ?? 0}</td>
-              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{display(item.category_guess || item.nature)}</td>
+              <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{getExcludedCategoryLabel(item.category_guess || item.nature, (item as Record<string, unknown>).category_label || (item as Record<string, unknown>).display_name)}</td>
               <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{item.exclude_from_operating ? '是' : '否'}</td>
             </tr>
           ))}
@@ -248,7 +299,7 @@ function TransactionTable({
             return (
               <tr key={transactionId} className="odd:bg-white even:bg-slate-50/60">
                 <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">{display(item.date || item.transaction_date)}</td>
-                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">{display(item.direction)}</td>
+                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2">{getFlowDirectionLabel(item.direction, item.direction_label)}</td>
                 <MoneyCell value={item.amount || item.credit_amount || item.debit_amount} />
                 <td className="max-w-[240px] whitespace-normal break-words border-b border-slate-100 px-3 py-2">{display(item.counterparty_name)}</td>
                 <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 font-mono">{display(item.counterparty_account)}</td>

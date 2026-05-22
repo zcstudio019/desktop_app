@@ -21,6 +21,7 @@ import type { CustomerDocumentListItem, CustomerListItem, CustomerProfileMarkdow
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard from './common/ProcessFeedbackCard';
 import EnterpriseBankStatementView, {
+  getDocumentTypeLabel,
   hasEnterpriseFlowShape,
   isEnterpriseBankStatementType,
   normalizeEnterpriseFlowData,
@@ -4789,7 +4790,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                             </p>
                           </div>
                           <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
-                            {source.documentType || 'enterprise_flow'}
+                            {getDocumentTypeLabel(source.documentType || 'enterprise_flow')}
                           </span>
                         </div>
                         <EnterpriseBankStatementView
