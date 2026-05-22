@@ -2297,6 +2297,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const draftRef = useRef('');
 
   useEffect(() => {
+    console.log("[ProfilePreview][MOUNT] current component loaded");
+  }, []);
+
+  useEffect(() => {
     profileRef.current = profile;
   }, [profile]);
 
@@ -2472,12 +2476,14 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       return;
     }
     enterpriseFlowPreviewLoadingRef.current = customerId;
+    console.log("[ProfilePreview] customerId=", customerId);
     try {
       setEnterpriseFlowPreviewError(null);
       const result = await getCustomerEnterpriseFlowSummary(customerId);
+      console.log("[ProfilePreview] enterprise-flow/summary response", result);
       setEnterpriseFlowPreviewDoc(result.item || null);
     } catch (err) {
-      if (import.meta.env.DEV) console.debug('[EnterpriseBankStatementView] load latest enterprise flow failed', err);
+      console.log('[ProfilePreview] enterprise-flow/summary failed', err);
       setEnterpriseFlowPreviewDoc(null);
       setEnterpriseFlowPreviewError('企业流水结构化预览暂时不可用，请稍后重试');
     } finally {
@@ -2802,9 +2808,36 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     ),
     [documents, extractionGroups, selectedCustomer, profile, enterpriseFlowPreviewDoc]
   );
+  const enterpriseFlowSummary = useMemo(
+    () => normalizeEnterpriseFlowData(enterpriseFlowPreviewDoc) as Record<string, unknown> | null,
+    [enterpriseFlowPreviewDoc]
+  );
+  const enterpriseFlowSummaryAccounts = Array.isArray(enterpriseFlowSummary?.accounts)
+    ? enterpriseFlowSummary.accounts
+    : [];
+  const shouldRenderEnterpriseFlowSummary = !!(
+    enterpriseFlowSummary &&
+    enterpriseFlowSummaryAccounts.length > 0 &&
+    (
+      isEnterpriseBankStatementType(enterpriseFlowSummary.document_type) ||
+      enterpriseFlowSummary.normalized_document_type === 'enterprise_bank_statement'
+    )
+  );
   const enterpriseFlowViewSources = useMemo(
-    () => enterpriseFlowState.source ? [enterpriseFlowState.source] : [],
-    [enterpriseFlowState]
+    () => {
+      if (shouldRenderEnterpriseFlowSummary && enterpriseFlowSummary) {
+        return [{
+          key: String(enterpriseFlowSummary.aggregation_scope || enterpriseFlowSummary.document_type || 'enterprise_flow_summary'),
+          documentType: String(enterpriseFlowSummary.document_type || 'enterprise_flow'),
+          data: enterpriseFlowSummary,
+          markdown: '',
+          fileName: '客户级企业流水汇总',
+          createdAt: '',
+        }];
+      }
+      return enterpriseFlowState.source ? [enterpriseFlowState.source] : [];
+    },
+    [enterpriseFlowState, enterpriseFlowSummary, shouldRenderEnterpriseFlowSummary]
   );
   const hasEnterpriseStructuredData = enterpriseFlowViewSources.length > 0;
   const profilePreviewRenderMode = hasEnterpriseStructuredData
@@ -2813,13 +2846,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       ? 'error_fallback'
       : 'markdown_preview';
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
     const selectedDoc = enterpriseFlowState.selectedEnterpriseFlowDoc;
     const accounts = Array.isArray(enterpriseFlowState.parsedEnterpriseData?.accounts)
       ? enterpriseFlowState.parsedEnterpriseData.accounts
       : [];
     const tailongAccount = accounts.find((account) => String((account as Record<string, unknown>)?.bank_name || '').includes('泰隆'));
-    console.debug('[EnterpriseBankStatementView] page hit', {
+    console.log('[EnterpriseBankStatementView] page hit', {
       customerId: activeCustomerId,
       customerIdCandidates,
       documents: documents.length,
@@ -2829,7 +2861,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       hasParsedData: !!enterpriseFlowState.parsedEnterpriseData,
       keys: Object.keys(enterpriseFlowState.parsedEnterpriseData || {}),
     });
-    console.debug('[EnterpriseFlow][Frontend][SelectedDoc]', {
+    console.log('[EnterpriseFlow][Frontend][SelectedDoc]', {
       document_id:
         selectedDoc?.document_id ||
         selectedDoc?.doc_id ||
@@ -2853,15 +2885,18 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       tailong_total_outflow: (tailongAccount as Record<string, unknown> | undefined)?.total_outflow,
       tailong_account: tailongAccount,
     });
-    console.debug('[ProfilePreview] enterpriseFlowSummary', enterpriseFlowPreviewDoc);
-    console.debug('[ProfilePreview] shouldRenderEnterpriseFlow', hasEnterpriseStructuredData);
-    console.debug('[ProfilePreview] renderMode', profilePreviewRenderMode);
+    console.log('[ProfilePreview] enterpriseFlowSummary', enterpriseFlowSummary);
+    console.log('[ProfilePreview] accounts length', enterpriseFlowSummaryAccounts.length);
+    console.log('[ProfilePreview] shouldRenderEnterpriseFlow', hasEnterpriseStructuredData);
+    console.log('[ProfilePreview] renderMode', profilePreviewRenderMode);
   }, [
     activeCustomerId,
     customerIdCandidates,
     documents.length,
     enterpriseFlowState,
     enterpriseFlowPreviewDoc,
+    enterpriseFlowSummary,
+    enterpriseFlowSummaryAccounts.length,
     extractionGroups.length,
     hasEnterpriseStructuredData,
     profilePreviewRenderMode,
