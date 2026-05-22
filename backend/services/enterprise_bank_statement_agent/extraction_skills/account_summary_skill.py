@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _round(value: float | None) -> float | None:
@@ -122,27 +125,23 @@ def build_account_summary(
             inflow_count += int(account.get("summary_inflow_count") or 0)
             outflow_count += int(account.get("summary_outflow_count") or 0)
 
-    internal_amount = sum(float(tx.get("credit_amount") or tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_internal_transfer"))
-    related_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_related_party"))
-    personal_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_personal_counterparty"))
-    operating_inflow = sum(
-        float(tx.get("credit_amount") or 0)
-        for tx in transactions
-        if tx.get("direction") == "inflow"
-        and not tx.get("is_internal_transfer")
-        and not tx.get("is_related_party")
-        and not tx.get("is_personal_counterparty")
-    )
-    operating_outflow = sum(
-        float(tx.get("debit_amount") or 0)
-        for tx in transactions
-        if tx.get("direction") == "outflow" and not tx.get("is_internal_transfer")
-    )
+    internal_transfer_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_internal_transfer"))
+    internal_transfer_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_internal_transfer"))
+    related_party_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_related_party") and not tx.get("is_internal_transfer"))
+    related_party_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_related_party") and not tx.get("is_internal_transfer"))
+    personal_transfer_inflow = sum(float(tx.get("credit_amount") or 0) for tx in transactions if tx.get("is_personal_counterparty") and not tx.get("is_internal_transfer"))
+    personal_transfer_outflow = sum(float(tx.get("debit_amount") or 0) for tx in transactions if tx.get("is_personal_counterparty") and not tx.get("is_internal_transfer"))
+    internal_amount = internal_transfer_inflow + internal_transfer_outflow
+    operating_inflow = max(0.0, total_inflow - internal_transfer_inflow - related_party_inflow - personal_transfer_inflow)
+    operating_outflow = max(0.0, total_outflow - internal_transfer_outflow - related_party_outflow - personal_transfer_outflow)
     low_balance_threshold = 5000.0
     low_balance_count = sum(1 for tx in transactions if tx.get("balance") is not None and float(tx.get("balance") or 0) < low_balance_threshold)
     banks = {item.get("bank_name") for item in normalized_accounts if item.get("bank_name")}
     account_transaction_count = sum(int(account.get("transaction_count") or 0) for account in normalized_accounts)
     summary = {
+        "raw_total_inflow": _round(total_inflow) or 0.0,
+        "raw_total_outflow": _round(total_outflow) or 0.0,
+        "raw_net_cashflow": _round(total_inflow - total_outflow) or 0.0,
         "total_inflow": _round(total_inflow) or 0.0,
         "total_outflow": _round(total_outflow) or 0.0,
         "net_cashflow": _round(total_inflow - total_outflow) or 0.0,
@@ -162,7 +161,23 @@ def build_account_summary(
         "estimated_operating_outflow": _round(operating_outflow),
         "estimated_operating_net_cashflow": _round(operating_inflow - operating_outflow),
         "excluded_internal_transfer_amount": _round(internal_amount),
-        "excluded_related_party_inflow": _round(related_inflow),
-        "excluded_personal_inflow": _round(personal_inflow),
+        "excluded_related_party_inflow": _round(related_party_inflow),
+        "excluded_personal_inflow": _round(personal_transfer_inflow),
+        "internal_transfer_inflow": _round(internal_transfer_inflow) or 0.0,
+        "internal_transfer_outflow": _round(internal_transfer_outflow) or 0.0,
+        "related_party_inflow": _round(related_party_inflow) or 0.0,
+        "related_party_outflow": _round(related_party_outflow) or 0.0,
+        "personal_transfer_inflow": _round(personal_transfer_inflow) or 0.0,
+        "personal_transfer_outflow": _round(personal_transfer_outflow) or 0.0,
+        "operating_inflow": _round(operating_inflow) or 0.0,
+        "operating_outflow": _round(operating_outflow) or 0.0,
+        "operating_net_cashflow": _round(operating_inflow - operating_outflow) or 0.0,
     }
+    logger.info(
+        "[EnterpriseFlow][OperatingSummary] raw_inflow=%s operating_inflow=%s raw_outflow=%s operating_outflow=%s",
+        summary["raw_total_inflow"],
+        summary["operating_inflow"],
+        summary["raw_total_outflow"],
+        summary["operating_outflow"],
+    )
     return summary, normalized_accounts, warnings

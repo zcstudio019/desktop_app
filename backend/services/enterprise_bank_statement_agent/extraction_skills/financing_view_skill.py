@@ -4,7 +4,9 @@ from typing import Any
 
 
 def build_financing_view(summary: dict[str, Any], risk_analysis: dict[str, Any]) -> dict[str, Any]:
-    bank_recognizable = summary.get("estimated_operating_inflow")
+    bank_recognizable = summary.get("operating_inflow")
+    if bank_recognizable is None:
+        bank_recognizable = summary.get("estimated_operating_inflow")
     checklist = ["近6-12个月完整银行流水", "主要客户合同/订单", "主要交易发票", "纳税申报或完税证明"]
     if summary.get("excluded_related_party_inflow"):
         checklist.append("关联方交易背景说明")

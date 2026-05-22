@@ -282,6 +282,8 @@ def read_excel_workbook(file_path: str | None = None, rows: list[dict[str, Any]]
 GENERIC_SHEET_NAMES = {"testReport", "Sheet", "Sheet1", "明细", "账户明细查询", ""}
 
 BANK_ALIASES_CN: tuple[tuple[str, str], ...] = (
+    ("北京银行", "北京银行"),
+    ("中国建设银行", "建设银行"),
     ("上海银行", "上海银行"),
     ("建行", "建设银行"),
     ("建设银行", "建设银行"),
@@ -304,6 +306,8 @@ HEADER_SYNONYMS_CN: dict[str, tuple[str, ...]] = {
     "counterparty_name": ("对方户名", "对方名称", "对手名称", "交易对手", "收付款方名称"),
     "counterparty_account": ("对方账号", "对方账户", "对手账号", "收付款方账号", "交易对手账号"),
     "counterparty_bank": ("对方开户行", "对方机构", "对方银行", "收付款方开户行", "对方账户开户行"),
+    "payee_name": ("收款人", "收款方", "付款人", "付款方"),
+    "payee_account": ("收款账号", "收款账户", "付款账号", "付款账户"),
     "account_number": ("账号", "本方账号", "企业账号", "选择账号", "账户账号", "账户号码"),
     "account_name": ("账户名称", "户名", "企业名称", "客户名称", "单位名称"),
     "currency": ("币种", "货币"),
@@ -434,6 +438,16 @@ def _canonical_header(value: Any) -> str | None:
     label = _strip_label(value)
     if not label:
         return None
+    if any(token in label for token in ("收款账号", "收款账户", "付款账号", "付款账户")):
+        return "payee_account"
+    if any(token in label for token in ("收款人", "收款方", "付款人", "付款方")):
+        return "payee_name"
+    if label == "对手方":
+        return "counterparty_name"
+    if "对手方账号" in label:
+        return "counterparty_account"
+    if "对手方银行" in label:
+        return "counterparty_bank"
     # Shanghai Bank "账户明细查询" exports use very stable Chinese headers.
     # Check these first so "对手账号" never falls through to own account number.
     if "对手账号" in label or "对方账号" in label or "交易对手账号" in label:
@@ -457,7 +471,7 @@ def _canonical_header(value: Any) -> str | None:
     if any(name in label for name in HEADER_SYNONYMS_CN["counterparty_account"]):
         return "counterparty_account"
     for canonical, names in HEADER_SYNONYMS_CN.items():
-        if canonical in {"counterparty_bank", "counterparty_account"}:
+        if canonical in {"counterparty_bank", "counterparty_account", "payee_name", "payee_account"}:
             continue
         if any(name in label for name in names):
             if canonical == "account_number" and any(token in label for token in ("对方", "对手", "收付款方", "交易对手")):
@@ -607,7 +621,9 @@ def _parse_date_range(value: Any) -> tuple[str | None, str | None]:
 
 
 def parse_sheet_account_info(sheet_name: str, rows: list[list[Any]], customer_name: str | None = None, source_file: str | None = None) -> dict[str, Any]:
+    raw_bank_context = " ".join(_cn_text(item) for item in (source_file, sheet_name) if item)
     bank_name = infer_bank_from_text(source_file) or infer_bank_from_sheet_name(sheet_name)
+    logger.info("[EnterpriseFlow][BankDetect] file=%s raw=%s normalized_bank=%s", source_file or "", raw_bank_context, bank_name or "")
     account_info: dict[str, Any] = {
         "bank_name": bank_name or "未知银行",
         "account_name": customer_name,

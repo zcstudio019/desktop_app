@@ -2298,6 +2298,16 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 f"- 月均收入：{_format_amount_for_markdown(summary.get('average_monthly_inflow') or 0)}",
                 f"- 月均支出：{_format_amount_for_markdown(summary.get('average_monthly_outflow') or 0)}",
                 '',
+                '### 经营性流水净化',
+                f"- 原始收入：{_format_amount_for_markdown(summary.get('raw_total_inflow') or summary.get('total_inflow') or 0)}",
+                f"- 原始支出：{_format_amount_for_markdown(summary.get('raw_total_outflow') or summary.get('total_outflow') or 0)}",
+                f"- 内部转账收入剔除：{_format_amount_for_markdown(summary.get('internal_transfer_inflow') or 0)}",
+                f"- 内部转账支出剔除：{_format_amount_for_markdown(summary.get('internal_transfer_outflow') or 0)}",
+                f"- 关联方收入剔除/列示：{_format_amount_for_markdown(summary.get('related_party_inflow') or summary.get('excluded_related_party_inflow') or 0)}",
+                f"- 个人往来收入剔除/列示：{_format_amount_for_markdown(summary.get('personal_transfer_inflow') or summary.get('excluded_personal_inflow') or 0)}",
+                f"- 银行可能认可经营性回款：{_format_amount_for_markdown(summary.get('operating_inflow') or summary.get('estimated_operating_inflow') or 0)}",
+                f"- 经营性净流入：{_format_amount_for_markdown(summary.get('operating_net_cashflow') or summary.get('estimated_operating_net_cashflow') or 0)}",
+                '',
                 '### 各银行账户汇总',
                 '| 银行 | 户名 | 账号 | 收入 | 支出 | 净流入 | 笔数 |',
                 '| --- | --- | --- | ---: | ---: | ---: | ---: |',
@@ -2351,6 +2361,44 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 if top_outflow:
                     outflow_names = '、'.join(str(item.get('name') or '-') for item in top_outflow[:5])
                     flow_lines.append(f"- 主要支出对象：{outflow_names}")
+                flow_lines.extend([
+                    '',
+                    '### 主要真实经营对手方',
+                    '| 对手方 | 类型 | 收入 | 支出 | 笔数 | 是否计入经营流水 |',
+                    '| --- | --- | ---: | ---: | ---: | --- |',
+                ])
+                for item in top_inflow[:10]:
+                    flow_lines.append(
+                        '| {name} | {nature} | {inflow} | {outflow} | {count} | 是 |'.format(
+                            name=item.get('name') or '-',
+                            nature=item.get('category_guess') or item.get('nature') or '-',
+                            inflow=_format_amount_for_markdown(item.get('inflow') or 0),
+                            outflow=_format_amount_for_markdown(item.get('outflow') or 0),
+                            count=item.get('transaction_count') or item.get('count') or 0,
+                        )
+                    )
+            internal_items = counterparty_summary.get('internal_transfer_counterparties') or []
+            flow_lines.extend([
+                '',
+                '### 内部往来/左手倒右手明细',
+                '| 对手方 | 账号 | 银行 | 收入 | 支出 | 笔数 | 剔除原因 |',
+                '| --- | --- | --- | ---: | ---: | ---: | --- |',
+            ])
+            if internal_items:
+                for item in internal_items[:20]:
+                    flow_lines.append(
+                        '| {name} | {account} | {bank} | {inflow} | {outflow} | {count} | {reason} |'.format(
+                            name=item.get('name') or '-',
+                            account=item.get('account') or item.get('counterparty_account') or '-',
+                            bank=item.get('bank') or '-',
+                            inflow=_format_amount_for_markdown(item.get('inflow') or 0),
+                            outflow=_format_amount_for_markdown(item.get('outflow') or 0),
+                            count=item.get('transaction_count') or item.get('count') or 0,
+                            reason=item.get('risk_note') or '本方/关联主体互转，经营流水口径剔除',
+                        )
+                    )
+            else:
+                flow_lines.append('| 未识别到内部转账规则命中 | - | - | 0.00 元 | 0.00 元 | 0 | 请检查关联公司名单是否完整 |')
 
             signals = risk_analysis.get('signals') or []
             checklist = financing_view.get('material_checklist') or []

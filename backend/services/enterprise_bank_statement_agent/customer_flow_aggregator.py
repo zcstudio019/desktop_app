@@ -92,10 +92,17 @@ def _merge_counterparty(target: dict[str, dict[str, Any]], item: dict[str, Any])
         {
             "name": item.get("name") or item.get("counterparty_name") or "未知对手方",
             "counterparty_account": item.get("counterparty_account") or "",
+            "account": item.get("account") or item.get("counterparty_account") or "",
+            "bank": item.get("bank") or item.get("counterparty_bank") or "",
             "inflow": 0.0,
             "outflow": 0.0,
             "net": 0.0,
+            "amount": 0.0,
+            "count": 0,
             "transaction_count": 0,
+            "nature": item.get("nature"),
+            "exclude_from_operating": bool(item.get("exclude_from_operating")),
+            "is_internal_transfer": bool(item.get("is_internal_transfer")),
             "category_guess": item.get("category_guess") or item.get("category"),
             "is_related_party": False,
             "is_personal_counterparty": False,
@@ -105,7 +112,11 @@ def _merge_counterparty(target: dict[str, dict[str, Any]], item: dict[str, Any])
     stat["inflow"] = round(_num(stat.get("inflow")) + _num(item.get("inflow")), 2)
     stat["outflow"] = round(_num(stat.get("outflow")) + _num(item.get("outflow")), 2)
     stat["net"] = round(stat["inflow"] - stat["outflow"], 2)
+    stat["amount"] = round(_num(stat.get("amount")) + _num(item.get("amount") or item.get("inflow") or item.get("outflow")), 2)
+    stat["count"] = _int(stat.get("count")) + _int(item.get("count") or item.get("transaction_count"))
     stat["transaction_count"] = _int(stat.get("transaction_count")) + _int(item.get("transaction_count"))
+    stat["exclude_from_operating"] = bool(stat.get("exclude_from_operating") or item.get("exclude_from_operating"))
+    stat["is_internal_transfer"] = bool(stat.get("is_internal_transfer") or item.get("is_internal_transfer"))
     stat["is_related_party"] = bool(stat.get("is_related_party") or item.get("is_related_party"))
     stat["is_personal_counterparty"] = bool(stat.get("is_personal_counterparty") or item.get("is_personal_counterparty"))
 
@@ -119,6 +130,14 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
     warnings: list[str] = []
     start_dates: list[str] = []
     end_dates: list[str] = []
+    raw_total_inflow = 0.0
+    raw_total_outflow = 0.0
+    internal_transfer_inflow = 0.0
+    internal_transfer_outflow = 0.0
+    related_party_inflow = 0.0
+    related_party_outflow = 0.0
+    personal_transfer_inflow = 0.0
+    personal_transfer_outflow = 0.0
 
     for extraction in extractions:
         extraction_type = str(extraction.get("extraction_type") or extraction.get("document_type") or "")
@@ -134,6 +153,14 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         extraction_id = str(extraction.get("extraction_id") or "")
         source_accounts = [_dict(item) for item in _list(payload.get("accounts"))]
         source_summary = _dict(payload.get("summary"))
+        raw_total_inflow += _num(source_summary.get("raw_total_inflow") or source_summary.get("total_inflow"))
+        raw_total_outflow += _num(source_summary.get("raw_total_outflow") or source_summary.get("total_outflow"))
+        internal_transfer_inflow += _num(source_summary.get("internal_transfer_inflow"))
+        internal_transfer_outflow += _num(source_summary.get("internal_transfer_outflow"))
+        related_party_inflow += _num(source_summary.get("related_party_inflow") or source_summary.get("excluded_related_party_inflow"))
+        related_party_outflow += _num(source_summary.get("related_party_outflow"))
+        personal_transfer_inflow += _num(source_summary.get("personal_transfer_inflow") or source_summary.get("excluded_personal_inflow"))
+        personal_transfer_outflow += _num(source_summary.get("personal_transfer_outflow"))
         period = _dict(payload.get("statement_period"))
         if period.get("start_date"):
             start_dates.append(_date_key(period.get("start_date")))
@@ -202,7 +229,13 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
                 transactions.append({**tx, "source_file": tx.get("source_file") or file_name, "source_document_id": doc_id})
 
         cps = _dict(payload.get("counterparty_summary"))
-        for item in _list(cps.get("top_inflow_counterparties")) + _list(cps.get("top_outflow_counterparties")):
+        for item in (
+            _list(cps.get("top_inflow_counterparties"))
+            + _list(cps.get("top_outflow_counterparties"))
+            + _list(cps.get("internal_transfer_counterparties"))
+            + _list(cps.get("related_party_counterparties"))
+            + _list(cps.get("personal_counterparties"))
+        ):
             _merge_counterparty(counterparties, _dict(item))
         warnings.extend(str(item) for item in _list(payload.get("warnings")) if item)
 
@@ -221,8 +254,17 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
     }
     months = _month_count(monthly_summary, statement_period)
     statement_period["months_count"] = months
-    estimated_operating_inflow = round(total_inflow, 2)
+    if raw_total_inflow == 0 and total_inflow > 0:
+        raw_total_inflow = total_inflow
+    if raw_total_outflow == 0 and total_outflow > 0:
+        raw_total_outflow = total_outflow
+    operating_inflow = round(max(0.0, raw_total_inflow - internal_transfer_inflow - related_party_inflow - personal_transfer_inflow), 2)
+    operating_outflow = round(max(0.0, raw_total_outflow - internal_transfer_outflow - related_party_outflow - personal_transfer_outflow), 2)
+    estimated_operating_inflow = operating_inflow
     summary = {
+        "raw_total_inflow": round(raw_total_inflow, 2),
+        "raw_total_outflow": round(raw_total_outflow, 2),
+        "raw_net_cashflow": round(raw_total_inflow - raw_total_outflow, 2),
         "total_inflow": total_inflow,
         "total_outflow": total_outflow,
         "net_cashflow": round(total_inflow - total_outflow, 2),
@@ -235,18 +277,29 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         "average_monthly_outflow": round(total_outflow / months, 2) if months else None,
         "average_monthly_net_cashflow": round((total_inflow - total_outflow) / months, 2) if months else None,
         "estimated_operating_inflow": estimated_operating_inflow,
-        "estimated_operating_outflow": total_outflow,
-        "estimated_operating_net_cashflow": round(estimated_operating_inflow - total_outflow, 2),
-        "excluded_internal_transfer_amount": 0.0,
-        "excluded_related_party_inflow": 0.0,
-        "excluded_personal_inflow": 0.0,
+        "estimated_operating_outflow": operating_outflow,
+        "estimated_operating_net_cashflow": round(estimated_operating_inflow - operating_outflow, 2),
+        "excluded_internal_transfer_amount": round(internal_transfer_inflow + internal_transfer_outflow, 2),
+        "excluded_related_party_inflow": round(related_party_inflow, 2),
+        "excluded_personal_inflow": round(personal_transfer_inflow, 2),
+        "internal_transfer_inflow": round(internal_transfer_inflow, 2),
+        "internal_transfer_outflow": round(internal_transfer_outflow, 2),
+        "related_party_inflow": round(related_party_inflow, 2),
+        "related_party_outflow": round(related_party_outflow, 2),
+        "personal_transfer_inflow": round(personal_transfer_inflow, 2),
+        "personal_transfer_outflow": round(personal_transfer_outflow, 2),
+        "operating_inflow": operating_inflow,
+        "operating_outflow": operating_outflow,
+        "operating_net_cashflow": round(operating_inflow - operating_outflow, 2),
     }
     cp_items = list(counterparties.values())
-    top_inflow = sorted(cp_items, key=lambda item: _num(item.get("inflow")), reverse=True)[:10]
-    top_outflow = sorted(cp_items, key=lambda item: _num(item.get("outflow")), reverse=True)[:10]
+    operating_cp_items = [item for item in cp_items if not item.get("exclude_from_operating")]
+    top_inflow = sorted(operating_cp_items, key=lambda item: _num(item.get("inflow")), reverse=True)[:10]
+    top_outflow = sorted(operating_cp_items, key=lambda item: _num(item.get("outflow")), reverse=True)[:10]
     counterparty_summary = {
         "top_inflow_counterparties": top_inflow,
         "top_outflow_counterparties": top_outflow,
+        "internal_transfer_counterparties": [item for item in cp_items if item.get("is_internal_transfer")],
         "related_party_counterparties": [item for item in cp_items if item.get("is_related_party")],
         "personal_counterparties": [item for item in cp_items if item.get("is_personal_counterparty")],
         "customer_concentration_top5_ratio": round(sum(_num(item.get("inflow")) for item in top_inflow[:5]) / total_inflow, 4) if total_inflow else None,
@@ -310,5 +363,12 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]]) -> di
         len(accounts),
         total_inflow,
         total_outflow,
+    )
+    logger.info(
+        "[EnterpriseFlow][OperatingSummary] raw_inflow=%s operating_inflow=%s raw_outflow=%s operating_outflow=%s",
+        summary["raw_total_inflow"],
+        summary["operating_inflow"],
+        summary["raw_total_outflow"],
+        summary["operating_outflow"],
     )
     return result

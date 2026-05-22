@@ -39,6 +39,16 @@ def render_enterprise_bank_statement_markdown(data: dict[str, Any]) -> str:
         f"| 月均净流入 | {_money(summary.get('average_monthly_net_cashflow'))} |",
         f"| 银行可能认可经营性回款估算 | {_money(financing.get('bank_recognizable_inflow'))} |",
         "",
+        "## 二点五、经营性流水净化",
+        f"- 原始收入：{_money(summary.get('raw_total_inflow') if summary.get('raw_total_inflow') is not None else summary.get('total_inflow'))}",
+        f"- 原始支出：{_money(summary.get('raw_total_outflow') if summary.get('raw_total_outflow') is not None else summary.get('total_outflow'))}",
+        f"- 内部转账收入剔除：{_money(summary.get('internal_transfer_inflow'))}",
+        f"- 内部转账支出剔除：{_money(summary.get('internal_transfer_outflow'))}",
+        f"- 关联方收入剔除/列示：{_money(summary.get('related_party_inflow') if summary.get('related_party_inflow') is not None else summary.get('excluded_related_party_inflow'))}",
+        f"- 个人往来收入剔除/列示：{_money(summary.get('personal_transfer_inflow') if summary.get('personal_transfer_inflow') is not None else summary.get('excluded_personal_inflow'))}",
+        f"- 银行可能认可经营性回款：{_money(summary.get('operating_inflow') if summary.get('operating_inflow') is not None else financing.get('bank_recognizable_inflow'))}",
+        f"- 经营性净流入：{_money(summary.get('operating_net_cashflow') if summary.get('operating_net_cashflow') is not None else summary.get('estimated_operating_net_cashflow'))}",
+        "",
         "## 三、各银行账户汇总",
         "| 银行 | 户名 | 账号 | 收入 | 支出 | 净流入 | 笔数 | 期末余额 |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
@@ -54,6 +64,28 @@ def render_enterprise_bank_statement_markdown(data: dict[str, Any]) -> str:
     lines += ["", "## 六、主要支出对象", "| 对手方 | 支出 | 笔数 | 分类 | 风险提示 |", "| --- | ---: | ---: | --- | --- |"]
     for item in counterparty.get("top_outflow_counterparties") or []:
         lines.append(f"| {item.get('name')} | {_money(item.get('outflow'))} | {item.get('transaction_count') or 0} | {item.get('category_guess') or '-'} | {item.get('risk_note') or '-'} |")
+    lines += [
+        "",
+        "## 六点五、内部往来/左手倒右手明细",
+        "| 对手方 | 账号 | 银行 | 收入 | 支出 | 笔数 | 剔除原因 |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- |",
+    ]
+    internal_items = counterparty.get("internal_transfer_counterparties") or []
+    if internal_items:
+        for item in internal_items[:20]:
+            lines.append(
+                f"| {item.get('name') or '-'} | {item.get('account') or item.get('counterparty_account') or '-'} | {item.get('bank') or '-'} | {_money(item.get('inflow'))} | {_money(item.get('outflow'))} | {item.get('transaction_count') or item.get('count') or 0} | {item.get('risk_note') or '本方/关联主体互转，经营流水口径剔除'} |"
+            )
+    else:
+        lines.append("| 未识别到内部转账规则命中 | - | - | - | - | - | 请检查关联公司名单是否完整 |")
+    lines += [
+        "",
+        "## 六点六、主要真实经营对手方",
+        "| 对手方 | 类型 | 收入 | 支出 | 笔数 | 是否计入经营流水 |",
+        "| --- | --- | ---: | ---: | ---: | --- |",
+    ]
+    for item in (counterparty.get("top_inflow_counterparties") or [])[:10]:
+        lines.append(f"| {item.get('name') or '-'} | {item.get('category_guess') or item.get('nature') or '-'} | {_money(item.get('inflow'))} | {_money(item.get('outflow'))} | {item.get('transaction_count') or item.get('count') or 0} | 是 |")
     related_amount = sum(float(item.get("inflow") or 0) + float(item.get("outflow") or 0) for item in counterparty.get("related_party_counterparties") or [])
     personal_amount = sum(float(item.get("inflow") or 0) + float(item.get("outflow") or 0) for item in counterparty.get("personal_counterparties") or [])
     lines += [

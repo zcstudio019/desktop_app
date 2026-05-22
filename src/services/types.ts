@@ -95,6 +95,9 @@ export interface EnterpriseBankAccountStatement {
 }
 
 export interface EnterpriseBankStatementSummary {
+  raw_total_inflow?: number;
+  raw_total_outflow?: number;
+  raw_net_cashflow?: number;
   total_inflow?: number;
   total_outflow?: number;
   net_cashflow?: number;
@@ -116,6 +119,15 @@ export interface EnterpriseBankStatementSummary {
   excluded_internal_transfer_amount?: number | null;
   excluded_related_party_inflow?: number | null;
   excluded_personal_inflow?: number | null;
+  internal_transfer_inflow?: number | null;
+  internal_transfer_outflow?: number | null;
+  related_party_inflow?: number | null;
+  related_party_outflow?: number | null;
+  personal_transfer_inflow?: number | null;
+  personal_transfer_outflow?: number | null;
+  operating_inflow?: number | null;
+  operating_outflow?: number | null;
+  operating_net_cashflow?: number | null;
 }
 
 export interface EnterpriseMonthlyCashflowSummary {
@@ -130,11 +142,20 @@ export interface EnterpriseMonthlyCashflowSummary {
 
 export interface EnterpriseCounterpartyStat {
   name?: string;
+  account?: string | null;
+  bank?: string | null;
   inflow?: number;
   outflow?: number;
   net?: number;
+  amount?: number;
+  count?: number;
   transaction_count?: number;
+  first_date?: string | null;
+  last_date?: string | null;
+  nature?: string | null;
+  exclude_from_operating?: boolean;
   category_guess?: string | null;
+  is_internal_transfer?: boolean;
   is_related_party?: boolean;
   is_personal_counterparty?: boolean;
   risk_note?: string | null;
@@ -143,6 +164,7 @@ export interface EnterpriseCounterpartyStat {
 export interface EnterpriseCounterpartySummary {
   top_inflow_counterparties?: EnterpriseCounterpartyStat[];
   top_outflow_counterparties?: EnterpriseCounterpartyStat[];
+  internal_transfer_counterparties?: EnterpriseCounterpartyStat[];
   related_party_counterparties?: EnterpriseCounterpartyStat[];
   personal_counterparties?: EnterpriseCounterpartyStat[];
   customer_concentration_top5_ratio?: number | null;

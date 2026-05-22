@@ -226,13 +226,22 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
   const risk = statement.risk_analysis || {};
   const financing = statement.financing_view || {};
   const riskBadge = riskMeta(risk.overall_level);
+  const sourceFiles = asArray<Record<string, unknown>>((statement as Record<string, unknown>).source_files);
+  const accountNameFallback = accounts.find((item) => item.account_name)?.account_name;
+  const rawTotalInflow = summary.raw_total_inflow ?? summary.total_inflow;
+  const rawTotalOutflow = summary.raw_total_outflow ?? summary.total_outflow;
+  const rawNetCashflow = summary.raw_net_cashflow ?? summary.net_cashflow;
+  const operatingInflow = summary.operating_inflow ?? summary.estimated_operating_inflow ?? financing.bank_recognizable_inflow;
+  const operatingOutflow = summary.operating_outflow ?? summary.estimated_operating_outflow;
+  const operatingNetCashflow = summary.operating_net_cashflow ?? summary.estimated_operating_net_cashflow;
+  const internalTransferExcluded = Number(summary.internal_transfer_inflow || 0) + Number(summary.internal_transfer_outflow || 0);
   const metricCards = [
-    { label: '总收入', value: summary.total_inflow, icon: <TrendingUp className="h-4 w-4" />, tone: 'text-emerald-700 bg-emerald-50 border-emerald-100' },
-    { label: '总支出', value: summary.total_outflow, icon: <TrendingDown className="h-4 w-4" />, tone: 'text-rose-700 bg-rose-50 border-rose-100' },
-    { label: '净流入', value: summary.net_cashflow, icon: <Banknote className="h-4 w-4" />, tone: Number(summary.net_cashflow || 0) < 0 ? 'text-rose-700 bg-rose-50 border-rose-100' : 'text-blue-700 bg-blue-50 border-blue-100' },
+    { label: '总收入', value: rawTotalInflow, icon: <TrendingUp className="h-4 w-4" />, tone: 'text-emerald-700 bg-emerald-50 border-emerald-100' },
+    { label: '总支出', value: rawTotalOutflow, icon: <TrendingDown className="h-4 w-4" />, tone: 'text-rose-700 bg-rose-50 border-rose-100' },
+    { label: '净流入', value: rawNetCashflow, icon: <Banknote className="h-4 w-4" />, tone: Number(rawNetCashflow || 0) < 0 ? 'text-rose-700 bg-rose-50 border-rose-100' : 'text-blue-700 bg-blue-50 border-blue-100' },
     { label: '月均收入', value: summary.average_monthly_inflow, icon: <TrendingUp className="h-4 w-4" />, tone: 'text-sky-700 bg-sky-50 border-sky-100' },
     { label: '月均支出', value: summary.average_monthly_outflow, icon: <TrendingDown className="h-4 w-4" />, tone: 'text-orange-700 bg-orange-50 border-orange-100' },
-    { label: '银行认可经营性回款估算', value: summary.estimated_operating_inflow, icon: <Building2 className="h-4 w-4" />, tone: 'text-indigo-700 bg-indigo-50 border-indigo-100' },
+    { label: '银行认可经营性回款估算', value: operatingInflow, icon: <Building2 className="h-4 w-4" />, tone: 'text-indigo-700 bg-indigo-50 border-indigo-100' },
   ];
 
   return (
@@ -248,8 +257,8 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
 
       <Section title="基础信息" action={<span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${riskBadge.className}`}>{riskBadge.label} {risk.overall_score ?? 0}分</span>}>
         <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
-          <div><div className="text-xs text-slate-500">客户名称</div><div className="mt-1 text-slate-800">{display(statement.company_name)}</div></div>
-          <div><div className="text-xs text-slate-500">资料来源文件</div><div className="mt-1 break-words text-slate-800">{display(statement.source_file)}</div></div>
+          <div><div className="text-xs text-slate-500">客户名称</div><div className="mt-1 text-slate-800">{display(statement.company_name || accountNameFallback)}</div></div>
+          <div><div className="text-xs text-slate-500">资料来源文件</div><div className="mt-1 break-words text-slate-800">{sourceFiles.length > 0 ? `共 ${sourceFiles.length} 份` : display(statement.source_file)}</div></div>
           <div><div className="text-xs text-slate-500">流水期间</div><div className="mt-1 text-slate-800">{display(statement.statement_period?.start_date)} 至 {display(statement.statement_period?.end_date)}</div></div>
           <div><div className="text-xs text-slate-500">月份/交易/账户/银行</div><div className="mt-1 text-slate-800">{statement.statement_period?.months_count ?? 0} 月 · {summary.transaction_count ?? 0} 笔 · {summary.account_count ?? 0} 户 · {summary.bank_count ?? 0} 家</div></div>
         </div>
@@ -260,16 +269,17 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
           <table className="min-w-full text-sm">
             <tbody>
               {[
-                ['总收入', summary.total_inflow],
-                ['总支出', summary.total_outflow],
-                ['净流入', summary.net_cashflow],
+                ['总收入', rawTotalInflow],
+                ['总支出', rawTotalOutflow],
+                ['净流入', rawNetCashflow],
                 ['月均收入', summary.average_monthly_inflow],
                 ['月均支出', summary.average_monthly_outflow],
                 ['月均净流入', summary.average_monthly_net_cashflow],
-                ['银行可能认可经营性回款估算', summary.estimated_operating_inflow],
-                ['剔除内部转账金额', summary.excluded_internal_transfer_amount],
-                ['剔除关联方收入', summary.excluded_related_party_inflow],
-                ['剔除个人往来收入', summary.excluded_personal_inflow],
+                ['银行可能认可经营性回款估算', operatingInflow],
+                ['剔除内部转账收入', summary.internal_transfer_inflow],
+                ['剔除内部转账支出', summary.internal_transfer_outflow],
+                ['剔除关联方收入', summary.related_party_inflow ?? summary.excluded_related_party_inflow],
+                ['剔除个人往来收入', summary.personal_transfer_inflow ?? summary.excluded_personal_inflow],
               ].map(([label, value]) => (
                 <tr key={String(label)} className="odd:bg-white even:bg-slate-50/60">
                   <td className="border-b border-slate-100 px-3 py-2 text-slate-500">{label}</td>
@@ -279,6 +289,20 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
             </tbody>
           </table>
         </div>
+      </Section>
+
+      <Section title="经营性流水净化">
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">原始账面收入</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(rawTotalInflow)}</div></div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">内部往来剔除</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(internalTransferExcluded || summary.excluded_internal_transfer_amount)}</div></div>
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3"><div className="text-xs text-indigo-700">经营性回款估算</div><div className="mt-1 text-lg font-semibold text-indigo-900">{formatMoney(operatingInflow)}</div></div>
+          <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-xs text-slate-500">原始账面支出</div><div className="mt-1 font-semibold text-slate-800">{formatMoney(rawTotalOutflow)}</div></div>
+          <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-xs text-slate-500">经营性支出估算</div><div className="mt-1 font-semibold text-slate-800">{formatMoney(operatingOutflow)}</div></div>
+          <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-xs text-slate-500">经营性净流入</div><div className="mt-1 font-semibold text-slate-800">{formatMoney(operatingNetCashflow)}</div></div>
+        </div>
+        {Number(internalTransferExcluded || summary.excluded_internal_transfer_amount || 0) <= 0 ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">未识别到内部转账规则命中；请检查关联公司名单是否完整。</div>
+        ) : null}
       </Section>
 
       <Section title="各银行账户汇总">
@@ -341,6 +365,10 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
           <RelatedPartyTable title="关联方往来" items={asArray<EnterpriseCounterpartyStat>(counterparty.related_party_counterparties)} emptyText="暂未识别到明显关联方往来" />
           <RelatedPartyTable title="个人账户往来" items={asArray<EnterpriseCounterpartyStat>(counterparty.personal_counterparties)} emptyText="暂未识别到明显个人账户往来" />
         </div>
+      </Section>
+
+      <Section title="内部往来/左手倒右手">
+        <RelatedPartyTable title="内部往来对象" items={asArray<EnterpriseCounterpartyStat>(counterparty.internal_transfer_counterparties)} emptyText="暂未识别到明显内部往来" />
       </Section>
 
       <Section title="风险信号">

@@ -58,6 +58,8 @@ def extract_transactions(workbook: dict[str, Any], accounts: list[dict[str, Any]
                 "counterparty_name": normalize_text(row.get("counterparty_name")) or None,
                 "counterparty_account": normalize_account_number(row.get("counterparty_account")),
                 "counterparty_bank": normalize_text(row.get("counterparty_bank")) or None,
+                "payee_name": normalize_text(row.get("payee_name")) or None,
+                "payee_account": normalize_account_number(row.get("payee_account")),
                 "debit_amount": debit,
                 "credit_amount": credit,
                 "balance": normalize_amount(row.get("balance")),

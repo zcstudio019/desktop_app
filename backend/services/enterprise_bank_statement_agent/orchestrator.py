@@ -40,6 +40,16 @@ logger = logging.getLogger(__name__)
 SUPPORTED_TYPES = {"enterprise_flow", "enterprise_bank_statement", "bank_statement_enterprise", "company_bank_statement", "企业流水", "银行流水"}
 
 
+def _infer_customer_name(customer_id: str | None, metadata: dict[str, Any]) -> str | None:
+    for key in ("customer_name", "customerName", "company_name", "companyName"):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    if customer_id and customer_id.startswith("enterprise_"):
+        return customer_id[len("enterprise_") :]
+    return customer_id
+
+
 def _confidence(data: dict[str, Any]) -> float:
     score = 0.45
     if data.get("accounts"):
@@ -131,6 +141,9 @@ def run_enterprise_bank_statement_agent(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = metadata or {}
+    customer_name = _infer_customer_name(customer_id, metadata)
+    if customer_name and not metadata.get("customer_name"):
+        metadata = {**metadata, "customer_name": customer_name}
     rows = metadata.get("rows") if isinstance(metadata.get("rows"), list) else None
     source_text = text if text is not None else raw_text
     source_file = filename or (Path(file_path).name if file_path else None)
@@ -158,11 +171,11 @@ def run_enterprise_bank_statement_agent(
         workbook = {"source_file": source_file, "sheets": [], "warnings": ["未提供 Excel 文件路径，文本流水 fallback 暂返回稳定空结构"]}
         warnings.extend(workbook["warnings"])
 
-    basic, accounts, basic_warnings = extract_account_basic_info(workbook, {**metadata, "customer_name": metadata.get("customer_name")})
+    basic, accounts, basic_warnings = extract_account_basic_info(workbook, {**metadata, "customer_name": customer_name})
     warnings.extend(basic_warnings)
     transactions, tx_warnings = extract_transactions(workbook, accounts, {**metadata, "filename": source_file})
     warnings.extend(tx_warnings)
-    transactions = classify_transactions(transactions, basic.get("company_name"), metadata)
+    transactions = classify_transactions(transactions, basic.get("company_name") or customer_name, metadata)
     months_count = (basic.get("statement_period") or {}).get("months_count")
     summary, accounts, summary_warnings = build_account_summary(transactions, accounts, months_count)
     warnings.extend(summary_warnings)

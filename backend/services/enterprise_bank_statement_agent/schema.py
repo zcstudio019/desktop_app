@@ -53,6 +53,8 @@ class BankTransaction(BaseModel):
     counterparty_name: Optional[str] = None
     counterparty_account: Optional[str] = None
     counterparty_bank: Optional[str] = None
+    payee_name: Optional[str] = None
+    payee_account: Optional[str] = None
     debit_amount: Optional[float] = None
     credit_amount: Optional[float] = None
     balance: Optional[float] = None
@@ -66,11 +68,18 @@ class BankTransaction(BaseModel):
     is_personal_counterparty: bool = False
     is_large_amount: bool = False
     is_suspicious: bool = False
+    nature: Optional[str] = None
+    exclude_from_operating: bool = False
+    nature_reason: Optional[str] = None
+    nature_confidence: Optional[float] = None
     tags: List[str] = Field(default_factory=list)
     raw: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BankStatementSummary(BaseModel):
+    raw_total_inflow: float = 0.0
+    raw_total_outflow: float = 0.0
+    raw_net_cashflow: float = 0.0
     total_inflow: float = 0.0
     total_outflow: float = 0.0
     net_cashflow: float = 0.0
@@ -92,6 +101,15 @@ class BankStatementSummary(BaseModel):
     excluded_internal_transfer_amount: Optional[float] = None
     excluded_related_party_inflow: Optional[float] = None
     excluded_personal_inflow: Optional[float] = None
+    internal_transfer_inflow: float = 0.0
+    internal_transfer_outflow: float = 0.0
+    related_party_inflow: float = 0.0
+    related_party_outflow: float = 0.0
+    personal_transfer_inflow: float = 0.0
+    personal_transfer_outflow: float = 0.0
+    operating_inflow: float = 0.0
+    operating_outflow: float = 0.0
+    operating_net_cashflow: float = 0.0
 
 
 class MonthlyCashflowSummary(BaseModel):
@@ -106,19 +124,29 @@ class MonthlyCashflowSummary(BaseModel):
 
 class CounterpartyStat(BaseModel):
     name: str
+    account: Optional[str] = None
+    bank: Optional[str] = None
     inflow: float = 0.0
     outflow: float = 0.0
     net: float = 0.0
+    amount: float = 0.0
+    count: int = 0
     transaction_count: int = 0
+    first_date: Optional[str] = None
+    last_date: Optional[str] = None
+    nature: Optional[str] = None
+    exclude_from_operating: bool = False
     category_guess: Optional[str] = None
     is_related_party: bool = False
     is_personal_counterparty: bool = False
+    is_internal_transfer: bool = False
     risk_note: Optional[str] = None
 
 
 class CounterpartySummary(BaseModel):
     top_inflow_counterparties: List[CounterpartyStat] = Field(default_factory=list)
     top_outflow_counterparties: List[CounterpartyStat] = Field(default_factory=list)
+    internal_transfer_counterparties: List[CounterpartyStat] = Field(default_factory=list)
     related_party_counterparties: List[CounterpartyStat] = Field(default_factory=list)
     personal_counterparties: List[CounterpartyStat] = Field(default_factory=list)
     customer_concentration_top5_ratio: Optional[float] = None
