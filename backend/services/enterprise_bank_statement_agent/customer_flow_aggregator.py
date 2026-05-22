@@ -417,6 +417,14 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]], rules
             "supplier_concentration_top5_ratio": round(sum(_num(item.get("outflow")) for item in top_outflow[:5]) / total_outflow, 4) if total_outflow else None,
         }
     views, classification_summary, excluded_transactions = _build_views_and_classification(transactions)
+    view_excluded_inflow = round(summary["raw_total_inflow"] - summary["operating_inflow"], 2)
+    view_excluded_outflow = round(summary["raw_total_outflow"] - summary["operating_outflow"], 2)
+    views.setdefault("operating", {})["inflow"] = summary["operating_inflow"]
+    views.setdefault("operating", {})["outflow"] = summary["operating_outflow"]
+    views.setdefault("excluded", {})["inflow"] = view_excluded_inflow
+    views.setdefault("excluded", {})["outflow"] = view_excluded_outflow
+    bank_recognized_cashflow = summary["operating_inflow"]
+    view_consistency_diff = round(bank_recognized_cashflow - summary["operating_inflow"], 2)
     signals = []
     if total_inflow > 0 and abs(summary["net_cashflow"]) / total_inflow < 0.03:
         signals.append(
@@ -439,8 +447,8 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]], rules
         "weaknesses": ["客户级净流入偏低。"] if signals else [],
     }
     financing_view = {
-        "bank_recognizable_inflow": estimated_operating_inflow,
-        "adjusted_operating_inflow": estimated_operating_inflow,
+        "bank_recognizable_inflow": bank_recognized_cashflow,
+        "adjusted_operating_inflow": bank_recognized_cashflow,
         "excluded_internal_transfer_amount": summary["excluded_internal_transfer_amount"],
         "excluded_related_party_inflow": summary["excluded_related_party_inflow"],
         "excluded_personal_inflow": summary["excluded_personal_inflow"],
@@ -496,5 +504,14 @@ def aggregate_customer_enterprise_flows(extractions: list[dict[str, Any]], rules
         summary["operating_inflow"],
         summary["raw_total_outflow"],
         summary["operating_outflow"],
+    )
+    logger.info(
+        "[EnterpriseFlow][ViewConsistency] raw_inflow=%s operating_inflow=%s bank_recognized_cashflow=%s diff=%s excluded_inflow=%s excluded_outflow=%s",
+        summary["raw_total_inflow"],
+        summary["operating_inflow"],
+        bank_recognized_cashflow,
+        view_consistency_diff,
+        view_excluded_inflow,
+        view_excluded_outflow,
     )
     return result

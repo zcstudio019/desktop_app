@@ -139,6 +139,11 @@ function formatRatio(value: unknown): string {
   return `${(number * 100).toFixed(1)}%`;
 }
 
+function toNumber(value: unknown): number {
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
 function splitLines(value: string): string[] {
   return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
 }
@@ -310,15 +315,23 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
   const rawNetCashflow = summary.raw_net_cashflow ?? summary.net_cashflow;
   const operatingInflow = summary.operating_inflow ?? summary.estimated_operating_inflow ?? financing.bank_recognizable_inflow;
   const operatingOutflow = summary.operating_outflow ?? summary.estimated_operating_outflow;
+  const operatingNetCashflow = toNumber(operatingInflow) - toNumber(operatingOutflow);
   const viewData = statement.views || {};
   const rawView = viewData.raw || {};
-  const operatingView = viewData.operating || {};
   const excludedView = viewData.excluded || {};
   const classificationSummary = statement.classification_summary || {};
   const internalTransferTransactions = asArray<Record<string, unknown>>(statement.internal_transfer_transactions);
   const excludedTransactions = asArray<Record<string, unknown>>(excludedView.transactions).length
     ? asArray<Record<string, unknown>>(excludedView.transactions)
     : internalTransferTransactions;
+  const expectedExcludedInflow = Math.round((toNumber(rawTotalInflow) - toNumber(operatingInflow)) * 100) / 100;
+  const expectedExcludedOutflow = Math.round((toNumber(rawTotalOutflow) - toNumber(operatingOutflow)) * 100) / 100;
+  const displayedExcludedInflow = toNumber(excludedView.inflow ?? summary.excluded_inflow_total);
+  const displayedExcludedOutflow = toNumber(excludedView.outflow ?? summary.excluded_outflow_total);
+  const excludedInflowConsistent = Math.abs(expectedExcludedInflow - displayedExcludedInflow) <= 0.01;
+  const excludedOutflowConsistent = Math.abs(expectedExcludedOutflow - displayedExcludedOutflow) <= 0.01;
+  const operatingNetFromSummary = summary.operating_net_cashflow ?? summary.estimated_operating_net_cashflow;
+  const operatingNetConsistent = operatingNetFromSummary === undefined || Math.abs(toNumber(operatingNetFromSummary) - operatingNetCashflow) <= 0.01;
 
   const openRules = async () => {
     setRulesOpen(true);
@@ -429,10 +442,13 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
       {viewMode === 'operating' ? (
         <Section title="净化流水视图">
           <div className="grid gap-3 md:grid-cols-3">
-            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3"><div className="text-xs text-indigo-700">经营性回款</div><div className="mt-1 text-lg font-semibold text-indigo-900">{formatMoney(operatingView.inflow ?? operatingInflow)}</div></div>
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">经营性支出</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(operatingView.outflow ?? operatingOutflow)}</div></div>
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">经营性净流入</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(Number(operatingView.inflow ?? operatingInflow ?? 0) - Number(operatingView.outflow ?? operatingOutflow ?? 0))}</div></div>
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3"><div className="text-xs text-indigo-700">经营性回款</div><div className="mt-1 text-lg font-semibold text-indigo-900">{formatMoney(operatingInflow)}</div></div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">经营性支出</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(operatingOutflow)}</div></div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">经营性净流入</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(operatingNetCashflow)}</div></div>
           </div>
+          {!operatingNetConsistent ? (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">口径校验异常：经营性净流入与经营性回款-经营性支出不一致。</div>
+          ) : null}
         </Section>
       ) : null}
 
@@ -447,6 +463,13 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
               </div>
             ))}
           </div>
+          {!excludedInflowConsistent || !excludedOutflowConsistent ? (
+            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              口径校验异常：被剔除流水合计与原始流水-净化流水差额不一致。
+              收入差额应为 {formatMoney(expectedExcludedInflow)}，当前为 {formatMoney(displayedExcludedInflow)}；
+              支出差额应为 {formatMoney(expectedExcludedOutflow)}，当前为 {formatMoney(displayedExcludedOutflow)}。
+            </div>
+          ) : null}
           <TransactionTable items={excludedTransactions} customerId={customerId} onReviewed={onRulesSaved} />
         </Section>
       ) : null}
@@ -545,8 +568,8 @@ export const EnterpriseBankStatementView: React.FC<EnterpriseBankStatementViewPr
 
       <Section title="融资建议">
         <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">银行可能认可流水口径</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(financing.bank_recognizable_inflow ?? operatingInflow)}</div></div>
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">调整后经营性进账</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(financing.adjusted_operating_inflow ?? operatingInflow)}</div></div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">银行可能认可流水口径</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(operatingInflow)}</div></div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">调整后经营性进账</div><div className="mt-1 text-lg font-semibold text-slate-800">{formatMoney(operatingInflow)}</div></div>
         </div>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <div><div className="mb-2 text-xs font-medium text-slate-500">建议产品</div><div className="flex flex-wrap gap-2">{asArray<string>(financing.suggested_credit_products).map((item) => <span key={item} className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs text-blue-700">{item}</span>)}</div></div>
