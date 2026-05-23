@@ -289,3 +289,21 @@ def test_salary_continuity_strong_and_unstable(tmp_path: Path) -> None:
     ])
     weak = run_personal_bank_statement_agent(file_path=str(weak_path), filename=weak_path.name)["extracted_json"]
     assert weak["income_verification"]["salary_continuity_level"] in {"weak", "none"}
+
+
+def test_china_merchants_daifa_kuanxiang_suspected_salary_rows_metadata() -> None:
+    rows = [
+        {"交易日期": "2024-06-21", "交易金额": "11543.87", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+        {"交易日期": "2024-07-10", "交易金额": "16131.77", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+        {"交易日期": "2024-08-09", "交易金额": "15986.08", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+        {"交易日期": "2024-09-10", "交易金额": "15774.82", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+    ]
+    data = run_personal_bank_statement_agent(filename="招商银行个人流水.xlsx", metadata={"rows": rows})["extracted_json"]
+    income = data["income_verification"]
+    assert income["suspected_salary_income"] > 0
+    assert income["suspected_salary_count"] == 4
+    assert income["salary_months"] == 4
+    assert any(item["counterparty_name"] == "上海中兴软件有限责任公司" for item in income["salary_sources"])
+    assert {tx["salary_detection"]["salary_type"] for tx in data["transactions"]} == {"suspected_salary"}
+    assert income["confirmed_salary_income"] == 0
+    assert income["verified_salary_income"] == 0

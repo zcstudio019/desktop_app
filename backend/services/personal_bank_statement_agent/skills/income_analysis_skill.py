@@ -95,11 +95,17 @@ def analyze_income(transactions: list[dict[str, Any]], month_count: int | None =
     for item in monthly.values():
         item["verified_income"] = item["verified_salary_income"] + item["verified_operating_income"] + item["verified_other_stable_income"]
         item["stable_income"] = item["verified_income"]
-    salary_months = len({
+    confirmed_salary_months = len({
         str(tx.get("transaction_date") or "")[:7]
         for tx in transactions
         if tx.get("category") == "salary_income" and str(tx.get("transaction_date") or "")[:7]
     })
+    suspected_salary_months = len({
+        str(tx.get("transaction_date") or "")[:7]
+        for tx in transactions
+        if tx.get("category") == "suspected_salary_income" and str(tx.get("transaction_date") or "")[:7]
+    })
+    salary_months = confirmed_salary_months or suspected_salary_months
     salary_sources: dict[str, dict[str, Any]] = defaultdict(lambda: {"counterparty_name": "未知付款方", "amount": 0.0, "count": 0, "months": set(), "salary_type": ""})
     salary_confidences: list[float] = []
     continuous_months = 0
@@ -122,6 +128,9 @@ def analyze_income(transactions: list[dict[str, Any]], month_count: int | None =
             continuous_months = max(continuous_months, int(detection.get("continuous_months") or 0))
         elif not source["salary_type"]:
             source["salary_type"] = "suspected_salary"
+            if not totals["confirmed_salary_income"]:
+                salary_confidences.append(float(detection.get("confidence") or 0))
+                continuous_months = max(continuous_months, int(detection.get("continuous_months") or 0))
     if continuous_months >= 6:
         continuity_level = "strong"
     elif continuous_months >= 3:

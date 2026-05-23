@@ -47,8 +47,10 @@ def build_financing_judgement(
 
     if confirmed_salary > 0 and salary_months >= 6 and salary_continuity == "strong" and salary_confidence >= 0.75 and not is_repayment_flow:
         income_quality = "强"
+    elif suspected_salary > 0 and confirmed_salary <= 0 and salary_months >= 3:
+        income_quality = "中/待核实"
     elif suspected_salary > 0 and confirmed_salary <= 0:
-        income_quality = "中" if unknown_ratio < 0.5 else "无法完全确认"
+        income_quality = "无法完全确认"
     elif verified <= 0 and raw_income > 0 and unknown_ratio >= 0.5:
         income_quality = "弱"
     elif verified >= 30000 and not is_repayment_flow:
@@ -76,7 +78,9 @@ def build_financing_judgement(
     else:
         suspicious_flow_risk = "低"
 
-    if is_repayment_flow:
+    if suspected_salary > 0 and confirmed_salary <= 0 and salary_months >= 3 and not is_repayment_flow:
+        recommended_usage = "可作为辅助收入证明，需人工核实"
+    elif is_repayment_flow:
         recommended_usage = "可作为还款账户流水"
     elif income_quality in {"强", "中"} and suspicious_flow_risk == "低":
         recommended_usage = "可作为主收入证明"
@@ -96,7 +100,7 @@ def build_financing_judgement(
     elif verified > 0:
         final_summary = "该流水识别到明确工资或经营收入，可作为收入证明材料之一，仍建议结合征信、纳税、经营收款账户等资料交叉验证。"
     elif suspected_salary > 0:
-        final_summary = "该流水仅识别到疑似工资收入，尚缺少明确工资摘要或完整付款方证据，需人工核实任职单位、发薪用途和连续性后再判断收入质量。"
+        final_summary = "该流水未识别到明确工资摘要，但存在多笔代发类款项，付款方为公司主体，并连续多月出现，具备疑似工资收入特征。建议结合劳动合同、社保、公积金或单位开具的收入证明核实后采信。"
     else:
         final_summary = "该流水未识别到明确可采信收入来源，暂不建议单独用于收入或还款能力判断。"
 

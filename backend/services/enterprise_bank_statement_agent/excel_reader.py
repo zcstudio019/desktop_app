@@ -23,10 +23,11 @@ HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
     "post_date": ("记账日期", "入账日期", "过账日期", "清算日期", "post_date", "posting_date"),
     "credit_amount": ("贷方金额", "收入", "转入", "入账金额", "发生额收入", "收方金额", "来账金额", "贷方发生额", "收入金额", "借方金额（收）", "借方金额(收)", "credit", "credit_amount", "inflow"),
     "debit_amount": ("借方金额", "支出", "转出", "出账金额", "发生额支出", "付方金额", "往账金额", "借方发生额", "支出金额", "贷方金额（支）", "贷方金额(支)", "debit", "debit_amount", "outflow"),
+    "transaction_amount": ("交易金额", "发生额", "金额", "transaction_amount", "amount"),
     "balance": ("余额", "账户余额", "交易后余额", "可用余额", "balance"),
     "summary": ("摘要", "交易摘要", "交易名称", "备注", "附言", "客户附言", "summary", "remark"),
     "purpose": ("用途", "交易用途", "附言", "备注", "purpose", "usage"),
-    "counterparty_name": ("对方户名", "对方名称", "交易对手", "对方账户名称", "收付款方名称", "counterparty_name", "counterparty"),
+    "counterparty_name": ("对方户名", "对方名称", "交易对手", "对方账户名称", "收付款方名称", "对手信息", "对手方", "counterparty_name", "counterparty", "counter party"),
     "counterparty_account": COUNTERPARTY_ACCOUNT_HEADERS,
     "counterparty_bank": COUNTERPARTY_BANK_HEADERS,
     "account_number": OWN_ACCOUNT_HEADERS,
@@ -91,7 +92,7 @@ def _find_header_row(rows: list[list[Any]], warnings: list[str], sheet_name: str
             if canonical and canonical not in mapping.values():
                 mapping[col_index] = canonical
         fields = set(mapping.values())
-        amount_score = int("credit_amount" in fields) + int("debit_amount" in fields)
+        amount_score = int("credit_amount" in fields) + int("debit_amount" in fields) + int("transaction_amount" in fields)
         score = amount_score * 2 + int("transaction_date" in fields) + int("balance" in fields) + int("summary" in fields)
         if score > best_score:
             best_score = score
@@ -299,11 +300,12 @@ HEADER_SYNONYMS_CN: dict[str, tuple[str, ...]] = {
     "post_date": ("记账日期", "入账日期", "过账日期"),
     "credit_amount": ("贷方发生额", "贷方金额", "贷方发生额（收入）", "贷方发生额(收入)", "收入", "收入金额", "入账金额", "转入", "发生额收入"),
     "debit_amount": ("借方发生额", "借方金额", "借方发生额（支取）", "借方发生额(支取)", "支出", "支出金额", "出账金额", "转出", "发生额支出"),
+    "transaction_amount": ("交易金额", "发生额", "金额"),
     "balance": ("余额", "账户余额", "交易后余额", "可用余额"),
     "summary": ("摘要", "交易摘要", "交易名称"),
     "purpose": ("交易用途", "用途"),
     "remark": ("备注", "附言", "客户附言"),
-    "counterparty_name": ("对方户名", "对方名称", "对手名称", "交易对手", "收付款方名称"),
+    "counterparty_name": ("对方户名", "对方名称", "对手名称", "交易对手", "收付款方名称", "对手信息", "对手方"),
     "counterparty_account": ("对方账号", "对方账户", "对手账号", "收付款方账号", "交易对手账号"),
     "counterparty_bank": ("对方开户行", "对方机构", "对方银行", "收付款方开户行", "对方账户开户行"),
     "payee_name": ("收款人", "收款方", "付款人", "付款方"),
@@ -442,7 +444,7 @@ def _canonical_header(value: Any) -> str | None:
         return "payee_account"
     if any(token in label for token in ("收款人", "收款方", "付款人", "付款方")):
         return "payee_name"
-    if label == "对手方":
+    if label in {"对手方", "对手信息"}:
         return "counterparty_name"
     if "对手方账号" in label:
         return "counterparty_account"
@@ -452,7 +454,7 @@ def _canonical_header(value: Any) -> str | None:
     # Check these first so "对手账号" never falls through to own account number.
     if "对手账号" in label or "对方账号" in label or "交易对手账号" in label:
         return "counterparty_account"
-    if "对手名称" in label or "对方户名" in label or "对方名称" in label:
+    if "对手名称" in label or "对手信息" in label or "对方户名" in label or "对方名称" in label:
         return "counterparty_name"
     if "借方发生额" in label or "借方金额" in label:
         return "debit_amount"
@@ -460,6 +462,8 @@ def _canonical_header(value: Any) -> str | None:
         return "credit_amount"
     if "交易流水号" in label:
         return "serial_no"
+    if label in {"交易金额", "发生额", "金额"}:
+        return "transaction_amount"
     if label == "交易时间":
         return "transaction_date"
     if label == "记账日期":
@@ -509,6 +513,8 @@ def _find_header_row(rows: list[list[Any]], warnings: list[str], sheet_name: str
             score = 10
         elif {"transaction_date", "credit_amount", "debit_amount", "balance"}.issubset(fields):
             score = 9
+        elif {"transaction_date", "transaction_amount"}.issubset(fields) and ("summary" in fields or "counterparty_name" in fields):
+            score = 8
         elif {"debit_amount", "credit_amount", "balance"}.issubset(fields):
             score = 8
         else:
@@ -516,6 +522,7 @@ def _find_header_row(rows: list[list[Any]], warnings: list[str], sheet_name: str
                 int("transaction_date" in fields)
                 + int("debit_amount" in fields) * 2
                 + int("credit_amount" in fields) * 2
+                + int("transaction_amount" in fields) * 3
                 + int("balance" in fields)
                 + int("account_number" in fields)
                 + int("account_name" in fields)

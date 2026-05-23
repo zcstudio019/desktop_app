@@ -30,6 +30,7 @@ STRONG_SALARY_KEYWORDS = (
 )
 
 SUSPECTED_SALARY_KEYWORDS = (
+    "代发款项",
     "代发",
     "批量代发",
     "企业代发",
@@ -38,6 +39,9 @@ SUSPECTED_SALARY_KEYWORDS = (
     "代发业务",
     "批量转账",
     "对公代发",
+    "银联代付",
+    "网联收款",
+    "代付入账",
     "转账",
     "网银转账",
     "企业网银转账",
@@ -83,16 +87,21 @@ EMPLOYER_COUNTERPARTY_KEYWORDS = (
     "股份有限公司",
     "集团",
     "公司",
+    "科技",
+    "软件",
+    "信息",
+    "网络",
     "工厂",
     "厂",
     "商贸",
-    "科技",
+    "贸易",
     "实业",
     "工程",
     "建筑",
     "劳务",
     "人力资源",
     "财务",
+    "银行股份有限公司",
     "银行代发",
     "代发工资专户",
 )
@@ -252,6 +261,22 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
             continue
 
         score = sum([bool(suspected), employer_like, continuous >= 2, periodic, stable])
+        if suspected and employer_like:
+            if continuous >= 6 and stable:
+                confidence = 0.85
+            elif continuous >= 3:
+                confidence = 0.75
+            elif continuous >= 2:
+                confidence = 0.65
+            else:
+                confidence = 0.6
+            confidence += 0.04 if periodic else 0
+            confidence += 0.03 if stable else 0
+            detection["salary_type"] = "suspected_salary"
+            detection["confidence"] = round(min(confidence, 0.9), 2)
+            detection["evidence"] = "摘要命中疑似代发类关键词，付款方为公司/单位主体，识别为疑似工资收入，需人工核实"
+            tx["need_manual_review"] = True
+            continue
         if suspected and score >= 3:
             confidence = 0.45 + (0.15 if employer_like else 0) + (0.12 if continuous >= 3 else 0.08 if continuous >= 2 else 0) + (0.1 if periodic else 0) + (0.1 if stable else 0)
             detection["salary_type"] = "suspected_salary"
@@ -269,8 +294,10 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
     confirmed_amount = sum(float(tx.get("credit_amount") or 0) for tx in confirmed)
     suspected_amount = sum(float(tx.get("credit_amount") or 0) for tx in suspected_txs)
     salary_months = len({str(tx.get("transaction_date") or "")[:7] for tx in confirmed if str(tx.get("transaction_date") or "")[:7]})
-    confirmed_dates = [date for date in (_parse_date(tx.get("transaction_date")) for tx in confirmed) if date]
-    confirmed_amounts = [float(tx.get("credit_amount") or 0) for tx in confirmed]
+    suspected_months = len({str(tx.get("transaction_date") or "")[:7] for tx in suspected_txs if str(tx.get("transaction_date") or "")[:7]})
+    continuity_basis = confirmed if confirmed else suspected_txs
+    confirmed_dates = [date for date in (_parse_date(tx.get("transaction_date")) for tx in continuity_basis) if date]
+    confirmed_amounts = [float(tx.get("credit_amount") or 0) for tx in continuity_basis]
     continuity_months = _longest_consecutive_months(confirmed_dates)
     stable = _amount_stable(confirmed_amounts)
     if continuity_months >= 6 and stable:
@@ -308,20 +335,22 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
     if not confirmed_amount:
         notes.append("未识别到明确工资收入")
     if suspected_amount:
-        notes.append("存在疑似工资收入，需结合付款方和用途人工核实")
+        top_source = salary_sources[0]["counterparty_name"] if salary_sources else "疑似单位付款方"
+        notes.append(f"摘要为代发类款项，付款方为{top_source}等公司主体，连续多月出现，识别为疑似工资收入，需人工核实是否为工资")
     if any(
         normalize_text(tx.get("summary")) in {"汇款汇入", "转账", "转账收入"} and not normalize_text(tx.get("counterparty_name"))
         for tx in income_transactions
     ):
         notes.append("汇款汇入/转账且缺少付款方时，不认定为工资")
-    confidence_values = [float(tx.get("salary_detection", {}).get("confidence") or 0) for tx in confirmed]
+    confidence_basis = confirmed if confirmed else suspected_txs
+    confidence_values = [float(tx.get("salary_detection", {}).get("confidence") or 0) for tx in confidence_basis]
     return {
         "confirmed_salary_income": round2(confirmed_amount),
         "suspected_salary_income": round2(suspected_amount),
         "verified_salary_income": round2(confirmed_amount),
         "salary_income_count": len(confirmed),
         "suspected_salary_count": len(suspected_txs),
-        "salary_months": salary_months,
+        "salary_months": salary_months or suspected_months,
         "salary_avg_monthly_amount": round2(confirmed_amount / salary_months) if salary_months else 0.0,
         "salary_continuity_level": continuity_level,
         "salary_confidence": round2(sum(confidence_values) / len(confidence_values)) if confidence_values else 0.0,

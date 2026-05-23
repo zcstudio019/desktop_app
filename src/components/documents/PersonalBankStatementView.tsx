@@ -192,6 +192,8 @@ type NormalizedTx = {
   amount: number;
   debitAmount: number;
   creditAmount: number;
+  transactionDate: string;
+  counterpartyName: string;
 };
 
 type NormalizedPersonalFlowSummary = {
@@ -226,6 +228,8 @@ const LOAN_REPAYMENT_KEYWORDS = ['个贷还款', '贷款回收', '贷款还款',
 const QUICK_PAYMENT_KEYWORDS = ['快捷支付', '消费', 'POS', '支付宝', '微信支付'];
 const UNKNOWN_INFLOW_KEYWORDS = ['汇款汇入', '转账收入', '跨行汇入', '他行汇入'];
 const INTEREST_INCOME_KEYWORDS = ['存款利息', '结息'];
+const SUSPECTED_SALARY_KEYWORDS = ['代发款项', '代发', '批量代发', '企业代发', '单位代发', '代发入账', '代发业务', '对公代发', '银联代付', '网联收款', '代付入账', '批量入账'];
+const EMPLOYER_COUNTERPARTY_KEYWORDS = ['有限公司', '有限责任公司', '股份有限公司', '集团', '公司', '科技', '软件', '信息', '网络', '工程', '建筑', '实业', '商贸', '贸易', '人力资源', '劳务', '工厂', '厂', '银行股份有限公司', '代发工资专户'];
 
 function containsAny(text: string, keywords: string[]): boolean {
   return keywords.some((keyword) => text.includes(keyword));
@@ -282,12 +286,15 @@ function getTransactionList(raw: Record<string, unknown>): Record<string, unknow
 }
 
 function normalizeTransaction(tx: Record<string, unknown>): NormalizedTx {
-  const summary = String(tx.summary || tx['摘要'] || tx.description || '').trim();
+  const summary = String(tx.summary || tx['摘要'] || tx['交易摘要'] || tx.description || '').trim();
+  const counterpartyName = String(tx.counterparty_name || tx.counterpartyName || tx.counterparty || tx['对手信息'] || tx['对方户名'] || tx['对方名称'] || tx['交易对手'] || tx['对手方'] || '').trim();
+  const transactionDate = String(tx.transaction_date || tx.transactionDate || tx['交易日期'] || tx.date || '').slice(0, 10);
   const rawDirection = String(tx.direction || tx['收支'] || tx.transaction_direction || '').trim();
   const debit = absAmount(tx.debit_amount ?? tx.debitAmount);
   const credit = absAmount(tx.credit_amount ?? tx.creditAmount);
-  const amount = absAmount(tx.amount ?? tx['金额'] ?? tx.transaction_amount ?? (credit || debit));
-  const direction = rawDirection || (credit > 0 ? '收' : debit > 0 ? '支' : '');
+  const signedAmount = toNumber(tx.amount ?? tx['金额'] ?? tx.transaction_amount ?? tx['交易金额']);
+  const amount = absAmount(tx.amount ?? tx['金额'] ?? tx.transaction_amount ?? tx['交易金额'] ?? (credit || debit));
+  const direction = rawDirection || (credit > 0 || signedAmount > 0 ? '收' : debit > 0 || signedAmount < 0 ? '支' : '');
   const isIncome = direction === '收' || direction === 'income' || direction === 'credit' || direction === 'inflow';
   const isExpense = direction === '支' || direction === 'expense' || direction === 'debit' || direction === 'outflow';
   return {
@@ -296,11 +303,57 @@ function normalizeTransaction(tx: Record<string, unknown>): NormalizedTx {
     amount,
     debitAmount: debit || (isExpense ? amount : 0),
     creditAmount: credit || (isIncome ? amount : 0),
+    transactionDate,
+    counterpartyName,
   };
 }
 
 function sumTransactions(transactions: NormalizedTx[], predicate: (tx: NormalizedTx) => boolean, amountSelector: (tx: NormalizedTx) => number): number {
   return transactions.reduce((sum, tx) => predicate(tx) ? sum + amountSelector(tx) : sum, 0);
+}
+
+function employerLikeCounterparty(name: string): boolean {
+  return containsAny(name, EMPLOYER_COUNTERPARTY_KEYWORDS);
+}
+
+function deriveSuspectedSalary(transactions: NormalizedTx[]): {
+  amount: number;
+  count: number;
+  months: number;
+  confidence: number;
+  sources: Record<string, unknown>[];
+  notes: string[];
+} {
+  const matched = transactions.filter((tx) => (
+    (tx.creditAmount > 0 || tx.direction === '收') &&
+    containsAny(tx.summary, SUSPECTED_SALARY_KEYWORDS) &&
+    employerLikeCounterparty(tx.counterpartyName)
+  ));
+  const amount = matched.reduce((sum, tx) => sum + (tx.creditAmount || tx.amount), 0);
+  const months = new Set(matched.map((tx) => tx.transactionDate.slice(0, 7)).filter(Boolean));
+  const bySource = new Map<string, { counterparty_name: string; amount: number; count: number; months: Set<string>; salary_type: string }>();
+  for (const tx of matched) {
+    const key = tx.counterpartyName || '未知付款方';
+    const item = bySource.get(key) || { counterparty_name: key, amount: 0, count: 0, months: new Set<string>(), salary_type: 'suspected_salary' };
+    item.amount += tx.creditAmount || tx.amount;
+    item.count += 1;
+    if (tx.transactionDate.slice(0, 7)) item.months.add(tx.transactionDate.slice(0, 7));
+    bySource.set(key, item);
+  }
+  const sources = Array.from(bySource.values())
+    .map((item) => ({ ...item, months: Array.from(item.months).sort(), amount: Math.round(item.amount * 100) / 100 }))
+    .sort((a, b) => Number(b.amount) - Number(a.amount));
+  const monthCount = months.size;
+  const confidence = monthCount >= 6 ? 0.85 : monthCount >= 3 ? 0.75 : monthCount >= 2 ? 0.65 : matched.length ? 0.6 : 0;
+  const topSource = sources[0]?.counterparty_name ? String(sources[0].counterparty_name) : '';
+  return {
+    amount: Math.round(amount * 100) / 100,
+    count: matched.length,
+    months: monthCount,
+    confidence,
+    sources,
+    notes: matched.length ? [`摘要为代发款项/代发类收入，付款方为${topSource || '公司主体'}，连续多月出现，识别为疑似工资收入，需人工核实是否为工资。`] : [],
+  };
 }
 
 function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedPersonalFlowSummary {
@@ -334,6 +387,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     (tx) => isIncome(tx) && containsAny(tx.summary, INTEREST_INCOME_KEYWORDS),
     (tx) => tx.creditAmount || tx.amount
   );
+  const derivedSuspectedSalary = deriveSuspectedSalary(transactions);
   const totalIncome = pickMeaningfulNumber(
     income.raw_total_income,
     rawSummary.total_income,
@@ -380,15 +434,15 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     verifiedIncome: pickNumber(income.verified_income, income.stable_income, customerSummary.verified_income, customerSummary.stable_income, customerSummary.customer_verified_income, customerSummary.customer_stable_income),
     avgMonthlyVerifiedIncome: pickNumber(income.avg_monthly_verified_income, income.avg_monthly_stable_income, customerSummary.avg_monthly_verified_income, customerSummary.avg_monthly_stable_income, customerSummary.customer_avg_monthly_verified_income),
     confirmedSalaryIncome: pickNumber(income.confirmed_salary_income, income.verified_salary_income, customerSummary.salary_income),
-    suspectedSalaryIncome: pickNumber(income.suspected_salary_income, customerSummary.suspected_salary_income),
+    suspectedSalaryIncome: pickMeaningfulNumber(income.suspected_salary_income, customerSummary.suspected_salary_income, derivedSuspectedSalary.amount),
     verifiedSalaryIncome: pickNumber(income.verified_salary_income, income.salary_income, customerSummary.salary_income),
     verifiedOperatingIncome: pickNumber(income.verified_operating_income, income.operating_income, customerSummary.operating_income),
     verifiedOtherStableIncome: pickNumber(income.verified_other_stable_income, income.other_stable_income),
-    salaryMonths: pickNumber(income.salary_months, customerSummary.salary_months),
+    salaryMonths: pickMeaningfulNumber(income.salary_months, customerSummary.salary_months, derivedSuspectedSalary.months),
     salaryAvgMonthlyAmount: pickNumber(income.salary_avg_monthly_amount),
-    salaryConfidence: pickNumber(income.salary_confidence, customerSummary.salary_confidence),
-    salarySources: asArray<Record<string, unknown>>(income.salary_sources),
-    salaryDetectionNotes: asArray<string>(income.salary_detection_notes),
+    salaryConfidence: pickMeaningfulNumber(income.salary_confidence, customerSummary.salary_confidence, derivedSuspectedSalary.confidence),
+    salarySources: asArray<Record<string, unknown>>(income.salary_sources).length ? asArray<Record<string, unknown>>(income.salary_sources) : derivedSuspectedSalary.sources,
+    salaryDetectionNotes: asArray<string>(income.salary_detection_notes).length ? asArray<string>(income.salary_detection_notes) : derivedSuspectedSalary.notes,
     unknownInflow,
     interestIncome,
     loanRepaymentExpense,
