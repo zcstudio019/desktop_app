@@ -1853,6 +1853,7 @@ async def get_customer_personal_flow_summary(
                 item for item in all_extractions
                 if (item.get("extraction_type") or item.get("document_type") or "") in PERSONAL_FLOW_TYPES
             ]
+        extractions = [item for item in extractions if item.get("is_active") is not False]
         aggregated = aggregate_customer_personal_flows(extractions)
     except Exception as exc:
         logger.exception("[PersonalFlowSummary] failed customer_id=%s", customer_id)

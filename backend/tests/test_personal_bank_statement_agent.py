@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from backend.document_types import normalize_document_type_code, should_append_same_type_document
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
 from backend.services.personal_bank_statement_agent.customer_flow_aggregator import aggregate_customer_personal_flows
+from backend.services.personal_bank_statement_agent.deterministic_summary import build_deterministic_personal_flow_summary
 from backend.services.personal_bank_statement_agent.orchestrator import run_personal_bank_statement_agent
 
 
@@ -117,7 +118,7 @@ def test_customer_aggregate_multi_files_partial_failure_and_delete_refresh(tmp_p
     parsed = run_personal_bank_statement_agent(file_path=str(path), filename=path.name)["extracted_json"]
     failed = {"doc_id": "bad", "extraction_type": "personal_flow", "file_name": "bad.xlsx", "extracted_data": {"extracted_json": {"extraction_status": "failed", "warnings": ["bad file"]}}}
     one = {"doc_id": "doc1", "extraction_id": "ext1", "extraction_type": "personal_flow", "file_name": path.name, "extracted_data": {"extracted_json": parsed}}
-    two = {"doc_id": "doc2", "extraction_id": "ext2", "extraction_type": "personal_flow", "file_name": path.name, "extracted_data": {"extracted_json": parsed}}
+    two = {"doc_id": "doc2", "extraction_id": "ext2", "extraction_type": "personal_flow", "file_name": "aggregate-2.xlsx", "extracted_data": {"extracted_json": parsed}}
     aggregated = aggregate_customer_personal_flows([one, two, failed])
     assert aggregated["source_document_count"] == 2
     assert aggregated["customer_level_summary"]["salary_income"] == parsed["customer_level_summary"]["salary_income"] * 2
@@ -326,6 +327,23 @@ def test_deterministic_summary_from_transaction_amount_rows_metadata() -> None:
     assert summary["max_expense_transaction"]["summary"] == "转账汇款"
 
 
+def test_deterministic_personal_flow_summary_is_repeatable() -> None:
+    payload = {
+        "收支规模汇总": {"总收入金额": 1, "总支出金额": 1},
+        "交易明细列表": [
+            {"交易日期": "2024-06-21", "交易金额": "11543.87", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+            {"交易日期": "2024-07-10", "交易金额": "16131.77", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+            {"交易日期": "2024-07-15", "交易金额": "-1000.00", "交易摘要": "转账汇款", "对手信息": "李四"},
+        ],
+    }
+    first = build_deterministic_personal_flow_summary(payload)
+    second = build_deterministic_personal_flow_summary(payload)
+    assert first["deterministic_summary"] == second["deterministic_summary"]
+    assert first["income_verification"]["suspected_salary_income"] == second["income_verification"]["suspected_salary_income"]
+    assert first["income_verification"]["suspected_salary_income"] == 27675.64
+    assert first["income_verification"]["salary_sources"][0]["counterparty_name"] == "上海中兴软件有限责任公司"
+
+
 def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
     payload = {
         "doc_type": "personal_flow",
@@ -343,3 +361,41 @@ def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
     assert aggregated["deterministic_summary"]["total_expense"] == 40
     assert aggregated["customer_level_summary"]["raw_total_income"] == 100
     assert aggregated["summary_warnings"][0]["code"] == "summary_detail_mismatch"
+
+
+def test_duplicate_same_file_hash_only_latest_participates_in_personal_flow_aggregate() -> None:
+    old_payload = {
+        "doc_type": "personal_flow",
+        "transactions": [
+            {"transaction_date": "2024-01-01", "transaction_amount": 100, "summary": "汇款汇入"},
+        ],
+    }
+    latest_payload = {
+        "doc_type": "personal_flow",
+        "transactions": [
+            {"transaction_date": "2024-01-01", "transaction_amount": 200, "summary": "汇款汇入"},
+        ],
+    }
+    aggregated = aggregate_customer_personal_flows([
+        {
+            "doc_id": "old",
+            "extraction_id": "ext-old",
+            "extraction_type": "personal_flow",
+            "file_name": "same.xlsx",
+            "file_hash": "hash-1",
+            "created_at": "2024-01-01T00:00:00",
+            "extracted_data": {"extracted_json": old_payload},
+        },
+        {
+            "doc_id": "new",
+            "extraction_id": "ext-new",
+            "extraction_type": "personal_flow",
+            "file_name": "same.xlsx",
+            "file_hash": "hash-1",
+            "created_at": "2024-01-02T00:00:00",
+            "extracted_data": {"extracted_json": latest_payload},
+        },
+    ])
+    assert aggregated["source_document_count"] == 1
+    assert aggregated["source_files"][0]["document_id"] == "new"
+    assert aggregated["deterministic_summary"]["total_income"] == 200

@@ -33,6 +33,16 @@ function asArray<T = Record<string, unknown>>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
+function normalizeWarnings(value: unknown): string[] {
+  return asArray<unknown>(value)
+    .map((item) => {
+      if (typeof item === 'string') return item;
+      const record = asRecord(item);
+      return String(record.message || record.evidence || record.code || '').trim();
+    })
+    .filter(Boolean);
+}
+
 function parseMaybeJson(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   try {
@@ -501,7 +511,7 @@ function normalizePersonalFlowData(raw: Record<string, unknown>) {
     topIncome: asArray<Record<string, unknown>>(raw.top_income_counterparties || firstAccount.top_income_counterparties),
     topExpense: asArray<Record<string, unknown>>(raw.top_expense_counterparties || firstAccount.top_expense_counterparties),
     riskSignals: asArray<Record<string, unknown>>(raw.risk_signals),
-    warnings: asArray<string>(raw.warnings),
+    warnings: normalizeWarnings(raw.warnings || raw.summary_warnings),
     documents: asArray<Record<string, unknown>>(raw.documents || raw.source_files),
     documentCount: numberValue(raw.document_count, raw.source_document_count, asArray(raw.documents || raw.source_files).length),
     accountCount: numberValue(raw.account_count, customerSummary.account_count, accounts.length),

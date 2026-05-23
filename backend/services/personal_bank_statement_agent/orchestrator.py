@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .markdown_renderer import render_personal_bank_statement_markdown
+from .deterministic_summary import build_deterministic_personal_flow_summary
 from .normalizer import months_count, round2
 from .schema import (
     Account,
@@ -533,9 +534,7 @@ def run_personal_bank_statement_agent(
             financing_judgement=judgement,
             warnings=[],
         )
-        extracted_json = to_plain_dict(data)
-        extracted_json["deterministic_summary"] = deterministic_summary
-        extracted_json["ai_summary_raw"] = ai_summary_raw
+        extracted_json = build_deterministic_personal_flow_summary(to_plain_dict(data))
         if summary_warning:
             extracted_json.setdefault("summary_warnings", []).append(summary_warning)
             extracted_json.setdefault("risk_signals", []).append(summary_warning)

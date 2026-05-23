@@ -4,15 +4,10 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
+from .deterministic_summary import build_deterministic_personal_flow_summary
 from .normalizer import round2
 from .skills.financing_judgement_skill import build_financing_judgement
 from .skills.risk_signal_skill import detect_risk_signals
-from .summary_utils import (
-    build_deterministic_summary,
-    build_summary_mismatch_warning,
-    collect_transaction_details,
-    get_ai_summary_raw,
-)
 
 PERSONAL_FLOW_TYPES = {
     "personal_flow",
@@ -35,6 +30,35 @@ def _list(value: Any) -> list[Any]:
 def _payload(extraction: dict[str, Any]) -> dict[str, Any]:
     data = _dict(extraction.get("extracted_data"))
     return _dict(data.get("extracted_json") or data.get("data") or data)
+
+
+def _dedupe_extractions(extractions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    keys: list[str] = []
+    for extraction in sorted(extractions, key=lambda item: str(item.get("created_at") or "")):
+        payload = _payload(extraction)
+        normalized = build_deterministic_personal_flow_summary(payload) if payload else {}
+        extraction["_deterministic_payload"] = normalized
+        file_name = str(
+            extraction.get("file_name")
+            or payload.get("source_file")
+            or payload.get("file_name")
+            or ""
+        )
+        file_hash = str(
+            extraction.get("file_hash")
+            or payload.get("file_hash")
+            or _dict(extraction.get("document")).get("file_hash")
+            or normalized.get("transaction_signature")
+            or extraction.get("doc_id")
+            or extraction.get("extraction_id")
+            or ""
+        )
+        key = f"{file_name}|{file_hash}" if file_name or file_hash else str(extraction.get("extraction_id") or len(keys))
+        if key not in latest:
+            keys.append(key)
+        latest[key] = extraction
+    return [latest[key] for key in keys if key in latest]
 
 
 def _date(value: Any) -> str:
@@ -65,6 +89,7 @@ def _merge_top(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict[str, Any]:
+    extractions = _dedupe_extractions(extractions)
     source_files: list[dict[str, Any]] = []
     accounts: list[dict[str, Any]] = []
     transactions: list[dict[str, Any]] = []
@@ -77,12 +102,16 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     top_income: list[dict[str, Any]] = []
     top_expense: list[dict[str, Any]] = []
     sums = defaultdict(float)
+    salary_months: set[str] = set()
+    salary_sources: dict[str, dict[str, Any]] = defaultdict(lambda: {"counterparty_name": "", "amount": 0.0, "count": 0, "months": set(), "salary_type": ""})
+    salary_notes: list[str] = []
+    salary_confidences: list[float] = []
 
     for extraction in extractions:
         extraction_type = str(extraction.get("extraction_type") or extraction.get("document_type") or "")
         if extraction_type and extraction_type not in PERSONAL_FLOW_TYPES:
             continue
-        payload = _payload(extraction)
+        payload = _dict(extraction.get("_deterministic_payload")) or build_deterministic_personal_flow_summary(_payload(extraction))
         if not payload:
             continue
         doc_id = str(extraction.get("doc_id") or extraction.get("document_id") or "")
@@ -94,13 +123,14 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
             warnings.extend(str(item) for item in _list(payload.get("warnings")) if item)
             continue
         summary = _dict(payload.get("customer_level_summary"))
-        detail_transactions = collect_transaction_details(payload)
-        detail_summary = build_deterministic_summary(detail_transactions) if detail_transactions else {}
-        ai_summary_raw = get_ai_summary_raw(payload)
-        mismatch_warning = build_summary_mismatch_warning(ai_summary_raw, detail_summary) if detail_summary else None
-        if mismatch_warning:
-            summary_warnings.append(mismatch_warning)
-            warnings.append(f"{mismatch_warning['code']}: {mismatch_warning['evidence']}")
+        detail_transactions = _list(payload.get("transactions"))
+        detail_summary = _dict(payload.get("deterministic_summary"))
+        ai_summary_raw = _dict(payload.get("ai_summary_raw"))
+        for mismatch_warning in _list(payload.get("summary_warnings")):
+            mismatch_warning = _dict(mismatch_warning)
+            if mismatch_warning:
+                summary_warnings.append(mismatch_warning)
+                warnings.append(f"{mismatch_warning.get('code')}: {mismatch_warning.get('evidence')}")
         effective_raw_income = detail_summary.get("total_income") if detail_summary else summary.get("raw_total_income")
         effective_raw_expense = detail_summary.get("total_expense") if detail_summary else summary.get("raw_total_expense")
         effective_net_cash_flow = detail_summary.get("net_cash_flow") if detail_summary else summary.get("net_cash_flow")
@@ -110,6 +140,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 "document_id": doc_id,
                 "extraction_id": extraction_id,
                 "file_name": file_name,
+                "created_at": extraction.get("created_at") or "",
                 "source_file": payload.get("source_file") or file_name,
                 "document_type": extraction_type or "personal_flow",
                 "bank_name": payload.get("bank_name") or (source_accounts[0].get("bank_name") if source_accounts else ""),
@@ -127,6 +158,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 "raw_total_expense": effective_raw_expense or 0,
                 "deterministic_summary": detail_summary,
                 "ai_summary_raw": ai_summary_raw,
+                "warnings": payload.get("warnings") or [],
             }
         )
         income = _dict(payload.get("income_verification"))
@@ -144,6 +176,29 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         sums["internal_transfer_income"] += float(income.get("internal_transfer_income") or summary.get("internal_transfer_income") or 0)
         sums["loan_repayment_expense"] += float(expense.get("loan_repayment_expense") or summary.get("loan_repayment_expense") or 0)
         sums["net_operating_cash_flow"] += float(summary.get("net_operating_cash_flow") or effective_net_cash_flow or 0)
+        if income.get("salary_confidence"):
+            salary_confidences.append(float(income.get("salary_confidence") or 0))
+        salary_notes.extend(str(item) for item in _list(income.get("salary_detection_notes")) if item)
+        for source in _list(income.get("salary_sources")):
+            source = _dict(source)
+            name = str(source.get("counterparty_name") or "").strip()
+            if not name:
+                continue
+            target = salary_sources[name]
+            target["counterparty_name"] = name
+            target["amount"] = round2(float(target.get("amount") or 0) + float(source.get("amount") or 0))
+            target["count"] = int(target.get("count") or 0) + int(source.get("count") or 0)
+            target["salary_type"] = source.get("salary_type") or target.get("salary_type") or ""
+            for month in _list(source.get("months")):
+                if month:
+                    target["months"].add(str(month))
+                    salary_months.add(str(month))
+        for tx in detail_transactions:
+            salary_type = (_dict(_dict(tx).get("salary_detection")).get("salary_type") or "")
+            if salary_type in {"confirmed_salary", "suspected_salary"}:
+                month = str(_dict(tx).get("transaction_date") or "")[:7]
+                if month:
+                    salary_months.add(month)
         if summary.get("period_start"):
             start_dates.append(_date(summary.get("period_start")))
         if summary.get("period_end"):
@@ -162,9 +217,10 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 target["month"] = month_key
                 for key in ("raw_income", "raw_expense", "salary_income", "operating_income", "stable_income"):
                     target[key] = round2(float(target.get(key) or 0) + float(month.get(key) or 0))
-            for tx in _list(account.get("transactions")):
-                transactions.append({**_dict(tx), "source_document_id": doc_id, "source_extraction_id": extraction_id, "source_file": file_name})
-        if not source_accounts and detail_transactions:
+            if not detail_transactions:
+                for tx in _list(account.get("transactions")):
+                    transactions.append({**_dict(tx), "source_document_id": doc_id, "source_extraction_id": extraction_id, "source_file": file_name})
+        if detail_transactions:
             for tx in detail_transactions:
                 transactions.append({**_dict(tx), "source_document_id": doc_id, "source_extraction_id": extraction_id, "source_file": file_name})
         warnings.extend(str(item) for item in _list(payload.get("warnings")) if item)
@@ -218,11 +274,19 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "verified_income": summary["verified_income"],
         "stable_income": summary["stable_income"],
         "unknown_inflow": summary["unknown_inflow"],
-        "salary_months": 0,
-        "salary_avg_monthly_amount": 0,
-        "salary_confidence": 0,
-        "salary_sources": [],
-        "salary_detection_notes": [],
+        "salary_income_count": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "confirmed_salary")),
+        "suspected_salary_count": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "suspected_salary")),
+        "salary_months": len(salary_months),
+        "salary_avg_monthly_amount": round2((summary["confirmed_salary_income"] or summary["suspected_salary_income"]) / len(salary_months)) if salary_months else 0,
+        "salary_confidence": round2(sum(salary_confidences) / len(salary_confidences)) if salary_confidences else 0,
+        "salary_sources": [
+            {
+                **{key: value for key, value in source.items() if key != "months"},
+                "months": sorted(str(month) for month in source.get("months") or []),
+            }
+            for source in sorted(salary_sources.values(), key=lambda item: float(item.get("amount") or 0), reverse=True)[:10]
+        ],
+        "salary_detection_notes": list(dict.fromkeys(salary_notes)),
     }
     income_analysis = {"income_volatility": 0, "monthly_income": list(monthly.values())}
     expense_analysis = {
@@ -267,6 +331,8 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "document_type": "personal_flow",
         "normalized_document_type": "personal_bank_statement",
         "aggregation_scope": "customer",
+        "document_count": len(source_files),
+        "account_count": len(accounts),
         "source_document_count": len(source_files),
         "source_files": source_files,
         "failed_sources": failed_sources,
