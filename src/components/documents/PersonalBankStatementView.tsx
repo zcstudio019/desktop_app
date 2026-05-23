@@ -363,6 +363,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
   const expense = asRecord(raw.expense_analysis);
   const cash = asRecord(raw.cash_retention_analysis);
   const repayment = asRecord(raw.repayment_analysis);
+  const deterministic = asRecord(raw.deterministic_summary);
   const scaleSummary = getScaleSummary(raw);
   const transactions = getTransactionList(raw).map(normalizeTransaction);
   const isIncome = (tx: NormalizedTx) => tx.creditAmount > 0 || tx.direction === '收';
@@ -389,6 +390,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
   );
   const derivedSuspectedSalary = deriveSuspectedSalary(transactions);
   const totalIncome = pickMeaningfulNumber(
+    deterministic.total_income,
     income.raw_total_income,
     rawSummary.total_income,
     customerSummary.raw_total_income,
@@ -397,6 +399,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     scaleSummary['总收入金额']
   );
   const totalExpense = pickMeaningfulAbsNumber(
+    deterministic.total_expense,
     expense.raw_total_expense,
     rawSummary.total_expense,
     customerSummary.raw_total_expense,
@@ -405,6 +408,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     scaleSummary['总支出金额']
   );
   const netCashFlow = pickMeaningfulNumber(
+    deterministic.net_cash_flow,
     cash.net_cash_flow,
     rawSummary.net_cash_flow,
     customerSummary.net_cash_flow,
@@ -427,10 +431,10 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     totalIncome,
     totalExpense,
     netCashFlow,
-    incomeCount: pickMeaningfulNumber(rawSummary.income_count, scaleSummary['总收入笔数']),
-    expenseCount: pickMeaningfulNumber(rawSummary.expense_count, scaleSummary['总支出笔数']),
-    avgMonthlyIncome: pickMeaningfulNumber(income.avg_monthly_raw_income, customerSummary.avg_monthly_income, scaleSummary['月均收入']),
-    avgMonthlyExpense: pickMeaningfulAbsNumber(expense.avg_monthly_expense, scaleSummary['月均支出']),
+    incomeCount: pickMeaningfulNumber(deterministic.income_count, rawSummary.income_count, scaleSummary['总收入笔数']),
+    expenseCount: pickMeaningfulNumber(deterministic.expense_count, rawSummary.expense_count, scaleSummary['总支出笔数']),
+    avgMonthlyIncome: pickMeaningfulNumber(deterministic.avg_monthly_income, income.avg_monthly_raw_income, customerSummary.avg_monthly_income, scaleSummary['月均收入']),
+    avgMonthlyExpense: pickMeaningfulAbsNumber(deterministic.avg_monthly_expense, expense.avg_monthly_expense, scaleSummary['月均支出']),
     verifiedIncome: pickNumber(income.verified_income, income.stable_income, customerSummary.verified_income, customerSummary.stable_income, customerSummary.customer_verified_income, customerSummary.customer_stable_income),
     avgMonthlyVerifiedIncome: pickNumber(income.avg_monthly_verified_income, income.avg_monthly_stable_income, customerSummary.avg_monthly_verified_income, customerSummary.avg_monthly_stable_income, customerSummary.customer_avg_monthly_verified_income),
     confirmedSalaryIncome: pickNumber(income.confirmed_salary_income, income.verified_salary_income, customerSummary.salary_income),

@@ -307,3 +307,39 @@ def test_china_merchants_daifa_kuanxiang_suspected_salary_rows_metadata() -> Non
     assert {tx["salary_detection"]["salary_type"] for tx in data["transactions"]} == {"suspected_salary"}
     assert income["confirmed_salary_income"] == 0
     assert income["verified_salary_income"] == 0
+
+
+def test_deterministic_summary_from_transaction_amount_rows_metadata() -> None:
+    rows = [
+        {"交易日期": "2024-06-21", "交易金额": "11543.87", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+        {"交易日期": "2024-07-10", "交易金额": "16131.77", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+        {"交易日期": "2024-07-15", "交易金额": "-1000.00", "交易摘要": "转账汇款", "对手信息": "李四"},
+    ]
+    data = run_personal_bank_statement_agent(filename="招商银行个人流水.xlsx", metadata={"rows": rows})["extracted_json"]
+    summary = data["deterministic_summary"]
+    assert summary["total_income"] == 27675.64
+    assert summary["total_expense"] == 1000
+    assert summary["income_count"] == 2
+    assert summary["expense_count"] == 1
+    assert summary["net_cash_flow"] == 26675.64
+    assert summary["max_income_transaction"]["summary"] == "代发款项"
+    assert summary["max_expense_transaction"]["summary"] == "转账汇款"
+
+
+def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
+    payload = {
+        "doc_type": "personal_flow",
+        "customer_level_summary": {"raw_total_income": 1, "raw_total_expense": 1},
+        "raw_summary": {"total_income": 1, "total_expense": 1},
+        "transactions": [
+            {"transaction_date": "2024-01-01", "transaction_amount": 100, "summary": "汇款汇入", "counterparty_name": ""},
+            {"transaction_date": "2024-01-02", "transaction_amount": -40, "summary": "转账汇款", "counterparty_name": ""},
+        ],
+    }
+    aggregated = aggregate_customer_personal_flows([
+        {"doc_id": "doc1", "extraction_type": "personal_flow", "file_name": "a.xlsx", "extracted_data": {"extracted_json": payload}}
+    ])
+    assert aggregated["deterministic_summary"]["total_income"] == 100
+    assert aggregated["deterministic_summary"]["total_expense"] == 40
+    assert aggregated["customer_level_summary"]["raw_total_income"] == 100
+    assert aggregated["summary_warnings"][0]["code"] == "summary_detail_mismatch"

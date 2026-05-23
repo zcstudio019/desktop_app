@@ -18,7 +18,7 @@ def _pct(value: Any) -> str:
 
 
 def render_personal_bank_statement_markdown(data: dict[str, Any]) -> str:
-    summary = data.get("raw_summary") or {}
+    summary = data.get("deterministic_summary") or data.get("raw_summary") or {}
     income = data.get("income_verification") or {}
     expense = data.get("expense_analysis") or {}
     retention = data.get("cash_retention_analysis") or {}

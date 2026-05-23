@@ -7,6 +7,12 @@ from typing import Any
 from .normalizer import round2
 from .skills.financing_judgement_skill import build_financing_judgement
 from .skills.risk_signal_skill import detect_risk_signals
+from .summary_utils import (
+    build_deterministic_summary,
+    build_summary_mismatch_warning,
+    collect_transaction_details,
+    get_ai_summary_raw,
+)
 
 PERSONAL_FLOW_TYPES = {
     "personal_flow",
@@ -63,6 +69,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     accounts: list[dict[str, Any]] = []
     transactions: list[dict[str, Any]] = []
     warnings: list[str] = []
+    summary_warnings: list[dict[str, str]] = []
     failed_sources: list[dict[str, Any]] = []
     start_dates: list[str] = []
     end_dates: list[str] = []
@@ -87,6 +94,16 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
             warnings.extend(str(item) for item in _list(payload.get("warnings")) if item)
             continue
         summary = _dict(payload.get("customer_level_summary"))
+        detail_transactions = collect_transaction_details(payload)
+        detail_summary = build_deterministic_summary(detail_transactions) if detail_transactions else {}
+        ai_summary_raw = get_ai_summary_raw(payload)
+        mismatch_warning = build_summary_mismatch_warning(ai_summary_raw, detail_summary) if detail_summary else None
+        if mismatch_warning:
+            summary_warnings.append(mismatch_warning)
+            warnings.append(f"{mismatch_warning['code']}: {mismatch_warning['evidence']}")
+        effective_raw_income = detail_summary.get("total_income") if detail_summary else summary.get("raw_total_income")
+        effective_raw_expense = detail_summary.get("total_expense") if detail_summary else summary.get("raw_total_expense")
+        effective_net_cash_flow = detail_summary.get("net_cash_flow") if detail_summary else summary.get("net_cash_flow")
         source_accounts = [_dict(item) for item in _list(payload.get("accounts"))]
         source_files.append(
             {
@@ -106,14 +123,16 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 "loan_repayment_expense": (payload.get("expense_analysis") or {}).get("loan_repayment_expense") if isinstance(payload.get("expense_analysis"), dict) else summary.get("loan_repayment_expense") or 0,
                 "risk_signals": payload.get("risk_signals") or [],
                 "account_count": len(source_accounts),
-                "raw_total_income": summary.get("raw_total_income") or 0,
-                "raw_total_expense": summary.get("raw_total_expense") or 0,
+                "raw_total_income": effective_raw_income or 0,
+                "raw_total_expense": effective_raw_expense or 0,
+                "deterministic_summary": detail_summary,
+                "ai_summary_raw": ai_summary_raw,
             }
         )
         income = _dict(payload.get("income_verification"))
         expense = _dict(payload.get("expense_analysis"))
-        sums["raw_total_income"] += float(income.get("raw_total_income") or summary.get("raw_total_income") or 0)
-        sums["raw_total_expense"] += float(expense.get("raw_total_expense") or summary.get("raw_total_expense") or 0)
+        sums["raw_total_income"] += float(effective_raw_income or income.get("raw_total_income") or summary.get("raw_total_income") or 0)
+        sums["raw_total_expense"] += float(effective_raw_expense or expense.get("raw_total_expense") or summary.get("raw_total_expense") or 0)
         sums["salary_income"] += float(income.get("verified_salary_income") or summary.get("salary_income") or 0)
         sums["confirmed_salary_income"] += float(income.get("confirmed_salary_income") or income.get("verified_salary_income") or summary.get("salary_income") or 0)
         sums["suspected_salary_income"] += float(income.get("suspected_salary_income") or summary.get("suspected_salary_income") or 0)
@@ -124,7 +143,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         sums["loan_inflow"] += float(income.get("loan_inflow") or summary.get("loan_inflow") or 0)
         sums["internal_transfer_income"] += float(income.get("internal_transfer_income") or summary.get("internal_transfer_income") or 0)
         sums["loan_repayment_expense"] += float(expense.get("loan_repayment_expense") or summary.get("loan_repayment_expense") or 0)
-        sums["net_operating_cash_flow"] += float(summary.get("net_operating_cash_flow") or 0)
+        sums["net_operating_cash_flow"] += float(summary.get("net_operating_cash_flow") or effective_net_cash_flow or 0)
         if summary.get("period_start"):
             start_dates.append(_date(summary.get("period_start")))
         if summary.get("period_end"):
@@ -144,6 +163,9 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 for key in ("raw_income", "raw_expense", "salary_income", "operating_income", "stable_income"):
                     target[key] = round2(float(target.get(key) or 0) + float(month.get(key) or 0))
             for tx in _list(account.get("transactions")):
+                transactions.append({**_dict(tx), "source_document_id": doc_id, "source_extraction_id": extraction_id, "source_file": file_name})
+        if not source_accounts and detail_transactions:
+            for tx in detail_transactions:
                 transactions.append({**_dict(tx), "source_document_id": doc_id, "source_extraction_id": extraction_id, "source_file": file_name})
         warnings.extend(str(item) for item in _list(payload.get("warnings")) if item)
 
@@ -178,6 +200,30 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "customer_avg_monthly_verified_income": round2(sums["verified_income"] / month_count),
         "customer_repayment_pressure": round(sums["loan_repayment_expense"] / sums["raw_total_income"], 6) if sums["raw_total_income"] else 0.0,
     }
+    deterministic_summary = {
+        "total_income": summary["raw_total_income"],
+        "total_expense": summary["raw_total_expense"],
+        "income_count": sum(1 for tx in transactions if float(tx.get("credit_amount") or 0) > 0),
+        "expense_count": sum(1 for tx in transactions if float(tx.get("debit_amount") or 0) > 0),
+        "net_cash_flow": round2(summary["raw_total_income"] - summary["raw_total_expense"]),
+        "avg_monthly_income": summary["avg_monthly_income"],
+        "avg_monthly_expense": round2(summary["raw_total_expense"] / month_count),
+        "month_count": month_count,
+    }
+    income_verification = {
+        "raw_total_income": summary["raw_total_income"],
+        "confirmed_salary_income": summary["confirmed_salary_income"],
+        "suspected_salary_income": summary["suspected_salary_income"],
+        "verified_salary_income": summary["salary_income"],
+        "verified_income": summary["verified_income"],
+        "stable_income": summary["stable_income"],
+        "unknown_inflow": summary["unknown_inflow"],
+        "salary_months": 0,
+        "salary_avg_monthly_amount": 0,
+        "salary_confidence": 0,
+        "salary_sources": [],
+        "salary_detection_notes": [],
+    }
     income_analysis = {"income_volatility": 0, "monthly_income": list(monthly.values())}
     expense_analysis = {
         "raw_total_expense": summary["raw_total_expense"],
@@ -202,16 +248,17 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     risk_signals = detect_risk_signals(
         summary,
         transactions,
-        {"raw_total_income": summary["raw_total_income"], "verified_income": summary["verified_income"], "unknown_inflow": summary["unknown_inflow"]},
+        income_verification,
         expense_analysis,
         month_count,
         flow_nature=flow_nature,
     )
+    risk_signals.extend(summary_warnings)
     judgement = build_financing_judgement(
         summary,
         risk_signals,
         month_count,
-        income_verification={"raw_total_income": summary["raw_total_income"], "verified_income": summary["verified_income"], "unknown_inflow": summary["unknown_inflow"]},
+        income_verification=income_verification,
         expense_analysis=expense_analysis,
         flow_nature=flow_nature,
     )
@@ -225,13 +272,18 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "failed_sources": failed_sources,
         "accounts": accounts,
         "transactions": transactions[:2000],
+        "deterministic_summary": deterministic_summary,
+        "ai_summary_raw": {"source_files": [item.get("ai_summary_raw") for item in source_files if item.get("ai_summary_raw")]},
         "monthly_trend": [monthly[key] for key in sorted(monthly)],
         "top_income_counterparties": _merge_top(top_income),
         "top_expense_counterparties": _merge_top(top_expense),
         "customer_level_summary": summary,
+        "income_verification": income_verification,
+        "expense_analysis": expense_analysis,
         "flow_nature": flow_nature,
         "customer_level_notes": customer_notes,
         "risk_signals": risk_signals,
         "financing_judgement": judgement,
+        "summary_warnings": summary_warnings,
         "warnings": list(dict.fromkeys(warnings)),
     }

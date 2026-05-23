@@ -19,6 +19,7 @@ from .schema import (
     to_plain_dict,
 )
 from .segmenter import read_personal_bank_statement_workbook
+from .summary_utils import build_deterministic_summary, build_summary_mismatch_warning
 from .skills import (
     analyze_counterparties,
     analyze_expenses,
@@ -360,6 +361,19 @@ def run_personal_bank_statement_agent(
         monthly = _build_monthly_trend(transactions)
         observed_months = len([item for item in monthly if item.get("month") != "unknown"])
         month_count = months_count(period.get("start_date"), period.get("end_date"), observed_months)
+        deterministic_summary = build_deterministic_summary(transactions, month_count)
+        raw_income = deterministic_summary["total_income"]
+        raw_expense = deterministic_summary["total_expense"]
+        ai_summary_raw = {
+            "total_income": raw_income,
+            "total_expense": raw_expense,
+            "income_count": deterministic_summary["income_count"],
+            "expense_count": deterministic_summary["expense_count"],
+            "net_cash_flow": deterministic_summary["net_cash_flow"],
+            "avg_monthly_income": deterministic_summary["avg_monthly_income"],
+            "avg_monthly_expense": deterministic_summary["avg_monthly_expense"],
+        }
+        summary_warning = build_summary_mismatch_warning(ai_summary_raw, deterministic_summary)
         income_analysis = analyze_income(transactions, month_count)
         expense_analysis = analyze_expenses(transactions, month_count)
         clean = _build_clean_summary(transactions)
@@ -427,7 +441,7 @@ def run_personal_bank_statement_agent(
             "internal_transfer_income": income_verification["internal_transfer_income"],
             "loan_inflow": income_verification["loan_inflow"],
             "net_operating_cash_flow": round2(stable_income - expense_summary["loan_repayment_expense"] - expense_summary["credit_card_repayment_expense"] - expense_summary["operating_expense"]),
-            "avg_monthly_income": round2(raw_income / month_count),
+            "avg_monthly_income": deterministic_summary["avg_monthly_income"],
             "avg_monthly_stable_income": income_verification["avg_monthly_stable_income"],
             "income_stability_score": round2(max(0, 100 - float(income_analysis.get("income_volatility") or 0) * 100)),
             "repayment_capacity_score": round2(min(100, (stable_income / max(1.0, expense_summary["loan_repayment_expense"] + expense_summary["credit_card_repayment_expense"])) * 50)) if stable_income else 0.0,
@@ -495,7 +509,13 @@ def run_personal_bank_statement_agent(
             account_no=(accounts_meta[0].get("account_no") if accounts_meta else "") or "",
             currency=(accounts_meta[0].get("currency") if accounts_meta else "人民币") or "人民币",
             statement_period=StatementPeriod(**period),
-            raw_summary=RawSummary(**_build_raw_summary(transactions)),
+            raw_summary=RawSummary(
+                total_income=deterministic_summary["total_income"],
+                total_expense=deterministic_summary["total_expense"],
+                income_count=deterministic_summary["income_count"],
+                expense_count=deterministic_summary["expense_count"],
+                net_cash_flow=deterministic_summary["net_cash_flow"],
+            ),
             income_verification=income_verification,
             expense_analysis=expense_summary,
             cash_retention_analysis=cash_retention,
@@ -514,6 +534,13 @@ def run_personal_bank_statement_agent(
             warnings=[],
         )
         extracted_json = to_plain_dict(data)
+        extracted_json["deterministic_summary"] = deterministic_summary
+        extracted_json["ai_summary_raw"] = ai_summary_raw
+        if summary_warning:
+            extracted_json.setdefault("summary_warnings", []).append(summary_warning)
+            extracted_json.setdefault("risk_signals", []).append(summary_warning)
+            risk_signals.append(summary_warning)
+            warnings.append(f"{summary_warning['code']}: {summary_warning['evidence']}")
         extracted_json["internal_transfer_summary"] = internal_summary
         extracted_json["income_analysis_detail"] = income_analysis
         extracted_json["expense_analysis_detail"] = expense_analysis
