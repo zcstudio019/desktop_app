@@ -843,6 +843,20 @@ function isDocumentTypeMatch(sourceType: string, targetType: string): boolean {
   return normalizedSource === normalizedTarget || normalizedSource === targetDisplayName;
 }
 
+const PERSONAL_FLOW_TYPES = [
+  'personal_flow',
+  'personal_bank_statement',
+  'bank_statement_personal',
+  'individual_bank_statement',
+  '个人流水',
+  '个人银行流水',
+];
+
+function isPersonalFlowType(value: unknown): boolean {
+  const normalized = normalizeFieldLookupKey(String(value || ''));
+  return PERSONAL_FLOW_TYPES.some((type) => normalizeFieldLookupKey(type) === normalized);
+}
+
 function getDocumentsByType(documents: CustomerDocumentListItem[], documentType: string): CustomerDocumentListItem[] {
   return sortDocumentsWithinGroup(documents.filter((document) => isDocumentTypeMatch(document.file_type, documentType)));
 }
@@ -911,6 +925,42 @@ function getExtractedJsonFromRecord(item: Record<string, unknown> | null | undef
     item.data ??
     item.result ??
     null
+  );
+}
+
+function getPersonalFlowPayloadFromRecord(item: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  if (!item) return {};
+  const extractedData = parseMaybeJson(item.extracted_data ?? item.extractedData);
+  const extractedDataRecord = extractedData && typeof extractedData === 'object' && !Array.isArray(extractedData)
+    ? extractedData as Record<string, unknown>
+    : {};
+  const extractedJson = parseMaybeJson(
+    item.extracted_json ??
+    item.extractedJson ??
+    item.analysis_result ??
+    item.result_json ??
+    extractedDataRecord.extracted_json ??
+    extractedDataRecord.extractedJson ??
+    extractedData
+  );
+  return extractedJson && typeof extractedJson === 'object' && !Array.isArray(extractedJson)
+    ? extractedJson as Record<string, unknown>
+    : {};
+}
+
+function hasPersonalFlowShape(item: Record<string, unknown> | null | undefined): boolean {
+  if (!item) return false;
+  const payload = getPersonalFlowPayloadFromRecord(item);
+  const type = getDocumentTypeFromRecord(item) || getDocumentTypeFromRecord(payload);
+  return Boolean(
+    isPersonalFlowType(type) ||
+    isPersonalFlowType(item.file_type) ||
+    isPersonalFlowType(item.type) ||
+    payload['收支规模汇总'] ||
+    (payload.summary as Record<string, unknown> | undefined)?.['收支规模汇总'] ||
+    (payload.extracted_json as Record<string, unknown> | undefined)?.['收支规模汇总'] ||
+    payload.raw_summary ||
+    payload.income_verification
   );
 }
 
@@ -2278,6 +2328,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [documentStatusError, setDocumentStatusError] = useState<string | null>(null);
   const [enterpriseFlowPreviewError, setEnterpriseFlowPreviewError] = useState<string | null>(null);
   const [personalFlowPreviewError, setPersonalFlowPreviewError] = useState<string | null>(null);
+  const [personalFlowPreviewLoading, setPersonalFlowPreviewLoading] = useState(false);
   const [backgroundRefreshNotice, setBackgroundRefreshNotice] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentResult, setAgentResult] = useState<Record<string, unknown> | null>(null);
@@ -2502,9 +2553,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       return;
     }
     personalFlowPreviewLoadingRef.current = customerId;
+    setPersonalFlowPreviewLoading(true);
     try {
       setPersonalFlowPreviewError(null);
       const result = await getCustomerPersonalFlowSummary(customerId);
+      console.debug('[ProfilePreview] personal-flow/summary response', result);
       setPersonalFlowPreviewDoc(result.item || null);
     } catch (err) {
       console.warn('[ProfilePreview] personal-flow/summary failed', err);
@@ -2512,6 +2565,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setPersonalFlowPreviewError('个人流水结构化预览暂时不可用，请稍后重试');
     } finally {
       personalFlowPreviewLoadingRef.current = null;
+      setPersonalFlowPreviewLoading(false);
     }
   }, []);
 
@@ -2866,6 +2920,25 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   );
   const hasEnterpriseStructuredData = enterpriseFlowViewSources.length > 0;
   const personalFlowSummary = personalFlowPreviewDoc;
+  const selectedPersonalFlowDoc = useMemo(
+    () => {
+      const candidates = flattenEnterpriseFlowCandidateDocs(
+        documents,
+        extractionGroups,
+        selectedCustomer,
+        profile,
+        personalFlowSummary ? [personalFlowSummary] : [],
+      );
+      return candidates
+        .filter((item) => hasPersonalFlowShape(item))
+        .sort((a, b) => getRecordTime(b) - getRecordTime(a))[0] || null;
+    },
+    [documents, extractionGroups, personalFlowSummary, profile, selectedCustomer]
+  );
+  const markdownHasPersonalFlow = Boolean(
+    (renderedDraft || draft).includes('个人流水') &&
+    (renderedDraft || draft).includes('收支规模汇总')
+  );
   const personalFlowSummaryAccounts = Array.isArray(personalFlowSummary?.accounts)
     ? personalFlowSummary.accounts
     : [];
@@ -2879,16 +2952,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     (personalFlowSummary?.income_verification as Record<string, unknown> | undefined)?.raw_total_income ??
     (personalFlowSummary?.raw_summary as Record<string, unknown> | undefined)?.total_income ??
     (personalFlowSummary?.customer_level_summary as Record<string, unknown> | undefined)?.raw_total_income ??
+    (personalFlowSummary?.['收支规模汇总'] as Record<string, unknown> | undefined)?.['总收入金额'] ??
     0
   );
   const hasPersonalStructuredData = !!(
-    personalFlowSummary &&
-    (personalFlowSummaryAccounts.length > 0 || personalFlowDocumentCount > 0 || personalFlowRawIncome > 0) &&
-    (
-      personalFlowSummary.document_type === 'personal_flow' ||
-      personalFlowSummary.doc_type === 'personal_flow' ||
-      personalFlowSummary.normalized_document_type === 'personal_bank_statement'
-    )
+    (personalFlowSummary && (
+      personalFlowSummaryAccounts.length > 0 ||
+      personalFlowDocumentCount > 0 ||
+      personalFlowRawIncome > 0 ||
+      personalFlowSummary.raw_summary ||
+      personalFlowSummary.income_verification ||
+      hasPersonalFlowShape(personalFlowSummary)
+    )) ||
+    hasPersonalFlowShape(selectedPersonalFlowDoc) ||
+    markdownHasPersonalFlow
   );
   const profilePreviewRenderMode = hasPersonalStructuredData
     ? 'personal_flow_structured'
@@ -2940,6 +3017,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     console.log('[ProfilePreview] enterpriseFlowSummary', enterpriseFlowSummary);
     console.log('[ProfilePreview] accounts length', enterpriseFlowSummaryAccounts.length);
     console.log('[ProfilePreview] shouldRenderEnterpriseFlow', hasEnterpriseStructuredData);
+    console.debug('[ProfilePreview] personalFlowSummary', personalFlowSummary);
+    console.debug('[ProfilePreview] shouldRenderPersonalFlow', hasPersonalStructuredData);
+    console.debug('[ProfilePreview] selectedDoc', selectedPersonalFlowDoc);
     console.log('[ProfilePreview] renderMode', profilePreviewRenderMode);
   }, [
     activeCustomerId,
@@ -2951,7 +3031,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     enterpriseFlowSummaryAccounts.length,
     extractionGroups.length,
     hasEnterpriseStructuredData,
+    hasPersonalStructuredData,
+    personalFlowSummary,
     profilePreviewRenderMode,
+    selectedPersonalFlowDoc,
   ]);
   const fieldSourceSummaries = useMemo(
     () => buildFieldSourceSummaries(renderedDraft, documents),
@@ -4840,7 +4923,14 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                           个人流水
                         </span>
                       </div>
-                      <PersonalBankStatementView data={personalFlowSummary} error={personalFlowPreviewError} />
+                      <PersonalBankStatementView
+                        customerId={activeCustomerId || selectedCustomerId || undefined}
+                        summary={personalFlowSummary}
+                        selectedDoc={selectedPersonalFlowDoc}
+                        markdownText={renderedDraft || draft}
+                        loading={personalFlowPreviewLoading && !personalFlowSummary && !selectedPersonalFlowDoc && !markdownHasPersonalFlow}
+                        error={personalFlowPreviewError}
+                      />
                     </section>
                     {hasEnterpriseStructuredData ? (
                       enterpriseFlowViewSources.map((source) => (

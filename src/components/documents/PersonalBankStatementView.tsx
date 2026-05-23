@@ -13,6 +13,10 @@ import {
 
 type PersonalBankStatementViewProps = {
   data?: Record<string, unknown> | null;
+  summary?: Record<string, unknown> | null;
+  selectedDoc?: Record<string, unknown> | null;
+  markdownText?: string;
+  customerId?: string | null;
   markdown?: string;
   loading?: boolean;
   error?: string | null;
@@ -27,6 +31,15 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asArray<T = Record<string, unknown>>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }
 
 function firstValue(...values: unknown[]): unknown {
@@ -221,6 +234,32 @@ function getScaleSummary(raw: Record<string, unknown>): Record<string, unknown> 
   );
 }
 
+function extractPersonalFlowFromMarkdown(markdownText = ''): Record<string, unknown> {
+  if (!markdownText || !markdownText.includes('收支规模汇总')) {
+    return {};
+  }
+  const fields = [
+    '总收入金额',
+    '总收入笔数',
+    '总支出金额',
+    '总支出笔数',
+    '净现金流',
+    '月均收入',
+    '月均支出',
+    '最大单笔收入金额',
+    '最大单笔支出金额',
+  ];
+  const scaleSummary: Record<string, string> = {};
+  for (const field of fields) {
+    const pattern = new RegExp(`["“]?${field}["”]?\\s*[:：]\\s*["“]?([-+]?\\d[\\d,]*(?:\\.\\d+)?)`, 'i');
+    const match = markdownText.match(pattern);
+    if (match?.[1]) {
+      scaleSummary[field] = match[1];
+    }
+  }
+  return Object.keys(scaleSummary).length ? { 收支规模汇总: scaleSummary } : {};
+}
+
 function getTransactionList(raw: Record<string, unknown>): Record<string, unknown>[] {
   const summary = asRecord(raw.summary);
   const extractedJson = asRecord(raw.extracted_json);
@@ -229,7 +268,9 @@ function getTransactionList(raw: Record<string, unknown>): Record<string, unknow
     raw.transactions ||
     summary['交易明细列表'] ||
     extractedJson['交易明细列表'] ||
-    extractedJson.transactions
+    extractedJson.transactions ||
+    asRecord(raw.analysis_result)['交易明细列表'] ||
+    asRecord(raw.result_json)['交易明细列表']
   );
 }
 
@@ -395,6 +436,26 @@ function normalizePersonalFlowData(raw: Record<string, unknown>) {
   };
 }
 
+function buildPersonalFlowRawInput(props: PersonalBankStatementViewProps): Record<string, unknown> {
+  const selectedDoc = asRecord(props.selectedDoc);
+  const selectedDocExtracted = asRecord(parseMaybeJson(
+    selectedDoc.extracted_json ??
+    selectedDoc.extractedJson ??
+    selectedDoc.analysis_result ??
+    selectedDoc.result_json ??
+    selectedDoc.extracted_data ??
+    selectedDoc.extractedData
+  ));
+  const markdownFallback = extractPersonalFlowFromMarkdown(props.markdownText || props.markdown || '');
+  return {
+    ...markdownFallback,
+    ...selectedDocExtracted,
+    ...selectedDoc,
+    ...asRecord(props.data),
+    ...asRecord(props.summary),
+  };
+}
+
 function FastMatchesTable({ matches }: { matches: Record<string, unknown>[] }) {
   if (!matches.length) {
     return <div className="rounded-lg border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-500">暂未识别到快进快出匹配明细</div>;
@@ -456,14 +517,12 @@ function MonthlyTrendTable({ items }: { items: Record<string, unknown>[] }) {
   );
 }
 
-const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = ({ data, markdown, loading = false, error = null, showHeader = false }) => {
+const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (props) => {
+  const { markdown, markdownText, loading = false, error = null, showHeader = false } = props;
   if (loading) {
     return <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500">正在加载个人流水结构化分析...</div>;
   }
-  if (error) {
-    return <AlertBox tone="amber">{error}</AlertBox>;
-  }
-  const statement = asRecord(data);
+  const statement = buildPersonalFlowRawInput(props);
   const normalized = normalizePersonalFlowData(statement);
   const normalizedSummary = normalized.normalizedSummary;
   if (import.meta.env.DEV) {
@@ -478,11 +537,15 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = ({ d
     Object.keys(normalized.income).length > 0
   );
 
+  if (error && !hasData) {
+    return <AlertBox tone="amber">{error}</AlertBox>;
+  }
+
   if (!hasData) {
     return (
       <div className="space-y-3">
         <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">暂无个人流水结构化数据</div>
-        {markdown ? <pre className="whitespace-pre-wrap rounded-xl border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-700">{markdown}</pre> : null}
+        {markdown || markdownText ? <pre className="whitespace-pre-wrap rounded-xl border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-700">{markdown || markdownText}</pre> : null}
       </div>
     );
   }
@@ -496,6 +559,7 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = ({ d
 
   return (
     <div className="space-y-4">
+      {error ? <AlertBox tone="amber">{error}</AlertBox> : null}
       {showHeader ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-100 bg-white p-4 shadow-sm">
           <div>
