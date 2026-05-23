@@ -201,3 +201,91 @@ def test_verified_salary_and_operating_income_enhanced(tmp_path: Path) -> None:
     assert income["stable_income"] == 50000
     assert data["top_income_counterparties"][0]["amount"] == 30000
     assert data["top_expense_counterparties"][0]["amount"] == 500
+
+
+def test_confirmed_salary_keywords(tmp_path: Path) -> None:
+    path = tmp_path / "confirmed_salary.xlsx"
+    _make_workbook(path, [
+        ["户名", "张三"],
+        ["账号", "6222"],
+        ["交易日期", "摘要", "对方户名", "对方账号", "支出", "收入", "余额"],
+        ["2025-01-10", "代发工资", "上海样例科技有限公司", "1001", "", 12000, 12000],
+        ["2025-02-10", "工资发放", "上海样例科技有限公司", "1001", "", 12500, 24500],
+    ])
+    data = run_personal_bank_statement_agent(file_path=str(path), filename=path.name)["extracted_json"]
+    income = data["income_verification"]
+    assert income["confirmed_salary_income"] == 24500
+    assert income["verified_salary_income"] == 24500
+    assert income["suspected_salary_income"] == 0
+    assert all(tx["salary_detection"]["salary_type"] == "confirmed_salary" for tx in data["transactions"] if tx["direction"] == "income")
+
+
+def test_suspected_salary_requires_pattern_and_counterparty(tmp_path: Path) -> None:
+    path = tmp_path / "suspected_salary.xlsx"
+    _make_workbook(path, [
+        ["户名", "张三"],
+        ["账号", "6222"],
+        ["交易日期", "摘要", "对方户名", "对方账号", "支出", "收入", "余额"],
+        ["2025-01-10", "批量代发", "上海样例科技有限公司", "1001", "", 10000, 10000],
+        ["2025-02-11", "批量代发", "上海样例科技有限公司", "1001", "", 10200, 20200],
+        ["2025-03-10", "批量代发", "上海样例科技有限公司", "1001", "", 10100, 30300],
+    ])
+    data = run_personal_bank_statement_agent(file_path=str(path), filename=path.name)["extracted_json"]
+    income = data["income_verification"]
+    assert income["confirmed_salary_income"] == 0
+    assert income["verified_salary_income"] == 0
+    assert income["suspected_salary_income"] == 30300
+    assert income["salary_continuity_level"] in {"none", "weak"}
+    assert all(tx["salary_detection"]["salary_type"] == "suspected_salary" for tx in data["transactions"] if tx["direction"] == "income")
+
+
+def test_salary_exclusions_and_unknown_transfer_not_salary(tmp_path: Path) -> None:
+    path = tmp_path / "salary_exclusions.xlsx"
+    _make_workbook(path, [
+        ["户名", "张三"],
+        ["账号", "6222"],
+        ["交易日期", "摘要", "对方户名", "对方账号", "支出", "收入", "余额"],
+        ["2025-01-01", "汇款汇入", "", "", "", 10000, 10000],
+        ["2025-01-02", "报销", "上海样例科技有限公司", "1001", "", 1000, 11000],
+        ["2025-01-03", "借款", "李四", "2001", "", 5000, 16000],
+        ["2025-01-04", "货款", "客户A", "3001", "", 8000, 24000],
+        ["2025-01-05", "劳务费", "项目方", "4001", "", 3000, 27000],
+    ])
+    data = run_personal_bank_statement_agent(file_path=str(path), filename=path.name)["extracted_json"]
+    income = data["income_verification"]
+    by_summary = {tx["summary"]: tx for tx in data["transactions"] if tx["direction"] == "income"}
+    assert income["confirmed_salary_income"] == 0
+    assert income["suspected_salary_income"] == 0
+    assert by_summary["汇款汇入"]["category"] == "unknown_inflow"
+    assert by_summary["报销"]["category"] == "reimbursement_or_advance_income"
+    assert by_summary["借款"]["category"] == "borrowing_or_transfer_income"
+    assert by_summary["货款"]["category"] == "operating_income"
+    assert by_summary["劳务费"]["category"] == "labor_income"
+
+
+def test_salary_continuity_strong_and_unstable(tmp_path: Path) -> None:
+    strong_path = tmp_path / "salary_strong.xlsx"
+    _make_workbook(strong_path, [
+        ["户名", "张三"],
+        ["账号", "6222"],
+        ["交易日期", "摘要", "对方户名", "对方账号", "支出", "收入", "余额"],
+        ["2025-01-10", "代发工资", "上海样例科技有限公司", "1001", "", 10000, 10000],
+        ["2025-02-10", "代发工资", "上海样例科技有限公司", "1001", "", 10100, 20100],
+        ["2025-03-11", "代发工资", "上海样例科技有限公司", "1001", "", 9900, 30000],
+        ["2025-04-10", "代发工资", "上海样例科技有限公司", "1001", "", 10050, 40050],
+        ["2025-05-09", "代发工资", "上海样例科技有限公司", "1001", "", 10000, 50050],
+        ["2025-06-10", "代发工资", "上海样例科技有限公司", "1001", "", 10200, 60250],
+    ])
+    strong = run_personal_bank_statement_agent(file_path=str(strong_path), filename=strong_path.name)["extracted_json"]
+    assert strong["income_verification"]["salary_continuity_level"] == "strong"
+
+    weak_path = tmp_path / "salary_weak.xlsx"
+    _make_workbook(weak_path, [
+        ["户名", "张三"],
+        ["账号", "6222"],
+        ["交易日期", "摘要", "对方户名", "对方账号", "支出", "收入", "余额"],
+        ["2025-01-03", "代发工资", "上海样例科技有限公司", "1001", "", 5000, 5000],
+        ["2025-03-20", "代发工资", "上海样例科技有限公司", "1001", "", 20000, 25000],
+    ])
+    weak = run_personal_bank_statement_agent(file_path=str(weak_path), filename=weak_path.name)["extracted_json"]
+    assert weak["income_verification"]["salary_continuity_level"] in {"weak", "none"}

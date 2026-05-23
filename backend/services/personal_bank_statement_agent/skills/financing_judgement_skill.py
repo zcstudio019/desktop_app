@@ -24,6 +24,11 @@ def build_financing_judgement(
     risk_codes = {item.get("code") for item in risk_signals}
     raw_income = float(income_verification.get("raw_total_income") or summary.get("raw_total_income") or 0)
     verified = float(income_verification.get("verified_income") or summary.get("verified_income") or 0)
+    confirmed_salary = float(income_verification.get("confirmed_salary_income") or income_verification.get("verified_salary_income") or summary.get("salary_income") or 0)
+    suspected_salary = float(income_verification.get("suspected_salary_income") or summary.get("suspected_salary_income") or 0)
+    salary_months = int(income_verification.get("salary_months") or summary.get("salary_months") or 0)
+    salary_continuity = str(income_verification.get("salary_continuity_level") or "none")
+    salary_confidence = float(income_verification.get("salary_confidence") or summary.get("salary_confidence") or 0)
     unknown = float(income_verification.get("unknown_inflow") or summary.get("unknown_inflow") or 0)
     unknown_ratio = unknown / raw_income if raw_income else 0.0
     loan_ratio = float(expense_analysis.get("loan_repayment_ratio") or 0)
@@ -34,11 +39,17 @@ def build_financing_judgement(
         missing.append("补充近 6-12 个月完整个人流水")
     if verified <= 0 or unknown_ratio >= 0.5:
         missing.extend(["补充工资卡流水", "补充经营收款流水", "补充带完整对方户名和用途的流水"])
+    if suspected_salary > 0 and confirmed_salary <= 0:
+        missing.append("核实疑似工资付款方是否为真实任职单位")
     if loan_ratio >= 0.35 or is_repayment_flow:
         missing.extend(["结合个人征信核对贷款余额、月供和还款记录", "说明每月汇款汇入的真实资金来源"])
     missing = list(dict.fromkeys(missing))
 
-    if verified <= 0 and raw_income > 0 and unknown_ratio >= 0.5:
+    if confirmed_salary > 0 and salary_months >= 6 and salary_continuity == "strong" and salary_confidence >= 0.75 and not is_repayment_flow:
+        income_quality = "强"
+    elif suspected_salary > 0 and confirmed_salary <= 0:
+        income_quality = "中" if unknown_ratio < 0.5 else "无法完全确认"
+    elif verified <= 0 and raw_income > 0 and unknown_ratio >= 0.5:
         income_quality = "弱"
     elif verified >= 30000 and not is_repayment_flow:
         income_quality = "强"
@@ -84,6 +95,8 @@ def build_financing_judgement(
         )
     elif verified > 0:
         final_summary = "该流水识别到明确工资或经营收入，可作为收入证明材料之一，仍建议结合征信、纳税、经营收款账户等资料交叉验证。"
+    elif suspected_salary > 0:
+        final_summary = "该流水仅识别到疑似工资收入，尚缺少明确工资摘要或完整付款方证据，需人工核实任职单位、发薪用途和连续性后再判断收入质量。"
     else:
         final_summary = "该流水未识别到明确可采信收入来源，暂不建议单独用于收入或还款能力判断。"
 

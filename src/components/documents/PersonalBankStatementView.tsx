@@ -204,9 +204,16 @@ type NormalizedPersonalFlowSummary = {
   avgMonthlyExpense: number;
   verifiedIncome: number;
   avgMonthlyVerifiedIncome: number;
+  confirmedSalaryIncome: number;
+  suspectedSalaryIncome: number;
   verifiedSalaryIncome: number;
   verifiedOperatingIncome: number;
   verifiedOtherStableIncome: number;
+  salaryMonths: number;
+  salaryAvgMonthlyAmount: number;
+  salaryConfidence: number;
+  salarySources: Record<string, unknown>[];
+  salaryDetectionNotes: string[];
   unknownInflow: number;
   interestIncome: number;
   loanRepaymentExpense: number;
@@ -372,9 +379,16 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     avgMonthlyExpense: pickMeaningfulAbsNumber(expense.avg_monthly_expense, scaleSummary['月均支出']),
     verifiedIncome: pickNumber(income.verified_income, income.stable_income, customerSummary.verified_income, customerSummary.stable_income, customerSummary.customer_verified_income, customerSummary.customer_stable_income),
     avgMonthlyVerifiedIncome: pickNumber(income.avg_monthly_verified_income, income.avg_monthly_stable_income, customerSummary.avg_monthly_verified_income, customerSummary.avg_monthly_stable_income, customerSummary.customer_avg_monthly_verified_income),
+    confirmedSalaryIncome: pickNumber(income.confirmed_salary_income, income.verified_salary_income, customerSummary.salary_income),
+    suspectedSalaryIncome: pickNumber(income.suspected_salary_income, customerSummary.suspected_salary_income),
     verifiedSalaryIncome: pickNumber(income.verified_salary_income, income.salary_income, customerSummary.salary_income),
     verifiedOperatingIncome: pickNumber(income.verified_operating_income, income.operating_income, customerSummary.operating_income),
     verifiedOtherStableIncome: pickNumber(income.verified_other_stable_income, income.other_stable_income),
+    salaryMonths: pickNumber(income.salary_months, customerSummary.salary_months),
+    salaryAvgMonthlyAmount: pickNumber(income.salary_avg_monthly_amount),
+    salaryConfidence: pickNumber(income.salary_confidence, customerSummary.salary_confidence),
+    salarySources: asArray<Record<string, unknown>>(income.salary_sources),
+    salaryDetectionNotes: asArray<string>(income.salary_detection_notes),
     unknownInflow,
     interestIncome,
     loanRepaymentExpense,
@@ -582,6 +596,13 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
       <Section title="收入采信分析">
         <InfoGrid rows={[
           ['原始收入', money(normalizedSummary.totalIncome)],
+          ['明确工资收入', money(normalizedSummary.confirmedSalaryIncome)],
+          ['疑似工资收入', money(normalizedSummary.suspectedSalaryIncome)],
+          ['工资覆盖月份', display(normalizedSummary.salaryMonths)],
+          ['月均明确工资', money(normalizedSummary.salaryAvgMonthlyAmount)],
+          ['工资识别置信度', percent(normalizedSummary.salaryConfidence)],
+          ['主要发薪单位', normalizedSummary.salarySources.length ? normalizedSummary.salarySources.slice(0, 3).map((item) => display(item.counterparty_name)).join('、') : EMPTY],
+          ['工资识别说明', normalizedSummary.salaryDetectionNotes.length ? normalizedSummary.salaryDetectionNotes.join('；') : EMPTY],
           ['工资收入', money(normalizedSummary.verifiedSalaryIncome)],
           ['经营收入', money(normalizedSummary.verifiedOperatingIncome)],
           ['其他稳定收入', money(normalizedSummary.verifiedOtherStableIncome)],

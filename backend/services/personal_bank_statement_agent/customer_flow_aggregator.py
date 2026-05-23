@@ -100,6 +100,8 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 "period": payload.get("statement_period") or {"start_date": summary.get("period_start") or "", "end_date": summary.get("period_end") or ""},
                 "flow_nature": payload.get("flow_nature") or {},
                 "verified_income": (payload.get("income_verification") or {}).get("verified_income") if isinstance(payload.get("income_verification"), dict) else summary.get("verified_income") or 0,
+                "confirmed_salary_income": (payload.get("income_verification") or {}).get("confirmed_salary_income") if isinstance(payload.get("income_verification"), dict) else summary.get("salary_income") or 0,
+                "suspected_salary_income": (payload.get("income_verification") or {}).get("suspected_salary_income") if isinstance(payload.get("income_verification"), dict) else summary.get("suspected_salary_income") or 0,
                 "unknown_inflow": (payload.get("income_verification") or {}).get("unknown_inflow") if isinstance(payload.get("income_verification"), dict) else summary.get("unknown_inflow") or 0,
                 "loan_repayment_expense": (payload.get("expense_analysis") or {}).get("loan_repayment_expense") if isinstance(payload.get("expense_analysis"), dict) else summary.get("loan_repayment_expense") or 0,
                 "risk_signals": payload.get("risk_signals") or [],
@@ -113,6 +115,8 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         sums["raw_total_income"] += float(income.get("raw_total_income") or summary.get("raw_total_income") or 0)
         sums["raw_total_expense"] += float(expense.get("raw_total_expense") or summary.get("raw_total_expense") or 0)
         sums["salary_income"] += float(income.get("verified_salary_income") or summary.get("salary_income") or 0)
+        sums["confirmed_salary_income"] += float(income.get("confirmed_salary_income") or income.get("verified_salary_income") or summary.get("salary_income") or 0)
+        sums["suspected_salary_income"] += float(income.get("suspected_salary_income") or summary.get("suspected_salary_income") or 0)
         sums["operating_income"] += float(income.get("verified_operating_income") or summary.get("operating_income") or 0)
         sums["stable_income"] += float(income.get("stable_income") or summary.get("stable_income") or 0)
         sums["verified_income"] += float(income.get("verified_income") or summary.get("verified_income") or 0)
@@ -153,6 +157,8 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "raw_total_income": round2(sums["raw_total_income"]),
         "raw_total_expense": round2(sums["raw_total_expense"]),
         "salary_income": round2(sums["salary_income"]),
+        "confirmed_salary_income": round2(sums["confirmed_salary_income"]),
+        "suspected_salary_income": round2(sums["suspected_salary_income"]),
         "operating_income": round2(sums["operating_income"]),
         "stable_income": round2(sums["stable_income"]),
         "internal_transfer_income": round2(sums["internal_transfer_income"]),

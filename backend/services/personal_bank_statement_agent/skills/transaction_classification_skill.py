@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..normalizer import normalize_text
+from .salary_income_detection_skill import detect_salary_income
 
 
 SALARY_KEYWORDS = ("工资", "薪资", "代发工资", "代发薪", "奖金", "绩效", "劳务报酬")
@@ -46,6 +47,10 @@ def classify_transactions(transactions: list[dict[str, Any]]) -> list[dict[str, 
         tx["is_fast_in_fast_out_related"] = False
         tx.setdefault("risk_tags", [])
 
+    salary_summary = detect_salary_income(transactions)
+    for tx in transactions:
+        debit = float(tx.get("debit_amount") or 0)
+        credit = float(tx.get("credit_amount") or 0)
         if tx.get("is_internal_transfer"):
             tx["category"] = "internal_transfer"
             tx["evidence"] = tx.get("evidence") or "本人账户互转，不计入稳定收入"
@@ -53,12 +58,34 @@ def classify_transactions(transactions: list[dict[str, Any]]) -> list[dict[str, 
 
         text = normalize_text(f"{tx.get('summary')} {tx.get('counterparty_name')}")
         if tx.get("direction") == "income" and credit > 0:
-            if _has_any(text, SALARY_KEYWORDS):
+            salary_detection = tx.get("salary_detection") or {}
+            salary_type = salary_detection.get("salary_type")
+            exclusion_category = str(tx.get("salary_exclusion_category") or "")
+            if salary_type == "confirmed_salary":
                 tx["category"] = "salary_income"
                 tx["is_salary"] = True
                 tx["is_verified_income"] = True
                 tx["is_stable_income"] = True
-                tx["evidence"] = "摘要命中工资/薪资类关键词，计入可采信工资收入"
+                tx["evidence"] = salary_detection.get("evidence") or "工资收入识别器判定为明确工资收入"
+            elif salary_type == "suspected_salary":
+                tx["category"] = "suspected_salary_income"
+                tx["is_salary"] = True
+                tx["is_verified_income"] = False
+                tx["is_stable_income"] = False
+                tx["need_manual_review"] = True
+                tx["evidence"] = salary_detection.get("evidence") or "疑似工资收入，需人工核实，不计入默认可采信工资"
+            elif exclusion_category == "reimbursement_or_advance_income":
+                tx["category"] = "reimbursement_or_advance_income"
+                tx["evidence"] = salary_detection.get("evidence") or "报销/差旅费/备用金类入账，不计入工资"
+            elif exclusion_category == "borrowing_or_transfer_income":
+                tx["category"] = "borrowing_or_transfer_income"
+                tx["evidence"] = salary_detection.get("evidence") or "借款/往来款/还款类入账，不计入工资"
+            elif exclusion_category == "investment_income":
+                tx["category"] = "investment_income"
+                tx["evidence"] = salary_detection.get("evidence") or "分红/投资收益类入账，不计入工资"
+            elif _has_any(text, ("劳务费", "劳务报酬")):
+                tx["category"] = "labor_income"
+                tx["evidence"] = "劳务费/劳务报酬不直接认定为工资，需人工核实"
             elif _has_any(text, OPERATING_KEYWORDS) and not _has_any(text, OPERATING_EXCLUDE_KEYWORDS):
                 tx["category"] = "operating_income"
                 tx["is_operating_income"] = True
@@ -127,4 +154,8 @@ def classify_transactions(transactions: list[dict[str, Any]]) -> list[dict[str, 
         else:
             tx["category"] = "other"
             tx["evidence"] = "交易方向无法唯一判断"
+    for tx in transactions:
+        if tx.get("direction") == "income":
+            tx.setdefault("salary_detection", {"salary_type": "unknown", "confidence": 0.0})
+    setattr(classify_transactions, "last_salary_summary", salary_summary)
     return transactions

@@ -365,6 +365,8 @@ def run_personal_bank_statement_agent(
         clean = _build_clean_summary(transactions)
         income_verification = {
             "raw_total_income": raw_income,
+            "confirmed_salary_income": income_analysis.get("confirmed_salary_income") or 0,
+            "suspected_salary_income": income_analysis.get("suspected_salary_income") or 0,
             "verified_salary_income": income_analysis.get("verified_salary_income") or 0,
             "verified_operating_income": income_analysis.get("verified_operating_income") or 0,
             "verified_other_stable_income": income_analysis.get("verified_other_stable_income") or 0,
@@ -380,6 +382,16 @@ def run_personal_bank_statement_agent(
             "stable_income": income_analysis.get("stable_income") or 0,
             "avg_monthly_verified_income": income_analysis.get("avg_monthly_verified_income") or 0,
             "avg_monthly_stable_income": income_analysis.get("avg_monthly_stable_income") or 0,
+            "salary_income_count": int(income_analysis.get("salary_income_count") or 0),
+            "suspected_salary_count": int(income_analysis.get("suspected_salary_count") or 0),
+            "salary_months": int(income_analysis.get("salary_months") or 0),
+            "salary_avg_monthly_amount": income_analysis.get("salary_avg_monthly_amount") or 0,
+            "salary_continuity_level": income_analysis.get("salary_continuity_level") or "none",
+            "salary_confidence": income_analysis.get("salary_confidence") or 0,
+            "salary_sources": income_analysis.get("salary_sources") or [],
+            "salary_detection_notes": income_analysis.get("salary_detection_notes") or [],
+            "conservative_verified_income": income_analysis.get("conservative_verified_income") or income_analysis.get("verified_income") or 0,
+            "aggressive_estimated_income": income_analysis.get("aggressive_estimated_income") or 0,
             "verification_notes": income_analysis.get("verification_notes") or [],
         }
         expense_summary = {
@@ -407,6 +419,9 @@ def run_personal_bank_statement_agent(
             "raw_total_income": raw_income,
             "raw_total_expense": raw_expense,
             "salary_income": income_verification["verified_salary_income"],
+            "suspected_salary_income": income_verification["suspected_salary_income"],
+            "salary_months": income_verification["salary_months"],
+            "salary_confidence": income_verification["salary_confidence"],
             "operating_income": income_verification["verified_operating_income"],
             "stable_income": stable_income,
             "internal_transfer_income": income_verification["internal_transfer_income"],

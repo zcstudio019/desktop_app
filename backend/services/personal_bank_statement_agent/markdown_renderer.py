@@ -54,6 +54,38 @@ def render_personal_bank_statement_markdown(data: dict[str, Any]) -> str:
         f"- 可采信稳定收入：{_money(income.get('stable_income'))}",
         f"- 月均可采信收入：{_money(income.get('avg_monthly_verified_income'))}",
         "",
+        "## 工资收入识别",
+        f"- 明确工资收入：{_money(income.get('confirmed_salary_income') or income.get('verified_salary_income'))}",
+        f"- 疑似工资收入：{_money(income.get('suspected_salary_income'))}",
+        f"- 工资收入笔数：{income.get('salary_income_count') or 0}",
+        f"- 疑似工资笔数：{income.get('suspected_salary_count') or 0}",
+        f"- 工资覆盖月份：{income.get('salary_months') or 0}",
+        f"- 月均明确工资：{_money(income.get('salary_avg_monthly_amount'))}",
+        f"- 工资发放稳定性：{income.get('salary_continuity_level') or 'none'}",
+        f"- 工资识别置信度：{_pct(income.get('salary_confidence'))}",
+        "- 主要发薪单位：",
+    ]
+    salary_sources = income.get("salary_sources") or []
+    if salary_sources:
+        for source in salary_sources[:5]:
+            lines.append(
+                f"  - {source.get('counterparty_name') or '未知付款方'}："
+                f"{_money(source.get('amount'))}，{source.get('count') or 0} 笔，"
+                f"{source.get('salary_type') or '-'}"
+            )
+    else:
+        lines.append("  - 暂无")
+    notes = income.get("salary_detection_notes") or []
+    lines += [
+        "- 疑似工资待核实说明：",
+    ]
+    if notes:
+        for note in notes:
+            lines.append(f"  - {note}")
+    else:
+        lines.append("  - 暂无")
+    lines += [
+        "",
         "## 支出与还款分析",
         f"- 总支出：{_money(expense.get('raw_total_expense'))}",
         f"- 贷款还款支出：{_money(expense.get('loan_repayment_expense'))}",

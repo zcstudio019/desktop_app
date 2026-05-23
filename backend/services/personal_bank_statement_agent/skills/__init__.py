@@ -6,6 +6,7 @@ from .financing_judgement_skill import build_financing_judgement
 from .income_analysis_skill import analyze_income
 from .internal_transfer_detection_skill import detect_internal_transfers
 from .risk_signal_skill import detect_risk_signals
+from .salary_income_detection_skill import detect_salary_income
 from .transaction_classification_skill import classify_transactions
 from .transaction_table_skill import extract_transactions
 
@@ -17,6 +18,7 @@ __all__ = [
     "classify_transactions",
     "detect_internal_transfers",
     "detect_risk_signals",
+    "detect_salary_income",
     "extract_account_info",
     "extract_owner_info",
     "extract_transactions",

@@ -53,6 +53,8 @@ class CleanSummary(BaseModel):
 
 class IncomeVerification(BaseModel):
     raw_total_income: float = 0.0
+    confirmed_salary_income: float = 0.0
+    suspected_salary_income: float = 0.0
     verified_salary_income: float = 0.0
     verified_operating_income: float = 0.0
     verified_other_stable_income: float = 0.0
@@ -68,6 +70,16 @@ class IncomeVerification(BaseModel):
     stable_income: float = 0.0
     avg_monthly_verified_income: float = 0.0
     avg_monthly_stable_income: float = 0.0
+    salary_income_count: int = 0
+    suspected_salary_count: int = 0
+    salary_months: int = 0
+    salary_avg_monthly_amount: float = 0.0
+    salary_continuity_level: str = "none"
+    salary_confidence: float = 0.0
+    salary_sources: list[dict[str, Any]] = Field(default_factory=list)
+    salary_detection_notes: list[str] = Field(default_factory=list)
+    conservative_verified_income: float = 0.0
+    aggressive_estimated_income: float = 0.0
     verification_notes: list[str] = Field(default_factory=list)
 
 
@@ -147,6 +159,8 @@ class Transaction(BaseModel):
     is_loan_repayment: bool = False
     is_credit_card_repayment: bool = False
     is_fast_in_fast_out_related: bool = False
+    salary_detection: dict[str, Any] = Field(default_factory=dict)
+    need_manual_review: bool = False
     risk_tags: list[str] = Field(default_factory=list)
     evidence: str = ""
 
@@ -172,6 +186,9 @@ class CustomerLevelSummary(BaseModel):
     raw_total_income: float = 0.0
     raw_total_expense: float = 0.0
     salary_income: float = 0.0
+    suspected_salary_income: float = 0.0
+    salary_months: int = 0
+    salary_confidence: float = 0.0
     operating_income: float = 0.0
     stable_income: float = 0.0
     internal_transfer_income: float = 0.0
