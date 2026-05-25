@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from math import sqrt
+import re
 from typing import Any
 
 from ..normalizer import normalize_text, round2
@@ -142,6 +143,17 @@ def _employer_like(name: Any) -> bool:
     return bool(text and _matched(text, EMPLOYER_COUNTERPARTY_KEYWORDS))
 
 
+def _same_person(name: Any, account_name: Any) -> bool:
+    counterparty = normalize_text(name)
+    owner = normalize_text(account_name)
+    return bool(counterparty and owner and counterparty == owner)
+
+
+def _personal_counterparty(name: Any) -> bool:
+    text = normalize_text(name)
+    return bool(text and not _employer_like(text) and re.fullmatch(r"[\u4e00-\u9fff]{2,4}", text))
+
+
 def _parse_date(value: Any) -> datetime | None:
     text = str(value or "")[:10]
     if not text:
@@ -206,7 +218,7 @@ def _exclude_category(exclude_keywords: list[str]) -> str:
     return "non_salary_income"
 
 
-def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
+def detect_salary_income(transactions: list[dict[str, Any]], account_name: str = "") -> dict[str, Any]:
     income_transactions: list[dict[str, Any]] = []
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
@@ -225,6 +237,8 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
             "matched_keywords": strong or suspected,
             "exclude_keywords": exclude,
             "employer_like_counterparty": _employer_like(tx.get("counterparty_name")),
+            "is_self_counterparty": _same_person(tx.get("counterparty_name"), account_name),
+            "is_personal_counterparty": _personal_counterparty(tx.get("counterparty_name")),
             "periodic_payment": False,
             "amount_stable": False,
             "continuous_months": 0,
@@ -255,6 +269,8 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
         suspected = [item for item in detection["matched_keywords"] if item in SUSPECTED_SALARY_KEYWORDS]
         exclude = detection["exclude_keywords"]
         employer_like = bool(detection["employer_like_counterparty"])
+        is_self_counterparty = bool(detection["is_self_counterparty"])
+        is_personal_counterparty = bool(detection["is_personal_counterparty"])
         continuous = int(detection["continuous_months"] or 0)
         periodic = bool(detection["periodic_payment"])
         stable = bool(detection["amount_stable"])
@@ -265,6 +281,22 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
             detection["evidence"] = f"命中排除关键词：{'、'.join(exclude)}，不认定为工资"
             continue
 
+        if is_self_counterparty:
+            detection["salary_type"] = "non_salary"
+            detection["income_nature"] = "self_transfer_income"
+            detection["confidence"] = 0.98
+            detection["evidence"] = "对手方与户名一致，识别为本人账户转入，不计入疑似工资收入"
+            tx["income_nature"] = "self_transfer_income"
+            continue
+
+        if is_personal_counterparty:
+            detection["salary_type"] = "non_salary"
+            detection["income_nature"] = "personal_transfer_income"
+            detection["confidence"] = 0.9
+            detection["evidence"] = "对手方为个人姓名且不具备单位主体特征，不计入疑似工资收入"
+            tx["income_nature"] = "personal_transfer_income"
+            continue
+
         if strong:
             confidence = 0.82 + (0.08 if employer_like else 0) + (0.05 if continuous >= 3 else 0) + (0.03 if stable else 0)
             detection["salary_type"] = "confirmed_salary"
@@ -272,7 +304,6 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
             detection["evidence"] = f"摘要命中强工资关键词：{'、'.join(strong)}"
             continue
 
-        score = sum([bool(suspected), employer_like, continuous >= 2, periodic, stable])
         if suspected and employer_like:
             if continuous >= 6 and stable:
                 confidence = 0.85
@@ -299,14 +330,6 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
             detection["evidence"] = "多月出现代发类收入，但对手信息缺失，无法确认付款单位，需回看完整流水"
             tx["need_manual_review"] = True
             continue
-        if suspected and score >= 3:
-            confidence = 0.45 + (0.15 if employer_like else 0) + (0.12 if continuous >= 3 else 0.08 if continuous >= 2 else 0) + (0.1 if periodic else 0) + (0.1 if stable else 0)
-            detection["salary_type"] = "suspected_salary"
-            detection["confidence"] = round(min(confidence, 0.82), 2)
-            detection["evidence"] = "疑似代发/转账收入结合付款方、周期或金额稳定性，需人工核实"
-            tx["need_manual_review"] = True
-            continue
-
         detection["salary_type"] = "non_salary" if suspected else "unknown"
         detection["confidence"] = 0.55 if suspected else 0.0
         detection["evidence"] = "缺少明确工资关键词、单位付款方或稳定发放规律，不能认定为工资"

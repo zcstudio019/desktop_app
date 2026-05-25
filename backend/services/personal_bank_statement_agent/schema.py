@@ -63,6 +63,8 @@ class IncomeVerification(BaseModel):
     interest_income: float = 0.0
     loan_inflow: float = 0.0
     internal_transfer_income: float = 0.0
+    self_transfer_income: float = 0.0
+    personal_transfer_income: float = 0.0
     related_party_income: float = 0.0
     investment_redeem_income: float = 0.0
     refund_income: float = 0.0

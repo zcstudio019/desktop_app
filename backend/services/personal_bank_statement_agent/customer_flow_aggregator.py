@@ -228,6 +228,8 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         sums["unknown_inflow"] += float(income.get("unknown_inflow") or summary.get("unknown_inflow") or 0)
         sums["loan_inflow"] += float(income.get("loan_inflow") or summary.get("loan_inflow") or 0)
         sums["internal_transfer_income"] += float(income.get("internal_transfer_income") or summary.get("internal_transfer_income") or 0)
+        sums["self_transfer_income"] += float(income.get("self_transfer_income") or 0)
+        sums["personal_transfer_income"] += float(income.get("personal_transfer_income") or 0)
         sums["loan_repayment_expense"] += float(expense.get("loan_repayment_expense") or summary.get("loan_repayment_expense") or 0)
         sums["net_operating_cash_flow"] += float(summary.get("net_operating_cash_flow") or effective_net_cash_flow or 0)
         fast_matches.extend(_dict(item) for item in _list(_dict(payload.get("fast_in_fast_out_analysis")).get("matches")))
@@ -296,6 +298,8 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "operating_income": round2(sums["operating_income"]),
         "stable_income": round2(sums["stable_income"]),
         "internal_transfer_income": round2(sums["internal_transfer_income"]),
+        "self_transfer_income": round2(sums["self_transfer_income"]),
+        "personal_transfer_income": round2(sums["personal_transfer_income"]),
         "loan_inflow": round2(sums["loan_inflow"]),
         "net_operating_cash_flow": round2(sums["net_operating_cash_flow"]),
         "avg_monthly_income": round2(sums["raw_total_income"] / month_count),
@@ -331,6 +335,9 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "verified_income": summary["verified_income"],
         "stable_income": summary["stable_income"],
         "unknown_inflow": summary["unknown_inflow"],
+        "internal_transfer_income": summary["internal_transfer_income"],
+        "self_transfer_income": summary["self_transfer_income"],
+        "personal_transfer_income": summary["personal_transfer_income"],
         "salary_income_count": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "confirmed_salary")),
         "suspected_salary_count": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "suspected_salary")),
         "suspected_salary_count_low_confidence": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "low_confidence_suspected_salary")),

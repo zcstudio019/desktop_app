@@ -465,6 +465,46 @@ def test_repeated_daifa_without_counterparty_is_low_confidence_suspected_salary(
     assert "对手信息缺失" in render_personal_bank_statement_markdown(data)
 
 
+def test_suspected_salary_excludes_self_and_personal_counterparties() -> None:
+    monthly_amounts = [40371.65] * 12 + [40371.69]
+    months = [
+        "2024-06", "2024-07", "2024-08", "2024-09", "2024-10", "2024-11", "2024-12",
+        "2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06",
+    ]
+    transactions = [
+        {
+            "交易日期": f"{month}-10",
+            "交易金额": str(amount),
+            "交易摘要": "代发款项",
+            "对手信息": "上海中兴软件有限责任公司",
+        }
+        for month, amount in zip(months, monthly_amounts)
+    ]
+    transactions.extend([
+        {"交易日期": "2025-05-12", "交易金额": "60060", "交易摘要": "代发款项", "对手信息": "康磊"},
+        {"交易日期": "2025-06-12", "交易金额": "46500", "交易摘要": "代发款项", "对手信息": "刘稼"},
+    ])
+    data = build_deterministic_personal_flow_summary({
+        "account_name": "康磊",
+        "交易明细列表": transactions,
+    })
+    income = data["income_verification"]
+    assert income["suspected_salary_income"] == 524831.49
+    assert income["salary_months"] == 13
+    assert income["salary_avg_monthly_amount"] == round(524831.49 / 13, 2)
+    assert income["confirmed_salary_income"] == 0
+    assert income["verified_salary_income"] == 0
+    assert income["self_transfer_income"] == 60060
+    assert income["internal_transfer_income"] == 60060
+    assert income["personal_transfer_income"] == 46500
+    assert [source["counterparty_name"] for source in income["salary_sources"]] == ["上海中兴软件有限责任公司"]
+    by_counterparty = {tx["counterparty_name"]: tx for tx in data["transactions"]}
+    assert by_counterparty["康磊"]["category"] == "self_transfer_income"
+    assert by_counterparty["刘稼"]["category"] == "personal_transfer_income"
+    assert by_counterparty["康磊"]["salary_detection"]["salary_type"] == "non_salary"
+    assert by_counterparty["刘稼"]["salary_detection"]["salary_type"] == "non_salary"
+
+
 def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
     payload = {
         "doc_type": "personal_flow",

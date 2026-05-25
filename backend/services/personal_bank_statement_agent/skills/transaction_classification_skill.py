@@ -30,7 +30,7 @@ def _has_counterparty(tx: dict[str, Any]) -> bool:
     return bool(normalize_text(tx.get("counterparty_name")) or normalize_text(tx.get("counterparty_account")))
 
 
-def classify_transactions(transactions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def classify_transactions(transactions: list[dict[str, Any]], account_name: str = "") -> list[dict[str, Any]]:
     for tx in transactions:
         debit = float(tx.get("debit_amount") or 0)
         credit = float(tx.get("credit_amount") or 0)
@@ -47,7 +47,7 @@ def classify_transactions(transactions: list[dict[str, Any]]) -> list[dict[str, 
         tx["is_fast_in_fast_out_related"] = False
         tx.setdefault("risk_tags", [])
 
-    salary_summary = detect_salary_income(transactions)
+    salary_summary = detect_salary_income(transactions, account_name=account_name)
     for tx in transactions:
         debit = float(tx.get("debit_amount") or 0)
         credit = float(tx.get("credit_amount") or 0)
@@ -60,8 +60,16 @@ def classify_transactions(transactions: list[dict[str, Any]]) -> list[dict[str, 
         if tx.get("direction") == "income" and credit > 0:
             salary_detection = tx.get("salary_detection") or {}
             salary_type = salary_detection.get("salary_type")
+            income_nature = salary_detection.get("income_nature") or tx.get("income_nature")
             exclusion_category = str(tx.get("salary_exclusion_category") or "")
-            if salary_type == "confirmed_salary":
+            if income_nature == "self_transfer_income":
+                tx["category"] = "self_transfer_income"
+                tx["is_internal_transfer"] = True
+                tx["evidence"] = salary_detection.get("evidence") or "对手方与户名一致，识别为本人账户转入"
+            elif income_nature == "personal_transfer_income":
+                tx["category"] = "personal_transfer_income"
+                tx["evidence"] = salary_detection.get("evidence") or "个人付款方转入，不计入工资收入"
+            elif salary_type == "confirmed_salary":
                 tx["category"] = "salary_income"
                 tx["is_salary"] = True
                 tx["is_verified_income"] = True

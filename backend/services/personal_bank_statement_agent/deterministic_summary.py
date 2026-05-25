@@ -386,8 +386,13 @@ def _summary_mismatch_warning(ai_summary: dict[str, Any], detail_summary: dict[s
     }
 
 
-def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, Any]], raw_summary: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    salary = detect_salary_income(transactions)
+def _income_and_expense(
+    payload: dict[str, Any],
+    transactions: list[dict[str, Any]],
+    raw_summary: dict[str, Any],
+    account_name: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    salary = detect_salary_income(transactions, account_name=account_name)
     for tx in transactions:
         salary_type = _dict(tx.get("salary_detection")).get("salary_type")
         if salary_type in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"}:
@@ -409,6 +414,8 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
     verified_operating_income = 0.0
     verified_other_stable_income = 0.0
     unknown_inflow = 0.0
+    self_transfer_income = 0.0
+    personal_transfer_income = 0.0
     interest_income = 0.0
     loan_repayment_expense = 0.0
     quick_payment_expense = 0.0
@@ -421,6 +428,20 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
         credit = float(tx.get("credit_amount") or 0)
         debit = float(tx.get("debit_amount") or 0)
         if credit > 0:
+            income_nature = _dict(tx.get("salary_detection")).get("income_nature") or tx.get("income_nature")
+            if income_nature == "self_transfer_income":
+                self_transfer_income += credit
+                tx["category"] = "self_transfer_income"
+                tx["is_internal_transfer"] = True
+                tx["is_salary"] = False
+                tx["is_verified_income"] = False
+                tx["is_stable_income"] = False
+            elif income_nature == "personal_transfer_income":
+                personal_transfer_income += credit
+                tx["category"] = "personal_transfer_income"
+                tx["is_salary"] = False
+                tx["is_verified_income"] = False
+                tx["is_stable_income"] = False
             if _contains(summary, OPERATING_INCOME_KEYWORDS) and not _contains(summary, EXCLUDE_OPERATING_INCOME_KEYWORDS):
                 verified_operating_income += credit
             elif _contains(summary, OTHER_STABLE_INCOME_KEYWORDS):
@@ -463,6 +484,9 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
         "salary_detection_notes": salary.get("salary_detection_notes") or [],
         "verified_operating_income": round2(verified_operating_income),
         "verified_other_stable_income": round2(verified_other_stable_income),
+        "self_transfer_income": round2(self_transfer_income),
+        "internal_transfer_income": round2(self_transfer_income),
+        "personal_transfer_income": round2(personal_transfer_income),
         "unknown_inflow": round2(unknown_inflow),
         "interest_income": round2(interest_income),
         "verified_income": verified_income,
@@ -642,7 +666,12 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any], ra
     mismatch = _summary_mismatch_warning(ai_raw, raw_summary) if transactions and has_ai_summary else None
     if mismatch:
         warnings.append(mismatch)
-    income_verification, expense_analysis = _income_and_expense(payload, transactions, raw_summary)
+    income_verification, expense_analysis = _income_and_expense(
+        payload,
+        transactions,
+        raw_summary,
+        account_name=str(base_info.get("account_name") or ""),
+    )
     fast_analysis = _fast_in_fast_out_analysis(transactions, raw_summary["total_income"])
     payroll_like_transactions = [
         {
@@ -679,6 +708,9 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any], ra
         "stable_income": income_verification["stable_income"],
         "verified_income": income_verification["verified_income"],
         "unknown_inflow": income_verification["unknown_inflow"],
+        "self_transfer_income": income_verification["self_transfer_income"],
+        "internal_transfer_income": income_verification["internal_transfer_income"],
+        "personal_transfer_income": income_verification["personal_transfer_income"],
         "loan_repayment_expense": expense_analysis["loan_repayment_expense"],
         "avg_monthly_stable_income": round2(income_verification["stable_income"] / month_count),
     }
