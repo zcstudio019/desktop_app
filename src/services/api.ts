@@ -890,7 +890,8 @@ export async function getCustomerPersonalFlowSummary(
   customerId: string,
   signal?: AbortSignal
 ): Promise<{ item: Record<string, unknown> | null }> {
-  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/personal-flow/summary`, {
+  const debugQuery = import.meta.env.DEV ? '?debug=true' : '';
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/personal-flow/summary${debugQuery}`, {
     method: 'GET',
     headers: { ...getAuthHeaders() },
     signal,

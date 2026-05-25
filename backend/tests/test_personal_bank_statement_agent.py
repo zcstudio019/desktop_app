@@ -400,6 +400,34 @@ def test_markdown_renderer_uses_standard_base_info() -> None:
     assert "- 流水期间：2024-06-15 至 2025-06-15" in markdown
 
 
+def test_deterministic_suspected_salary_precedes_unknown_inflow_and_exposes_debug(caplog) -> None:
+    caplog.set_level("INFO")
+    data = build_deterministic_personal_flow_summary({
+        "source_file": "招商银行交易流水.pdf",
+        "交易明细列表": [
+            {"记账日期": "2024-06-21", "交易金额": "11543.87", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+            {"记账日期": "2024-07-10", "交易金额": "16131.77", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+            {"记账日期": "2024-08-09", "交易金额": "15986.08", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+            {"记账日期": "2024-09-10", "交易金额": "15774.82", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+        ],
+    })
+    income = data["income_verification"]
+    first_tx = data["transactions"][0]
+    assert first_tx["summary"] == "代发款项"
+    assert first_tx["counterparty_name"] == "上海中兴软件有限责任公司"
+    assert first_tx["credit_amount"] == 11543.87
+    assert income["suspected_salary_income"] == 59436.54
+    assert income["suspected_salary_count"] == 4
+    assert income["unknown_inflow"] == 0
+    assert data["debug"]["transaction_source_key"] == "交易明细列表"
+    assert data["debug"]["salary_candidate_count"] == 4
+    assert "[PersonalFlow][PAYROLL_LIKE_TX]" in caplog.text
+    assert "[PersonalFlow][SALARY_CANDIDATE] type=suspected" in caplog.text
+    assert "[PersonalFlow][SUMMARY_SOURCE] deterministic_from_transactions" in caplog.text
+    markdown = render_personal_bank_statement_markdown(data)
+    assert "未识别到明确工资收入，但存在疑似单位代发收入" in markdown
+
+
 def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
     payload = {
         "doc_type": "personal_flow",
@@ -417,6 +445,7 @@ def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
     assert aggregated["deterministic_summary"]["total_expense"] == 40
     assert aggregated["customer_level_summary"]["raw_total_income"] == 100
     assert aggregated["summary_warnings"][0]["code"] == "summary_detail_mismatch"
+    assert aggregated["debug"]["summary_source"] == "deterministic_from_transactions"
 
 
 def test_duplicate_same_file_hash_only_latest_participates_in_personal_flow_aggregate() -> None:

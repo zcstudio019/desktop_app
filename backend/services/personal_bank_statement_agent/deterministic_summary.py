@@ -145,17 +145,22 @@ def normalize_personal_flow_base_info(payload: dict[str, Any], transactions: lis
     }
 
 
-def collect_raw_transactions(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def collect_raw_transactions_with_source(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     containers = [payload, _dict(payload.get("extracted_json")), _dict(payload.get("summary"))]
-    for container in containers:
+    for container_index, container in enumerate(containers):
         for key in TRANSACTION_LIST_KEYS:
             transactions = [_dict(item) for item in _list(container.get(key))]
             if transactions:
-                return transactions
+                prefix = ("", "extracted_json.", "summary.")[container_index]
+                return transactions, f"{prefix}{key}"
     transactions: list[dict[str, Any]] = []
     for account in _list(payload.get("accounts")):
         transactions.extend(_dict(item) for item in _list(_dict(account).get("transactions")))
-    return transactions
+    return transactions, "accounts.transactions" if transactions else ""
+
+
+def collect_raw_transactions(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return collect_raw_transactions_with_source(payload)[0]
 
 
 def normalize_personal_flow_transaction(tx: dict[str, Any], index: int = 0) -> dict[str, Any]:
@@ -301,19 +306,19 @@ def _summary_mismatch_warning(ai_summary: dict[str, Any], detail_summary: dict[s
 
 
 def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, Any]], raw_summary: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    salary = detect_salary_income(transactions)
     for tx in transactions:
-        if (
-            float(tx.get("credit_amount") or 0) > 0
-            and "代发" in str(tx.get("summary") or "")
-        ):
+        salary_type = _dict(tx.get("salary_detection")).get("salary_type")
+        if salary_type in {"confirmed_salary", "suspected_salary"}:
             logger.info(
-                "[PersonalFlow][SALARY_CANDIDATE] date=%s amount=%s summary=%s counterparty=%s",
+                "[PersonalFlow][SALARY_CANDIDATE] type=%s date=%s amount=%s summary=%s counterparty=%s reason=%s",
+                salary_type.replace("_salary", ""),
                 tx.get("transaction_date") or "",
                 tx.get("credit_amount") or 0,
                 tx.get("summary") or "",
                 tx.get("counterparty_name") or "",
+                "payroll_keyword_and_company_counterparty" if salary_type == "suspected_salary" else "strong_salary_keyword",
             )
-    salary = detect_salary_income(transactions)
     verified_operating_income = 0.0
     verified_other_stable_income = 0.0
     unknown_inflow = 0.0
@@ -333,9 +338,10 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
                 verified_operating_income += credit
             elif _contains(summary, OTHER_STABLE_INCOME_KEYWORDS):
                 verified_other_stable_income += credit
-            if _contains(summary, UNKNOWN_INFLOW_KEYWORDS) and not counterparty:
+            salary_type = _dict(tx.get("salary_detection")).get("salary_type")
+            if salary_type not in {"confirmed_salary", "suspected_salary"} and _contains(summary, UNKNOWN_INFLOW_KEYWORDS) and not counterparty:
                 unknown_inflow += credit
-            elif summary in {"汇款汇入", "汇入汇款", "转账收入"} and not counterparty:
+            elif salary_type not in {"confirmed_salary", "suspected_salary"} and summary in {"汇款汇入", "汇入汇款", "转账收入"} and not counterparty:
                 unknown_inflow += credit
             if _contains(summary, INTEREST_KEYWORDS):
                 interest_income += credit
@@ -524,16 +530,39 @@ def transaction_signature(transactions: list[dict[str, Any]]) -> str:
 
 def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) -> dict[str, Any]:
     payload = _dict(extracted_json)
-    transactions = normalize_personal_flow_transactions(payload)
+    raw_transactions, transaction_source_key = collect_raw_transactions_with_source(payload)
+    transactions = [normalize_personal_flow_transaction(tx, index) for index, tx in enumerate(raw_transactions)]
     base_info = normalize_personal_flow_base_info(payload, transactions)
     raw_summary = _raw_summary(payload, transactions)
     ai_raw = _ai_summary_raw(payload)
     warnings = [item for item in _list(payload.get("warnings")) if item]
-    mismatch = _summary_mismatch_warning(ai_raw, raw_summary) if transactions else None
+    has_ai_summary = bool(
+        _dict(payload.get("ai_summary_raw"))
+        or _dict(payload.get("收支规模汇总"))
+        or _dict(payload.get("raw_summary"))
+        or _dict(payload.get("customer_level_summary"))
+    )
+    mismatch = _summary_mismatch_warning(ai_raw, raw_summary) if transactions and has_ai_summary else None
     if mismatch:
         warnings.append(mismatch)
     income_verification, expense_analysis = _income_and_expense(payload, transactions, raw_summary)
     fast_analysis = _fast_in_fast_out_analysis(transactions, raw_summary["total_income"])
+    payroll_like_transactions = [
+        {
+            "transaction_date": tx.get("transaction_date") or "",
+            "amount": tx.get("credit_amount") or tx.get("amount") or 0,
+            "direction": tx.get("direction") or "",
+            "summary": tx.get("summary") or "",
+            "counterparty_name": tx.get("counterparty_name") or "",
+            "salary_type": _dict(tx.get("salary_detection")).get("salary_type") or "",
+        }
+        for tx in transactions
+        if "代发" in str(tx.get("summary") or "")
+    ]
+    salary_candidate_transactions = [
+        tx for tx in payroll_like_transactions
+        if tx.get("salary_type") in {"confirmed_salary", "suspected_salary"}
+    ]
     month_count = int(raw_summary.get("month_count") or 1)
     customer_level_summary = {
         **_dict(payload.get("customer_level_summary")),
@@ -556,6 +585,45 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
         "avg_monthly_stable_income": round2(income_verification["stable_income"] / month_count),
     }
     logger.info(
+        "[PersonalFlow][START] customer_id=%s file_name=%s document_type=%s",
+        payload.get("customer_id") or "",
+        payload.get("source_file") or payload.get("original_filename") or payload.get("file_name") or "",
+        payload.get("document_type") or payload.get("doc_type") or "personal_flow",
+    )
+    logger.info(
+        "[PersonalFlow][BASE_INFO] bank=%s account_name=%s account_no=%s period=%s currency=%s",
+        base_info.get("bank_name") or "",
+        base_info.get("account_name") or "",
+        base_info.get("account_no") or "",
+        base_info.get("statement_period") or {},
+        base_info.get("currency") or "",
+    )
+    logger.info("[PersonalFlow][TX_SOURCE] source_key=%s raw_count=%s", transaction_source_key or "missing", len(raw_transactions))
+    logger.info(
+        "[PersonalFlow][TX_NORMALIZED] count=%s income_count=%s expense_count=%s",
+        len(transactions),
+        raw_summary["income_count"],
+        raw_summary["expense_count"],
+    )
+    for tx in transactions[:10]:
+        logger.info(
+            "[PersonalFlow][TX_SAMPLE] date=%s amount=%s direction=%s summary=%s counterparty=%s",
+            tx.get("transaction_date") or "",
+            tx.get("credit_amount") or -(float(tx.get("debit_amount") or 0)),
+            tx.get("direction") or "",
+            tx.get("summary") or "",
+            tx.get("counterparty_name") or "",
+        )
+    for tx in payroll_like_transactions:
+        logger.info(
+            "[PersonalFlow][PAYROLL_LIKE_TX] date=%s amount=%s summary=%s counterparty=%s",
+            tx.get("transaction_date") or "",
+            tx.get("amount") or 0,
+            tx.get("summary") or "",
+            tx.get("counterparty_name") or "",
+        )
+    logger.info("[PersonalFlow][SALARY_CANDIDATES] count=%s", len(salary_candidate_transactions))
+    logger.info(
         "[PersonalFlow][AI_SUMMARY_RAW] income=%s expense=%s net=%s",
         ai_raw.get("total_income") or 0,
         ai_raw.get("total_expense") or 0,
@@ -572,6 +640,7 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
     logger.info("[PersonalFlow][TRANSACTIONS_COUNT] count=%s", len(transactions))
     logger.info("[PersonalFlow][SUMMARY_SOURCE] deterministic_from_transactions")
     logger.info("[PersonalFlow][SUMMARY_MISMATCH] %s", bool(mismatch))
+    logger.info("[PersonalFlow][WARNINGS] %s", warnings)
     return {
         **payload,
         **base_info,
@@ -591,4 +660,13 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
         "transaction_signature": transaction_signature(transactions),
         "warnings": warnings,
         "summary_warnings": [mismatch] if mismatch else [],
+        "debug": {
+            "summary_source": "deterministic_from_transactions",
+            "transaction_source_key": transaction_source_key,
+            "transaction_count": len(transactions),
+            "salary_candidate_count": len(salary_candidate_transactions),
+            "payroll_like_transactions": payroll_like_transactions,
+            "ai_summary_raw": ai_raw,
+            "warnings": warnings,
+        },
     }

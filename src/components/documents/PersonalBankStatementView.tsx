@@ -436,6 +436,14 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
   const interestIncome = hasValue(income.interest_income)
     ? pickMeaningfulNumber(income.interest_income, derivedInterestIncome)
     : derivedInterestIncome;
+  const suspectedSalaryIncome = pickMeaningfulNumber(income.suspected_salary_income, customerSummary.suspected_salary_income, derivedSuspectedSalary.amount);
+  const existingSalaryNotes = asArray<string>(income.salary_detection_notes);
+  const salaryDetectionNotes = suspectedSalaryIncome > 0 && (
+    !existingSalaryNotes.length ||
+    (existingSalaryNotes.length === 1 && existingSalaryNotes[0] === '未识别到明确工资收入')
+  )
+    ? ['未识别到明确工资收入，但存在疑似单位代发收入，需人工核实。']
+    : existingSalaryNotes.length ? existingSalaryNotes : derivedSuspectedSalary.notes;
 
   return {
     totalIncome,
@@ -448,7 +456,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     verifiedIncome: pickNumber(income.verified_income, income.stable_income, customerSummary.verified_income, customerSummary.stable_income, customerSummary.customer_verified_income, customerSummary.customer_stable_income),
     avgMonthlyVerifiedIncome: pickNumber(income.avg_monthly_verified_income, income.avg_monthly_stable_income, customerSummary.avg_monthly_verified_income, customerSummary.avg_monthly_stable_income, customerSummary.customer_avg_monthly_verified_income),
     confirmedSalaryIncome: pickNumber(income.confirmed_salary_income, income.verified_salary_income, customerSummary.salary_income),
-    suspectedSalaryIncome: pickMeaningfulNumber(income.suspected_salary_income, customerSummary.suspected_salary_income, derivedSuspectedSalary.amount),
+    suspectedSalaryIncome,
     verifiedSalaryIncome: pickNumber(income.verified_salary_income, income.salary_income, customerSummary.salary_income),
     verifiedOperatingIncome: pickNumber(income.verified_operating_income, income.operating_income, customerSummary.operating_income),
     verifiedOtherStableIncome: pickNumber(income.verified_other_stable_income, income.other_stable_income),
@@ -456,7 +464,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     salaryAvgMonthlyAmount: pickNumber(income.salary_avg_monthly_amount),
     salaryConfidence: pickMeaningfulNumber(income.salary_confidence, customerSummary.salary_confidence, derivedSuspectedSalary.confidence),
     salarySources: asArray<Record<string, unknown>>(income.salary_sources).length ? asArray<Record<string, unknown>>(income.salary_sources) : derivedSuspectedSalary.sources,
-    salaryDetectionNotes: asArray<string>(income.salary_detection_notes).length ? asArray<string>(income.salary_detection_notes) : derivedSuspectedSalary.notes,
+    salaryDetectionNotes,
     unknownInflow,
     interestIncome,
     loanRepaymentExpense,
@@ -691,7 +699,7 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
           ['明确工资收入', money(normalizedSummary.confirmedSalaryIncome)],
           ['疑似工资收入', money(normalizedSummary.suspectedSalaryIncome)],
           ['工资覆盖月份', display(normalizedSummary.salaryMonths)],
-          ['月均明确工资', money(normalizedSummary.salaryAvgMonthlyAmount)],
+          ['工资月均金额', money(normalizedSummary.salaryAvgMonthlyAmount)],
           ['工资识别置信度', percent(normalizedSummary.salaryConfidence)],
           ['主要发薪单位', normalizedSummary.salarySources.length ? normalizedSummary.salarySources.slice(0, 3).map((item) => display(item.counterparty_name)).join('、') : EMPTY],
           ['工资识别说明', normalizedSummary.salaryDetectionNotes.length ? normalizedSummary.salaryDetectionNotes.join('；') : EMPTY],

@@ -1831,6 +1831,7 @@ async def get_customer_enterprise_flow_summary(
 @router.get("/{customer_id}/personal-flow/summary")
 async def get_customer_personal_flow_summary(
     customer_id: str,
+    debug: bool = Query(default=False, description="Include deterministic personal-flow diagnostics"),
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Return customer-level aggregation across all personal_flow extractions."""
@@ -1865,6 +1866,8 @@ async def get_customer_personal_flow_summary(
             extractions = enriched_extractions
         extractions = [item for item in extractions if item.get("is_active") is not False]
         aggregated = aggregate_customer_personal_flows(extractions)
+        if not debug:
+            aggregated.pop("debug", None)
     except Exception as exc:
         logger.exception("[PersonalFlowSummary] failed customer_id=%s", customer_id)
         raise HTTPException(status_code=500, detail="获取客户级个人流水汇总失败") from exc

@@ -121,6 +121,8 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     salary_confidences: list[float] = []
     fast_matches: list[dict[str, Any]] = []
     base_info: dict[str, Any] = {}
+    payroll_like_transactions: list[dict[str, Any]] = []
+    ai_summary_sources: list[dict[str, Any]] = []
 
     for extraction in extractions:
         extraction_type = str(extraction.get("extraction_type") or extraction.get("document_type") or "")
@@ -141,6 +143,10 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         detail_transactions = _list(payload.get("transactions"))
         detail_summary = _dict(payload.get("deterministic_summary"))
         ai_summary_raw = _dict(payload.get("ai_summary_raw"))
+        payload_debug = _dict(payload.get("debug"))
+        payroll_like_transactions.extend(_dict(item) for item in _list(payload_debug.get("payroll_like_transactions")))
+        if ai_summary_raw:
+            ai_summary_sources.append(ai_summary_raw)
         for mismatch_warning in _list(payload.get("summary_warnings")):
             mismatch_warning = _dict(mismatch_warning)
             if mismatch_warning:
@@ -418,4 +424,15 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "financing_judgement": judgement,
         "summary_warnings": summary_warnings,
         "warnings": list(dict.fromkeys(warnings)),
+        "debug": {
+            "summary_source": "deterministic_from_transactions",
+            "transaction_count": len(transactions),
+            "salary_candidate_count": sum(
+                1 for item in payroll_like_transactions
+                if item.get("salary_type") in {"confirmed_salary", "suspected_salary"}
+            ),
+            "payroll_like_transactions": payroll_like_transactions[:100],
+            "ai_summary_raw": {"source_files": ai_summary_sources},
+            "warnings": summary_warnings + [{"message": item} for item in list(dict.fromkeys(warnings))],
+        },
     }

@@ -77,7 +77,6 @@ EXCLUDE_SALARY_KEYWORDS = (
     "转存",
     "赎回",
     "保险",
-    "代付",
     "代收",
 )
 
@@ -353,7 +352,9 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
         "salary_income_count": len(confirmed),
         "suspected_salary_count": len(suspected_txs),
         "salary_months": salary_months or suspected_months,
-        "salary_avg_monthly_amount": round2(confirmed_amount / salary_months) if salary_months else 0.0,
+        "salary_avg_monthly_amount": round2(
+            (confirmed_amount if confirmed_amount else suspected_amount) / (salary_months or suspected_months)
+        ) if (salary_months or suspected_months) else 0.0,
         "salary_continuity_level": continuity_level,
         "salary_confidence": round2(sum(confidence_values) / len(confidence_values)) if confidence_values else 0.0,
         "salary_sources": salary_sources[:10],

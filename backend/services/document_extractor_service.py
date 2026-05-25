@@ -9080,6 +9080,8 @@ def build_structured_extraction(
         source_json = content.get("extracted_json") or content.get("data") or content
         if not isinstance(source_json, dict):
             source_json = {}
+        source_json.setdefault("customer_id", customer_id)
+        source_json.setdefault("document_type", normalized_code)
         source_json.setdefault("source_file", filename)
         source_json.setdefault("original_filename", filename)
         normalized_personal_flow = build_deterministic_personal_flow_summary(source_json)
