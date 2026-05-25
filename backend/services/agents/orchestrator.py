@@ -34,6 +34,7 @@ async def _load_customer_context(customer_id: str) -> dict[str, Any]:
             "extractions": [],
             "customer_profile": {},
             "enterprise_credit": {},
+            "financial_reports": [],
             "steps": {},
             "load_warnings": [f"存储服务初始化失败：{exc}"],
         }
@@ -59,11 +60,15 @@ async def _load_customer_context(customer_id: str) -> dict[str, Any]:
         load_warnings.append(f"资料汇总读取失败：{exc}")
 
     enterprise_credit: dict[str, Any] = {}
+    financial_reports: list[dict[str, Any]] = []
     for item in extractions or []:
         data = item.get("extracted_data") or {}
         if item.get("extraction_type") == "enterprise_credit" or str(data.get("schema_version") or "").startswith("enterprise_credit"):
             enterprise_credit = data
-            break
+        if item.get("extraction_type") in {"financial_report", "financial_data"} or str(data.get("schema_version") or "").startswith("financial_report"):
+            structured = data.get("structured_json") or data.get("extracted_json") or data.get("data") or {}
+            if isinstance(structured, dict):
+                financial_reports.append(structured)
 
     return {
         "customer": customer or {},
@@ -71,6 +76,7 @@ async def _load_customer_context(customer_id: str) -> dict[str, Any]:
         "extractions": extractions or [],
         "customer_profile": profile or {},
         "enterprise_credit": enterprise_credit,
+        "financial_reports": financial_reports,
         "steps": {},
         "load_warnings": load_warnings,
     }
@@ -103,12 +109,22 @@ def _normalize_workflow_context(context: dict[str, Any]) -> dict[str, Any]:
             "active_loans": source.get("active_loans") or latest_report.get("active_loans") or [],
             "credit_facilities": source.get("credit_lines") or latest_report.get("credit_lines") or [],
         }
+    financial_reports = source.get("financial_reports") or []
+    if not financial_reports:
+        for item in source.get("extractions") or []:
+            if not isinstance(item, dict) or item.get("extraction_type") not in {"financial_report", "financial_data"}:
+                continue
+            payload = item.get("extracted_data") or {}
+            structured = payload.get("structured_json") or payload.get("extracted_json") or payload.get("data") or {}
+            if isinstance(structured, dict):
+                financial_reports.append(structured)
     return {
         "customer": source.get("customer") or source.get("customer_profile") or {},
         "documents": documents,
         "extractions": source.get("extractions") or [],
         "customer_profile": source.get("customer_profile") or {},
         "enterprise_credit": enterprise_credit,
+        "financial_reports": financial_reports,
         "steps": {},
         "load_warnings": source.get("load_warnings") or [],
     }
@@ -120,6 +136,7 @@ async def _execute_agent_workflow(*, run: AgentRun, context: dict[str, Any]) -> 
         "document_count": len(context.get("documents") or []),
         "extraction_count": len(context.get("extractions") or []),
         "has_enterprise_credit": bool(context.get("enterprise_credit")),
+        "financial_report_count": len(context.get("financial_reports") or []),
         "load_warnings": context.get("load_warnings") or [],
     }
     run.version_fingerprint = build_agent_version_fingerprint()

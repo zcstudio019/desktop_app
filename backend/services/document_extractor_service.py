@@ -30,6 +30,7 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
     "personal_credit_report",
     "enterprise_flow",
     "enterprise_bank_statement",
+    "financial_report",
 }
 
 DATE_PATTERN = re.compile(r"((?:19|20)\d{2}[年/\-.](?:0?[1-9]|1[0-2])[月/\-.](?:0?[1-9]|[12]\d|3[01])日?)")
@@ -38,6 +39,7 @@ ID_CARD_PATTERN = re.compile(r"([1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-
 UNIFIED_CODE_PATTERN = re.compile(r"\b([0-9A-Z]{18})\b")
 
 TYPE_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("financial_report", ("资产负债表", "利润表", "现金流量表", "财务报表报送", "财务报表")),
     ("business_license", ("营业执照", "统一社会信用代码", "法定代表人")),
     ("account_license", ("开户许可证", "开户银行", "核准号")),
     ("company_articles", ("公司章程", "股东", "注册资本")),

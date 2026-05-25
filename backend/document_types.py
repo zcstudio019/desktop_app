@@ -56,11 +56,11 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         customer_scope="personal",
     ),
     DocumentTypeDefinition(
-        code="financial_data",
-        name="财务数据",
-        storage_label="财务数据提取",
+        code="financial_report",
+        name="财务报表",
+        storage_label="财务报表提取",
         formats=("pdf", "xlsx", "image"),
-        aliases=("财务数据", "财务数据提取", "财务报表"),
+        aliases=("财务报表", "财务报表提取", "财务数据", "财务数据提取", "financial_data", "financial_report"),
     ),
     DocumentTypeDefinition(
         code="collateral",
@@ -191,6 +191,12 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
 DOCUMENT_TYPES_BY_CODE = {item.code: item for item in DOCUMENT_TYPE_DEFINITIONS}
 
 DOCUMENT_TYPE_CANONICAL_ALIASES = {
+    "financial_data": "financial_report",
+    "financial_report": "financial_report",
+    "财务数据": "financial_report",
+    "财务数据提取": "financial_report",
+    "财务报表": "financial_report",
+    "财务报表提取": "financial_report",
     "personal_credit": "personal_credit_report",
     "personal_credit_report": "personal_credit_report",
     "个人征信": "personal_credit_report",
@@ -296,4 +302,5 @@ def should_append_same_type_document(value: str | None) -> bool:
         "企业流水",
         "银行流水",
         "enterprise_credit_report",
+        "financial_report",
     }

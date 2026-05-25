@@ -6,6 +6,7 @@ from typing import Any
 from .base import BaseAgent
 from .llm_runner import agent_llm_enabled, run_agent_llm_json
 from .prompts import RISK_AGENT_SYSTEM_PROMPT
+from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 
 
 RISK_SCHEMA: dict[str, Any] = {
@@ -135,6 +136,23 @@ class RiskAgent(BaseAgent):
         credit = context.get("enterprise_credit") or {}
         active_loans = credit.get("active_loans") or []
         risks: list[dict[str, Any]] = []
+        financial_reports = context.get("financial_reports") or []
+        financial_rollup = aggregate_customer_financial_reports([
+            {"extraction_type": "financial_report", "extracted_data": {"structured_json": item}}
+            for item in financial_reports if isinstance(item, dict)
+        ])
+        if financial_rollup.get("reports"):
+            financial_analysis = financial_rollup.get("latest_credit_analysis") or {}
+            for finding in financial_analysis.get("risk_findings") or []:
+                mapped_level = "high" if finding.get("risk_level") in {"high", "medium_high"} else "medium"
+                risks.append({
+                    "risk_type": finding.get("title") or finding.get("code") or "财务报表风险",
+                    "risk_level": mapped_level,
+                    "description": finding.get("description") or finding.get("title") or "",
+                    "evidence": "；".join(finding.get("evidence") or []),
+                    "suggestion": finding.get("suggestion") or "结合财务明细和流水交叉验证。",
+                    "source": "financial_report_agent",
+                })
 
         credit_line_total = _num(credit_profile.get("credit_line_total"))
         used_credit_line = _num(credit_profile.get("used_credit_line"))
