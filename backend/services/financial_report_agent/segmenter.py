@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 
 TABLE_MARKERS = {
@@ -26,8 +27,9 @@ def segment_financial_report(raw_text: str, raw_pages: list[dict[str, Any]] | No
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in TABLE_MARKERS}
     for page in pages:
         text = page["text"]
+        compact_text = re.sub(r"\s+", "", text)
         for key, markers in TABLE_MARKERS.items():
-            if any(marker in text for marker in markers):
+            if any(marker in compact_text for marker in markers):
                 sections[key].append(page)
     full_text = "\n".join(page["text"] for page in pages)
     for key in sections:

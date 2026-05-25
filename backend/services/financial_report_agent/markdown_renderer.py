@@ -2,10 +2,26 @@ from __future__ import annotations
 
 from typing import Any
 
+from .display_mapper import to_display_json
+
+
+def _display_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if "企业信息" in payload or "资产负债表" in payload:
+        return payload
+    if isinstance(payload.get("display_json"), dict):
+        return payload["display_json"]
+    structured = payload.get("structured_json") if isinstance(payload.get("structured_json"), dict) else payload
+    reports = structured.get("reports") if isinstance(structured, dict) else None
+    if isinstance(reports, dict):
+        structured = {**structured, **reports}
+    elif isinstance(reports, list) and reports and isinstance(reports[-1], dict):
+        structured = {**structured, **reports[-1]}
+    return to_display_json(structured if isinstance(structured, dict) else {})
+
 
 def _field_value(item: dict[str, Any] | Any) -> Any:
     if isinstance(item, dict):
-        return item.get("标准化数值")
+        return item.get("标准化数值") if "标准化数值" in item else item.get("normalized_value")
     return None
 
 
@@ -15,12 +31,12 @@ def _money(item: dict[str, Any] | Any) -> str:
 
 
 def _page(item: dict[str, Any] | Any) -> str:
-    value = item.get("来源页码") if isinstance(item, dict) else None
+    value = (item.get("来源页码") if "来源页码" in item else item.get("source_page")) if isinstance(item, dict) else None
     return "-" if value is None else str(value)
 
 
 def _confidence(item: dict[str, Any] | Any) -> str:
-    value = item.get("置信度") if isinstance(item, dict) else None
+    value = (item.get("置信度") if "置信度" in item else item.get("confidence")) if isinstance(item, dict) else None
     return "-" if value is None else f"{float(value):.2f}"
 
 
@@ -32,11 +48,11 @@ def _statement_table(lines: list[str], title: str, section: dict[str, Any], labe
     lines.extend(["", f"### {title}", f"| 项目 | {amount_header} | 来源页码 | 置信度 |", "|---|---:|---:|---:|"])
     for label in labels:
         item = section.get(label) or {}
-        if _field_value(item) is not None:
-            lines.append(f"| {label} | {_money(item)} | {_page(item)} | {_confidence(item)} |")
+        lines.append(f"| {label} | {_money(item)} | {_page(item)} | {_confidence(item)} |")
 
 
-def render_financial_report_markdown(display_json: dict[str, Any]) -> str:
+def render_financial_report_markdown(data: dict[str, Any]) -> str:
+    display_json = _display_payload(data)
     info = display_json.get("企业信息") or {}
     balance = display_json.get("资产负债表") or {}
     income = display_json.get("利润表") or {}

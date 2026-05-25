@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from .skills import (
 )
 from .validator import validate_financial_report_result
 
+logger = logging.getLogger(__name__)
+
 
 def _period(item: dict[str, Any]) -> str:
     return str((item.get("company_info") or {}).get("report_period_end") or "")
@@ -27,6 +30,29 @@ def _period(item: dict[str, Any]) -> str:
 
 def _metric(item: dict[str, Any], section: str, field: str) -> float:
     return value_of((item.get(section) or {}).get(field) or {}) or 0.0
+
+
+def _source_text_with_fallback(raw_text: str, text: str | None, metadata: dict[str, Any]) -> str:
+    candidates: list[str] = [str(text if text is not None else raw_text or "")]
+    for key in ("layout_text", "table_text", "ocr_text", "ocr_text_fallback", "page_text"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+    for item in metadata.get("raw_pages") or []:
+        if isinstance(item, dict):
+            candidates.append(str(item.get("text") or ""))
+    collected: list[str] = []
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if candidate and candidate not in collected:
+            collected.append(candidate)
+    return "\n\n".join(collected)
+
+
+def _non_empty_amount_count(section: Any) -> tuple[int, int]:
+    payload = to_plain_dict(section)
+    amount_fields = [item for item in payload.values() if isinstance(item, dict) and "normalized_value" in item]
+    return len(amount_fields), sum(1 for item in amount_fields if item.get("normalized_value") is not None)
 
 
 def aggregate_financial_report_periods(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -55,14 +81,31 @@ def run_financial_report_agent(
 ) -> dict[str, Any]:
     metadata = metadata or {}
     source_file = filename or (Path(file_path).name if file_path else "")
-    source_text = str(text if text is not None else raw_text or "")
+    source_text = _source_text_with_fallback(raw_text, text, metadata)
     raw_pages = metadata.get("raw_pages") if isinstance(metadata.get("raw_pages"), list) else None
     segmented = segment_financial_report(source_text, raw_pages)
     info = extract_company_info(segmented["full_text"], source_file, metadata)
+    logger.info(
+        "[FinancialReportAgent][DEBUG] company_info=%s",
+        {
+            "company_name": bool(info.company_name),
+            "taxpayer_id": bool(info.taxpayer_id),
+            "report_period_start": info.report_period_start,
+            "report_period_end": info.report_period_end,
+            "report_date": info.report_date,
+            "report_type": info.report_type,
+        },
+    )
     _, multiplier = detect_unit(segmented["full_text"])
     balance, balance_evidence = extract_balance_sheet(segmented["sections"]["balance_sheet"], source_file, multiplier)
+    total_fields, non_empty = _non_empty_amount_count(balance)
+    logger.info("[FinancialReportAgent][DEBUG] balance_sheet_fields=%s non_empty=%s", total_fields, non_empty)
     income, income_evidence = extract_income_statement(segmented["sections"]["income_statement"], source_file, multiplier)
+    total_fields, non_empty = _non_empty_amount_count(income)
+    logger.info("[FinancialReportAgent][DEBUG] income_statement_fields=%s non_empty=%s", total_fields, non_empty)
     cashflow, cashflow_evidence = extract_cash_flow_statement(segmented["sections"]["cash_flow_statement"], source_file, multiplier)
+    total_fields, non_empty = _non_empty_amount_count(cashflow)
+    logger.info("[FinancialReportAgent][DEBUG] cash_flow_fields=%s non_empty=%s", total_fields, non_empty)
     equity = None
     equity_evidence = []
     if any("所有者权益变动表" in page["text"] or "股东权益变动表" in page["text"] for page in segmented["pages"]):
@@ -85,12 +128,19 @@ def run_financial_report_agent(
     data = to_plain_dict(provisional)
     ratios = calculate_financial_ratios(data["balance_sheet"], data["income_statement"], data["cash_flow_statement"], prior)
     data["financial_ratios"] = to_plain_dict(ratios)
+    logger.info(
+        "[FinancialReportAgent][DEBUG] financial_ratios_fields=%s non_empty=%s",
+        len(data["financial_ratios"]),
+        sum(1 for value in data["financial_ratios"].values() if value is not None),
+    )
     risk = analyze_bank_credit_risk(data, history)
     data["bank_credit_analysis"] = to_plain_dict(risk)
     all_reports = history + [data]
     data["trend_metrics"] = aggregate_financial_report_periods(all_reports)
     data["validation_warnings"] = validate_financial_report_result(data)
+    logger.info("[FinancialReportAgent][DEBUG] validation_warnings=%s", data["validation_warnings"])
     display_json = to_display_json(data)
+    logger.info("[FinancialReportAgent][DEBUG] markdown_input_keys=%s", list(display_json.keys()))
     data["report_markdown"] = render_financial_report_markdown(display_json)
     core_values = [
         _metric(data, "balance_sheet", "total_assets"),

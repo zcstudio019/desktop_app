@@ -9,7 +9,7 @@ AMOUNT_RE = re.compile(r"(?<!\d)(?:[-－—(]?\s*)?\d[\d,，]*(?:\.\d+)?\s*\)?")
 
 
 def detect_unit(text: str) -> tuple[str, Decimal]:
-    source = str(text or "")
+    source = re.sub(r"\s+", "", str(text or ""))
     if re.search(r"单位\s*[:：]?\s*(?:人民币)?\s*万元", source):
         return "万元", Decimal("10000")
     if re.search(r"单位\s*[:：]?\s*(?:人民币)?\s*千元", source):

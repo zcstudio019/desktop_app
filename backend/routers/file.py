@@ -387,6 +387,23 @@ def _ocr_pdf_pages(file_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
     return _build_raw_text_from_pages(raw_pages), raw_pages
 
 
+def _financial_report_needs_ocr_supplement(text_content: str, raw_pages: list[dict[str, Any]]) -> bool:
+    if raw_pages:
+        return False
+    compact = re.sub(r"\s+", "", str(text_content or ""))
+    markers = (
+        "资产负债表",
+        "货币资金",
+        "资产总计",
+        "利润表",
+        "营业收入",
+        "净利润",
+        "现金流量表",
+        "经营活动产生的现金流量净额",
+    )
+    return sum(1 for marker in markers if marker in compact) < 4
+
+
 def _ocr_pdf_selected_pages(file_bytes: bytes, page_indices: list[int], *, log_prefix: str, filename: str) -> str:
     images = file_service.pdf_to_images(file_bytes)
     if not images:
@@ -852,6 +869,15 @@ async def _process_file_bytes(
         if seal_region_text:
             text_content = f"{text_content}\n\n--- Property Certificate Seal Region OCR ---\n{seal_region_text}"
             raw_pages.append({"page": len(raw_pages) + 1, "text": seal_region_text})
+    if document_type_code == "financial_report" and file_type == "pdf" and _financial_report_needs_ocr_supplement(text_content, raw_pages):
+        logger.info("[FinancialReportAgent][OCR_FALLBACK] native layout text incomplete, OCR all pages filename=%s", filename)
+        try:
+            ocr_text, ocr_pages = _ocr_pdf_pages(file_bytes)
+            if ocr_pages:
+                text_content = f"{text_content}\n\n{ocr_text}"
+                raw_pages.extend(ocr_pages)
+        except Exception as exc:  # pragma: no cover - best-effort extraction supplement
+            logger.warning("[FinancialReportAgent][OCR_FALLBACK] failed filename=%s error=%s", filename, exc)
     if progress_callback:
         await progress_callback("正在结构化提取")
     if document_type_code == "bank_statement" and (
