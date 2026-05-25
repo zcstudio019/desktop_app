@@ -34,6 +34,7 @@ def render_personal_bank_statement_markdown(data: dict[str, Any]) -> str:
         f"- 银行：{data.get('bank_name') or '-'}",
         f"- 户名：{data.get('account_name') or (data.get('owner') or {}).get('name') or '-'}",
         f"- 账号：{data.get('account_no') or '-'}",
+        f"- 账户类型：{data.get('account_type') or '-'}",
         f"- 流水期间：{period.get('start_date') or '-'} 至 {period.get('end_date') or '-'}",
         f"- 币种：{data.get('currency') or '人民币'}",
         "",

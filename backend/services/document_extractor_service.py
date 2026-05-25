@@ -9080,6 +9080,8 @@ def build_structured_extraction(
         source_json = content.get("extracted_json") or content.get("data") or content
         if not isinstance(source_json, dict):
             source_json = {}
+        source_json.setdefault("source_file", filename)
+        source_json.setdefault("original_filename", filename)
         normalized_personal_flow = build_deterministic_personal_flow_summary(source_json)
         deterministic_markdown = render_personal_bank_statement_markdown(normalized_personal_flow)
         content["extracted_json"] = normalized_personal_flow
@@ -9091,17 +9093,22 @@ def build_structured_extraction(
         ai_summary = normalized_personal_flow.get("ai_summary_raw") or {}
         salary = normalized_personal_flow.get("income_verification") or {}
         logger.info(
-            "[PersonalFlow][AI_SUMMARY] income=%s expense=%s",
+            "[PersonalFlow][AI_SUMMARY_RAW] income=%s expense=%s net=%s",
             ai_summary.get("total_income") or 0,
             ai_summary.get("total_expense") or 0,
+            ai_summary.get("net_cash_flow") or 0,
         )
         logger.info(
-            "[PersonalFlow][DETAIL_SUMMARY] income=%s expense=%s count=%s",
+            "[PersonalFlow][DETAIL_SUMMARY] income=%s expense=%s net=%s income_count=%s expense_count=%s",
             detail_summary.get("total_income") or 0,
             detail_summary.get("total_expense") or 0,
-            (detail_summary.get("income_count") or 0) + (detail_summary.get("expense_count") or 0),
+            detail_summary.get("net_cash_flow") or 0,
+            detail_summary.get("income_count") or 0,
+            detail_summary.get("expense_count") or 0,
         )
-        logger.info("[PersonalFlow][SUMMARY_SOURCE] source=deterministic")
+        logger.info("[PersonalFlow][TRANSACTIONS_COUNT] count=%s", len(normalized_personal_flow.get("transactions") or []))
+        logger.info("[PersonalFlow][SUMMARY_SOURCE] deterministic_from_transactions")
+        logger.info("[PersonalFlow][SUMMARY_MISMATCH] %s", bool(normalized_personal_flow.get("summary_warnings")))
         logger.info(
             "[PersonalFlow][SALARY] confirmed=%s suspected=%s sources=%s",
             salary.get("confirmed_salary_income") or 0,

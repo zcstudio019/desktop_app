@@ -39,7 +39,10 @@ def _dedupe_extractions(extractions: list[dict[str, Any]]) -> list[dict[str, Any
     latest: dict[str, dict[str, Any]] = {}
     keys: list[str] = []
     for extraction in sorted(extractions, key=lambda item: str(item.get("created_at") or "")):
-        payload = _payload(extraction)
+        payload = dict(_payload(extraction))
+        if payload:
+            payload.setdefault("source_file", extraction.get("file_name") or "")
+            payload.setdefault("original_filename", extraction.get("file_name") or "")
         normalized = build_deterministic_personal_flow_summary(payload) if payload else {}
         extraction["_deterministic_payload"] = normalized
         file_name = str(
@@ -117,6 +120,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     salary_notes: list[str] = []
     salary_confidences: list[float] = []
     fast_matches: list[dict[str, Any]] = []
+    base_info: dict[str, Any] = {}
 
     for extraction in extractions:
         extraction_type = str(extraction.get("extraction_type") or extraction.get("document_type") or "")
@@ -145,15 +149,29 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         effective_raw_income = detail_summary.get("total_income") if detail_summary else summary.get("raw_total_income")
         effective_raw_expense = detail_summary.get("total_expense") if detail_summary else summary.get("raw_total_expense")
         effective_net_cash_flow = detail_summary.get("net_cash_flow") if detail_summary else summary.get("net_cash_flow")
-        logger.info("[PersonalFlow][AI_SUMMARY] income=%s expense=%s", ai_summary_raw.get("total_income") or 0, ai_summary_raw.get("total_expense") or 0)
+        logger.info("[PersonalFlow][AI_SUMMARY_RAW] income=%s expense=%s net=%s", ai_summary_raw.get("total_income") or 0, ai_summary_raw.get("total_expense") or 0, ai_summary_raw.get("net_cash_flow") or 0)
         logger.info(
-            "[PersonalFlow][DETAIL_SUMMARY] income=%s expense=%s count=%s",
+            "[PersonalFlow][DETAIL_SUMMARY] income=%s expense=%s net=%s income_count=%s expense_count=%s",
             effective_raw_income or 0,
             effective_raw_expense or 0,
-            (detail_summary.get("income_count") or 0) + (detail_summary.get("expense_count") or 0),
+            effective_net_cash_flow or 0,
+            detail_summary.get("income_count") or 0,
+            detail_summary.get("expense_count") or 0,
         )
-        logger.info("[PersonalFlow][SUMMARY_SOURCE] source=deterministic")
+        logger.info("[PersonalFlow][TRANSACTIONS_COUNT] count=%s", len(detail_transactions))
+        logger.info("[PersonalFlow][SUMMARY_SOURCE] deterministic_from_transactions")
+        logger.info("[PersonalFlow][SUMMARY_MISMATCH] %s", bool(payload.get("summary_warnings")))
         source_accounts = [_dict(item) for item in _list(payload.get("accounts"))]
+        if not base_info and any(payload.get(key) for key in ("bank_name", "account_name", "account_no")):
+            base_info = {
+                "bank_name": payload.get("bank_name") or "",
+                "account_name": payload.get("account_name") or "",
+                "account_no": payload.get("account_no") or "",
+                "currency": payload.get("currency") or "人民币",
+                "account_type": payload.get("account_type") or "",
+                "statement_period": payload.get("statement_period") or {},
+                "print_date": payload.get("print_date") or "",
+            }
         source_files.append(
             {
                 "document_id": doc_id,
@@ -370,6 +388,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         flow_nature=flow_nature,
     )
     return {
+        **base_info,
         "doc_type": "personal_flow",
         "document_type": "personal_flow",
         "normalized_document_type": "personal_bank_statement",

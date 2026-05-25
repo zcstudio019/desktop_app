@@ -14,7 +14,10 @@ from backend.document_types import normalize_document_type_code, should_append_s
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
 from backend.services.document_extractor_service import build_structured_extraction
 from backend.services.personal_bank_statement_agent.customer_flow_aggregator import aggregate_customer_personal_flows
-from backend.services.personal_bank_statement_agent.deterministic_summary import build_deterministic_personal_flow_summary
+from backend.services.personal_bank_statement_agent.deterministic_summary import (
+    build_deterministic_personal_flow_summary,
+    normalize_personal_flow_base_info,
+)
 from backend.services.personal_bank_statement_agent.markdown_renderer import render_personal_bank_statement_markdown
 from backend.services.personal_bank_statement_agent.orchestrator import run_personal_bank_statement_agent
 
@@ -348,6 +351,53 @@ def test_deterministic_personal_flow_summary_is_repeatable() -> None:
     markdown = render_personal_bank_statement_markdown(first)
     assert "27,675.64" in markdown
     assert "1,000.00" in markdown
+
+
+def test_normalize_personal_flow_base_info_from_chinese_fields_and_filename() -> None:
+    payload = {
+        "source_file": "招商银行交易流水(申请时间2025年06月17日22时06分04秒)(1).pdf",
+        "账户基础信息": {
+            "户名": "康磊",
+            "账号": "6214********3039",
+            "开户银行": "招商银行上海大宁支行",
+            "流水起始日期": "2024-06-15",
+            "流水结束日期": "2025-06-15",
+            "币种": "人民币",
+        },
+    }
+    info = normalize_personal_flow_base_info(payload)
+    assert info["bank_name"] == "招商银行上海大宁支行"
+    assert info["account_name"] == "康磊"
+    assert info["account_no"] == "6214********3039"
+    assert info["statement_period"] == {"start_date": "2024-06-15", "end_date": "2025-06-15"}
+    assert info["currency"] == "人民币"
+
+
+def test_normalize_personal_flow_base_info_infers_bank_and_period() -> None:
+    payload = {"source_file": "招商银行交易流水.pdf"}
+    transactions = [{"transaction_date": "2024-06-15"}, {"transaction_date": "2025-06-15"}]
+    info = normalize_personal_flow_base_info(payload, transactions)
+    assert info["bank_name"] == "招商银行"
+    assert info["statement_period"] == {"start_date": "2024-06-15", "end_date": "2025-06-15"}
+
+
+def test_markdown_renderer_uses_standard_base_info() -> None:
+    data = build_deterministic_personal_flow_summary({
+        "账户基础信息": {
+            "户名": "康磊",
+            "账号": "6214********3039",
+            "开户银行": "招商银行上海大宁支行",
+            "流水起始日期": "2024-06-15",
+            "流水结束日期": "2025-06-15",
+            "币种": "人民币",
+        },
+        "交易明细列表": [{"交易日期": "2024-06-15", "交易金额": "100", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"}],
+    })
+    markdown = render_personal_bank_statement_markdown(data)
+    assert "- 银行：招商银行上海大宁支行" in markdown
+    assert "- 户名：康磊" in markdown
+    assert "- 账号：6214********3039" in markdown
+    assert "- 流水期间：2024-06-15 至 2025-06-15" in markdown
 
 
 def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:

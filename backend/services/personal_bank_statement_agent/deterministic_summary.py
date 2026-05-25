@@ -3,10 +3,13 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from hashlib import sha1
+import logging
 from typing import Any
 
 from .normalizer import normalize_amount, normalize_text, round2
 from .skills.salary_income_detection_skill import detect_salary_income
+
+logger = logging.getLogger(__name__)
 
 
 TRANSACTION_LIST_KEYS = (
@@ -42,6 +45,15 @@ FAST_OUT_EXPENSE_KEYWORDS = LOAN_REPAYMENT_KEYWORDS + QUICK_PAYMENT_KEYWORDS + (
 OPERATING_INCOME_KEYWORDS = ("货款", "服务费", "销售款", "客户付款", "经营回款", "工程款", "材料款", "结算款")
 OTHER_STABLE_INCOME_KEYWORDS = ("租金", "分红", "固定收入")
 EXCLUDE_OPERATING_INCOME_KEYWORDS = ("借款", "贷款", "还款", "转存", "理财赎回", "赎回")
+BASE_INFO_KEYS = ("账户基础信息", "一、账户基础信息", "base_info", "account_info")
+BANK_NAME_KEYS = ("开户银行", "银行", "银行名称", "开户行", "开户机构")
+ACCOUNT_NAME_KEYS = ("户名", "账户名称", "客户名称", "姓名", "Account Name")
+ACCOUNT_NO_KEYS = ("账号", "账户", "银行卡号", "Account No.", "Account No")
+CURRENCY_KEYS = ("币种", "Currency")
+ACCOUNT_TYPE_KEYS = ("账户类型", "Account Type")
+START_DATE_KEYS = ("流水起始日期", "起始日期", "开始日期", "交易起始日期", "statement_start_date")
+END_DATE_KEYS = ("流水结束日期", "结束日期", "截止日期", "交易结束日期", "statement_end_date")
+PRINT_DATE_KEYS = ("文档打印日期", "打印日期", "Print Time", "打印时间")
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -91,6 +103,46 @@ def _month_count_from_period(payload: dict[str, Any], dates: list[str]) -> int:
 
 def _contains(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def _infer_bank_from_source_file(source_file: Any) -> str:
+    text = str(source_file or "")
+    for keyword, bank_name in (
+        ("招商银行", "招商银行"),
+        ("兴业银行", "兴业银行"),
+        ("建设银行", "建设银行"),
+        ("建行", "建设银行"),
+        ("上海银行", "上海银行"),
+        ("北京银行", "北京银行"),
+    ):
+        if keyword in text:
+            return bank_name
+    return ""
+
+
+def normalize_personal_flow_base_info(payload: dict[str, Any], transactions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    transactions = transactions or []
+    base_info: dict[str, Any] = {}
+    for key in BASE_INFO_KEYS:
+        candidate = _dict(payload.get(key))
+        if candidate:
+            base_info = candidate
+            break
+    period = _dict(payload.get("statement_period") or payload.get("流水期间"))
+    dates = sorted(str(tx.get("transaction_date") or "")[:10] for tx in transactions if str(tx.get("transaction_date") or "")[:10])
+    source_file = payload.get("source_file") or payload.get("original_filename") or payload.get("file_name") or ""
+    return {
+        "bank_name": normalize_text(payload.get("bank_name") or _first(base_info, BANK_NAME_KEYS) or _infer_bank_from_source_file(source_file)),
+        "account_name": normalize_text(payload.get("account_name") or _first(base_info, ACCOUNT_NAME_KEYS)),
+        "account_no": normalize_text(payload.get("account_no") or _first(base_info, ACCOUNT_NO_KEYS)),
+        "currency": normalize_text(payload.get("currency") or _first(base_info, CURRENCY_KEYS)) or "人民币",
+        "account_type": normalize_text(payload.get("account_type") or _first(base_info, ACCOUNT_TYPE_KEYS)),
+        "statement_period": {
+            "start_date": _date(period.get("start_date") or _first(base_info, START_DATE_KEYS) or (dates[0] if dates else "")),
+            "end_date": _date(period.get("end_date") or _first(base_info, END_DATE_KEYS) or (dates[-1] if dates else "")),
+        },
+        "print_date": _date(payload.get("print_date") or _first(base_info, PRINT_DATE_KEYS)),
+    }
 
 
 def collect_raw_transactions(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -216,6 +268,9 @@ def _raw_summary(payload: dict[str, Any], transactions: list[dict[str, Any]]) ->
 
 
 def _ai_summary_raw(payload: dict[str, Any]) -> dict[str, Any]:
+    persisted_ai_raw = _dict(payload.get("ai_summary_raw"))
+    if persisted_ai_raw:
+        return persisted_ai_raw
     scale = _dict(payload.get("收支规模汇总"))
     raw = _dict(payload.get("raw_summary"))
     customer = _dict(payload.get("customer_level_summary"))
@@ -246,6 +301,18 @@ def _summary_mismatch_warning(ai_summary: dict[str, Any], detail_summary: dict[s
 
 
 def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, Any]], raw_summary: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    for tx in transactions:
+        if (
+            float(tx.get("credit_amount") or 0) > 0
+            and "代发" in str(tx.get("summary") or "")
+        ):
+            logger.info(
+                "[PersonalFlow][SALARY_CANDIDATE] date=%s amount=%s summary=%s counterparty=%s",
+                tx.get("transaction_date") or "",
+                tx.get("credit_amount") or 0,
+                tx.get("summary") or "",
+                tx.get("counterparty_name") or "",
+            )
     salary = detect_salary_income(transactions)
     verified_operating_income = 0.0
     verified_other_stable_income = 0.0
@@ -322,6 +389,13 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
         "loan_repayment_ratio": round(loan_repayment_expense / raw_summary["total_expense"], 6) if raw_summary["total_expense"] else 0.0,
         "repayment_frequency": len(monthly_loan_months),
     }
+    logger.info(
+        "[PersonalFlow][SALARY_RESULT] confirmed=%s suspected=%s months=%s sources=%s",
+        income_verification["confirmed_salary_income"],
+        income_verification["suspected_salary_income"],
+        income_verification["salary_months"],
+        income_verification["salary_sources"],
+    )
     return income_verification, expense_analysis
 
 
@@ -451,6 +525,7 @@ def transaction_signature(transactions: list[dict[str, Any]]) -> str:
 def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) -> dict[str, Any]:
     payload = _dict(extracted_json)
     transactions = normalize_personal_flow_transactions(payload)
+    base_info = normalize_personal_flow_base_info(payload, transactions)
     raw_summary = _raw_summary(payload, transactions)
     ai_raw = _ai_summary_raw(payload)
     warnings = [item for item in _list(payload.get("warnings")) if item]
@@ -463,8 +538,8 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
     customer_level_summary = {
         **_dict(payload.get("customer_level_summary")),
         "account_count": len(_list(payload.get("accounts"))) or 1 if transactions else 0,
-        "period_start": (_dict(payload.get("statement_period")).get("start_date") or ""),
-        "period_end": (_dict(payload.get("statement_period")).get("end_date") or ""),
+        "period_start": base_info["statement_period"]["start_date"],
+        "period_end": base_info["statement_period"]["end_date"],
         "raw_total_income": raw_summary["total_income"],
         "raw_total_expense": raw_summary["total_expense"],
         "net_cash_flow": raw_summary["net_cash_flow"],
@@ -480,8 +555,26 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
         "loan_repayment_expense": expense_analysis["loan_repayment_expense"],
         "avg_monthly_stable_income": round2(income_verification["stable_income"] / month_count),
     }
+    logger.info(
+        "[PersonalFlow][AI_SUMMARY_RAW] income=%s expense=%s net=%s",
+        ai_raw.get("total_income") or 0,
+        ai_raw.get("total_expense") or 0,
+        ai_raw.get("net_cash_flow") or 0,
+    )
+    logger.info(
+        "[PersonalFlow][DETAIL_SUMMARY] income=%s expense=%s net=%s income_count=%s expense_count=%s",
+        raw_summary["total_income"],
+        raw_summary["total_expense"],
+        raw_summary["net_cash_flow"],
+        raw_summary["income_count"],
+        raw_summary["expense_count"],
+    )
+    logger.info("[PersonalFlow][TRANSACTIONS_COUNT] count=%s", len(transactions))
+    logger.info("[PersonalFlow][SUMMARY_SOURCE] deterministic_from_transactions")
+    logger.info("[PersonalFlow][SUMMARY_MISMATCH] %s", bool(mismatch))
     return {
         **payload,
+        **base_info,
         "doc_type": "personal_flow",
         "document_type": "personal_flow",
         "deterministic_summary": raw_summary,

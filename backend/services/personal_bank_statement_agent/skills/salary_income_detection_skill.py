@@ -332,11 +332,13 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
         })
     salary_sources.sort(key=lambda item: float(item.get("amount") or 0), reverse=True)
     notes: list[str] = []
-    if not confirmed_amount:
-        notes.append("未识别到明确工资收入")
     if suspected_amount:
         top_source = salary_sources[0]["counterparty_name"] if salary_sources else "疑似单位付款方"
+        if not confirmed_amount:
+            notes.append("未识别到明确工资收入，但存在疑似单位代发收入。")
         notes.append(f"摘要为代发类款项，付款方为{top_source}等公司主体，连续多月出现，识别为疑似工资收入，需人工核实是否为工资")
+    elif not confirmed_amount:
+        notes.append("未识别到明确工资收入")
     if any(
         normalize_text(tx.get("summary")) in {"汇款汇入", "转账", "转账收入"} and not normalize_text(tx.get("counterparty_name"))
         for tx in income_transactions

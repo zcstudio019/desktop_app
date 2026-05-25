@@ -501,6 +501,12 @@ function normalizePersonalFlowData(raw: Record<string, unknown>) {
     judgement,
     accounts,
     firstAccount,
+    bankName: String(raw.bank_name || firstAccount.bank_name || ''),
+    accountName: String(raw.account_name || firstAccount.account_name || ''),
+    accountNo: String(raw.account_no || firstAccount.account_no || ''),
+    currency: String(raw.currency || firstAccount.currency || '人民币'),
+    accountType: String(raw.account_type || firstAccount.account_type || ''),
+    statementPeriod: asRecord(raw.statement_period || firstAccount.statement_period),
     normalizedSummary,
     rawIncome,
     rawExpense,
@@ -658,6 +664,17 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
           <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">个人流水</span>
         </div>
       ) : null}
+
+      <Section title="基础信息">
+        <InfoGrid rows={[
+          ['银行', display(normalized.bankName)],
+          ['户名', display(normalized.accountName)],
+          ['账号', display(normalized.accountNo)],
+          ['账户类型', display(normalized.accountType)],
+          ['流水期间', `${display(normalized.statementPeriod.start_date)} 至 ${display(normalized.statementPeriod.end_date)}`],
+          ['币种', display(normalized.currency)],
+        ]} />
+      </Section>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         <Metric label="总收入" help="原始进账，不等于可用收入" value={money(normalized.rawIncome)} icon={<TrendingUp className="h-4 w-4" />} tone="border-emerald-100 bg-emerald-50 text-emerald-700" />
