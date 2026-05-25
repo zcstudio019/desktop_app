@@ -195,6 +195,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 "verified_income": (payload.get("income_verification") or {}).get("verified_income") if isinstance(payload.get("income_verification"), dict) else summary.get("verified_income") or 0,
                 "confirmed_salary_income": (payload.get("income_verification") or {}).get("confirmed_salary_income") if isinstance(payload.get("income_verification"), dict) else summary.get("salary_income") or 0,
                 "suspected_salary_income": (payload.get("income_verification") or {}).get("suspected_salary_income") if isinstance(payload.get("income_verification"), dict) else summary.get("suspected_salary_income") or 0,
+                "low_confidence_suspected_salary_income": (payload.get("income_verification") or {}).get("low_confidence_suspected_salary_income") if isinstance(payload.get("income_verification"), dict) else summary.get("low_confidence_suspected_salary_income") or 0,
                 "suspected_salary_income_low_confidence": (payload.get("income_verification") or {}).get("suspected_salary_income_low_confidence") if isinstance(payload.get("income_verification"), dict) else summary.get("suspected_salary_income_low_confidence") or 0,
                 "unknown_inflow": (payload.get("income_verification") or {}).get("unknown_inflow") if isinstance(payload.get("income_verification"), dict) else summary.get("unknown_inflow") or 0,
                 "loan_repayment_expense": (payload.get("expense_analysis") or {}).get("loan_repayment_expense") if isinstance(payload.get("expense_analysis"), dict) else summary.get("loan_repayment_expense") or 0,
@@ -221,7 +222,9 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         sums["salary_income"] += float(income.get("verified_salary_income") or summary.get("salary_income") or 0)
         sums["confirmed_salary_income"] += float(income.get("confirmed_salary_income") or income.get("verified_salary_income") or summary.get("salary_income") or 0)
         sums["suspected_salary_income"] += float(income.get("suspected_salary_income") or summary.get("suspected_salary_income") or 0)
-        sums["suspected_salary_income_low_confidence"] += float(income.get("suspected_salary_income_low_confidence") or summary.get("suspected_salary_income_low_confidence") or 0)
+        low_confidence_salary = float(income.get("low_confidence_suspected_salary_income") or income.get("suspected_salary_income_low_confidence") or summary.get("low_confidence_suspected_salary_income") or summary.get("suspected_salary_income_low_confidence") or 0)
+        sums["low_confidence_suspected_salary_income"] += low_confidence_salary
+        sums["suspected_salary_income_low_confidence"] += low_confidence_salary
         sums["operating_income"] += float(income.get("verified_operating_income") or summary.get("operating_income") or 0)
         sums["stable_income"] += float(income.get("stable_income") or summary.get("stable_income") or 0)
         sums["verified_income"] += float(income.get("verified_income") or summary.get("verified_income") or 0)
@@ -230,7 +233,26 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         sums["internal_transfer_income"] += float(income.get("internal_transfer_income") or summary.get("internal_transfer_income") or 0)
         sums["self_transfer_income"] += float(income.get("self_transfer_income") or 0)
         sums["personal_transfer_income"] += float(income.get("personal_transfer_income") or 0)
+        sums["related_party_income"] += float(income.get("related_party_income") or 0)
+        sums["platform_collection_income"] += float(income.get("platform_collection_income") or 0)
+        sums["company_business_inflow"] += float(income.get("company_business_inflow") or 0)
+        sums["investment_income"] += float(income.get("investment_income") or 0)
+        sums["refund_income"] += float(income.get("refund_income") or 0)
+        sums["interest_income"] += float(income.get("interest_income") or 0)
         sums["loan_repayment_expense"] += float(expense.get("loan_repayment_expense") or summary.get("loan_repayment_expense") or 0)
+        for key in (
+            "credit_card_repayment_expense",
+            "online_loan_repayment_expense",
+            "quick_payment_expense",
+            "living_expense",
+            "investment_expense",
+            "internal_transfer_expense",
+            "related_party_transfer_expense",
+            "business_or_company_outflow",
+            "cash_withdrawal",
+            "fee_expense",
+        ):
+            sums[key] += float(expense.get(key) or 0)
         sums["net_operating_cash_flow"] += float(summary.get("net_operating_cash_flow") or effective_net_cash_flow or 0)
         fast_matches.extend(_dict(item) for item in _list(_dict(payload.get("fast_in_fast_out_analysis")).get("matches")))
         if income.get("salary_confidence"):
@@ -294,12 +316,19 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "salary_income": round2(sums["salary_income"]),
         "confirmed_salary_income": round2(sums["confirmed_salary_income"]),
         "suspected_salary_income": round2(sums["suspected_salary_income"]),
+        "low_confidence_suspected_salary_income": round2(sums["low_confidence_suspected_salary_income"]),
         "suspected_salary_income_low_confidence": round2(sums["suspected_salary_income_low_confidence"]),
         "operating_income": round2(sums["operating_income"]),
         "stable_income": round2(sums["stable_income"]),
         "internal_transfer_income": round2(sums["internal_transfer_income"]),
         "self_transfer_income": round2(sums["self_transfer_income"]),
         "personal_transfer_income": round2(sums["personal_transfer_income"]),
+        "related_party_income": round2(sums["related_party_income"]),
+        "platform_collection_income": round2(sums["platform_collection_income"]),
+        "company_business_inflow": round2(sums["company_business_inflow"]),
+        "investment_income": round2(sums["investment_income"]),
+        "refund_income": round2(sums["refund_income"]),
+        "interest_income": round2(sums["interest_income"]),
         "loan_inflow": round2(sums["loan_inflow"]),
         "net_operating_cash_flow": round2(sums["net_operating_cash_flow"]),
         "avg_monthly_income": round2(sums["raw_total_income"] / month_count),
@@ -330,6 +359,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "raw_total_income": summary["raw_total_income"],
         "confirmed_salary_income": summary["confirmed_salary_income"],
         "suspected_salary_income": summary["suspected_salary_income"],
+        "low_confidence_suspected_salary_income": summary["low_confidence_suspected_salary_income"],
         "suspected_salary_income_low_confidence": summary["suspected_salary_income_low_confidence"],
         "verified_salary_income": summary["salary_income"],
         "verified_income": summary["verified_income"],
@@ -338,6 +368,12 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "internal_transfer_income": summary["internal_transfer_income"],
         "self_transfer_income": summary["self_transfer_income"],
         "personal_transfer_income": summary["personal_transfer_income"],
+        "related_party_income": summary["related_party_income"],
+        "platform_collection_income": summary["platform_collection_income"],
+        "company_business_inflow": summary["company_business_inflow"],
+        "investment_income": summary["investment_income"],
+        "refund_income": summary["refund_income"],
+        "interest_income": summary["interest_income"],
         "salary_income_count": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "confirmed_salary")),
         "suspected_salary_count": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "suspected_salary")),
         "suspected_salary_count_low_confidence": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "low_confidence_suspected_salary")),
@@ -357,6 +393,16 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     expense_analysis = {
         "raw_total_expense": summary["raw_total_expense"],
         "loan_repayment_expense": summary["loan_repayment_expense"],
+        "credit_card_repayment_expense": round2(sums["credit_card_repayment_expense"]),
+        "online_loan_repayment_expense": round2(sums["online_loan_repayment_expense"]),
+        "quick_payment_expense": round2(sums["quick_payment_expense"]),
+        "living_expense": round2(sums["living_expense"]),
+        "investment_expense": round2(sums["investment_expense"]),
+        "internal_transfer_expense": round2(sums["internal_transfer_expense"]),
+        "related_party_transfer_expense": round2(sums["related_party_transfer_expense"]),
+        "business_or_company_outflow": round2(sums["business_or_company_outflow"]),
+        "cash_withdrawal": round2(sums["cash_withdrawal"]),
+        "fee_expense": round2(sums["fee_expense"]),
         "loan_repayment_ratio": round(summary["loan_repayment_expense"] / summary["raw_total_expense"], 6) if summary["raw_total_expense"] else 0.0,
         "has_frequent_loan_or_credit_card_repayment": False,
         "has_abnormal_large_expense": any("abnormal_large_expense" in (tx.get("risk_tags") or []) for tx in transactions),

@@ -441,7 +441,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     ? pickMeaningfulNumber(income.interest_income, derivedInterestIncome)
     : derivedInterestIncome;
   const suspectedSalaryIncome = pickMeaningfulNumber(income.suspected_salary_income, customerSummary.suspected_salary_income, derivedSuspectedSalary.amount);
-  const lowConfidenceSuspectedSalaryIncome = pickNumber(income.suspected_salary_income_low_confidence, customerSummary.suspected_salary_income_low_confidence);
+  const lowConfidenceSuspectedSalaryIncome = pickNumber(income.low_confidence_suspected_salary_income, income.suspected_salary_income_low_confidence, customerSummary.low_confidence_suspected_salary_income, customerSummary.suspected_salary_income_low_confidence);
   const existingSalaryNotes = asArray<string>(income.salary_detection_notes);
   const salaryDetectionNotes = suspectedSalaryIncome > 0 && (
     !existingSalaryNotes.length ||
@@ -731,7 +731,12 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
           ['总支出', money(normalizedSummary.totalExpense)],
           ['贷款还款支出', money(normalized.loanRepaymentExpense)],
           ['信用卡还款支出', money(normalizedSummary.creditCardRepaymentExpense)],
+          ['线上贷款/小贷还款', money(normalized.expense.online_loan_repayment_expense)],
           ['快捷支付/消费', money(normalizedSummary.quickPaymentExpense)],
+          ['投资证券转账', money(normalized.expense.investment_expense)],
+          ['本人账户转出', money(normalized.expense.internal_transfer_expense)],
+          ['个人往来转出', money(normalized.expense.related_party_transfer_expense)],
+          ['现金取款', money(normalized.expense.cash_withdrawal)],
           ['月均贷款还款', money(normalized.expense.avg_monthly_loan_repayment, normalized.repayment.monthly_repayment_estimate)],
           ['贷款还款占比', percent(loanRepaymentRatio)],
         ]} />

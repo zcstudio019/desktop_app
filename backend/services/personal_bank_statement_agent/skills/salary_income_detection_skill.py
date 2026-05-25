@@ -38,21 +38,8 @@ SUSPECTED_SALARY_KEYWORDS = (
     "单位代发",
     "代发入账",
     "代发业务",
-    "批量转账",
     "对公代发",
-    "银联代付",
-    "网联收款",
     "代付入账",
-    "转账",
-    "网银转账",
-    "企业网银转账",
-    "对公转账",
-    "收入",
-    "入账",
-    "汇款",
-    "电子汇入",
-    "跨行汇入",
-    "普通汇款",
     "实时代发",
     "批量入账",
 )
@@ -66,6 +53,7 @@ LOW_CONFIDENCE_PAYROLL_KEYWORDS = (
     "代发业务",
     "对公代发",
     "银联代付",
+    "网联收款",
     "代付入账",
     "批量入账",
 )
@@ -230,11 +218,12 @@ def detect_salary_income(transactions: list[dict[str, Any]], account_name: str =
         summary_text = normalize_text(tx.get("summary"))
         strong = _matched(summary_text, STRONG_SALARY_KEYWORDS)
         suspected = _matched(summary_text, SUSPECTED_SALARY_KEYWORDS)
+        low_confidence = _matched(summary_text, LOW_CONFIDENCE_PAYROLL_KEYWORDS)
         exclude = _matched(text, EXCLUDE_SALARY_KEYWORDS)
         detection = {
             "salary_type": "unknown",
             "confidence": 0.0,
-            "matched_keywords": strong or suspected,
+            "matched_keywords": strong or suspected or low_confidence,
             "exclude_keywords": exclude,
             "employer_like_counterparty": _employer_like(tx.get("counterparty_name")),
             "is_self_counterparty": _same_person(tx.get("counterparty_name"), account_name),
@@ -248,8 +237,8 @@ def detect_salary_income(transactions: list[dict[str, Any]], account_name: str =
         tx["need_manual_review"] = False
         tx["salary_exclusion_category"] = _exclude_category(exclude) if exclude else ""
         income_transactions.append(tx)
-        if strong or suspected:
-            groups[_group_key(tx, strong or suspected)].append(tx)
+        if strong or suspected or low_confidence:
+            groups[_group_key(tx, strong or suspected or low_confidence)].append(tx)
 
     for items in groups.values():
         dates = [date for date in (_parse_date(item.get("transaction_date")) for item in items) if date]
@@ -274,6 +263,7 @@ def detect_salary_income(transactions: list[dict[str, Any]], account_name: str =
         continuous = int(detection["continuous_months"] or 0)
         periodic = bool(detection["periodic_payment"])
         stable = bool(detection["amount_stable"])
+        payroll_like = bool(strong or suspected or _matched(normalize_text(tx.get("summary")), LOW_CONFIDENCE_PAYROLL_KEYWORDS))
 
         if exclude:
             detection["salary_type"] = "non_salary"
@@ -281,7 +271,7 @@ def detect_salary_income(transactions: list[dict[str, Any]], account_name: str =
             detection["evidence"] = f"命中排除关键词：{'、'.join(exclude)}，不认定为工资"
             continue
 
-        if is_self_counterparty:
+        if payroll_like and is_self_counterparty:
             detection["salary_type"] = "non_salary"
             detection["income_nature"] = "self_transfer_income"
             detection["confidence"] = 0.98
@@ -289,7 +279,7 @@ def detect_salary_income(transactions: list[dict[str, Any]], account_name: str =
             tx["income_nature"] = "self_transfer_income"
             continue
 
-        if is_personal_counterparty:
+        if payroll_like and is_personal_counterparty:
             detection["salary_type"] = "non_salary"
             detection["income_nature"] = "personal_transfer_income"
             detection["confidence"] = 0.9
@@ -399,6 +389,7 @@ def detect_salary_income(transactions: list[dict[str, Any]], account_name: str =
     return {
         "confirmed_salary_income": round2(confirmed_amount),
         "suspected_salary_income": round2(suspected_amount),
+        "low_confidence_suspected_salary_income": round2(low_confidence_amount),
         "suspected_salary_income_low_confidence": round2(low_confidence_amount),
         "verified_salary_income": round2(confirmed_amount),
         "salary_income_count": len(confirmed),

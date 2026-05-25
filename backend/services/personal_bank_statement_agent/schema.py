@@ -55,6 +55,7 @@ class IncomeVerification(BaseModel):
     raw_total_income: float = 0.0
     confirmed_salary_income: float = 0.0
     suspected_salary_income: float = 0.0
+    low_confidence_suspected_salary_income: float = 0.0
     suspected_salary_income_low_confidence: float = 0.0
     verified_salary_income: float = 0.0
     verified_operating_income: float = 0.0
@@ -66,6 +67,9 @@ class IncomeVerification(BaseModel):
     self_transfer_income: float = 0.0
     personal_transfer_income: float = 0.0
     related_party_income: float = 0.0
+    platform_collection_income: float = 0.0
+    company_business_inflow: float = 0.0
+    investment_income: float = 0.0
     investment_redeem_income: float = 0.0
     refund_income: float = 0.0
     non_verified_income: float = 0.0
@@ -91,11 +95,16 @@ class ExpenseAnalysis(BaseModel):
     raw_total_expense: float = 0.0
     loan_repayment_expense: float = 0.0
     credit_card_repayment_expense: float = 0.0
+    online_loan_repayment_expense: float = 0.0
     quick_payment_expense: float = 0.0
     living_expense: float = 0.0
     operating_expense: float = 0.0
     internal_transfer_expense: float = 0.0
     investment_expense: float = 0.0
+    related_party_transfer_expense: float = 0.0
+    business_or_company_outflow: float = 0.0
+    cash_withdrawal: float = 0.0
+    fee_expense: float = 0.0
     other_expense: float = 0.0
     avg_monthly_loan_repayment: float = 0.0
     loan_repayment_ratio: float = 0.0

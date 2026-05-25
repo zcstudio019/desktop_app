@@ -9,6 +9,7 @@ from typing import Any
 
 from .normalizer import normalize_amount, normalize_text, round2
 from .skills.salary_income_detection_skill import detect_salary_income
+from .skills.transaction_classification_skill import classify_transactions
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ UNKNOWN_INFLOW_KEYWORDS = ("汇款汇入", "汇入汇款", "转账收入", "跨�
 INTEREST_KEYWORDS = ("存款利息", "结息")
 LOAN_REPAYMENT_KEYWORDS = ("个贷还款", "贷款回收", "贷款还款", "贷款扣款", "按揭", "房贷", "车贷", "小贷", "消费贷", "网贷", "还本", "还息")
 QUICK_PAYMENT_KEYWORDS = ("快捷支付", "支付宝", "微信支付", "POS", "消费")
-FAST_OUT_EXPENSE_KEYWORDS = LOAN_REPAYMENT_KEYWORDS + QUICK_PAYMENT_KEYWORDS + ("转账", "转出", "汇款")
+FAST_OUT_EXPENSE_KEYWORDS = LOAN_REPAYMENT_KEYWORDS + QUICK_PAYMENT_KEYWORDS + ("信用卡还款", "中融小贷", "支付宝信贷业务待还款账户", "美团月付还款", "转账", "转出", "汇款")
 OPERATING_INCOME_KEYWORDS = ("货款", "服务费", "销售款", "客户付款", "经营回款", "工程款", "材料款", "结算款")
 OTHER_STABLE_INCOME_KEYWORDS = ("租金", "分红", "固定收入")
 EXCLUDE_OPERATING_INCOME_KEYWORDS = ("借款", "贷款", "还款", "转存", "理财赎回", "赎回")
@@ -416,9 +417,24 @@ def _income_and_expense(
     unknown_inflow = 0.0
     self_transfer_income = 0.0
     personal_transfer_income = 0.0
+    related_party_income = 0.0
+    platform_collection_income = 0.0
+    company_business_inflow = 0.0
     interest_income = 0.0
+    loan_inflow = 0.0
+    investment_income = 0.0
+    refund_income = 0.0
     loan_repayment_expense = 0.0
+    credit_card_repayment_expense = 0.0
+    online_loan_repayment_expense = 0.0
     quick_payment_expense = 0.0
+    living_expense = 0.0
+    investment_expense = 0.0
+    internal_transfer_expense = 0.0
+    related_party_transfer_expense = 0.0
+    business_or_company_outflow = 0.0
+    cash_withdrawal = 0.0
+    fee_expense = 0.0
     other_expense = 0.0
     monthly_loan_months: set[str] = set()
 
@@ -428,39 +444,77 @@ def _income_and_expense(
         credit = float(tx.get("credit_amount") or 0)
         debit = float(tx.get("debit_amount") or 0)
         if credit > 0:
+            category = str(tx.get("category") or "")
             income_nature = _dict(tx.get("salary_detection")).get("income_nature") or tx.get("income_nature")
-            if income_nature == "self_transfer_income":
+            if income_nature == "self_transfer_income" or category in {"self_transfer_income", "internal_transfer_income"}:
                 self_transfer_income += credit
-                tx["category"] = "self_transfer_income"
+                if category != "internal_transfer_income":
+                    tx["category"] = "self_transfer_income"
                 tx["is_internal_transfer"] = True
                 tx["is_salary"] = False
                 tx["is_verified_income"] = False
                 tx["is_stable_income"] = False
-            elif income_nature == "personal_transfer_income":
+            elif income_nature == "personal_transfer_income" or category == "personal_transfer_income":
                 personal_transfer_income += credit
                 tx["category"] = "personal_transfer_income"
                 tx["is_salary"] = False
                 tx["is_verified_income"] = False
                 tx["is_stable_income"] = False
-            if _contains(summary, OPERATING_INCOME_KEYWORDS) and not _contains(summary, EXCLUDE_OPERATING_INCOME_KEYWORDS):
+            if category == "operating_income" or (_contains(summary, OPERATING_INCOME_KEYWORDS) and not _contains(summary, EXCLUDE_OPERATING_INCOME_KEYWORDS)):
                 verified_operating_income += credit
             elif _contains(summary, OTHER_STABLE_INCOME_KEYWORDS):
                 verified_other_stable_income += credit
+            elif category == "platform_collection_income":
+                platform_collection_income += credit
+            elif category == "company_business_inflow":
+                company_business_inflow += credit
+            elif category == "loan_inflow":
+                loan_inflow += credit
+            elif category == "related_party_income":
+                related_party_income += credit
+            elif category == "investment_income":
+                investment_income += credit
+            elif category == "refund_income":
+                refund_income += credit
             salary_type = _dict(tx.get("salary_detection")).get("salary_type")
-            if salary_type not in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"} and _contains(summary, UNKNOWN_INFLOW_KEYWORDS) and not counterparty:
+            if category == "unknown_inflow":
+                unknown_inflow += credit
+            elif salary_type not in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"} and _contains(summary, UNKNOWN_INFLOW_KEYWORDS) and not counterparty:
                 unknown_inflow += credit
             elif salary_type not in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"} and summary in {"汇款汇入", "汇入汇款", "转账收入"} and not counterparty:
                 unknown_inflow += credit
             if _contains(summary, INTEREST_KEYWORDS):
                 interest_income += credit
         if debit > 0:
-            if _contains(summary, LOAN_REPAYMENT_KEYWORDS):
+            category = str(tx.get("category") or "")
+            if category == "online_loan_repayment_expense":
+                online_loan_repayment_expense += debit
                 loan_repayment_expense += debit
                 month = str(tx.get("transaction_date") or "")[:7]
                 if month:
                     monthly_loan_months.add(month)
-            elif _contains(summary, QUICK_PAYMENT_KEYWORDS):
+            elif category == "credit_card_repayment_expense":
+                credit_card_repayment_expense += debit
+            elif category == "loan_repayment_expense" or _contains(summary, LOAN_REPAYMENT_KEYWORDS):
+                loan_repayment_expense += debit
+                month = str(tx.get("transaction_date") or "")[:7]
+                if month:
+                    monthly_loan_months.add(month)
+            elif category in {"platform_payment_expense", "quick_payment_expense"} or _contains(summary, QUICK_PAYMENT_KEYWORDS):
                 quick_payment_expense += debit
+                living_expense += debit
+            elif category == "investment_expense":
+                investment_expense += debit
+            elif category == "internal_transfer_expense":
+                internal_transfer_expense += debit
+            elif category == "related_party_transfer_expense":
+                related_party_transfer_expense += debit
+            elif category == "business_or_company_outflow":
+                business_or_company_outflow += debit
+            elif category == "cash_withdrawal":
+                cash_withdrawal += debit
+            elif category == "fee_expense":
+                fee_expense += debit
             else:
                 other_expense += debit
 
@@ -471,6 +525,7 @@ def _income_and_expense(
         "raw_total_income": raw_summary["total_income"],
         "confirmed_salary_income": round2(confirmed_salary),
         "suspected_salary_income": salary.get("suspected_salary_income") or 0,
+        "low_confidence_suspected_salary_income": salary.get("low_confidence_suspected_salary_income") or salary.get("suspected_salary_income_low_confidence") or 0,
         "suspected_salary_income_low_confidence": salary.get("suspected_salary_income_low_confidence") or 0,
         "verified_salary_income": round2(confirmed_salary),
         "salary_income_count": salary.get("salary_income_count") or 0,
@@ -487,8 +542,14 @@ def _income_and_expense(
         "self_transfer_income": round2(self_transfer_income),
         "internal_transfer_income": round2(self_transfer_income),
         "personal_transfer_income": round2(personal_transfer_income),
+        "related_party_income": round2(related_party_income),
+        "platform_collection_income": round2(platform_collection_income),
+        "company_business_inflow": round2(company_business_inflow),
         "unknown_inflow": round2(unknown_inflow),
         "interest_income": round2(interest_income),
+        "loan_inflow": round2(loan_inflow),
+        "investment_income": round2(investment_income),
+        "refund_income": round2(refund_income),
         "verified_income": verified_income,
         "stable_income": verified_income,
         "avg_monthly_verified_income": round2(verified_income / month_count),
@@ -497,12 +558,17 @@ def _income_and_expense(
     expense_analysis = {
         "raw_total_expense": raw_summary["total_expense"],
         "loan_repayment_expense": round2(loan_repayment_expense),
-        "credit_card_repayment_expense": 0.0,
+        "credit_card_repayment_expense": round2(credit_card_repayment_expense),
+        "online_loan_repayment_expense": round2(online_loan_repayment_expense),
         "quick_payment_expense": round2(quick_payment_expense),
-        "living_expense": round2(quick_payment_expense),
+        "living_expense": round2(living_expense),
         "operating_expense": 0.0,
-        "internal_transfer_expense": 0.0,
-        "investment_expense": 0.0,
+        "internal_transfer_expense": round2(internal_transfer_expense),
+        "investment_expense": round2(investment_expense),
+        "related_party_transfer_expense": round2(related_party_transfer_expense),
+        "business_or_company_outflow": round2(business_or_company_outflow),
+        "cash_withdrawal": round2(cash_withdrawal),
+        "fee_expense": round2(fee_expense),
         "other_expense": round2(other_expense),
         "avg_monthly_loan_repayment": round2(loan_repayment_expense / month_count),
         "loan_repayment_ratio": round(loan_repayment_expense / raw_summary["total_expense"], 6) if raw_summary["total_expense"] else 0.0,
@@ -654,6 +720,7 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any], ra
     if recovered_counterparties:
         logger.info("[PersonalFlow][COUNTERPARTY_FALLBACK] recovered=%s rows=%s", len(recovered_counterparties), recovered_counterparties)
     base_info = normalize_personal_flow_base_info(payload, transactions)
+    transactions = classify_transactions(transactions, account_name=str(base_info.get("account_name") or ""))
     raw_summary = _raw_summary(payload, transactions)
     ai_raw = _ai_summary_raw(payload)
     warnings = [item for item in _list(payload.get("warnings")) if item]
@@ -703,6 +770,7 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any], ra
         "salary_income": income_verification["verified_salary_income"],
         "confirmed_salary_income": income_verification["confirmed_salary_income"],
         "suspected_salary_income": income_verification["suspected_salary_income"],
+        "low_confidence_suspected_salary_income": income_verification["low_confidence_suspected_salary_income"],
         "suspected_salary_income_low_confidence": income_verification["suspected_salary_income_low_confidence"],
         "operating_income": income_verification["verified_operating_income"],
         "stable_income": income_verification["stable_income"],
@@ -711,6 +779,13 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any], ra
         "self_transfer_income": income_verification["self_transfer_income"],
         "internal_transfer_income": income_verification["internal_transfer_income"],
         "personal_transfer_income": income_verification["personal_transfer_income"],
+        "related_party_income": income_verification["related_party_income"],
+        "platform_collection_income": income_verification["platform_collection_income"],
+        "company_business_inflow": income_verification["company_business_inflow"],
+        "loan_inflow": income_verification["loan_inflow"],
+        "investment_income": income_verification["investment_income"],
+        "refund_income": income_verification["refund_income"],
+        "interest_income": income_verification["interest_income"],
         "loan_repayment_expense": expense_analysis["loan_repayment_expense"],
         "avg_monthly_stable_income": round2(income_verification["stable_income"] / month_count),
     }

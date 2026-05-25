@@ -505,6 +505,91 @@ def test_suspected_salary_excludes_self_and_personal_counterparties() -> None:
     assert by_counterparty["刘稼"]["salary_detection"]["salary_type"] == "non_salary"
 
 
+def test_confirmed_salary_requires_explicit_salary_summary() -> None:
+    data = build_deterministic_personal_flow_summary({
+        "交易明细列表": [
+            {"交易日期": "2025-01-10", "交易金额": "10000", "交易摘要": "代发工资", "对手信息": "上海软件有限公司"},
+            {"交易日期": "2025-02-10", "交易金额": "11000", "交易摘要": "工资发放", "对手信息": "上海软件有限公司"},
+        ],
+    })
+    income = data["income_verification"]
+    assert income["confirmed_salary_income"] == 21000
+    assert income["verified_salary_income"] == 21000
+    assert income["suspected_salary_income"] == 0
+
+
+def test_yerong_platform_receipts_without_counterparty_are_low_confidence_and_fast_out() -> None:
+    data = build_deterministic_personal_flow_summary({
+        "account_name": "叶嵘",
+        "交易明细列表": [
+            {"交易日期": "2025-01-10", "交易金额": "10000", "交易摘要": "银联代付", "对手信息": ""},
+            {"交易日期": "2025-01-10", "交易金额": "-9500", "交易摘要": "转账汇款", "对手信息": "张三"},
+            {"交易日期": "2025-02-10", "交易金额": "10100", "交易摘要": "银联代付", "对手信息": ""},
+            {"交易日期": "2025-03-10", "交易金额": "10050", "交易摘要": "银联代付", "对手信息": ""},
+        ],
+    })
+    income = data["income_verification"]
+    assert income["confirmed_salary_income"] == 0
+    assert income["suspected_salary_income"] == 0
+    assert income["low_confidence_suspected_salary_income"] == 30150
+    assert data["fast_in_fast_out_analysis"]["has_fast_in_fast_out"] is True
+
+
+def test_liucong_company_inflow_and_liability_repayments_are_not_salary() -> None:
+    data = build_deterministic_personal_flow_summary({
+        "account_name": "刘聪",
+        "交易明细列表": [
+            {"交易日期": "2025-01-02", "交易金额": "30000", "交易摘要": "汇入汇款", "对手信息": "上海煜禧贸易有限公司"},
+            {"交易日期": "2025-01-03", "交易金额": "20000", "交易摘要": "汇入汇款", "对手信息": "上海汪流汇江文化传媒有限公司"},
+            {"交易日期": "2025-01-05", "交易金额": "50000", "交易摘要": "个贷放款", "对手信息": "招商银行"},
+            {"交易日期": "2025-01-12", "交易金额": "-5000", "交易摘要": "个贷交易", "对手信息": "招商银行"},
+            {"交易日期": "2025-01-13", "交易金额": "-2000", "交易摘要": "信用卡还款", "对手信息": "招商银行信用卡中心"},
+            {"交易日期": "2025-01-14", "交易金额": "-1000", "交易摘要": "支付宝信贷业务待还款账户", "对手信息": "支付宝"},
+            {"交易日期": "2025-01-15", "交易金额": "-800", "交易摘要": "中融小贷", "对手信息": "中融小贷"},
+        ],
+    })
+    income = data["income_verification"]
+    expense = data["expense_analysis"]
+    assert income["company_business_inflow"] == 50000
+    assert income["loan_inflow"] == 50000
+    assert income["confirmed_salary_income"] == 0
+    assert income["suspected_salary_income"] == 0
+    assert expense["loan_repayment_expense"] == 6800
+    assert expense["credit_card_repayment_expense"] == 2000
+    assert expense["online_loan_repayment_expense"] == 1800
+
+
+def test_xuehanglun_investment_online_loan_consumption_and_self_transfer() -> None:
+    data = build_deterministic_personal_flow_summary({
+        "account_name": "薛行轮",
+        "交易明细列表": [
+            {"交易日期": "2025-01-01", "交易金额": "-4000", "交易摘要": "银证转账", "对手信息": "证券公司"},
+            {"交易日期": "2025-01-02", "交易金额": "-1200", "交易摘要": "还款 中融小贷", "对手信息": "中融小贷"},
+            {"交易日期": "2025-01-03", "交易金额": "-300", "交易摘要": "微信支付", "对手信息": "财付通"},
+            {"交易日期": "2025-01-04", "交易金额": "-500", "交易摘要": "转支", "对手信息": "薛行轮"},
+        ],
+    })
+    expense = data["expense_analysis"]
+    assert expense["investment_expense"] == 4000
+    assert expense["online_loan_repayment_expense"] == 1200
+    assert expense["living_expense"] == 300
+    assert expense["internal_transfer_expense"] == 500
+
+
+def test_masked_personal_counterparties_are_not_salary_and_can_fast_out() -> None:
+    data = build_deterministic_personal_flow_summary({
+        "account_name": "王某",
+        "交易明细列表": [
+            {"交易日期": "2025-03-01", "交易金额": "10000", "交易摘要": "汇入汇款", "对手信息": "傅秀珍"},
+            {"交易日期": "2025-03-01", "交易金额": "-9800", "交易摘要": "转账汇款", "对手信息": "邓家林"},
+        ],
+    })
+    assert data["income_verification"]["suspected_salary_income"] == 0
+    assert data["income_verification"]["personal_transfer_income"] == 10000
+    assert data["expense_analysis"]["related_party_transfer_expense"] == 9800
+    assert data["fast_in_fast_out_analysis"]["has_fast_in_fast_out"] is True
+
+
 def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
     payload = {
         "doc_type": "personal_flow",
