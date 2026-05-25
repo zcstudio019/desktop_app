@@ -179,6 +179,8 @@ class Transaction(BaseModel):
 
 
 class Account(BaseModel):
+    bank_brand: str = ""
+    branch_name: str = ""
     bank_name: str = ""
     account_name: str = ""
     account_no: str = ""
@@ -238,6 +240,8 @@ class PersonalBankStatementExtraction(BaseModel):
     document_type: str = "personal_flow"
     normalized_document_type: str = "personal_bank_statement"
     source_file: str = ""
+    bank_brand: str = ""
+    branch_name: str = ""
     bank_name: str = ""
     account_name: str = ""
     account_no: str = ""

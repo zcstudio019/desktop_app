@@ -366,6 +366,8 @@ def test_normalize_personal_flow_base_info_from_chinese_fields_and_filename() ->
         },
     }
     info = normalize_personal_flow_base_info(payload)
+    assert info["bank_brand"] == "招商银行"
+    assert info["branch_name"] == "招商银行上海大宁支行"
     assert info["bank_name"] == "招商银行上海大宁支行"
     assert info["account_name"] == "康磊"
     assert info["account_no"] == "6214********3039"
@@ -379,6 +381,53 @@ def test_normalize_personal_flow_base_info_infers_bank_and_period() -> None:
     info = normalize_personal_flow_base_info(payload, transactions)
     assert info["bank_name"] == "招商银行"
     assert info["statement_period"] == {"start_date": "2024-06-15", "end_date": "2025-06-15"}
+
+
+def test_normalize_personal_flow_base_info_combines_bank_brand_with_branch() -> None:
+    info = normalize_personal_flow_base_info({
+        "source_file": "招商银行交易流水(申请时间2025年06月17日22时06分04秒)(1).pdf",
+        "账户基础信息": {"开户行": "上海大宁支行"},
+    })
+    assert info["bank_brand"] == "招商银行"
+    assert info["branch_name"] == "上海大宁支行"
+    assert info["bank_name"] == "招商银行上海大宁支行"
+
+
+def test_normalize_personal_flow_base_info_does_not_duplicate_brand() -> None:
+    info = normalize_personal_flow_base_info({
+        "source_file": "招商银行交易流水.pdf",
+        "账户基础信息": {"开户行": "招商银行上海大宁支行"},
+    })
+    assert info["bank_brand"] == "招商银行"
+    assert info["bank_name"] == "招商银行上海大宁支行"
+
+
+def test_normalize_personal_flow_base_info_recognizes_other_bank_brands() -> None:
+    abc = normalize_personal_flow_base_info({"source_file": "中国农业银行交易流水.pdf"})
+    ccb = normalize_personal_flow_base_info({"source_file": "建设银行个人流水.pdf"})
+    assert abc["bank_brand"] == "中国农业银行"
+    assert abc["bank_name"] == "中国农业银行"
+    assert ccb["bank_brand"] == "中国建设银行"
+    assert ccb["bank_name"] == "中国建设银行"
+
+
+def test_normalize_personal_flow_base_info_recognizes_cmb_english_title() -> None:
+    info = normalize_personal_flow_base_info({
+        "raw_text": "Transaction Statement of China Merchants Bank",
+        "账户基础信息": {"开户行": "上海大宁支行"},
+    })
+    assert info["bank_brand"] == "招商银行"
+    assert info["bank_name"] == "招商银行上海大宁支行"
+
+
+def test_deterministic_summary_applies_raw_text_bank_brand_to_branch() -> None:
+    data = build_deterministic_personal_flow_summary(
+        {"账户基础信息": {"开户行": "上海大宁支行"}},
+        raw_text="Transaction Statement of China Merchants Bank",
+    )
+    assert data["bank_brand"] == "招商银行"
+    assert data["branch_name"] == "上海大宁支行"
+    assert data["bank_name"] == "招商银行上海大宁支行"
 
 
 def test_markdown_renderer_uses_standard_base_info() -> None:

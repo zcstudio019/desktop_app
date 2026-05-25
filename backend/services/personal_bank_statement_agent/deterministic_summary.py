@@ -49,7 +49,8 @@ OPERATING_INCOME_KEYWORDS = ("货款", "服务费", "销售款", "客户付款",
 OTHER_STABLE_INCOME_KEYWORDS = ("租金", "分红", "固定收入")
 EXCLUDE_OPERATING_INCOME_KEYWORDS = ("借款", "贷款", "还款", "转存", "理财赎回", "赎回")
 BASE_INFO_KEYS = ("账户基础信息", "一、账户基础信息", "base_info", "account_info")
-BANK_NAME_KEYS = ("开户银行", "银行", "银行名称", "开户行", "开户机构")
+BANK_NAME_KEYS = ("银行", "银行名称", "Bank Name")
+BRANCH_NAME_KEYS = ("开户行", "开户银行", "开户机构", "Sub Branch", "支行", "网点")
 ACCOUNT_NAME_KEYS = ("户名", "账户名称", "客户名称", "姓名", "Account Name")
 ACCOUNT_NO_KEYS = ("账号", "账户", "银行卡号", "Account No.", "Account No")
 CURRENCY_KEYS = ("币种", "Currency")
@@ -121,19 +122,37 @@ def _contains(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
-def _infer_bank_from_source_file(source_file: Any) -> str:
-    text = str(source_file or "")
+def _infer_bank_brand(*values: Any) -> str:
+    text = " ".join(str(value or "") for value in values)
     for keyword, bank_name in (
         ("招商银行", "招商银行"),
+        ("Transaction Statement of China Merchants Bank", "招商银行"),
         ("兴业银行", "兴业银行"),
-        ("建设银行", "建设银行"),
-        ("建行", "建设银行"),
+        ("中国建设银行", "中国建设银行"),
+        ("建设银行", "中国建设银行"),
+        ("建行", "中国建设银行"),
+        ("中国农业银行", "中国农业银行"),
+        ("农业银行", "中国农业银行"),
+        ("农行", "中国农业银行"),
         ("上海银行", "上海银行"),
         ("北京银行", "北京银行"),
     ):
         if keyword in text:
             return bank_name
     return ""
+
+
+def _full_bank_name(bank_brand: str, branch_name: str, provided_bank_name: str) -> str:
+    provided = normalize_text(provided_bank_name)
+    brand = normalize_text(bank_brand)
+    branch = normalize_text(branch_name)
+    if provided and brand and brand in provided:
+        return provided
+    if branch and brand and brand in branch:
+        return branch
+    if brand and branch:
+        return f"{brand}{branch}"
+    return provided or brand or branch
 
 
 def normalize_personal_flow_base_info(payload: dict[str, Any], transactions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -147,8 +166,19 @@ def normalize_personal_flow_base_info(payload: dict[str, Any], transactions: lis
     period = _dict(payload.get("statement_period") or payload.get("流水期间"))
     dates = sorted(str(tx.get("transaction_date") or "")[:10] for tx in transactions if str(tx.get("transaction_date") or "")[:10])
     source_file = payload.get("source_file") or payload.get("original_filename") or payload.get("file_name") or ""
+    raw_text = payload.get("raw_text") or payload.get("text") or payload.get("ocr_text") or ""
+    provided_bank_name = normalize_text(payload.get("bank_name") or _first(base_info, BANK_NAME_KEYS))
+    branch_name = normalize_text(payload.get("branch_name") or _first(base_info, BRANCH_NAME_KEYS))
+    bank_brand = normalize_text(
+        payload.get("bank_brand")
+        or _infer_bank_brand(source_file, raw_text, provided_bank_name, branch_name)
+    )
+    if provided_bank_name and not branch_name and ("支行" in provided_bank_name or "分行" in provided_bank_name):
+        branch_name = provided_bank_name
     return {
-        "bank_name": normalize_text(payload.get("bank_name") or _first(base_info, BANK_NAME_KEYS) or _infer_bank_from_source_file(source_file)),
+        "bank_brand": bank_brand,
+        "branch_name": branch_name,
+        "bank_name": _full_bank_name(bank_brand, branch_name, provided_bank_name),
         "account_name": normalize_text(payload.get("account_name") or _first(base_info, ACCOUNT_NAME_KEYS)),
         "account_no": normalize_text(payload.get("account_no") or _first(base_info, ACCOUNT_NO_KEYS)),
         "currency": normalize_text(payload.get("currency") or _first(base_info, CURRENCY_KEYS)) or "人民币",
@@ -719,7 +749,10 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any], ra
     transactions, recovered_counterparties = fill_missing_counterparties_from_text(transactions, fallback_text)
     if recovered_counterparties:
         logger.info("[PersonalFlow][COUNTERPARTY_FALLBACK] recovered=%s rows=%s", len(recovered_counterparties), recovered_counterparties)
-    base_info = normalize_personal_flow_base_info(payload, transactions)
+    base_info = normalize_personal_flow_base_info(
+        {**payload, "raw_text": payload.get("raw_text") or fallback_text},
+        transactions,
+    )
     transactions = classify_transactions(transactions, account_name=str(base_info.get("account_name") or ""))
     raw_summary = _raw_summary(payload, transactions)
     ai_raw = _ai_summary_raw(payload)

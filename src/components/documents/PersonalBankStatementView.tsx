@@ -497,6 +497,7 @@ function normalizePersonalFlowData(raw: Record<string, unknown>) {
   const judgement = asRecord(raw.financing_judgement);
   const accounts = asArray<Record<string, unknown>>(raw.accounts);
   const firstAccount = accounts[0] || {};
+  const baseInfo = asRecord(raw.base_info || raw.account_info || raw['账户基础信息']);
   const normalizedSummary = normalizePersonalFlowSummary(raw);
 
   const rawIncome = normalizedSummary.totalIncome;
@@ -520,7 +521,7 @@ function normalizePersonalFlowData(raw: Record<string, unknown>) {
     judgement,
     accounts,
     firstAccount,
-    bankName: String(raw.bank_name || firstAccount.bank_name || ''),
+    bankName: String(raw.bank_name || baseInfo.bank_name || firstAccount.bank_name || ''),
     accountName: String(raw.account_name || firstAccount.account_name || ''),
     accountNo: String(raw.account_no || firstAccount.account_no || ''),
     currency: String(raw.currency || firstAccount.currency || '人民币'),
