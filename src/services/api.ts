@@ -918,7 +918,12 @@ export async function savePersonalFlowIncomeConfirmation(
   documentId: string,
   payload: PersonalFlowIncomeConfirmationPayload,
   signal?: AbortSignal
-): Promise<{ success: boolean; item: Record<string, unknown> }> {
+): Promise<{
+  success: boolean;
+  item: Record<string, unknown>;
+  summary?: Record<string, unknown> | null;
+  profile_markdown?: string;
+}> {
   const response = await fetch(
     `${API_BASE}/api/customers/${encodeURIComponent(customerId)}/personal-flow/${encodeURIComponent(documentId)}/income-confirmations`,
     {
@@ -928,7 +933,12 @@ export async function savePersonalFlowIncomeConfirmation(
       signal,
     }
   );
-  return handleResponse<{ success: boolean; item: Record<string, unknown> }>(response);
+  return handleResponse<{
+    success: boolean;
+    item: Record<string, unknown>;
+    summary?: Record<string, unknown> | null;
+    profile_markdown?: string;
+  }>(response);
 }
 
 export async function getEnterpriseFlowRules(

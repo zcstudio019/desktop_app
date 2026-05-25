@@ -733,8 +733,21 @@ def test_manual_confirmed_suspected_salary_is_added_to_verified_income_once() ->
     extraction = {
         "doc_id": "salary-doc",
         "extraction_type": "personal_flow",
-        "file_name": "salary.pdf",
-        "extracted_data": {"extracted_json": {"交易明细列表": transactions}},
+        "file_name": "招商银行交易流水(申请时间2025年06月17日22时06分04秒)(1).pdf",
+        "extracted_data": {
+            "extracted_json": {
+                "一、账户基础信息": {
+                    "开户行": "上海大宁支行",
+                    "户名": "康磊",
+                    "账号": "6214********3039",
+                    "账户类型": "ALL/全币种",
+                    "币种": "人民币",
+                    "流水起始日期": "2024-06-15",
+                    "流水结束日期": "2025-06-15",
+                },
+                "交易明细列表": transactions,
+            }
+        },
     }
     before = aggregate_customer_personal_flows([extraction])
     income_before = before["income_verification"]
@@ -767,6 +780,14 @@ def test_manual_confirmed_suspected_salary_is_added_to_verified_income_once() ->
     assert "salary_suspected_only" not in codes
     assert "salary_missing" not in codes
     assert confirmed["financing_judgement"]["recommended_usage"] == "可作为辅助收入证明，已人工确认"
+    assert confirmed["bank_name"] == "招商银行上海大宁支行"
+    markdown = render_personal_bank_statement_markdown(confirmed)
+    assert "- 银行：招商银行上海大宁支行" in markdown
+    assert "- 已人工确认工资收入：524,831.49" in markdown
+    assert "- 可采信工资收入：524,831.49" in markdown
+    assert "- 可采信收入：524,831.49" in markdown
+    assert "- 月均可采信收入：40,371.65" in markdown
+    assert "上海中兴软件有限责任公司" in markdown
 
 
 def test_manual_rejected_suspected_salary_does_not_become_verified_income() -> None:

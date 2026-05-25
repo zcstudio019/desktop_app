@@ -184,6 +184,8 @@ def aggregate_customer_personal_flows(
         source_accounts = [_dict(item) for item in _list(payload.get("accounts"))]
         if not base_info and any(payload.get(key) for key in ("bank_name", "account_name", "account_no")):
             base_info = {
+                "bank_brand": payload.get("bank_brand") or "",
+                "branch_name": payload.get("branch_name") or "",
                 "bank_name": payload.get("bank_name") or "",
                 "account_name": payload.get("account_name") or "",
                 "account_no": payload.get("account_no") or "",
@@ -200,6 +202,8 @@ def aggregate_customer_personal_flows(
                 "created_at": extraction.get("created_at") or "",
                 "source_file": payload.get("source_file") or file_name,
                 "document_type": extraction_type or "personal_flow",
+                "bank_brand": payload.get("bank_brand") or "",
+                "branch_name": payload.get("branch_name") or "",
                 "bank_name": payload.get("bank_name") or (source_accounts[0].get("bank_name") if source_accounts else ""),
                 "account_no": payload.get("account_no") or (source_accounts[0].get("account_no") if source_accounts else ""),
                 "period": payload.get("statement_period") or {"start_date": summary.get("period_start") or "", "end_date": summary.get("period_end") or ""},

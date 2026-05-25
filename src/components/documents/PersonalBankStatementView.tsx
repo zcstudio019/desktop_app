@@ -24,6 +24,10 @@ type PersonalBankStatementViewProps = {
   showHeader?: boolean;
   canReviewIncome?: boolean;
   onSummaryRefresh?: () => void | Promise<void>;
+  onConfirmationApplied?: (result: {
+    summary?: Record<string, unknown> | null;
+    profile_markdown?: string;
+  }) => void | Promise<void>;
 };
 
 const EMPTY = '--';
@@ -714,7 +718,7 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
     setSubmittingConfirmation(status);
     setConfirmationError(null);
     try {
-      await savePersonalFlowIncomeConfirmation(props.customerId, documentId, {
+      const result = await savePersonalFlowIncomeConfirmation(props.customerId, documentId, {
         income_type: 'suspected_salary',
         target_type: 'confirmed_salary',
         counterparty_name: String(selectedSalarySource.counterparty_name || ''),
@@ -724,6 +728,7 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
         manual_status: status,
         reason: confirmationReason.trim(),
       });
+      await props.onConfirmationApplied?.(result);
       setSelectedSalarySource(null);
       setConfirmationReason('');
       await props.onSummaryRefresh?.();

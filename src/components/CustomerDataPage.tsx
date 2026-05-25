@@ -4931,7 +4931,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         loading={personalFlowPreviewLoading && !personalFlowSummary && !selectedPersonalFlowDoc && !markdownHasPersonalFlow}
                         error={personalFlowPreviewError}
                         canReviewIncome={currentAuthRole === 'admin' || currentAuthRole === 'operator'}
-                        onSummaryRefresh={() => loadPersonalFlowPreview(activeCustomerId || selectedCustomerId)}
+                        onConfirmationApplied={(result) => {
+                          if (result.summary) {
+                            setPersonalFlowPreviewDoc(result.summary);
+                          }
+                          if (typeof result.profile_markdown === 'string' && result.profile_markdown) {
+                            const nextMarkdown = sanitizeProfileMarkdown(result.profile_markdown);
+                            setDraft(nextMarkdown);
+                            setProfile((current) => current ? { ...current, markdown_content: result.profile_markdown || '' } : current);
+                          }
+                        }}
+                        onSummaryRefresh={() => Promise.all([
+                          loadPersonalFlowPreview(activeCustomerId || selectedCustomerId),
+                          loadProfile(activeCustomerId || selectedCustomerId),
+                        ]).then(() => undefined)}
                       />
                     </section>
                     {hasEnterpriseStructuredData ? (

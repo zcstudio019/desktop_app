@@ -1964,10 +1964,25 @@ async def save_customer_personal_flow_income_confirmation(
         },
     )
     try:
-        await profile_sync_service.handle_document_saved(storage_service, customer_id)
-    except Exception:
+        sync_result = await profile_sync_service.handle_document_saved(storage_service, customer_id)
+        profile_refresh = sync_result.get("profile") or {}
+        if profile_refresh.get("success") is False:
+            raise RuntimeError(str(profile_refresh.get("error") or "资料汇总重建失败"))
+        profile = await storage_service.get_customer_profile(customer_id) or {}
+        summary_response = await get_customer_personal_flow_summary(
+            customer_id,
+            debug=False,
+            current_user=current_user,
+        )
+    except Exception as exc:
         logger.exception("[PersonalFlow][INCOME_CONFIRMATION] profile refresh failed customer_id=%s", customer_id)
-    return {"success": True, "item": saved}
+        raise HTTPException(status_code=500, detail="人工确认已保存，但资料汇总刷新失败，请重试刷新页面") from exc
+    return {
+        "success": True,
+        "item": saved,
+        "summary": summary_response.get("item"),
+        "profile_markdown": profile.get("markdown_content") or "",
+    }
 
 
 @router.get("/{customer_id}/enterprise-flow/rules")
