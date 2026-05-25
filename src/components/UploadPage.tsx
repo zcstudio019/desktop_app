@@ -136,8 +136,8 @@ const FILE_TYPES: FileTypeConfig[] = [
     storeOriginal: true,
   },
   { 
-    id: 'financial_data', 
-    name: '财务数据', 
+    id: 'financial_report',
+    name: '财务报表',
     formats: 'PDF / XLSX', 
     color: 'text-red-600',
     bgColor: 'bg-red-50',

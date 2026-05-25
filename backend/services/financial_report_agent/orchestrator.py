@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from .display_mapper import to_display_json
 from .markdown_renderer import render_financial_report_markdown
 from .normalizer import detect_unit, value_of
 from .schema import FinancialReportExtractionResult, to_plain_dict
@@ -89,7 +90,8 @@ def run_financial_report_agent(
     all_reports = history + [data]
     data["trend_metrics"] = aggregate_financial_report_periods(all_reports)
     data["validation_warnings"] = validate_financial_report_result(data)
-    data["report_markdown"] = render_financial_report_markdown(data)
+    display_json = to_display_json(data)
+    data["report_markdown"] = render_financial_report_markdown(display_json)
     core_values = [
         _metric(data, "balance_sheet", "total_assets"),
         _metric(data, "income_statement", "revenue"),
@@ -104,6 +106,7 @@ def run_financial_report_agent(
         "schema_version": "financial_report.agent.v1",
         "skill_name": "financial_report_agent",
         "structured_json": data,
+        "display_json": display_json,
         "ratios_json": data["financial_ratios"],
         "risk_findings_json": data["bank_credit_analysis"]["risk_findings"],
         "markdown_report": data["report_markdown"],

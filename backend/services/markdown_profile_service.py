@@ -21,6 +21,8 @@ from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator i
     aggregate_customer_enterprise_flows,
 )
 from backend.services.enterprise_bank_statement_agent.flow_rules import get_enterprise_flow_rules
+from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
+from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
 
 logger = logging.getLogger(__name__)
@@ -1658,6 +1660,22 @@ async def _build_single_document_section(
         fallback = '## 个人征信报告\n\n- 个人征信报告已上传，但结构化摘要暂不可用。'
         logger.info("[Profile Sync][PersonalCredit] markdown length=%s", len(fallback))
         return fallback, source_document
+    if extraction_type == 'financial_report' and isinstance(extracted_data, dict):
+        structured_json = extracted_data.get('structured_json') or extracted_data.get('extracted_json') or extracted_data.get('data') or {}
+        if not isinstance(structured_json, dict):
+            structured_json = {}
+        display_json = extracted_data.get('display_json') or to_financial_report_display_json(structured_json)
+        source_document['display_json'] = display_json
+        saved_markdown = str(
+            extracted_data.get('markdown_report')
+            or extracted_data.get('markdown_summary')
+            or extracted_data.get('markdown')
+            or structured_json.get('report_markdown')
+            or ''
+        ).strip()
+        if saved_markdown:
+            return saved_markdown, source_document
+        return render_financial_report_markdown(display_json), source_document
     if extraction_type in {'enterprise_flow', 'enterprise_bank_statement', 'bank_statement_enterprise', 'company_bank_statement'} and isinstance(extracted_data, dict):
         extracted_json = extracted_data.get('extracted_json') or extracted_data.get('data') or {}
         if not isinstance(extracted_json, dict):

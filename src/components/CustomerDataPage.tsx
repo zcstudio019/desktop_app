@@ -261,9 +261,13 @@ const DOCUMENT_GROUPS = {
     title: '资产资料',
     types: ['property_report', 'vehicle_license'],
   },
+  financial: {
+    title: '财务资料',
+    types: ['financial_report', 'financial_data'],
+  },
 } as const;
 
-const DOCUMENT_GROUP_ORDER = ['enterprise', 'banking', 'personal', 'asset'] as const;
+const DOCUMENT_GROUP_ORDER = ['enterprise', 'banking', 'financial', 'personal', 'asset'] as const;
 
 const DOCUMENT_COMPLETENESS_RULES = {
   enterprise: {
@@ -277,6 +281,12 @@ const DOCUMENT_COMPLETENESS_RULES = {
     description: '用于核对账户主体、账户状态与银行流水情况。',
     required: ['account_license'],
     optional: ['bank_statement', 'bank_statement_detail'],
+  },
+  financial: {
+    title: '财务资料',
+    description: '用于核验资产负债、经营成果、现金流和偿债能力。',
+    required: [],
+    optional: ['financial_report'],
   },
   personal: {
     title: '个人/家庭资料',
@@ -506,6 +516,8 @@ function getDocumentTypeDisplayNameByCode(fileType: string): string {
     marriage_cert: '结婚证',
     property_report: '房产证 / 产调',
     vehicle_license: '行驶证',
+    financial_report: '财务报表',
+    financial_data: '财务报表',
   };
   return DISPLAY_NAMES[fileType] || fileType;
 }

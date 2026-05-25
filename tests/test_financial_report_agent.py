@@ -17,7 +17,8 @@ def _pages(year: int, assets: float, liabilities: float, equity: float, revenue:
             "text": f"""财务报表报送与信息采集（企业会计准则一般企业）-{year}{report_label}
 企业名称：测试制造有限公司
 统一社会信用代码：91310000123456789X
-报表日期：{year}-12-31
+税款所属期起止：{year}-01-01至{year}-12-31
+报送日期：{year + 1}-05-26
 单位：元
 资产负债表
 货币资金 1 2,000,000.00
@@ -79,8 +80,9 @@ def test_financial_report_core_regression(year, assets, liabilities, equity, rev
     assert data["income_statement"]["revenue"]["normalized_value"] == revenue
     assert data["income_statement"]["net_profit"]["normalized_value"] == profit
     assert data["cash_flow_statement"]["net_operating_cash_flow"]["normalized_value"] == ocf
+    assert data["company_info"]["report_type"] == ("quarterly" if year == 2024 else "annual")
     assert result["ratios_json"]["asset_liability_ratio"] is not None
-    assert result["markdown_report"].startswith("# 财务报表授信分析报告")
+    assert result["markdown_report"].startswith("## 财务报表")
     assert any(item["field_path"] == "balance_sheet.total_assets" for item in result["evidence_json"])
 
 
@@ -107,3 +109,43 @@ def test_financial_report_customer_rollup_detects_continuous_negative_cashflow()
     assert "continuous_negative_operating_cash_flow" in codes
     assert "declining_revenue" in codes
     assert rollup["latest_credit_analysis"]["overall_risk_level"] == "high"
+
+
+def test_financial_report_markdown_and_display_json_are_chinese_presentations() -> None:
+    pages = _pages(*CASES[0])
+    result = run_financial_report_agent(
+        raw_text="\n".join(item["text"] for item in pages),
+        filename="2022财务报表报送与信息采集（企业会计准则一般企业）-2022年报.pdf",
+        metadata={"raw_pages": pages},
+    )
+    markdown = result["markdown_report"]
+    forbidden = [
+        "document_type", "source_file", "customer_id", "company_info", "balance_sheet",
+        "cash_and_equivalents", "raw_value", "normalized_value", "source_page",
+        "source_text", "confidence", "financial_report", "annual", "CNY",
+    ]
+    required = [
+        "文档类型", "来源文件", "企业信息", "资产负债表", "利润表", "现金流量表",
+        "货币资金", "营业收入", "经营活动产生的现金流量净额", "置信度",
+        "财务报表", "年报", "人民币",
+    ]
+    assert all(item not in markdown for item in forbidden)
+    assert all(item in markdown for item in required)
+    assert result["structured_json"]["document_type"] == "financial_report"
+    assert result["display_json"]["文档类型"] == "财务报表"
+    assert "company_info" not in result["display_json"]
+    assert result["display_json"]["企业信息"]["报表类型"] == "年报"
+    assert result["display_json"]["企业信息"]["币种"] == "人民币"
+
+
+def test_financial_report_period_uses_tax_period_not_submission_date() -> None:
+    pages = _pages(*CASES[0])
+    result = run_financial_report_agent(
+        raw_text="\n".join(item["text"] for item in pages),
+        filename="2022财务报表报送与信息采集（企业会计准则一般企业）-2022年报.pdf",
+        metadata={"raw_pages": pages},
+    )
+    info = result["structured_json"]["company_info"]
+    assert info["report_period_start"] == "2022-01-01"
+    assert info["report_period_end"] == "2022-12-31"
+    assert info["report_date"] == "2023-05-26"

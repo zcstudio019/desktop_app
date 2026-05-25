@@ -2,89 +2,135 @@ from __future__ import annotations
 
 from typing import Any
 
-from .normalizer import value_of
+
+def _field_value(item: dict[str, Any] | Any) -> Any:
+    if isinstance(item, dict):
+        return item.get("标准化数值")
+    return None
 
 
-def _amount(section: dict[str, Any], key: str) -> str:
-    value = value_of(section.get(key) or {})
-    return "-" if value is None else f"{value:,.2f}"
+def _money(item: dict[str, Any] | Any) -> str:
+    value = _field_value(item)
+    return "-" if value is None else f"{float(value):,.2f}"
+
+
+def _page(item: dict[str, Any] | Any) -> str:
+    value = item.get("来源页码") if isinstance(item, dict) else None
+    return "-" if value is None else str(value)
+
+
+def _confidence(item: dict[str, Any] | Any) -> str:
+    value = item.get("置信度") if isinstance(item, dict) else None
+    return "-" if value is None else f"{float(value):.2f}"
 
 
 def _ratio(value: Any) -> str:
     return "-" if value is None else f"{float(value):.2%}"
 
 
-def render_financial_report_markdown(data: dict[str, Any]) -> str:
-    info = data.get("company_info") or {}
-    balance = data.get("balance_sheet") or {}
-    income = data.get("income_statement") or {}
-    cashflow = data.get("cash_flow_statement") or {}
-    ratios = data.get("financial_ratios") or {}
-    risk = data.get("bank_credit_analysis") or {}
-    trends = data.get("trend_metrics") or []
+def _statement_table(lines: list[str], title: str, section: dict[str, Any], labels: list[str], amount_header: str) -> None:
+    lines.extend(["", f"### {title}", f"| 项目 | {amount_header} | 来源页码 | 置信度 |", "|---|---:|---:|---:|"])
+    for label in labels:
+        item = section.get(label) or {}
+        if _field_value(item) is not None:
+            lines.append(f"| {label} | {_money(item)} | {_page(item)} | {_confidence(item)} |")
+
+
+def render_financial_report_markdown(display_json: dict[str, Any]) -> str:
+    info = display_json.get("企业信息") or {}
+    balance = display_json.get("资产负债表") or {}
+    income = display_json.get("利润表") or {}
+    cashflow = display_json.get("现金流量表") or {}
+    ratios = display_json.get("财务指标") or {}
+    risk = display_json.get("银行授信分析") or {}
+    trends = display_json.get("趋势指标") or []
     lines = [
-        "# 财务报表授信分析报告",
+        "## 财务报表",
         "",
-        "## 1. 企业基本信息",
-        f"- 企业名称：{info.get('company_name') or '-'}",
-        f"- 报告期间：{info.get('report_period_start') or '-'} 至 {info.get('report_period_end') or '-'}",
-        f"- 会计准则：{info.get('accounting_standard') or '-'}；报表类型：{info.get('report_type') or '-'}；单位：元",
+        "- 资料类型：财务报表",
+        f"- 来源文件：{display_json.get('来源文件') or '-'}",
+        "- 原件状态：可查看",
+        "- 报告标题：财务报表授信分析报告",
+        f"- 文档类型：{display_json.get('文档类型') or '财务报表'}",
         "",
-        "## 2. 三张表摘要",
-        "| 项目 | 金额（元） |",
-        "| --- | ---: |",
-        f"| 资产总计 | {_amount(balance, 'total_assets')} |",
-        f"| 负债合计 | {_amount(balance, 'total_liabilities')} |",
-        f"| 所有者权益合计 | {_amount(balance, 'total_equity')} |",
-        f"| 营业收入 | {_amount(income, 'revenue')} |",
-        f"| 净利润 | {_amount(income, 'net_profit')} |",
-        f"| 经营活动现金流量净额 | {_amount(cashflow, 'net_operating_cash_flow')} |",
-        "",
-        "## 3. 银行授信核心指标表",
-        "| 指标 | 数值 |",
-        "| --- | ---: |",
-        f"| 资产负债率 | {_ratio(ratios.get('asset_liability_ratio'))} |",
-        f"| 流动比率 | {ratios.get('current_ratio') if ratios.get('current_ratio') is not None else '-'} |",
-        f"| 速动比率 | {ratios.get('quick_ratio') if ratios.get('quick_ratio') is not None else '-'} |",
-        f"| 毛利率 | {_ratio(ratios.get('gross_margin'))} |",
-        f"| 净利率 | {_ratio(ratios.get('net_margin'))} |",
-        f"| 经营现金流/收入 | {_ratio(ratios.get('operating_cash_flow_to_revenue'))} |",
-        "",
-        "## 4. 经营趋势分析",
+        "### 企业信息",
+        "| 字段 | 内容 |",
+        "|---|---|",
     ]
+    for label in [
+        "企业名称", "纳税人识别号", "会计准则", "报表类型", "所属期开始日期",
+        "所属期结束日期", "报送日期", "币种", "金额单位",
+    ]:
+        lines.append(f"| {label} | {info.get(label) or '-'} |")
+    _statement_table(
+        lines, "资产负债表摘要", balance,
+        ["货币资金", "应收账款", "预付款项", "其他应收款", "存货", "流动资产合计", "短期借款", "应付账款",
+         "流动负债合计", "负债合计", "所有者权益合计", "资产总计"],
+        "期末余额",
+    )
+    _statement_table(
+        lines, "利润表摘要", income,
+        ["营业收入", "营业成本", "税金及附加", "销售费用", "管理费用", "研发费用", "财务费用", "营业利润",
+         "利润总额", "所得税费用", "净利润"],
+        "本期金额",
+    )
+    _statement_table(
+        lines, "现金流量表摘要", cashflow,
+        ["销售商品、提供劳务收到的现金", "经营活动现金流入小计", "购买商品、接受劳务支付的现金",
+         "经营活动现金流出小计", "经营活动产生的现金流量净额", "投资活动产生的现金流量净额",
+         "筹资活动产生的现金流量净额", "期末现金及现金等价物余额"],
+        "本期金额",
+    )
+    lines.extend([
+        "",
+        "### 银行授信核心指标表",
+        "| 指标 | 数值 |",
+        "|---|---:|",
+        f"| 资产负债率 | {_ratio(ratios.get('资产负债率'))} |",
+        f"| 流动比率 | {ratios.get('流动比率') if ratios.get('流动比率') is not None else '-'} |",
+        f"| 速动比率 | {ratios.get('速动比率') if ratios.get('速动比率') is not None else '-'} |",
+        f"| 毛利率 | {_ratio(ratios.get('毛利率'))} |",
+        f"| 净利率 | {_ratio(ratios.get('净利率'))} |",
+        f"| 经营现金流收入比 | {_ratio(ratios.get('经营现金流收入比'))} |",
+        "",
+        "### 经营趋势分析",
+    ])
     if trends:
-        lines.extend(["| 期间 | 营业收入（元） | 净利润（元） | 经营现金流（元） |", "| --- | ---: | ---: | ---: |"])
+        lines.extend(["| 所属期间 | 营业收入（元） | 净利润（元） | 经营现金流（元） |", "|---|---:|---:|---:|"])
         for item in trends:
-            lines.append(f"| {item.get('period') or '-'} | {item.get('revenue', 0):,.2f} | {item.get('net_profit', 0):,.2f} | {item.get('net_operating_cash_flow', 0):,.2f} |")
+            lines.append(
+                f"| {item.get('所属期间') or '-'} | {float(item.get('营业收入') or 0):,.2f} | "
+                f"{float(item.get('净利润') or 0):,.2f} | {float(item.get('经营活动产生的现金流量净额') or 0):,.2f} |"
+            )
     else:
         lines.append("- 当前仅解析本期报表，待补充历史期间后生成趋势比较。")
     lines.extend([
         "",
-        "## 5. 偿债能力分析",
-        f"- 资产负债率：{_ratio(ratios.get('asset_liability_ratio'))}；现金比率：{_ratio(ratios.get('cash_ratio'))}。",
+        "### 偿债能力分析",
+        f"- 资产负债率：{_ratio(ratios.get('资产负债率'))}；现金比率：{_ratio(ratios.get('现金比率'))}。",
         "",
-        "## 6. 盈利能力分析",
-        f"- 毛利率：{_ratio(ratios.get('gross_margin'))}；净利率：{_ratio(ratios.get('net_margin'))}。",
+        "### 盈利能力分析",
+        f"- 毛利率：{_ratio(ratios.get('毛利率'))}；净利率：{_ratio(ratios.get('净利率'))}。",
         "",
-        "## 7. 现金流质量分析",
-        f"- 经营现金流/收入：{_ratio(ratios.get('operating_cash_flow_to_revenue'))}；筹资依赖度：{_ratio(ratios.get('financing_dependence'))}。",
+        "### 现金流质量分析",
+        f"- 经营现金流收入比：{_ratio(ratios.get('经营现金流收入比'))}；筹资依赖度：{_ratio(ratios.get('筹资依赖度'))}。",
         "",
-        "## 8. 异常科目分析",
+        "### 异常科目分析",
     ])
-    findings = risk.get("risk_findings") or []
-    lines.extend([f"- [{item.get('risk_level')}] {item.get('title')}：{item.get('description')}" for item in findings] or ["- 未识别到需单列提示的异常财务项目。"])
-    lines.extend(["", "## 9. 银行贷款审核关注点"])
-    lines.extend([f"- {item}" for item in risk.get("key_bank_questions") or []] or ["- 按常规贷前调查核实收入、负债与现金流真实性。"])
-    lines.extend(["", "## 10. 缺失材料清单"])
-    lines.extend([f"- {item.get('material')}：{item.get('reason')}" for item in risk.get("missing_materials") or []])
+    findings = risk.get("风险发现") or []
+    lines.extend([f"- [{item.get('风险等级')}] {item.get('风险标题')}：{item.get('风险说明')}" for item in findings] or ["- 未识别到需单列提示的异常财务项目。"])
+    lines.extend(["", "### 银行贷款审核关注点"])
+    lines.extend([f"- {item}" for item in risk.get("银行审核关注点") or []] or ["- 按常规贷前调查核实收入、负债与现金流真实性。"])
+    lines.extend(["", "### 缺失材料清单"])
+    lines.extend([f"- {item.get('材料名称')}：{item.get('补充原因')}" for item in risk.get("缺失材料") or []])
     lines.extend([
         "",
-        "## 11. 综合授信建议",
-        f"- 风险等级：{risk.get('overall_risk_level') or 'unknown'}",
-        f"- 授信观点：{risk.get('credit_view') or '-'}",
-        f"- 建议策略：{risk.get('suggested_credit_strategy') or '-'}",
+        "### 综合授信建议",
+        f"- 风险等级：{risk.get('综合风险等级') or '未知'}",
+        f"- 授信观点：{risk.get('授信观点') or '-'}",
+        f"- 建议策略：{risk.get('建议授信策略') or '-'}",
     ])
-    warnings = data.get("validation_warnings") or []
+    warnings = display_json.get("数据校验提示") or []
     if warnings:
-        lines.extend(["", "## 数据校验提示"] + [f"- {warning}" for warning in warnings])
+        lines.extend(["", "### 数据校验提示"] + [f"- {warning}" for warning in warnings])
     return "\n".join(lines)

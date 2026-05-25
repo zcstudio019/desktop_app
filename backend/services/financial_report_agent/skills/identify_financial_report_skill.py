@@ -15,6 +15,10 @@ def _first(patterns: tuple[str, ...], text: str) -> str:
     return ""
 
 
+def _normalize_date(value: str) -> str:
+    return str(value or "").replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-").replace(".", "-")
+
+
 def identify_financial_report(text: str, filename: str = "", metadata: dict[str, Any] | None = None) -> CompanyInfo:
     source = f"{filename}\n{text}"
     unit, _ = detect_unit(source)
@@ -32,20 +36,28 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
         report_type = "annual"
     else:
         report_type = "unknown"
-    report_date = _first(
+    report_date = _normalize_date(_first(
         (
-            r"(?:报表日期|报送日期|报告日期)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
-            r"((?:20\d{2})年(?:12|0?3|0?6|0?9)月(?:31|30)日)",
+            r"(?:报送日期|报告日期|申报日期)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
         ),
         source,
+    ))
+    period_match = re.search(
+        r"(?:税款所属期起止|税款所属期|税款所属时间)\s*[:：]?\s*"
+        r"((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)\s*(?:至|到|[-~—－])\s*"
+        r"((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
+        source,
     )
-    end = report_date.replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-").replace(".", "-")
-    year_match = re.search(r"(20\d{2})", filename or source)
-    year = year_match.group(1) if year_match else (end[:4] if end else "")
-    if report_type == "annual" and year:
-        start, end = f"{year}-01-01", end or f"{year}-12-31"
+    if period_match:
+        start = _normalize_date(period_match.group(1))
+        end = _normalize_date(period_match.group(2))
     else:
         start = ""
+        end = ""
+    year_match = re.search(r"(20\d{2})", filename or source)
+    year = year_match.group(1) if year_match else (report_date[:4] if report_date else "")
+    if report_type == "annual" and year and not start:
+        start, end = f"{year}-01-01", f"{year}-12-31"
     return CompanyInfo(
         accounting_standard=standard,
         report_type=report_type,
@@ -53,7 +65,7 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
         report_period_end=end,
         company_name=_first((r"(?:企业名称|公司名称|纳税人名称)\s*[:：]\s*([^\n\r]+)",), text),
         taxpayer_id=_first((r"(?:纳税人识别号|统一社会信用代码)\s*[:：]\s*([0-9A-Z]{15,20})",), text),
-        report_date=end,
+        report_date=report_date,
         currency="CNY",
         unit=unit,
     )
