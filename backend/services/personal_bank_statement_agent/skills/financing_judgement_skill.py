@@ -25,6 +25,7 @@ def build_financing_judgement(
     raw_income = float(income_verification.get("raw_total_income") or summary.get("raw_total_income") or 0)
     verified = float(income_verification.get("verified_income") or summary.get("verified_income") or 0)
     confirmed_salary = float(income_verification.get("confirmed_salary_income") or income_verification.get("verified_salary_income") or summary.get("salary_income") or 0)
+    manual_confirmed_salary = float(income_verification.get("manual_confirmed_salary_income") or summary.get("manual_confirmed_salary_income") or 0)
     suspected_salary = float(income_verification.get("suspected_salary_income") or summary.get("suspected_salary_income") or 0)
     salary_months = int(income_verification.get("salary_months") or summary.get("salary_months") or 0)
     salary_continuity = str(income_verification.get("salary_continuity_level") or "none")
@@ -45,7 +46,9 @@ def build_financing_judgement(
         missing.extend(["结合个人征信核对贷款余额、月供和还款记录", "说明每月汇款汇入的真实资金来源"])
     missing = list(dict.fromkeys(missing))
 
-    if confirmed_salary > 0 and salary_months >= 6 and salary_continuity == "strong" and salary_confidence >= 0.75 and not is_repayment_flow:
+    if manual_confirmed_salary > 0 and not is_repayment_flow:
+        income_quality = "中"
+    elif confirmed_salary > 0 and salary_months >= 6 and salary_continuity == "strong" and salary_confidence >= 0.75 and not is_repayment_flow:
         income_quality = "强"
     elif suspected_salary > 0 and confirmed_salary <= 0 and salary_months >= 3:
         income_quality = "中/待核实"
@@ -78,7 +81,9 @@ def build_financing_judgement(
     else:
         suspicious_flow_risk = "低"
 
-    if suspected_salary > 0 and confirmed_salary <= 0 and salary_months >= 3 and not is_repayment_flow:
+    if manual_confirmed_salary > 0 and not is_repayment_flow:
+        recommended_usage = "可作为辅助收入证明，已人工确认"
+    elif suspected_salary > 0 and confirmed_salary <= 0 and salary_months >= 3 and not is_repayment_flow:
         recommended_usage = "可作为辅助收入证明，需人工核实"
     elif is_repayment_flow:
         recommended_usage = "可作为还款账户流水"
@@ -97,6 +102,8 @@ def build_financing_judgement(
             "支出中贷款还款/贷款回收占比较高，账户沉淀弱。该流水可证明客户存在持续还款行为，"
             "但不能直接证明其稳定收入来源，不建议单独作为主收入证明。"
         )
+    elif manual_confirmed_salary > 0:
+        final_summary = "该流水存在代发类疑似工资收入，工资摘要未直接写明工资，但相关收入已经人工确认并纳入可采信工资。建议结合劳动合同、社保或单位收入证明留档核验。"
     elif verified > 0:
         final_summary = "该流水识别到明确工资或经营收入，可作为收入证明材料之一，仍建议结合征信、纳税、经营收款账户等资料交叉验证。"
     elif suspected_salary > 0:

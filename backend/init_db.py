@@ -139,6 +139,7 @@ def _repair_mysql_charset_and_text_columns(connection) -> None:
             "personal_counterparty_names_json",
             "manual_overrides_json",
         ],
+        "income_confirmation_overrides": ["months_json", "transaction_ids_json", "reason"],
         "customer_document_chunks": ["chunk_text", "embedding_json", "metadata_json"],
         "risk_reports": ["risk_json", "report_markdown"],
         "customer_risk_reports": ["report_json", "report_markdown"],

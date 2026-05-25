@@ -50,6 +50,10 @@ from backend.services.personal_bank_statement_agent.customer_flow_aggregator imp
     PERSONAL_FLOW_TYPES,
     aggregate_customer_personal_flows,
 )
+from backend.services.personal_bank_statement_agent.income_confirmation_service import (
+    list_income_confirmations,
+    save_income_confirmation,
+)
 from backend.services.enterprise_bank_statement_agent.flow_rules import (
     get_enterprise_flow_rules,
     save_enterprise_flow_rules,
@@ -99,6 +103,17 @@ class EnterpriseFlowTransactionReviewPayload(BaseModel):
     exclude_from_operating: bool = False
     manual_reason: str = ""
     reviewed_by: str = ""
+
+
+class PersonalFlowIncomeConfirmationPayload(BaseModel):
+    income_type: str = "suspected_salary"
+    target_type: str = "confirmed_salary"
+    counterparty_name: str
+    amount: float = 0
+    months: list[str] = []
+    transaction_ids: list[str] = []
+    manual_status: str = "confirmed"
+    reason: str = ""
 
 
 def _model_payload(model: BaseModel) -> dict[str, Any]:
@@ -1865,7 +1880,10 @@ async def get_customer_personal_flow_summary(
                 enriched_extractions.append(enriched)
             extractions = enriched_extractions
         extractions = [item for item in extractions if item.get("is_active") is not False]
-        aggregated = aggregate_customer_personal_flows(extractions)
+        aggregated = aggregate_customer_personal_flows(
+            extractions,
+            income_confirmations=list_income_confirmations(customer_id),
+        )
         if not debug:
             aggregated.pop("debug", None)
     except Exception as exc:
@@ -1888,6 +1906,68 @@ def _ensure_flow_rule_editor(current_user: dict) -> None:
     role = str(current_user.get("role") or "")
     if role not in {"admin", "operator"}:
         raise HTTPException(status_code=403, detail="当前账号无权编辑企业流水经营性口径")
+
+
+def _ensure_personal_flow_income_editor(current_user: dict) -> None:
+    role = str(current_user.get("role") or "")
+    if role not in {"admin", "operator"}:
+        raise HTTPException(status_code=403, detail="当前账号无权确认或驳回个人流水收入分类")
+
+
+@router.post("/{customer_id}/personal-flow/{document_id}/income-confirmations")
+async def save_customer_personal_flow_income_confirmation(
+    customer_id: str,
+    document_id: str,
+    payload: PersonalFlowIncomeConfirmationPayload,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Persist a reviewer decision for one suspected salary source."""
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+    _ensure_personal_flow_income_editor(current_user)
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录")
+    await _ensure_local_customer_access(customer, current_user)
+    document = await storage_service.get_document(document_id)
+    if not document or str(document.get("customer_id") or "") != customer_id:
+        raise HTTPException(status_code=404, detail="未找到该个人流水资料")
+    document_type = str(document.get("file_type") or document.get("document_type") or "")
+    if document_type not in PERSONAL_FLOW_TYPES:
+        raise HTTPException(status_code=400, detail="仅个人流水资料支持收入人工确认")
+
+    username = str(current_user.get("username") or "")
+    try:
+        saved = save_income_confirmation(
+            customer_id,
+            document_id,
+            _model_payload(payload),
+            confirmed_by=username,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    add_activity(
+        "personal_flow_income_confirmation",
+        customer=customer.get("name") or "",
+        customer_id=customer_id,
+        username=username,
+        document_type="personal_flow",
+        title="个人流水疑似工资人工确认",
+        description=f"{saved.get('manual_status')}：{saved.get('counterparty_name')}",
+        metadata={
+            "document_id": document_id,
+            "income_type": saved.get("income_type"),
+            "target_type": saved.get("target_type"),
+            "manual_status": saved.get("manual_status"),
+            "amount": saved.get("amount"),
+            "reason": saved.get("reason"),
+        },
+    )
+    try:
+        await profile_sync_service.handle_document_saved(storage_service, customer_id)
+    except Exception:
+        logger.exception("[PersonalFlow][INCOME_CONFIRMATION] profile refresh failed customer_id=%s", customer_id)
+    return {"success": True, "item": saved}
 
 
 @router.get("/{customer_id}/enterprise-flow/rules")

@@ -902,6 +902,35 @@ export async function getCustomerPersonalFlowSummary(
 // Alias kept for feature-specific imports.
 export const getPersonalFlowSummary = getCustomerPersonalFlowSummary;
 
+export type PersonalFlowIncomeConfirmationPayload = {
+  income_type?: 'suspected_salary';
+  target_type?: 'confirmed_salary';
+  counterparty_name: string;
+  amount: number;
+  months?: string[];
+  transaction_ids?: string[];
+  manual_status: 'confirmed' | 'rejected' | 'pending';
+  reason?: string;
+};
+
+export async function savePersonalFlowIncomeConfirmation(
+  customerId: string,
+  documentId: string,
+  payload: PersonalFlowIncomeConfirmationPayload,
+  signal?: AbortSignal
+): Promise<{ success: boolean; item: Record<string, unknown> }> {
+  const response = await fetch(
+    `${API_BASE}/api/customers/${encodeURIComponent(customerId)}/personal-flow/${encodeURIComponent(documentId)}/income-confirmations`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(payload),
+      signal,
+    }
+  );
+  return handleResponse<{ success: boolean; item: Record<string, unknown> }>(response);
+}
+
 export async function getEnterpriseFlowRules(
   customerId: string,
   signal?: AbortSignal

@@ -30,7 +30,8 @@ def detect_risk_signals(
     verified_income = float(summary.get("verified_income") or income_analysis.get("verified_income") or 0)
     unknown_inflow = float(summary.get("unknown_inflow") or income_analysis.get("unknown_inflow") or 0)
     stable = float(summary.get("stable_income") or income_analysis.get("stable_income") or 0)
-    confirmed_salary = float(income_analysis.get("confirmed_salary_income") or income_analysis.get("verified_salary_income") or summary.get("salary_income") or 0)
+    confirmed_salary = float(income_analysis.get("confirmed_salary_income") or 0)
+    manual_confirmed_salary = float(income_analysis.get("manual_confirmed_salary_income") or summary.get("manual_confirmed_salary_income") or 0)
     suspected_salary = float(income_analysis.get("suspected_salary_income") or summary.get("suspected_salary_income") or 0)
     loan_repayment = float(summary.get("loan_repayment_expense") or expense_analysis.get("loan_repayment_expense") or 0)
     loan_ratio = float(expense_analysis.get("loan_repayment_ratio") or (loan_repayment / raw_expense if raw_expense else 0))
@@ -60,14 +61,14 @@ def detect_risk_signals(
             add("income_expense_highly_matched", "high", "收入与支出金额高度接近", f"收入支出匹配度 {matched:.1%}")
     if stable <= 0 and (unknown_inflow > 0 or loan_ratio >= 0.6):
         add("cannot_use_as_primary_income_proof", "high", "不建议作为主收入证明", "缺少明确工资/经营收入证据，且存在还款账户或来源不明汇入特征")
-    if confirmed_salary <= 0 and suspected_salary > 0:
+    if confirmed_salary <= 0 and manual_confirmed_salary <= 0 and suspected_salary > 0:
         source_names = []
         for tx in transactions:
             if (tx.get("salary_detection") or {}).get("salary_type") == "suspected_salary" and tx.get("counterparty_name"):
                 source_names.append(str(tx.get("counterparty_name")))
         source_text = "、".join(list(dict.fromkeys(source_names))[:3]) or "疑似单位付款方"
         add("salary_suspected_only", "medium", "存在疑似工资收入，但未识别到明确工资摘要", f"摘要为代发类款项，付款方为{source_text}，连续多月出现")
-    elif confirmed_salary <= 0:
+    elif confirmed_salary <= 0 and manual_confirmed_salary <= 0:
         add("salary_missing", "medium", "未识别到明确工资收入", "confirmed_salary_income 为 0")
     if confirmed_salary > 0 and income_analysis.get("salary_continuity_level") in {"none", "weak"}:
         add("salary_unstable", "medium", "工资金额或发放周期稳定性不足", f"工资连续性：{income_analysis.get('salary_continuity_level') or 'unknown'}")

@@ -58,6 +58,9 @@ def render_personal_bank_statement_markdown(data: dict[str, Any]) -> str:
         "## 工资收入识别",
         f"- 明确工资收入：{_money(income.get('confirmed_salary_income') or income.get('verified_salary_income'))}",
         f"- 疑似工资收入：{_money(income.get('suspected_salary_income'))}",
+        f"- 已人工确认工资收入：{_money(income.get('manual_confirmed_salary_income'))}",
+        f"- 人工驳回工资收入：{_money(income.get('manual_rejected_salary_income'))}",
+        f"- 可采信工资收入：{_money(income.get('verified_salary_income'))}",
         f"- 低置信疑似工资收入：{_money(income.get('low_confidence_suspected_salary_income') or income.get('suspected_salary_income_low_confidence'))}",
         f"- 工资收入笔数：{income.get('salary_income_count') or 0}",
         f"- 疑似工资笔数：{income.get('suspected_salary_count') or 0}",
@@ -71,10 +74,12 @@ def render_personal_bank_statement_markdown(data: dict[str, Any]) -> str:
     salary_sources = income.get("salary_sources") or []
     if salary_sources:
         for source in salary_sources[:5]:
+            manual_status = str(source.get("manual_status") or "")
+            manual_label = {"confirmed": "，人工已确认", "rejected": "，人工已驳回", "pending": "，待人工复核"}.get(manual_status, "")
             lines.append(
                 f"  - {source.get('counterparty_name') or '未知付款方'}："
                 f"{_money(source.get('amount'))}，{source.get('count') or 0} 笔，"
-                f"{source.get('salary_type') or '-'}"
+                f"{source.get('salary_type') or '-'}{manual_label}"
             )
     else:
         lines.append("  - 暂无")
@@ -87,6 +92,20 @@ def render_personal_bank_statement_markdown(data: dict[str, Any]) -> str:
             lines.append(f"  - {note}")
     else:
         lines.append("  - 暂无")
+    confirmed_sources = [
+        source for source in salary_sources
+        if source.get("manual_status") in {"confirmed", "rejected"}
+    ]
+    if confirmed_sources:
+        lines.append("- 人工确认记录：")
+        for source in confirmed_sources[:5]:
+            status = "确认采信为工资" if source.get("manual_status") == "confirmed" else "驳回为非工资"
+            lines.append(
+                f"  - {source.get('counterparty_name') or '未知付款方'}：{status}；"
+                f"说明：{source.get('confirm_reason') or '-'}；"
+                f"确认人：{source.get('confirmed_by') or '-'}；"
+                f"确认时间：{source.get('confirmed_at') or '-'}"
+            )
     lines += [
         "",
         "## 支出与还款分析",

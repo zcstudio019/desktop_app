@@ -57,6 +57,8 @@ class IncomeVerification(BaseModel):
     suspected_salary_income: float = 0.0
     low_confidence_suspected_salary_income: float = 0.0
     suspected_salary_income_low_confidence: float = 0.0
+    manual_confirmed_salary_income: float = 0.0
+    manual_rejected_salary_income: float = 0.0
     verified_salary_income: float = 0.0
     verified_operating_income: float = 0.0
     verified_other_stable_income: float = 0.0

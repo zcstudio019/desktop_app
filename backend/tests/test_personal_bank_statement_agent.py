@@ -713,3 +713,91 @@ def test_personal_flow_upload_postprocess_writes_deterministic_raw_summary() -> 
     assert extracted["income_verification"]["suspected_salary_income"] == 15986.08
     assert extracted["summary_warnings"][0]["code"] == "summary_detail_mismatch"
     assert "15,986.08" in content["markdown_summary"]
+
+
+def test_manual_confirmed_suspected_salary_is_added_to_verified_income_once() -> None:
+    salary_dates = [
+        "2024-06-10", "2024-07-10", "2024-08-10", "2024-09-10", "2024-10-10",
+        "2024-11-10", "2024-12-10", "2025-01-10", "2025-02-10", "2025-03-10",
+        "2025-04-10", "2025-05-10", "2025-06-10",
+    ]
+    transactions = [
+        {
+            "交易日期": date,
+            "交易金额": str(amount),
+            "交易摘要": "代发款项",
+            "对手信息": "上海中兴软件有限责任公司",
+        }
+        for date, amount in zip(salary_dates, [40371.65] * 12 + [40371.69])
+    ]
+    extraction = {
+        "doc_id": "salary-doc",
+        "extraction_type": "personal_flow",
+        "file_name": "salary.pdf",
+        "extracted_data": {"extracted_json": {"交易明细列表": transactions}},
+    }
+    before = aggregate_customer_personal_flows([extraction])
+    income_before = before["income_verification"]
+    assert income_before["suspected_salary_income"] == 524831.49
+    assert income_before["verified_income"] == 0
+
+    confirmation = {
+        "document_id": "salary-doc",
+        "counterparty_name": "上海中兴软件有限责任公司",
+        "income_type": "suspected_salary",
+        "target_type": "confirmed_salary",
+        "manual_status": "confirmed",
+        "amount": 1,
+        "reason": "任职单位人工核验",
+        "confirmed_by": "zhoucheng",
+        "confirmed_at": "2026-05-25T10:00:00",
+    }
+    confirmed = aggregate_customer_personal_flows(
+        [extraction],
+        income_confirmations=[confirmation, confirmation],
+    )
+    income_confirmed = confirmed["income_verification"]
+    assert income_confirmed["suspected_salary_income"] == 524831.49
+    assert income_confirmed["manual_confirmed_salary_income"] == 524831.49
+    assert income_confirmed["verified_salary_income"] == 524831.49
+    assert income_confirmed["verified_income"] == 524831.49
+    assert income_confirmed["avg_monthly_verified_income"] == 40371.65
+    assert income_confirmed["salary_sources"][0]["manual_status"] == "confirmed"
+    codes = {item["code"] for item in confirmed["risk_signals"]}
+    assert "salary_suspected_only" not in codes
+    assert "salary_missing" not in codes
+    assert confirmed["financing_judgement"]["recommended_usage"] == "可作为辅助收入证明，已人工确认"
+
+
+def test_manual_rejected_suspected_salary_does_not_become_verified_income() -> None:
+    extraction = {
+        "doc_id": "salary-doc-rejected",
+        "extraction_type": "personal_flow",
+        "file_name": "salary-rejected.pdf",
+        "extracted_data": {
+            "extracted_json": {
+                "交易明细列表": [
+                    {
+                        "交易日期": "2025-01-10",
+                        "交易金额": "10000",
+                        "交易摘要": "代发款项",
+                        "对手信息": "上海中兴软件有限责任公司",
+                    }
+                ]
+            }
+        },
+    }
+    rejected = aggregate_customer_personal_flows(
+        [extraction],
+        income_confirmations=[{
+            "document_id": "salary-doc-rejected",
+            "counterparty_name": "上海中兴软件有限责任公司",
+            "income_type": "suspected_salary",
+            "target_type": "confirmed_salary",
+            "manual_status": "rejected",
+        }],
+    )
+    income = rejected["income_verification"]
+    assert income["manual_rejected_salary_income"] == 10000
+    assert income["verified_salary_income"] == 0
+    assert income["verified_income"] == 0

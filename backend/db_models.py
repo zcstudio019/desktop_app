@@ -86,6 +86,30 @@ class CustomerFlowRule(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
+class IncomeConfirmationOverride(Base):
+    __tablename__ = "income_confirmation_overrides"
+    __table_args__ = (
+        UniqueConstraint("document_id", "counterparty_name", "income_type", name="uq_income_confirmation_source"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(String(64), nullable=False, index=True)
+    document_id = Column(String(64), nullable=False, index=True)
+    source_type = Column(String(50), nullable=False, default="personal_flow")
+    income_type = Column(String(50), nullable=False, default="suspected_salary")
+    target_type = Column(String(50), nullable=False, default="confirmed_salary")
+    counterparty_name = Column(String(255), nullable=False)
+    amount = Column(Float, default=0.0)
+    months_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    transaction_ids_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    manual_status = Column(String(32), nullable=False, default="pending")
+    reason = Column(Text().with_variant(LONGTEXT(), "mysql"), default="")
+    confirmed_by = Column(String(128), default="")
+    confirmed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class CustomerProfile(Base):
     __tablename__ = "customer_profiles"
 

@@ -14,6 +14,7 @@ from backend.services.personal_bank_statement_agent.customer_flow_aggregator imp
     PERSONAL_FLOW_TYPES,
     aggregate_customer_personal_flows,
 )
+from backend.services.personal_bank_statement_agent.income_confirmation_service import list_income_confirmations
 from backend.services.personal_bank_statement_agent.markdown_renderer import render_personal_bank_statement_markdown
 from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator import (
     ENTERPRISE_FLOW_TYPES,
@@ -2516,7 +2517,10 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 if item.get('is_active') is not False:
                     enriched_personal_extractions.append(item)
 
-            aggregated_personal_flow = aggregate_customer_personal_flows(enriched_personal_extractions)
+            aggregated_personal_flow = aggregate_customer_personal_flows(
+                enriched_personal_extractions,
+                income_confirmations=list_income_confirmations(customer_id),
+            )
             if aggregated_personal_flow.get('source_document_count'):
                 for source in aggregated_personal_flow.get('source_files') or []:
                     source_documents.append({

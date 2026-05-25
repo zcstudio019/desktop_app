@@ -4930,6 +4930,8 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         markdownText={renderedDraft || draft}
                         loading={personalFlowPreviewLoading && !personalFlowSummary && !selectedPersonalFlowDoc && !markdownHasPersonalFlow}
                         error={personalFlowPreviewError}
+                        canReviewIncome={currentAuthRole === 'admin' || currentAuthRole === 'operator'}
+                        onSummaryRefresh={() => loadPersonalFlowPreview(activeCustomerId || selectedCustomerId)}
                       />
                     </section>
                     {hasEnterpriseStructuredData ? (

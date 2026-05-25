@@ -99,7 +99,11 @@ def _merge_top(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(merged.values(), key=lambda item: float(item.get("amount") or 0), reverse=True)[:10]
 
 
-def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate_customer_personal_flows(
+    extractions: list[dict[str, Any]],
+    *,
+    income_confirmations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     before_dedupe = len(extractions)
     extractions = _dedupe_extractions(extractions)
     logger.info("[PersonalFlow][DEDUP] before=%s after=%s", before_dedupe, len(extractions))
@@ -116,7 +120,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     top_expense: list[dict[str, Any]] = []
     sums = defaultdict(float)
     salary_months: set[str] = set()
-    salary_sources: dict[str, dict[str, Any]] = defaultdict(lambda: {"counterparty_name": "", "amount": 0.0, "count": 0, "months": set(), "salary_type": ""})
+    salary_sources: dict[str, dict[str, Any]] = defaultdict(lambda: {"counterparty_name": "", "amount": 0.0, "count": 0, "months": set(), "salary_type": "", "document_ids": set()})
     salary_notes: list[str] = []
     salary_confidences: list[float] = []
     fast_matches: list[dict[str, Any]] = []
@@ -124,6 +128,14 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     payroll_like_transactions: list[dict[str, Any]] = []
     recovered_counterparties: list[dict[str, Any]] = []
     ai_summary_sources: list[dict[str, Any]] = []
+    confirmation_index = {
+        (
+            str(item.get("document_id") or ""),
+            str(item.get("counterparty_name") or "").strip(),
+            str(item.get("income_type") or "suspected_salary"),
+        ): item
+        for item in (income_confirmations or [])
+    }
 
     for extraction in extractions:
         extraction_type = str(extraction.get("extraction_type") or extraction.get("document_type") or "")
@@ -226,6 +238,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         sums["low_confidence_suspected_salary_income"] += low_confidence_salary
         sums["suspected_salary_income_low_confidence"] += low_confidence_salary
         sums["operating_income"] += float(income.get("verified_operating_income") or summary.get("operating_income") or 0)
+        sums["verified_other_stable_income"] += float(income.get("verified_other_stable_income") or 0)
         sums["stable_income"] += float(income.get("stable_income") or summary.get("stable_income") or 0)
         sums["verified_income"] += float(income.get("verified_income") or summary.get("verified_income") or 0)
         sums["unknown_inflow"] += float(income.get("unknown_inflow") or summary.get("unknown_inflow") or 0)
@@ -258,20 +271,54 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         if income.get("salary_confidence"):
             salary_confidences.append(float(income.get("salary_confidence") or 0))
         salary_notes.extend(str(item) for item in _list(income.get("salary_detection_notes")) if item)
+        annotated_source_salary_sources: list[dict[str, Any]] = []
+        source_manual_confirmed_salary_income = 0.0
+        source_manual_rejected_salary_income = 0.0
         for source in _list(income.get("salary_sources")):
             source = _dict(source)
             name = str(source.get("counterparty_name") or "").strip()
             if not name:
                 continue
+            enriched_source = dict(source)
+            enriched_source["document_id"] = doc_id
+            confirmation = confirmation_index.get((doc_id, name, "suspected_salary"))
+            if confirmation and source.get("salary_type") == "suspected_salary":
+                status = str(confirmation.get("manual_status") or "pending")
+                enriched_source.update(
+                    {
+                        "manual_status": status,
+                        "manual_confirmed_as": confirmation.get("target_type") or "confirmed_salary",
+                        "confirmed_by": confirmation.get("confirmed_by") or "",
+                        "confirmed_at": confirmation.get("confirmed_at") or "",
+                        "confirm_reason": confirmation.get("reason") or "",
+                    }
+                )
+                source_amount = float(source.get("amount") or 0)
+                if status == "confirmed":
+                    sums["manual_confirmed_salary_income"] += source_amount
+                    source_manual_confirmed_salary_income += source_amount
+                elif status == "rejected":
+                    sums["manual_rejected_salary_income"] += source_amount
+                    source_manual_rejected_salary_income += source_amount
+            annotated_source_salary_sources.append(enriched_source)
             target = salary_sources[name]
             target["counterparty_name"] = name
             target["amount"] = round2(float(target.get("amount") or 0) + float(source.get("amount") or 0))
             target["count"] = int(target.get("count") or 0) + int(source.get("count") or 0)
             target["salary_type"] = source.get("salary_type") or target.get("salary_type") or ""
+            target["document_ids"].add(doc_id)
+            if enriched_source.get("manual_status"):
+                target.update({key: enriched_source.get(key) for key in ("manual_status", "manual_confirmed_as", "confirmed_by", "confirmed_at", "confirm_reason")})
             for month in _list(source.get("months")):
                 if month:
                     target["months"].add(str(month))
                     salary_months.add(str(month))
+        source_files[-1]["salary_sources"] = annotated_source_salary_sources
+        source_files[-1]["manual_confirmed_salary_income"] = round2(source_manual_confirmed_salary_income)
+        source_files[-1]["manual_rejected_salary_income"] = round2(source_manual_rejected_salary_income)
+        source_files[-1]["verified_income"] = round2(
+            float(source_files[-1].get("verified_income") or 0) + source_manual_confirmed_salary_income
+        )
         for tx in detail_transactions:
             salary_type = (_dict(_dict(tx).get("salary_detection")).get("salary_type") or "")
             if salary_type in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"}:
@@ -307,19 +354,25 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     period_start = min(start_dates) if start_dates else ""
     period_end = max(end_dates) if end_dates else ""
     month_count = _months(period_start, period_end, len(monthly))
+    manual_confirmed_salary_income = round2(sums["manual_confirmed_salary_income"])
+    manual_rejected_salary_income = round2(sums["manual_rejected_salary_income"])
+    verified_salary_income = round2(sums["confirmed_salary_income"] + manual_confirmed_salary_income)
+    verified_income = round2(verified_salary_income + sums["operating_income"] + sums["verified_other_stable_income"])
     summary = {
         "account_count": len(accounts),
         "period_start": period_start,
         "period_end": period_end,
         "raw_total_income": round2(sums["raw_total_income"]),
         "raw_total_expense": round2(sums["raw_total_expense"]),
-        "salary_income": round2(sums["salary_income"]),
+        "salary_income": verified_salary_income,
         "confirmed_salary_income": round2(sums["confirmed_salary_income"]),
+        "manual_confirmed_salary_income": manual_confirmed_salary_income,
+        "manual_rejected_salary_income": manual_rejected_salary_income,
         "suspected_salary_income": round2(sums["suspected_salary_income"]),
         "low_confidence_suspected_salary_income": round2(sums["low_confidence_suspected_salary_income"]),
         "suspected_salary_income_low_confidence": round2(sums["suspected_salary_income_low_confidence"]),
         "operating_income": round2(sums["operating_income"]),
-        "stable_income": round2(sums["stable_income"]),
+        "stable_income": verified_income,
         "internal_transfer_income": round2(sums["internal_transfer_income"]),
         "self_transfer_income": round2(sums["self_transfer_income"]),
         "personal_transfer_income": round2(sums["personal_transfer_income"]),
@@ -332,17 +385,17 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "loan_inflow": round2(sums["loan_inflow"]),
         "net_operating_cash_flow": round2(sums["net_operating_cash_flow"]),
         "avg_monthly_income": round2(sums["raw_total_income"] / month_count),
-        "avg_monthly_stable_income": round2(sums["stable_income"] / month_count),
+        "avg_monthly_stable_income": round2(verified_income / month_count),
         "income_stability_score": 0.0,
         "repayment_capacity_score": 0.0,
-        "verified_income": round2(sums["verified_income"]),
+        "verified_income": verified_income,
         "unknown_inflow": round2(sums["unknown_inflow"]),
         "loan_repayment_expense": round2(sums["loan_repayment_expense"]),
         "customer_raw_total_income": round2(sums["raw_total_income"]),
-        "customer_verified_income": round2(sums["verified_income"]),
+        "customer_verified_income": verified_income,
         "customer_unknown_inflow": round2(sums["unknown_inflow"]),
         "customer_loan_repayment_expense": round2(sums["loan_repayment_expense"]),
-        "customer_avg_monthly_verified_income": round2(sums["verified_income"] / month_count),
+        "customer_avg_monthly_verified_income": round2(verified_income / month_count),
         "customer_repayment_pressure": round(sums["loan_repayment_expense"] / sums["raw_total_income"], 6) if sums["raw_total_income"] else 0.0,
     }
     deterministic_summary = {
@@ -358,12 +411,18 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     income_verification = {
         "raw_total_income": summary["raw_total_income"],
         "confirmed_salary_income": summary["confirmed_salary_income"],
+        "manual_confirmed_salary_income": summary["manual_confirmed_salary_income"],
+        "manual_rejected_salary_income": summary["manual_rejected_salary_income"],
         "suspected_salary_income": summary["suspected_salary_income"],
         "low_confidence_suspected_salary_income": summary["low_confidence_suspected_salary_income"],
         "suspected_salary_income_low_confidence": summary["suspected_salary_income_low_confidence"],
-        "verified_salary_income": summary["salary_income"],
+        "verified_salary_income": verified_salary_income,
         "verified_income": summary["verified_income"],
         "stable_income": summary["stable_income"],
+        "verified_operating_income": round2(sums["operating_income"]),
+        "verified_other_stable_income": round2(sums["verified_other_stable_income"]),
+        "avg_monthly_verified_income": round2(verified_income / month_count),
+        "avg_monthly_stable_income": round2(verified_income / month_count),
         "unknown_inflow": summary["unknown_inflow"],
         "internal_transfer_income": summary["internal_transfer_income"],
         "self_transfer_income": summary["self_transfer_income"],
@@ -382,8 +441,10 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "salary_confidence": round2(sum(salary_confidences) / len(salary_confidences)) if salary_confidences else 0,
         "salary_sources": [
             {
-                **{key: value for key, value in source.items() if key != "months"},
+                **{key: value for key, value in source.items() if key not in {"months", "document_ids"}},
                 "months": sorted(str(month) for month in source.get("months") or []),
+                "document_ids": sorted(str(doc_id) for doc_id in source.get("document_ids") or [] if doc_id),
+                "document_id": sorted(str(doc_id) for doc_id in source.get("document_ids") or [] if doc_id)[0] if source.get("document_ids") else "",
             }
             for source in sorted(salary_sources.values(), key=lambda item: float(item.get("amount") or 0), reverse=True)[:10]
         ],

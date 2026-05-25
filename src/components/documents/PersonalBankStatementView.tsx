@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   BadgeCheck,
   Banknote,
@@ -10,6 +10,7 @@ import {
   TrendingUp,
   WalletCards,
 } from 'lucide-react';
+import { savePersonalFlowIncomeConfirmation } from '../../services/api';
 
 type PersonalBankStatementViewProps = {
   data?: Record<string, unknown> | null;
@@ -21,6 +22,8 @@ type PersonalBankStatementViewProps = {
   loading?: boolean;
   error?: string | null;
   showHeader?: boolean;
+  canReviewIncome?: boolean;
+  onSummaryRefresh?: () => void | Promise<void>;
 };
 
 const EMPTY = '--';
@@ -218,6 +221,8 @@ type NormalizedPersonalFlowSummary = {
   avgMonthlyVerifiedIncome: number;
   confirmedSalaryIncome: number;
   suspectedSalaryIncome: number;
+  manualConfirmedSalaryIncome: number;
+  manualRejectedSalaryIncome: number;
   lowConfidenceSuspectedSalaryIncome: number;
   verifiedSalaryIncome: number;
   verifiedOperatingIncome: number;
@@ -441,9 +446,13 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     ? pickMeaningfulNumber(income.interest_income, derivedInterestIncome)
     : derivedInterestIncome;
   const suspectedSalaryIncome = pickMeaningfulNumber(income.suspected_salary_income, customerSummary.suspected_salary_income, derivedSuspectedSalary.amount);
+  const manualConfirmedSalaryIncome = pickNumber(income.manual_confirmed_salary_income, customerSummary.manual_confirmed_salary_income);
+  const manualRejectedSalaryIncome = pickNumber(income.manual_rejected_salary_income, customerSummary.manual_rejected_salary_income);
   const lowConfidenceSuspectedSalaryIncome = pickNumber(income.low_confidence_suspected_salary_income, income.suspected_salary_income_low_confidence, customerSummary.low_confidence_suspected_salary_income, customerSummary.suspected_salary_income_low_confidence);
   const existingSalaryNotes = asArray<string>(income.salary_detection_notes);
-  const salaryDetectionNotes = suspectedSalaryIncome > 0 && (
+  const salaryDetectionNotes = manualConfirmedSalaryIncome > 0
+    ? ['系统未识别到明确工资摘要，但发现代发类疑似工资收入。经人工确认后，已将该部分疑似工资并入可采信工资收入。']
+    : suspectedSalaryIncome > 0 && (
     !existingSalaryNotes.length ||
     (existingSalaryNotes.length === 1 && existingSalaryNotes[0] === '未识别到明确工资收入')
   )
@@ -467,6 +476,8 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     avgMonthlyVerifiedIncome: pickNumber(income.avg_monthly_verified_income, income.avg_monthly_stable_income, customerSummary.avg_monthly_verified_income, customerSummary.avg_monthly_stable_income, customerSummary.customer_avg_monthly_verified_income),
     confirmedSalaryIncome: pickNumber(income.confirmed_salary_income, income.verified_salary_income, customerSummary.salary_income),
     suspectedSalaryIncome,
+    manualConfirmedSalaryIncome,
+    manualRejectedSalaryIncome,
     lowConfidenceSuspectedSalaryIncome,
     verifiedSalaryIncome: pickNumber(income.verified_salary_income, income.salary_income, customerSummary.salary_income),
     verifiedOperatingIncome: pickNumber(income.verified_operating_income, income.operating_income, customerSummary.operating_income),
@@ -631,6 +642,10 @@ function MonthlyTrendTable({ items }: { items: Record<string, unknown>[] }) {
 
 const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (props) => {
   const { markdown, markdownText, loading = false, error = null, showHeader = false } = props;
+  const [selectedSalarySource, setSelectedSalarySource] = useState<Record<string, unknown> | null>(null);
+  const [confirmationReason, setConfirmationReason] = useState('');
+  const [submittingConfirmation, setSubmittingConfirmation] = useState<'confirmed' | 'rejected' | null>(null);
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
   if (loading) {
     return <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500">正在加载个人流水结构化分析...</div>;
   }
@@ -671,6 +686,53 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
   const flowType = String(normalized.nature.primary_type || 'unknown');
   const retentionLevel = String(normalized.cash.retention_level || 'unknown');
   const fastMatches = asArray<Record<string, unknown>>(normalized.fast.matches);
+  const canReviewIncome = props.canReviewIncome ?? (
+    typeof window !== 'undefined' && ['admin', 'operator'].includes(window.localStorage.getItem('auth_role') || '')
+  );
+  const documentSalarySources: Record<string, unknown>[] = normalized.documents.flatMap((document) => (
+    asArray<Record<string, unknown>>(document.salary_sources).map((source): Record<string, unknown> => ({
+      ...source,
+      document_id: source.document_id || document.document_id,
+    }))
+  ));
+  const reviewableSalarySources: Record<string, unknown>[] = (documentSalarySources.length ? documentSalarySources : normalizedSummary.salarySources)
+    .filter((source) => String(source.salary_type || '') === 'suspected_salary');
+
+  async function submitIncomeConfirmation(status: 'confirmed' | 'rejected') {
+    if (!selectedSalarySource || !props.customerId) return;
+    const documentId = String(
+      selectedSalarySource.document_id ||
+      asArray<string>(selectedSalarySource.document_ids)[0] ||
+      asRecord(props.selectedDoc).document_id ||
+      asRecord(props.selectedDoc).doc_id ||
+      ''
+    );
+    if (!documentId) {
+      setConfirmationError('缺少资料编号，暂时无法提交人工确认。');
+      return;
+    }
+    setSubmittingConfirmation(status);
+    setConfirmationError(null);
+    try {
+      await savePersonalFlowIncomeConfirmation(props.customerId, documentId, {
+        income_type: 'suspected_salary',
+        target_type: 'confirmed_salary',
+        counterparty_name: String(selectedSalarySource.counterparty_name || ''),
+        amount: toNumber(selectedSalarySource.amount),
+        months: asArray<string>(selectedSalarySource.months),
+        transaction_ids: asArray<string>(selectedSalarySource.transaction_ids),
+        manual_status: status,
+        reason: confirmationReason.trim(),
+      });
+      setSelectedSalarySource(null);
+      setConfirmationReason('');
+      await props.onSummaryRefresh?.();
+    } catch (submitError) {
+      setConfirmationError(submitError instanceof Error ? submitError.message : '人工确认提交失败，请稍后重试。');
+    } finally {
+      setSubmittingConfirmation(null);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -710,13 +772,15 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
           ['原始收入', money(normalizedSummary.totalIncome)],
           ['明确工资收入', money(normalizedSummary.confirmedSalaryIncome)],
           ['疑似工资收入', money(normalizedSummary.suspectedSalaryIncome)],
+          ['已人工确认工资', money(normalizedSummary.manualConfirmedSalaryIncome)],
+          ['人工驳回工资', money(normalizedSummary.manualRejectedSalaryIncome)],
           ['低置信疑似工资收入', money(normalizedSummary.lowConfidenceSuspectedSalaryIncome)],
           ['工资覆盖月份', display(normalizedSummary.salaryMonths)],
           ['工资月均金额', money(normalizedSummary.salaryAvgMonthlyAmount)],
           ['工资识别置信度', percent(normalizedSummary.salaryConfidence)],
           ['主要发薪单位', normalizedSummary.salarySources.length ? normalizedSummary.salarySources.slice(0, 3).map((item) => display(item.counterparty_name)).join('、') : EMPTY],
           ['工资识别说明', normalizedSummary.salaryDetectionNotes.length ? normalizedSummary.salaryDetectionNotes.join('；') : EMPTY],
-          ['工资收入', money(normalizedSummary.verifiedSalaryIncome)],
+          ['可采信工资收入', money(normalizedSummary.verifiedSalaryIncome)],
           ['经营收入', money(normalizedSummary.verifiedOperatingIncome)],
           ['其他稳定收入', money(normalizedSummary.verifiedOtherStableIncome)],
           ['来源不明汇入', money(unknownInflow)],
@@ -724,6 +788,37 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
           ['可采信收入', money(normalized.verifiedIncome)],
           ['月均可采信收入', money(normalizedSummary.avgMonthlyVerifiedIncome)],
         ]} />
+        {reviewableSalarySources.length ? (
+          <div className="mt-4 space-y-2">
+            {reviewableSalarySources.map((source, index) => {
+              const status = String(source.manual_status || '');
+              return (
+                <div key={`${String(source.document_id || '')}-${String(source.counterparty_name || '')}-${index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm">
+                  <div>
+                    <div className="font-medium text-slate-800">{display(source.counterparty_name)}</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      疑似工资 {money(source.amount)} · {display(source.count)} 笔 · {asArray<string>(source.months).length} 个月
+                    </div>
+                  </div>
+                  {status === 'confirmed' ? (
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">已人工确认</span>
+                  ) : status === 'rejected' ? (
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600">已驳回</span>
+                      {canReviewIncome ? <button type="button" className="rounded-md border border-violet-200 bg-white px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50" onClick={() => setSelectedSalarySource(source)}>重新复核</button> : null}
+                    </div>
+                  ) : canReviewIncome ? (
+                    <button type="button" className="rounded-md border border-violet-200 bg-white px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50" onClick={() => setSelectedSalarySource(source)}>
+                      确认采信为工资
+                    </button>
+                  ) : (
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs text-amber-700">待复核</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         {unknownRatio >= 0.5 ? <div className="mt-3"><AlertBox>存在大量来源不明汇入，不建议直接作为稳定收入采信。</AlertBox></div> : null}
       </Section>
 
@@ -831,6 +926,33 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
             {normalized.warnings.map((item, index) => <div key={`${item}-${index}`} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{item}</div>)}
           </div>
         </Section>
+      ) : null}
+      {selectedSalarySource ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+            <h4 className="text-base font-semibold text-slate-900">疑似工资收入人工复核</h4>
+            <InfoGrid rows={[
+              ['付款方', display(selectedSalarySource.counterparty_name)],
+              ['疑似工资金额', money(selectedSalarySource.amount)],
+              ['笔数', display(selectedSalarySource.count)],
+              ['覆盖月份', String(asArray<string>(selectedSalarySource.months).length)],
+            ]} />
+            <label className="mt-4 block text-xs font-medium text-slate-600">人工确认原因</label>
+            <textarea
+              value={confirmationReason}
+              onChange={(event) => setConfirmationReason(event.target.value)}
+              rows={3}
+              placeholder="例如：付款方为任职单位，连续多月发放，已核实为工资收入"
+              className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none focus:border-violet-400"
+            />
+            {confirmationError ? <div className="mt-3"><AlertBox tone="rose">{confirmationError}</AlertBox></div> : null}
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700" disabled={Boolean(submittingConfirmation)} onClick={() => { setSelectedSalarySource(null); setConfirmationError(null); }}>取消</button>
+              <button type="button" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700 disabled:opacity-50" disabled={Boolean(submittingConfirmation)} onClick={() => void submitIncomeConfirmation('rejected')}>{submittingConfirmation === 'rejected' ? '提交中...' : '驳回为非工资收入'}</button>
+              <button type="button" className="rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50" disabled={Boolean(submittingConfirmation)} onClick={() => void submitIncomeConfirmation('confirmed')}>{submittingConfirmation === 'confirmed' ? '提交中...' : '确认为工资收入'}</button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );
