@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook
 
@@ -11,8 +12,10 @@ if str(ROOT) not in sys.path:
 
 from backend.document_types import normalize_document_type_code, should_append_same_type_document
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
+from backend.services.document_extractor_service import build_structured_extraction
 from backend.services.personal_bank_statement_agent.customer_flow_aggregator import aggregate_customer_personal_flows
 from backend.services.personal_bank_statement_agent.deterministic_summary import build_deterministic_personal_flow_summary
+from backend.services.personal_bank_statement_agent.markdown_renderer import render_personal_bank_statement_markdown
 from backend.services.personal_bank_statement_agent.orchestrator import run_personal_bank_statement_agent
 
 
@@ -342,6 +345,9 @@ def test_deterministic_personal_flow_summary_is_repeatable() -> None:
     assert first["income_verification"]["suspected_salary_income"] == second["income_verification"]["suspected_salary_income"]
     assert first["income_verification"]["suspected_salary_income"] == 27675.64
     assert first["income_verification"]["salary_sources"][0]["counterparty_name"] == "上海中兴软件有限责任公司"
+    markdown = render_personal_bank_statement_markdown(first)
+    assert "27,675.64" in markdown
+    assert "1,000.00" in markdown
 
 
 def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
@@ -399,3 +405,21 @@ def test_duplicate_same_file_hash_only_latest_participates_in_personal_flow_aggr
     assert aggregated["source_document_count"] == 1
     assert aggregated["source_files"][0]["document_id"] == "new"
     assert aggregated["deterministic_summary"]["total_income"] == 200
+
+
+def test_personal_flow_upload_postprocess_writes_deterministic_raw_summary() -> None:
+    ai_payload = {
+        "收支规模汇总": {"总收入金额": 1, "总支出金额": -1},
+        "交易明细列表": [
+            {"交易日期": "2024-08-09", "交易金额": "15986.08", "交易摘要": "代发款项", "对手信息": "上海中兴软件有限责任公司"},
+            {"交易日期": "2024-08-10", "交易金额": "-1000", "交易摘要": "贷款还款"},
+        ],
+    }
+    with patch("backend.services.document_extractor_service.generic_extract", return_value=ai_payload):
+        content = build_structured_extraction("", "personal_flow", filename="招商流水.pdf")
+    extracted = content["extracted_json"]
+    assert extracted["raw_summary"]["total_income"] == 15986.08
+    assert extracted["raw_summary"]["total_expense"] == 1000
+    assert extracted["income_verification"]["suspected_salary_income"] == 15986.08
+    assert extracted["summary_warnings"][0]["code"] == "summary_detail_mismatch"
+    assert "15,986.08" in content["markdown_summary"]

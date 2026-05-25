@@ -38,6 +38,7 @@ UNKNOWN_INFLOW_KEYWORDS = ("汇款汇入", "汇入汇款", "转账收入", "跨�
 INTEREST_KEYWORDS = ("存款利息", "结息")
 LOAN_REPAYMENT_KEYWORDS = ("个贷还款", "贷款回收", "贷款还款", "贷款扣款", "按揭", "房贷", "车贷", "小贷", "消费贷", "网贷", "还本", "还息")
 QUICK_PAYMENT_KEYWORDS = ("快捷支付", "支付宝", "微信支付", "POS", "消费")
+FAST_OUT_EXPENSE_KEYWORDS = LOAN_REPAYMENT_KEYWORDS + QUICK_PAYMENT_KEYWORDS + ("转账", "转出", "汇款")
 OPERATING_INCOME_KEYWORDS = ("货款", "服务费", "销售款", "客户付款", "经营回款", "工程款", "材料款", "结算款")
 OTHER_STABLE_INCOME_KEYWORDS = ("租金", "分红", "固定收入")
 EXCLUDE_OPERATING_INCOME_KEYWORDS = ("借款", "贷款", "还款", "转存", "理财赎回", "赎回")
@@ -94,10 +95,12 @@ def _contains(text: str, keywords: tuple[str, ...]) -> bool:
 
 def collect_raw_transactions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     containers = [payload, _dict(payload.get("extracted_json")), _dict(payload.get("summary"))]
-    transactions: list[dict[str, Any]] = []
     for container in containers:
         for key in TRANSACTION_LIST_KEYS:
-            transactions.extend(_dict(item) for item in _list(container.get(key)))
+            transactions = [_dict(item) for item in _list(container.get(key))]
+            if transactions:
+                return transactions
+    transactions: list[dict[str, Any]] = []
     for account in _list(payload.get("accounts")):
         transactions.extend(_dict(item) for item in _list(_dict(account).get("transactions")))
     return transactions
@@ -158,24 +161,13 @@ def normalize_personal_flow_transaction(tx: dict[str, Any], index: int = 0) -> d
         "balance": normalize_amount(_first(tx, BALANCE_KEYS)),
         "counterparty_name": counterparty_name,
         "counterparty_account": normalize_text(tx.get("counterparty_account") or tx.get("对方账号") or ""),
+        "raw": _dict(tx.get("raw")) or dict(tx),
     }
     return normalized
 
 
 def normalize_personal_flow_transactions(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, tx in enumerate(collect_raw_transactions(payload)):
-        item = normalize_personal_flow_transaction(tx, index)
-        key = "|".join(
-            str(item.get(field) or "")
-            for field in ("transaction_date", "summary", "counterparty_name", "signed_amount", "balance")
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        normalized.append(item)
-    return normalized
+    return [normalize_personal_flow_transaction(tx, index) for index, tx in enumerate(collect_raw_transactions(payload))]
 
 
 def _raw_summary(payload: dict[str, Any], transactions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -369,6 +361,85 @@ def _top_counterparties(transactions: list[dict[str, Any]], direction: str) -> l
     return sorted(totals.values(), key=lambda item: float(item.get("amount") or 0), reverse=True)[:10]
 
 
+def _fast_in_fast_out_analysis(transactions: list[dict[str, Any]], raw_income: float) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
+    expenses = [
+        tx for tx in transactions
+        if float(tx.get("debit_amount") or 0) > 0 and _contains(str(tx.get("summary") or ""), FAST_OUT_EXPENSE_KEYWORDS)
+    ]
+    used_expenses: set[str] = set()
+    for income in [tx for tx in transactions if float(tx.get("credit_amount") or 0) > 0]:
+        income_date = _date(income.get("transaction_date"))
+        try:
+            income_day = datetime.strptime(income_date, "%Y-%m-%d")
+        except ValueError:
+            continue
+        amount = float(income.get("credit_amount") or 0)
+        candidates: list[tuple[dict[str, Any], int]] = []
+        for expense in expenses:
+            expense_id = str(expense.get("transaction_id") or "")
+            if expense_id in used_expenses:
+                continue
+            try:
+                days = (datetime.strptime(_date(expense.get("transaction_date")), "%Y-%m-%d") - income_day).days
+            except ValueError:
+                continue
+            if 0 <= days <= 3:
+                candidates.append((expense, days))
+        single = next(
+            (
+                (expense, days)
+                for expense, days in candidates
+                if 0.85 <= float(expense.get("debit_amount") or 0) / amount <= 1.05
+            ),
+            None,
+        )
+        if single:
+            expense, days = single
+            expense_amount = float(expense.get("debit_amount") or 0)
+            used_expenses.add(str(expense.get("transaction_id") or ""))
+            matches.append({
+                "income_transaction_id": income.get("transaction_id") or "",
+                "expense_transaction_id": expense.get("transaction_id") or "",
+                "income_date": income_date,
+                "expense_date": expense.get("transaction_date") or "",
+                "income_amount": round2(amount),
+                "expense_amount": round2(expense_amount),
+                "days_between": days,
+                "match_ratio": round(expense_amount / amount, 6),
+                "reason": "收入后3日内发生金额接近的贷款还款或转出支出",
+            })
+            continue
+        combination_amount = sum(float(expense.get("debit_amount") or 0) for expense, _days in candidates)
+        if candidates and 0.85 <= combination_amount / amount <= 1.05:
+            for expense, _days in candidates:
+                used_expenses.add(str(expense.get("transaction_id") or ""))
+            max_days = max(days for _expense, days in candidates)
+            matches.append({
+                "income_transaction_id": income.get("transaction_id") or "",
+                "expense_transaction_id": "",
+                "income_date": income_date,
+                "expense_date": max(str(expense.get("transaction_date") or "") for expense, _days in candidates),
+                "income_amount": round2(amount),
+                "expense_amount": round2(combination_amount),
+                "days_between": max_days,
+                "match_ratio": round(combination_amount / amount, 6),
+                "reason": "收入后3日内多笔贷款还款或转出支出合计金额接近收入",
+                "expense_transactions": [
+                    {"transaction_id": expense.get("transaction_id") or "", "expense_date": expense.get("transaction_date") or "", "expense_amount": expense.get("debit_amount") or 0}
+                    for expense, _days in candidates
+                ],
+            })
+    matched_amount = round2(sum(float(item.get("expense_amount") or 0) for item in matches))
+    return {
+        "has_fast_in_fast_out": bool(matches),
+        "matched_count": len(matches),
+        "matched_amount": matched_amount,
+        "matched_amount_ratio": round(matched_amount / raw_income, 6) if raw_income else 0.0,
+        "matches": matches,
+    }
+
+
 def transaction_signature(transactions: list[dict[str, Any]]) -> str:
     parts = [
         f"{tx.get('transaction_date')}|{tx.get('summary')}|{tx.get('counterparty_name')}|{tx.get('signed_amount')}"
@@ -387,6 +458,7 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
     if mismatch:
         warnings.append(mismatch)
     income_verification, expense_analysis = _income_and_expense(payload, transactions, raw_summary)
+    fast_analysis = _fast_in_fast_out_analysis(transactions, raw_summary["total_income"])
     month_count = int(raw_summary.get("month_count") or 1)
     customer_level_summary = {
         **_dict(payload.get("customer_level_summary")),
@@ -417,6 +489,7 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
         "ai_summary_raw": ai_raw,
         "income_verification": income_verification,
         "expense_analysis": expense_analysis,
+        "fast_in_fast_out_analysis": fast_analysis,
         "customer_level_summary": customer_level_summary,
         "monthly_trend": _monthly_trend(transactions),
         "top_income_counterparties": _top_counterparties(transactions, "income"),

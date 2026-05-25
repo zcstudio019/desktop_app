@@ -8964,7 +8964,7 @@ def build_structured_extraction(
                 str(item.get("text") or "")[:1500],
             )
 
-    if normalized_code in DOCUMENT_AGENT_DISPATCH_TYPES:
+    if normalized_code in DOCUMENT_AGENT_DISPATCH_TYPES or (normalized_code == "personal_flow" and bool(rows)):
         agent_result = run_document_extraction_agent(
             document_type=normalized_code,
             raw_text=str(text_content or ""),
@@ -9072,6 +9072,42 @@ def build_structured_extraction(
         content = extract_special_license(text_content)
     else:
         content = generic_extract(text_content, normalized_code, ai_service)
+
+    if normalized_code == "personal_flow":
+        from backend.services.personal_bank_statement_agent.deterministic_summary import build_deterministic_personal_flow_summary
+        from backend.services.personal_bank_statement_agent.markdown_renderer import render_personal_bank_statement_markdown
+
+        source_json = content.get("extracted_json") or content.get("data") or content
+        if not isinstance(source_json, dict):
+            source_json = {}
+        normalized_personal_flow = build_deterministic_personal_flow_summary(source_json)
+        deterministic_markdown = render_personal_bank_statement_markdown(normalized_personal_flow)
+        content["extracted_json"] = normalized_personal_flow
+        content["data"] = normalized_personal_flow
+        content["markdown_summary"] = deterministic_markdown
+        content["markdown"] = deterministic_markdown
+        content["summary"] = deterministic_markdown
+        detail_summary = normalized_personal_flow.get("deterministic_summary") or {}
+        ai_summary = normalized_personal_flow.get("ai_summary_raw") or {}
+        salary = normalized_personal_flow.get("income_verification") or {}
+        logger.info(
+            "[PersonalFlow][AI_SUMMARY] income=%s expense=%s",
+            ai_summary.get("total_income") or 0,
+            ai_summary.get("total_expense") or 0,
+        )
+        logger.info(
+            "[PersonalFlow][DETAIL_SUMMARY] income=%s expense=%s count=%s",
+            detail_summary.get("total_income") or 0,
+            detail_summary.get("total_expense") or 0,
+            (detail_summary.get("income_count") or 0) + (detail_summary.get("expense_count") or 0),
+        )
+        logger.info("[PersonalFlow][SUMMARY_SOURCE] source=deterministic")
+        logger.info(
+            "[PersonalFlow][SALARY] confirmed=%s suspected=%s sources=%s",
+            salary.get("confirmed_salary_income") or 0,
+            salary.get("suspected_salary_income") or 0,
+            salary.get("salary_sources") or [],
+        )
 
     content.setdefault("document_type_code", normalized_code)
     content.setdefault("document_type_name", get_document_display_name(normalized_code))

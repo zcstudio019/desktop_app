@@ -1853,6 +1853,16 @@ async def get_customer_personal_flow_summary(
                 item for item in all_extractions
                 if (item.get("extraction_type") or item.get("document_type") or "") in PERSONAL_FLOW_TYPES
             ]
+            enriched_extractions = []
+            for item in extractions:
+                document = await storage_service.get_document(item.get("doc_id")) if item.get("doc_id") else None
+                enriched = dict(item)
+                enriched["file_name"] = (document or {}).get("file_name") or enriched.get("file_name") or ""
+                enriched["file_hash"] = (document or {}).get("file_hash") or ""
+                enriched["file_size"] = (document or {}).get("file_size") or 0
+                enriched["is_active"] = (document or {}).get("is_active", True)
+                enriched_extractions.append(enriched)
+            extractions = enriched_extractions
         extractions = [item for item in extractions if item.get("is_active") is not False]
         aggregated = aggregate_customer_personal_flows(extractions)
     except Exception as exc:

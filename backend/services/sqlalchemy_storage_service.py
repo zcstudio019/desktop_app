@@ -1055,6 +1055,7 @@ class SQLAlchemyStorageService:
                     Document.file_name,
                     Document.file_path,
                     Document.file_hash,
+                    Document.file_size,
                     Document.upload_time,
                     Document.is_active,
                 )
@@ -1064,11 +1065,12 @@ class SQLAlchemyStorageService:
                 .order_by(desc(Document.upload_time), desc(Extraction.created_at), desc(Extraction.id))
             ).all()
             items: list[dict[str, Any]] = []
-            for extraction, file_name, file_path, file_hash, upload_time, is_active in rows:
+            for extraction, file_name, file_path, file_hash, file_size, upload_time, is_active in rows:
                 item = self._row_to_extraction(extraction)
                 item["file_name"] = file_name or ""
                 item["file_path"] = file_path or ""
                 item["file_hash"] = file_hash or ""
+                item["file_size"] = file_size or 0
                 item["uploaded_at"] = upload_time.isoformat() if upload_time else item.get("created_at") or ""
                 item["is_active"] = bool(is_active) if is_active is not None else True
                 items.append(item)

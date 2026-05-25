@@ -519,6 +519,10 @@ function normalizePersonalFlowData(raw: Record<string, unknown>) {
 }
 
 function buildPersonalFlowRawInput(props: PersonalBankStatementViewProps): Record<string, unknown> {
+  const summary = asRecord(props.summary);
+  if (Object.keys(summary).length) {
+    return summary;
+  }
   const selectedDoc = asRecord(props.selectedDoc);
   const selectedDocExtracted = asRecord(parseMaybeJson(
     selectedDoc.extracted_json ??
@@ -608,6 +612,9 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
   const normalized = normalizePersonalFlowData(statement);
   const normalizedSummary = normalized.normalizedSummary;
   if (import.meta.env.DEV) {
+    console.debug('[PersonalBankStatementView] summary source =', Object.keys(asRecord(props.summary)).length ? 'personalFlowSummary' : 'fallback');
+    console.debug('[PersonalBankStatementView] raw_summary =', statement.raw_summary || statement.deterministic_summary);
+    console.debug('[PersonalBankStatementView] warnings =', statement.warnings || statement.summary_warnings || []);
     console.debug('[PersonalBankStatementView] raw summary:', statement);
     console.debug('[PersonalBankStatementView] normalized summary:', normalizedSummary);
   }

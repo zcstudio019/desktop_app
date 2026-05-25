@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from backend.document_types import get_document_display_name, normalize_document_type_code, should_store_original
+from backend.services.personal_bank_statement_agent.customer_flow_aggregator import (
+    PERSONAL_FLOW_TYPES,
+    aggregate_customer_personal_flows,
+)
+from backend.services.personal_bank_statement_agent.markdown_renderer import render_personal_bank_statement_markdown
 from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator import (
     ENTERPRISE_FLOW_TYPES,
     aggregate_customer_enterprise_flows,
@@ -2083,12 +2088,17 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
         item for item in extractions
         if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') in ENTERPRISE_FLOW_TYPES
     ]
+    personal_flow_extractions = [
+        item for item in extractions
+        if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') in PERSONAL_FLOW_TYPES
+    ]
     other_extractions = [
         item for item in extractions
         if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') != 'id_card'
         and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in PROPERTY_DOCUMENT_TYPES
         and not _is_enterprise_credit_type(item.get('extraction_type'))
         and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in ENTERPRISE_FLOW_TYPES
+        and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in PERSONAL_FLOW_TYPES
     ]
 
     if id_card_extractions:
@@ -2474,6 +2484,66 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             sections.append(_markdown_section('企业流水摘要', ['- 企业流水客户级汇总暂时生成失败，请查看来源文档列表。']))
     else:
         logger.info("[Profile Sync][EnterpriseFlow] active found=false")
+
+    logger.info("[Profile Sync][PersonalFlow] found count=%s", len(personal_flow_extractions))
+    if personal_flow_extractions:
+        try:
+            enriched_personal_extractions: list[dict[str, Any]] = []
+            for extraction in personal_flow_extractions:
+                item = dict(extraction)
+                document = None
+                doc_id = item.get('doc_id')
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "profile_markdown personal_flow_document_meta_failed customer_id=%s doc_id=%s error=%s",
+                            customer_id,
+                            doc_id,
+                            exc,
+                        )
+                item['file_name'] = (document or {}).get('file_name') or item.get('file_name') or ''
+                item['file_path'] = (document or {}).get('file_path') or item.get('file_path') or ''
+                item['file_hash'] = (document or {}).get('file_hash') or item.get('file_hash') or ''
+                item['file_size'] = (document or {}).get('file_size') or item.get('file_size') or 0
+                item['created_at'] = (
+                    (document or {}).get('upload_time')
+                    or item.get('created_at')
+                    or ''
+                )
+                item['is_active'] = (document or {}).get('is_active') if document and 'is_active' in document else item.get('is_active', True)
+                if item.get('is_active') is not False:
+                    enriched_personal_extractions.append(item)
+
+            aggregated_personal_flow = aggregate_customer_personal_flows(enriched_personal_extractions)
+            if aggregated_personal_flow.get('source_document_count'):
+                for source in aggregated_personal_flow.get('source_files') or []:
+                    source_documents.append({
+                        'source_type': 'personal_flow',
+                        'source_type_name': get_document_display_name('personal_flow'),
+                        'extraction_id': source.get('extraction_id'),
+                        'doc_id': source.get('document_id'),
+                        'file_name': source.get('file_name') or '个人流水',
+                        'original_status': '可查看' if source.get('file_name') else '原件文件不存在或已不可用',
+                        'original_available': bool(source.get('file_name')),
+                    })
+                sections.append(render_personal_bank_statement_markdown(aggregated_personal_flow))
+                summary = aggregated_personal_flow.get('deterministic_summary') or {}
+                logger.info(
+                    "[Profile Sync][PersonalFlow] summary_source=deterministic documents=%s income=%s expense=%s",
+                    aggregated_personal_flow.get('source_document_count') or 0,
+                    summary.get('total_income') or 0,
+                    summary.get('total_expense') or 0,
+                )
+        except Exception as exc:
+            logger.warning(
+                "profile_markdown personal_flow_aggregate_failed customer_id=%s error=%s",
+                customer_id,
+                exc,
+                exc_info=True,
+            )
+            sections.append(_markdown_section('个人流水摘要', ['- 个人流水客户级汇总暂时生成失败，请查看来源文档列表。']))
 
     for extraction in other_extractions:
         extraction_id = extraction.get('extraction_id') or ''
