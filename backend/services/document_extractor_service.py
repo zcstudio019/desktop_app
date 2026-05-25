@@ -9084,7 +9084,7 @@ def build_structured_extraction(
         source_json.setdefault("document_type", normalized_code)
         source_json.setdefault("source_file", filename)
         source_json.setdefault("original_filename", filename)
-        normalized_personal_flow = build_deterministic_personal_flow_summary(source_json)
+        normalized_personal_flow = build_deterministic_personal_flow_summary(source_json, raw_text=str(text_content or ""))
         deterministic_markdown = render_personal_bank_statement_markdown(normalized_personal_flow)
         content["extracted_json"] = normalized_personal_flow
         content["data"] = normalized_personal_flow
@@ -9112,9 +9112,10 @@ def build_structured_extraction(
         logger.info("[PersonalFlow][SUMMARY_SOURCE] deterministic_from_transactions")
         logger.info("[PersonalFlow][SUMMARY_MISMATCH] %s", bool(normalized_personal_flow.get("summary_warnings")))
         logger.info(
-            "[PersonalFlow][SALARY] confirmed=%s suspected=%s sources=%s",
+            "[PersonalFlow][SALARY] confirmed=%s suspected=%s low_confidence=%s sources=%s",
             salary.get("confirmed_salary_income") or 0,
             salary.get("suspected_salary_income") or 0,
+            salary.get("suspected_salary_income_low_confidence") or 0,
             salary.get("salary_sources") or [],
         )
 

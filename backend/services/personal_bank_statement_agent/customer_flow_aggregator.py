@@ -122,6 +122,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
     fast_matches: list[dict[str, Any]] = []
     base_info: dict[str, Any] = {}
     payroll_like_transactions: list[dict[str, Any]] = []
+    recovered_counterparties: list[dict[str, Any]] = []
     ai_summary_sources: list[dict[str, Any]] = []
 
     for extraction in extractions:
@@ -145,6 +146,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         ai_summary_raw = _dict(payload.get("ai_summary_raw"))
         payload_debug = _dict(payload.get("debug"))
         payroll_like_transactions.extend(_dict(item) for item in _list(payload_debug.get("payroll_like_transactions")))
+        recovered_counterparties.extend(_dict(item) for item in _list(payload_debug.get("recovered_counterparties")))
         if ai_summary_raw:
             ai_summary_sources.append(ai_summary_raw)
         for mismatch_warning in _list(payload.get("summary_warnings")):
@@ -193,6 +195,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                 "verified_income": (payload.get("income_verification") or {}).get("verified_income") if isinstance(payload.get("income_verification"), dict) else summary.get("verified_income") or 0,
                 "confirmed_salary_income": (payload.get("income_verification") or {}).get("confirmed_salary_income") if isinstance(payload.get("income_verification"), dict) else summary.get("salary_income") or 0,
                 "suspected_salary_income": (payload.get("income_verification") or {}).get("suspected_salary_income") if isinstance(payload.get("income_verification"), dict) else summary.get("suspected_salary_income") or 0,
+                "suspected_salary_income_low_confidence": (payload.get("income_verification") or {}).get("suspected_salary_income_low_confidence") if isinstance(payload.get("income_verification"), dict) else summary.get("suspected_salary_income_low_confidence") or 0,
                 "unknown_inflow": (payload.get("income_verification") or {}).get("unknown_inflow") if isinstance(payload.get("income_verification"), dict) else summary.get("unknown_inflow") or 0,
                 "loan_repayment_expense": (payload.get("expense_analysis") or {}).get("loan_repayment_expense") if isinstance(payload.get("expense_analysis"), dict) else summary.get("loan_repayment_expense") or 0,
                 "risk_signals": payload.get("risk_signals") or [],
@@ -207,9 +210,10 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         income = _dict(payload.get("income_verification"))
         expense = _dict(payload.get("expense_analysis"))
         logger.info(
-            "[PersonalFlow][SALARY] confirmed=%s suspected=%s sources=%s",
+            "[PersonalFlow][SALARY] confirmed=%s suspected=%s low_confidence=%s sources=%s",
             income.get("confirmed_salary_income") or 0,
             income.get("suspected_salary_income") or 0,
+            income.get("suspected_salary_income_low_confidence") or 0,
             income.get("salary_sources") or [],
         )
         sums["raw_total_income"] += float(effective_raw_income or income.get("raw_total_income") or summary.get("raw_total_income") or 0)
@@ -217,6 +221,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         sums["salary_income"] += float(income.get("verified_salary_income") or summary.get("salary_income") or 0)
         sums["confirmed_salary_income"] += float(income.get("confirmed_salary_income") or income.get("verified_salary_income") or summary.get("salary_income") or 0)
         sums["suspected_salary_income"] += float(income.get("suspected_salary_income") or summary.get("suspected_salary_income") or 0)
+        sums["suspected_salary_income_low_confidence"] += float(income.get("suspected_salary_income_low_confidence") or summary.get("suspected_salary_income_low_confidence") or 0)
         sums["operating_income"] += float(income.get("verified_operating_income") or summary.get("operating_income") or 0)
         sums["stable_income"] += float(income.get("stable_income") or summary.get("stable_income") or 0)
         sums["verified_income"] += float(income.get("verified_income") or summary.get("verified_income") or 0)
@@ -245,7 +250,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
                     salary_months.add(str(month))
         for tx in detail_transactions:
             salary_type = (_dict(_dict(tx).get("salary_detection")).get("salary_type") or "")
-            if salary_type in {"confirmed_salary", "suspected_salary"}:
+            if salary_type in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"}:
                 month = str(_dict(tx).get("transaction_date") or "")[:7]
                 if month:
                     salary_months.add(month)
@@ -287,6 +292,7 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "salary_income": round2(sums["salary_income"]),
         "confirmed_salary_income": round2(sums["confirmed_salary_income"]),
         "suspected_salary_income": round2(sums["suspected_salary_income"]),
+        "suspected_salary_income_low_confidence": round2(sums["suspected_salary_income_low_confidence"]),
         "operating_income": round2(sums["operating_income"]),
         "stable_income": round2(sums["stable_income"]),
         "internal_transfer_income": round2(sums["internal_transfer_income"]),
@@ -320,14 +326,16 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
         "raw_total_income": summary["raw_total_income"],
         "confirmed_salary_income": summary["confirmed_salary_income"],
         "suspected_salary_income": summary["suspected_salary_income"],
+        "suspected_salary_income_low_confidence": summary["suspected_salary_income_low_confidence"],
         "verified_salary_income": summary["salary_income"],
         "verified_income": summary["verified_income"],
         "stable_income": summary["stable_income"],
         "unknown_inflow": summary["unknown_inflow"],
         "salary_income_count": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "confirmed_salary")),
         "suspected_salary_count": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "suspected_salary")),
+        "suspected_salary_count_low_confidence": sum(1 for tx in transactions if (_dict(tx.get("salary_detection")).get("salary_type") == "low_confidence_suspected_salary")),
         "salary_months": len(salary_months),
-        "salary_avg_monthly_amount": round2((summary["confirmed_salary_income"] or summary["suspected_salary_income"]) / len(salary_months)) if salary_months else 0,
+        "salary_avg_monthly_amount": round2((summary["confirmed_salary_income"] or summary["suspected_salary_income"] or summary["suspected_salary_income_low_confidence"]) / len(salary_months)) if salary_months else 0,
         "salary_confidence": round2(sum(salary_confidences) / len(salary_confidences)) if salary_confidences else 0,
         "salary_sources": [
             {
@@ -429,9 +437,10 @@ def aggregate_customer_personal_flows(extractions: list[dict[str, Any]]) -> dict
             "transaction_count": len(transactions),
             "salary_candidate_count": sum(
                 1 for item in payroll_like_transactions
-                if item.get("salary_type") in {"confirmed_salary", "suspected_salary"}
+                if item.get("salary_type") in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"}
             ),
             "payroll_like_transactions": payroll_like_transactions[:100],
+            "recovered_counterparties": recovered_counterparties[:100],
             "ai_summary_raw": {"source_files": ai_summary_sources},
             "warnings": summary_warnings + [{"message": item} for item in list(dict.fromkeys(warnings))],
         },

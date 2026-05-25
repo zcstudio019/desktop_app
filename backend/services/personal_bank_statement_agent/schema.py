@@ -55,6 +55,7 @@ class IncomeVerification(BaseModel):
     raw_total_income: float = 0.0
     confirmed_salary_income: float = 0.0
     suspected_salary_income: float = 0.0
+    suspected_salary_income_low_confidence: float = 0.0
     verified_salary_income: float = 0.0
     verified_operating_income: float = 0.0
     verified_other_stable_income: float = 0.0
@@ -72,6 +73,7 @@ class IncomeVerification(BaseModel):
     avg_monthly_stable_income: float = 0.0
     salary_income_count: int = 0
     suspected_salary_count: int = 0
+    suspected_salary_count_low_confidence: int = 0
     salary_months: int = 0
     salary_avg_monthly_amount: float = 0.0
     salary_continuity_level: str = "none"

@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime
 from hashlib import sha1
 import logging
+import re
 from typing import Any
 
 from .normalizer import normalize_amount, normalize_text, round2
@@ -35,6 +36,7 @@ COUNTERPARTY_KEYS = (
     "counterparty",
     "counterparty_name",
     "Counter Party",
+    "Counterparty",
 )
 
 UNKNOWN_INFLOW_KEYWORDS = ("汇款汇入", "汇入汇款", "转账收入", "跨行汇入", "他行汇入", "普通汇款", "电子汇入")
@@ -54,6 +56,19 @@ ACCOUNT_TYPE_KEYS = ("账户类型", "Account Type")
 START_DATE_KEYS = ("流水起始日期", "起始日期", "开始日期", "交易起始日期", "statement_start_date")
 END_DATE_KEYS = ("流水结束日期", "结束日期", "截止日期", "交易结束日期", "statement_end_date")
 PRINT_DATE_KEYS = ("文档打印日期", "打印日期", "Print Time", "打印时间")
+CMB_TEXT_SUMMARY_KEYWORDS = (
+    "代发款项",
+    "代发工资",
+    "工资发放",
+    "转账汇款",
+    "汇入汇款",
+    "汇款汇入",
+    "快捷支付",
+    "个贷还款",
+    "贷款回收",
+    "存款利息",
+    "结息",
+)
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -227,6 +242,72 @@ def normalize_personal_flow_transactions(payload: dict[str, Any]) -> list[dict[s
     return [normalize_personal_flow_transaction(tx, index) for index, tx in enumerate(collect_raw_transactions(payload))]
 
 
+def extract_china_merchants_transactions_from_text(raw_text: str) -> list[dict[str, Any]]:
+    """Extract CMB row-shaped evidence used only to fill missing counterparties."""
+    summary_pattern = "|".join(re.escape(keyword) for keyword in CMB_TEXT_SUMMARY_KEYWORDS)
+    row_pattern = re.compile(
+        rf"(?P<date>(?:19|20)\d{{2}}[-/.]\d{{1,2}}[-/.]\d{{1,2}})"
+        rf"\s+(?:(?:CNY|RMB|人民币)\s+)?"
+        rf"(?P<amount>[+-]?\d[\d,]*\.\d{{1,2}})"
+        rf"\s+(?P<balance>[+-]?\d[\d,]*\.\d{{1,2}})"
+        rf"\s+(?P<summary>{summary_pattern})"
+        rf"(?:\s+(?P<counterparty>.+?))?\s*$",
+        re.IGNORECASE,
+    )
+    parsed: list[dict[str, Any]] = []
+    for raw_line in str(raw_text or "").splitlines():
+        line = re.sub(r"\s+", " ", str(raw_line or "")).strip()
+        match = row_pattern.search(line)
+        if not match:
+            continue
+        counterparty = normalize_text(match.group("counterparty") or "")
+        parsed.append(
+            {
+                "transaction_date": _date(match.group("date")),
+                "amount": normalize_amount(match.group("amount")) or 0,
+                "summary": normalize_text(match.group("summary")),
+                "counterparty_name": counterparty,
+                "raw_text_line": line,
+            }
+        )
+    return parsed
+
+
+def fill_missing_counterparties_from_text(
+    transactions: list[dict[str, Any]],
+    raw_text: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    fallback_rows = extract_china_merchants_transactions_from_text(raw_text)
+    recovered: list[dict[str, Any]] = []
+    if not fallback_rows:
+        return transactions, recovered
+    for tx in transactions:
+        if tx.get("counterparty_name"):
+            continue
+        amount = float(tx.get("credit_amount") or -(float(tx.get("debit_amount") or 0)))
+        for row in fallback_rows:
+            if not row.get("counterparty_name"):
+                continue
+            if (
+                row.get("transaction_date") == tx.get("transaction_date")
+                and row.get("summary") == tx.get("summary")
+                and abs(float(row.get("amount") or 0) - amount) <= 0.01
+            ):
+                tx["counterparty_name"] = row["counterparty_name"]
+                tx["counterparty_recovered_from_raw_text"] = True
+                recovered.append(
+                    {
+                        "transaction_id": tx.get("transaction_id") or "",
+                        "transaction_date": tx.get("transaction_date") or "",
+                        "summary": tx.get("summary") or "",
+                        "amount": amount,
+                        "counterparty_name": tx["counterparty_name"],
+                    }
+                )
+                break
+    return transactions, recovered
+
+
 def _raw_summary(payload: dict[str, Any], transactions: list[dict[str, Any]]) -> dict[str, Any]:
     total_income = 0.0
     total_expense = 0.0
@@ -309,7 +390,7 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
     salary = detect_salary_income(transactions)
     for tx in transactions:
         salary_type = _dict(tx.get("salary_detection")).get("salary_type")
-        if salary_type in {"confirmed_salary", "suspected_salary"}:
+        if salary_type in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"}:
             logger.info(
                 "[PersonalFlow][SALARY_CANDIDATE] type=%s date=%s amount=%s summary=%s counterparty=%s reason=%s",
                 salary_type.replace("_salary", ""),
@@ -317,7 +398,13 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
                 tx.get("credit_amount") or 0,
                 tx.get("summary") or "",
                 tx.get("counterparty_name") or "",
-                "payroll_keyword_and_company_counterparty" if salary_type == "suspected_salary" else "strong_salary_keyword",
+                (
+                    "payroll_keyword_and_company_counterparty"
+                    if salary_type == "suspected_salary"
+                    else "payroll_keyword_missing_counterparty"
+                    if salary_type == "low_confidence_suspected_salary"
+                    else "strong_salary_keyword"
+                ),
             )
     verified_operating_income = 0.0
     verified_other_stable_income = 0.0
@@ -339,9 +426,9 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
             elif _contains(summary, OTHER_STABLE_INCOME_KEYWORDS):
                 verified_other_stable_income += credit
             salary_type = _dict(tx.get("salary_detection")).get("salary_type")
-            if salary_type not in {"confirmed_salary", "suspected_salary"} and _contains(summary, UNKNOWN_INFLOW_KEYWORDS) and not counterparty:
+            if salary_type not in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"} and _contains(summary, UNKNOWN_INFLOW_KEYWORDS) and not counterparty:
                 unknown_inflow += credit
-            elif salary_type not in {"confirmed_salary", "suspected_salary"} and summary in {"汇款汇入", "汇入汇款", "转账收入"} and not counterparty:
+            elif salary_type not in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"} and summary in {"汇款汇入", "汇入汇款", "转账收入"} and not counterparty:
                 unknown_inflow += credit
             if _contains(summary, INTEREST_KEYWORDS):
                 interest_income += credit
@@ -363,9 +450,11 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
         "raw_total_income": raw_summary["total_income"],
         "confirmed_salary_income": round2(confirmed_salary),
         "suspected_salary_income": salary.get("suspected_salary_income") or 0,
+        "suspected_salary_income_low_confidence": salary.get("suspected_salary_income_low_confidence") or 0,
         "verified_salary_income": round2(confirmed_salary),
         "salary_income_count": salary.get("salary_income_count") or 0,
         "suspected_salary_count": salary.get("suspected_salary_count") or 0,
+        "suspected_salary_count_low_confidence": salary.get("suspected_salary_count_low_confidence") or 0,
         "salary_months": salary.get("salary_months") or 0,
         "salary_avg_monthly_amount": salary.get("salary_avg_monthly_amount") or 0,
         "salary_continuity_level": salary.get("salary_continuity_level") or "none",
@@ -396,9 +485,10 @@ def _income_and_expense(payload: dict[str, Any], transactions: list[dict[str, An
         "repayment_frequency": len(monthly_loan_months),
     }
     logger.info(
-        "[PersonalFlow][SALARY_RESULT] confirmed=%s suspected=%s months=%s sources=%s",
+        "[PersonalFlow][SALARY_RESULT] confirmed=%s suspected=%s low_confidence=%s months=%s sources=%s",
         income_verification["confirmed_salary_income"],
         income_verification["suspected_salary_income"],
+        income_verification["suspected_salary_income_low_confidence"],
         income_verification["salary_months"],
         income_verification["salary_sources"],
     )
@@ -528,10 +618,17 @@ def transaction_signature(transactions: list[dict[str, Any]]) -> str:
     return sha1("\n".join(sorted(parts)).encode("utf-8")).hexdigest()
 
 
-def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) -> dict[str, Any]:
+def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any], raw_text: str = "") -> dict[str, Any]:
     payload = _dict(extracted_json)
     raw_transactions, transaction_source_key = collect_raw_transactions_with_source(payload)
+    for index, raw_tx in enumerate(raw_transactions[:10]):
+        logger.info("[PersonalFlow][RAW_TX_KEYS] index=%s keys=%s", index, list(raw_tx.keys()))
+        logger.info("[PersonalFlow][RAW_TX_SAMPLE] raw_tx_%s=%s", index, raw_tx)
     transactions = [normalize_personal_flow_transaction(tx, index) for index, tx in enumerate(raw_transactions)]
+    fallback_text = str(raw_text or payload.get("raw_text") or "")
+    transactions, recovered_counterparties = fill_missing_counterparties_from_text(transactions, fallback_text)
+    if recovered_counterparties:
+        logger.info("[PersonalFlow][COUNTERPARTY_FALLBACK] recovered=%s rows=%s", len(recovered_counterparties), recovered_counterparties)
     base_info = normalize_personal_flow_base_info(payload, transactions)
     raw_summary = _raw_summary(payload, transactions)
     ai_raw = _ai_summary_raw(payload)
@@ -561,7 +658,7 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
     ]
     salary_candidate_transactions = [
         tx for tx in payroll_like_transactions
-        if tx.get("salary_type") in {"confirmed_salary", "suspected_salary"}
+        if tx.get("salary_type") in {"confirmed_salary", "suspected_salary", "low_confidence_suspected_salary"}
     ]
     month_count = int(raw_summary.get("month_count") or 1)
     customer_level_summary = {
@@ -577,6 +674,7 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
         "salary_income": income_verification["verified_salary_income"],
         "confirmed_salary_income": income_verification["confirmed_salary_income"],
         "suspected_salary_income": income_verification["suspected_salary_income"],
+        "suspected_salary_income_low_confidence": income_verification["suspected_salary_income_low_confidence"],
         "operating_income": income_verification["verified_operating_income"],
         "stable_income": income_verification["stable_income"],
         "verified_income": income_verification["verified_income"],
@@ -666,6 +764,7 @@ def build_deterministic_personal_flow_summary(extracted_json: dict[str, Any]) ->
             "transaction_count": len(transactions),
             "salary_candidate_count": len(salary_candidate_transactions),
             "payroll_like_transactions": payroll_like_transactions,
+            "recovered_counterparties": recovered_counterparties,
             "ai_summary_raw": ai_raw,
             "warnings": warnings,
         },

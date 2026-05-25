@@ -55,6 +55,19 @@ SUSPECTED_SALARY_KEYWORDS = (
     "实时代发",
     "批量入账",
 )
+LOW_CONFIDENCE_PAYROLL_KEYWORDS = (
+    "代发款项",
+    "代发",
+    "批量代发",
+    "企业代发",
+    "单位代发",
+    "代发入账",
+    "代发业务",
+    "对公代发",
+    "银联代付",
+    "代付入账",
+    "批量入账",
+)
 
 EXCLUDE_SALARY_KEYWORDS = (
     "报销",
@@ -276,6 +289,16 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
             detection["evidence"] = "摘要命中疑似代发类关键词，付款方为公司/单位主体，识别为疑似工资收入，需人工核实"
             tx["need_manual_review"] = True
             continue
+        low_confidence_payroll = _matched(normalize_text(tx.get("summary")), LOW_CONFIDENCE_PAYROLL_KEYWORDS)
+        if low_confidence_payroll and not normalize_text(tx.get("counterparty_name")) and continuous >= 2:
+            confidence = 0.45 if continuous >= 3 else 0.35
+            confidence += 0.05 if periodic else 0
+            confidence += 0.05 if stable else 0
+            detection["salary_type"] = "low_confidence_suspected_salary"
+            detection["confidence"] = round(min(confidence, 0.6), 2)
+            detection["evidence"] = "多月出现代发类收入，但对手信息缺失，无法确认付款单位，需回看完整流水"
+            tx["need_manual_review"] = True
+            continue
         if suspected and score >= 3:
             confidence = 0.45 + (0.15 if employer_like else 0) + (0.12 if continuous >= 3 else 0.08 if continuous >= 2 else 0) + (0.1 if periodic else 0) + (0.1 if stable else 0)
             detection["salary_type"] = "suspected_salary"
@@ -290,11 +313,14 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
 
     confirmed = [tx for tx in income_transactions if tx.get("salary_detection", {}).get("salary_type") == "confirmed_salary"]
     suspected_txs = [tx for tx in income_transactions if tx.get("salary_detection", {}).get("salary_type") == "suspected_salary"]
+    low_confidence_txs = [tx for tx in income_transactions if tx.get("salary_detection", {}).get("salary_type") == "low_confidence_suspected_salary"]
     confirmed_amount = sum(float(tx.get("credit_amount") or 0) for tx in confirmed)
     suspected_amount = sum(float(tx.get("credit_amount") or 0) for tx in suspected_txs)
+    low_confidence_amount = sum(float(tx.get("credit_amount") or 0) for tx in low_confidence_txs)
     salary_months = len({str(tx.get("transaction_date") or "")[:7] for tx in confirmed if str(tx.get("transaction_date") or "")[:7]})
     suspected_months = len({str(tx.get("transaction_date") or "")[:7] for tx in suspected_txs if str(tx.get("transaction_date") or "")[:7]})
-    continuity_basis = confirmed if confirmed else suspected_txs
+    low_confidence_months = len({str(tx.get("transaction_date") or "")[:7] for tx in low_confidence_txs if str(tx.get("transaction_date") or "")[:7]})
+    continuity_basis = confirmed if confirmed else suspected_txs if suspected_txs else low_confidence_txs
     confirmed_dates = [date for date in (_parse_date(tx.get("transaction_date")) for tx in continuity_basis) if date]
     confirmed_amounts = [float(tx.get("credit_amount") or 0) for tx in continuity_basis]
     continuity_months = _longest_consecutive_months(confirmed_dates)
@@ -309,7 +335,7 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
         continuity_level = "none"
     salary_sources = []
     by_source: dict[str, dict[str, Any]] = defaultdict(lambda: {"counterparty_name": "", "amount": 0.0, "count": 0, "months": set(), "salary_type": ""})
-    for tx in confirmed + suspected_txs:
+    for tx in confirmed + suspected_txs + low_confidence_txs:
         name = normalize_text(tx.get("counterparty_name")) or "未知付款方"
         target = by_source[name]
         target["counterparty_name"] = name
@@ -320,7 +346,7 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
         if tx_salary_type == "confirmed_salary":
             target["salary_type"] = "confirmed_salary"
         elif not target["salary_type"]:
-            target["salary_type"] = "suspected_salary"
+            target["salary_type"] = tx_salary_type or "suspected_salary"
     for item in by_source.values():
         salary_sources.append({
             "counterparty_name": item["counterparty_name"],
@@ -336,6 +362,8 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
         if not confirmed_amount:
             notes.append("未识别到明确工资收入，但存在疑似单位代发收入。")
         notes.append(f"摘要为代发类款项，付款方为{top_source}等公司主体，连续多月出现，识别为疑似工资收入，需人工核实是否为工资")
+    elif low_confidence_amount:
+        notes.append("存在多笔代发款项，但对手信息缺失，无法确认付款单位，需回看原始流水或补充完整对手方信息。")
     elif not confirmed_amount:
         notes.append("未识别到明确工资收入")
     if any(
@@ -343,18 +371,21 @@ def detect_salary_income(transactions: list[dict[str, Any]]) -> dict[str, Any]:
         for tx in income_transactions
     ):
         notes.append("汇款汇入/转账且缺少付款方时，不认定为工资")
-    confidence_basis = confirmed if confirmed else suspected_txs
+    confidence_basis = confirmed if confirmed else suspected_txs if suspected_txs else low_confidence_txs
     confidence_values = [float(tx.get("salary_detection", {}).get("confidence") or 0) for tx in confidence_basis]
     return {
         "confirmed_salary_income": round2(confirmed_amount),
         "suspected_salary_income": round2(suspected_amount),
+        "suspected_salary_income_low_confidence": round2(low_confidence_amount),
         "verified_salary_income": round2(confirmed_amount),
         "salary_income_count": len(confirmed),
         "suspected_salary_count": len(suspected_txs),
-        "salary_months": salary_months or suspected_months,
+        "suspected_salary_count_low_confidence": len(low_confidence_txs),
+        "salary_months": salary_months or suspected_months or low_confidence_months,
         "salary_avg_monthly_amount": round2(
-            (confirmed_amount if confirmed_amount else suspected_amount) / (salary_months or suspected_months)
-        ) if (salary_months or suspected_months) else 0.0,
+            (confirmed_amount if confirmed_amount else suspected_amount if suspected_amount else low_confidence_amount)
+            / (salary_months or suspected_months or low_confidence_months)
+        ) if (salary_months or suspected_months or low_confidence_months) else 0.0,
         "salary_continuity_level": continuity_level,
         "salary_confidence": round2(sum(confidence_values) / len(confidence_values)) if confidence_values else 0.0,
         "salary_sources": salary_sources[:10],

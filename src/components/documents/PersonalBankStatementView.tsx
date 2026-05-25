@@ -218,6 +218,7 @@ type NormalizedPersonalFlowSummary = {
   avgMonthlyVerifiedIncome: number;
   confirmedSalaryIncome: number;
   suspectedSalaryIncome: number;
+  lowConfidenceSuspectedSalaryIncome: number;
   verifiedSalaryIncome: number;
   verifiedOperatingIncome: number;
   verifiedOtherStableIncome: number;
@@ -286,9 +287,12 @@ function getTransactionList(raw: Record<string, unknown>): Record<string, unknow
   const extractedJson = asRecord(raw.extracted_json);
   return asArray<Record<string, unknown>>(
     raw['交易明细列表'] ||
+    raw['三、交易明细列表'] ||
     raw.transactions ||
     summary['交易明细列表'] ||
+    summary['三、交易明细列表'] ||
     extractedJson['交易明细列表'] ||
+    extractedJson['三、交易明细列表'] ||
     extractedJson.transactions ||
     asRecord(raw.analysis_result)['交易明细列表'] ||
     asRecord(raw.result_json)['交易明细列表']
@@ -297,7 +301,7 @@ function getTransactionList(raw: Record<string, unknown>): Record<string, unknow
 
 function normalizeTransaction(tx: Record<string, unknown>): NormalizedTx {
   const summary = String(tx.summary || tx['摘要'] || tx['交易摘要'] || tx.description || '').trim();
-  const counterpartyName = String(tx.counterparty_name || tx.counterpartyName || tx.counterparty || tx['对手信息'] || tx['对方户名'] || tx['对方名称'] || tx['交易对手'] || tx['对手方'] || '').trim();
+  const counterpartyName = String(tx.counterparty_name || tx.counterpartyName || tx.counterparty || tx['对手信息'] || tx['对方户名'] || tx['对方名称'] || tx['交易对手'] || tx['对手方'] || tx['Counter Party'] || tx.Counterparty || '').trim();
   const transactionDate = String(tx.transaction_date || tx.transactionDate || tx['交易日期'] || tx.date || '').slice(0, 10);
   const rawDirection = String(tx.direction || tx['收支'] || tx.transaction_direction || '').trim();
   const debit = absAmount(tx.debit_amount ?? tx.debitAmount);
@@ -437,12 +441,18 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     ? pickMeaningfulNumber(income.interest_income, derivedInterestIncome)
     : derivedInterestIncome;
   const suspectedSalaryIncome = pickMeaningfulNumber(income.suspected_salary_income, customerSummary.suspected_salary_income, derivedSuspectedSalary.amount);
+  const lowConfidenceSuspectedSalaryIncome = pickNumber(income.suspected_salary_income_low_confidence, customerSummary.suspected_salary_income_low_confidence);
   const existingSalaryNotes = asArray<string>(income.salary_detection_notes);
   const salaryDetectionNotes = suspectedSalaryIncome > 0 && (
     !existingSalaryNotes.length ||
     (existingSalaryNotes.length === 1 && existingSalaryNotes[0] === '未识别到明确工资收入')
   )
     ? ['未识别到明确工资收入，但存在疑似单位代发收入，需人工核实。']
+    : lowConfidenceSuspectedSalaryIncome > 0 && (
+      !existingSalaryNotes.length ||
+      (existingSalaryNotes.length === 1 && existingSalaryNotes[0] === '未识别到明确工资收入')
+    )
+      ? ['存在疑似代发收入，但缺少付款方，无法确认工资性质，需补充完整流水或修复对手信息提取。']
     : existingSalaryNotes.length ? existingSalaryNotes : derivedSuspectedSalary.notes;
 
   return {
@@ -457,6 +467,7 @@ function normalizePersonalFlowSummary(raw: Record<string, unknown>): NormalizedP
     avgMonthlyVerifiedIncome: pickNumber(income.avg_monthly_verified_income, income.avg_monthly_stable_income, customerSummary.avg_monthly_verified_income, customerSummary.avg_monthly_stable_income, customerSummary.customer_avg_monthly_verified_income),
     confirmedSalaryIncome: pickNumber(income.confirmed_salary_income, income.verified_salary_income, customerSummary.salary_income),
     suspectedSalaryIncome,
+    lowConfidenceSuspectedSalaryIncome,
     verifiedSalaryIncome: pickNumber(income.verified_salary_income, income.salary_income, customerSummary.salary_income),
     verifiedOperatingIncome: pickNumber(income.verified_operating_income, income.operating_income, customerSummary.operating_income),
     verifiedOtherStableIncome: pickNumber(income.verified_other_stable_income, income.other_stable_income),
@@ -698,6 +709,7 @@ const PersonalBankStatementView: React.FC<PersonalBankStatementViewProps> = (pro
           ['原始收入', money(normalizedSummary.totalIncome)],
           ['明确工资收入', money(normalizedSummary.confirmedSalaryIncome)],
           ['疑似工资收入', money(normalizedSummary.suspectedSalaryIncome)],
+          ['低置信疑似工资收入', money(normalizedSummary.lowConfidenceSuspectedSalaryIncome)],
           ['工资覆盖月份', display(normalizedSummary.salaryMonths)],
           ['工资月均金额', money(normalizedSummary.salaryAvgMonthlyAmount)],
           ['工资识别置信度', percent(normalizedSummary.salaryConfidence)],

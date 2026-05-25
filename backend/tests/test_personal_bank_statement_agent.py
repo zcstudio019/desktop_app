@@ -428,6 +428,43 @@ def test_deterministic_suspected_salary_precedes_unknown_inflow_and_exposes_debu
     assert "未识别到明确工资收入，但存在疑似单位代发收入" in markdown
 
 
+def test_china_merchants_raw_text_fills_missing_counterparty_for_suspected_salary() -> None:
+    payload = {
+        "交易明细列表": [
+            {"记账日期": "2024-07-10", "交易金额": "16131.77", "交易摘要": "代发款项", "对手信息": ""},
+        ],
+    }
+    raw_text = "2024-07-10 CNY 16,131.77 16,138.76 代发款项 上海中兴软件有限责任公司"
+    data = build_deterministic_personal_flow_summary(payload, raw_text=raw_text)
+    tx = data["transactions"][0]
+    income = data["income_verification"]
+    assert tx["counterparty_name"] == "上海中兴软件有限责任公司"
+    assert tx["counterparty_recovered_from_raw_text"] is True
+    assert tx["salary_detection"]["salary_type"] == "suspected_salary"
+    assert income["suspected_salary_income"] == 16131.77
+    assert data["debug"]["recovered_counterparties"][0]["counterparty_name"] == "上海中兴软件有限责任公司"
+    assert data["debug"]["salary_candidate_count"] == 1
+
+
+def test_repeated_daifa_without_counterparty_is_low_confidence_suspected_salary() -> None:
+    data = build_deterministic_personal_flow_summary({
+        "交易明细列表": [
+            {"交易日期": "2025-04-10", "交易金额": "16800", "交易摘要": "代发款项", "对手信息": ""},
+            {"交易日期": "2025-05-10", "交易金额": "16900", "交易摘要": "代发款项", "对手信息": ""},
+            {"交易日期": "2025-06-10", "交易金额": "16953.88", "交易摘要": "代发款项", "对手信息": ""},
+        ],
+    })
+    income = data["income_verification"]
+    assert income["suspected_salary_income"] == 0
+    assert income["suspected_salary_income_low_confidence"] == 50653.88
+    assert income["suspected_salary_count_low_confidence"] == 3
+    assert income["salary_months"] == 3
+    assert income["unknown_inflow"] == 0
+    assert data["debug"]["salary_candidate_count"] == 3
+    assert all(tx["salary_detection"]["salary_type"] == "low_confidence_suspected_salary" for tx in data["transactions"])
+    assert "对手信息缺失" in render_personal_bank_statement_markdown(data)
+
+
 def test_aggregate_prefers_detail_summary_when_ai_summary_mismatch() -> None:
     payload = {
         "doc_type": "personal_flow",
