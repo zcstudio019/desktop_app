@@ -13,16 +13,35 @@ def _compact(value: str) -> str:
     return re.sub(r"\s+", "", str(value or ""))
 
 
+def _normalized_with_positions(value: str) -> tuple[str, list[int]]:
+    normalized: list[str] = []
+    positions: list[int] = []
+    for index, character in enumerate(str(value or "")):
+        if character.isspace() or character in ":：":
+            continue
+        normalized.append("(" if character == "（" else ")" if character == "）" else character)
+        positions.append(index + 1)
+    return "".join(normalized), positions
+
+
+def normalize_label(value: str) -> str:
+    normalized, _ = _normalized_with_positions(value)
+    return normalized
+
+
 def _matched_label(line: str, labels: tuple[str, ...]) -> tuple[str, int] | None:
     for label in sorted(labels, key=len, reverse=True):
-        pattern = r"\s*".join(re.escape(character) for character in label)
-        match = re.search(pattern, str(line or ""))
+        normalized_line, positions = _normalized_with_positions(line)
+        normalized_label = normalize_label(label)
+        match = re.search(re.escape(normalized_label), normalized_line)
         if not match:
             continue
-        preceding_text = str(line or "")[:match.start()].rstrip()
+        original_start = positions[match.start() - 1] if match.start() else 0
+        original_end = positions[match.end() - 1]
+        preceding_text = str(line or "")[:original_start].rstrip()
         preceding = preceding_text[-1:] if preceding_text else ""
         if not (preceding and "\u4e00" <= preceding <= "\u9fff"):
-            return label, match.end()
+            return label, original_end
     return None
 
 
@@ -44,17 +63,35 @@ def extract_amount_fields(
             raw_lines = str(page.get("text") or "").splitlines()
             for line_index, raw_line in enumerate(raw_lines):
                 line = raw_line.strip()
-                match_info = _matched_label(line, labels)
+                candidates = [line]
+                # Long labels are sometimes split over multiple layout/OCR lines.
+                candidates.extend(
+                    " ".join(item.strip() for item in raw_lines[line_index:line_index + size])
+                    for size in (2, 3)
+                    if line_index + size <= len(raw_lines)
+                )
+                match_info = None
+                candidate = line
+                for possible in candidates:
+                    if possible != line:
+                        normalized_first_line = normalize_label(line)
+                        if not any(normalize_label(label).startswith(normalized_first_line) for label in labels):
+                            continue
+                    match_info = _matched_label(possible, labels)
+                    if match_info:
+                        candidate = possible
+                        break
                 if not match_info:
                     continue
                 matched_label, _ = match_info
                 # PDF layout text may put the row label and its row number/value on adjacent lines.
-                candidate_lines = [line]
-                for adjacent in raw_lines[line_index + 1:line_index + 4]:
-                    if any(_matched_label(adjacent, (other,)) for other in all_labels if other != matched_label):
-                        break
-                    candidate_lines.append(adjacent.strip())
-                candidate = " ".join(candidate_lines)
+                if first_current_amount(candidate, multiplier)[1] is None:
+                    candidate_lines = [candidate]
+                    for adjacent in raw_lines[line_index + len(candidate.splitlines()):line_index + 4]:
+                        if any(_matched_label(adjacent, (other,)) for other in all_labels if other != matched_label):
+                            break
+                        candidate_lines.append(adjacent.strip())
+                    candidate = " ".join(candidate_lines)
                 candidate_match = _matched_label(candidate, (matched_label,))
                 label_end = candidate_match[1] if candidate_match else 0
                 remainder = candidate[label_end:]

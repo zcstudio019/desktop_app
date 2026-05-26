@@ -25,6 +25,9 @@ def validate_financial_report_result(data: dict[str, Any], tolerance: float = 1.
     assets = _v(balance, "total_assets")
     liabilities = _v(balance, "total_liabilities")
     equity = _v(balance, "total_equity")
+    equity_source_text = str((balance.get("total_equity") or {}).get("source_text") or "")
+    if equity_source_text == "由资产总计 - 负债合计计算得出":
+        warnings.append("所有者权益合计由资产总计减负债合计计算得出，原表字段未直接命中")
     _check(warnings, "资产总计与负债和所有者权益总计", assets, _v(balance, "total_liabilities_and_equity"), tolerance)
     if liabilities is not None and equity is not None:
         _check(warnings, "负债合计加所有者权益合计与资产总计", assets, liabilities + equity, tolerance)

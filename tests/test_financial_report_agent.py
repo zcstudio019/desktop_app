@@ -149,3 +149,18 @@ def test_financial_report_period_uses_tax_period_not_submission_date() -> None:
     assert info["report_period_start"] == "2022-01-01"
     assert info["report_period_end"] == "2022-12-31"
     assert info["report_date"] == "2023-05-26"
+
+
+def test_financial_report_derives_total_equity_when_equity_label_is_missing() -> None:
+    pages = _pages(*CASES[1])
+    pages[0]["text"] = pages[0]["text"].replace("所有者权益合计 60 13,043,765.10\n", "")
+    result = run_financial_report_agent(
+        raw_text="\n".join(item["text"] for item in pages),
+        filename="2023无权益标签财务报表.pdf",
+        metadata={"raw_pages": pages},
+    )
+    equity = result["structured_json"]["balance_sheet"]["total_equity"]
+    assert equity["normalized_value"] == 13043765.10
+    assert equity["confidence"] == 0.90
+    assert equity["source_text"] == "由资产总计 - 负债合计计算得出"
+    assert "所有者权益合计由资产总计减负债合计计算得出，原表字段未直接命中" in result["validation_warnings"]

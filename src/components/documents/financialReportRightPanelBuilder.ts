@@ -109,6 +109,22 @@ function amount(section: JsonRecord, key: string): number | null {
   return numberValue(value);
 }
 
+function balanceAmount(section: JsonRecord, key: string): number | null {
+  if (key !== 'total_equity') return amount(section, key);
+  const directCandidates = [
+    amount(section, 'total_equity'),
+    amount(asRecord(section.equity), 'total_equity'),
+    amount(section, 'total_owners_equity'),
+    amount(section, 'owners_equity_total'),
+  ];
+  for (const value of directCandidates) {
+    if (value !== null) return value;
+  }
+  const assets = amount(section, 'total_assets');
+  const liabilities = amount(section, 'total_liabilities');
+  return assets !== null && liabilities !== null ? Math.round((assets - liabilities) * 100) / 100 : null;
+}
+
 function mapValue(value: unknown): string {
   const values: Record<string, string> = {
     financial_report: '财务报表',
@@ -284,7 +300,7 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
   const previousBalance = asRecord(previous?.balance_sheet);
   const latestRatios = asRecord(latest.financial_ratios);
   const latestAnalysis = asRecord(latest.bank_credit_analysis);
-  const latestValue = (section: JsonRecord, key: string) => amount(section, key);
+  const latestValue = (section: JsonRecord, key: string) => balanceAmount(section, key);
   const ratio = (key: string) => numberValue(latestRatios[key]);
   const latestThree = reports.slice(-3);
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from ..schema import BalanceSheet, EvidenceItem
+from ..evidence import build_evidence
+from ..normalizer import value_of
+from ..schema import AmountField, BalanceSheet, EvidenceItem
 from ._common import extract_amount_fields
 
 
@@ -41,7 +43,19 @@ BALANCE_FIELDS = {
     "capital_reserve": ("资本公积",),
     "surplus_reserve": ("盈余公积",),
     "undistributed_profit": ("未分配利润",),
-    "total_equity": ("所有者权益合计", "股东权益合计"),
+    "total_equity": (
+        "所有者权益合计",
+        "所有者权益（或股东权益）合计",
+        "所有者权益（或股东权益)合计",
+        "所有者权益（或股东权益） 合计",
+        "所有者权益（或股东权益) 合计",
+        "所有者权益（或股东权 益）合计",
+        "所有者权益（或股东权益\n）合计",
+        "所有者权益（或\n股东权益）合计",
+        "所有者权益（或\n股东权 益）合计",
+        "股东权益合计",
+        "权益合计",
+    ),
     "total_liabilities_and_equity": ("负债和所有者权益总计", "负债及所有者权益总计", "负债和股东权益总计"),
 }
 
@@ -57,4 +71,30 @@ def extract_balance_sheet(
         source_file=source_file,
         multiplier=multiplier,
     )
+    if value_of(values.get("total_equity") or {}) is None:
+        assets = value_of(values.get("total_assets") or {})
+        liabilities = value_of(values.get("total_liabilities") or {})
+        if assets is not None and liabilities is not None:
+            calculated = round(assets - liabilities, 2)
+            source_page = values["total_assets"].source_page or values["total_liabilities"].source_page
+            source_text = "由资产总计 - 负债合计计算得出"
+            values["total_equity"] = AmountField(
+                raw_value=f"{calculated:,.2f}",
+                normalized_value=calculated,
+                source_page=source_page,
+                source_text=source_text,
+                confidence=0.90,
+            )
+            evidence.append(
+                build_evidence(
+                    field_path="balance_sheet.total_equity",
+                    source_file=source_file,
+                    source_page=source_page,
+                    table_name="资产负债表",
+                    row_label="所有者权益合计",
+                    column_label="计算值",
+                    raw_text=source_text,
+                    confidence=0.90,
+                )
+            )
     return BalanceSheet(**values), evidence

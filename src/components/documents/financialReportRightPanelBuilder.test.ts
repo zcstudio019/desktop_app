@@ -86,6 +86,7 @@ describe('buildFinancialReportCustomerSummary', () => {
     const summary = buildFinancialReportCustomerSummary(reports);
     const cards = Object.fromEntries(summary.topMetrics.map((item) => [item.label, item.value]));
     const totalAssets = summary.latestBalanceSheet.find((item) => item.label === '资产总计');
+    const totalEquity = summary.latestBalanceSheet.find((item) => item.label === '所有者权益合计');
 
     expect(summary.title).toBe('财务数据总览');
     expect(summary.reportCount).toBe(3);
@@ -99,6 +100,11 @@ describe('buildFinancialReportCustomerSummary', () => {
     expect(cards['近三期累计净利润']).toBe(7_128_201.06);
     expect(totalAssets?.latest).toBe(54_688_482.62);
     expect(totalAssets?.previous).toBe(69_320_214.02);
+    expect(totalEquity?.latest).toBe(13_051_733.79);
+    expect(totalEquity?.previous).toBe(13_043_765.10);
+    expect(totalEquity?.change).toBeCloseTo(7_968.69, 2);
+    expect(totalEquity?.changeRate).toBeCloseTo(7_968.69 / 13_043_765.10, 10);
+    expect(`${((totalEquity?.changeRate || 0) * 100).toFixed(2)}%`).toBe('0.06%');
     expect(summary.incomeTrendRows.map((item) => item.period)).toEqual(['2022年报', '2023年报', '2024季报']);
     expect(summary.cashFlowTrendRows).toHaveLength(3);
     expect(summary.riskFlags.map((item) => item.title)).toContain('经营现金流连续为负');
@@ -111,5 +117,19 @@ describe('buildFinancialReportCustomerSummary', () => {
     expect(summary.title).toBe('单期财务报表分析');
     expect(summary.isSinglePeriod).toBe(true);
     expect(summary.reportCount).toBe(1);
+  });
+
+  it('reads legacy owner equity paths and falls back to assets minus liabilities', () => {
+    const legacy = structuredClone(reports[1]);
+    delete (legacy.balance_sheet as Record<string, unknown>).total_equity;
+    (legacy.balance_sheet as Record<string, unknown>).equity = { total_equity: amount(13_043_765.10) };
+    const fallback = structuredClone(reports[2]);
+    delete (fallback.balance_sheet as Record<string, unknown>).total_equity;
+    const summary = buildFinancialReportCustomerSummary([legacy, fallback]);
+    const equity = summary.latestBalanceSheet.find((item) => item.label === '所有者权益合计');
+
+    expect(equity?.latest).toBe(13_051_733.79);
+    expect(equity?.previous).toBe(13_043_765.10);
+    expect(equity?.change).toBeCloseTo(7_968.69, 2);
   });
 });

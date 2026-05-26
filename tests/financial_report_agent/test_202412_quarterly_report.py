@@ -27,7 +27,8 @@ PAGES = [
 非 流 动 资 产 合 计 29 4,290,621.25 1,820,743.43 负 债 合 计 53 41,636,748.83 78,474,828.15
 实 收 资 本 54 2,660,000.00 2,660,000.00
 未 分 配 利 润 58 10,391,733.79 3,563,157.79
-所 有 者 权 益 合 计 59 13,051,733.79 6,223,157.79
+所 有 者 权 益（或 股 东 权
+益） 合 计 59 13,051,733.79 13,043,765.10
 资 产 总 计 30 54,688,482.62 84,697,985.94 负 债 和 所 有 者 权 益 总 计 60 54,688,482.62 84,697,985.94
 """,
     },
@@ -106,6 +107,10 @@ def test_202412_quarterly_core_fields_and_company_info() -> None:
     }
     for field, expected in balance_expected.items():
         assert data["balance_sheet"][field]["normalized_value"] == expected
+    equity = data["balance_sheet"]["total_equity"]
+    assert equity["confidence"] == 0.96
+    assert "所 有 者 权 益" in equity["source_text"]
+    assert equity["source_text"] != "由资产总计 - 负债合计计算得出"
 
     income_expected = {
         "revenue": 60376572.48,
