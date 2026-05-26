@@ -2600,6 +2600,66 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             financial_lines.extend(f"- {title}" for title in risk_titles[:10] if title)
             if not risk_titles:
                 financial_lines.append('- 暂未识别到明确财务风险信号')
+
+            def financial_report_extraction_sort_key(extraction: dict[str, Any]) -> tuple[str, str, str, str]:
+                payload = extraction.get('extracted_data') or {}
+                report = (
+                    payload.get('structured_json')
+                    or payload.get('extracted_json')
+                    or payload.get('data')
+                    or payload
+                ) if isinstance(payload, dict) else {}
+                info = report.get('company_info') or {} if isinstance(report, dict) else {}
+                return (
+                    str(info.get('report_period_start') or ''),
+                    str(info.get('report_period_end') or ''),
+                    str(info.get('report_date') or ''),
+                    str(report.get('source_file') if isinstance(report, dict) else extraction.get('file_name') or ''),
+                )
+
+            def nested_financial_report_markdown(markdown: str, index: int) -> str:
+                nested_lines = [f"#### 财务报表 {index}"]
+                title_removed = False
+                for line in str(markdown or '').strip().splitlines():
+                    stripped = line.strip()
+                    if not title_removed and re.match(r'^##\s+财务报表\s*$', stripped):
+                        title_removed = True
+                        continue
+                    if line.startswith('### '):
+                        nested_lines.append('##### ' + line[4:])
+                    elif line.startswith('## '):
+                        nested_lines.append('##### ' + line[3:])
+                    elif line.startswith('# '):
+                        nested_lines.append('##### ' + line[2:])
+                    else:
+                        nested_lines.append(line)
+                return '\n'.join(nested_lines)
+
+            financial_lines.extend(['', '### 财务报表明细（逐份）'])
+            for index, extraction in enumerate(
+                sorted(financial_report_extractions, key=financial_report_extraction_sort_key),
+                start=1,
+            ):
+                try:
+                    detail_markdown, _detail_source = await _build_single_document_section(
+                        storage_service,
+                        customer_id,
+                        extraction,
+                    )
+                    financial_lines.extend(['', nested_financial_report_markdown(detail_markdown, index)])
+                except Exception as detail_exc:
+                    logger.warning(
+                        "profile_markdown financial_report_detail_failed customer_id=%s extraction_id=%s error=%s",
+                        customer_id,
+                        extraction.get('extraction_id'),
+                        detail_exc,
+                        exc_info=True,
+                    )
+                    financial_lines.extend([
+                        '',
+                        f"#### 财务报表 {index}",
+                        '- 提示：该份财务报表明细暂时无法生成，请查看原始文件。',
+                    ])
             sections.append('## 财务报表\n' + '\n'.join(financial_lines))
             logger.info("[Profile Sync][FinancialReport] markdown section appended=true report_count=%s", len(reports))
         except Exception as exc:

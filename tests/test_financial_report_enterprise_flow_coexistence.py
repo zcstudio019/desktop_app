@@ -191,7 +191,7 @@ def test_profile_keeps_financial_report_and_enterprise_flow_in_both_upload_order
 
 
 def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_separately() -> None:
-    storage = _Storage([*FINANCIAL_REPORTS, *ENTERPRISE_FLOWS])
+    storage = _Storage([*reversed(FINANCIAL_REPORTS), *ENTERPRISE_FLOWS])
     payload = asyncio.run(build_auto_profile_payload(storage, "customer-coexist"))
     markdown = payload["markdown_content"]
     lines = markdown.splitlines()
@@ -208,6 +208,25 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert "| 2024季报 | -1,989,500.82 元 |" in markdown
     assert "| 资产负债率 | 76.13% |" in markdown
     assert "本分析基于客户名下全部财务报表资料自动汇总生成。" in markdown
+    assert "### 财务报表明细（逐份）" in markdown
+    assert markdown.count("#### 财务报表 ") == 3
+    assert markdown.count("##### 企业信息") == 3
+    assert markdown.count("##### 资产负债表摘要") == 3
+    assert markdown.count("##### 利润表摘要") == 3
+    assert markdown.count("##### 现金流量表摘要") == 3
+    assert markdown.count("##### 银行授信核心指标表") == 3
+    assert markdown.count("##### 偿债能力分析") == 3
+    assert markdown.count("##### 盈利能力分析") == 3
+    assert markdown.count("##### 现金流质量分析") == 3
+    assert markdown.count("##### 异常科目分析") == 3
+    assert markdown.count("##### 银行贷款审核关注点") == 3
+    assert markdown.count("##### 缺失材料清单") == 3
+    assert markdown.count("##### 综合授信建议") == 3
+    assert "- 来源文件：2022财务报表.pdf" in markdown
+    assert "- 来源文件：2023财务报表.pdf" in markdown
+    assert "- 来源文件：2024财务报表.pdf" in markdown
+    assert markdown.index("- 来源文件：2022财务报表.pdf") < markdown.index("- 来源文件：2023财务报表.pdf")
+    assert markdown.index("- 来源文件：2023财务报表.pdf") < markdown.index("- 来源文件：2024财务报表.pdf")
     assert "来源文件数：2" in markdown
 
 
