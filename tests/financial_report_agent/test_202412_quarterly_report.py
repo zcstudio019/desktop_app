@@ -54,6 +54,20 @@ PAGES = [
 综 合 收 益 总 额 21 7,968.69 0.00
 """,
     },
+    {
+        "page": 3,
+        "text": """现金流量表
+项目 行次 本期金额 上期金额
+收到的税费返还 2 298.26 35,239.66
+收到其他与经营活动有关的现金 3 449,101.77 15,642,383.10
+支付给职工以及为职工支付的现金 6 406,894.31 5,473,139.34
+支付的各项税费 7 0.00 784,496.16
+支付其他与经营活动有关的现金 8 1,215,354.87 16,188,635.86
+现金及现金等价物净增加额（减少以“-”号填列） 33 -102,166.23 -1,498,747.60
+加：期初现金及现金等价物余额 34 252,327.89 1,648,909.26
+六、期末现金及现金等价物余额 35 150,161.66 150,161.66
+""",
+    },
 ]
 
 
@@ -135,6 +149,20 @@ def test_202412_quarterly_core_fields_and_company_info() -> None:
     for field, expected in income_expected.items():
         assert data["income_statement"][field]["normalized_value"] == expected
 
+    cashflow_expected = {
+        "tax_refund_received": (298.26, 35239.66),
+        "other_cash_received_related_to_operating": (449101.77, 15642383.10),
+        "cash_paid_to_employees": (406894.31, 5473139.34),
+        "taxes_paid": (0.00, 784496.16),
+        "other_cash_paid_related_to_operating": (1215354.87, 16188635.86),
+        "net_cash_increase": (-102166.23, -1498747.60),
+        "beginning_cash_balance": (252327.89, 1648909.26),
+        "ending_cash_balance": (150161.66, 150161.66),
+    }
+    for field, (current, previous) in cashflow_expected.items():
+        assert data["cash_flow_statement"][field]["normalized_value"] == current
+        assert data["cash_flow_statement"][field]["previous_normalized_value"] == previous
+
 
 def test_202412_quarterly_markdown_displays_extracted_rows() -> None:
     result = _result()
@@ -144,10 +172,14 @@ def test_202412_quarterly_markdown_displays_extracted_rows() -> None:
         "25,020,000.00", "资产总计", "54,688,482.62", "营业收入",
         "60,376,572.48", "净利润", "7,968.69",
         "上年年末余额", "上期金额", "13,043,765.10", "100,012,470.73",
+        "收到的税费返还", "298.26", "35,239.66", "支付的各项税费", "0.00", "784,496.16",
+        "现金及现金等价物净增加额", "-102,166.23", "期初现金及现金等价物余额", "252,327.89",
     ]:
         assert text in markdown
     assert "| 货币资金 | -" not in markdown
     assert "| 营业收入 | -" not in markdown
+    assert "| 收到的税费返还 | - | -" not in markdown
+    assert "| 支付的各项税费 | 0.00 | 784,496.16 |" in markdown
 
 
 def test_renderer_accepts_structured_json_directly() -> None:

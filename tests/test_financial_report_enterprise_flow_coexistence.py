@@ -55,6 +55,7 @@ def _financial_report(
             "net_profit": _amount(net_profit),
         },
         "cash_flow_statement": {
+            "tax_refund_received": _amount(574202.82),
             "net_operating_cash_flow": _amount(operating_cash_flow),
         },
         "financial_ratios": {
@@ -214,6 +215,7 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert markdown.count("##### 资产负债表摘要") == 3
     assert markdown.count("##### 利润表摘要") == 3
     assert markdown.count("##### 现金流量表摘要") == 3
+    assert markdown.count("| 收到的税费返还 | 574,202.82 |") == 3
     assert markdown.count("##### 银行授信核心指标表") == 3
     assert markdown.count("##### 偿债能力分析") == 3
     assert markdown.count("##### 盈利能力分析") == 3

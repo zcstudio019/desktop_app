@@ -218,7 +218,20 @@ def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> 
             "page": 3,
             "text": """现金流量表
 项目 行次 本期金额 上期金额
+销售商品、提供劳务收到的现金 1 94,657,666.04 156,338,816.24
+收到的税费返还 2 574,202.82 0.00
+收到的其他与经营活动有关的现金 3 11,395,721.33 55,966,002.98
+经营活动现金流入小计 4 106,627,590.19 212,304,819.22
+支付给职工以及为职工支付的现金 6 9,438,287.25 24,966,946.30
+支付的各项税费 7 365,202.54 1,834,384.18
+支付的其他与经营活动有关的现金 8 27,929,846.83 25,727,370.44
 经营活动产生的现金流量净额 10 -8,438,844.57 -15,841,870.74
+投资支付的现金 18 2,549,749.28 0.00
+投资活动产生的现金流量净额 22 -2,549,749.28 -1,600,178.83
+吸收投资收到的现金 23 130,000.00 1,530,000.00
+取得借款收到的现金 24 9,000,000.00 33,500,000.00
+筹资活动产生的现金流量净额 31 9,130,000.00 14,615,941.46
+加：期初现金及现金等价物余额 34 3,507,503.11 6,333,611.22
 期末现金及现金等价物余额 32 1,648,909.26 3,507,503.11
 """,
         },
@@ -237,6 +250,7 @@ def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> 
     income_tax = data["income_statement"]["income_tax_expense"]
     net_profit = data["income_statement"]["net_profit"]
     operating_cash = data["cash_flow_statement"]["net_operating_cash_flow"]
+    cashflow = data["cash_flow_statement"]
     assert cash["normalized_value"] == 1648909.26
     assert cash["previous_normalized_value"] == 3507503.11
     assert assets["normalized_value"] == 69320214.02
@@ -257,6 +271,26 @@ def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> 
     assert net_profit["previous_normalized_value"] == 429625.06
     assert operating_cash["current_column_label"] == "本期金额"
     assert operating_cash["previous_column_label"] == "上期金额"
+    cashflow_expected = {
+        "cash_received_from_sales": (94657666.04, 156338816.24),
+        "tax_refund_received": (574202.82, 0.00),
+        "other_cash_received_related_to_operating": (11395721.33, 55966002.98),
+        "operating_cash_inflow_total": (106627590.19, 212304819.22),
+        "cash_paid_to_employees": (9438287.25, 24966946.30),
+        "taxes_paid": (365202.54, 1834384.18),
+        "other_cash_paid_related_to_operating": (27929846.83, 25727370.44),
+        "net_operating_cash_flow": (-8438844.57, -15841870.74),
+        "cash_paid_for_investments": (2549749.28, 0.00),
+        "net_investing_cash_flow": (-2549749.28, -1600178.83),
+        "cash_received_from_investors": (130000.00, 1530000.00),
+        "cash_received_from_borrowings": (9000000.00, 33500000.00),
+        "net_financing_cash_flow": (9130000.00, 14615941.46),
+        "beginning_cash_balance": (3507503.11, 6333611.22),
+        "ending_cash_balance": (1648909.26, 3507503.11),
+    }
+    for field, (current, previous) in cashflow_expected.items():
+        assert cashflow[field]["normalized_value"] == current
+        assert cashflow[field]["previous_normalized_value"] == previous
     assert cash["current_value"] == cash["normalized_value"]
     assert cash["compare_value"] == cash["previous_normalized_value"]
     markdown = result["markdown_report"]
@@ -266,8 +300,16 @@ def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> 
     assert "| 营业收入 | 100,012,470.73 | 140,360,769.35 |" in markdown
     assert "| 营业成本 | 74,007,485.08 | 111,393,386.93 |" in markdown
     assert "| 所得税费用 | 0.00 | -99,400.64 |" in markdown
+    assert "| 收到的税费返还 | 574,202.82 | 0.00 |" in markdown
+    assert "| 收到其他与经营活动有关的现金 | 11,395,721.33 | 55,966,002.98 |" in markdown
+    assert "| 支付给职工以及为职工支付的现金 | 9,438,287.25 | 24,966,946.30 |" in markdown
+    assert "| 支付的各项税费 | 365,202.54 | 1,834,384.18 |" in markdown
+    assert "| 支付其他与经营活动有关的现金 | 27,929,846.83 | 25,727,370.44 |" in markdown
+    assert "| 现金及现金等价物净增加额 |" in markdown
+    assert "| 期初现金及现金等价物余额 | 3,507,503.11 | 6,333,611.22 |" in markdown
     assert "| 营业成本 | - | -" not in markdown
     assert "| 所得税费用 | - | -" not in markdown
+    assert "| 收到的税费返还 | - | -" not in markdown
 
 
 def test_financial_report_amount_parser_keeps_zero_and_negative_tax_amounts() -> None:
@@ -276,3 +318,58 @@ def test_financial_report_amount_parser_keeps_zero_and_negative_tax_amounts() ->
     assert normalize_amount("－99,400.64") == -99400.64
     assert normalize_amount("（99,400.64）") == -99400.64
     assert normalize_amount("(99,400.64)") == -99400.64
+
+
+def test_financial_report_extracts_extended_cash_flow_rows_and_aliases() -> None:
+    pages = [{
+        "page": 4,
+        "text": """现金流量表
+项目 行次 本期金额 上期金额
+收到的其他与经营活动有关的现金 3 11.00 12.00
+支付的其他与经营活动有关的现金 8 13.00 14.00
+处置固定资产、无形资产和其他长期资产而收回的现金净额 13 15.00 16.00
+处置子公司及其他营业单位收到的现金净额 14 17.00 18.00
+收到的其他与投资活动有关的现金 15 19.00 20.00
+购建固定资产、无形资产和其他长期资产所支付的现金 17 21.00 22.00
+取得子公司及其他营业单位支付的现金净额 19 23.00 24.00
+支付的其他与投资活动有关的现金 20 25.00 26.00
+收到的其他与筹资活动有关的现金 25 27.00 28.00
+分配股利、利润和偿付利息支付的现金 28 29.00 30.00
+支付的其他与筹资活动有关的现金 29 31.00 32.00
+汇率变动对现金及现金等价物的影响 32 -33.00 34.00
+现金及现金等价物净增加额（减少以“-”号填列） 33 -35.00 0.00
+加：期初现金及现金等价物余额 34 36.00 37.00
+六、期末现金及现金等价物余额 35 1.00 37.00
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="extended-cash-flow.pdf",
+        metadata={"raw_pages": pages},
+    )
+    cashflow = result["structured_json"]["cash_flow_statement"]
+    expected = {
+        "other_cash_received_related_to_operating": (11.00, 12.00),
+        "other_cash_paid_related_to_operating": (13.00, 14.00),
+        "cash_received_from_disposal_assets": (15.00, 16.00),
+        "cash_received_from_disposal_subsidiaries": (17.00, 18.00),
+        "other_cash_received_related_to_investing": (19.00, 20.00),
+        "cash_paid_for_fixed_intangible_assets": (21.00, 22.00),
+        "cash_paid_for_acquisition_subsidiaries": (23.00, 24.00),
+        "other_cash_paid_related_to_investing": (25.00, 26.00),
+        "other_cash_received_related_to_financing": (27.00, 28.00),
+        "cash_paid_for_dividends_profit_interest": (29.00, 30.00),
+        "other_cash_paid_related_to_financing": (31.00, 32.00),
+        "effect_of_exchange_rate_changes": (-33.00, 34.00),
+        "net_cash_increase": (-35.00, 0.00),
+        "beginning_cash_balance": (36.00, 37.00),
+        "ending_cash_balance": (1.00, 37.00),
+    }
+    for field, (current, previous) in expected.items():
+        assert cashflow[field]["normalized_value"] == current
+        assert cashflow[field]["previous_normalized_value"] == previous
+    markdown = result["markdown_report"]
+    assert "| 处置子公司及其他营业单位收到的现金净额 | 17.00 | 18.00 |" in markdown
+    assert "| 支付其他与筹资活动有关的现金 | 31.00 | 32.00 |" in markdown
+    assert "| 汇率变动对现金及现金等价物的影响 | -33.00 | 34.00 |" in markdown
+    assert "| 现金及现金等价物净增加额 | -35.00 | 0.00 |" in markdown
