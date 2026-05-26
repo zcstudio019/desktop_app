@@ -3026,15 +3026,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       : 'markdown_preview';
   const financialReportPanel = hasFinancialReportDocuments ? (
     <section className="rounded-[28px] border border-indigo-100 bg-white/95 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-base font-semibold text-slate-900">财务报表分析</h3>
-          <p className="mt-1 text-xs text-slate-500">财务报表结构化分析表</p>
-        </div>
-        <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
-          财务报表
-        </span>
-      </div>
       <FinancialReportView data={financialReportPayloads[0]} reports={financialReportPayloads} />
     </section>
   ) : null;
