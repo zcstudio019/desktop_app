@@ -2331,7 +2331,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             reports = aggregated_financial.get('reports') or []
             latest = reports[-1] if reports else {}
             earliest = reports[0] if reports else {}
-            latest_info = latest.get('company_info') or {}
+            latest_info = aggregated_financial.get('company_info') or latest.get('company_info') or {}
             earliest_info = earliest.get('company_info') or {}
             latest_analysis = aggregated_financial.get('latest_credit_analysis') or latest.get('bank_credit_analysis') or {}
 
@@ -2388,6 +2388,9 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     'accounting_standard': {
                         'enterprise_accounting_standard': '企业会计准则一般企业',
                         'small_enterprise_accounting_standard': '小企业会计准则',
+                        'small_business_accounting_standard': '小企业会计准则',
+                        'business_accounting_standard': '企业会计准则',
+                        'unknown': '-',
                     },
                 }
                 return mappings.get(key, {}).get(str(value), str(value or '-'))
@@ -2438,7 +2441,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 f"| 报表类型 | {'多期（最新为' + financial_value_label('report_type', latest_info.get('report_type')) + '）' if len(reports) > 1 else financial_value_label('report_type', latest_info.get('report_type'))} |",
                 f"| 所属期开始日期 | {financial_info_text('report_period_start')} |",
                 f"| 所属期结束日期 | {financial_info_text('report_period_end')} |",
-                f"| 报送日期 | {financial_info_text('report_date')} |",
+                f"| 报送日期/报表日 | {financial_info_text('report_date')} |",
                 f"| 币种 | {financial_value_label('currency', latest_info.get('currency'))} |",
                 f"| 金额单位 | {financial_info_text('unit')} |",
                 '',

@@ -8,6 +8,7 @@ from backend.services.document_extractor_service import detect_document_type_cod
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_report_agent.normalizer import normalize_amount
 from backend.services.financial_report_agent.orchestrator import run_financial_report_agent
+from backend.services.financial_report_agent.skills.identify_financial_report_skill import identify_financial_report
 
 
 def _pages(year: int, assets: float, liabilities: float, equity: float, revenue: float, profit: float, ocf: float) -> list[dict]:
@@ -150,6 +151,26 @@ def test_financial_report_period_uses_tax_period_not_submission_date() -> None:
     assert info["report_period_start"] == "2022-01-01"
     assert info["report_period_end"] == "2022-12-31"
     assert info["report_date"] == "2023-05-26"
+
+
+def test_identify_financial_report_supports_company_info_aliases() -> None:
+    info = identify_financial_report(
+        "\n".join(
+            [
+                "企业会计准则",
+                "纳税人名称：测试科技有限公司",
+                "纳税人识别号（国税）：913201055804841947",
+                "税款所属期：2025-01-01至2025-12-31",
+                "报表日期：2026-03-25",
+            ]
+        ),
+        "2025财务报表.pdf",
+    )
+    assert info.taxpayer_id == "913201055804841947"
+    assert info.accounting_standard == "business_accounting_standard"
+    assert info.report_period_start == "2025-01-01"
+    assert info.report_period_end == "2025-12-31"
+    assert info.report_date == "2026-03-25"
 
 
 def test_financial_report_derives_total_equity_when_equity_label_is_missing() -> None:

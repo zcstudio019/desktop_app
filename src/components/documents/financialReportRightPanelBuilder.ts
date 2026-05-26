@@ -183,11 +183,13 @@ function mapValue(value: unknown): string {
     annual: '年报',
     quarterly: '季报',
     monthly: '月报',
-    unknown: '未知',
+    unknown: '-',
     CNY: '人民币',
     enterprise_accounting_standard: '企业会计准则一般企业',
     general_enterprise: '企业会计准则一般企业',
     small_enterprise_accounting_standard: '小企业会计准则',
+    small_business_accounting_standard: '小企业会计准则',
+    business_accounting_standard: '企业会计准则',
   };
   const original = String(value ?? '').trim();
   return values[original] || original || EMPTY;
@@ -309,6 +311,66 @@ function uniqueReports(inputs: unknown[]): JsonRecord[] {
   return reports.sort((a, b) => reportSortKey(a).localeCompare(reportSortKey(b)));
 }
 
+function pathValue(report: JsonRecord, path: string[]): unknown {
+  let value: unknown = report;
+  for (const part of path) value = asRecord(value)[part];
+  return value;
+}
+
+function hasSummaryValue(value: unknown): boolean {
+  const result = String(value ?? '').trim();
+  return Boolean(result) && !['unknown', '未知', '-'].includes(result);
+}
+
+export function pickFirstNonEmpty(reports: JsonRecord[], paths: string[][]): unknown {
+  for (const report of [...reports].reverse()) {
+    for (const path of paths) {
+      const value = pathValue(report, path);
+      if (hasSummaryValue(value)) return value;
+    }
+  }
+  return '';
+}
+
+function summarySearchText(inputs: unknown[], reports: JsonRecord[]): string {
+  return [...reports, ...inputs].reverse().map((item) => {
+    try {
+      return JSON.stringify(item);
+    } catch {
+      return String(item ?? '');
+    }
+  }).join('\n');
+}
+
+function aggregateCompanyInfo(reports: JsonRecord[], inputs: unknown[]): JsonRecord {
+  const latestInfo = info(reports[reports.length - 1] || {});
+  const textContent = summarySearchText(inputs, reports);
+  const result: JsonRecord = { ...latestInfo };
+  for (const key of ['company_name', 'currency', 'unit']) {
+    result[key] = pickFirstNonEmpty(reports, [['company_info', key], [key]]) || '';
+  }
+  result.taxpayer_id = pickFirstNonEmpty(reports, [['company_info', 'taxpayer_id'], ['taxpayer_id']])
+    || textContent.match(/(?:纳税人识别号(?:[（(](?:国税|地税)[）)])?|统一社会信用代码)\s*[:：]\s*([A-Z0-9]{15,20})/)?.[1]
+    || '';
+  let standard = String(pickFirstNonEmpty(reports, [['company_info', 'accounting_standard'], ['accounting_standard']]) || '');
+  if (!hasSummaryValue(standard)) {
+    standard = textContent.includes('小企业会计准则') ? 'small_enterprise_accounting_standard'
+      : textContent.includes('企业会计准则一般企业') ? 'enterprise_accounting_standard'
+      : textContent.includes('企业会计准则') ? 'business_accounting_standard'
+      : 'unknown';
+  }
+  result.accounting_standard = standard;
+  result.report_date = pickFirstNonEmpty(reports, [
+    ['company_info', 'report_date'],
+    ['report_date'],
+    ['company_info', 'balance_sheet_date'],
+    ['balance_sheet_date'],
+    ['company_info', 'statement_date'],
+    ['statement_date'],
+  ]) || textContent.match(/(?:报送日期|资产负债表日|报表日期)\s*[:：]\s*(20\d{2}-\d{2}-\d{2})/)?.[1] || '';
+  return result;
+}
+
 function addRisk(flags: RiskFlag[], flag: RiskFlag): void {
   if (!flags.some((item) => item.title === flag.title)) flags.push(flag);
 }
@@ -375,7 +437,7 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[], profileMa
     };
   }
 
-  const latestInfo = info(latest);
+  const latestInfo = aggregateCompanyInfo(reports, inputs);
   const latestBalance = asRecord(latest.balance_sheet);
   const previousBalance = asRecord(previous?.balance_sheet);
   const latestRatios = asRecord(latest.financial_ratios);
@@ -586,12 +648,13 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[], profileMa
     ],
     baseInfo: [
       ['企业名称', text(latestInfo.company_name)],
+      ['纳税人识别号', text(latestInfo.taxpayer_id)],
       ['资料类型', '财务报表'],
       ['已识别报表份数', `${reports.length}份`],
       ['已识别报表期间', reports.map(periodLabel).join('、')],
       ['覆盖期间', `${text(info(reports[0]).report_period_start)} 至 ${text(latestInfo.report_period_end)}`],
       ['最新报表期', periodRange(latest)],
-      ['最新报表日', text(latestInfo.report_date)],
+      ['最新报送日期/报表日', text(latestInfo.report_date)],
       ['会计准则', mapValue(latestInfo.accounting_standard)],
       ['币种', mapValue(latestInfo.currency)],
       ['金额单位', text(latestInfo.unit)],

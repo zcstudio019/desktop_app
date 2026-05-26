@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import tempfile
 from typing import Any
 
 from backend.services.agents.financing_judgement_agent import FinancingJudgementAgent
 from backend.services.agents.orchestrator import _normalize_workflow_context
+from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.local_storage_service import LocalStorageService
 from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.rag_service import RagService
@@ -207,6 +209,40 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert "| 资产负债率 | 76.13% |" in markdown
     assert "本分析基于客户名下全部财务报表资料自动汇总生成。" in markdown
     assert "来源文件数：2" in markdown
+
+
+def test_profile_financial_company_info_falls_back_across_reports_and_markdown() -> None:
+    latest = copy.deepcopy(FINANCIAL_REPORTS[-1])
+    latest["extraction_id"] = "financial-2025"
+    latest["doc_id"] = "doc-financial-2025"
+    latest["file_name"] = "2025财务报表.pdf"
+    report = latest["extracted_data"]["structured_json"]
+    report["source_file"] = latest["file_name"]
+    report["company_info"].update({
+        "taxpayer_id": "",
+        "accounting_standard": "unknown",
+        "report_period_start": "2025-01-01",
+        "report_period_end": "2025-12-31",
+        "report_date": "",
+    })
+    latest["extracted_data"]["markdown_report"] = "## 财务报表\n报送日期：2025-03-25"
+    history = copy.deepcopy(FINANCIAL_REPORTS[1])
+    history["extracted_data"]["structured_json"]["company_info"]["report_date"] = ""
+    extractions = [history, latest, ENTERPRISE_FLOWS[0]]
+    summary = aggregate_customer_financial_reports(extractions)
+    company_info = summary["company_info"]
+    payload = asyncio.run(build_auto_profile_payload(_Storage(extractions), "customer-coexist"))
+    markdown = payload["markdown_content"]
+
+    assert company_info["taxpayer_id"] == "913201055804841947"
+    assert company_info["accounting_standard"] == "enterprise_accounting_standard"
+    assert company_info["report_date"] == "2025-03-25"
+    assert "| 纳税人识别号 | 913201055804841947 |" in markdown
+    assert "| 会计准则 | 企业会计准则一般企业 |" in markdown
+    assert "| 报送日期/报表日 | 2025-03-25 |" in markdown
+    assert "| 会计准则 | unknown |" not in markdown
+    assert "| 纳税人识别号 | - |" not in markdown
+    assert "## 企业流水" in markdown
 
 
 def test_rag_index_keeps_financial_report_and_enterprise_flow_source_types() -> None:

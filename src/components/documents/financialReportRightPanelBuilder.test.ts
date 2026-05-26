@@ -148,6 +148,25 @@ describe('buildFinancialReportCustomerSummary', () => {
     expect(equity?.change).toBeCloseTo(7_968.69, 2);
   });
 
+  it('fills customer company info from historical reports and report markdown', () => {
+    const previous = structuredClone(reports[1]);
+    (previous.company_info as Record<string, unknown>).taxpayer_id = '913201055804841947';
+    (previous.company_info as Record<string, unknown>).report_date = '';
+    const latest = structuredClone(reports[2]);
+    (latest.company_info as Record<string, unknown>).taxpayer_id = '';
+    (latest.company_info as Record<string, unknown>).accounting_standard = 'unknown';
+    (latest.company_info as Record<string, unknown>).report_date = '';
+    const summary = buildFinancialReportCustomerSummary([
+      previous,
+      { structured_json: latest, markdown_report: '报送日期：2025-03-25' },
+    ]);
+
+    expect(summary.baseInfo).toContainEqual(['纳税人识别号', '913201055804841947']);
+    expect(summary.baseInfo).toContainEqual(['会计准则', '企业会计准则一般企业']);
+    expect(summary.baseInfo).toContainEqual(['最新报送日期/报表日', '2025-03-25']);
+    expect(summary.baseInfo).not.toContainEqual(['会计准则', '未知']);
+  });
+
   it('preserves report, localized structured data and profile markdown for collapsed raw sections', () => {
     const wrapped = {
       structured_json: reports[2],

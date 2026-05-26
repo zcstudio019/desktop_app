@@ -25,8 +25,10 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
     unit, _ = detect_unit(source)
     if "小企业会计准则" in compact_source:
         standard = "small_enterprise_accounting_standard"
-    elif "企业会计准则" in compact_source:
+    elif "企业会计准则一般企业" in compact_source:
         standard = "enterprise_accounting_standard"
+    elif "企业会计准则" in compact_source:
+        standard = "business_accounting_standard"
     else:
         standard = "unknown"
     if "季报" in compact_source or "季度" in compact_source:
@@ -39,7 +41,7 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
         report_type = "unknown"
     report_date = _normalize_date(_first(
         (
-            r"(?:报送日期|报告日期|申报日期)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
+            r"(?:报送日期|报告日期|报表日期|申报日期)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
             r"(?:资产负债表日)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
         ),
         compact_source,
@@ -66,7 +68,7 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
         report_period_start=start,
         report_period_end=end,
         company_name=_first((r"(?:企业名称|公司名称|纳税人名称|编制单位)\s*[:：]\s*([^:：\n\r]+?有限公司|[^:：\n\r]+?公司)",), compact_source),
-        taxpayer_id=_first((r"(?:纳税人识别号|统一社会信用代码)\s*[:：]\s*([0-9A-Z]{15,20})",), compact_source),
+        taxpayer_id=_first((r"(?:纳税人识别号(?:[（(](?:国税|地税)[）)])?|统一社会信用代码)\s*[:：]\s*([0-9A-Z]{15,20})",), compact_source),
         report_date=report_date,
         currency="CNY",
         unit=unit,
