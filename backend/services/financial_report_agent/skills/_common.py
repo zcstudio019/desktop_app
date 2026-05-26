@@ -61,6 +61,7 @@ def extract_amount_fields(
     current_column_label: str = "期末余额/本期金额",
     previous_column_label: str = "上年年末余额/上期金额",
     allowed_preceding_chinese: set[str] | None = None,
+    prefer_last_amounts: bool = False,
 ) -> tuple[dict[str, AmountField], list[EvidenceItem]]:
     values: dict[str, AmountField] = {}
     evidence: list[EvidenceItem] = []
@@ -107,7 +108,11 @@ def extract_amount_fields(
                 candidate_match = _matched_label(candidate, (matched_label,), allowed_preceding_chinese)
                 label_end = candidate_match[1] if candidate_match else 0
                 remainder = candidate[label_end:]
-                raw_value, normalized, previous_raw_value, previous_normalized = current_and_previous_amounts(remainder, multiplier)
+                raw_value, normalized, previous_raw_value, previous_normalized = current_and_previous_amounts(
+                    remainder,
+                    multiplier,
+                    prefer_last_amounts=prefer_last_amounts,
+                )
                 if normalized is None:
                     continue
                 confidence = 0.96 if table_name in _compact(str(page.get("text") or "")) else 0.88

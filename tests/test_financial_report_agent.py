@@ -373,3 +373,83 @@ def test_financial_report_extracts_extended_cash_flow_rows_and_aliases() -> None
     assert "| 支付其他与筹资活动有关的现金 | 31.00 | 32.00 |" in markdown
     assert "| 汇率变动对现金及现金等价物的影响 | -33.00 | 34.00 |" in markdown
     assert "| 现金及现金等价物净增加额 | -35.00 | 0.00 |" in markdown
+
+
+def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_zero_details() -> None:
+    pages = [{
+        "page": 1,
+        "text": """小企业会计准则 现金流量表
+项目 行次 本年累计金额 上年金额
+一、销售产成品、商品、提供劳务收到的现金 1 81,530,980.95 14,260,100.00
+收到其他与经营活动有关的现金 2 63,196,820.37 3,069,962.48
+经营活动现金流入小计 3 144,727,801.32 17,330,062.48
+购买原材料、商品、接受劳务支付的现金 4 79,773,041.92 3,764,197.61
+支付的职工薪酬 5 3,246,766.56 600,760.98
+支付的税费 6 1,436,108.53 656,739.77
+支付其他与经营活动有关的现金 7 64,756,495.40 7,504,741.46
+经营活动现金流出小计 8 149,212,412.41 12,526,440.82
+经营活动产生的现金流量净额 9 -4,484,611.09 4,803,622.66
+收回短期投资、长期债券投资和长期股权投资收到的现金 10 0.00 0.00
+取得投资收益收到的现金 11 0.00 0.00
+处置固定资产、无形资产和其他非流动资产收回的现金净额 12 0.00 0.00
+投资活动现金流入小计 13 0.00 0.00
+短期投资、长期债券投资和长期股权投资支付的现金 14 200,000.00 0.00
+投资活动现金流出小计 15 200,000.00 0.00
+投资活动产生的现金流量净额 16 -200,000.00 0.00
+取得投资者投资收到的现金 17 0.00 0.00
+取得借款收到的现金 18 0.00 0.00
+筹资活动现金流入小计 19 0.00 0.00
+偿还借款本金支付的现金 20 0.00 0.00
+偿还借款利息支付的现金 21 0.00 0.00
+筹资活动现金流出小计 22 0.00 0.00
+筹资活动产生的现金流量净额 23 0.00 0.00
+现金净增加额 24 -4,684,611.09 4,803,622.66
+期初现金余额 25 5,000,000.00 196,377.34
+期末现金余额 26 315,388.91 5,000,000.00
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="小企业会计准则现金流量表.pdf",
+        metadata={"raw_pages": pages},
+    )
+    cashflow = result["structured_json"]["cash_flow_statement"]
+    expected = {
+        "cash_received_from_sales": (81530980.95, 14260100.00),
+        "other_cash_received_related_to_operating": (63196820.37, 3069962.48),
+        "cash_paid_for_goods_services": (79773041.92, 3764197.61),
+        "cash_paid_to_employees": (3246766.56, 600760.98),
+        "taxes_paid": (1436108.53, 656739.77),
+        "other_cash_paid_related_to_operating": (64756495.40, 7504741.46),
+        "net_operating_cash_flow": (-4484611.09, 4803622.66),
+        "cash_paid_for_investments": (200000.00, 0.00),
+        "net_investing_cash_flow": (-200000.00, 0.00),
+    }
+    for field, (current, previous) in expected.items():
+        assert cashflow[field]["normalized_value"] == current
+        assert cashflow[field]["previous_normalized_value"] == previous
+    assert cashflow["cash_received_from_investment_recovery"]["normalized_value"] == 0.00
+    assert cashflow["cash_received_from_investment_recovery"]["previous_normalized_value"] == 0.00
+    markdown = result["markdown_report"]
+    for row in [
+        "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 |",
+        "| 收到其他与经营活动有关的现金 | 63,196,820.37 | 3,069,962.48 |",
+        "| 购买商品、接受劳务支付的现金 | 79,773,041.92 | 3,764,197.61 |",
+        "| 支付给职工以及为职工支付的现金 | 3,246,766.56 | 600,760.98 |",
+        "| 支付的各项税费 | 1,436,108.53 | 656,739.77 |",
+        "| 投资支付的现金 | 200,000.00 | 0.00 |",
+        "| 投资活动产生的现金流量净额 | -200,000.00 | 0.00 |",
+    ]:
+        assert row in markdown
+    for hidden_row in [
+        "收回投资收到的现金",
+        "取得投资收益收到的现金",
+        "处置固定资产、无形资产和其他长期资产收回的现金净额",
+        "吸收投资收到的现金",
+        "取得借款收到的现金",
+        "偿还债务支付的现金",
+        "分配股利、利润或偿付利息支付的现金",
+    ]:
+        assert f"| {hidden_row} |" not in markdown
+    assert "| 投资活动现金流入小计 | 0.00 | 0.00 |" in markdown
+    assert "| 筹资活动产生的现金流量净额 | 0.00 | 0.00 |" in markdown

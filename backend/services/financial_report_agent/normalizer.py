@@ -38,7 +38,7 @@ def first_current_amount(line: str, multiplier: Decimal | float = Decimal("1")) 
 
 
 def current_and_previous_amounts(
-    line: str, multiplier: Decimal | float = Decimal("1")
+    line: str, multiplier: Decimal | float = Decimal("1"), *, prefer_last_amounts: bool = False
 ) -> tuple[str, float | None, str, float | None]:
     tokens = [item.group(0).strip() for item in AMOUNT_RE.finditer(str(line or ""))]
     values: list[tuple[str, float]] = []
@@ -51,13 +51,14 @@ def current_and_previous_amounts(
         if "." not in token and "," not in token and len(digits) <= 3:
             continue
         values.append((token, normalized))
-        if len(values) == 2:
+        if len(values) == 2 and not prefer_last_amounts:
             break
     if not values:
         return ("", None, "", None)
     if len(values) == 1:
         return (values[0][0], values[0][1], "", None)
-    return (values[0][0], values[0][1], values[1][0], values[1][1])
+    current, previous = values[-2:] if prefer_last_amounts else values[:2]
+    return (current[0], current[1], previous[0], previous[1])
 
 
 def value_of(item: Any) -> float | None:

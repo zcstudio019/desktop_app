@@ -44,6 +44,8 @@ def _page(item: dict[str, Any] | Any) -> str:
 
 def _confidence(item: dict[str, Any] | Any) -> str:
     value = (item.get("置信度") if "置信度" in item else item.get("confidence")) if isinstance(item, dict) else None
+    if _field_value(item) is None:
+        return "-"
     return "-" if value is None else f"{float(value):.2f}"
 
 
@@ -53,7 +55,8 @@ def _ratio(value: Any) -> str:
 
 def _statement_table(
     lines: list[str], title: str, section: dict[str, Any], labels: list[str],
-    amount_header: str, previous_header: str,
+    amount_header: str, previous_header: str, *, hide_double_zero_details: bool = False,
+    keep_zero_labels: set[str] | None = None,
 ) -> None:
     lines.extend([
         "",
@@ -61,8 +64,22 @@ def _statement_table(
         f"| 项目 | {amount_header} | {previous_header} | 来源页码 | 置信度 |",
         "|---|---:|---:|---:|---:|",
     ])
+    required_zero_labels = keep_zero_labels or set()
     for label in labels:
         item = section.get(label) or {}
+        current = _field_value(item)
+        previous = (
+            item.get("对比列标准化数值") if "对比列标准化数值" in item else item.get("previous_normalized_value")
+        ) if isinstance(item, dict) else None
+        if (
+            hide_double_zero_details
+            and label not in required_zero_labels
+            and current is not None
+            and previous is not None
+            and float(current) == 0.0
+            and float(previous) == 0.0
+        ):
+            continue
         lines.append(f"| {label} | {_money(item)} | {_previous_money(item)} | {_page(item)} | {_confidence(item)} |")
 
 
@@ -148,6 +165,21 @@ def render_financial_report_markdown(data: dict[str, Any]) -> str:
         ],
         "本期金额",
         "上期金额",
+        hide_double_zero_details=True,
+        keep_zero_labels={
+            "经营活动现金流入小计",
+            "经营活动现金流出小计",
+            "经营活动产生的现金流量净额",
+            "投资活动现金流入小计",
+            "投资活动现金流出小计",
+            "投资活动产生的现金流量净额",
+            "筹资活动现金流入小计",
+            "筹资活动现金流出小计",
+            "筹资活动产生的现金流量净额",
+            "现金及现金等价物净增加额",
+            "期初现金及现金等价物余额",
+            "期末现金及现金等价物余额",
+        },
     )
     lines.extend([
         "",
