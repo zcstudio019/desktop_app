@@ -7,6 +7,8 @@ import logging
 import uuid
 from typing import Any
 
+from backend.document_types import normalize_document_type_code
+from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator import ENTERPRISE_FLOW_TYPES
 from services.ai_service import AIService
 from utils.json_parser import parse_json
 
@@ -22,6 +24,8 @@ TOP_K = 5
 SOURCE_PRIORITY = {
     "customer_profile_markdown": 4,
     "parsed_document_text": 3,
+    "financial_report": 3,
+    "enterprise_flow": 3,
     "scheme_match_summary": 2,
     "application_summary": 1,
 }
@@ -60,7 +64,15 @@ class RagService:
 
         profile, _ = await get_or_create_customer_profile(storage_service, customer_id)
         documents: list[dict[str, Any]] = [
-            {"source_type": "customer_profile_markdown", "source_id": customer_id, "text": profile.get("markdown_content") or ""}
+            {
+                "source_type": "customer_profile_markdown",
+                "document_type": "customer_profile_markdown",
+                "source_id": customer_id,
+                "document_id": "",
+                "source_file": "",
+                "section_title": "资料汇总",
+                "text": profile.get("markdown_content") or "",
+            }
         ]
 
         get_business_extractions = getattr(storage_service, "get_business_extractions_by_customer", None)
@@ -69,11 +81,28 @@ class RagService:
         else:
             extractions = await storage_service.get_extractions_by_customer(customer_id)
         for extraction in extractions:
+            document_type = normalize_document_type_code(
+                extraction.get("extraction_type") or extraction.get("document_type") or ""
+            ) or str(extraction.get("extraction_type") or extraction.get("document_type") or "parsed_document_text")
+            if document_type in ENTERPRISE_FLOW_TYPES:
+                document_type = "enterprise_flow"
+            extracted_data = extraction.get("extracted_data") or {}
+            structured_json = extracted_data.get("structured_json") if isinstance(extracted_data, dict) else {}
+            source_file = str(
+                extraction.get("file_name")
+                or extraction.get("source_file")
+                or (structured_json or {}).get("source_file")
+                or ""
+            )
             documents.append(
                 {
-                    "source_type": "parsed_document_text",
+                    "source_type": document_type,
+                    "document_type": document_type,
                     "source_id": extraction.get("extraction_id") or "",
-                    "text": self._serialize_data(extraction.get("extracted_data") or {}),
+                    "document_id": extraction.get("doc_id") or extraction.get("document_id") or "",
+                    "source_file": source_file,
+                    "section_title": f"{document_type}结构化提取",
+                    "text": self._serialize_data(extracted_data),
                 }
             )
 
@@ -82,7 +111,11 @@ class RagService:
             documents.append(
                 {
                     "source_type": "scheme_match_summary",
+                    "document_type": "scheme_match_summary",
                     "source_id": scheme_snapshot.get("snapshot_id") or customer_id,
+                    "document_id": "",
+                    "source_file": "",
+                    "section_title": "方案匹配摘要",
                     "text": scheme_snapshot.get("summary_markdown") or scheme_snapshot.get("raw_result") or "",
                 }
             )
@@ -94,7 +127,11 @@ class RagService:
             documents.append(
                 {
                     "source_type": "application_summary",
+                    "document_type": "application_summary",
                     "source_id": latest_app.get("id") or "",
+                    "document_id": "",
+                    "source_file": "",
+                    "section_title": "申请表摘要",
                     "text": self._serialize_data(latest_app.get("applicationData") or {}),
                 }
             )
@@ -114,7 +151,15 @@ class RagService:
                         "chunk_index": chunk_index,
                         "chunk_text": chunk_text,
                         "embedding": self.embedding_service.embed_text(chunk_text),
-                        "metadata": {"source_priority": SOURCE_PRIORITY.get(document["source_type"], 0)},
+                        "metadata": {
+                            "source_priority": SOURCE_PRIORITY.get(document["source_type"], SOURCE_PRIORITY["parsed_document_text"]),
+                            "customer_id": customer_id,
+                            "document_id": document.get("document_id") or "",
+                            "document_type": document.get("document_type") or document["source_type"],
+                            "source_type": document["source_type"],
+                            "source_file": document.get("source_file") or "",
+                            "section_title": document.get("section_title") or "",
+                        },
                     }
                 )
         await storage_service.replace_customer_chunks(customer_id, stored_chunks)
@@ -147,7 +192,8 @@ class RagService:
                 if label not in missing:
                     missing.append(label)
         source_types = {chunk.get("source_type") for chunk in chunks}
-        if "parsed_document_text" not in source_types and "已解析资料文本" not in missing:
+        parsed_source_types = source_types - {"customer_profile_markdown", "scheme_match_summary", "application_summary"}
+        if not parsed_source_types and "已解析资料文本" not in missing:
             missing.append("已解析资料文本")
         return missing
 
@@ -177,6 +223,10 @@ class RagService:
             [
                 {
                     "source_type": chunk.get("source_type") or "",
+                    "document_type": (chunk.get("metadata") or {}).get("document_type") or chunk.get("source_type") or "",
+                    "document_id": (chunk.get("metadata") or {}).get("document_id") or "",
+                    "source_file": (chunk.get("metadata") or {}).get("source_file") or "",
+                    "section_title": (chunk.get("metadata") or {}).get("section_title") or "",
                     "text": chunk.get("chunk_text") or "",
                     "score": round(
                         self.embedding_service.cosine_similarity(query_embedding, chunk.get("embedding") or []),

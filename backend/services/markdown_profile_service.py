@@ -21,6 +21,7 @@ from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator i
     aggregate_customer_enterprise_flows,
 )
 from backend.services.enterprise_bank_statement_agent.flow_rules import get_enterprise_flow_rules
+from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
@@ -2111,6 +2112,10 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
         item for item in extractions
         if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') in PERSONAL_FLOW_TYPES
     ]
+    financial_report_extractions = [
+        item for item in extractions
+        if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') == 'financial_report'
+    ]
     other_extractions = [
         item for item in extractions
         if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') != 'id_card'
@@ -2118,6 +2123,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
         and not _is_enterprise_credit_type(item.get('extraction_type'))
         and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in ENTERPRISE_FLOW_TYPES
         and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in PERSONAL_FLOW_TYPES
+        and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') != 'financial_report'
     ]
 
     if id_card_extractions:
@@ -2295,6 +2301,96 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             logger.warning("profile_markdown property_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
             sections.append(_markdown_section('房产证', ['- 提示：房产证资料整理失败，请查看来源文档列表或重新上传。']))
 
+    logger.info("[Profile Sync][FinancialReport] found count=%s", len(financial_report_extractions))
+    if financial_report_extractions:
+        try:
+            for extraction in financial_report_extractions:
+                document = None
+                doc_id = extraction.get('doc_id')
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "profile_markdown financial_report_document_meta_failed customer_id=%s doc_id=%s error=%s",
+                            customer_id,
+                            doc_id,
+                            exc,
+                        )
+                source_documents.append({
+                    'source_type': 'financial_report',
+                    'source_type_name': get_document_display_name('financial_report'),
+                    'extraction_id': extraction.get('extraction_id'),
+                    'doc_id': doc_id,
+                    'file_name': (document or {}).get('file_name') or extraction.get('file_name') or '财务报表',
+                    'original_status': '可查看' if (document or {}).get('file_path') else '原件文件不存在或已不可用',
+                    'original_available': bool((document or {}).get('file_path')),
+                })
+
+            aggregated_financial = aggregate_customer_financial_reports(financial_report_extractions)
+            reports = aggregated_financial.get('reports') or []
+            latest = reports[-1] if reports else {}
+            earliest = reports[0] if reports else {}
+            latest_info = latest.get('company_info') or {}
+            earliest_info = earliest.get('company_info') or {}
+            latest_analysis = aggregated_financial.get('latest_credit_analysis') or latest.get('bank_credit_analysis') or {}
+
+            def financial_amount(report: dict[str, Any], section: str, key: str) -> float | None:
+                item = (report.get(section) or {}).get(key) or {}
+                value = item.get('normalized_value') if isinstance(item, dict) else item
+                try:
+                    return float(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            def financial_total(section: str, key: str) -> float:
+                return sum(financial_amount(report, section, key) or 0 for report in reports[-3:])
+
+            def financial_period_label(report: dict[str, Any]) -> str:
+                info = report.get('company_info') or {}
+                end = str(info.get('report_period_end') or info.get('report_date') or '')
+                type_label = {'annual': '年报', 'quarterly': '季报', 'monthly': '月报'}.get(
+                    str(info.get('report_type') or ''), '报表'
+                )
+                return f"{end[:4]}{type_label}" if end else type_label
+
+            risk_findings = latest_analysis.get('risk_findings') or []
+            risk_titles = [
+                str(item.get('title') or item.get('code') or '').strip()
+                for item in risk_findings if isinstance(item, dict)
+            ]
+            risk_level = str(latest_analysis.get('overall_risk_level') or 'unknown')
+            risk_label = {'low': '低', 'medium': '中', 'medium_high': '中高', 'high': '高'}.get(risk_level, '-')
+            coverage_start = str(earliest_info.get('report_period_start') or '-')
+            coverage_end = str(latest_info.get('report_period_end') or latest_info.get('report_date') or '-')
+            financial_lines = [
+                '### 财务数据总览',
+                f"- 已识别报表份数：{len(reports)}份",
+                f"- 已识别报表期间：{'、'.join(financial_period_label(report) for report in reports) or '-'}",
+                f"- 覆盖期间：{coverage_start} 至 {coverage_end}",
+                f"- 最新资产总计：{_format_amount_for_markdown(financial_amount(latest, 'balance_sheet', 'total_assets') or 0)}",
+                f"- 最新负债合计：{_format_amount_for_markdown(financial_amount(latest, 'balance_sheet', 'total_liabilities') or 0)}",
+                f"- 最新所有者权益合计：{_format_amount_for_markdown(financial_amount(latest, 'balance_sheet', 'total_equity') or 0)}",
+                f"- 近三期累计营业收入：{_format_amount_for_markdown(financial_total('income_statement', 'revenue'))}",
+                f"- 近三期累计净利润：{_format_amount_for_markdown(financial_total('income_statement', 'net_profit'))}",
+                f"- 综合风险：{risk_label}",
+                '',
+                '### 财务风险摘要',
+            ]
+            financial_lines.extend(f"- {title}" for title in risk_titles[:10] if title)
+            if not risk_titles:
+                financial_lines.append('- 暂未识别到明确财务风险信号')
+            sections.append('## 财务报表\n' + '\n'.join(financial_lines))
+            logger.info("[Profile Sync][FinancialReport] markdown section appended=true report_count=%s", len(reports))
+        except Exception as exc:
+            logger.warning(
+                "profile_markdown financial_report_aggregate_failed customer_id=%s error=%s",
+                customer_id,
+                exc,
+                exc_info=True,
+            )
+            sections.append(_markdown_section('财务报表', ['- 财务报表客户级汇总暂时生成失败，请查看来源文档列表。']))
+
     logger.info("[Profile Sync][EnterpriseFlow] found count=%s", len(enterprise_flow_extractions))
     if enterprise_flow_extractions:
         try:
@@ -2335,8 +2431,8 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
 
             for source in source_files:
                 source_documents.append({
-                    'source_type': source.get('document_type') or 'enterprise_flow',
-                    'source_type_name': get_document_display_name(source.get('document_type') or 'enterprise_flow'),
+                    'source_type': 'enterprise_flow',
+                    'source_type_name': get_document_display_name('enterprise_flow'),
                     'extraction_id': source.get('extraction_id'),
                     'doc_id': source.get('document_id'),
                     'file_name': source.get('file_name') or '企业流水',
@@ -2356,7 +2452,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             )
 
             flow_lines = [
-                '### 总体流水汇总',
+                '### 企业流水分析',
                 f"- 来源文件数：{aggregated_flow.get('source_document_count') or len(source_files)}",
                 f"- 覆盖账户数：{summary.get('account_count') or len(accounts)}",
                 f"- 覆盖银行数：{summary.get('bank_count') or len({str(account.get('bank_name') or '') for account in accounts if account.get('bank_name')})}",
@@ -2490,8 +2586,16 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             conclusion = str(financing_view.get('conclusion') or '').strip()
             if conclusion:
                 flow_lines.append(f"- 综合判断：{conclusion}")
+            flow_lines.extend(['', '### 流水风险摘要'])
+            if signals:
+                flow_lines.extend(
+                    f"- {str(item.get('title') or item.get('code') or '-')}：{str(item.get('description') or item.get('message') or '').strip() or '-'}"
+                    for item in signals[:10] if isinstance(item, dict)
+                )
+            else:
+                flow_lines.append('- 暂未识别到明确流水风险信号')
 
-            sections.append('## 企业流水摘要\n' + '\n'.join(flow_lines))
+            sections.append('---\n\n## 企业流水\n' + '\n'.join(flow_lines))
             logger.info("[Profile Sync][EnterpriseFlow] markdown section appended=true")
         except Exception as exc:
             logger.warning(

@@ -66,6 +66,11 @@ class FinancingJudgementAgent(BaseAgent):
             "credit_analysis": (context.get("steps") or {}).get("CreditAnalysisAgent") or {},
             "risk_analysis": (context.get("steps") or {}).get("RiskAgent") or {},
             "missing_materials": (context.get("steps") or {}).get("MissingMaterialAgent") or {},
+            "analysis_summaries_by_type": context.get("analysis_summaries_by_type") or {
+                "financial_report": context.get("financial_report_summary") or {},
+                "enterprise_flow": context.get("enterprise_flow_summary") or {},
+                "enterprise_credit": context.get("enterprise_credit") or {},
+            },
             "rule_judgement": rule_output,
         }
         llm_output = await run_agent_llm_json(
@@ -98,6 +103,8 @@ class FinancingJudgementAgent(BaseAgent):
         credit_profile = (steps.get("CreditAnalysisAgent") or {}).get("credit_profile") or {}
         risk_output = steps.get("RiskAgent") or {}
         missing_output = steps.get("MissingMaterialAgent") or {}
+        financial_summary = context.get("financial_report_summary") or {}
+        enterprise_flow_summary = context.get("enterprise_flow_summary") or {}
         risk_level = risk_output.get("risk_level") or "unknown"
         total_balance = credit_profile.get("total_unsettled_balance")
         credit_line_total = credit_profile.get("credit_line_total")
@@ -116,6 +123,10 @@ class FinancingJudgementAgent(BaseAgent):
             strengths.append("已有授信信息，可用于判断银行合作基础")
         if total_balance:
             strengths.append("已有负债结构信息，可辅助测算偿债压力")
+        if financial_summary.get("reports"):
+            strengths.append("已取得财务报表汇总，可用于判断资产负债和盈利表现")
+        if enterprise_flow_summary.get("summary") or enterprise_flow_summary.get("accounts"):
+            strengths.append("已取得企业流水汇总，可用于交叉验证经营回款")
         weaknesses = []
         if risk_level in {"medium", "high"}:
             weaknesses.append("存在需要解释的风险项")

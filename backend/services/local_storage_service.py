@@ -7,6 +7,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 
+from backend.document_types import normalize_document_type_code
+
 # NOTE:
 # This module is retained only as a local SQLite fallback for development.
 # Production MySQL / RDS deployments should use SQLAlchemyStorageService instead.
@@ -769,13 +771,15 @@ class LocalStorageService:
         if missing_fields:
             raise ValueError(f"缺少必需字段: {', '.join(missing_fields)}")
 
+        payload = dict(extraction_data)
+        payload['extraction_type'] = normalize_document_type_code(payload.get('extraction_type') or '') or payload.get('extraction_type')
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
             # 将 extracted_data 序列化为 JSON
             extracted_data_json = json.dumps(
-                extraction_data.get('extracted_data', {}),
+                payload.get('extracted_data', {}),
                 ensure_ascii=False
             )
 
@@ -785,15 +789,15 @@ class LocalStorageService:
                     extracted_data, confidence
                 ) VALUES (?, ?, ?, ?, ?, ?)
             ''', (
-                extraction_data['extraction_id'],
-                extraction_data['doc_id'],
-                extraction_data['customer_id'],
-                extraction_data['extraction_type'],
+                payload['extraction_id'],
+                payload['doc_id'],
+                payload['customer_id'],
+                payload['extraction_type'],
                 extracted_data_json,
-                extraction_data.get('confidence')
+                payload.get('confidence')
             ))
             conn.commit()
-            return extraction_data
+            return payload
         except sqlite3.Error as e:
             conn.rollback()
             raise RuntimeError(f"保存提取结果失败: {e}") from e
