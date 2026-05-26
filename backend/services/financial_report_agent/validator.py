@@ -50,8 +50,12 @@ def validate_financial_report_result(data: dict[str, Any], tolerance: float = 1.
         _check(warnings, "流动负债合计与核心流动负债科目", _v(balance, "current_liabilities_total"), sum(current_liability_components), tolerance)
     revenue, cost = _v(income, "revenue"), _v(income, "operating_cost")
     expenses = [_v(income, key) for key in ("taxes_and_surcharges", "selling_expenses", "admin_expenses", "rd_expenses", "finance_expenses")]
+    operating_additions = [_v(income, key) for key in ("other_income", "investment_income")]
     if revenue is not None and cost is not None and all(value is not None for value in expenses):
-        _check(warnings, "营业利润与已提取损益明细", _v(income, "operating_profit"), revenue - cost - sum(expenses), tolerance)
+        expected_operating_profit = revenue - cost - sum(expenses) + sum(
+            value for value in operating_additions if value is not None
+        )
+        _check(warnings, "营业利润与已提取损益明细", _v(income, "operating_profit"), expected_operating_profit, tolerance)
     operating_profit = _v(income, "operating_profit")
     non_operating_income, non_operating_expense = _v(income, "non_operating_income"), _v(income, "non_operating_expense")
     if operating_profit is not None and non_operating_income is not None and non_operating_expense is not None:

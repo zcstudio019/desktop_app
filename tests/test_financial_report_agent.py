@@ -6,6 +6,7 @@ from backend.document_types import normalize_document_type_code, should_append_s
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
 from backend.services.document_extractor_service import detect_document_type_code
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
+from backend.services.financial_report_agent.normalizer import normalize_amount
 from backend.services.financial_report_agent.orchestrator import run_financial_report_agent
 
 
@@ -185,8 +186,11 @@ def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> 
             "page": 2,
             "text": """利润表
 项目 行次 本期金额 上期金额
-营业收入 1 100,012,470.73 140,360,769.35
-净利润 20 6,690,607.31 429,625.06
+一、营业收入 1 100,012,470.73 140,360,769.35
+减：营业成本 2 74,007,485.08 111,393,386.93
+三、利润总额（亏损总额以“-”号填列） 18 6,690,607.31 330,224.42
+减：所得税费用 19 0.00 -99,400.64
+四、净利润（净亏损以“-”号填列） 20 6,690,607.31 429,625.06
 """,
         },
         {
@@ -208,6 +212,8 @@ def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> 
     assets = data["balance_sheet"]["total_assets"]
     equity = data["balance_sheet"]["total_equity"]
     revenue = data["income_statement"]["revenue"]
+    operating_cost = data["income_statement"]["operating_cost"]
+    income_tax = data["income_statement"]["income_tax_expense"]
     net_profit = data["income_statement"]["net_profit"]
     operating_cash = data["cash_flow_statement"]["net_operating_cash_flow"]
     assert cash["normalized_value"] == 1648909.26
@@ -218,6 +224,14 @@ def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> 
     assert equity["previous_normalized_value"] == 6223157.79
     assert revenue["normalized_value"] == 100012470.73
     assert revenue["previous_normalized_value"] == 140360769.35
+    assert operating_cost["normalized_value"] == 74007485.08
+    assert operating_cost["previous_normalized_value"] == 111393386.93
+    assert operating_cost["current_column_label"] == "本期金额"
+    assert operating_cost["previous_column_label"] == "上期金额"
+    assert income_tax["normalized_value"] == 0.00
+    assert income_tax["previous_normalized_value"] == -99400.64
+    assert income_tax["raw_value"] == "0.00"
+    assert income_tax["previous_raw_value"] == "-99,400.64"
     assert net_profit["normalized_value"] == 6690607.31
     assert net_profit["previous_normalized_value"] == 429625.06
     assert operating_cash["current_column_label"] == "本期金额"
@@ -229,3 +243,15 @@ def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> 
     assert "上期金额" in markdown
     assert "| 货币资金 | 1,648,909.26 | 3,507,503.11 |" in markdown
     assert "| 营业收入 | 100,012,470.73 | 140,360,769.35 |" in markdown
+    assert "| 营业成本 | 74,007,485.08 | 111,393,386.93 |" in markdown
+    assert "| 所得税费用 | 0.00 | -99,400.64 |" in markdown
+    assert "| 营业成本 | - | -" not in markdown
+    assert "| 所得税费用 | - | -" not in markdown
+
+
+def test_financial_report_amount_parser_keeps_zero_and_negative_tax_amounts() -> None:
+    assert normalize_amount("0.00") == 0.00
+    assert normalize_amount("-99,400.64") == -99400.64
+    assert normalize_amount("－99,400.64") == -99400.64
+    assert normalize_amount("（99,400.64）") == -99400.64
+    assert normalize_amount("(99,400.64)") == -99400.64

@@ -29,7 +29,12 @@ def normalize_label(value: str) -> str:
     return normalized
 
 
-def _matched_label(line: str, labels: tuple[str, ...]) -> tuple[str, int] | None:
+def _matched_label(
+    line: str,
+    labels: tuple[str, ...],
+    allowed_preceding_chinese: set[str] | None = None,
+) -> tuple[str, int] | None:
+    permitted_prefixes = allowed_preceding_chinese or set()
     for label in sorted(labels, key=len, reverse=True):
         normalized_line, positions = _normalized_with_positions(line)
         normalized_label = normalize_label(label)
@@ -40,7 +45,7 @@ def _matched_label(line: str, labels: tuple[str, ...]) -> tuple[str, int] | None
         original_end = positions[match.end() - 1]
         preceding_text = str(line or "")[:original_start].rstrip()
         preceding = preceding_text[-1:] if preceding_text else ""
-        if not (preceding and "\u4e00" <= preceding <= "\u9fff"):
+        if not (preceding and "\u4e00" <= preceding <= "\u9fff") or preceding in permitted_prefixes:
             return label, original_end
     return None
 
@@ -55,6 +60,7 @@ def extract_amount_fields(
     multiplier: Decimal,
     current_column_label: str = "期末余额/本期金额",
     previous_column_label: str = "上年年末余额/上期金额",
+    allowed_preceding_chinese: set[str] | None = None,
 ) -> tuple[dict[str, AmountField], list[EvidenceItem]]:
     values: dict[str, AmountField] = {}
     evidence: list[EvidenceItem] = []
@@ -79,7 +85,7 @@ def extract_amount_fields(
                         normalized_first_line = normalize_label(line)
                         if not any(normalize_label(label).startswith(normalized_first_line) for label in labels):
                             continue
-                    match_info = _matched_label(possible, labels)
+                    match_info = _matched_label(possible, labels, allowed_preceding_chinese)
                     if match_info:
                         candidate = possible
                         break
@@ -90,11 +96,15 @@ def extract_amount_fields(
                 if first_current_amount(candidate, multiplier)[1] is None:
                     candidate_lines = [candidate]
                     for adjacent in raw_lines[line_index + len(candidate.splitlines()):line_index + 4]:
-                        if any(_matched_label(adjacent, (other,)) for other in all_labels if other != matched_label):
+                        if any(
+                            _matched_label(adjacent, (other,), allowed_preceding_chinese)
+                            for other in all_labels
+                            if other != matched_label
+                        ):
                             break
                         candidate_lines.append(adjacent.strip())
                     candidate = " ".join(candidate_lines)
-                candidate_match = _matched_label(candidate, (matched_label,))
+                candidate_match = _matched_label(candidate, (matched_label,), allowed_preceding_chinese)
                 label_end = candidate_match[1] if candidate_match else 0
                 remainder = candidate[label_end:]
                 raw_value, normalized, previous_raw_value, previous_normalized = current_and_previous_amounts(remainder, multiplier)

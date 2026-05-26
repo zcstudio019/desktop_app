@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
-AMOUNT_RE = re.compile(r"(?<!\d)(?:[-－—(]?\s*)?\d[\d,，]*(?:\.\d+)?\s*\)?")
+AMOUNT_RE = re.compile(r"(?<!\d)(?:[-－—(（]?\s*)?\d[\d,，]*(?:\.\d+)?\s*[)）]?")
 
 
 def detect_unit(text: str) -> tuple[str, Decimal]:
@@ -21,7 +21,7 @@ def normalize_amount(value: Any, multiplier: Decimal | float = Decimal("1")) -> 
     text = str(value or "").strip()
     if not text or text in {"-", "--", "—", "－"}:
         return None
-    negative = text.startswith(("-", "－", "—", "(")) or text.endswith(")")
+    negative = text.startswith(("-", "－", "—", "(", "（")) or text.endswith((")", "）"))
     cleaned = re.sub(r"[,\s，()（）－—-]", "", text)
     try:
         amount = Decimal(cleaned) * Decimal(str(multiplier))
