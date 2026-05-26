@@ -2377,13 +2377,44 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 )
                 return f"{end[:4]}{type_label}" if end else type_label
 
+            def financial_info_text(key: str) -> str:
+                value = latest_info.get(key)
+                return str(value).strip() if value not in (None, '') else '-'
+
+            def financial_value_label(key: str, value: Any) -> str:
+                mappings = {
+                    'report_type': {'annual': '年报', 'quarterly': '季报', 'monthly': '月报', 'unknown': '未知'},
+                    'currency': {'CNY': '人民币', 'RMB': '人民币'},
+                    'accounting_standard': {
+                        'enterprise_accounting_standard': '企业会计准则一般企业',
+                        'small_enterprise_accounting_standard': '小企业会计准则',
+                    },
+                }
+                return mappings.get(key, {}).get(str(value), str(value or '-'))
+
+            def financial_ratio(key: str) -> float | None:
+                value = (latest.get('financial_ratios') or {}).get(key)
+                try:
+                    return float(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            def financial_ratio_text(key: str, percentage: bool = True) -> str:
+                value = financial_ratio(key)
+                if value is None:
+                    return '-'
+                return f"{value:.2%}" if percentage else f"{value:.2f}"
+
+            def financial_risk_level_label(level: Any) -> str:
+                return {'low': '低', 'medium': '中', 'medium_high': '中高', 'high': '高'}.get(str(level), '-')
+
             risk_findings = latest_analysis.get('risk_findings') or []
             risk_titles = [
                 str(item.get('title') or item.get('code') or '').strip()
                 for item in risk_findings if isinstance(item, dict)
             ]
             risk_level = str(latest_analysis.get('overall_risk_level') or 'unknown')
-            risk_label = {'low': '低', 'medium': '中', 'medium_high': '中高', 'high': '高'}.get(risk_level, '-')
+            risk_label = financial_risk_level_label(risk_level)
             coverage_start = str(earliest_info.get('report_period_start') or '-')
             coverage_end = str(latest_info.get('report_period_end') or latest_info.get('report_date') or '-')
             financial_lines = [
@@ -2397,6 +2428,19 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 f"- 近三期累计营业收入：{_format_amount_for_markdown(financial_total('income_statement', 'revenue'))}",
                 f"- 近三期累计净利润：{_format_amount_for_markdown(financial_total('income_statement', 'net_profit'))}",
                 f"- 综合风险：{risk_label}",
+                '',
+                '### 企业信息',
+                '| 字段 | 内容 |',
+                '|---|---|',
+                f"| 企业名称 | {financial_info_text('company_name')} |",
+                f"| 纳税人识别号 | {financial_info_text('taxpayer_id')} |",
+                f"| 会计准则 | {financial_value_label('accounting_standard', latest_info.get('accounting_standard'))} |",
+                f"| 报表类型 | {'多期（最新为' + financial_value_label('report_type', latest_info.get('report_type')) + '）' if len(reports) > 1 else financial_value_label('report_type', latest_info.get('report_type'))} |",
+                f"| 所属期开始日期 | {financial_info_text('report_period_start')} |",
+                f"| 所属期结束日期 | {financial_info_text('report_period_end')} |",
+                f"| 报送日期 | {financial_info_text('report_date')} |",
+                f"| 币种 | {financial_value_label('currency', latest_info.get('currency'))} |",
+                f"| 金额单位 | {financial_info_text('unit')} |",
                 '',
                 '### 资产负债表摘要',
                 '| 项目 | 最新一期 | 上一期 | 变化额 | 变化率 |',
@@ -2463,6 +2507,90 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     )
                 )
             financial_lines.extend([
+                '',
+                '### 银行授信核心指标表',
+                '| 指标 | 数值 |',
+                '|---|---:|',
+                f"| 资产负债率 | {financial_ratio_text('asset_liability_ratio')} |",
+                f"| 流动比率 | {financial_ratio_text('current_ratio', percentage=False)} |",
+                f"| 速动比率 | {financial_ratio_text('quick_ratio', percentage=False)} |",
+                f"| 现金比率 | {financial_ratio_text('cash_ratio')} |",
+                f"| 毛利率 | {financial_ratio_text('gross_margin')} |",
+                f"| 净利率 | {financial_ratio_text('net_margin')} |",
+                f"| 经营现金流收入比 | {financial_ratio_text('operating_cash_flow_to_revenue')} |",
+                f"| 筹资依赖度 | {financial_ratio_text('financing_dependence')} |",
+                '',
+                '### 偿债能力分析',
+                f"- 资产负债率：{financial_ratio_text('asset_liability_ratio')}；流动比率：{financial_ratio_text('current_ratio', percentage=False)}；现金比率：{financial_ratio_text('cash_ratio')}。",
+                '',
+                '### 盈利能力分析',
+                f"- 毛利率：{financial_ratio_text('gross_margin')}；净利率：{financial_ratio_text('net_margin')}。",
+                '',
+                '### 现金流质量分析',
+                f"- 经营现金流收入比：{financial_ratio_text('operating_cash_flow_to_revenue')}；筹资依赖度：{financial_ratio_text('financing_dependence')}。",
+                '',
+                '### 异常科目分析',
+            ])
+            if risk_findings:
+                for finding in risk_findings:
+                    if not isinstance(finding, dict):
+                        continue
+                    evidence = '；'.join(str(item) for item in finding.get('evidence') or [] if item)
+                    detail = str(finding.get('description') or '').strip()
+                    if evidence:
+                        detail = f"{detail} 证据：{evidence}".strip()
+                    financial_lines.append(
+                        f"- [{financial_risk_level_label(finding.get('risk_level'))}] "
+                        f"{finding.get('title') or finding.get('code') or '风险事项'}：{detail or '-'}"
+                    )
+            else:
+                financial_lines.append('- 暂未识别到需单列提示的异常财务项目。')
+            financial_lines.extend([
+                '',
+                '### 银行贷款审核关注点',
+            ])
+            bank_questions = [
+                str(item).strip()
+                for item in latest_analysis.get('key_bank_questions') or []
+                if str(item).strip()
+            ]
+            if bank_questions:
+                financial_lines.extend(f"- {item}" for item in bank_questions)
+            else:
+                financial_lines.append('- 按常规贷前调查核实收入、负债与现金流真实性。')
+            financial_lines.extend([
+                '',
+                '### 缺失材料清单',
+            ])
+            materials = latest_analysis.get('missing_materials') or []
+            if materials:
+                for material in materials:
+                    if isinstance(material, dict):
+                        reason = str(material.get('reason') or '').strip()
+                        financial_lines.append(
+                            f"- {material.get('material') or '-'}" + (f"：{reason}" if reason else '')
+                        )
+                    else:
+                        financial_lines.append(f"- {material}")
+            else:
+                financial_lines.append('- 暂无新增材料提示，仍需按常规贷前要求核验原始财务资料。')
+            positive_factors = [
+                str(item).strip() for item in latest_analysis.get('positive_factors') or [] if str(item).strip()
+            ]
+            negative_factors = [
+                str(item).strip() for item in latest_analysis.get('negative_factors') or [] if str(item).strip()
+            ]
+            products = ['抵押经营贷', '应收账款质押'] if risk_level in {'medium_high', 'high'} else ['经营贷', '流动资金贷款', '订单融资']
+            financial_lines.extend([
+                '',
+                '### 综合授信建议',
+                '- 本分析基于客户名下全部财务报表资料自动汇总生成。',
+                f"- 综合判断：{latest_analysis.get('credit_view') or '-'}",
+                f"- 正向因素：{'；'.join(positive_factors) or '-'}",
+                f"- 负向因素：{'；'.join(negative_factors) or '-'}",
+                f"- 建议授信策略：{latest_analysis.get('suggested_credit_strategy') or '-'}",
+                f"- 建议产品：{'、'.join(products)}",
+                f"- 建议补充材料：{'；'.join(str(item.get('material') if isinstance(item, dict) else item) for item in materials) or '-'}",
                 '',
                 '### 财务风险摘要',
             ])

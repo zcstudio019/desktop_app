@@ -31,6 +31,8 @@ def _financial_report(
         "source_file": f"{year}财务报表.pdf",
         "company_info": {
             "company_name": "测试有限公司",
+            "taxpayer_id": "913201055804841947",
+            "accounting_standard": "enterprise_accounting_standard",
             "report_type": "quarterly" if quarterly else "annual",
             "report_period_start": period_start,
             "report_period_end": period_end,
@@ -47,12 +49,22 @@ def _financial_report(
         },
         "income_statement": {
             "revenue": _amount(revenue),
+            "operating_cost": _amount(revenue * 0.8),
             "net_profit": _amount(net_profit),
         },
         "cash_flow_statement": {
             "net_operating_cash_flow": _amount(operating_cash_flow),
         },
-        "financial_ratios": {},
+        "financial_ratios": {
+            "asset_liability_ratio": liabilities / assets,
+            "current_ratio": 1.1,
+            "quick_ratio": 0.8,
+            "cash_ratio": 0.05,
+            "gross_margin": 0.2,
+            "net_margin": net_profit / revenue,
+            "operating_cash_flow_to_revenue": operating_cash_flow / revenue,
+            "financing_dependence": 0.3,
+        },
     }
     return {
         "extraction_id": f"financial-{year}",
@@ -160,6 +172,15 @@ def test_profile_keeps_financial_report_and_enterprise_flow_in_both_upload_order
         assert "### 资产负债表摘要" in markdown
         assert "### 利润表摘要" in markdown
         assert "### 现金流量表摘要" in markdown
+        assert "### 企业信息" in markdown
+        assert "### 银行授信核心指标表" in markdown
+        assert "### 偿债能力分析" in markdown
+        assert "### 盈利能力分析" in markdown
+        assert "### 现金流质量分析" in markdown
+        assert "### 异常科目分析" in markdown
+        assert "### 银行贷款审核关注点" in markdown
+        assert "### 缺失材料清单" in markdown
+        assert "### 综合授信建议" in markdown
         assert "## 企业流水" in markdown
         assert "### 企业流水分析" in markdown
         assert "### 财务风险摘要" in markdown
@@ -176,9 +197,15 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert lines.count("## 企业流水") == 1
     assert "已识别报表份数：3份" in markdown
     assert "2022年报、2023年报、2024季报" in markdown
+    assert "| 企业名称 | 测试有限公司 |" in markdown
+    assert "| 纳税人识别号 | 913201055804841947 |" in markdown
+    assert "| 报表类型 | 多期（最新为季报） |" in markdown
+    assert "| 币种 | 人民币 |" in markdown
     assert "| 资产总计 | 54,688,482.62 元 | 69,320,214.02 元 | -14,631,731.40 元 | -21.11% |" in markdown
     assert "| 2022年报 | 140,360,769.35 元 |" in markdown
     assert "| 2024季报 | -1,989,500.82 元 |" in markdown
+    assert "| 资产负债率 | 76.13% |" in markdown
+    assert "本分析基于客户名下全部财务报表资料自动汇总生成。" in markdown
     assert "来源文件数：2" in markdown
 
 
