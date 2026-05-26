@@ -207,7 +207,7 @@ def _markdown_section(title: str, lines: list[str]) -> str:
 
 
 def _format_amount_for_markdown(value: Any) -> str:
-    text = str(value or '').strip()
+    text = str(value if value is not None else '').strip()
     if not text:
         return '\u6682\u65e0'
     raw = text.replace(',', '').replace('\u5143', '').strip()
@@ -2343,6 +2343,29 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 except (TypeError, ValueError):
                     return None
 
+            def financial_previous_amount(section: str, key: str) -> float | None:
+                item = (latest.get(section) or {}).get(key) or {}
+                if isinstance(item, dict) and item.get('previous_normalized_value') is not None:
+                    try:
+                        return float(item.get('previous_normalized_value'))
+                    except (TypeError, ValueError):
+                        pass
+                return financial_amount(reports[-2], section, key) if len(reports) > 1 else None
+
+            def financial_amount_text(value: float | None) -> str:
+                return _format_amount_for_markdown(value) if value is not None else '-'
+
+            def financial_rate_text(numerator: float | None, denominator: float | None) -> str:
+                if numerator is None or denominator in (None, 0):
+                    return '-'
+                return f"{numerator / denominator:.2%}"
+
+            def financial_change_text(current: float | None, previous: float | None) -> tuple[str, str]:
+                if current is None or previous is None:
+                    return '-', '-'
+                change = current - previous
+                return financial_amount_text(change), financial_rate_text(change, previous)
+
             def financial_total(section: str, key: str) -> float:
                 return sum(financial_amount(report, section, key) or 0 for report in reports[-3:])
 
@@ -2375,8 +2398,74 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 f"- 近三期累计净利润：{_format_amount_for_markdown(financial_total('income_statement', 'net_profit'))}",
                 f"- 综合风险：{risk_label}",
                 '',
-                '### 财务风险摘要',
+                '### 资产负债表摘要',
+                '| 项目 | 最新一期 | 上一期 | 变化额 | 变化率 |',
+                '|---|---:|---:|---:|---:|',
             ]
+            balance_fields = [
+                ('cash_and_equivalents', '货币资金'),
+                ('accounts_receivable', '应收账款'),
+                ('prepayments', '预付款项'),
+                ('other_receivables', '其他应收款'),
+                ('inventory', '存货'),
+                ('current_assets_total', '流动资产合计'),
+                ('total_assets', '资产总计'),
+                ('short_term_loans', '短期借款'),
+                ('long_term_loans', '长期借款'),
+                ('accounts_payable', '应付账款'),
+                ('current_liabilities_total', '流动负债合计'),
+                ('total_liabilities', '负债合计'),
+                ('total_equity', '所有者权益合计'),
+            ]
+            for key, label in balance_fields:
+                current = financial_amount(latest, 'balance_sheet', key)
+                previous = financial_previous_amount('balance_sheet', key)
+                change_amount, change_rate = financial_change_text(current, previous)
+                financial_lines.append(
+                    f"| {label} | {financial_amount_text(current)} | {financial_amount_text(previous)} | {change_amount} | {change_rate} |"
+                )
+            financial_lines.extend([
+                '',
+                '### 利润表摘要',
+                '| 所属期 | 营业收入 | 营业成本 | 毛利 | 净利润 | 毛利率 | 净利率 |',
+                '|---|---:|---:|---:|---:|---:|---:|',
+            ])
+            for report in reports:
+                revenue = financial_amount(report, 'income_statement', 'revenue')
+                operating_cost = financial_amount(report, 'income_statement', 'operating_cost')
+                gross_profit = revenue - operating_cost if revenue is not None and operating_cost is not None else None
+                net_profit = financial_amount(report, 'income_statement', 'net_profit')
+                financial_lines.append(
+                    '| {period} | {revenue} | {cost} | {gross} | {net} | {gross_margin} | {net_margin} |'.format(
+                        period=financial_period_label(report),
+                        revenue=financial_amount_text(revenue),
+                        cost=financial_amount_text(operating_cost),
+                        gross=financial_amount_text(gross_profit),
+                        net=financial_amount_text(net_profit),
+                        gross_margin=financial_rate_text(gross_profit, revenue),
+                        net_margin=financial_rate_text(net_profit, revenue),
+                    )
+                )
+            financial_lines.extend([
+                '',
+                '### 现金流量表摘要',
+                '| 所属期 | 经营现金流 | 投资现金流 | 筹资现金流 | 期末现金余额 |',
+                '|---|---:|---:|---:|---:|',
+            ])
+            for report in reports:
+                financial_lines.append(
+                    '| {period} | {operating} | {investing} | {financing} | {ending} |'.format(
+                        period=financial_period_label(report),
+                        operating=financial_amount_text(financial_amount(report, 'cash_flow_statement', 'net_operating_cash_flow')),
+                        investing=financial_amount_text(financial_amount(report, 'cash_flow_statement', 'net_investing_cash_flow')),
+                        financing=financial_amount_text(financial_amount(report, 'cash_flow_statement', 'net_financing_cash_flow')),
+                        ending=financial_amount_text(financial_amount(report, 'cash_flow_statement', 'ending_cash_balance')),
+                    )
+                )
+            financial_lines.extend([
+                '',
+                '### 财务风险摘要',
+            ])
             financial_lines.extend(f"- {title}" for title in risk_titles[:10] if title)
             if not risk_titles:
                 financial_lines.append('- 暂未识别到明确财务风险信号')

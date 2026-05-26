@@ -157,6 +157,9 @@ def test_profile_keeps_financial_report_and_enterprise_flow_in_both_upload_order
         }
         assert "## 财务报表" in markdown
         assert "### 财务数据总览" in markdown
+        assert "### 资产负债表摘要" in markdown
+        assert "### 利润表摘要" in markdown
+        assert "### 现金流量表摘要" in markdown
         assert "## 企业流水" in markdown
         assert "### 企业流水分析" in markdown
         assert "### 财务风险摘要" in markdown
@@ -173,6 +176,9 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert lines.count("## 企业流水") == 1
     assert "已识别报表份数：3份" in markdown
     assert "2022年报、2023年报、2024季报" in markdown
+    assert "| 资产总计 | 54,688,482.62 元 | 69,320,214.02 元 | -14,631,731.40 元 | -21.11% |" in markdown
+    assert "| 2022年报 | 140,360,769.35 元 |" in markdown
+    assert "| 2024季报 | -1,989,500.82 元 |" in markdown
     assert "来源文件数：2" in markdown
 
 
