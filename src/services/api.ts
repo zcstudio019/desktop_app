@@ -828,9 +828,11 @@ export async function getCustomerDetail(
 
 export async function getCustomerExtractions(
   customerId: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  includeData = false
 ): Promise<ExtractionGroup[]> {
-  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/extractions`, {
+  const query = includeData ? '?include_data=true' : '';
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/extractions${query}`, {
     method: 'GET',
     headers: { ...getAuthHeaders() },
     signal,

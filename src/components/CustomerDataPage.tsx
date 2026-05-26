@@ -9,6 +9,7 @@ import {
   deleteCustomerProfileMarkdown,
   downloadDocumentOriginal,
   getCustomerDocumentStatus,
+  getCustomerExtractions,
   getCustomerEnterpriseFlowSummary,
   getCustomerPersonalFlowSummary,
   getCustomerProfileMarkdown,
@@ -29,6 +30,8 @@ import EnterpriseBankStatementView, {
   parseMaybeJson,
 } from './documents/EnterpriseBankStatementView';
 import PersonalBankStatementView from './documents/PersonalBankStatementView';
+import FinancialReportView from './documents/FinancialReportView';
+import { hasFinancialReportStructuredData } from './documents/financialReportRightPanelBuilder';
 
 interface CustomerDataPageProps {
   onBack?: () => void;
@@ -2540,6 +2543,16 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     }
   }, []);
 
+  const loadExtractions = useCallback(async (customerId: string) => {
+    try {
+      const result = await getCustomerExtractions(customerId, undefined, true);
+      setExtractionGroups(result);
+    } catch (err) {
+      console.warn('[FinancialReportView] load extraction results failed', err);
+      setExtractionGroups([]);
+    }
+  }, []);
+
   const loadEnterpriseFlowPreview = useCallback(async (customerId: string) => {
     if (enterpriseFlowPreviewLoadingRef.current === customerId) {
       return;
@@ -2656,9 +2669,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     const requestCustomerId = customerIdCandidates[0];
     setExtractionGroups([]);
     void loadDocuments(requestCustomerId);
+    void loadExtractions(requestCustomerId);
     void loadPersonalFlowPreview(requestCustomerId);
     void loadEnterpriseFlowPreview(requestCustomerId);
-  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadPersonalFlowPreview, loadingCustomers, selectedCustomerId]);
+  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadExtractions, loadPersonalFlowPreview, loadingCustomers, selectedCustomerId]);
 
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearch.trim().toLowerCase();
@@ -2979,13 +2993,51 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     hasPersonalFlowShape(selectedPersonalFlowDoc) ||
     markdownHasPersonalFlow
   );
+  const financialReportItems = useMemo(
+    () => {
+      const seen = new Set<string>();
+      return [
+        ...getExtractionItemsByType(extractionGroups, 'financial_report'),
+        ...getExtractionItemsByType(extractionGroups, 'financial_data'),
+      ].filter((item) => {
+        const key = item.extraction_id || `${item.extraction_type}-${item.created_at}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    },
+    [extractionGroups]
+  );
+  const financialReportPayloads = useMemo(
+    () => financialReportItems.map((item) => item.extracted_data).filter((item) => hasFinancialReportStructuredData(item)),
+    [financialReportItems]
+  );
+  const hasFinancialReportDocuments = financialReportItems.length > 0 || documents.some((item) => (
+    isDocumentTypeMatch(item.file_type, 'financial_report') || isDocumentTypeMatch(item.file_type, 'financial_data')
+  ));
   const profilePreviewRenderMode = hasPersonalStructuredData
     ? 'personal_flow_structured'
     : hasEnterpriseStructuredData
     ? 'enterprise_flow_structured'
+    : hasFinancialReportDocuments
+    ? 'financial_report_structured'
     : personalFlowPreviewError || enterpriseFlowPreviewError
       ? 'error_fallback'
       : 'markdown_preview';
+  const financialReportPanel = hasFinancialReportDocuments ? (
+    <section className="rounded-[28px] border border-indigo-100 bg-white/95 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-base font-semibold text-slate-900">财务报表分析</h3>
+          <p className="mt-1 text-xs text-slate-500">财务报表结构化分析表</p>
+        </div>
+        <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
+          财务报表
+        </span>
+      </div>
+      <FinancialReportView data={financialReportPayloads[0]} reports={financialReportPayloads} />
+    </section>
+  ) : null;
   useEffect(() => {
     const selectedDoc = enterpriseFlowState.selectedEnterpriseFlowDoc;
     const accounts = Array.isArray(enterpriseFlowState.parsedEnterpriseData?.accounts)
@@ -4983,6 +5035,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         </section>
                       ))
                     ) : null}
+                    {financialReportPanel}
                   </div>
                 ) : hasEnterpriseStructuredData ? (
                   <div className="mb-6 space-y-4">
@@ -5008,6 +5061,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         />
                       </section>
                     ))}
+                    {financialReportPanel}
+                  </div>
+                ) : hasFinancialReportDocuments ? (
+                  <div className="mb-6 space-y-4">
+                    {financialReportPanel}
                   </div>
                 ) : (personalFlowPreviewError || enterpriseFlowPreviewError) ? (
                   <div className="mb-6 flex flex-col gap-3 rounded-[24px] border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between">
@@ -5030,7 +5088,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedDraft || '暂无内容'}</ReactMarkdown>
                   </article>
                 )}
-                {hasPersonalStructuredData || hasEnterpriseStructuredData ? (
+                {!hasFinancialReportDocuments && (hasPersonalStructuredData || hasEnterpriseStructuredData) ? (
                   <RawMarkdownPanel markdown={renderedDraft || draft} />
                 ) : null}
               </div>
