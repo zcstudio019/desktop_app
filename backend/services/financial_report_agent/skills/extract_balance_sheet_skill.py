@@ -70,6 +70,8 @@ def extract_balance_sheet(
         field_prefix="balance_sheet",
         source_file=source_file,
         multiplier=multiplier,
+        current_column_label="期末余额",
+        previous_column_label="上年年末余额",
     )
     if value_of(values.get("total_equity") or {}) is None:
         assets = value_of(values.get("total_assets") or {})
@@ -78,9 +80,22 @@ def extract_balance_sheet(
             calculated = round(assets - liabilities, 2)
             source_page = values["total_assets"].source_page or values["total_liabilities"].source_page
             source_text = "由资产总计 - 负债合计计算得出"
+            previous_assets = values["total_assets"].previous_normalized_value
+            previous_liabilities = values["total_liabilities"].previous_normalized_value
+            previous_calculated = (
+                round(previous_assets - previous_liabilities, 2)
+                if previous_assets is not None and previous_liabilities is not None
+                else None
+            )
             values["total_equity"] = AmountField(
                 raw_value=f"{calculated:,.2f}",
                 normalized_value=calculated,
+                previous_raw_value=f"{previous_calculated:,.2f}" if previous_calculated is not None else "",
+                previous_normalized_value=previous_calculated,
+                current_value=calculated,
+                compare_value=previous_calculated,
+                current_column_label="期末余额",
+                previous_column_label="上年年末余额",
                 source_page=source_page,
                 source_text=source_text,
                 confidence=0.90,

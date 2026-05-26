@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from ..evidence import build_evidence
-from ..normalizer import first_current_amount
+from ..normalizer import current_and_previous_amounts, first_current_amount
 from ..schema import AmountField, EvidenceItem
 
 
@@ -53,6 +53,8 @@ def extract_amount_fields(
     field_prefix: str,
     source_file: str,
     multiplier: Decimal,
+    current_column_label: str = "期末余额/本期金额",
+    previous_column_label: str = "上年年末余额/上期金额",
 ) -> tuple[dict[str, AmountField], list[EvidenceItem]]:
     values: dict[str, AmountField] = {}
     evidence: list[EvidenceItem] = []
@@ -95,13 +97,19 @@ def extract_amount_fields(
                 candidate_match = _matched_label(candidate, (matched_label,))
                 label_end = candidate_match[1] if candidate_match else 0
                 remainder = candidate[label_end:]
-                raw_value, normalized = first_current_amount(remainder, multiplier)
+                raw_value, normalized, previous_raw_value, previous_normalized = current_and_previous_amounts(remainder, multiplier)
                 if normalized is None:
                     continue
                 confidence = 0.96 if table_name in _compact(str(page.get("text") or "")) else 0.88
                 found = AmountField(
                     raw_value=raw_value,
                     normalized_value=normalized,
+                    previous_raw_value=previous_raw_value,
+                    previous_normalized_value=previous_normalized,
+                    current_value=normalized,
+                    compare_value=previous_normalized,
+                    current_column_label=current_column_label,
+                    previous_column_label=previous_column_label,
                     source_page=int(page.get("page") or 1),
                     source_text=candidate,
                     confidence=confidence,
@@ -113,7 +121,7 @@ def extract_amount_fields(
                         source_page=found.source_page,
                         table_name=table_name,
                         row_label=matched_label,
-                        column_label="期末余额/本期金额",
+                        column_label=f"{current_column_label} / {previous_column_label}",
                         raw_text=candidate,
                         confidence=confidence,
                     )

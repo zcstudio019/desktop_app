@@ -49,5 +49,7 @@ def extract_cash_flow_statement(
         field_prefix="cash_flow_statement",
         source_file=source_file,
         multiplier=multiplier,
+        current_column_label="本期金额",
+        previous_column_label="上期金额",
     )
     return CashFlowStatement(**values), evidence

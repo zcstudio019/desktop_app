@@ -33,7 +33,15 @@ def normalize_amount(value: Any, multiplier: Decimal | float = Decimal("1")) -> 
 
 
 def first_current_amount(line: str, multiplier: Decimal | float = Decimal("1")) -> tuple[str, float | None]:
+    values = current_and_previous_amounts(line, multiplier)
+    return values[0], values[1]
+
+
+def current_and_previous_amounts(
+    line: str, multiplier: Decimal | float = Decimal("1")
+) -> tuple[str, float | None, str, float | None]:
     tokens = [item.group(0).strip() for item in AMOUNT_RE.finditer(str(line or ""))]
+    values: list[tuple[str, float]] = []
     for token in tokens:
         normalized = normalize_amount(token, multiplier)
         if normalized is None:
@@ -42,8 +50,14 @@ def first_current_amount(line: str, multiplier: Decimal | float = Decimal("1")) 
         digits = re.sub(r"\D", "", token)
         if "." not in token and "," not in token and len(digits) <= 3:
             continue
-        return token, normalized
-    return ("", None)
+        values.append((token, normalized))
+        if len(values) == 2:
+            break
+    if not values:
+        return ("", None, "", None)
+    if len(values) == 1:
+        return (values[0][0], values[0][1], "", None)
+    return (values[0][0], values[0][1], values[1][0], values[1][1])
 
 
 def value_of(item: Any) -> float | None:

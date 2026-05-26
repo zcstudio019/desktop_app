@@ -109,6 +109,9 @@ def test_202412_quarterly_core_fields_and_company_info() -> None:
         assert data["balance_sheet"][field]["normalized_value"] == expected
     equity = data["balance_sheet"]["total_equity"]
     assert equity["confidence"] == 0.96
+    assert equity["previous_normalized_value"] == 13043765.10
+    assert equity["current_column_label"] == "期末余额"
+    assert equity["previous_column_label"] == "上年年末余额"
     assert "所 有 者 权 益" in equity["source_text"]
     assert equity["source_text"] != "由资产总计 - 负债合计计算得出"
 
@@ -140,6 +143,7 @@ def test_202412_quarterly_markdown_displays_extracted_rows() -> None:
         "资产负债表摘要", "利润表摘要", "货币资金", "150,161.66", "短期借款",
         "25,020,000.00", "资产总计", "54,688,482.62", "营业收入",
         "60,376,572.48", "净利润", "7,968.69",
+        "上年年末余额", "上期金额", "13,043,765.10", "100,012,470.73",
     ]:
         assert text in markdown
     assert "| 货币资金 | -" not in markdown

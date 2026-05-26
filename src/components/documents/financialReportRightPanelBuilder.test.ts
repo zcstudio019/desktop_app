@@ -132,4 +132,16 @@ describe('buildFinancialReportCustomerSummary', () => {
     expect(equity?.previous).toBe(13_043_765.10);
     expect(equity?.change).toBeCloseTo(7_968.69, 2);
   });
+
+  it('prefers the comparison column on the latest balance sheet over another report value', () => {
+    const prior = structuredClone(reports[1]);
+    (prior.balance_sheet.total_equity as Record<string, unknown>).normalized_value = 99;
+    const latest = structuredClone(reports[2]);
+    (latest.balance_sheet.total_equity as Record<string, unknown>).previous_normalized_value = 13_043_765.10;
+    const summary = buildFinancialReportCustomerSummary([prior, latest]);
+    const equity = summary.latestBalanceSheet.find((item) => item.label === '所有者权益合计');
+
+    expect(equity?.previous).toBe(13_043_765.10);
+    expect(equity?.change).toBeCloseTo(7_968.69, 2);
+  });
 });

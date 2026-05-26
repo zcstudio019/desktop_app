@@ -109,6 +109,11 @@ function amount(section: JsonRecord, key: string): number | null {
   return numberValue(value);
 }
 
+function previousAmount(section: JsonRecord, key: string): number | null {
+  const value = asRecord(section[key]);
+  return numberValue(value.previous_normalized_value ?? value.compare_value ?? value['对比列标准化数值']);
+}
+
 function balanceAmount(section: JsonRecord, key: string): number | null {
   if (key !== 'total_equity') return amount(section, key);
   const directCandidates = [
@@ -122,6 +127,22 @@ function balanceAmount(section: JsonRecord, key: string): number | null {
   }
   const assets = amount(section, 'total_assets');
   const liabilities = amount(section, 'total_liabilities');
+  return assets !== null && liabilities !== null ? Math.round((assets - liabilities) * 100) / 100 : null;
+}
+
+function previousBalanceAmount(section: JsonRecord, key: string): number | null {
+  if (key !== 'total_equity') return previousAmount(section, key);
+  const directCandidates = [
+    previousAmount(section, 'total_equity'),
+    previousAmount(asRecord(section.equity), 'total_equity'),
+    previousAmount(section, 'total_owners_equity'),
+    previousAmount(section, 'owners_equity_total'),
+  ];
+  for (const value of directCandidates) {
+    if (value !== null) return value;
+  }
+  const assets = previousAmount(section, 'total_assets');
+  const liabilities = previousAmount(section, 'total_liabilities');
   return assets !== null && liabilities !== null ? Math.round((assets - liabilities) * 100) / 100 : null;
 }
 
@@ -325,7 +346,7 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
   ];
   const latestBalanceSheet = balanceFields.map(([label, key]) => {
     const latestAmount = latestValue(latestBalance, key);
-    const priorAmount = latestValue(previousBalance, key);
+    const priorAmount = previousBalanceAmount(latestBalance, key) ?? latestValue(previousBalance, key);
     return {
       label,
       latest: latestAmount,

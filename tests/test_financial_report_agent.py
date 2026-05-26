@@ -164,3 +164,68 @@ def test_financial_report_derives_total_equity_when_equity_label_is_missing() ->
     assert equity["confidence"] == 0.90
     assert equity["source_text"] == "由资产总计 - 负债合计计算得出"
     assert "所有者权益合计由资产总计减负债合计计算得出，原表字段未直接命中" in result["validation_warnings"]
+
+
+def test_financial_report_extracts_and_renders_comparison_columns_for_2023() -> None:
+    pages = [
+        {
+            "page": 1,
+            "text": """财务报表报送与信息采集（企业会计准则一般企业）-2023年报
+税款所属期起止：2023-01-01至2023-12-31
+资产负债表
+项目 行次 期末余额 上年年末余额
+货币资金 1 1,648,909.26 3,507,503.11
+资产总计 30 69,320,214.02 84,697,985.94
+负债合计 53 56,276,448.92 78,474,828.15
+所有者权益合计 59 13,043,765.10 6,223,157.79
+负债和所有者权益总计 60 69,320,214.02 84,697,985.94
+""",
+        },
+        {
+            "page": 2,
+            "text": """利润表
+项目 行次 本期金额 上期金额
+营业收入 1 100,012,470.73 140,360,769.35
+净利润 20 6,690,607.31 429,625.06
+""",
+        },
+        {
+            "page": 3,
+            "text": """现金流量表
+项目 行次 本期金额 上期金额
+经营活动产生的现金流量净额 10 -8,438,844.57 -15,841,870.74
+期末现金及现金等价物余额 32 1,648,909.26 3,507,503.11
+""",
+        },
+    ]
+    result = run_financial_report_agent(
+        raw_text="\n".join(item["text"] for item in pages),
+        filename="2023财务报表报送与信息采集（企业会计准则一般企业）-2023年报.pdf",
+        metadata={"raw_pages": pages},
+    )
+    data = result["structured_json"]
+    cash = data["balance_sheet"]["cash_and_equivalents"]
+    assets = data["balance_sheet"]["total_assets"]
+    equity = data["balance_sheet"]["total_equity"]
+    revenue = data["income_statement"]["revenue"]
+    net_profit = data["income_statement"]["net_profit"]
+    operating_cash = data["cash_flow_statement"]["net_operating_cash_flow"]
+    assert cash["normalized_value"] == 1648909.26
+    assert cash["previous_normalized_value"] == 3507503.11
+    assert assets["normalized_value"] == 69320214.02
+    assert assets["previous_normalized_value"] == 84697985.94
+    assert equity["normalized_value"] == 13043765.10
+    assert equity["previous_normalized_value"] == 6223157.79
+    assert revenue["normalized_value"] == 100012470.73
+    assert revenue["previous_normalized_value"] == 140360769.35
+    assert net_profit["normalized_value"] == 6690607.31
+    assert net_profit["previous_normalized_value"] == 429625.06
+    assert operating_cash["current_column_label"] == "本期金额"
+    assert operating_cash["previous_column_label"] == "上期金额"
+    assert cash["current_value"] == cash["normalized_value"]
+    assert cash["compare_value"] == cash["previous_normalized_value"]
+    markdown = result["markdown_report"]
+    assert "上年年末余额" in markdown
+    assert "上期金额" in markdown
+    assert "| 货币资金 | 1,648,909.26 | 3,507,503.11 |" in markdown
+    assert "| 营业收入 | 100,012,470.73 | 140,360,769.35 |" in markdown

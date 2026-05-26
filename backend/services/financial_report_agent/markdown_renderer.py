@@ -30,6 +30,13 @@ def _money(item: dict[str, Any] | Any) -> str:
     return "-" if value is None else f"{float(value):,.2f}"
 
 
+def _previous_money(item: dict[str, Any] | Any) -> str:
+    if not isinstance(item, dict):
+        return "-"
+    value = item.get("对比列标准化数值") if "对比列标准化数值" in item else item.get("previous_normalized_value")
+    return "-" if value is None else f"{float(value):,.2f}"
+
+
 def _page(item: dict[str, Any] | Any) -> str:
     value = (item.get("来源页码") if "来源页码" in item else item.get("source_page")) if isinstance(item, dict) else None
     return "-" if value is None else str(value)
@@ -44,11 +51,19 @@ def _ratio(value: Any) -> str:
     return "-" if value is None else f"{float(value):.2%}"
 
 
-def _statement_table(lines: list[str], title: str, section: dict[str, Any], labels: list[str], amount_header: str) -> None:
-    lines.extend(["", f"### {title}", f"| 项目 | {amount_header} | 来源页码 | 置信度 |", "|---|---:|---:|---:|"])
+def _statement_table(
+    lines: list[str], title: str, section: dict[str, Any], labels: list[str],
+    amount_header: str, previous_header: str,
+) -> None:
+    lines.extend([
+        "",
+        f"### {title}",
+        f"| 项目 | {amount_header} | {previous_header} | 来源页码 | 置信度 |",
+        "|---|---:|---:|---:|---:|",
+    ])
     for label in labels:
         item = section.get(label) or {}
-        lines.append(f"| {label} | {_money(item)} | {_page(item)} | {_confidence(item)} |")
+        lines.append(f"| {label} | {_money(item)} | {_previous_money(item)} | {_page(item)} | {_confidence(item)} |")
 
 
 def render_financial_report_markdown(data: dict[str, Any]) -> str:
@@ -81,14 +96,16 @@ def render_financial_report_markdown(data: dict[str, Any]) -> str:
     _statement_table(
         lines, "资产负债表摘要", balance,
         ["货币资金", "应收账款", "预付款项", "其他应收款", "存货", "流动资产合计", "短期借款", "应付账款",
-         "流动负债合计", "负债合计", "所有者权益合计", "资产总计"],
+        "流动负债合计", "负债合计", "所有者权益合计", "资产总计"],
         "期末余额",
+        "上年年末余额",
     )
     _statement_table(
         lines, "利润表摘要", income,
         ["营业收入", "营业成本", "税金及附加", "销售费用", "管理费用", "研发费用", "财务费用", "营业利润",
          "利润总额", "所得税费用", "净利润"],
         "本期金额",
+        "上期金额",
     )
     _statement_table(
         lines, "现金流量表摘要", cashflow,
@@ -96,6 +113,7 @@ def render_financial_report_markdown(data: dict[str, Any]) -> str:
          "经营活动现金流出小计", "经营活动产生的现金流量净额", "投资活动产生的现金流量净额",
          "筹资活动产生的现金流量净额", "期末现金及现金等价物余额"],
         "本期金额",
+        "上期金额",
     )
     lines.extend([
         "",

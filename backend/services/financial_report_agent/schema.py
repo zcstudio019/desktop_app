@@ -27,6 +27,12 @@ class EvidenceItem(BaseModel):
 class AmountField(BaseModel):
     raw_value: str = ""
     normalized_value: float | None = None
+    previous_raw_value: str = ""
+    previous_normalized_value: float | None = None
+    current_value: float | None = None
+    compare_value: float | None = None
+    current_column_label: str = ""
+    previous_column_label: str = ""
     source_page: int | None = None
     source_text: str = ""
     confidence: float = 0.0
