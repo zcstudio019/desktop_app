@@ -1,14 +1,16 @@
 type JsonRecord = Record<string, unknown>;
 
 export type DocumentContentSource =
-  | 'document_report_markdown'
-  | 'extraction_report_markdown'
-  | 'extracted_json_report_markdown'
-  | 'extracted_json_markdown_report'
-  | 'structured_json_report_markdown'
-  | 'generated_financial_report_markdown'
-  | 'extracted_text'
-  | 'parsed_text'
+  | 'selectedDocument.report_markdown'
+  | 'selectedDocument.reportMarkdown'
+  | 'selectedDocument.extraction.report_markdown'
+  | 'selectedDocument.latest_extraction.report_markdown'
+  | 'selectedDocument.extracted_json.report_markdown'
+  | 'selectedDocument.extracted_json.markdown_report'
+  | 'selectedDocument.structured_json.report_markdown'
+  | 'generatedFinancialReportMarkdown'
+  | 'selectedDocument.extracted_text'
+  | 'selectedDocument.parsed_text'
   | 'empty';
 
 export type DocumentContentResolution = {
@@ -67,6 +69,7 @@ export function renderFinancialReportMarkdownFromStructuredData(structuredValue:
   const balanceSheet = asRecord(structured.balance_sheet);
   const incomeStatement = asRecord(structured.income_statement);
   const cashFlowStatement = asRecord(structured.cash_flow_statement);
+  const financialRatios = asRecord(structured.financial_ratios);
   const reportType = { annual: '年报', quarterly: '季报', monthly: '月报' }[String(companyInfo.report_type || '')] || '-';
   const currency = String(companyInfo.currency || '') === 'CNY' ? '人民币' : String(companyInfo.currency || '-');
   return [
@@ -109,23 +112,37 @@ export function renderFinancialReportMarkdownFromStructuredData(structuredValue:
       ['net_cash_increase', '现金及现金等价物净增加额'],
       ['ending_cash_balance', '期末现金及现金等价物余额'],
     ], '本期金额', '上期金额'),
+    '',
+    '### 银行授信核心指标表',
+    '| 指标 | 数值 |',
+    '|---|---:|',
+    `| 资产负债率 | ${money(financialRatios.asset_liability_ratio)} |`,
+    `| 流动比率 | ${money(financialRatios.current_ratio)} |`,
+    `| 速动比率 | ${money(financialRatios.quick_ratio)} |`,
+    `| 现金比率 | ${money(financialRatios.cash_ratio)} |`,
+    `| 毛利率 | ${money(financialRatios.gross_margin)} |`,
+    `| 净利率 | ${money(financialRatios.net_margin)} |`,
   ].join('\n');
 }
 
 export function resolveDocumentContent(detailValue: unknown): DocumentContentResolution {
   const detail = asRecord(detailValue);
   const extraction = asRecord(detail.extraction);
+  const latestExtraction = asRecord(detail.latest_extraction);
   const extractedData = asRecord(extraction.extracted_data);
+  const latestExtractedData = asRecord(latestExtraction.extracted_data);
   const extractedJson = asRecord(detail.extracted_json ?? extractedData.extracted_json ?? extractedData.data ?? extractedData);
   const structuredJson = asRecord(detail.structured_json ?? extractedData.structured_json ?? extractedJson.structured_json);
   const documentType = String(detail.document_type ?? detail.file_type ?? structuredJson.document_type ?? '');
 
   const candidates: Array<[DocumentContentSource, string]> = [
-    ['document_report_markdown', nonEmpty(detail.report_markdown)],
-    ['extraction_report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.report_markdown)],
-    ['extracted_json_report_markdown', nonEmpty(extractedJson.report_markdown)],
-    ['extracted_json_markdown_report', nonEmpty(extractedJson.markdown_report)],
-    ['structured_json_report_markdown', nonEmpty(structuredJson.report_markdown)],
+    ['selectedDocument.report_markdown', nonEmpty(detail.report_markdown)],
+    ['selectedDocument.reportMarkdown', nonEmpty(detail.reportMarkdown)],
+    ['selectedDocument.extraction.report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.report_markdown)],
+    ['selectedDocument.latest_extraction.report_markdown', nonEmpty(latestExtraction.report_markdown ?? latestExtractedData.report_markdown)],
+    ['selectedDocument.extracted_json.report_markdown', nonEmpty(extractedJson.report_markdown)],
+    ['selectedDocument.extracted_json.markdown_report', nonEmpty(extractedJson.markdown_report)],
+    ['selectedDocument.structured_json.report_markdown', nonEmpty(structuredJson.report_markdown)],
   ];
   for (const [source, content] of candidates) {
     if (content) return { content, source };
@@ -133,12 +150,12 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
   if (documentType === 'financial_report' && Object.keys(structuredJson).length > 0) {
     return {
       content: renderFinancialReportMarkdownFromStructuredData(structuredJson),
-      source: 'generated_financial_report_markdown',
+      source: 'generatedFinancialReportMarkdown',
     };
   }
   const extractedText = nonEmpty(detail.extracted_text ?? extractedJson.extracted_text ?? extractedData.extracted_text);
-  if (extractedText) return { content: extractedText, source: 'extracted_text' };
+  if (extractedText) return { content: extractedText, source: 'selectedDocument.extracted_text' };
   const parsedText = nonEmpty(detail.parsed_text ?? extractedJson.parsed_text ?? extractedData.parsed_text);
-  if (parsedText) return { content: parsedText, source: 'parsed_text' };
+  if (parsedText) return { content: parsedText, source: 'selectedDocument.parsed_text' };
   return { content: '暂无分析报告', source: 'empty' };
 }

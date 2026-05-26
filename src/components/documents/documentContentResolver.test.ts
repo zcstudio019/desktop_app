@@ -9,7 +9,7 @@ describe('resolveDocumentContent', () => {
       extraction: { report_markdown: '# 提取结果报告' },
       extracted_json: { markdown_report: '# 备用报告' },
     });
-    expect(result.source).toBe('document_report_markdown');
+    expect(result.source).toBe('selectedDocument.report_markdown');
     expect(result.content).toBe('# 单文档完整分析');
   });
 
@@ -25,10 +25,11 @@ describe('resolveDocumentContent', () => {
         cash_flow_statement: { net_operating_cash_flow: { normalized_value: -10 } },
       },
     });
-    expect(result.source).toBe('generated_financial_report_markdown');
+    expect(result.source).toBe('generatedFinancialReportMarkdown');
     expect(result.content).toContain('资产负债表摘要');
     expect(result.content).toContain('利润表摘要');
     expect(result.content).toContain('现金流量表摘要');
+    expect(result.content).toContain('银行授信核心指标表');
     expect(result.content).not.toContain('财务数据总览');
   });
 });

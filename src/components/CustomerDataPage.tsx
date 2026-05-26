@@ -2341,6 +2341,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [selectedContentDocumentId, setSelectedContentDocumentId] = useState('');
   const [selectedDocumentDetail, setSelectedDocumentDetail] = useState<DocumentDetailResponse | null>(null);
   const [loadingDocumentContent, setLoadingDocumentContent] = useState(false);
+  const [suppressAutomaticDocumentSelection, setSuppressAutomaticDocumentSelection] = useState(false);
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
   const [enterpriseFlowPreviewDoc, setEnterpriseFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
@@ -2419,6 +2420,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setExtractionGroups([]);
     setSelectedContentDocumentId('');
     setSelectedDocumentDetail(null);
+    setSuppressAutomaticDocumentSelection(false);
     setCurrentCustomer(null, null);
   }, [setCurrentCustomer]);
 
@@ -2639,6 +2641,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setExtractionGroups([]);
       setSelectedContentDocumentId('');
       setSelectedDocumentDetail(null);
+      setSuppressAutomaticDocumentSelection(false);
       setCurrentCustomer(null, null);
       return;
     }
@@ -2679,6 +2682,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setSelectedContentDocumentId('');
     setSelectedDocumentDetail(null);
     setLoadingDocumentContent(false);
+    setSuppressAutomaticDocumentSelection(false);
     setExtractionGroups([]);
     void loadDocuments(requestCustomerId);
     void loadExtractions(requestCustomerId);
@@ -3327,6 +3331,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setSelectedContentDocumentId(document.doc_id);
     setSelectedDocumentDetail(null);
     setLoadingDocumentContent(true);
+    setSuppressAutomaticDocumentSelection(false);
     try {
       setError(null);
       const detail = await getDocumentDetail(document.doc_id);
@@ -3342,6 +3347,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setSelectedContentDocumentId('');
     setSelectedDocumentDetail(null);
     setLoadingDocumentContent(false);
+    setSuppressAutomaticDocumentSelection(true);
   }, []);
 
   const handleDownloadDocument = useCallback(async (document: CustomerDocumentListItem) => {
@@ -3520,10 +3526,17 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
 
   useEffect(() => {
     const highlightedDoc = documents.find((document) => isHighlightedDocument(document));
-    if (highlightedDoc && highlightedDoc.doc_id !== selectedContentDocumentId) {
-      void handleSelectDocumentContent(highlightedDoc);
+    const latestFinancialReport = documents.find((document) => (
+      (isDocumentTypeMatch(document.file_type, 'financial_report') || isDocumentTypeMatch(document.file_type, 'financial_data'))
+      && document.is_latest
+    )) || documents.find((document) => (
+      isDocumentTypeMatch(document.file_type, 'financial_report') || isDocumentTypeMatch(document.file_type, 'financial_data')
+    ));
+    const preferredDocument = highlightedDoc || latestFinancialReport;
+    if (!suppressAutomaticDocumentSelection && preferredDocument && preferredDocument.doc_id !== selectedContentDocumentId) {
+      void handleSelectDocumentContent(preferredDocument);
     }
-  }, [documents, handleSelectDocumentContent, isHighlightedDocument, selectedContentDocumentId]);
+  }, [documents, handleSelectDocumentContent, isHighlightedDocument, selectedContentDocumentId, suppressAutomaticDocumentSelection]);
 
   useEffect(() => {
     const detail = selectedDocumentDetail as (DocumentDetailResponse & {
@@ -3531,16 +3544,22 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       extracted_json?: Record<string, unknown>;
     }) | null;
     const extractionData = (detail?.extraction?.extracted_data || {}) as Record<string, unknown>;
-    console.log('[DocumentContentPanel] content source', {
-      currentDocumentId: selectedContentDocumentId || null,
-      documentType: detail?.document_type || detail?.file_type || selectedContentDocument?.file_type || null,
-      hasDocumentReportMarkdown: Boolean(detail?.report_markdown),
+    const latestExtraction = (detail?.latest_extraction || {}) as Record<string, unknown>;
+    const latestExtractionData = (latestExtraction.extracted_data || {}) as Record<string, unknown>;
+    const profileMarkdown = profile?.markdown_content || renderedDraft || draft;
+    console.log('[LeftDocumentContent] selected source', {
+      selectedDocumentId: selectedContentDocumentId || null,
+      selectedDocumentType: detail?.document_type || detail?.file_type || selectedContentDocument?.file_type || null,
+      selectedDocumentName: detail?.file_name || selectedContentDocument?.file_name || null,
+      hasSelectedDocumentReportMarkdown: Boolean(detail?.report_markdown || detail?.reportMarkdown),
       hasExtractionReportMarkdown: Boolean(detail?.extraction?.report_markdown || extractionData.report_markdown),
-      hasExtractedJson: Boolean(detail?.extracted_json),
-      usingProfileMarkdown: false,
-      selectedContentSource: selectedDocumentContent?.source || (selectedContentDocumentId ? 'loading' : 'none'),
+      hasLatestExtractionReportMarkdown: Boolean(latestExtraction.report_markdown || latestExtractionData.report_markdown),
+      hasExtractedJsonMarkdown: Boolean(detail?.extracted_json?.report_markdown || detail?.extracted_json?.markdown_report),
+      hasCustomerProfileMarkdown: Boolean(profileMarkdown),
+      selectedContentSource: selectedDocumentContent?.source || (selectedContentDocumentId ? 'loading' : 'customerProfile.markdown'),
+      contentPreview: selectedDocumentContent?.content?.slice(0, 200) || profileMarkdown.slice(0, 200),
     });
-  }, [selectedContentDocument, selectedContentDocumentId, selectedDocumentContent, selectedDocumentDetail]);
+  }, [draft, profile, renderedDraft, selectedContentDocument, selectedContentDocumentId, selectedDocumentContent, selectedDocumentDetail]);
 
   return (
     <div className="flex h-full bg-slate-50">
@@ -4911,9 +4930,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                               <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <div className="truncate text-sm font-semibold text-slate-800">
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleSelectDocumentContent(document)}
+                                      className="truncate text-left text-sm font-semibold text-slate-800 hover:text-indigo-700"
+                                    >
                                       {document.file_name || '未命名文件'}
-                                    </div>
+                                    </button>
                                     {focusedFromConflict ? (
                                       <span className="rounded-full border border-sky-200 bg-sky-100 px-2.5 py-1 text-xs font-medium text-sky-700">
                                         来自冲突核验

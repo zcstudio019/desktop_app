@@ -80,7 +80,9 @@ export interface DocumentDetailResponse {
   created_at?: string;
   updated_at?: string;
   report_markdown?: string;
+  reportMarkdown?: string;
   extraction?: Record<string, unknown>;
+  latest_extraction?: Record<string, unknown>;
   extracted_json?: Record<string, unknown>;
   structured_json?: Record<string, unknown>;
   original_available: boolean;
