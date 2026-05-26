@@ -42,8 +42,31 @@ export type RatioRow = {
 export type RiskFlag = {
   level: string;
   title: string;
+  description?: string;
   evidence: string[];
   bankAttention: string;
+};
+
+export type FinancingAdvice = {
+  referenceCreditSpaceLabel: string;
+  suggestedStrategy: string;
+  suggestedProducts: string[];
+  suggestedMaterials: string[];
+  description: string;
+};
+
+export type RiskSignal = {
+  level: string;
+  title: string;
+  description: string;
+  evidence?: string;
+};
+
+export type FinancialRawSections = {
+  reportMarkdown?: string;
+  displayJson?: unknown;
+  structuredJson?: unknown;
+  profileMarkdown?: string;
 };
 
 export type FinancialReportCustomerSummary = {
@@ -59,6 +82,9 @@ export type FinancialReportCustomerSummary = {
   cashFlowTrendRows: CashFlowTrendRow[];
   coreRatios: RatioRow[];
   riskFlags: RiskFlag[];
+  financingAdvice: FinancingAdvice;
+  riskSignals: RiskSignal[];
+  rawSections: FinancialRawSections;
   creditConclusion: {
     riskLevel: string;
     conclusion: string;
@@ -87,6 +113,10 @@ function asRecord(value: unknown): JsonRecord {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function optionalText(value: unknown): string {
+  return String(value ?? '').trim();
 }
 
 function text(value: unknown): string {
@@ -283,11 +313,31 @@ function addRisk(flags: RiskFlag[], flag: RiskFlag): void {
   if (!flags.some((item) => item.title === flag.title)) flags.push(flag);
 }
 
-function riskFlag(level: string, title: string, evidence: string[], bankAttention: string): RiskFlag {
-  return { level, title, evidence, bankAttention };
+function riskFlag(level: string, title: string, evidence: string[], bankAttention: string, description = ''): RiskFlag {
+  return { level, title, description, evidence, bankAttention };
 }
 
-export function buildFinancialReportCustomerSummary(inputs: unknown[]): FinancialReportCustomerSummary {
+function presentationSections(inputs: unknown[], latest: JsonRecord, profileMarkdown = ''): FinancialRawSections {
+  for (const input of inputs) {
+    if (findFinancialReportStructuredData(input) !== latest) continue;
+    const envelope = asRecord(input);
+    return {
+      reportMarkdown: optionalText(
+        envelope.markdown_report ?? envelope.report_markdown ?? envelope.markdown_summary ?? latest.report_markdown,
+      ),
+      displayJson: envelope.display_json,
+      structuredJson: latest,
+      profileMarkdown,
+    };
+  }
+  return {
+    reportMarkdown: optionalText(latest.report_markdown),
+    structuredJson: latest,
+    profileMarkdown,
+  };
+}
+
+export function buildFinancialReportCustomerSummary(inputs: unknown[], profileMarkdown = ''): FinancialReportCustomerSummary {
   const reports = uniqueReports(inputs);
   const latest = reports[reports.length - 1] || null;
   const previous = reports[reports.length - 2] || null;
@@ -305,6 +355,15 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
       cashFlowTrendRows: [],
       coreRatios: [],
       riskFlags: [],
+      financingAdvice: {
+        referenceCreditSpaceLabel: '-',
+        suggestedStrategy: '-',
+        suggestedProducts: [],
+        suggestedMaterials: [],
+        description: '-',
+      },
+      riskSignals: [],
+      rawSections: { profileMarkdown },
       creditConclusion: {
         riskLevel: 'unknown',
         conclusion: '',
@@ -404,6 +463,12 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
   const prepaymentRatio = divide(amount(latestBalance, 'prepayments'), latestAssets);
   const shortDebtCoverage = ratio('short_debt_cash_coverage') ?? divide(latestCash, latestShortLoans);
   const latestDebtRatio = ratio('asset_liability_ratio');
+  const latestIncome = asRecord(latest.income_statement);
+  const latestInterestExpense = amount(latestIncome, 'interest_expense');
+  const interestBearingDebt = ratio('interest_bearing_debt') ?? sum([
+    amount(latestBalance, 'short_term_loans'),
+    amount(latestBalance, 'long_term_loans'),
+  ]);
 
   const riskFlags: RiskFlag[] = [];
   for (const raw of asArray(latestAnalysis.risk_findings)) {
@@ -413,6 +478,7 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
       text(finding.title),
       asArray(finding.evidence).map((item) => text(item)).filter((item) => item !== EMPTY),
       text(finding.suggestion),
+      text(finding.description) === EMPTY ? '' : text(finding.description),
     ));
   }
   if (consecutiveNegativeOperatingCash) {
@@ -422,7 +488,10 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
     addRisk(riskFlags, riskFlag('medium_high', '货币资金持续下降', ['各期货币资金呈持续下降趋势。'], '核查可动用现金、受限资金及短期偿债来源。'));
   }
   if (latestShortLoans !== null && latestAssets !== null && latestShortLoans / latestAssets > 0.3) {
-    addRisk(riskFlags, riskFlag('medium_high', '最新期短期借款较高', [`短期借款占最新资产总额 ${(latestShortLoans / latestAssets * 100).toFixed(2)}%。`], '关注借款到期分布及续贷依赖。'));
+    addRisk(riskFlags, riskFlag('medium_high', '短期借款压力较大', [`短期借款占最新资产总额 ${(latestShortLoans / latestAssets * 100).toFixed(2)}%。`], '关注借款到期分布及续贷依赖。'));
+  }
+  if (latestDebtRatio !== null && latestDebtRatio > 0.7) {
+    addRisk(riskFlags, riskFlag('medium_high', '资产负债率偏高', [`最新资产负债率 ${(latestDebtRatio * 100).toFixed(2)}%。`], '关注杠杆水平、增信条件和新增融资空间。'));
   }
   if (otherReceivableRatio !== null && otherReceivableRatio > 0.2) {
     addRisk(riskFlags, riskFlag('medium_high', '其他应收款占比偏高', [`其他应收款占最新资产总额 ${(otherReceivableRatio * 100).toFixed(2)}%。`], '核查对手方、账龄和关联方资金占用。'));
@@ -437,13 +506,21 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
     addRisk(riskFlags, riskFlag('medium_high', '收入规模下降', ['营业收入在已识别期间连续下降。'], '核查订单、客户稳定性及收入下降原因。'));
   }
   if (financingSupportsOperations) {
-    addRisk(riskFlags, riskFlag('high', '筹资现金流补经营现金流缺口', ['存在经营现金流为负且筹资现金流为正的期间。'], '关注外部融资依赖及还款资金闭环。'));
+    addRisk(riskFlags, riskFlag('high', '筹资依赖较高', ['存在经营现金流为负且筹资现金流为正的期间。'], '关注外部融资依赖及还款资金闭环。'));
   }
   if (decliningAssets) {
     addRisk(riskFlags, riskFlag('medium_high', '资产总额下降', ['资产总额在已识别期间连续下降。'], '了解资产收缩原因及可抵质押资产变化。'));
   }
   if (shortDebtCoverage !== null && shortDebtCoverage < 0.2) {
-    addRisk(riskFlags, riskFlag('high', '现金余额对短期借款覆盖不足', [`最新短期借款现金覆盖率 ${(shortDebtCoverage * 100).toFixed(2)}%。`], '核查短期借款还款安排及备用流动性。'));
+    addRisk(riskFlags, riskFlag('high', '货币资金覆盖不足', [`最新短期借款现金覆盖率 ${(shortDebtCoverage * 100).toFixed(2)}%。`], '核查短期借款还款安排及备用流动性。'));
+  }
+  if (interestBearingDebt !== null && interestBearingDebt > 0 && latestInterestExpense === 0) {
+    addRisk(riskFlags, riskFlag(
+      'medium_high',
+      '利息费用填报口径异常',
+      ['存在有息借款，但最新利润表利息费用为 0.00。'],
+      '核查借款合同、计息记录及财务报表填报口径。',
+    ));
   }
 
   const coreRatios: RatioRow[] = [
@@ -471,6 +548,29 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
     : riskFlags.length > 0 ? 'medium_high'
     : String(latestAnalysis.overall_risk_level || 'low');
   const aggregationNotice = '本分析基于客户名下全部财务报表资料自动汇总生成。';
+  const extractedProducts = asArray(latestAnalysis.suggested_products)
+    .map((item) => text(item))
+    .filter((item) => item !== EMPTY);
+  const defaultProducts = riskLevel === 'high'
+    ? ['抵押经营贷', '应收账款质押']
+    : ['经营贷', '流动资金贷款', '订单融资'];
+  const suggestedProducts = [...new Set(extractedProducts.length ? extractedProducts : defaultProducts)];
+  const defaultMaterials = [
+    '近 6-12 个月完整银行流水',
+    '近两年或最近一期纳税申报表',
+    '主要客户合同/订单',
+    '现有借款合同与还款计划',
+  ];
+  const suggestedMaterials = [...new Set([...missingMaterials, ...defaultMaterials])];
+  const financingDescription = riskLevel === 'high'
+    ? '财务报表显示企业仍具备一定收入规模，但经营现金流、货币资金和短期债务压力需要结合流水、纳税、合同与真实回款进一步核实，建议控制授信额度与期限，必要时追加担保或抵押。'
+    : '财务口径可作为初步授信判断依据，建议结合银行流水、纳税申报与交易合同核验收入和回款真实性后确定额度与期限。';
+  const riskSignals = riskFlags.map((item) => ({
+    level: item.level,
+    title: item.title,
+    description: item.description || item.bankAttention,
+    evidence: item.evidence.join('；') || undefined,
+  }));
 
   return {
     available: true,
@@ -495,13 +595,22 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
       ['会计准则', mapValue(latestInfo.accounting_standard)],
       ['币种', mapValue(latestInfo.currency)],
       ['金额单位', text(latestInfo.unit)],
-      ['综合风险', riskLevel === 'high' ? '高' : riskLevel === 'medium_high' || riskLevel === 'medium' ? '中' : '低'],
+      ['综合风险', riskLevel === 'high' ? '高' : riskLevel === 'medium_high' ? '中高' : riskLevel === 'medium' ? '中' : '低'],
     ],
     latestBalanceSheet,
     incomeTrendRows,
     cashFlowTrendRows,
     coreRatios,
     riskFlags,
+    financingAdvice: {
+      referenceCreditSpaceLabel: riskLevel === 'high' ? '审慎核额，需结合增信材料复核' : '可结合最新净资产与经营现金流审慎核额',
+      suggestedStrategy: text(latestAnalysis.suggested_credit_strategy),
+      suggestedProducts,
+      suggestedMaterials,
+      description: financingDescription,
+    },
+    riskSignals,
+    rawSections: presentationSections(inputs, latest, profileMarkdown),
     creditConclusion: {
       riskLevel,
       conclusion: `${aggregationNotice}${text(latestAnalysis.credit_view) === EMPTY ? '' : ` ${text(latestAnalysis.credit_view)}`}`,
@@ -513,6 +622,10 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[]): Financia
   };
 }
 
-export function buildFinancialReportRightPanel(data: unknown, reports: unknown[] = []): FinancialReportCustomerSummary {
-  return buildFinancialReportCustomerSummary([...reports, data]);
+export function buildFinancialReportRightPanel(
+  data: unknown,
+  reports: unknown[] = [],
+  profileMarkdown = '',
+): FinancialReportCustomerSummary {
+  return buildFinancialReportCustomerSummary([...reports, data], profileMarkdown);
 }

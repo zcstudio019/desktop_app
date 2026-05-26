@@ -3026,7 +3026,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       : 'markdown_preview';
   const financialReportPanel = hasFinancialReportDocuments ? (
     <section className="rounded-[28px] border border-indigo-100 bg-white/95 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
-      <FinancialReportView data={financialReportPayloads[0]} reports={financialReportPayloads} />
+      <FinancialReportView
+        data={financialReportPayloads[0]}
+        reports={financialReportPayloads}
+        profileMarkdown={renderedDraft || draft}
+      />
     </section>
   ) : null;
   useEffect(() => {

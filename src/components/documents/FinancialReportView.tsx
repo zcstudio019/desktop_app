@@ -1,5 +1,7 @@
 import React, { useMemo } from 'react';
-import { AlertTriangle, BadgeCheck, CircleDollarSign, TrendingUp } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, CircleDollarSign, FileText } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   buildFinancialReportCustomerSummary,
   type BalanceChangeRow,
@@ -9,6 +11,7 @@ import {
 type FinancialReportViewProps = {
   data?: unknown;
   reports?: unknown[];
+  profileMarkdown?: string;
 };
 
 const EMPTY = '-';
@@ -37,8 +40,11 @@ function ratioValue(value: number | string | null, format: 'amount' | 'ratio' | 
 
 function riskMeta(level: unknown) {
   const value = String(level || '').toLowerCase();
-  if (value === 'high' || value === 'medium_high' || value === 'risk') {
+  if (value === 'high' || value === 'risk') {
     return { label: '高', className: 'border-rose-200 bg-rose-50 text-rose-700' };
+  }
+  if (value === 'medium_high') {
+    return { label: '中高', className: 'border-orange-200 bg-orange-50 text-orange-700' };
   }
   if (value === 'medium' || value === 'weak') {
     return { label: '中', className: 'border-amber-200 bg-amber-50 text-amber-700' };
@@ -100,8 +106,11 @@ function Tags({ items, emptyText }: { items: string[]; emptyText: string }) {
   );
 }
 
-export const FinancialReportView: React.FC<FinancialReportViewProps> = ({ data, reports = [] }) => {
-  const panel = useMemo(() => buildFinancialReportCustomerSummary([...reports, data]), [data, reports]);
+export const FinancialReportView: React.FC<FinancialReportViewProps> = ({ data, reports = [], profileMarkdown = '' }) => {
+  const panel = useMemo(
+    () => buildFinancialReportCustomerSummary([...reports, data], profileMarkdown),
+    [data, reports, profileMarkdown],
+  );
   if (!panel.available) {
     return (
       <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-7 text-sm text-slate-500">
@@ -230,34 +239,6 @@ export const FinancialReportView: React.FC<FinancialReportViewProps> = ({ data, 
         </div>
       </Section>
 
-      <Section title="异常财务项" action={<AlertTriangle className="h-4 w-4 text-amber-500" />}>
-        <div className="space-y-3">
-          {panel.riskFlags.length ? panel.riskFlags.map((finding, index) => {
-            const meta = riskMeta(finding.level);
-            return (
-              <div key={`${finding.title}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${meta.className}`}>{meta.label}</span>
-                  <span className="text-sm font-semibold text-slate-800">{finding.title}</span>
-                </div>
-                <div className="mt-2 text-sm text-slate-600">证据：{finding.evidence.join('；') || EMPTY}</div>
-                <div className="mt-1 text-sm text-slate-600">银行关注点：{finding.bankAttention}</div>
-              </div>
-            );
-          }) : (
-            <div className="rounded-lg border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-500">暂未识别到明确异常财务项</div>
-          )}
-        </div>
-      </Section>
-
-      {!panel.isSinglePeriod ? (
-        <Section title="多期趋势分析" action={<TrendingUp className="h-4 w-4 text-blue-500" />}>
-          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm leading-6 text-blue-800">
-            多期趋势已分别呈现在利润表与现金流量表摘要中；资产负债表按最新一期对比上一期展示，不进行跨期相加。
-          </div>
-        </Section>
-      ) : null}
-
       <Section title="综合授信分析" action={<BadgeCheck className="h-4 w-4 text-blue-500" />}>
         <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-blue-900">
           <span className={`mr-2 rounded-full border px-2 py-0.5 text-xs font-medium ${overallRisk.className}`}>风险 {overallRisk.label}</span>
@@ -270,6 +251,73 @@ export const FinancialReportView: React.FC<FinancialReportViewProps> = ({ data, 
           <div><div className="mb-2 text-xs font-medium text-slate-500">建议授信策略</div><div className="text-sm leading-6 text-slate-700">{panel.creditConclusion.strategy}</div></div>
         </div>
       </Section>
+
+      <Section title="融资建议">
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="text-xs text-slate-500">财务口径可参考授信空间</div>
+            <div className="mt-1 text-sm font-semibold leading-6 text-slate-800">{panel.financingAdvice.referenceCreditSpaceLabel}</div>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="text-xs text-slate-500">建议授信策略</div>
+            <div className="mt-1 text-sm font-semibold leading-6 text-slate-800">{panel.financingAdvice.suggestedStrategy}</div>
+          </div>
+        </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <div>
+            <div className="mb-2 text-xs font-medium text-slate-500">建议产品</div>
+            <Tags items={panel.financingAdvice.suggestedProducts} emptyText="-" />
+          </div>
+          <div>
+            <div className="mb-2 text-xs font-medium text-slate-500">建议补充材料</div>
+            <Tags items={panel.financingAdvice.suggestedMaterials} emptyText="-" />
+          </div>
+        </div>
+        <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm leading-6 text-indigo-800">
+          {panel.financingAdvice.description}
+        </div>
+      </Section>
+
+      <Section title="风险信号" action={<AlertTriangle className="h-4 w-4 text-amber-500" />}>
+        <div className="space-y-3">
+          {panel.riskSignals.length ? panel.riskSignals.map((signal, index) => {
+            const meta = riskMeta(signal.level);
+            return (
+              <div key={`${signal.title}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${meta.className}`}>{meta.label}</span>
+                  <span className="text-sm font-semibold text-slate-800">{signal.title}</span>
+                </div>
+                <div className="mt-2 text-sm leading-6 text-slate-600">{signal.description}</div>
+                <div className="mt-1 text-sm text-slate-600">证据数据：{signal.evidence || EMPTY}</div>
+              </div>
+            );
+          }) : (
+            <div className="rounded-lg border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-500">暂未识别到明确风险信号</div>
+          )}
+        </div>
+      </Section>
+
+      <details className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-800"><FileText className="mr-2 inline h-4 w-4" />查看原始分析报告</summary>
+        <article className="prose prose-slate mt-3 max-w-none border-t border-slate-100 pt-3 text-sm">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{panel.rawSections.reportMarkdown || '暂无原始分析报告'}</ReactMarkdown>
+        </article>
+      </details>
+
+      <details className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-800"><AlertTriangle className="mr-2 inline h-4 w-4" />查看原始结构化数据</summary>
+        <pre className="mt-3 max-h-[420px] overflow-auto rounded-lg bg-slate-950 p-3 text-xs leading-5 text-slate-100">
+          {JSON.stringify(panel.rawSections.displayJson ?? panel.rawSections.structuredJson ?? {}, null, 2)}
+        </pre>
+      </details>
+
+      <details className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-800"><FileText className="mr-2 inline h-4 w-4" />查看原始资料汇总 Markdown</summary>
+        <article className="prose prose-slate mt-3 max-w-none border-t border-slate-100 pt-3 text-sm">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{panel.rawSections.profileMarkdown || '暂无内容'}</ReactMarkdown>
+        </article>
+      </details>
     </div>
   );
 };

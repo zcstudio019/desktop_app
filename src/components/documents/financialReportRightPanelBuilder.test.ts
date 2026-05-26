@@ -108,6 +108,9 @@ describe('buildFinancialReportCustomerSummary', () => {
     expect(summary.incomeTrendRows.map((item) => item.period)).toEqual(['2022年报', '2023年报', '2024季报']);
     expect(summary.cashFlowTrendRows).toHaveLength(3);
     expect(summary.riskFlags.map((item) => item.title)).toContain('经营现金流连续为负');
+    expect(summary.riskSignals.map((item) => item.title)).toContain('经营现金流连续为负');
+    expect(summary.financingAdvice.description).toContain('建议控制授信额度与期限');
+    expect(summary.financingAdvice.suggestedMaterials).toContain('近 6-12 个月完整银行流水');
     expect(summary.creditConclusion.conclusion).toContain('本分析基于客户名下全部财务报表资料自动汇总生成。');
   });
 
@@ -143,5 +146,19 @@ describe('buildFinancialReportCustomerSummary', () => {
 
     expect(equity?.previous).toBe(13_043_765.10);
     expect(equity?.change).toBeCloseTo(7_968.69, 2);
+  });
+
+  it('preserves report, localized structured data and profile markdown for collapsed raw sections', () => {
+    const wrapped = {
+      structured_json: reports[2],
+      markdown_report: '# 财务报表授信分析报告',
+      display_json: { 资料类型: '财务报表' },
+    };
+    const summary = buildFinancialReportCustomerSummary([wrapped], '# 客户资料汇总');
+
+    expect(summary.rawSections.reportMarkdown).toBe('# 财务报表授信分析报告');
+    expect(summary.rawSections.displayJson).toEqual({ 资料类型: '财务报表' });
+    expect(summary.rawSections.structuredJson).toBe(reports[2]);
+    expect(summary.rawSections.profileMarkdown).toBe('# 客户资料汇总');
   });
 });
