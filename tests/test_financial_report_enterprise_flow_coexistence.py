@@ -216,6 +216,8 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert markdown.count("##### 利润表摘要") == 3
     assert markdown.count("##### 现金流量表摘要") == 3
     assert markdown.count("| 收到的税费返还 | 574,202.82 |") == 3
+    assert "| 处置子公司及其他营业单位收到的现金净额 | - | - | - | - |" not in markdown
+    assert "| 收到其他与投资活动有关的现金 | - | - | - | - |" not in markdown
     assert markdown.count("##### 银行授信核心指标表") == 3
     assert markdown.count("##### 偿债能力分析") == 3
     assert markdown.count("##### 盈利能力分析") == 3

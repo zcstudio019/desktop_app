@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .display_mapper import to_display_json
+from .field_labels import CASH_FLOW_LABELS
 
 
 def _display_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -53,10 +54,56 @@ def _ratio(value: Any) -> str:
     return "-" if value is None else f"{float(value):.2%}"
 
 
+CASH_FLOW_KEY_BY_LABEL = {label: key for key, label in CASH_FLOW_LABELS.items()}
+CASH_FLOW_SUMMARY_FIELDS = {
+    "operating_cash_inflow_total",
+    "operating_cash_outflow_total",
+    "net_operating_cash_flow",
+    "investing_cash_inflow_total",
+    "investing_cash_outflow_total",
+    "net_investing_cash_flow",
+    "financing_cash_inflow_total",
+    "financing_cash_outflow_total",
+    "net_financing_cash_flow",
+    "net_cash_increase",
+    "beginning_cash_balance",
+    "ending_cash_balance",
+}
+
+
+def _previous_field_value(item: dict[str, Any] | Any) -> Any:
+    if not isinstance(item, dict):
+        return None
+    return item.get("对比列标准化数值") if "对比列标准化数值" in item else item.get("previous_normalized_value")
+
+
+def _is_missing(value: Any) -> bool:
+    return value is None or str(value).strip() in {"", "-", "—"}
+
+
+def _is_zero(value: Any) -> bool:
+    if _is_missing(value):
+        return False
+    try:
+        return float(str(value).replace(",", "").replace("元", "").strip()) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def should_render_cash_flow_row(field_key: str, item: dict[str, Any] | Any) -> bool:
+    current = _field_value(item)
+    previous = _previous_field_value(item)
+    if _is_missing(current) and _is_missing(previous):
+        return False
+    if _is_zero(current) and _is_zero(previous):
+        return field_key in CASH_FLOW_SUMMARY_FIELDS
+    return True
+
+
 def _statement_table(
     lines: list[str], title: str, section: dict[str, Any], labels: list[str],
     amount_header: str, previous_header: str, *, hide_double_zero_details: bool = False,
-    keep_zero_labels: set[str] | None = None,
+    keep_zero_labels: set[str] | None = None, cash_flow: bool = False,
 ) -> None:
     lines.extend([
         "",
@@ -67,10 +114,10 @@ def _statement_table(
     required_zero_labels = keep_zero_labels or set()
     for label in labels:
         item = section.get(label) or {}
+        if cash_flow and not should_render_cash_flow_row(CASH_FLOW_KEY_BY_LABEL.get(label, ""), item):
+            continue
         current = _field_value(item)
-        previous = (
-            item.get("对比列标准化数值") if "对比列标准化数值" in item else item.get("previous_normalized_value")
-        ) if isinstance(item, dict) else None
+        previous = _previous_field_value(item)
         if (
             hide_double_zero_details
             and label not in required_zero_labels
@@ -166,6 +213,7 @@ def render_financial_report_markdown(data: dict[str, Any]) -> str:
         "本期金额",
         "上期金额",
         hide_double_zero_details=True,
+        cash_flow=True,
         keep_zero_labels={
             "经营活动现金流入小计",
             "经营活动现金流出小计",

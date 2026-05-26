@@ -3,7 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from ..schema import CashFlowStatement, EvidenceItem
+from ..evidence import build_evidence
+from ..schema import AmountField, CashFlowStatement, EvidenceItem
 from ._common import extract_amount_fields
 
 
@@ -69,6 +70,67 @@ CASH_FLOW_FIELDS = {
     "ending_cash_balance": ("期末现金及现金等价物余额", "六、期末现金及现金等价物余额", "期末现金余额"),
 }
 
+SUBTOTAL_COMPONENTS = {
+    "operating_cash_inflow_total": (
+        "cash_received_from_sales",
+        "tax_refund_received",
+        "other_cash_received_related_to_operating",
+    ),
+    "operating_cash_outflow_total": (
+        "cash_paid_for_goods_services",
+        "cash_paid_to_employees",
+        "taxes_paid",
+        "other_cash_paid_related_to_operating",
+    ),
+    "investing_cash_inflow_total": (
+        "cash_received_from_investment_recovery",
+        "investment_income_cash_received",
+        "cash_received_from_disposal_assets",
+        "cash_received_from_disposal_subsidiaries",
+        "other_cash_received_related_to_investing",
+    ),
+    "investing_cash_outflow_total": (
+        "cash_paid_for_fixed_intangible_assets",
+        "cash_paid_for_investments",
+        "cash_paid_for_acquisition_subsidiaries",
+        "other_cash_paid_related_to_investing",
+    ),
+    "financing_cash_inflow_total": (
+        "cash_received_from_investors",
+        "cash_received_from_borrowings",
+        "other_cash_received_related_to_financing",
+    ),
+    "financing_cash_outflow_total": (
+        "cash_paid_for_debt_repayment",
+        "cash_paid_for_dividends_profit_interest",
+        "other_cash_paid_related_to_financing",
+    ),
+}
+
+
+def _calculated_subtotal(values: dict[str, AmountField], components: tuple[str, ...]) -> AmountField | None:
+    items = [values.get(field) or AmountField() for field in components]
+    current_values = [item.normalized_value for item in items if item.normalized_value is not None]
+    previous_values = [item.previous_normalized_value for item in items if item.previous_normalized_value is not None]
+    current = round(sum(current_values), 2) if current_values else None
+    previous = round(sum(previous_values), 2) if previous_values else None
+    if current in (None, 0) and previous in (None, 0):
+        return None
+    source_page = next((item.source_page for item in items if item.source_page is not None), None)
+    return AmountField(
+        raw_value=f"{current:,.2f}" if current is not None else "",
+        normalized_value=current,
+        previous_raw_value=f"{previous:,.2f}" if previous is not None else "",
+        previous_normalized_value=previous,
+        current_value=current,
+        compare_value=previous,
+        current_column_label="本期金额",
+        previous_column_label="上期金额",
+        source_page=source_page,
+        source_text="由现金流量明细项计算得出",
+        confidence=0.90,
+    )
+
 
 def extract_cash_flow_statement(
     pages: list[dict[str, Any]], source_file: str, multiplier: Decimal
@@ -84,4 +146,23 @@ def extract_cash_flow_statement(
         previous_column_label="上期金额",
         prefer_last_amounts=True,
     )
+    for subtotal_field, components in SUBTOTAL_COMPONENTS.items():
+        if values[subtotal_field].normalized_value is not None:
+            continue
+        calculated = _calculated_subtotal(values, components)
+        if calculated is None:
+            continue
+        values[subtotal_field] = calculated
+        evidence.append(
+            build_evidence(
+                field_path=f"cash_flow_statement.{subtotal_field}",
+                source_file=source_file,
+                source_page=calculated.source_page,
+                table_name="现金流量表",
+                row_label=CASH_FLOW_FIELDS[subtotal_field][0],
+                column_label="本期金额 / 上期金额",
+                raw_text=calculated.source_text,
+                confidence=calculated.confidence,
+            )
+        )
     return CashFlowStatement(**values), evidence
