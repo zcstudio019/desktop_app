@@ -13,6 +13,25 @@ describe('resolveDocumentContent', () => {
     expect(result.content).toBe('# 单文档完整分析');
   });
 
+  it('prefers latest extraction report markdown before an older extraction payload', () => {
+    const result = resolveDocumentContent({
+      document_type: 'financial_report',
+      latest_extraction: { report_markdown: '# 最新单文档报告' },
+      extraction: { report_markdown: '# 旧提取报告' },
+    });
+    expect(result.source).toBe('selectedDocument.latest_extraction.report_markdown');
+    expect(result.content).toBe('# 最新单文档报告');
+  });
+
+  it('supports camel-case latest extraction report markdown', () => {
+    const result = resolveDocumentContent({
+      document_type: 'financial_report',
+      latestExtraction: { reportMarkdown: '# 驼峰单文档报告' },
+    });
+    expect(result.source).toBe('selectedDocument.latestExtraction.reportMarkdown');
+    expect(result.content).toBe('# 驼峰单文档报告');
+  });
+
   it('generates a financial report from structured data without using profile markdown', () => {
     const result = resolveDocumentContent({
       document_type: 'financial_report',

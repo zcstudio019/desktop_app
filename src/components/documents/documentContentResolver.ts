@@ -3,11 +3,13 @@ type JsonRecord = Record<string, unknown>;
 export type DocumentContentSource =
   | 'selectedDocument.report_markdown'
   | 'selectedDocument.reportMarkdown'
-  | 'selectedDocument.extraction.report_markdown'
   | 'selectedDocument.latest_extraction.report_markdown'
+  | 'selectedDocument.latestExtraction.reportMarkdown'
+  | 'selectedDocument.extraction.report_markdown'
   | 'selectedDocument.extracted_json.report_markdown'
   | 'selectedDocument.extracted_json.markdown_report'
   | 'selectedDocument.structured_json.report_markdown'
+  | 'selectedDocument.structured_json.markdown_report'
   | 'generatedFinancialReportMarkdown'
   | 'selectedDocument.extracted_text'
   | 'selectedDocument.parsed_text'
@@ -128,21 +130,35 @@ export function renderFinancialReportMarkdownFromStructuredData(structuredValue:
 export function resolveDocumentContent(detailValue: unknown): DocumentContentResolution {
   const detail = asRecord(detailValue);
   const extraction = asRecord(detail.extraction);
-  const latestExtraction = asRecord(detail.latest_extraction);
+  const latestExtraction = asRecord(detail.latest_extraction ?? detail.latestExtraction);
   const extractedData = asRecord(extraction.extracted_data);
   const latestExtractedData = asRecord(latestExtraction.extracted_data);
-  const extractedJson = asRecord(detail.extracted_json ?? extractedData.extracted_json ?? extractedData.data ?? extractedData);
-  const structuredJson = asRecord(detail.structured_json ?? extractedData.structured_json ?? extractedJson.structured_json);
+  const extractedJson = asRecord(
+    detail.extracted_json
+    ?? latestExtractedData.extracted_json
+    ?? latestExtractedData.data
+    ?? extractedData.extracted_json
+    ?? extractedData.data
+    ?? extractedData,
+  );
+  const structuredJson = asRecord(
+    detail.structured_json
+    ?? latestExtractedData.structured_json
+    ?? extractedData.structured_json
+    ?? extractedJson.structured_json,
+  );
   const documentType = String(detail.document_type ?? detail.file_type ?? structuredJson.document_type ?? '');
 
   const candidates: Array<[DocumentContentSource, string]> = [
     ['selectedDocument.report_markdown', nonEmpty(detail.report_markdown)],
     ['selectedDocument.reportMarkdown', nonEmpty(detail.reportMarkdown)],
-    ['selectedDocument.extraction.report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.report_markdown)],
-    ['selectedDocument.latest_extraction.report_markdown', nonEmpty(latestExtraction.report_markdown ?? latestExtractedData.report_markdown)],
+    ['selectedDocument.latest_extraction.report_markdown', nonEmpty(latestExtraction.report_markdown ?? latestExtractedData.report_markdown ?? latestExtractedData.markdown_report)],
+    ['selectedDocument.latestExtraction.reportMarkdown', nonEmpty(latestExtraction.reportMarkdown)],
+    ['selectedDocument.extraction.report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.report_markdown ?? extractedData.markdown_report)],
     ['selectedDocument.extracted_json.report_markdown', nonEmpty(extractedJson.report_markdown)],
     ['selectedDocument.extracted_json.markdown_report', nonEmpty(extractedJson.markdown_report)],
     ['selectedDocument.structured_json.report_markdown', nonEmpty(structuredJson.report_markdown)],
+    ['selectedDocument.structured_json.markdown_report', nonEmpty(structuredJson.markdown_report)],
   ];
   for (const [source, content] of candidates) {
     if (content) return { content, source };

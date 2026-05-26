@@ -2341,7 +2341,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [selectedContentDocumentId, setSelectedContentDocumentId] = useState('');
   const [selectedDocumentDetail, setSelectedDocumentDetail] = useState<DocumentDetailResponse | null>(null);
   const [loadingDocumentContent, setLoadingDocumentContent] = useState(false);
-  const [suppressAutomaticDocumentSelection, setSuppressAutomaticDocumentSelection] = useState(false);
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
   const [enterpriseFlowPreviewDoc, setEnterpriseFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
@@ -2420,7 +2419,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setExtractionGroups([]);
     setSelectedContentDocumentId('');
     setSelectedDocumentDetail(null);
-    setSuppressAutomaticDocumentSelection(false);
     setCurrentCustomer(null, null);
   }, [setCurrentCustomer]);
 
@@ -2641,7 +2639,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setExtractionGroups([]);
       setSelectedContentDocumentId('');
       setSelectedDocumentDetail(null);
-      setSuppressAutomaticDocumentSelection(false);
       setCurrentCustomer(null, null);
       return;
     }
@@ -2682,7 +2679,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setSelectedContentDocumentId('');
     setSelectedDocumentDetail(null);
     setLoadingDocumentContent(false);
-    setSuppressAutomaticDocumentSelection(false);
     setExtractionGroups([]);
     void loadDocuments(requestCustomerId);
     void loadExtractions(requestCustomerId);
@@ -3331,7 +3327,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setSelectedContentDocumentId(document.doc_id);
     setSelectedDocumentDetail(null);
     setLoadingDocumentContent(true);
-    setSuppressAutomaticDocumentSelection(false);
     try {
       setError(null);
       const detail = await getDocumentDetail(document.doc_id);
@@ -3347,7 +3342,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setSelectedContentDocumentId('');
     setSelectedDocumentDetail(null);
     setLoadingDocumentContent(false);
-    setSuppressAutomaticDocumentSelection(true);
   }, []);
 
   const handleDownloadDocument = useCallback(async (document: CustomerDocumentListItem) => {
@@ -3525,6 +3519,9 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   );
 
   useEffect(() => {
+    if (documents.some((document) => document.doc_id === selectedContentDocumentId)) {
+      return;
+    }
     const highlightedDoc = documents.find((document) => isHighlightedDocument(document));
     const latestFinancialReport = documents.find((document) => (
       (isDocumentTypeMatch(document.file_type, 'financial_report') || isDocumentTypeMatch(document.file_type, 'financial_data'))
@@ -3532,11 +3529,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     )) || documents.find((document) => (
       isDocumentTypeMatch(document.file_type, 'financial_report') || isDocumentTypeMatch(document.file_type, 'financial_data')
     ));
-    const preferredDocument = highlightedDoc || latestFinancialReport;
-    if (!suppressAutomaticDocumentSelection && preferredDocument && preferredDocument.doc_id !== selectedContentDocumentId) {
+    const preferredDocument = highlightedDoc || latestFinancialReport || documents[0];
+    if (preferredDocument) {
       void handleSelectDocumentContent(preferredDocument);
     }
-  }, [documents, handleSelectDocumentContent, isHighlightedDocument, selectedContentDocumentId, suppressAutomaticDocumentSelection]);
+  }, [documents, handleSelectDocumentContent, isHighlightedDocument, selectedContentDocumentId]);
 
   useEffect(() => {
     const detail = selectedDocumentDetail as (DocumentDetailResponse & {
@@ -3544,20 +3541,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       extracted_json?: Record<string, unknown>;
     }) | null;
     const extractionData = (detail?.extraction?.extracted_data || {}) as Record<string, unknown>;
-    const latestExtraction = (detail?.latest_extraction || {}) as Record<string, unknown>;
+    const latestExtraction = (detail?.latest_extraction || detail?.latestExtraction || {}) as Record<string, unknown>;
     const latestExtractionData = (latestExtraction.extracted_data || {}) as Record<string, unknown>;
     const profileMarkdown = profile?.markdown_content || renderedDraft || draft;
-    console.log('[LeftDocumentContent] selected source', {
+    console.log('[LeftDocumentContent] markdown source', {
       selectedDocumentId: selectedContentDocumentId || null,
       selectedDocumentType: detail?.document_type || detail?.file_type || selectedContentDocument?.file_type || null,
       selectedDocumentName: detail?.file_name || selectedContentDocument?.file_name || null,
-      hasSelectedDocumentReportMarkdown: Boolean(detail?.report_markdown || detail?.reportMarkdown),
+      hasReportMarkdown: Boolean(detail?.report_markdown || detail?.reportMarkdown),
       hasExtractionReportMarkdown: Boolean(detail?.extraction?.report_markdown || extractionData.report_markdown),
-      hasLatestExtractionReportMarkdown: Boolean(latestExtraction.report_markdown || latestExtractionData.report_markdown),
+      hasLatestExtractionMarkdown: Boolean(latestExtraction.report_markdown || latestExtraction.reportMarkdown || latestExtractionData.report_markdown),
       hasExtractedJsonMarkdown: Boolean(detail?.extracted_json?.report_markdown || detail?.extracted_json?.markdown_report),
       hasCustomerProfileMarkdown: Boolean(profileMarkdown),
-      selectedContentSource: selectedDocumentContent?.source || (selectedContentDocumentId ? 'loading' : 'customerProfile.markdown'),
-      contentPreview: selectedDocumentContent?.content?.slice(0, 200) || profileMarkdown.slice(0, 200),
+      selectedContentSource: selectedDocumentContent?.source || (selectedContentDocumentId ? 'loading' : 'empty'),
+      preview: selectedDocumentContent?.content?.slice(0, 200) || '',
     });
   }, [draft, profile, renderedDraft, selectedContentDocument, selectedContentDocumentId, selectedDocumentContent, selectedDocumentDetail]);
 
@@ -5062,40 +5059,20 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                     </div>
                   ) : null}
                 </div>
-                {selectedContentDocumentId ? (
-                  <button
-                    type="button"
-                    onClick={clearSelectedDocumentContent}
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50"
-                  >
-                    返回客户资料汇总
-                  </button>
-                ) : null}
               </div>
-              {selectedContentDocumentId ? (
-                <article className="prose prose-slate max-w-none overflow-auto p-5 text-sm">
-                  {loadingDocumentContent ? (
-                    <div className="text-sm text-slate-500">正在加载当前资料分析报告...</div>
-                  ) : (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {selectedDocumentContent?.content || '暂无分析报告'}
-                    </ReactMarkdown>
-                  )}
-                </article>
-              ) : mode === 'edit' ? (
-                <textarea
-                  value={renderedDraft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  className="min-h-[520px] resize-y border-0 p-5 font-mono text-sm leading-6 text-slate-700 outline-none"
-                  placeholder="请输入资料汇总内容，支持标题、分段等格式"
-                />
-              ) : (
-                <div className="overflow-visible p-5">
-                  <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
-                    {draft || '暂无内容'}
-                  </pre>
-                </div>
-              )}
+              <article className="prose prose-slate max-w-none overflow-auto p-5 text-sm">
+                {loadingDocuments || (selectedContentDocumentId && loadingDocumentContent) ? (
+                  <div className="text-sm text-slate-500">正在加载当前资料分析报告...</div>
+                ) : selectedContentDocumentId ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {selectedDocumentContent?.content || '暂无分析报告'}
+                  </ReactMarkdown>
+                ) : (
+                  <div className="text-sm text-slate-500">
+                    {documents.length ? '请选择一份资料查看分析报告' : '暂无分析报告'}
+                  </div>
+                )}
+              </article>
             </section>
 
             <section className="flex flex-col bg-[radial-gradient(circle_at_top,_rgba(148,163,184,0.14),_transparent_45%),linear-gradient(180deg,#f8fafc_0%,#f1f5f9_100%)]">
