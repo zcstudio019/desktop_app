@@ -66,14 +66,23 @@ export interface StorageSaveResponse {
 }
 
 export interface DocumentDetailResponse {
+  document_id?: string;
   doc_id: string;
   customer_id: string;
   customer_name: string;
+  document_type?: string;
+  source_file?: string;
   file_name: string;
   file_type: string;
   file_type_name: string;
   file_size: number;
   upload_time: string;
+  created_at?: string;
+  updated_at?: string;
+  report_markdown?: string;
+  extraction?: Record<string, unknown>;
+  extracted_json?: Record<string, unknown>;
+  structured_json?: Record<string, unknown>;
   original_available: boolean;
   original_status: string;
   store_original: boolean;

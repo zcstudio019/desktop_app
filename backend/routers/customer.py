@@ -32,7 +32,7 @@ if str(desktop_app_path) not in sys.path:
 from services.feishu_service import FeishuService
 
 from backend.celery_app import TASK_QUEUE_ENABLED
-from backend.document_types import get_document_display_name, get_document_type_definition, should_store_original
+from backend.document_types import get_document_display_name, get_document_type_definition, normalize_document_type_code, should_store_original
 from backend.services import get_storage_service, supports_structured_storage  # 新增：存储服务 factory
 
 from backend.services.markdown_profile_service import (
@@ -68,6 +68,8 @@ from backend.services.activity_service import add_activity
 from backend.services.profile_sync_service import ProfileSyncService
 from backend.services.rag_service import RagService
 from backend.services.risk_assessment_service import RiskAssessmentService
+from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
+from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from services.file_service import FileService
 from services.ocr_service import OCRService, OCRServiceError
 from ..middleware.auth import get_current_user
@@ -2093,15 +2095,52 @@ async def get_document_detail(
     document, customer = await _load_accessible_document(doc_id, current_user)
     original_available, original_status = _build_document_original_status(document)
     definition = get_document_type_definition(document.get("file_type"))
+    extractions = await storage_service.get_extractions_by_doc(doc_id)
+    latest_extraction = extractions[0] if extractions else {}
+    extracted_data = latest_extraction.get("extracted_data") or {}
+    if not isinstance(extracted_data, dict):
+        extracted_data = {}
+    extracted_json = extracted_data.get("extracted_json") or extracted_data.get("data") or extracted_data
+    if not isinstance(extracted_json, dict):
+        extracted_json = {}
+    structured_json = (
+        extracted_data.get("structured_json")
+        or extracted_json.get("structured_json")
+        or (extracted_json if extracted_json.get("document_type") == "financial_report" else {})
+    )
+    if not isinstance(structured_json, dict):
+        structured_json = {}
+    document_type = normalize_document_type_code(document.get("file_type") or "") or str(document.get("file_type") or "")
+    report_markdown = str(
+        extracted_data.get("report_markdown")
+        or extracted_data.get("markdown_report")
+        or extracted_data.get("markdown_summary")
+        or extracted_json.get("report_markdown")
+        or extracted_json.get("markdown_report")
+        or structured_json.get("report_markdown")
+        or ""
+    )
+    if document_type == "financial_report" and not report_markdown and structured_json:
+        display_json = extracted_data.get("display_json") or to_financial_report_display_json(structured_json)
+        report_markdown = render_financial_report_markdown(display_json)
     return {
+        "document_id": document.get("doc_id") or "",
         "doc_id": document.get("doc_id") or "",
         "customer_id": document.get("customer_id") or "",
         "customer_name": customer.get("name") or "",
+        "document_type": document_type,
+        "source_file": document.get("file_name") or "",
         "file_name": document.get("file_name") or "",
-        "file_type": document.get("file_type") or "",
-        "file_type_name": get_document_display_name(document.get("file_type")),
+        "file_type": document_type,
+        "file_type_name": get_document_display_name(document_type),
         "file_size": document.get("file_size") or 0,
         "upload_time": document.get("upload_time") or "",
+        "created_at": latest_extraction.get("created_at") or document.get("upload_time") or "",
+        "updated_at": latest_extraction.get("created_at") or document.get("upload_time") or "",
+        "report_markdown": report_markdown,
+        "extraction": latest_extraction,
+        "extracted_json": extracted_json,
+        "structured_json": structured_json,
         "original_available": original_available,
         "original_status": original_status,
         "store_original": definition.store_original if definition else True,
