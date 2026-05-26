@@ -77,4 +77,19 @@ describe('FinancialReportView', () => {
     expect(details[1].textContent).toContain('资料类型');
     expect(details[1].textContent).not.toContain('document_type');
   });
+
+  it('keeps ratio judgement labels horizontal when the panel is narrow', () => {
+    const { container } = render(<FinancialReportView data={payload} />);
+    const ratioSection = screen.getByText('银行授信核心指标表').closest('section');
+    const table = ratioSection?.querySelector('table');
+    const judgementHeader = screen.getByText('判断');
+    const judgmentPills = Array.from(ratioSection?.querySelectorAll('tbody span') || []);
+
+    expect(table).toHaveClass('min-w-[620px]');
+    expect(judgementHeader).toHaveClass('w-20', 'min-w-20', 'whitespace-nowrap');
+    expect(judgmentPills.length).toBeGreaterThan(0);
+    judgmentPills.forEach((pill) => {
+      expect(pill).toHaveClass('inline-flex', 'min-w-[44px]', 'whitespace-nowrap', 'break-keep');
+    });
+  });
 });

@@ -212,12 +212,13 @@ export const FinancialReportView: React.FC<FinancialReportViewProps> = ({ data, 
 
       <Section title="银行授信核心指标表">
         <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
+          <table className="min-w-[620px] w-full text-sm">
             <thead className="bg-slate-50 text-xs text-slate-500">
               <tr>
-                {['指标', '数值', '判断', '说明'].map((label) => (
-                  <th key={label} className="border-b border-slate-200 px-3 py-2 text-left font-medium">{label}</th>
-                ))}
+                <th className="min-w-[130px] border-b border-slate-200 px-3 py-2 text-left font-medium">指标</th>
+                <th className="w-[110px] min-w-[110px] whitespace-nowrap border-b border-slate-200 px-3 py-2 text-right font-medium">数值</th>
+                <th className="w-20 min-w-20 whitespace-nowrap border-b border-slate-200 px-3 py-2 text-left font-medium">判断</th>
+                <th className="min-w-[180px] border-b border-slate-200 px-3 py-2 text-left font-medium">说明</th>
               </tr>
             </thead>
             <tbody>
@@ -225,12 +226,12 @@ export const FinancialReportView: React.FC<FinancialReportViewProps> = ({ data, 
                 const meta = judgmentMeta(item.judgment);
                 return (
                   <tr key={item.label} className="odd:bg-white even:bg-slate-50/60">
-                    <td className="border-b border-slate-100 px-3 py-2 font-medium text-slate-800">{item.label}</td>
-                    <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 text-right text-slate-800">{ratioValue(item.value, item.format)}</td>
-                    <td className="border-b border-slate-100 px-3 py-2">
-                      <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${meta.className}`}>{meta.label}</span>
+                    <td className="min-w-[130px] border-b border-slate-100 px-3 py-2 font-medium text-slate-800">{item.label}</td>
+                    <td className="w-[110px] min-w-[110px] whitespace-nowrap border-b border-slate-100 px-3 py-2 text-right text-slate-800">{ratioValue(item.value, item.format)}</td>
+                    <td className="w-20 min-w-20 whitespace-nowrap border-b border-slate-100 px-3 py-2">
+                      <span className={`inline-flex min-w-[44px] items-center justify-center whitespace-nowrap break-keep rounded-full border px-2 py-0.5 text-xs font-medium ${meta.className}`}>{meta.label}</span>
                     </td>
-                    <td className="border-b border-slate-100 px-3 py-2 text-slate-600">{item.explanation}</td>
+                    <td className="min-w-[180px] border-b border-slate-100 px-3 py-2 text-slate-600">{item.explanation}</td>
                   </tr>
                 );
               })}
