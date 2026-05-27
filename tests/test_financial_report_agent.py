@@ -585,7 +585,7 @@ def test_first_rows_prefer_table_cells_when_page_text_omits_comparison_column() 
     assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 | 2 | 0.96 |" in result["markdown_report"]
 
 
-def test_small_business_balance_sheet_uses_original_year_opening_amounts_and_keeps_zero() -> None:
+def test_small_business_balance_sheet_summary_uses_core_whitelist_and_original_opening_amounts() -> None:
     pages = [{
         "page": 1,
         "text": """小企业会计准则 资产负债表
@@ -593,11 +593,29 @@ def test_small_business_balance_sheet_uses_original_year_opening_amounts_and_kee
 货币资金 1 119,011.57 4,803,622.66
 短期投资 2 0.00 0.00
 应收票据 3 0.00 0.00
+应收股利 4 0.00 0.00
+应收利息 5 0.00 0.00
+应收账款 6 14,060,346.90 12,366,300.00
+预付账款 7 1,504,930.35 433,407.72
+其他应收款 8 27,540,109.25 400,647.52
 存货 10 2,260,018.96 0.00
-资产总计 31 2,379,030.53 4,803,622.66
-负债合计 52 0.00 0.00
-所有者权益合计 59 2,379,030.53 4,803,622.66
-负债和所有者权益总计 60 2,379,030.53 4,803,622.66
+在产品 11 0.00 0.00
+库存商品 12 0.00 0.00
+周转材料 13 0.00 0.00
+流动资产合计 16 45,484,417.03 18,003,977.90
+长期股权投资 19 200,000.00 0.00
+固定资产 22 1,707,716.80 935,486.72
+工程物资 23 0.00 0.00
+固定资产清理 24 0.00 0.00
+开发支出 27 0.00 0.00
+长期待摊费用 28 0.00 0.00
+资产总计 31 47,053,973.26 18,939,464.62
+短期借款 32 2,000,000.00 0.00
+应付账款 34 20,413,003.45 15,793,885.12
+流动负债合计 44 42,046,587.04 17,143,638.50
+负债合计 52 47,017,886.39 17,965,478.50
+所有者权益合计 59 36,086.87 973,986.12
+负债和所有者权益总计 60 47,053,973.26 18,939,464.62
 """,
     }]
     result = run_financial_report_agent(
@@ -623,9 +641,21 @@ def test_small_business_balance_sheet_uses_original_year_opening_amounts_and_kee
     assert balance["inventory"]["normalized_value"] == 2260018.96
     assert balance["inventory"]["previous_normalized_value"] == 0.00
     assert "| 货币资金 | 119,011.57 | 4,803,622.66 | 1 | 0.96 |" in markdown
-    assert "| 短期投资 | 0.00 | 0.00 | 1 | 0.96 |" in markdown
-    assert "| 应收票据 | 0.00 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 应收账款 | 14,060,346.90 | 12,366,300.00 | 1 | 0.96 |" in markdown
+    assert "| 预付款项 | 1,504,930.35 | 433,407.72 | 1 | 0.96 |" in markdown
+    assert "| 其他应收款 | 27,540,109.25 | 400,647.52 | 1 | 0.96 |" in markdown
     assert "| 存货 | 2,260,018.96 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 流动资产合计 | 45,484,417.03 | 18,003,977.90 | 1 | 0.96 |" in markdown
+    assert "| 长期股权投资 | 200,000.00 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 短期借款 | 2,000,000.00 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 应付账款 | 20,413,003.45 | 15,793,885.12 | 1 | 0.96 |" in markdown
+    assert "| 负债合计 | 47,017,886.39 | 17,965,478.50 | 1 | 0.96 |" in markdown
+    assert "| 所有者权益合计 | 36,086.87 | 973,986.12 | 1 | 0.96 |" in markdown
+    for hidden_label in (
+        "短期投资", "应收票据", "应收股利", "应收利息", "在产品", "库存商品",
+        "周转材料", "工程物资", "固定资产清理", "开发支出", "长期待摊费用",
+    ):
+        assert f"| {hidden_label} |" not in markdown
     assert "| 货币资金 | 119,011.57 | 44,541.34 |" not in markdown
 
 
