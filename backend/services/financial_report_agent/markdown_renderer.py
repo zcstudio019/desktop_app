@@ -119,6 +119,7 @@ def _statement_table(
     lines: list[str], title: str, section: dict[str, Any], labels: list[str],
     amount_header: str, previous_header: str, *, hide_double_zero_details: bool = False,
     keep_zero_labels: set[str] | None = None, cash_flow: bool = False,
+    hide_missing: bool = False,
 ) -> None:
     lines.extend([
         "",
@@ -129,6 +130,8 @@ def _statement_table(
     required_zero_labels = keep_zero_labels or set()
     for label in labels:
         item = section.get(label) or {}
+        if hide_missing and _field_value(item) is None and _previous_field_value(item) is None:
+            continue
         if cash_flow and not should_render_cash_flow_row(CASH_FLOW_KEY_BY_LABEL.get(label, ""), item):
             continue
         rendered_label = label
@@ -177,10 +180,22 @@ def render_financial_report_markdown(data: dict[str, Any]) -> str:
         lines.append(f"| {label} | {info.get(label) or '-'} |")
     _statement_table(
         lines, "资产负债表摘要", balance,
-        ["货币资金", "应收账款", "预付款项", "其他应收款", "存货", "流动资产合计", "短期借款", "应付账款",
-        "流动负债合计", "负债合计", "所有者权益合计", "资产总计"],
+        [
+            "货币资金", "短期投资", "交易性金融资产", "应收票据", "应收账款", "应收款项融资",
+            "预付款项", "应收股利", "应收利息", "其他应收款", "存货", "原材料", "在产品",
+            "库存商品", "周转材料", "其他流动资产", "流动资产合计", "长期债券投资",
+            "长期股权投资", "固定资产原价", "累计折旧", "固定资产账面价值", "固定资产",
+            "在建工程", "工程物资", "固定资产清理", "生产性生物资产", "无形资产",
+            "开发支出", "长期待摊费用", "其他非流动资产", "非流动资产合计", "资产总计",
+            "短期借款", "应付票据", "应付账款", "预收款项", "应付职工薪酬", "应交税费",
+            "应付利息", "应付利润", "其他应付款", "其他流动负债", "流动负债合计",
+            "长期借款", "长期应付款", "递延收益", "其他非流动负债", "非流动负债合计",
+            "负债合计", "实收资本", "资本公积", "盈余公积", "未分配利润",
+            "所有者权益合计", "负债和所有者权益总计",
+        ],
         "期末余额",
         "上年年末余额",
+        hide_missing=True,
     )
     _statement_table(
         lines, "利润表摘要", income,

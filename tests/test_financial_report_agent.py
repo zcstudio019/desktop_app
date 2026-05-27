@@ -585,42 +585,64 @@ def test_first_rows_prefer_table_cells_when_page_text_omits_comparison_column() 
     assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 | 2 | 0.96 |" in result["markdown_report"]
 
 
-def test_first_rows_backfill_comparison_from_previous_report_when_source_is_truncated() -> None:
-    pages = [
-        {
-            "page": 1,
-            "text": """资产负债表
-项目 行次 期末余额 上年年末余额
-货币资金 1 119,011.57
-资产总计 30 119,011.57
+def test_small_business_balance_sheet_uses_original_year_opening_amounts_and_keeps_zero() -> None:
+    pages = [{
+        "page": 1,
+        "text": """小企业会计准则 资产负债表
+资产 行次 期末金额 年初余额
+货币资金 1 119,011.57 4,803,622.66
+短期投资 2 0.00 0.00
+应收票据 3 0.00 0.00
+存货 10 2,260,018.96 0.00
+资产总计 31 2,379,030.53 4,803,622.66
+负债合计 52 0.00 0.00
+所有者权益合计 59 2,379,030.53 4,803,622.66
+负债和所有者权益总计 60 2,379,030.53 4,803,622.66
 """,
-        },
-        {
-            "page": 2,
-            "text": """适用执行小企业会计准则的企业 现金流量表
-项目 行次 本年累计金额 上年金额
-销售产成品、商品、提供劳务收到的现金 1 81,530,980.95
-""",
-        },
-    ]
-    history = [{
-        "source_file": "上一期财务报表.pdf",
-        "company_info": {"report_period_end": "2025-12-31"},
-        "balance_sheet": {"cash_and_equivalents": {"normalized_value": 4803622.66}},
-        "cash_flow_statement": {"cash_received_from_sales": {"normalized_value": 14260100.00}},
     }]
     result = run_financial_report_agent(
-        raw_text="\n".join(page["text"] for page in pages),
-        filename="小企业首行-历史报表回填.pdf",
-        metadata={"raw_pages": pages, "historical_financial_reports": history},
+        raw_text=pages[0]["text"],
+        filename="小企业资产负债表.pdf",
+        metadata={
+            "raw_pages": pages,
+            "historical_financial_reports": [{
+                "company_info": {"report_period_end": "2025-12-31"},
+                "balance_sheet": {"cash_and_equivalents": {"normalized_value": 44541.34}},
+            }],
+        },
     )
-    balance = result["structured_json"]["balance_sheet"]["cash_and_equivalents"]
-    cashflow = result["structured_json"]["cash_flow_statement"]["cash_received_from_sales"]
-    assert balance["previous_normalized_value"] == 4803622.66
-    assert balance["previous_source"] == "fallback_from_previous_report"
-    assert cashflow["previous_normalized_value"] == 14260100.00
-    assert cashflow["previous_source"] == "fallback_from_previous_report"
-    assert "| 货币资金 | 119,011.57 | 4,803,622.66 | 1 | 0.96 |" in result["markdown_report"]
-    assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 | 2 | 0.96 |" in result["markdown_report"]
-    assert "| 货币资金 | 119,011.57 | - |" not in result["markdown_report"]
-    assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | - |" not in result["markdown_report"]
+    balance = result["structured_json"]["balance_sheet"]
+    markdown = result["markdown_report"]
+
+    assert balance["cash_and_equivalents"]["normalized_value"] == 119011.57
+    assert balance["cash_and_equivalents"]["previous_normalized_value"] == 4803622.66
+    assert balance["short_term_investments"]["normalized_value"] == 0.00
+    assert balance["short_term_investments"]["previous_normalized_value"] == 0.00
+    assert balance["notes_receivable"]["normalized_value"] == 0.00
+    assert balance["notes_receivable"]["previous_normalized_value"] == 0.00
+    assert balance["inventory"]["normalized_value"] == 2260018.96
+    assert balance["inventory"]["previous_normalized_value"] == 0.00
+    assert "| 货币资金 | 119,011.57 | 4,803,622.66 | 1 | 0.96 |" in markdown
+    assert "| 短期投资 | 0.00 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 应收票据 | 0.00 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 存货 | 2,260,018.96 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 货币资金 | 119,011.57 | 44,541.34 |" not in markdown
+
+
+def test_single_report_detail_does_not_fill_missing_comparison_from_previous_report() -> None:
+    pages = [{"page": 1, "text": "资产负债表\n货币资金 1 119,011.57"}]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="当前单份报表.pdf",
+        metadata={
+            "raw_pages": pages,
+            "historical_financial_reports": [{
+                "company_info": {"report_period_end": "2025-12-31"},
+                "balance_sheet": {"cash_and_equivalents": {"normalized_value": 44541.34}},
+            }],
+        },
+    )
+    cash = result["structured_json"]["balance_sheet"]["cash_and_equivalents"]
+    assert cash["normalized_value"] == 119011.57
+    assert cash["previous_normalized_value"] is None
+    assert "| 货币资金 | 119,011.57 | 44,541.34 |" not in result["markdown_report"]

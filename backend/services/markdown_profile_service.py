@@ -21,10 +21,7 @@ from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator i
     aggregate_customer_enterprise_flows,
 )
 from backend.services.enterprise_bank_statement_agent.flow_rules import get_enterprise_flow_rules
-from backend.services.financial_report_agent.customer_report_aggregator import (
-    aggregate_customer_financial_reports,
-    backfill_financial_report_comparison_values,
-)
+from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
@@ -2001,7 +1998,6 @@ async def build_auto_profile_payload(storage_service: Any, customer_id: str) -> 
             'application_summary': application_snapshot,
             'scheme_summary': scheme_meta,
             'credit_debug': credit_debug,
-            'financial_comparison_backfill_version': 'first-row-comparison-v1',
         },
         'credit_debug': credit_debug,
         'rag_source_priority': get_rag_source_priority(),
@@ -2017,22 +2013,6 @@ async def get_or_create_customer_profile(storage_service: Any, customer_id: str)
         markdown = str(existing.get('markdown_content') or '')
         snapshot = existing.get('source_snapshot') or {}
         source_documents = snapshot.get('source_documents') or []
-        has_financial_report = (
-            any(doc.get('source_type') == 'financial_report' for doc in source_documents if isinstance(doc, dict))
-            or '## 财务报表' in markdown
-        )
-        if (
-            existing.get('source_mode') != 'manual'
-            and has_financial_report
-            and snapshot.get('financial_comparison_backfill_version') != 'first-row-comparison-v1'
-        ):
-            logger.info(
-                "[Profile Sync][FinancialReport] stale profile comparison snapshot detected customer_id=%s; regenerate",
-                customer_id,
-            )
-            generated = await build_auto_profile_payload(storage_service, customer_id)
-            saved = await storage_service.upsert_customer_profile(generated)
-            return saved, True
         has_enterprise_credit = (
             any(_is_enterprise_credit_type(doc.get('source_type')) for doc in source_documents if isinstance(doc, dict))
             or '企业征信' in markdown
@@ -2349,24 +2329,6 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     'original_available': bool((document or {}).get('file_path')),
                 })
 
-            repaired_financial_extractions = backfill_financial_report_comparison_values(financial_report_extractions)
-            update_extraction = getattr(storage_service, 'update_extraction', None)
-            if callable(update_extraction):
-                for extraction in repaired_financial_extractions:
-                    payload = extraction.get('extracted_data') or {}
-                    extraction_id = extraction.get('extraction_id')
-                    if not extraction_id or not isinstance(payload, dict):
-                        continue
-                    for field in (
-                        'structured_json', 'extracted_json', 'data',
-                        'report_markdown', 'markdown_report', 'markdown_summary', 'markdown',
-                    ):
-                        if field in payload:
-                            await update_extraction(extraction_id, field, payload[field])
-                    logger.info(
-                        "[Profile Sync][FinancialReport] persisted comparison backfill extraction_id=%s",
-                        extraction_id,
-                    )
             aggregated_financial = aggregate_customer_financial_reports(financial_report_extractions)
             reports = aggregated_financial.get('reports') or []
             latest = reports[-1] if reports else {}

@@ -4,8 +4,6 @@ import logging
 import re
 from typing import Any
 
-from .display_mapper import to_display_json
-from .markdown_renderer import render_financial_report_markdown
 from .orchestrator import aggregate_financial_report_periods
 from .risk_analyzer import analyze_financial_credit_risk
 
@@ -147,81 +145,7 @@ def collect_financial_reports(extractions: list[dict[str, Any]]) -> list[dict[st
     return sorted(reports, key=_period)
 
 
-def _current_amount(report: dict[str, Any], section: str, field: str) -> float | None:
-    item = ((report.get(section) or {}).get(field) or {})
-    value = item.get("normalized_value") if isinstance(item, dict) else None
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _backfill_report_field(
-    report: dict[str, Any],
-    prior: dict[str, Any],
-    section: str,
-    field: str,
-    label: str,
-    prior_column_label: str,
-) -> bool:
-    item = ((report.get(section) or {}).get(field) or {})
-    if not isinstance(item, dict) or item.get("normalized_value") is None:
-        return False
-    if item.get("previous_normalized_value") is not None:
-        return False
-    previous = _current_amount(prior, section, field)
-    if previous is None:
-        return False
-    prior_file = str(prior.get("source_file") or "上一期财务报表")
-    source_note = f"由上一期财务报表{label}{prior_column_label}回填（{prior_file}）"
-    item["previous_raw_value"] = f"{previous:,.2f}"
-    item["previous_normalized_value"] = previous
-    item["compare_value"] = previous
-    item["previous_source"] = "fallback_from_previous_report"
-    item["previous_source_text"] = source_note
-    source_text = str(item.get("source_text") or "")
-    item["source_text"] = f"{source_text}；{source_note}" if source_text else source_note
-    return True
-
-
-def backfill_financial_report_comparison_values(extractions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Repair legacy stored rows whose first comparison value was omitted."""
-    entries = [
-        (report, extraction)
-        for extraction in extractions or []
-        if (report := _report_from_extraction(extraction))
-    ]
-    entries.sort(key=lambda item: _period(item[0]))
-    changed: list[dict[str, Any]] = []
-    for index in range(1, len(entries)):
-        report, extraction = entries[index]
-        prior = entries[index - 1][0]
-        updated = _backfill_report_field(report, prior, "balance_sheet", "cash_and_equivalents", "货币资金", "期末余额")
-        updated = _backfill_report_field(
-            report, prior, "cash_flow_statement", "cash_received_from_sales", "销售商品、提供劳务收到的现金", "本期金额"
-        ) or updated
-        if not updated:
-            continue
-        payload = extraction.get("extracted_data") or {}
-        if isinstance(payload, dict):
-            markdown = render_financial_report_markdown(to_display_json(report))
-            report["report_markdown"] = markdown
-            for key in ("structured_json", "extracted_json", "data"):
-                candidate = payload.get(key)
-                if isinstance(candidate, dict) and candidate.get("document_type") == "financial_report":
-                    candidate.update(report)
-            for key in ("report_markdown", "markdown_report", "markdown_summary", "markdown"):
-                payload[key] = markdown
-        changed.append(extraction)
-        logger.info(
-            "[FinancialReportSummary][comparison_backfill] source_file=%s previous_source=fallback_from_previous_report",
-            report.get("source_file") or "",
-        )
-    return changed
-
-
 def aggregate_customer_financial_reports(extractions: list[dict[str, Any]]) -> dict[str, Any]:
-    backfill_financial_report_comparison_values(extractions)
     entries = [
         (report, extraction)
         for extraction in extractions or []

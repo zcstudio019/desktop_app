@@ -33,8 +33,6 @@ class AmountField(BaseModel):
     compare_value: float | None = None
     current_column_label: str = ""
     previous_column_label: str = ""
-    previous_source: str = ""
-    previous_source_text: str = ""
     source_page: int | None = None
     source_text: str = ""
     confidence: float = 0.0
@@ -60,19 +58,36 @@ class CompanyInfo(BaseModel):
 
 class BalanceSheet(BaseModel):
     cash_and_equivalents: AmountField = Field(default_factory=AmountField)
+    short_term_investments: AmountField = Field(default_factory=AmountField)
     trading_financial_assets: AmountField = Field(default_factory=AmountField)
     notes_receivable: AmountField = Field(default_factory=AmountField)
     accounts_receivable: AmountField = Field(default_factory=AmountField)
     receivables_financing: AmountField = Field(default_factory=AmountField)
     prepayments: AmountField = Field(default_factory=AmountField)
+    dividends_receivable: AmountField = Field(default_factory=AmountField)
+    interest_receivable: AmountField = Field(default_factory=AmountField)
     other_receivables: AmountField = Field(default_factory=AmountField)
     inventory: AmountField = Field(default_factory=AmountField)
+    raw_materials: AmountField = Field(default_factory=AmountField)
+    work_in_process: AmountField = Field(default_factory=AmountField)
+    finished_goods: AmountField = Field(default_factory=AmountField)
+    revolving_materials: AmountField = Field(default_factory=AmountField)
+    other_current_assets: AmountField = Field(default_factory=AmountField)
     current_assets_total: AmountField = Field(default_factory=AmountField)
+    long_term_bond_investments: AmountField = Field(default_factory=AmountField)
     long_term_equity_investment: AmountField = Field(default_factory=AmountField)
+    fixed_assets_original_cost: AmountField = Field(default_factory=AmountField)
+    accumulated_depreciation: AmountField = Field(default_factory=AmountField)
+    fixed_assets_net_value: AmountField = Field(default_factory=AmountField)
     fixed_assets: AmountField = Field(default_factory=AmountField)
     construction_in_progress: AmountField = Field(default_factory=AmountField)
+    construction_materials: AmountField = Field(default_factory=AmountField)
+    fixed_asset_disposal: AmountField = Field(default_factory=AmountField)
+    productive_biological_assets: AmountField = Field(default_factory=AmountField)
     intangible_assets: AmountField = Field(default_factory=AmountField)
+    development_expenditure: AmountField = Field(default_factory=AmountField)
     long_term_prepaid_expenses: AmountField = Field(default_factory=AmountField)
+    other_non_current_assets: AmountField = Field(default_factory=AmountField)
     non_current_assets_total: AmountField = Field(default_factory=AmountField)
     total_assets: AmountField = Field(default_factory=AmountField)
     short_term_loans: AmountField = Field(default_factory=AmountField)
@@ -82,10 +97,16 @@ class BalanceSheet(BaseModel):
     contract_liabilities: AmountField = Field(default_factory=AmountField)
     employee_benefits_payable: AmountField = Field(default_factory=AmountField)
     taxes_payable: AmountField = Field(default_factory=AmountField)
+    interest_payable: AmountField = Field(default_factory=AmountField)
+    profits_payable: AmountField = Field(default_factory=AmountField)
     other_payables: AmountField = Field(default_factory=AmountField)
+    other_current_liabilities: AmountField = Field(default_factory=AmountField)
     current_liabilities_total: AmountField = Field(default_factory=AmountField)
     non_current_liabilities_due_within_one_year: AmountField = Field(default_factory=AmountField)
     long_term_loans: AmountField = Field(default_factory=AmountField)
+    long_term_payables: AmountField = Field(default_factory=AmountField)
+    deferred_income: AmountField = Field(default_factory=AmountField)
+    other_non_current_liabilities: AmountField = Field(default_factory=AmountField)
     non_current_liabilities_total: AmountField = Field(default_factory=AmountField)
     total_liabilities: AmountField = Field(default_factory=AmountField)
     paid_in_capital: AmountField = Field(default_factory=AmountField)

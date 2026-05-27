@@ -53,9 +53,12 @@ function statementTable(
   currentColumn: string,
   previousColumn: string,
 ): string {
-  const rows = fields.map(([key, label]) => {
+  const rows = fields.flatMap(([key, label]) => {
     const field = monetaryField(section, key);
-    return `| ${label} | ${money(field.normalized_value)} | ${money(field.previous_normalized_value)} | ${String(field.source_page ?? '-')} | ${String(field.confidence ?? '-')} |`;
+    const hasCurrent = field.normalized_value !== null && field.normalized_value !== undefined && field.normalized_value !== '';
+    const hasPrevious = field.previous_normalized_value !== null && field.previous_normalized_value !== undefined && field.previous_normalized_value !== '';
+    if (!hasCurrent && !hasPrevious) return [];
+    return [`| ${label} | ${money(field.normalized_value)} | ${money(field.previous_normalized_value)} | ${String(field.source_page ?? '-')} | ${String(field.confidence ?? '-')} |`];
   });
   return [
     `### ${title}`,
@@ -90,12 +93,33 @@ export function renderFinancialReportMarkdownFromStructuredData(structuredValue:
     '',
     statementTable('资产负债表摘要', balanceSheet, [
       ['cash_and_equivalents', '货币资金'],
+      ['short_term_investments', '短期投资'],
+      ['notes_receivable', '应收票据'],
       ['accounts_receivable', '应收账款'],
+      ['prepayments', '预付款项'],
+      ['other_receivables', '其他应收款'],
+      ['inventory', '存货'],
       ['current_assets_total', '流动资产合计'],
+      ['long_term_bond_investments', '长期债券投资'],
+      ['long_term_equity_investment', '长期股权投资'],
+      ['fixed_assets_original_cost', '固定资产原价'],
+      ['accumulated_depreciation', '累计折旧'],
+      ['fixed_assets_net_value', '固定资产账面价值'],
+      ['construction_in_progress', '在建工程'],
+      ['intangible_assets', '无形资产'],
+      ['non_current_assets_total', '非流动资产合计'],
+      ['total_assets', '资产总计'],
       ['short_term_loans', '短期借款'],
+      ['notes_payable', '应付票据'],
+      ['accounts_payable', '应付账款'],
+      ['employee_benefits_payable', '应付职工薪酬'],
+      ['taxes_payable', '应交税费'],
+      ['other_payables', '其他应付款'],
+      ['current_liabilities_total', '流动负债合计'],
+      ['long_term_loans', '长期借款'],
       ['total_liabilities', '负债合计'],
       ['total_equity', '所有者权益合计'],
-      ['total_assets', '资产总计'],
+      ['total_liabilities_and_equity', '负债和所有者权益总计'],
     ], '期末余额', '上年年末余额'),
     '',
     statementTable('利润表摘要', incomeStatement, [
