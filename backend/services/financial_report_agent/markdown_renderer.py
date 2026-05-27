@@ -55,16 +55,9 @@ def _ratio(value: Any) -> str:
 
 
 CASH_FLOW_KEY_BY_LABEL = {label: key for key, label in CASH_FLOW_LABELS.items()}
-CASH_FLOW_SUMMARY_FIELDS = {
-    "operating_cash_inflow_total",
-    "operating_cash_outflow_total",
+CASH_FLOW_ZERO_VALUE_KEEP_FIELDS = {
     "net_operating_cash_flow",
-    "investing_cash_inflow_total",
-    "investing_cash_outflow_total",
     "net_investing_cash_flow",
-    "financing_cash_inflow_total",
-    "financing_cash_outflow_total",
-    "net_financing_cash_flow",
     "net_cash_increase",
     "beginning_cash_balance",
     "ending_cash_balance",
@@ -115,8 +108,10 @@ def should_render_cash_flow_row(field_key: str, item: dict[str, Any] | Any) -> b
             return False
     if _is_missing(current) and _is_missing(previous):
         return False
-    if _is_zero(current) and _is_zero(previous):
-        return field_key in CASH_FLOW_SUMMARY_FIELDS
+    current_is_empty_or_zero = _is_missing(current) or _is_zero(current)
+    previous_is_empty_or_zero = _is_missing(previous) or _is_zero(previous)
+    if current_is_empty_or_zero and previous_is_empty_or_zero:
+        return field_key in CASH_FLOW_ZERO_VALUE_KEEP_FIELDS
     return True
 
 
