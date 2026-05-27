@@ -268,6 +268,13 @@ def test_profile_financial_company_info_falls_back_across_reports_and_markdown()
     assert "| 报送日期/报表日 | 2025-03-25 |" in financial_summary
     assert "| 会计准则 | unknown |" not in financial_summary
     assert "| 纳税人识别号 | - |" not in financial_summary
+    financial_details = markdown.split("### 财务报表明细（逐份）", 1)[1]
+    latest_detail = financial_details.split("- 来源文件：2025财务报表.pdf", 1)[1]
+    assert "| 纳税人识别号 | 913201055804841947 |" in latest_detail
+    assert "| 会计准则 | 企业会计准则一般企业 |" in latest_detail
+    assert "| 报送日期/报表日 | - |" in latest_detail
+    assert "| 纳税人识别号 | - |" not in latest_detail
+    assert "| 会计准则 | - |" not in latest_detail
     assert "## 企业流水" in markdown
 
 

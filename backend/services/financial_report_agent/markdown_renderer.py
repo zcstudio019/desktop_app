@@ -183,11 +183,13 @@ def render_financial_report_markdown(data: dict[str, Any]) -> str:
         "| 字段 | 内容 |",
         "|---|---|",
     ]
-    for label in [
-        "企业名称", "纳税人识别号", "会计准则", "报表类型", "所属期开始日期",
-        "所属期结束日期", "报送日期", "币种", "金额单位",
+    for label, source_label in [
+        ("企业名称", "企业名称"), ("纳税人识别号", "纳税人识别号"), ("会计准则", "会计准则"),
+        ("报表类型", "报表类型"), ("所属期开始日期", "所属期开始日期"),
+        ("所属期结束日期", "所属期结束日期"), ("报送日期/报表日", "报送日期"),
+        ("币种", "币种"), ("金额单位", "金额单位"),
     ]:
-        lines.append(f"| {label} | {info.get(label) or '-'} |")
+        lines.append(f"| {label} | {info.get(source_label) or '-'} |")
     _statement_table(
         lines, "资产负债表摘要", balance,
         [

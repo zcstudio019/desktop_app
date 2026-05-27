@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import copy
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -1616,6 +1617,7 @@ async def _build_single_document_section(
     storage_service: Any,
     customer_id: str,
     extraction: dict[str, Any],
+    financial_company_info_fallback: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     raw_extraction_type = extraction.get('extraction_type') or '\u672a\u547d\u540d\u8d44\u6599'
     extraction_type = normalize_document_type_code(raw_extraction_type) or raw_extraction_type
@@ -1665,7 +1667,44 @@ async def _build_single_document_section(
         structured_json = extracted_data.get('structured_json') or extracted_data.get('extracted_json') or extracted_data.get('data') or {}
         if not isinstance(structured_json, dict):
             structured_json = {}
+        structured_json = copy.deepcopy(structured_json)
+        info = structured_json.setdefault('company_info', {})
+        fallback_info = financial_company_info_fallback or {}
+        if not str(info.get('company_name') or '').strip() and str(fallback_info.get('company_name') or '').strip():
+            info['company_name'] = fallback_info.get('company_name')
+        same_company = not info.get('company_name') or not fallback_info.get('company_name') or info.get('company_name') == fallback_info.get('company_name')
+        taxpayer_source = 'current_document'
+        standard_source = 'current_document'
+        if same_company and not str(info.get('taxpayer_id') or '').strip() and str(fallback_info.get('taxpayer_id') or '').strip():
+            info['taxpayer_id'] = fallback_info.get('taxpayer_id')
+            taxpayer_source = 'fallback_from_same_customer_financial_reports'
+        if (
+            same_company
+            and str(info.get('accounting_standard') or '').strip() in {'', '-', 'unknown'}
+            and str(fallback_info.get('accounting_standard') or '').strip() not in {'', '-', 'unknown'}
+        ):
+            info['accounting_standard'] = fallback_info.get('accounting_standard')
+            standard_source = 'fallback_from_same_customer_financial_reports'
+        logger.info(
+            "[FinancialReportAgent][company_info_normalized] %s",
+            {
+                'source_file': structured_json.get('source_file') or file_name,
+                'company_name': info.get('company_name') or '',
+                'taxpayer_id': info.get('taxpayer_id') or '',
+                'taxpayer_id_source': taxpayer_source,
+                'accounting_standard': info.get('accounting_standard') or 'unknown',
+                'accounting_standard_source': standard_source,
+                'report_type': info.get('report_type') or 'unknown',
+                'report_type_source': 'saved_single_document',
+                'report_period_start': info.get('report_period_start') or '',
+                'report_period_end': info.get('report_period_end') or '',
+                'report_date': info.get('report_date') or '',
+                'report_date_source': 'current_document' if info.get('report_date') else 'missing',
+            },
+        )
         display_json = extracted_data.get('display_json') or to_financial_report_display_json(structured_json)
+        if financial_company_info_fallback:
+            display_json = to_financial_report_display_json(structured_json)
         source_document['display_json'] = display_json
         if structured_json:
             # Profile details must reflect current display rules, including original-row cash flow filtering.
@@ -2647,6 +2686,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                         storage_service,
                         customer_id,
                         extraction,
+                        financial_company_info_fallback=latest_info,
                     )
                     financial_lines.extend(['', nested_financial_report_markdown(detail_markdown, index)])
                 except Exception as detail_exc:

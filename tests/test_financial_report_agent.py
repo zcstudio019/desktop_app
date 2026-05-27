@@ -212,6 +212,50 @@ def test_small_business_annual_report_completes_company_info_from_period_and_tab
     assert "| 报表类型 | unknown |" not in markdown
 
 
+def test_single_financial_report_allows_basic_info_fallback_but_not_report_date() -> None:
+    pages = [{
+        "page": 1,
+        "text": """2025年财务报表
+纳税人名称：上海意川建筑科技有限公司
+税款所属期：2025-01-01至2025-12-31
+资产负债表
+资产 行次 期末金额 年初余额
+短期投资 2 0.00 0.00
+固定资产原价 20 1,000.00 500.00
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="2025年财务报表.pdf",
+        metadata={
+            "raw_pages": pages,
+            "historical_financial_reports": [{
+                "company_info": {
+                    "company_name": "上海意川建筑科技有限公司",
+                    "taxpayer_id": "91310118MA1JP7UB2B",
+                    "accounting_standard": "small_business_accounting_standard",
+                    "report_date": "2025-05-19",
+                },
+            }],
+        },
+    )
+    info = result["structured_json"]["company_info"]
+    assert info["company_name"] == "上海意川建筑科技有限公司"
+    assert info["taxpayer_id"] == "91310118MA1JP7UB2B"
+    assert info["accounting_standard"] == "small_business_accounting_standard"
+    assert info["report_type"] == "annual"
+    assert info["report_period_start"] == "2025-01-01"
+    assert info["report_period_end"] == "2025-12-31"
+    assert info["report_date"] == ""
+    markdown = result["markdown_report"]
+    assert "| 纳税人识别号 | 91310118MA1JP7UB2B |" in markdown
+    assert "| 会计准则 | 小企业会计准则 |" in markdown
+    assert "| 报表类型 | 年报 |" in markdown
+    assert "| 报送日期/报表日 | - |" in markdown
+    assert "| 纳税人识别号 | - |" not in markdown
+    assert "| 会计准则 | - |" not in markdown
+
+
 def test_financial_report_derives_total_equity_when_equity_label_is_missing() -> None:
     pages = _pages(*CASES[1])
     pages[0]["text"] = pages[0]["text"].replace("所有者权益合计 60 13,043,765.10\n", "")

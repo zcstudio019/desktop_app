@@ -19,6 +19,14 @@ def _first(patterns: tuple[str, ...], text: str) -> str:
     return ""
 
 
+def _first_with_source(patterns: tuple[tuple[str, str], ...], text: str) -> tuple[str, str]:
+    for source_name, pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip(" ：:，,"), source_name
+    return "", "missing"
+
+
 def _normalize_date(value: str) -> str:
     return str(value or "").replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-").replace(".", "-")
 
@@ -61,18 +69,41 @@ def _accounting_standard(compact_source: str) -> tuple[str, str]:
     return "unknown", "unidentified"
 
 
+def _history_company_value(
+    metadata: dict[str, Any], field: str, company_name: str, *, allowed_values: set[str] | None = None
+) -> tuple[str, str]:
+    for report in reversed(metadata.get("historical_financial_reports") or []):
+        if not isinstance(report, dict):
+            continue
+        info = report.get("company_info") or {}
+        if not isinstance(info, dict):
+            continue
+        historical_name = str(info.get("company_name") or "").strip()
+        if company_name and historical_name and historical_name != company_name:
+            continue
+        value = str(info.get(field) or "").strip()
+        if value in {"", "-", "unknown"}:
+            continue
+        if allowed_values is not None and value not in allowed_values:
+            continue
+        return value, "fallback_from_same_customer_financial_reports"
+    return "", "missing"
+
+
 def identify_financial_report(text: str, filename: str = "", metadata: dict[str, Any] | None = None) -> CompanyInfo:
+    metadata = metadata or {}
     source = f"{filename}\n{text}"
     compact_source = re.sub(r"\s+", "", source)
     unit, _ = detect_unit(source)
     standard, accounting_standard_source = _accounting_standard(compact_source)
-    report_date = _normalize_date(_first(
+    report_date_raw, report_date_source = _first_with_source(
         (
-            r"(?:报送日期|报告日期|报表日期|申报日期)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
-            r"(?:资产负债表日)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
+            ("document_submission_date", r"(?:报送日期|报告日期|报表日期|申报日期|填报日期|编制日期)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)"),
+            ("statement_date", r"(?:资产负债表日)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)"),
         ),
         compact_source,
-    ))
+    )
+    report_date = _normalize_date(report_date_raw)
     period_match = re.search(
         r"(?:税款所属期起止|税款所属期|税款所属时间)\s*[:：]?\s*"
         r"((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)\s*(?:至|到|[-~—－])\s*"
@@ -99,27 +130,64 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
     year = year_match.group(1) if year_match else (report_date[:4] if report_date else "")
     if report_type == "annual" and year and not start:
         start, end = f"{year}-01-01", f"{year}-12-31"
+    company_name = _first((r"(?:企业名称|公司名称|纳税人名称|编制单位)\s*[:：]\s*([^:：\n\r]+?有限公司|[^:：\n\r]+?公司)",), compact_source)
+    if not company_name:
+        company_name, _ = _history_company_value(metadata, "company_name", "")
+    taxpayer_id, taxpayer_id_source = _first_with_source(
+        (
+            (
+                "document_text",
+                r"(?:纳税人识别号(?:[（(](?:国税|地税)[）)])?(?:/统一社会信用代码)?|统一社会信用代码)\s*[:：]?\s*([0-9A-Z]{12,30})",
+            ),
+        ),
+        compact_source,
+    )
+    if not taxpayer_id:
+        taxpayer_id, taxpayer_id_source = _history_company_value(metadata, "taxpayer_id", company_name)
+    if standard == "unknown":
+        standard, fallback_source = _history_company_value(
+            metadata,
+            "accounting_standard",
+            company_name,
+            allowed_values={
+                "small_business_accounting_standard",
+                "small_enterprise_accounting_standard",
+                "enterprise_accounting_standard",
+                "business_accounting_standard",
+            },
+        )
+        if standard:
+            if standard == "small_enterprise_accounting_standard":
+                standard = "small_business_accounting_standard"
+            accounting_standard_source = fallback_source
+        else:
+            standard = "unknown"
     info = CompanyInfo(
         accounting_standard=standard,
         report_type=report_type,
         report_period_start=start,
         report_period_end=end,
-        company_name=_first((r"(?:企业名称|公司名称|纳税人名称|编制单位)\s*[:：]\s*([^:：\n\r]+?有限公司|[^:：\n\r]+?公司)",), compact_source),
-        taxpayer_id=_first((r"(?:纳税人识别号(?:[（(](?:国税|地税)[）)])?|统一社会信用代码)\s*[:：]\s*([0-9A-Z]{15,20})",), compact_source),
+        company_name=company_name,
+        taxpayer_id=taxpayer_id,
         report_date=report_date,
         currency="CNY",
         unit=unit,
     )
     logger.info(
-        "[FinancialReportAgent][company_info] %s",
+        "[FinancialReportAgent][company_info_normalized] %s",
         {
             "source_file": filename,
+            "company_name": info.company_name,
+            "taxpayer_id": info.taxpayer_id,
+            "taxpayer_id_source": taxpayer_id_source,
             "report_period_start": info.report_period_start,
             "report_period_end": info.report_period_end,
-            "detected_report_type": info.report_type,
+            "report_type": info.report_type,
             "report_type_source": report_type_source,
-            "detected_accounting_standard": info.accounting_standard,
+            "accounting_standard": info.accounting_standard,
             "accounting_standard_source": accounting_standard_source,
+            "report_date": info.report_date,
+            "report_date_source": report_date_source,
         },
     )
     return info
