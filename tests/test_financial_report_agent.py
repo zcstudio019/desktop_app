@@ -174,6 +174,48 @@ def test_identify_financial_report_supports_company_info_aliases() -> None:
     assert info.report_date == "2026-03-25"
 
 
+def test_small_business_monthly_report_prefers_explicit_period_and_social_credit_code() -> None:
+    pages = [{
+        "page": 1,
+        "text": """资产负债表
+企业名称：上海耐吉电力集团有限公司
+纳税人识别号/社会信用代码：91310000761645460D
+所属期起：2022-12-01
+所属期止：2022-12-31
+适用执行小企业会计准则的企业
+报送日期/报表日：2023-1-15
+单位：元
+资产总计 31 1.00 1.00
+负债合计 52 0.00 0.00
+所有者权益合计 59 1.00 1.00
+负债和所有者权益总计 60 1.00 1.00
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="2022年财务报表.pdf",
+        metadata={"raw_pages": pages},
+    )
+    info = result["structured_json"]["company_info"]
+    assert info["company_name"] == "上海耐吉电力集团有限公司"
+    assert info["taxpayer_id"] == "91310000761645460D"
+    assert info["accounting_standard"] == "small_business_accounting_standard"
+    assert info["report_type"] == "monthly"
+    assert info["report_period_start"] == "2022-12-01"
+    assert info["report_period_end"] == "2022-12-31"
+    assert info["report_date"] == "2023-01-15"
+    markdown = result["markdown_report"]
+    assert "| 纳税人识别号 | 91310000761645460D |" in markdown
+    assert "| 会计准则 | 小企业会计准则 |" in markdown
+    assert "| 报表类型 | 月报 |" in markdown
+    assert "| 所属期开始日期 | 2022-12-01 |" in markdown
+    assert "| 所属期结束日期 | 2022-12-31 |" in markdown
+    assert "| 报送日期/报表日 | 2023-01-15 |" in markdown
+    assert "| 纳税人识别号 | - |" not in markdown
+    assert "| 报表类型 | 年报 |" not in markdown
+    assert "| 所属期开始日期 | 2022-01-01 |" not in markdown
+
+
 def test_small_business_annual_report_completes_company_info_from_period_and_table_style() -> None:
     pages = [{
         "page": 1,

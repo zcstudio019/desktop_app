@@ -188,6 +188,22 @@ describe('buildFinancialReportCustomerSummary', () => {
     expect(summary.baseInfo).not.toContainEqual(['会计准则', '未知']);
   });
 
+  it('normalizes non-padded report dates in customer-level base info', () => {
+    const monthly = structuredClone(reports[2]);
+    monthly.company_info = {
+      ...monthly.company_info,
+      report_type: 'monthly',
+      report_period_start: '2022-12-01',
+      report_period_end: '2022-12-31',
+      report_date: '2023-1-15',
+    };
+    const summary = buildFinancialReportCustomerSummary([monthly]);
+
+    expect(summary.baseInfo).toContainEqual(['已识别报表期间', '2022年12月月报']);
+    expect(summary.baseInfo).toContainEqual(['覆盖期间', '2022-12-01 至 2022-12-31']);
+    expect(summary.baseInfo).toContainEqual(['最新报送日期/报表日', '2023-01-15']);
+  });
+
   it('preserves report, localized structured data and profile markdown for collapsed raw sections', () => {
     const wrapped = {
       structured_json: reports[2],

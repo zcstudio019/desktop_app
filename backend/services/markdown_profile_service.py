@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import copy
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,16 @@ from backend.services.financial_report_agent.markdown_renderer import render_fin
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_financial_report_date(value: Any) -> str:
+    match = re.search(r'(20\d{2})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})\s*日?', str(value or ''))
+    if not match:
+        return str(value or '').strip()
+    try:
+        return date(*map(int, match.groups())).isoformat()
+    except ValueError:
+        return str(value or '').strip()
 
 RISK_REPORT_SCHEMA_TEMPLATE: dict[str, Any] = {
     "customer_summary": {
@@ -1669,6 +1680,9 @@ async def _build_single_document_section(
             structured_json = {}
         structured_json = copy.deepcopy(structured_json)
         info = structured_json.setdefault('company_info', {})
+        for date_field in ('report_period_start', 'report_period_end', 'report_date'):
+            if info.get(date_field):
+                info[date_field] = _normalize_financial_report_date(info.get(date_field))
         source_file = str(structured_json.get('source_file') or file_name or '')
         source_file_candidates = f"{structured_json.get('source_file') or ''}\n{file_name or ''}"
         month_match = re.search(r'(20\d{2})(?:年(0?[1-9]|1[0-2])月(?:份)?|[-.](0[1-9]|1[0-2]))', re.sub(r'\s+', '', source_file_candidates))

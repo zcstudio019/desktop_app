@@ -29,7 +29,15 @@ def _first_with_source(patterns: tuple[tuple[str, str], ...], text: str) -> tupl
 
 
 def _normalize_date(value: str) -> str:
-    return str(value or "").replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-").replace(".", "-")
+    text = str(value or "").strip()
+    match = re.search(r"(20\d{2})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})\s*日?", text)
+    if not match:
+        return ""
+    year, month, day = map(int, match.groups())
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return ""
 
 
 def _period_report_type(start: str, end: str) -> tuple[str, str]:
@@ -42,9 +50,18 @@ def _period_report_type(start: str, end: str) -> tuple[str, str]:
         return "unknown", ""
     if start_date.year == end_date.year and (start_date.month, start_date.day, end_date.month, end_date.day) == (1, 1, 12, 31):
         return "annual", "report_period_full_year"
-    if start_date.day == 1 and (end_date.year - start_date.year) * 12 + end_date.month - start_date.month == 2:
+    if (
+        start_date.day == 1
+        and end_date.day == calendar.monthrange(end_date.year, end_date.month)[1]
+        and (end_date.year - start_date.year) * 12 + end_date.month - start_date.month == 2
+    ):
         return "quarterly", "report_period_three_months"
-    if start_date.day == 1 and start_date.year == end_date.year and start_date.month == end_date.month:
+    if (
+        start_date.day == 1
+        and end_date.day == calendar.monthrange(end_date.year, end_date.month)[1]
+        and start_date.year == end_date.year
+        and start_date.month == end_date.month
+    ):
         return "monthly", "report_period_one_month"
     return "unknown", ""
 
@@ -145,28 +162,42 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
     standard, accounting_standard_source = _accounting_standard(compact_source)
     report_date_raw, report_date_source = _first_with_source(
         (
+            ("text:报送日期/报表日", r"(?:报送日期\s*[\/／]\s*报表日)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)"),
             ("document_submission_date", r"(?:报送日期|报告日期|报表日期|申报日期|填报日期|编制日期)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)"),
             ("statement_date", r"(?:资产负债表日)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)"),
         ),
         compact_source,
     )
     report_date = _normalize_date(report_date_raw)
-    period_match = re.search(
-        r"(?:税款所属期起止|税款所属期|税款所属时间)\s*[:：]?\s*"
+    separate_period_match = re.search(
+        r"(?:税款)?所属期(?:起|始|开始)\s*[:：]?\s*"
+        r"((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?).*?"
+        r"(?:税款)?所属期(?:止|结束)\s*[:：]?\s*"
+        r"((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
+        compact_source,
+    )
+    range_period_match = re.search(
+        r"(?:税款所属期起止|税款所属期|税款所属时间|所属期|所属时间)\s*[:：]?\s*"
         r"((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)\s*(?:至|到|[-~—－])\s*"
         r"((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
         compact_source,
     )
+    period_match = separate_period_match or range_period_match
     if period_match:
         start = _normalize_date(period_match.group(1))
         end = _normalize_date(period_match.group(2))
-        report_type, report_type_source = _period_report_type(start, end)
+        report_type, _period_derivation = _period_report_type(start, end)
+        period_source = "text:所属期起/所属期止" if separate_period_match else "text:所属期范围"
+        report_type_source = "derived_from_period"
+        if report_type != "annual" and any(marker in compact_source for marker in ("年报", "年度", "全年")):
+            logger.warning("文件名或标题与所属期不一致，已按所属期起止识别报表类型。 source_file=%s", filename)
     else:
-        explicit_period = filename_period or header_period
+        explicit_period = header_period or filename_period
         start = str(explicit_period.get("start") or "")
         end = str(explicit_period.get("end") or "")
         report_type = str(explicit_period.get("report_type") or "unknown")
-        report_type_source = "filename_period_signal" if filename_period else "header_period_signal" if header_period else "unidentified"
+        period_source = "header_period_signal" if header_period else "filename_period_signal" if filename_period else "missing"
+        report_type_source = period_source if explicit_period else "unidentified"
     if report_type == "unknown" and ("季报" in compact_source or "季度" in compact_source):
         report_type, report_type_source = "quarterly", "document_text_or_filename"
     elif report_type == "unknown" and "月报" in compact_source:
@@ -183,8 +214,8 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
     taxpayer_id, taxpayer_id_source = _first_with_source(
         (
             (
-                "document_text",
-                r"(?:纳税人识别号(?:[（(](?:国税|地税)[）)])?(?:/统一社会信用代码)?|统一社会信用代码)\s*[:：]?\s*([0-9A-Z]{12,30})",
+                "text:纳税人识别号/社会信用代码",
+                r"(?:纳税人识别号\s*[\/／]\s*(?:社会信用代码|统一社会信用代码)|纳税人识别号(?:[（(](?:国税|地税)[）)])?|社会信用代码|统一社会信用代码)\s*[:：]?\s*([0-9A-Z]{12,30})",
             ),
         ),
         compact_source,
@@ -219,6 +250,22 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
         report_date=report_date,
         currency="CNY",
         unit=unit,
+    )
+    logger.info(
+        "[FinancialReportAgent][company_info_detect] %s",
+        {
+            "source_file": filename,
+            "taxpayer_id": info.taxpayer_id,
+            "taxpayer_id_source": taxpayer_id_source,
+            "period_start": info.report_period_start,
+            "period_end": info.report_period_end,
+            "period_source": period_source,
+            "report_type": info.report_type,
+            "report_type_source": report_type_source,
+            "report_date": info.report_date,
+            "report_date_source": report_date_source,
+            "overwritten_by_filename_rule": False,
+        },
     )
     logger.info(
         "[FinancialReportAgent][company_info_normalized] %s",

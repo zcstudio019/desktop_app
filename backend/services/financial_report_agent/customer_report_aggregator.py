@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 import copy
+from datetime import date
 import logging
 import re
 from typing import Any
@@ -64,6 +65,16 @@ def _non_empty(value: Any) -> bool:
     return str(value if value is not None else "").strip() not in EMPTY_VALUES
 
 
+def _normalize_date(value: Any) -> str:
+    match = re.search(r"(20\d{2})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})\s*日?", str(value or ""))
+    if not match:
+        return ""
+    try:
+        return date(*map(int, match.groups())).isoformat()
+    except ValueError:
+        return ""
+
+
 def pick_first_non_empty(reports: list[dict[str, Any]], paths: list[tuple[str, ...]]) -> tuple[Any, str]:
     """Pick the first non-empty value from newest to oldest reports."""
     for report in reversed(reports):
@@ -121,7 +132,7 @@ def _resolve_company_info(entries: list[tuple[dict[str, Any], dict[str, Any]]]) 
     if not _non_empty(taxpayer_id):
         for report, extraction in reversed(entries):
             match = re.search(
-                r"(?:纳税人识别号(?:[（(](?:国税|地税)[）)])?|统一社会信用代码)\s*[:：]\s*([A-Z0-9]{15,20})",
+                r"(?:纳税人识别号\s*[\/／]\s*(?:社会信用代码|统一社会信用代码)|纳税人识别号(?:[（(](?:国税|地税)[）)])?|社会信用代码|统一社会信用代码)\s*[:：]?\s*([A-Z0-9]{12,30})",
                 _fallback_text(report, extraction),
             )
             if match:
@@ -155,11 +166,15 @@ def _resolve_company_info(entries: list[tuple[dict[str, Any], dict[str, Any]]]) 
             ("statement_date",),
         ],
     )
+    report_date = _normalize_date(report_date)
     if not _non_empty(report_date):
         for report, extraction in reversed(entries):
-            match = re.search(r"(?:报送日期|资产负债表日|报表日期)\s*[:：]\s*(20\d{2}-\d{2}-\d{2})", _fallback_text(report, extraction))
+            match = re.search(
+                r"(?:报送日期\s*[\/／]\s*报表日|报送日期|资产负债表日|报表日期)\s*[:：]?\s*(20\d{2}[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
+                _fallback_text(report, extraction),
+            )
             if match:
-                report_date = match.group(1)
+                report_date = _normalize_date(match.group(1))
                 source = f"{report.get('source_file') or '财务报表'}:report_markdown"
                 break
     latest_info["report_date"] = str(report_date).strip() if _non_empty(report_date) else ""

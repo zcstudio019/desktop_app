@@ -8,6 +8,7 @@ from typing import Any
 from backend.services.agents.financing_judgement_agent import FinancingJudgementAgent
 from backend.services.agents.orchestrator import _normalize_workflow_context
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
+from backend.services.financial_report_agent.orchestrator import run_financial_report_agent
 from backend.services.local_storage_service import LocalStorageService
 from backend.services.markdown_profile_service import build_auto_profile_payload
 from backend.services.rag_service import RagService
@@ -297,6 +298,46 @@ def test_profile_financial_company_info_falls_back_across_reports_and_markdown()
     assert "| 纳税人识别号 | - |" not in latest_detail
     assert "| 会计准则 | - |" not in latest_detail
     assert "## 企业流水" in markdown
+
+
+def test_profile_keeps_explicit_monthly_financial_period_in_customer_summary() -> None:
+    text = """资产负债表
+企业名称：上海耐吉电力集团有限公司
+纳税人识别号/社会信用代码：91310000761645460D
+所属期起：2022-12-01
+所属期止：2022-12-31
+适用执行小企业会计准则的企业
+报送日期/报表日：2023-1-15
+单位：元
+资产总计 31 1.00 1.00
+负债合计 52 0.00 0.00
+所有者权益合计 59 1.00 1.00
+负债和所有者权益总计 60 1.00 1.00
+"""
+    extracted = run_financial_report_agent(
+        raw_text=text,
+        filename="2022年财务报表.pdf",
+        metadata={"raw_pages": [{"page": 1, "text": text}]},
+    )
+    # Simulate a legacy persisted extraction that retained an unpadded report date.
+    extracted["structured_json"]["company_info"]["report_date"] = "2023-1-15"
+    extraction = {
+        "extraction_id": "financial-monthly-202212",
+        "doc_id": "doc-financial-monthly-202212",
+        "customer_id": "customer-coexist",
+        "extraction_type": "financial_report",
+        "file_name": "2022年财务报表.pdf",
+        "extracted_data": extracted,
+    }
+    payload = asyncio.run(build_auto_profile_payload(_Storage([extraction]), "customer-coexist"))
+    markdown = payload["markdown_content"]
+
+    assert "已识别报表期间：2022年12月月报" in markdown
+    assert "覆盖期间：2022-12-01 至 2022-12-31" in markdown
+    assert "| 纳税人识别号 | 91310000761645460D |" in markdown
+    assert "| 报表类型 | 月报 |" in markdown
+    assert "| 报送日期/报表日 | 2023-01-15 |" in markdown
+    assert "2022年报" not in markdown
 
 
 def test_profile_repairs_stored_monthly_report_period_from_source_file() -> None:

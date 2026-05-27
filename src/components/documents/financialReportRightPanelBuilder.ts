@@ -124,6 +124,12 @@ function text(value: unknown): string {
   return result || EMPTY;
 }
 
+function normalizeDate(value: unknown): string {
+  const match = String(value ?? '').match(/(20\d{2})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})\s*日?/);
+  if (!match) return '';
+  return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+}
+
 function numberValue(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const parsed = typeof value === 'number' ? value : Number(String(value).replace(/,/g, ''));
@@ -389,7 +395,7 @@ function aggregateCompanyInfo(reports: JsonRecord[], inputs: unknown[]): JsonRec
     result[key] = pickFirstNonEmpty(reports, [['company_info', key], [key]]) || '';
   }
   result.taxpayer_id = pickFirstNonEmpty(reports, [['company_info', 'taxpayer_id'], ['taxpayer_id']])
-    || textContent.match(/(?:纳税人识别号(?:[（(](?:国税|地税)[）)])?|统一社会信用代码)\s*[:：]\s*([A-Z0-9]{15,20})/)?.[1]
+    || textContent.match(/(?:纳税人识别号\s*[\/／]\s*(?:社会信用代码|统一社会信用代码)|纳税人识别号(?:[（(](?:国税|地税)[）)])?|社会信用代码|统一社会信用代码)\s*[:：]?\s*([A-Z0-9]{12,30})/)?.[1]
     || '';
   let standard = String(pickFirstNonEmpty(reports, [['company_info', 'accounting_standard'], ['accounting_standard']]) || '');
   if (!hasSummaryValue(standard)) {
@@ -399,14 +405,14 @@ function aggregateCompanyInfo(reports: JsonRecord[], inputs: unknown[]): JsonRec
       : 'unknown';
   }
   result.accounting_standard = standard;
-  result.report_date = pickFirstNonEmpty(reports, [
+  result.report_date = normalizeDate(pickFirstNonEmpty(reports, [
     ['company_info', 'report_date'],
     ['report_date'],
     ['company_info', 'balance_sheet_date'],
     ['balance_sheet_date'],
     ['company_info', 'statement_date'],
     ['statement_date'],
-  ]) || textContent.match(/(?:报送日期|资产负债表日|报表日期)\s*[:：]\s*(20\d{2}-\d{2}-\d{2})/)?.[1] || '';
+  ])) || normalizeDate(textContent.match(/(?:报送日期\s*[\/／]\s*报表日|报送日期|资产负债表日|报表日期)\s*[:：]?\s*(20\d{2}[-年/.]\d{1,2}[-月/.]\d{1,2}日?)/)?.[1]) || '';
   return result;
 }
 
