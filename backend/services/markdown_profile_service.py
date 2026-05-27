@@ -2530,54 +2530,67 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 f"| 金额单位 | {financial_info_text('unit')} |",
                 '',
                 '### 资产负债表摘要',
-                '| 项目 | 最新一期 | 上一期 | 变化额 | 变化率 |',
-                '|---|---:|---:|---:|---:|',
             ]
-            balance_fields = [
-                ('cash_and_equivalents', '货币资金'),
-                ('accounts_receivable', '应收账款'),
-                ('prepayments', '预付款项'),
-                ('other_receivables', '其他应收款'),
-                ('inventory', '存货'),
-                ('current_assets_total', '流动资产合计'),
-                ('total_assets', '资产总计'),
-                ('short_term_loans', '短期借款'),
-                ('long_term_loans', '长期借款'),
-                ('accounts_payable', '应付账款'),
-                ('other_payables', '其他应付款'),
-                ('current_liabilities_total', '流动负债合计'),
-                ('non_current_liabilities_total', '非流动负债合计'),
-                ('total_liabilities', '负债合计'),
-                ('total_equity', '所有者权益合计'),
+            balance_field_groups = [
+                ('资产类', [
+                    ('cash_and_equivalents', '货币资金'),
+                    ('accounts_receivable', '应收账款'),
+                    ('prepayments', '预付款项'),
+                    ('other_receivables', '其他应收款'),
+                    ('inventory', '存货'),
+                    ('current_assets_total', '流动资产合计'),
+                    ('total_assets', '资产总计'),
+                ]),
+                ('负债类', [
+                    ('short_term_loans', '短期借款'),
+                    ('long_term_loans', '长期借款'),
+                    ('accounts_payable', '应付账款'),
+                    ('other_payables', '其他应付款'),
+                    ('current_liabilities_total', '流动负债合计'),
+                    ('non_current_liabilities_total', '非流动负债合计'),
+                    ('total_liabilities', '负债合计'),
+                ]),
+                ('所有者权益类', [
+                    ('total_equity', '所有者权益合计'),
+                ]),
             ]
-            for key, label in balance_fields:
-                current, value_source = financial_summary_balance_amount(key)
-                previous = financial_previous_amount('balance_sheet', key)
-                change_amount, change_rate = financial_change_text(current, previous)
-                if key in {'long_term_loans', 'short_term_loans', 'accounts_payable', 'total_liabilities', 'total_assets'}:
-                    latest_item = (latest.get('balance_sheet') or {}).get(key) or {}
-                    logger.info(
-                        "[FinancialReportCustomerSummary][balance_row] %s",
-                        {
-                            'field_key': key,
-                            'label': label,
-                            'latest_report_file': latest.get('source_file') or '',
-                            'latest_raw_value': latest_item.get('raw_value') if isinstance(latest_item, dict) else '',
-                            'latest_normalized_value': latest_item.get('normalized_value') if isinstance(latest_item, dict) else current,
-                            'latest_previous_raw_value': latest_item.get('previous_raw_value') if isinstance(latest_item, dict) else '',
-                            'latest_previous_normalized_value': latest_item.get('previous_normalized_value') if isinstance(latest_item, dict) else None,
-                            'previous_report_file': (reports[-2].get('source_file') if len(reports) > 1 else ''),
-                            'previous_report_value': financial_amount(reports[-2], 'balance_sheet', key) if len(reports) > 1 else None,
-                            'resolved_latest_value': current,
-                            'resolved_previous_value': previous,
-                            'value_source': value_source,
-                            'change_amount': None if current is None or previous is None else current - previous,
-                            'change_rate': None if current is None or previous in (None, 0) else (current - previous) / previous,
-                        },
+            for group_title, balance_fields in balance_field_groups:
+                financial_lines.extend([
+                    '',
+                    f'#### {group_title}',
+                    '| 项目 | 最新一期 | 上一期 | 变化额 | 变化率 |',
+                    '|---|---:|---:|---:|---:|',
+                ])
+                for key, label in balance_fields:
+                    if not label.strip():
+                        continue
+                    current, value_source = financial_summary_balance_amount(key)
+                    previous = financial_previous_amount('balance_sheet', key)
+                    change_amount, change_rate = financial_change_text(current, previous)
+                    if key in {'long_term_loans', 'short_term_loans', 'accounts_payable', 'total_liabilities', 'total_assets'}:
+                        latest_item = (latest.get('balance_sheet') or {}).get(key) or {}
+                        logger.info(
+                            "[FinancialReportCustomerSummary][balance_row] %s",
+                            {
+                                'field_key': key,
+                                'label': label,
+                                'latest_report_file': latest.get('source_file') or '',
+                                'latest_raw_value': latest_item.get('raw_value') if isinstance(latest_item, dict) else '',
+                                'latest_normalized_value': latest_item.get('normalized_value') if isinstance(latest_item, dict) else current,
+                                'latest_previous_raw_value': latest_item.get('previous_raw_value') if isinstance(latest_item, dict) else '',
+                                'latest_previous_normalized_value': latest_item.get('previous_normalized_value') if isinstance(latest_item, dict) else None,
+                                'previous_report_file': (reports[-2].get('source_file') if len(reports) > 1 else ''),
+                                'previous_report_value': financial_amount(reports[-2], 'balance_sheet', key) if len(reports) > 1 else None,
+                                'resolved_latest_value': current,
+                                'resolved_previous_value': previous,
+                                'value_source': value_source,
+                                'change_amount': None if current is None or previous is None else current - previous,
+                                'change_rate': None if current is None or previous in (None, 0) else (current - previous) / previous,
+                            },
+                        )
+                    financial_lines.append(
+                        f"| {label} | {financial_amount_text(current)} | {financial_amount_text(previous)} | {change_amount} | {change_rate} |"
                     )
-                financial_lines.append(
-                    f"| {label} | {financial_amount_text(current)} | {financial_amount_text(previous)} | {change_amount} | {change_rate} |"
-                )
             financial_lines.extend([
                 '',
                 '### 利润表摘要',

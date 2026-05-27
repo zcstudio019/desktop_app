@@ -207,6 +207,12 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert "| 报表类型 | 多期（最新为季报） |" in markdown
     assert "| 币种 | 人民币 |" in markdown
     assert "| 资产总计 | 54,688,482.62 元 | 69,320,214.02 元 | -14,631,731.40 元 | -21.11% |" in markdown
+    financial_summary = markdown.split("### 财务报表明细（逐份）", 1)[0]
+    assert "#### 资产类" in financial_summary
+    assert "#### 负债类" in financial_summary
+    assert "#### 所有者权益类" in financial_summary
+    assert "|  |" not in financial_summary
+    assert "| |" not in financial_summary
     assert "| 2022年报 | 140,360,769.35 元 |" in markdown
     assert "| 2024季报 | -1,989,500.82 元 |" in markdown
     assert "| 资产负债率 | 76.13% |" in markdown
