@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import calendar
+import copy
 import logging
 import re
 from typing import Any
@@ -20,12 +22,37 @@ STANDARD_LABELS = {
 }
 
 
+def _repair_explicit_monthly_period(report: dict[str, Any], extraction: dict[str, Any]) -> dict[str, Any]:
+    source_file = str(report.get("source_file") or extraction.get("file_name") or "")
+    file_candidates = f"{report.get('source_file') or ''}\n{extraction.get('file_name') or ''}"
+    compact_file = re.sub(r"\s+", "", file_candidates)
+    if any(marker in compact_file for marker in ("年报", "年度", "全年")):
+        return report
+    match = re.search(r"(20\d{2})(?:年(0?[1-9]|1[0-2])月(?:份)?|[-.](0[1-9]|1[0-2]))", compact_file)
+    if not match:
+        return report
+    year = int(match.group(1))
+    month = int(match.group(2) or match.group(3))
+    repaired = copy.deepcopy(report)
+    info = repaired.setdefault("company_info", {})
+    info["report_type"] = "monthly"
+    info["report_period_start"] = f"{year:04d}-{month:02d}-01"
+    info["report_period_end"] = f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+    logger.info(
+        "[FinancialReportSummary][period_repaired] source_file=%s report_type=monthly period=%s~%s",
+        source_file,
+        info["report_period_start"],
+        info["report_period_end"],
+    )
+    return repaired
+
+
 def _report_from_extraction(extraction: dict[str, Any]) -> dict[str, Any] | None:
     if str(extraction.get("extraction_type") or extraction.get("document_type") or "") not in FINANCIAL_REPORT_TYPES:
         return None
     payload = extraction.get("extracted_data") or extraction
     report = payload.get("structured_json") or payload.get("extracted_json") or payload.get("data") or payload
-    return report if isinstance(report, dict) and report.get("balance_sheet") else None
+    return _repair_explicit_monthly_period(report, extraction) if isinstance(report, dict) and report.get("balance_sheet") else None
 
 
 def _period(report: dict[str, Any]) -> str:

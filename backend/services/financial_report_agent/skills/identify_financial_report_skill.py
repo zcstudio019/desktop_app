@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 from datetime import date
 import logging
 import re
@@ -48,6 +49,50 @@ def _period_report_type(start: str, end: str) -> tuple[str, str]:
     return "unknown", ""
 
 
+def _month_period(year: int, month: int) -> tuple[str, str]:
+    return f"{year:04d}-{month:02d}-01", f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+
+
+def _quarter_period(year: int, quarter: int) -> tuple[str, str]:
+    first_month = (quarter - 1) * 3 + 1
+    last_month = first_month + 2
+    return f"{year:04d}-{first_month:02d}-01", f"{year:04d}-{last_month:02d}-{calendar.monthrange(year, last_month)[1]:02d}"
+
+
+def _explicit_period_signal(text: str, *, allow_numeric_month: bool) -> dict[str, Any]:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    quarter_names = {"一": 1, "二": 2, "三": 3, "四": 4, "1": 1, "2": 2, "3": 3, "4": 4}
+    quarter_match = re.search(r"(20\d{2})年?(?:第?([一二三四1234])季(?:度|报)?|([一二三四1234])季度)", compact)
+    if quarter_match:
+        year = int(quarter_match.group(1))
+        quarter = quarter_names[quarter_match.group(2) or quarter_match.group(3)]
+        start, end = _quarter_period(year, quarter)
+        return {"signal": quarter_match.group(0), "year": year, "month": None, "quarter": quarter, "report_type": "quarterly", "start": start, "end": end}
+    month_range = re.search(r"(20\d{2})年?(0?[1-9]|1[0-2])(?:月)?(?:至|到|[-~—－])(0?[1-9]|1[0-2])月", compact)
+    if month_range:
+        year, first_month, last_month = map(int, month_range.groups())
+        if last_month - first_month == 2:
+            start, _ = _month_period(year, first_month)
+            _, end = _month_period(year, last_month)
+            return {"signal": month_range.group(0), "year": year, "month": None, "quarter": ((first_month - 1) // 3) + 1, "report_type": "quarterly", "start": start, "end": end}
+        if first_month == 1 and last_month == 12:
+            return {"signal": month_range.group(0), "year": year, "month": None, "quarter": None, "report_type": "annual", "start": f"{year}-01-01", "end": f"{year}-12-31"}
+    month_patterns = [r"(20\d{2})年(0?[1-9]|1[0-2])月(?:份)?(?!\d|日)"]
+    if allow_numeric_month:
+        month_patterns.append(r"(20\d{2})[-.](0[1-9]|1[0-2])(?=财务报表|报表|月报|\.pdf|$)")
+    for pattern in month_patterns:
+        month_match = re.search(pattern, compact)
+        if month_match and not any(word in compact for word in ("全年", "年度", "年报")):
+            year, month = map(int, month_match.groups())
+            start, end = _month_period(year, month)
+            return {"signal": month_match.group(0), "year": year, "month": month, "quarter": None, "report_type": "monthly", "start": start, "end": end}
+    annual_match = re.search(r"(20\d{2})(?:年)?(?:年报|年度|全年)", compact)
+    if annual_match:
+        year = int(annual_match.group(1))
+        return {"signal": annual_match.group(0), "year": year, "month": None, "quarter": None, "report_type": "annual", "start": f"{year}-01-01", "end": f"{year}-12-31"}
+    return {}
+
+
 def _accounting_standard(compact_source: str) -> tuple[str, str]:
     if "小企业会计准则" in compact_source or "适用执行小企业会计准则的企业" in compact_source:
         return "small_business_accounting_standard", "document_text_or_filename"
@@ -94,6 +139,8 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
     metadata = metadata or {}
     source = f"{filename}\n{text}"
     compact_source = re.sub(r"\s+", "", source)
+    filename_period = _explicit_period_signal(filename, allow_numeric_month=True)
+    header_period = _explicit_period_signal(text, allow_numeric_month=False)
     unit, _ = detect_unit(source)
     standard, accounting_standard_source = _accounting_standard(compact_source)
     report_date_raw, report_date_source = _first_with_source(
@@ -113,19 +160,19 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
     if period_match:
         start = _normalize_date(period_match.group(1))
         end = _normalize_date(period_match.group(2))
+        report_type, report_type_source = _period_report_type(start, end)
     else:
-        start = ""
-        end = ""
-    report_type, report_type_source = _period_report_type(start, end)
-    if report_type == "unknown":
-        if "季报" in compact_source or "季度" in compact_source:
-            report_type, report_type_source = "quarterly", "document_text_or_filename"
-        elif "月报" in compact_source or re.search(r"20\d{2}(?:0[1-9]|1[0-2])财务报表", compact_source):
-            report_type, report_type_source = "monthly", "document_text_or_filename"
-        elif "年报" in compact_source or "年度" in compact_source:
-            report_type, report_type_source = "annual", "document_text_or_filename"
-        else:
-            report_type_source = "unidentified"
+        explicit_period = filename_period or header_period
+        start = str(explicit_period.get("start") or "")
+        end = str(explicit_period.get("end") or "")
+        report_type = str(explicit_period.get("report_type") or "unknown")
+        report_type_source = "filename_period_signal" if filename_period else "header_period_signal" if header_period else "unidentified"
+    if report_type == "unknown" and ("季报" in compact_source or "季度" in compact_source):
+        report_type, report_type_source = "quarterly", "document_text_or_filename"
+    elif report_type == "unknown" and "月报" in compact_source:
+        report_type, report_type_source = "monthly", "document_text_or_filename"
+    elif report_type == "unknown" and ("年报" in compact_source or "年度" in compact_source or "全年" in compact_source):
+        report_type, report_type_source = "annual", "document_text_or_filename"
     year_match = re.search(r"(20\d{2})", filename or compact_source)
     year = year_match.group(1) if year_match else (report_date[:4] if report_date else "")
     if report_type == "annual" and year and not start:
@@ -188,6 +235,22 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
             "accounting_standard_source": accounting_standard_source,
             "report_date": info.report_date,
             "report_date_source": report_date_source,
+        },
+    )
+    period_signal = filename_period or header_period
+    logger.info(
+        "[FinancialReportAgent][period_detect] %s",
+        {
+            "source_file": filename,
+            "filename_period_signal": filename_period.get("signal", ""),
+            "header_period_signal": header_period.get("signal", ""),
+            "detected_year": period_signal.get("year"),
+            "detected_month": period_signal.get("month"),
+            "detected_quarter": period_signal.get("quarter"),
+            "report_type": info.report_type,
+            "report_period_start": info.report_period_start,
+            "report_period_end": info.report_period_end,
+            "reason": report_type_source,
         },
     )
     return info

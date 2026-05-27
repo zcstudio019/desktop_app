@@ -256,6 +256,44 @@ def test_single_financial_report_allows_basic_info_fallback_but_not_report_date(
     assert "| 会计准则 | - |" not in markdown
 
 
+def test_monthly_report_period_from_filename_and_header_overrides_year_only_fallback() -> None:
+    pages = [{
+        "page": 1,
+        "text": """资产负债表
+单位名称：上海意川建筑科技有限公司 2026年3月
+资产 行次 期末金额 年初余额
+货币资金 1 119,011.57 4,803,622.66
+资产总计 31 119,011.57 4,803,622.66
+负债合计 52 0.00 0.00
+所有者权益合计 59 119,011.57 4,803,622.66
+负债和所有者权益总计 60 119,011.57 4,803,622.66
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="2026年3月财务报表.pdf",
+        metadata={"raw_pages": pages},
+    )
+    info = result["structured_json"]["company_info"]
+    assert info["report_type"] == "monthly"
+    assert info["report_period_start"] == "2026-03-01"
+    assert info["report_period_end"] == "2026-03-31"
+    markdown = result["markdown_report"]
+    assert "| 报表类型 | 月报 |" in markdown
+    assert "| 所属期开始日期 | 2026-03-01 |" in markdown
+    assert "| 所属期结束日期 | 2026-03-31 |" in markdown
+    assert "| 报表类型 | 年报 |" not in markdown
+    assert "| 所属期开始日期 | 2026-01-01 |" not in markdown
+    assert "| 所属期结束日期 | 2026-12-31 |" not in markdown
+
+
+def test_quarter_period_from_header_is_not_misclassified_as_annual() -> None:
+    info = identify_financial_report("资产负债表\n上海意川建筑科技有限公司 2026年一季度", "2026年一季度财务报表.pdf")
+    assert info.report_type == "quarterly"
+    assert info.report_period_start == "2026-01-01"
+    assert info.report_period_end == "2026-03-31"
+
+
 def test_financial_report_derives_total_equity_when_equity_label_is_missing() -> None:
     pages = _pages(*CASES[1])
     pages[0]["text"] = pages[0]["text"].replace("所有者权益合计 60 13,043,765.10\n", "")

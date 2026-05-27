@@ -278,6 +278,35 @@ def test_profile_financial_company_info_falls_back_across_reports_and_markdown()
     assert "## 企业流水" in markdown
 
 
+def test_profile_repairs_stored_monthly_report_period_from_source_file() -> None:
+    monthly = copy.deepcopy(FINANCIAL_REPORTS[-1])
+    monthly["extraction_id"] = "financial-2026-03"
+    monthly["doc_id"] = "doc-financial-2026-03"
+    monthly["file_name"] = "2026年3月财务报表.pdf"
+    report = monthly["extracted_data"]["structured_json"]
+    report["source_file"] = monthly["file_name"]
+    report["company_info"].update({
+        "report_type": "annual",
+        "report_period_start": "2026-01-01",
+        "report_period_end": "2026-12-31",
+    })
+    extractions = [FINANCIAL_REPORTS[1], monthly]
+    summary = aggregate_customer_financial_reports(extractions)
+    latest_info = summary["reports"][-1]["company_info"]
+    assert latest_info["report_type"] == "monthly"
+    assert latest_info["report_period_start"] == "2026-03-01"
+    assert latest_info["report_period_end"] == "2026-03-31"
+    payload = asyncio.run(build_auto_profile_payload(_Storage(extractions), "customer-coexist"))
+    markdown = payload["markdown_content"]
+    assert "2023年报、2026年3月月报" in markdown
+    assert "覆盖期间：2023-01-01 至 2026-03-31" in markdown
+    monthly_detail = markdown.split("- 来源文件：2026年3月财务报表.pdf", 1)[1]
+    assert "| 报表类型 | 月报 |" in monthly_detail
+    assert "| 所属期开始日期 | 2026-03-01 |" in monthly_detail
+    assert "| 所属期结束日期 | 2026-03-31 |" in monthly_detail
+    assert "| 报表类型 | 年报 |" not in monthly_detail
+
+
 def test_rag_index_keeps_financial_report_and_enterprise_flow_source_types() -> None:
     storage = _Storage([FINANCIAL_REPORTS[-1], ENTERPRISE_FLOWS[0]])
     service = RagService(ai_service=object())

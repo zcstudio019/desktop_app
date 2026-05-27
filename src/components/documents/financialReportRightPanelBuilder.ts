@@ -183,6 +183,7 @@ function mapValue(value: unknown): string {
     annual: '年报',
     quarterly: '季报',
     monthly: '月报',
+    monthly_cumulative: '月报',
     unknown: '-',
     CNY: '人民币',
     enterprise_accounting_standard: '企业会计准则一般企业',
@@ -216,6 +217,9 @@ function periodLabel(data: JsonRecord): string {
   const end = String(company.report_period_end || company.report_date || '').trim();
   const year = end.slice(0, 4);
   const type = mapValue(company.report_type);
+  if ((company.report_type === 'monthly' || company.report_type === 'monthly_cumulative') && /^\d{4}-\d{2}/.test(end)) {
+    return `${year}年${Number(end.slice(5, 7))}月月报`;
+  }
   return year && type !== EMPTY && type !== '未知' ? `${year}${type}` : periodRange(data);
 }
 
@@ -290,12 +294,32 @@ export function hasFinancialReportStructuredData(raw: unknown): boolean {
   return Boolean(findFinancialReportStructuredData(raw));
 }
 
+function repairExplicitMonthlyPeriod(data: JsonRecord): JsonRecord {
+  const sourceFile = String(data.source_file ?? '').replace(/\s+/g, '');
+  if (/年报|年度|全年/.test(sourceFile)) return data;
+  const match = sourceFile.match(/(20\d{2})(?:年(0?[1-9]|1[0-2])月(?:份)?|[-.](0[1-9]|1[0-2]))/);
+  if (!match) return data;
+  const year = Number(match[1]);
+  const month = Number(match[2] || match[3]);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return {
+    ...data,
+    company_info: {
+      ...info(data),
+      report_type: 'monthly',
+      report_period_start: `${year}-${String(month).padStart(2, '0')}-01`,
+      report_period_end: `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`,
+    },
+  };
+}
+
 function uniqueReports(inputs: unknown[]): JsonRecord[] {
   const reports: JsonRecord[] = [];
   const seen = new Set<string>();
   for (const input of inputs) {
-    const data = findFinancialReportStructuredData(input);
-    if (!data) continue;
+    const original = findFinancialReportStructuredData(input);
+    if (!original) continue;
+    const data = repairExplicitMonthlyPeriod(original);
     const company = info(data);
     const key = [
       text(company.company_name),

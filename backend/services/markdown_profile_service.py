@@ -1669,6 +1669,16 @@ async def _build_single_document_section(
             structured_json = {}
         structured_json = copy.deepcopy(structured_json)
         info = structured_json.setdefault('company_info', {})
+        source_file = str(structured_json.get('source_file') or file_name or '')
+        source_file_candidates = f"{structured_json.get('source_file') or ''}\n{file_name or ''}"
+        month_match = re.search(r'(20\d{2})(?:年(0?[1-9]|1[0-2])月(?:份)?|[-.](0[1-9]|1[0-2]))', re.sub(r'\s+', '', source_file_candidates))
+        if month_match and not any(marker in source_file_candidates for marker in ('年报', '年度', '全年')):
+            import calendar
+            year = int(month_match.group(1))
+            month = int(month_match.group(2) or month_match.group(3))
+            info['report_type'] = 'monthly'
+            info['report_period_start'] = f'{year:04d}-{month:02d}-01'
+            info['report_period_end'] = f'{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}'
         fallback_info = financial_company_info_fallback or {}
         if not str(info.get('company_name') or '').strip() and str(fallback_info.get('company_name') or '').strip():
             info['company_name'] = fallback_info.get('company_name')
@@ -2413,9 +2423,12 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
             def financial_period_label(report: dict[str, Any]) -> str:
                 info = report.get('company_info') or {}
                 end = str(info.get('report_period_end') or info.get('report_date') or '')
-                type_label = {'annual': '年报', 'quarterly': '季报', 'monthly': '月报'}.get(
-                    str(info.get('report_type') or ''), '报表'
+                report_type = str(info.get('report_type') or '')
+                type_label = {'annual': '年报', 'quarterly': '季报', 'monthly': '月报', 'monthly_cumulative': '月报'}.get(
+                    report_type, '报表'
                 )
+                if report_type in {'monthly', 'monthly_cumulative'} and len(end) >= 7:
+                    return f"{end[:4]}年{int(end[5:7])}月月报"
                 return f"{end[:4]}{type_label}" if end else type_label
 
             def financial_info_text(key: str) -> str:
@@ -2424,7 +2437,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
 
             def financial_value_label(key: str, value: Any) -> str:
                 mappings = {
-                    'report_type': {'annual': '年报', 'quarterly': '季报', 'monthly': '月报', 'unknown': '未知'},
+                    'report_type': {'annual': '年报', 'quarterly': '季报', 'monthly': '月报', 'monthly_cumulative': '月报', 'unknown': '未知'},
                     'currency': {'CNY': '人民币', 'RMB': '人民币'},
                     'accounting_standard': {
                         'enterprise_accounting_standard': '企业会计准则一般企业',

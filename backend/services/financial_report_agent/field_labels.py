@@ -234,6 +234,7 @@ VALUE_LABELS = {
     "annual": "年报",
     "quarterly": "季报",
     "monthly": "月报",
+    "monthly_cumulative": "月报",
     "unknown": "-",
     "CNY": "人民币",
     "enterprise_accounting_standard": "企业会计准则一般企业",
