@@ -36,6 +36,11 @@ class AmountField(BaseModel):
     source_page: int | None = None
     source_text: str = ""
     confidence: float = 0.0
+    original_label: str = ""
+    display_label: str = ""
+    original_present: bool = False
+    calculated: bool = False
+    template_type: str = ""
 
 
 class CompanyInfo(BaseModel):

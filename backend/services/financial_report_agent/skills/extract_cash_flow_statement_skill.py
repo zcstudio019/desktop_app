@@ -5,7 +5,7 @@ from typing import Any
 
 from ..evidence import build_evidence
 from ..schema import AmountField, CashFlowStatement, EvidenceItem
-from ._common import extract_amount_fields
+from ._common import extract_amount_fields, normalize_label
 
 
 CASH_FLOW_FIELDS = {
@@ -107,8 +107,58 @@ SUBTOTAL_COMPONENTS = {
     ),
 }
 
+SMALL_BUSINESS_MARKERS = (
+    "小企业会计准则",
+    "适用执行小企业会计准则的企业",
+    "销售产成品、商品、提供劳务收到的现金",
+    "购买原材料、商品、接受劳务支付的现金",
+)
 
-def _calculated_subtotal(values: dict[str, AmountField], components: tuple[str, ...]) -> AmountField | None:
+SMALL_BUSINESS_DISPLAY_LABELS = {
+    "cash_received_from_disposal_assets": "处置固定资产、无形资产和其他非流动资产收回的现金净额",
+    "cash_paid_for_fixed_intangible_assets": "购建固定资产、无形资产和其他非流动资产支付的现金",
+    "cash_received_from_investors": "取得投资者投资收到的现金",
+    "cash_paid_for_debt_repayment": "偿还借款本金支付的现金",
+}
+ORIGINAL_CASH_BALANCE_LABEL_FIELDS = {"net_cash_increase", "beginning_cash_balance", "ending_cash_balance"}
+
+
+def _cash_flow_template(pages: list[dict[str, Any]]) -> str:
+    source = normalize_label("\n".join(str(page.get("text") or "") for page in pages))
+    if any(normalize_label(marker) in source for marker in SMALL_BUSINESS_MARKERS):
+        return "small_business_cash_flow"
+    return "enterprise_accounting_cash_flow"
+
+
+def _decorate_original_rows(values: dict[str, AmountField], template_type: str) -> None:
+    for field, item in values.items():
+        item.template_type = template_type
+        if item.normalized_value is None or not item.source_text:
+            continue
+        source_text = normalize_label(item.source_text)
+        original_label = next(
+            (
+                label for label in sorted(CASH_FLOW_FIELDS[field], key=len, reverse=True)
+                if normalize_label(label) in source_text
+            ),
+            CASH_FLOW_FIELDS[field][0],
+        )
+        item.original_label = original_label
+        if template_type == "small_business_cash_flow" and field in ORIGINAL_CASH_BALANCE_LABEL_FIELDS:
+            item.display_label = original_label.removeprefix("加：").removeprefix("加:")
+        elif template_type == "small_business_cash_flow":
+            item.display_label = SMALL_BUSINESS_DISPLAY_LABELS.get(field, CASH_FLOW_FIELDS[field][0])
+        else:
+            item.display_label = CASH_FLOW_FIELDS[field][0]
+        item.original_present = True
+        item.calculated = False
+
+
+def _calculated_subtotal(
+    values: dict[str, AmountField],
+    components: tuple[str, ...],
+    template_type: str,
+) -> AmountField | None:
     items = [values.get(field) or AmountField() for field in components]
     current_values = [item.normalized_value for item in items if item.normalized_value is not None]
     previous_values = [item.previous_normalized_value for item in items if item.previous_normalized_value is not None]
@@ -129,6 +179,10 @@ def _calculated_subtotal(values: dict[str, AmountField], components: tuple[str, 
         source_page=source_page,
         source_text="由现金流量明细项计算得出",
         confidence=0.90,
+        display_label="",
+        original_present=False,
+        calculated=True,
+        template_type=template_type,
     )
 
 
@@ -146,10 +200,12 @@ def extract_cash_flow_statement(
         previous_column_label="上期金额",
         prefer_last_amounts=True,
     )
+    template_type = _cash_flow_template(pages)
+    _decorate_original_rows(values, template_type)
     for subtotal_field, components in SUBTOTAL_COMPONENTS.items():
         if values[subtotal_field].normalized_value is not None:
             continue
-        calculated = _calculated_subtotal(values, components)
+        calculated = _calculated_subtotal(values, components, template_type)
         if calculated is None:
             continue
         values[subtotal_field] = calculated

@@ -77,6 +77,12 @@ def _previous_field_value(item: dict[str, Any] | Any) -> Any:
     return item.get("对比列标准化数值") if "对比列标准化数值" in item else item.get("previous_normalized_value")
 
 
+def _item_meta(item: dict[str, Any] | Any, english_key: str, chinese_key: str) -> Any:
+    if not isinstance(item, dict):
+        return None
+    return item.get(chinese_key) if chinese_key in item else item.get(english_key)
+
+
 def _is_missing(value: Any) -> bool:
     return value is None or str(value).strip() in {"", "-", "—"}
 
@@ -93,6 +99,20 @@ def _is_zero(value: Any) -> bool:
 def should_render_cash_flow_row(field_key: str, item: dict[str, Any] | Any) -> bool:
     current = _field_value(item)
     previous = _previous_field_value(item)
+    original_present = _item_meta(item, "original_present", "原表存在")
+    calculated = bool(_item_meta(item, "calculated", "系统计算"))
+    source_text = _item_meta(item, "source_text", "来源文本")
+    raw_value = _item_meta(item, "raw_value", "原始值")
+    previous_raw_value = _item_meta(item, "previous_raw_value", "对比列原始值")
+    if calculated and not original_present:
+        return False
+    if original_present is False:
+        return False
+    if original_present is None:
+        if source_text == "由现金流量明细项计算得出":
+            return False
+        if not (source_text or raw_value or previous_raw_value):
+            return False
     if _is_missing(current) and _is_missing(previous):
         return False
     if _is_zero(current) and _is_zero(previous):
@@ -116,6 +136,9 @@ def _statement_table(
         item = section.get(label) or {}
         if cash_flow and not should_render_cash_flow_row(CASH_FLOW_KEY_BY_LABEL.get(label, ""), item):
             continue
+        rendered_label = label
+        if cash_flow:
+            rendered_label = str(_item_meta(item, "display_label", "展示项目名") or label)
         current = _field_value(item)
         previous = _previous_field_value(item)
         if (
@@ -127,7 +150,7 @@ def _statement_table(
             and float(previous) == 0.0
         ):
             continue
-        lines.append(f"| {label} | {_money(item)} | {_previous_money(item)} | {_page(item)} | {_confidence(item)} |")
+        lines.append(f"| {rendered_label} | {_money(item)} | {_previous_money(item)} | {_page(item)} | {_confidence(item)} |")
 
 
 def render_financial_report_markdown(data: dict[str, Any]) -> str:
@@ -212,22 +235,7 @@ def render_financial_report_markdown(data: dict[str, Any]) -> str:
         ],
         "本期金额",
         "上期金额",
-        hide_double_zero_details=True,
         cash_flow=True,
-        keep_zero_labels={
-            "经营活动现金流入小计",
-            "经营活动现金流出小计",
-            "经营活动产生的现金流量净额",
-            "投资活动现金流入小计",
-            "投资活动现金流出小计",
-            "投资活动产生的现金流量净额",
-            "筹资活动现金流入小计",
-            "筹资活动现金流出小计",
-            "筹资活动产生的现金流量净额",
-            "现金及现金等价物净增加额",
-            "期初现金及现金等价物余额",
-            "期末现金及现金等价物余额",
-        },
     )
     lines.extend([
         "",

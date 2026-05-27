@@ -390,7 +390,6 @@ def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_z
 收回短期投资、长期债券投资和长期股权投资收到的现金 10 0.00 0.00
 取得投资收益收到的现金 11 0.00 0.00
 处置固定资产、无形资产和其他非流动资产收回的现金净额 12 0.00 0.00
-投资活动现金流入小计 13 0.00 0.00
 短期投资、长期债券投资和长期股权投资支付的现金 14 200,000.00 0.00
 投资活动产生的现金流量净额 16 -200,000.00 0.00
 取得投资者投资收到的现金 17 0.00 0.00
@@ -399,8 +398,8 @@ def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_z
 偿还借款利息支付的现金 21 0.00 0.00
 筹资活动产生的现金流量净额 23 0.00 0.00
 现金净增加额 24 -4,684,611.09 4,803,622.66
-期初现金余额 25 5,000,000.00 196,377.34
-期末现金余额 26 315,388.91 5,000,000.00
+期初现金余额 25 4,803,622.66 0.00
+期末现金余额 26 119,011.57 4,803,622.66
 """,
     }]
     result = run_financial_report_agent(
@@ -430,21 +429,39 @@ def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_z
     assert cashflow["cash_received_from_investment_recovery"]["previous_normalized_value"] == 0.00
     assert cashflow["operating_cash_inflow_total"]["source_text"] == "由现金流量明细项计算得出"
     assert cashflow["operating_cash_inflow_total"]["confidence"] == 0.90
+    assert cashflow["cash_received_from_sales"]["template_type"] == "small_business_cash_flow"
+    assert cashflow["cash_received_from_sales"]["original_present"] is True
+    assert cashflow["cash_received_from_sales"]["calculated"] is False
+    assert cashflow["cash_received_from_sales"]["original_label"] == "销售产成品、商品、提供劳务收到的现金"
+    assert cashflow["net_cash_increase"]["display_label"] == "现金净增加额"
+    assert cashflow["operating_cash_inflow_total"]["original_present"] is False
+    assert cashflow["operating_cash_inflow_total"]["calculated"] is True
     markdown = result["markdown_report"]
     for row in [
         "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 |",
         "| 收到其他与经营活动有关的现金 | 63,196,820.37 | 3,069,962.48 |",
-        "| 经营活动现金流入小计 | 144,727,801.32 | 17,330,062.48 |",
         "| 购买商品、接受劳务支付的现金 | 79,773,041.92 | 3,764,197.61 |",
         "| 支付给职工以及为职工支付的现金 | 3,246,766.56 | 600,760.98 |",
         "| 支付的各项税费 | 1,436,108.53 | 656,739.77 |",
-        "| 经营活动现金流出小计 | 149,212,412.41 | 12,526,439.82 |",
+        "| 支付其他与经营活动有关的现金 | 64,756,495.40 | 7,504,741.46 |",
+        "| 经营活动产生的现金流量净额 | -4,484,611.09 | 4,803,622.66 |",
         "| 投资支付的现金 | 200,000.00 | 0.00 |",
-        "| 投资活动现金流出小计 | 200,000.00 | 0.00 |",
         "| 投资活动产生的现金流量净额 | -200,000.00 | 0.00 |",
+        "| 现金净增加额 | -4,684,611.09 | 4,803,622.66 |",
+        "| 期初现金余额 | 4,803,622.66 | 0.00 |",
+        "| 期末现金余额 | 119,011.57 | 4,803,622.66 |",
     ]:
         assert row in markdown
     for hidden_row in [
+        "经营活动现金流入小计",
+        "经营活动现金流出小计",
+        "投资活动现金流入小计",
+        "投资活动现金流出小计",
+        "筹资活动现金流入小计",
+        "筹资活动现金流出小计",
+        "现金及现金等价物净增加额",
+        "期初现金及现金等价物余额",
+        "期末现金及现金等价物余额",
         "收回投资收到的现金",
         "取得投资收益收到的现金",
         "处置固定资产、无形资产和其他长期资产收回的现金净额",
@@ -462,7 +479,4 @@ def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_z
         "汇率变动对现金及现金等价物的影响",
     ]:
         assert f"| {hidden_row} |" not in markdown
-    assert "| 投资活动现金流入小计 | 0.00 | 0.00 |" in markdown
     assert "| 筹资活动产生的现金流量净额 | 0.00 | 0.00 |" in markdown
-    assert "| 筹资活动现金流入小计 |" not in markdown
-    assert "| 筹资活动现金流出小计 |" not in markdown

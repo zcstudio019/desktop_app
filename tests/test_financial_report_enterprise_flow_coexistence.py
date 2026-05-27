@@ -215,7 +215,8 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert markdown.count("##### 资产负债表摘要") == 3
     assert markdown.count("##### 利润表摘要") == 3
     assert markdown.count("##### 现金流量表摘要") == 3
-    assert markdown.count("| 收到的税费返还 | 574,202.82 |") == 3
+    # Synthetic summary values without original-row evidence must not be presented as source table rows.
+    assert "| 收到的税费返还 | 574,202.82 |" not in markdown
     assert "| 处置子公司及其他营业单位收到的现金净额 | - | - | - | - |" not in markdown
     assert "| 收到其他与投资活动有关的现金 | - | - | - | - |" not in markdown
     assert markdown.count("##### 银行授信核心指标表") == 3
@@ -256,15 +257,16 @@ def test_profile_financial_company_info_falls_back_across_reports_and_markdown()
     company_info = summary["company_info"]
     payload = asyncio.run(build_auto_profile_payload(_Storage(extractions), "customer-coexist"))
     markdown = payload["markdown_content"]
+    financial_summary = markdown.split("### 财务报表明细（逐份）", 1)[0]
 
     assert company_info["taxpayer_id"] == "913201055804841947"
     assert company_info["accounting_standard"] == "enterprise_accounting_standard"
     assert company_info["report_date"] == "2025-03-25"
-    assert "| 纳税人识别号 | 913201055804841947 |" in markdown
-    assert "| 会计准则 | 企业会计准则一般企业 |" in markdown
-    assert "| 报送日期/报表日 | 2025-03-25 |" in markdown
-    assert "| 会计准则 | unknown |" not in markdown
-    assert "| 纳税人识别号 | - |" not in markdown
+    assert "| 纳税人识别号 | 913201055804841947 |" in financial_summary
+    assert "| 会计准则 | 企业会计准则一般企业 |" in financial_summary
+    assert "| 报送日期/报表日 | 2025-03-25 |" in financial_summary
+    assert "| 会计准则 | unknown |" not in financial_summary
+    assert "| 纳税人识别号 | - |" not in financial_summary
     assert "## 企业流水" in markdown
 
 

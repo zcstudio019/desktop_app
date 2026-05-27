@@ -1667,11 +1667,13 @@ async def _build_single_document_section(
             structured_json = {}
         display_json = extracted_data.get('display_json') or to_financial_report_display_json(structured_json)
         source_document['display_json'] = display_json
+        if structured_json:
+            # Profile details must reflect current display rules, including original-row cash flow filtering.
+            return render_financial_report_markdown(display_json), source_document
         saved_markdown = str(
             extracted_data.get('markdown_report')
             or extracted_data.get('markdown_summary')
             or extracted_data.get('markdown')
-            or structured_json.get('report_markdown')
             or ''
         ).strip()
         if saved_markdown:
