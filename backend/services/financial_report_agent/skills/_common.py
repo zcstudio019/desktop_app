@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from ..evidence import build_evidence
-from ..normalizer import current_and_previous_amounts, first_current_amount
+from ..normalizer import current_and_previous_amounts, first_current_amount, normalize_amount
 from ..schema import AmountField, EvidenceItem
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,8 @@ def _table_rows(page: dict[str, Any]) -> list[list[str]]:
 
 def _field_from_cells(
     *,
+    field_key: str,
+    source_file: str,
     page: dict[str, Any],
     labels: tuple[str, ...],
     all_labels: tuple[str, ...],
@@ -93,7 +95,8 @@ def _field_from_cells(
     previous_column_label: str,
     table_name: str,
     allowed_preceding_chinese: set[str] | None,
-) -> tuple[AmountField, str] | None:
+    preserve_cell_columns: bool,
+) -> tuple[AmountField, str, bool] | None:
     for cells in _table_rows(page):
         row_text = " ".join(cells)
         label_index = next(
@@ -111,6 +114,7 @@ def _field_from_cells(
         if not matching:
             continue
         matched_label, label_end = matching
+        positional_result = False
         if label_index is not None:
             value_cells: list[str] = []
             for cell in cells[label_index + 1:]:
@@ -131,12 +135,41 @@ def _field_from_cells(
             ]
             if next_label_positions:
                 amount_text = amount_text[:min(next_label_positions)]
-        raw_value, normalized, previous_raw_value, previous_normalized = current_and_previous_amounts(
-            amount_text,
-            multiplier,
-            prefer_last_amounts=True,
-        )
-        if normalized is None:
+        raw_value = ""
+        normalized = None
+        previous_raw_value = ""
+        previous_normalized = None
+        if preserve_cell_columns and label_index is not None:
+            column_cells = list(value_cells)
+            if column_cells and re.fullmatch(r"\d{1,3}", column_cells[0].strip()):
+                column_cells = column_cells[1:]
+            if len(column_cells) >= 2:
+                current_cell, previous_cell = column_cells[0], column_cells[1]
+                normalized = normalize_amount(current_cell, multiplier)
+                previous_normalized = normalize_amount(previous_cell, multiplier)
+                raw_value = current_cell if normalized is not None else ""
+                previous_raw_value = previous_cell if previous_normalized is not None else ""
+                positional_result = True
+                logger.info(
+                    "[DEBUG][balance_sheet_cell_parse] %s",
+                    {
+                        "field_key": field_key,
+                        "label": matched_label,
+                        "row_no": value_cells[0] if value_cells else "",
+                        "current_cell": current_cell,
+                        "previous_cell": previous_cell,
+                        "normalized_value": normalized,
+                        "previous_normalized_value": previous_normalized,
+                        "source_file": source_file,
+                    },
+                )
+        if not positional_result:
+            raw_value, normalized, previous_raw_value, previous_normalized = current_and_previous_amounts(
+                amount_text,
+                multiplier,
+                prefer_last_amounts=True,
+            )
+        if normalized is None and previous_normalized is None:
             continue
         confidence = 0.96 if table_name in _compact(str(page.get("text") or "")) else 0.88
         logger.info(
@@ -162,7 +195,7 @@ def _field_from_cells(
             source_page=int(page.get("page") or 1),
             source_text=row_text,
             confidence=confidence,
-        ), matched_label
+        ), matched_label, positional_result
     return None
 
 
@@ -179,6 +212,7 @@ def extract_amount_fields(
     allowed_preceding_chinese: set[str] | None = None,
     prefer_last_amounts: bool = False,
     require_previous_amounts: bool = False,
+    preserve_cell_columns: bool = False,
 ) -> tuple[dict[str, AmountField], list[EvidenceItem]]:
     values: dict[str, AmountField] = {}
     evidence: list[EvidenceItem] = []
@@ -187,6 +221,8 @@ def extract_amount_fields(
         found = AmountField()
         for page in pages:
             from_cells = _field_from_cells(
+                field_key=field,
+                source_file=source_file,
                 page=page,
                 labels=labels,
                 all_labels=all_labels,
@@ -195,9 +231,10 @@ def extract_amount_fields(
                 previous_column_label=previous_column_label,
                 table_name=table_name,
                 allowed_preceding_chinese=allowed_preceding_chinese,
+                preserve_cell_columns=preserve_cell_columns,
             )
-            if from_cells and from_cells[0].previous_normalized_value is not None:
-                found, matched_label = from_cells
+            if from_cells and (from_cells[2] or from_cells[0].previous_normalized_value is not None):
+                found, matched_label, _positional_result = from_cells
                 evidence.append(
                     build_evidence(
                         field_path=f"{field_prefix}.{field}",

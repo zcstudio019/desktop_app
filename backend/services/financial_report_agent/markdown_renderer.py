@@ -45,7 +45,7 @@ def _page(item: dict[str, Any] | Any) -> str:
 
 def _confidence(item: dict[str, Any] | Any) -> str:
     value = (item.get("置信度") if "置信度" in item else item.get("confidence")) if isinstance(item, dict) else None
-    if _field_value(item) is None:
+    if _field_value(item) is None and _previous_field_value(item) is None:
         return "-"
     return "-" if value is None else f"{float(value):.2f}"
 

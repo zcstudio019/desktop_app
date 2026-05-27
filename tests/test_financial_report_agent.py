@@ -794,6 +794,33 @@ def test_small_business_balance_sheet_uses_cell_comparison_column_for_core_rows(
     assert "| 存货 | 2,260,018.96 | - |" not in markdown
 
 
+def test_balance_sheet_cells_keep_blank_current_column_for_long_term_loan() -> None:
+    pages = [{
+        "page": 1,
+        "text": """小企业会计准则 资产负债表
+负债和所有者权益 行次 期末余额 年初余额
+长期借款 42 1,714,285.60
+""",
+        "table_rows": [
+            ["长期借款", "42", "", "1,714,285.60"],
+        ],
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="2025年财务报表.pdf",
+        metadata={"raw_pages": pages},
+    )
+    loan = result["structured_json"]["balance_sheet"]["long_term_loans"]
+    assert loan["raw_value"] == ""
+    assert loan["normalized_value"] is None
+    assert loan["previous_raw_value"] == "1,714,285.60"
+    assert loan["previous_normalized_value"] == 1714285.60
+    assert loan["source_text"] == "长期借款 42  1,714,285.60"
+    markdown = result["markdown_report"]
+    assert "| 长期借款 | - | 1,714,285.60 | 1 | 0.96 |" in markdown
+    assert "| 长期借款 | 1,714,285.60 | - |" not in markdown
+
+
 def test_small_business_balance_sheet_summary_uses_core_whitelist_and_original_opening_amounts() -> None:
     pages = [{
         "page": 1,
