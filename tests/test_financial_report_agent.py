@@ -9,6 +9,7 @@ from backend.services.financial_report_agent.customer_report_aggregator import a
 from backend.services.financial_report_agent.normalizer import normalize_amount
 from backend.services.financial_report_agent.orchestrator import run_financial_report_agent
 from backend.services.financial_report_agent.skills.identify_financial_report_skill import identify_financial_report
+from services.file_service import FileService
 
 
 def _pages(year: int, assets: float, liabilities: float, equity: float, revenue: float, profit: float, ocf: float) -> list[dict]:
@@ -583,6 +584,94 @@ def test_first_rows_prefer_table_cells_when_page_text_omits_comparison_column() 
     assert cashflow["source_text"] == "销售产成品、商品、 提供劳务收到的现金 1 81,530,980.95 14,260,100.00"
     assert "| 货币资金 | 119,011.57 | 4,803,622.66 | 1 | 0.96 |" in result["markdown_report"]
     assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 | 2 | 0.96 |" in result["markdown_report"]
+
+
+def test_pdf_layout_merges_comparison_cell_blocks_on_same_visual_row() -> None:
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((20, 60), "ROW")
+    page.insert_text((180, 60), "1")
+    page.insert_text((250, 60), "119,011.57")
+    page.insert_text((360, 60), "4,803,622.66")
+    pdf_bytes = document.tobytes()
+    document.close()
+
+    pages = FileService.read_pdf_layout_pages(pdf_bytes)
+    row_texts = [" ".join(row) for row in pages[0]["table_rows"]]
+    assert any(
+        "ROW" in row and "119,011.57" in row and "4,803,622.66" in row
+        for row in row_texts
+    )
+
+
+def test_small_business_balance_sheet_uses_cell_comparison_column_for_core_rows() -> None:
+    pages = [{
+        "page": 1,
+        "text": """小企业会计准则 资产负债表
+资产 行次 期末金额 年初余额
+货币资金 1 119,011.57
+应收账款 6 14,060,346.90
+预付账款 7 1,504,930.35
+其他应收款 8 27,540,109.25
+存货 10 2,260,018.96
+流动资产合计 16 45,484,417.03
+长期股权投资 19 200,000.00
+无形资产 26 0.00
+非流动资产合计 30 1,569,556.23
+资产总计 31 47,053,973.26
+短期借款 32 2,000,000.00
+应付账款 34 20,413,003.45
+流动负债合计 44 42,046,587.04
+负债合计 52 47,017,886.39
+所有者权益合计 59 36,086.87
+负债和所有者权益总计 60 47,053,973.26
+""",
+        "table_rows": [
+            ["货币资金", "1", "119,011.57", "4,803,622.66"],
+            ["应收账款", "6", "14,060,346.90", "12,366,300.00"],
+            ["预付账款", "7", "1,504,930.35", "433,407.72"],
+            ["其他应收款", "8", "27,540,109.25", "400,647.52"],
+            ["存货", "10", "2,260,018.96", "0.00"],
+            ["流动资产合计", "16", "45,484,417.03", "18,003,977.90"],
+            ["长期股权投资", "19", "200,000.00", "0.00"],
+            ["无形资产", "26", "0.00", "0.00"],
+            ["非流动资产合计", "30", "1,569,556.23", "935,486.72"],
+            ["资产总计", "31", "47,053,973.26", "18,939,464.62"],
+            ["短期借款", "32", "2,000,000.00", "0.00"],
+            ["应付账款", "34", "20,413,003.45", "15,793,885.12"],
+            ["流动负债合计", "44", "42,046,587.04", "17,143,638.50"],
+            ["负债合计", "52", "47,017,886.39", "17,965,478.50"],
+            ["所有者权益合计", "59", "36,086.87", "973,986.12"],
+            ["负债和所有者权益总计", "60", "47,053,973.26", "18,939,464.62"],
+        ],
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="小企业资产负债表-cells年初余额.pdf",
+        metadata={"raw_pages": pages},
+    )
+    balance = result["structured_json"]["balance_sheet"]
+    for field in (
+        "cash_and_equivalents", "accounts_receivable", "prepayments", "other_receivables",
+        "inventory", "current_assets_total", "total_assets", "short_term_loans",
+        "accounts_payable", "current_liabilities_total", "total_liabilities", "total_equity",
+    ):
+        assert balance[field]["previous_normalized_value"] is not None
+    assert balance["cash_and_equivalents"]["previous_normalized_value"] == 4803622.66
+    assert balance["inventory"]["previous_normalized_value"] == 0.00
+    assert balance["long_term_equity_investment"]["previous_normalized_value"] == 0.00
+    assert balance["intangible_assets"]["normalized_value"] == 0.00
+    assert balance["intangible_assets"]["previous_normalized_value"] == 0.00
+    markdown = result["markdown_report"]
+    assert "| 货币资金 | 119,011.57 | 4,803,622.66 | 1 | 0.96 |" in markdown
+    assert "| 应收账款 | 14,060,346.90 | 12,366,300.00 | 1 | 0.96 |" in markdown
+    assert "| 存货 | 2,260,018.96 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 无形资产 | 0.00 | 0.00 | 1 | 0.96 |" in markdown
+    assert "| 货币资金 | 119,011.57 | - |" not in markdown
+    assert "| 应收账款 | 14,060,346.90 | - |" not in markdown
+    assert "| 存货 | 2,260,018.96 | - |" not in markdown
 
 
 def test_small_business_balance_sheet_summary_uses_core_whitelist_and_original_opening_amounts() -> None:

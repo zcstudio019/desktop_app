@@ -84,18 +84,48 @@ class FileService:
             for page_number, page in enumerate(doc, start=1):
                 text = page.get_text("text") or ""
                 grouped: dict[tuple[int, int], list[tuple[float, str]]] = {}
+                positioned_words: list[tuple[float, float, str]] = []
                 for word in page.get_text("words", sort=True) or []:
                     if len(word) < 8:
                         continue
                     grouped.setdefault((int(word[5]), int(word[6])), []).append((float(word[0]), str(word[4])))
-                table_rows = [
+                    positioned_words.append((float(word[1]), float(word[0]), str(word[4])))
+                visual_rows = [
                     [token for _x, token in sorted(items, key=lambda pair: pair[0]) if token.strip()]
                     for _key, items in sorted(grouped.items())
                 ]
+                coordinate_groups: list[tuple[float, list[tuple[float, str]]]] = []
+                for y_pos, x_pos, token in sorted(positioned_words):
+                    target = next(
+                        (items for row_y, items in coordinate_groups if abs(row_y - y_pos) <= 2.5),
+                        None,
+                    )
+                    if target is None:
+                        target = []
+                        coordinate_groups.append((y_pos, target))
+                    target.append((x_pos, token))
+                coordinate_rows = [
+                    [token for _x, token in sorted(items, key=lambda pair: pair[0]) if token.strip()]
+                    for _row_y, items in coordinate_groups
+                ]
+                structured_rows: list[list[str]] = []
+                find_tables = getattr(page, "find_tables", None)
+                if callable(find_tables):
+                    try:
+                        for table in getattr(find_tables(), "tables", []) or []:
+                            for row in table.extract() or []:
+                                cells = [str(cell or "").strip() for cell in row]
+                                if any(cells):
+                                    structured_rows.append(cells)
+                    except Exception:
+                        # Some PDFs do not expose usable ruling lines; retain visual rows.
+                        structured_rows = []
                 pages.append({
                     "page": page_number,
                     "text": text,
-                    "table_rows": [row for row in table_rows if row],
+                    # Structured cells preserve comparison columns such as 年初余额.
+                    # Coordinate rows join values split into separate PDF text blocks.
+                    "table_rows": structured_rows + [row for row in coordinate_rows if row] + [row for row in visual_rows if row],
                     "source": "pdf_layout",
                 })
             doc.close()

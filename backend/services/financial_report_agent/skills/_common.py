@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import logging
 import re
 from typing import Any
 
 from ..evidence import build_evidence
 from ..normalizer import current_and_previous_amounts, first_current_amount
 from ..schema import AmountField, EvidenceItem
+
+logger = logging.getLogger(__name__)
 
 
 def _compact(value: str) -> str:
@@ -40,6 +43,11 @@ def _matched_label(
         normalized_label = normalize_label(label)
         match = re.search(re.escape(normalized_label), normalized_line)
         if not match:
+            continue
+        following = normalized_line[match.end():match.end() + 1]
+        # A short label must not steal a more specific account row, e.g.
+        # "固定资产" from "固定资产原价" or "固定资产清理".
+        if following and "\u4e00" <= following <= "\u9fff":
             continue
         original_start = positions[match.start() - 1] if match.start() else 0
         original_end = positions[match.end() - 1]
@@ -131,6 +139,17 @@ def _field_from_cells(
         if normalized is None:
             continue
         confidence = 0.96 if table_name in _compact(str(page.get("text") or "")) else 0.88
+        logger.info(
+            "[FinancialReportAgent][DEBUG] table_row_cells=%s",
+            {
+                "table_name": table_name,
+                "original_label": matched_label,
+                "cells": cells,
+                "normalized_value": normalized,
+                "previous_normalized_value": previous_normalized,
+                "previous_raw_value": previous_raw_value,
+            },
+        )
         return AmountField(
             raw_value=raw_value,
             normalized_value=normalized,

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import logging
 from typing import Any
 
 from ..evidence import build_evidence
 from ..normalizer import value_of
 from ..schema import AmountField, BalanceSheet, EvidenceItem
 from ._common import extract_amount_fields
+
+logger = logging.getLogger(__name__)
 
 
 BALANCE_FIELDS = {
@@ -82,6 +85,34 @@ BALANCE_FIELDS = {
     "total_liabilities_and_equity": ("负债和所有者权益总计", "负债及所有者权益总计", "负债和股东权益总计"),
 }
 
+BALANCE_SHEET_SUMMARY_FIELDS = (
+    "cash_and_equivalents",
+    "accounts_receivable",
+    "prepayments",
+    "other_receivables",
+    "inventory",
+    "current_assets_total",
+    "long_term_equity_investment",
+    "fixed_assets_original_cost",
+    "fixed_assets_net_value",
+    "fixed_assets",
+    "intangible_assets",
+    "non_current_assets_total",
+    "total_assets",
+    "short_term_loans",
+    "accounts_payable",
+    "other_payables",
+    "current_liabilities_total",
+    "long_term_loans",
+    "long_term_payables",
+    "non_current_liabilities_total",
+    "total_liabilities",
+    "paid_in_capital",
+    "undistributed_profit",
+    "total_equity",
+    "total_liabilities_and_equity",
+)
+
 
 def extract_balance_sheet(
     pages: list[dict[str, Any]], source_file: str, multiplier: Decimal
@@ -136,4 +167,19 @@ def extract_balance_sheet(
                     confidence=0.90,
                 )
             )
+    for field_key in BALANCE_SHEET_SUMMARY_FIELDS:
+        item = values.get(field_key) or AmountField()
+        logger.info(
+            "[DEBUG][balance_sheet_row] %s",
+            {
+                "field_key": field_key,
+                "original_label": BALANCE_FIELDS[field_key][0],
+                "cells": item.source_text.split() if item.source_text else [],
+                "row_text": item.source_text,
+                "normalized_value": item.normalized_value,
+                "previous_normalized_value": item.previous_normalized_value,
+                "previous_raw_value": item.previous_raw_value,
+                "source_page": item.source_page,
+            },
+        )
     return BalanceSheet(**values), evidence
