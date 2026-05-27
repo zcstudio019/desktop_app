@@ -12,18 +12,33 @@ TABLE_MARKERS = {
 }
 
 
-def build_pages(raw_text: str, raw_pages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def build_pages(
+    raw_text: str,
+    raw_pages: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     pages: list[dict[str, Any]] = []
     for index, page in enumerate(raw_pages or [], start=1):
         if isinstance(page, dict) and str(page.get("text") or "").strip():
-            pages.append({"page": int(page.get("page") or index), "text": str(page.get("text") or "")})
+            copied = dict(page)
+            copied["page"] = int(page.get("page") or index)
+            copied["text"] = str(page.get("text") or "")
+            pages.append(copied)
     if not pages:
         pages = [{"page": 1, "text": str(raw_text or "")}]
+    extra = metadata or {}
+    for key in ("tables", "table_rows", "rows"):
+        if key in extra and key not in pages[0]:
+            pages[0][key] = extra[key]
     return pages
 
 
-def segment_financial_report(raw_text: str, raw_pages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    pages = build_pages(raw_text, raw_pages)
+def segment_financial_report(
+    raw_text: str,
+    raw_pages: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    pages = build_pages(raw_text, raw_pages, metadata)
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in TABLE_MARKERS}
     for page in pages:
         text = page["text"]

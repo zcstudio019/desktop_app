@@ -76,6 +76,34 @@ class FileService:
             return f"[PDF_ERROR] 读取失败: {str(e)}"
     
     @staticmethod
+    def read_pdf_layout_pages(file_bytes: bytes) -> list[dict[str, Any]]:
+        """Read PDF page text with visual line tokens for table-aware extraction."""
+        pages: list[dict[str, Any]] = []
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            for page_number, page in enumerate(doc, start=1):
+                text = page.get_text("text") or ""
+                grouped: dict[tuple[int, int], list[tuple[float, str]]] = {}
+                for word in page.get_text("words", sort=True) or []:
+                    if len(word) < 8:
+                        continue
+                    grouped.setdefault((int(word[5]), int(word[6])), []).append((float(word[0]), str(word[4])))
+                table_rows = [
+                    [token for _x, token in sorted(items, key=lambda pair: pair[0]) if token.strip()]
+                    for _key, items in sorted(grouped.items())
+                ]
+                pages.append({
+                    "page": page_number,
+                    "text": text,
+                    "table_rows": [row for row in table_rows if row],
+                    "source": "pdf_layout",
+                })
+            doc.close()
+        except Exception:
+            return []
+        return pages
+
+    @staticmethod
     def is_pdf_text_valid(content: str) -> bool:
         """检查 PDF 提取的文本是否有效
         
@@ -264,7 +292,11 @@ class FileService:
     def extract_content(file_bytes: bytes, file_type: str, *, filename: str = "") -> dict[str, Any]:
         """Unified extraction entry returning text and optional row data."""
         if file_type == "pdf":
-            return {"text": FileService.read_pdf_text(file_bytes), "rows": []}
+            return {
+                "text": FileService.read_pdf_text(file_bytes),
+                "rows": [],
+                "raw_pages": FileService.read_pdf_layout_pages(file_bytes),
+            }
         if file_type == "excel":
             rows = FileService.read_excel_rows(file_bytes)
             return {"text": rows_to_text(rows), "rows": rows}

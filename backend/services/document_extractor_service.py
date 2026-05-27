@@ -8976,6 +8976,7 @@ def build_structured_extraction(
                 "customer_name": customer_name,
                 "raw_pages": raw_pages,
                 "rows": rows,
+                "table_rows": rows if normalized_code == "financial_report" else [],
                 "file_path": file_path,
                 "document_type": normalized_code,
             },

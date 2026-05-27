@@ -83,7 +83,7 @@ def run_financial_report_agent(
     source_file = filename or (Path(file_path).name if file_path else "")
     source_text = _source_text_with_fallback(raw_text, text, metadata)
     raw_pages = metadata.get("raw_pages") if isinstance(metadata.get("raw_pages"), list) else None
-    segmented = segment_financial_report(source_text, raw_pages)
+    segmented = segment_financial_report(source_text, raw_pages, metadata)
     info = extract_company_info(segmented["full_text"], source_file, metadata)
     logger.info(
         "[FinancialReportAgent][DEBUG] company_info=%s",
@@ -98,12 +98,20 @@ def run_financial_report_agent(
     )
     _, multiplier = detect_unit(segmented["full_text"])
     balance, balance_evidence = extract_balance_sheet(segmented["sections"]["balance_sheet"], source_file, multiplier)
+    logger.info(
+        "[DEBUG][balance_sheet.cash_and_equivalents] = %s",
+        to_plain_dict(balance.cash_and_equivalents),
+    )
     total_fields, non_empty = _non_empty_amount_count(balance)
     logger.info("[FinancialReportAgent][DEBUG] balance_sheet_fields=%s non_empty=%s", total_fields, non_empty)
     income, income_evidence = extract_income_statement(segmented["sections"]["income_statement"], source_file, multiplier)
     total_fields, non_empty = _non_empty_amount_count(income)
     logger.info("[FinancialReportAgent][DEBUG] income_statement_fields=%s non_empty=%s", total_fields, non_empty)
     cashflow, cashflow_evidence = extract_cash_flow_statement(segmented["sections"]["cash_flow_statement"], source_file, multiplier)
+    logger.info(
+        "[DEBUG][cash_flow_statement.cash_received_from_sales] = %s",
+        to_plain_dict(cashflow.cash_received_from_sales),
+    )
     total_fields, non_empty = _non_empty_amount_count(cashflow)
     logger.info("[FinancialReportAgent][DEBUG] cash_flow_fields=%s non_empty=%s", total_fields, non_empty)
     equity = None

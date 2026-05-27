@@ -50,6 +50,103 @@ def _matched_label(
     return None
 
 
+def _row_cells(row: Any) -> list[str]:
+    if isinstance(row, dict):
+        row = row.get("cells") or row.get("values") or row.get("columns") or []
+    if not isinstance(row, (list, tuple)):
+        return []
+    return [str(cell or "").strip() for cell in row]
+
+
+def _table_rows(page: dict[str, Any]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    candidates: list[Any] = [page.get("table_rows"), page.get("rows")]
+    tables = page.get("tables")
+    if isinstance(tables, list):
+        for table in tables:
+            candidates.append(table.get("rows") if isinstance(table, dict) else table)
+    for candidate in candidates:
+        if not isinstance(candidate, list):
+            continue
+        for row in candidate:
+            cells = _row_cells(row)
+            if cells:
+                rows.append(cells)
+    return rows
+
+
+def _field_from_cells(
+    *,
+    page: dict[str, Any],
+    labels: tuple[str, ...],
+    all_labels: tuple[str, ...],
+    multiplier: Decimal,
+    current_column_label: str,
+    previous_column_label: str,
+    table_name: str,
+    allowed_preceding_chinese: set[str] | None,
+) -> tuple[AmountField, str] | None:
+    for cells in _table_rows(page):
+        row_text = " ".join(cells)
+        label_index = next(
+            (
+                index for index, cell in enumerate(cells)
+                if _matched_label(cell, labels, allowed_preceding_chinese)
+            ),
+            None,
+        )
+        matching = (
+            _matched_label(cells[label_index], labels, allowed_preceding_chinese)
+            if label_index is not None
+            else _matched_label(row_text, labels, allowed_preceding_chinese)
+        )
+        if not matching:
+            continue
+        matched_label, label_end = matching
+        if label_index is not None:
+            value_cells: list[str] = []
+            for cell in cells[label_index + 1:]:
+                if any(
+                    _matched_label(cell, (other,), allowed_preceding_chinese)
+                    for other in all_labels
+                    if other != matched_label
+                ):
+                    break
+                value_cells.append(cell)
+            amount_text = " ".join(value_cells)
+        else:
+            amount_text = row_text[label_end:]
+            next_label_positions = [
+                amount_text.find(other)
+                for other in all_labels
+                if other != matched_label and amount_text.find(other) >= 0
+            ]
+            if next_label_positions:
+                amount_text = amount_text[:min(next_label_positions)]
+        raw_value, normalized, previous_raw_value, previous_normalized = current_and_previous_amounts(
+            amount_text,
+            multiplier,
+            prefer_last_amounts=True,
+        )
+        if normalized is None:
+            continue
+        confidence = 0.96 if table_name in _compact(str(page.get("text") or "")) else 0.88
+        return AmountField(
+            raw_value=raw_value,
+            normalized_value=normalized,
+            previous_raw_value=previous_raw_value,
+            previous_normalized_value=previous_normalized,
+            current_value=normalized,
+            compare_value=previous_normalized,
+            current_column_label=current_column_label,
+            previous_column_label=previous_column_label,
+            source_page=int(page.get("page") or 1),
+            source_text=row_text,
+            confidence=confidence,
+        ), matched_label
+    return None
+
+
 def extract_amount_fields(
     *,
     pages: list[dict[str, Any]],
@@ -70,6 +167,31 @@ def extract_amount_fields(
     for field, labels in mapping.items():
         found = AmountField()
         for page in pages:
+            from_cells = _field_from_cells(
+                page=page,
+                labels=labels,
+                all_labels=all_labels,
+                multiplier=multiplier,
+                current_column_label=current_column_label,
+                previous_column_label=previous_column_label,
+                table_name=table_name,
+                allowed_preceding_chinese=allowed_preceding_chinese,
+            )
+            if from_cells and from_cells[0].previous_normalized_value is not None:
+                found, matched_label = from_cells
+                evidence.append(
+                    build_evidence(
+                        field_path=f"{field_prefix}.{field}",
+                        source_file=source_file,
+                        source_page=found.source_page,
+                        table_name=table_name,
+                        row_label=matched_label,
+                        column_label=f"{current_column_label} / {previous_column_label}",
+                        raw_text=found.source_text,
+                        confidence=found.confidence,
+                    )
+                )
+                break
             raw_lines = str(page.get("text") or "").splitlines()
             for line_index, raw_line in enumerate(raw_lines):
                 line = raw_line.strip()

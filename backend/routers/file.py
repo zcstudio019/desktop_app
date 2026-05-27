@@ -380,15 +380,15 @@ def _ocr_pdf_pages(file_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
         compressed = file_service.compress_image(img_bytes)
         try:
             page_text = ocr_service.recognize_image(compressed)
-            raw_pages.append({"page": index, "text": page_text})
+            raw_pages.append({"page": index, "text": page_text, "source": "ocr"})
         except OCRServiceError as exc:
             logger.warning("OCR failed for page %s: %s", index, exc)
-            raw_pages.append({"page": index, "text": OCR_PAGE_FAILED_PLACEHOLDER})
+            raw_pages.append({"page": index, "text": OCR_PAGE_FAILED_PLACEHOLDER, "source": "ocr"})
     return _build_raw_text_from_pages(raw_pages), raw_pages
 
 
 def _financial_report_needs_ocr_supplement(text_content: str, raw_pages: list[dict[str, Any]]) -> bool:
-    if raw_pages:
+    if raw_pages and any(str(page.get("source") or "") == "ocr" for page in raw_pages if isinstance(page, dict)):
         return False
     compact = re.sub(r"\s+", "", str(text_content or ""))
     markers = (
@@ -684,7 +684,11 @@ async def _extract_content_from_file(
                 await progress_callback("正在解析文件")
             extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
             text_content = extracted.get("text", "")
-            raw_pages: list[dict[str, Any]] = []
+            raw_pages: list[dict[str, Any]] = (
+                extracted.get("raw_pages", [])
+                if isinstance(extracted.get("raw_pages"), list)
+                else []
+            )
             if not file_service.is_pdf_text_valid(text_content):
                 logger.info("PDF text extraction invalid for %s, falling back to OCR", filename)
                 if progress_callback:
