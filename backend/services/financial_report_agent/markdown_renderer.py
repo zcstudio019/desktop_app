@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .display_mapper import to_display_json
-from .field_labels import CASH_FLOW_LABELS
+from .field_labels import BALANCE_SHEET_LABELS, CASH_FLOW_LABELS
 
 
 def _display_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -63,6 +63,87 @@ CASH_FLOW_ZERO_VALUE_KEEP_FIELDS = {
     "ending_cash_balance",
 }
 
+BALANCE_SHEET_KEY_BY_LABEL = {label: key for key, label in BALANCE_SHEET_LABELS.items()}
+BALANCE_SHEET_ALWAYS_SHOW_CORE_FIELDS = {
+    "cash_and_equivalents",
+    "accounts_receivable",
+    "prepayments",
+    "other_receivables",
+    "inventory",
+    "current_assets_total",
+    "total_assets",
+    "short_term_loans",
+    "accounts_payable",
+    "other_payables",
+    "current_liabilities_total",
+    "total_liabilities",
+    "total_equity",
+    "total_liabilities_and_equity",
+}
+BALANCE_SHEET_ORDERED_FIELDS = [
+    "cash_and_equivalents",
+    "short_term_investments",
+    "trading_financial_assets",
+    "notes_receivable",
+    "accounts_receivable",
+    "receivables_financing",
+    "prepayments",
+    "dividends_receivable",
+    "interest_receivable",
+    "other_receivables",
+    "inventory",
+    "raw_materials",
+    "work_in_process",
+    "finished_goods",
+    "revolving_materials",
+    "other_current_assets",
+    "current_assets_total",
+    "long_term_bond_investments",
+    "long_term_equity_investment",
+    "fixed_assets_original_cost",
+    "accumulated_depreciation",
+    "fixed_assets_net_value",
+    "fixed_assets",
+    "construction_in_progress",
+    "construction_materials",
+    "fixed_asset_disposal",
+    "productive_biological_assets",
+    "intangible_assets",
+    "development_expenditure",
+    "long_term_prepaid_expenses",
+    "other_non_current_assets",
+    "non_current_assets_total",
+    "total_assets",
+    "short_term_loans",
+    "notes_payable",
+    "accounts_payable",
+    "advance_receipts",
+    "contract_liabilities",
+    "employee_benefits_payable",
+    "taxes_payable",
+    "interest_payable",
+    "profits_payable",
+    "other_payables",
+    "other_current_liabilities",
+    "current_liabilities_total",
+    "non_current_liabilities_due_within_one_year",
+    "long_term_loans",
+    "long_term_payables",
+    "deferred_income",
+    "other_non_current_liabilities",
+    "non_current_liabilities_total",
+    "total_liabilities",
+    "paid_in_capital",
+    "capital_reserve",
+    "surplus_reserve",
+    "undistributed_profit",
+    "total_equity",
+    "total_liabilities_and_equity",
+]
+BALANCE_SHEET_SHOW_IF_HAS_VALUE_FIELDS = (
+    set(BALANCE_SHEET_ORDERED_FIELDS) - BALANCE_SHEET_ALWAYS_SHOW_CORE_FIELDS
+)
+
 
 def _previous_field_value(item: dict[str, Any] | Any) -> Any:
     if not isinstance(item, dict):
@@ -121,12 +202,23 @@ def should_render_cash_flow_row(field_key: str, item: dict[str, Any] | Any) -> b
     return True
 
 
+def should_render_balance_sheet_row(field_key: str, item: dict[str, Any] | Any) -> bool:
+    current = _field_value(item)
+    previous = _previous_field_value(item)
+    if field_key in BALANCE_SHEET_ALWAYS_SHOW_CORE_FIELDS:
+        return not (_is_missing(current) and _is_missing(previous))
+    if field_key in BALANCE_SHEET_SHOW_IF_HAS_VALUE_FIELDS:
+        return _has_non_zero_value(item)
+    return False
+
+
 def _statement_table(
     lines: list[str], title: str, section: dict[str, Any], labels: list[str],
     amount_header: str, previous_header: str, *, hide_double_zero_details: bool = False,
     keep_zero_labels: set[str] | None = None, cash_flow: bool = False,
     hide_missing: bool = False,
     non_zero_only_labels: set[str] | None = None,
+    balance_sheet: bool = False,
 ) -> None:
     lines.extend([
         "",
@@ -138,6 +230,8 @@ def _statement_table(
     non_zero_labels = non_zero_only_labels or set()
     for label in labels:
         item = section.get(label) or {}
+        if balance_sheet and not should_render_balance_sheet_row(BALANCE_SHEET_KEY_BY_LABEL.get(label, ""), item):
+            continue
         if hide_missing and _field_value(item) is None and _previous_field_value(item) is None:
             continue
         if label in non_zero_labels and not _has_non_zero_value(item):
@@ -192,18 +286,10 @@ def render_financial_report_markdown(data: dict[str, Any]) -> str:
         lines.append(f"| {label} | {info.get(source_label) or '-'} |")
     _statement_table(
         lines, "资产负债表摘要", balance,
-        [
-            "货币资金", "短期投资", "应收账款", "预付款项", "其他应收款", "存货",
-            "流动资产合计", "长期股权投资", "固定资产原价", "固定资产账面价值",
-            "固定资产", "无形资产", "非流动资产合计", "资产总计",
-            "短期借款", "应付账款", "其他应付款", "流动负债合计", "长期借款",
-            "长期应付款", "非流动负债合计", "负债合计", "实收资本", "未分配利润",
-            "所有者权益合计", "负债和所有者权益总计",
-        ],
+        [BALANCE_SHEET_LABELS[field_key] for field_key in BALANCE_SHEET_ORDERED_FIELDS],
         "期末余额",
         "上年年末余额",
-        hide_missing=True,
-        non_zero_only_labels={"短期投资", "长期股权投资", "固定资产原价", "固定资产账面价值", "长期应付款"},
+        balance_sheet=True,
     )
     _statement_table(
         lines, "利润表摘要", income,
