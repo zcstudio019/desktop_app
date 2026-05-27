@@ -62,6 +62,7 @@ def extract_amount_fields(
     previous_column_label: str = "上年年末余额/上期金额",
     allowed_preceding_chinese: set[str] | None = None,
     prefer_last_amounts: bool = False,
+    require_previous_amounts: bool = False,
 ) -> tuple[dict[str, AmountField], list[EvidenceItem]]:
     values: dict[str, AmountField] = {}
     evidence: list[EvidenceItem] = []
@@ -100,7 +101,7 @@ def extract_amount_fields(
                     prefer_last_amounts=prefer_last_amounts,
                 )
                 needs_adjacent_amount = found_amounts[1] is None or (
-                    prefer_last_amounts and found_amounts[3] is None
+                    (prefer_last_amounts or require_previous_amounts) and found_amounts[3] is None
                 )
                 if needs_adjacent_amount:
                     candidate_lines = [candidate]

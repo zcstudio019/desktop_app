@@ -513,3 +513,29 @@ def test_small_business_cash_flow_supports_standard_sales_label_with_comparison_
     assert sales["previous_normalized_value"] == 14260100.00
     assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 | 1 | 0.96 |" in result["markdown_report"]
     assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | - |" not in result["markdown_report"]
+
+
+def test_balance_sheet_first_row_keeps_comparison_amount_when_split_after_row_number() -> None:
+    pages = [{
+        "page": 1,
+        "text": """资产负债表
+项目 行次 期末余额 上年年末余额
+货币资金 1 119,011.57
+4,803,622.66
+资产总计 30 119,011.57 4,803,622.66
+负债合计 53 0.00 0.00
+所有者权益合计 59 119,011.57 4,803,622.66
+负债和所有者权益总计 60 119,011.57 4,803,622.66
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="资产负债表-首行跨列.pdf",
+        metadata={"raw_pages": pages},
+    )
+    cash = result["structured_json"]["balance_sheet"]["cash_and_equivalents"]
+    assert cash["normalized_value"] == 119011.57
+    assert cash["previous_normalized_value"] == 4803622.66
+    assert cash["previous_raw_value"] == "4,803,622.66"
+    assert "| 货币资金 | 119,011.57 | 4,803,622.66 | 1 | 0.96 |" in result["markdown_report"]
+    assert "| 货币资金 | 119,011.57 | - |" not in result["markdown_report"]

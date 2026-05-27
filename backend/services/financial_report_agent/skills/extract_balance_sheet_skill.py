@@ -72,6 +72,7 @@ def extract_balance_sheet(
         multiplier=multiplier,
         current_column_label="期末余额",
         previous_column_label="上年年末余额",
+        require_previous_amounts=True,
     )
     if value_of(values.get("total_equity") or {}) is None:
         assets = value_of(values.get("total_assets") or {})
