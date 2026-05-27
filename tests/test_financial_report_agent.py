@@ -174,6 +174,44 @@ def test_identify_financial_report_supports_company_info_aliases() -> None:
     assert info.report_date == "2026-03-25"
 
 
+def test_small_business_annual_report_completes_company_info_from_period_and_table_style() -> None:
+    pages = [{
+        "page": 1,
+        "text": """2024年财务报表
+纳税人名称：上海意川建筑科技有限公司
+纳税人识别号：91310118MA1JP7UB2B
+税款所属期：2024-01-01至2024-12-31
+报送日期：2025-05-19
+资产负债表
+资产 行次 期末金额 年初余额
+短期投资 2 0.00 0.00
+固定资产原价 20 1,000.00 500.00
+货币资金 1 119,011.57 4,803,622.66
+资产总计 31 119,011.57 4,803,622.66
+负债合计 52 0.00 0.00
+所有者权益合计 59 119,011.57 4,803,622.66
+负债和所有者权益总计 60 119,011.57 4,803,622.66
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="2024年财务报表.pdf",
+        metadata={"raw_pages": pages},
+    )
+    info = result["structured_json"]["company_info"]
+    assert info["report_period_start"] == "2024-01-01"
+    assert info["report_period_end"] == "2024-12-31"
+    assert info["report_type"] == "annual"
+    assert info["accounting_standard"] == "small_business_accounting_standard"
+    markdown = result["markdown_report"]
+    assert "| 会计准则 | 小企业会计准则 |" in markdown
+    assert "| 报表类型 | 年报 |" in markdown
+    assert "| 会计准则 | - |" not in markdown
+    assert "| 报表类型 | - |" not in markdown
+    assert "| 会计准则 | unknown |" not in markdown
+    assert "| 报表类型 | unknown |" not in markdown
+
+
 def test_financial_report_derives_total_equity_when_equity_label_is_missing() -> None:
     pages = _pages(*CASES[1])
     pages[0]["text"] = pages[0]["text"].replace("所有者权益合计 60 13,043,765.10\n", "")

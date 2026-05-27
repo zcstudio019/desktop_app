@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import date
+import logging
 import re
 from typing import Any
 
 from ..normalizer import detect_unit
 from ..schema import CompanyInfo
+
+logger = logging.getLogger(__name__)
 
 
 def _first(patterns: tuple[str, ...], text: str) -> str:
@@ -19,26 +23,49 @@ def _normalize_date(value: str) -> str:
     return str(value or "").replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-").replace(".", "-")
 
 
+def _period_report_type(start: str, end: str) -> tuple[str, str]:
+    if not start or not end:
+        return "unknown", ""
+    try:
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end)
+    except ValueError:
+        return "unknown", ""
+    if start_date.year == end_date.year and (start_date.month, start_date.day, end_date.month, end_date.day) == (1, 1, 12, 31):
+        return "annual", "report_period_full_year"
+    if start_date.day == 1 and (end_date.year - start_date.year) * 12 + end_date.month - start_date.month == 2:
+        return "quarterly", "report_period_three_months"
+    if start_date.day == 1 and start_date.year == end_date.year and start_date.month == end_date.month:
+        return "monthly", "report_period_one_month"
+    return "unknown", ""
+
+
+def _accounting_standard(compact_source: str) -> tuple[str, str]:
+    if "小企业会计准则" in compact_source or "适用执行小企业会计准则的企业" in compact_source:
+        return "small_business_accounting_standard", "document_text_or_filename"
+    if "企业会计准则一般企业" in compact_source:
+        return "enterprise_accounting_standard", "document_text_or_filename"
+    if "企业会计准则" in compact_source:
+        return "business_accounting_standard", "document_text_or_filename"
+    style_markers = (
+        "销售产成品、商品、提供劳务收到的现金",
+        "购买原材料、商品、接受劳务支付的现金",
+        "短期投资",
+        "固定资产原价",
+        "固定资产账面价值",
+    )
+    style_count = sum(1 for marker in style_markers if marker in compact_source)
+    uses_small_business_columns = "期末金额" in compact_source and "年初余额" in compact_source
+    if style_count >= 1 or uses_small_business_columns:
+        return "small_business_accounting_standard", "small_business_table_style"
+    return "unknown", "unidentified"
+
+
 def identify_financial_report(text: str, filename: str = "", metadata: dict[str, Any] | None = None) -> CompanyInfo:
     source = f"{filename}\n{text}"
     compact_source = re.sub(r"\s+", "", source)
     unit, _ = detect_unit(source)
-    if "小企业会计准则" in compact_source:
-        standard = "small_enterprise_accounting_standard"
-    elif "企业会计准则一般企业" in compact_source:
-        standard = "enterprise_accounting_standard"
-    elif "企业会计准则" in compact_source:
-        standard = "business_accounting_standard"
-    else:
-        standard = "unknown"
-    if "季报" in compact_source or "季度" in compact_source:
-        report_type = "quarterly"
-    elif "月报" in compact_source or re.search(r"20\d{2}(?:0[1-9]|1[0-2])财务报表", compact_source):
-        report_type = "monthly"
-    elif "年报" in compact_source or "年度" in compact_source:
-        report_type = "annual"
-    else:
-        report_type = "unknown"
+    standard, accounting_standard_source = _accounting_standard(compact_source)
     report_date = _normalize_date(_first(
         (
             r"(?:报送日期|报告日期|报表日期|申报日期)\s*[:：]?\s*((?:20\d{2})[-年/.]\d{1,2}[-月/.]\d{1,2}日?)",
@@ -58,11 +85,21 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
     else:
         start = ""
         end = ""
+    report_type, report_type_source = _period_report_type(start, end)
+    if report_type == "unknown":
+        if "季报" in compact_source or "季度" in compact_source:
+            report_type, report_type_source = "quarterly", "document_text_or_filename"
+        elif "月报" in compact_source or re.search(r"20\d{2}(?:0[1-9]|1[0-2])财务报表", compact_source):
+            report_type, report_type_source = "monthly", "document_text_or_filename"
+        elif "年报" in compact_source or "年度" in compact_source:
+            report_type, report_type_source = "annual", "document_text_or_filename"
+        else:
+            report_type_source = "unidentified"
     year_match = re.search(r"(20\d{2})", filename or compact_source)
     year = year_match.group(1) if year_match else (report_date[:4] if report_date else "")
     if report_type == "annual" and year and not start:
         start, end = f"{year}-01-01", f"{year}-12-31"
-    return CompanyInfo(
+    info = CompanyInfo(
         accounting_standard=standard,
         report_type=report_type,
         report_period_start=start,
@@ -73,3 +110,16 @@ def identify_financial_report(text: str, filename: str = "", metadata: dict[str,
         currency="CNY",
         unit=unit,
     )
+    logger.info(
+        "[FinancialReportAgent][company_info] %s",
+        {
+            "source_file": filename,
+            "report_period_start": info.report_period_start,
+            "report_period_end": info.report_period_end,
+            "detected_report_type": info.report_type,
+            "report_type_source": report_type_source,
+            "detected_accounting_standard": info.accounting_standard,
+            "accounting_standard_source": accounting_standard_source,
+        },
+    )
+    return info
