@@ -93,8 +93,16 @@ def extract_amount_fields(
                 if not match_info:
                     continue
                 matched_label, _ = match_info
-                # PDF layout text may put the row label and its row number/value on adjacent lines.
-                if first_current_amount(candidate, multiplier)[1] is None:
+                # PDF layout text may put the row label or comparison value on adjacent lines.
+                found_amounts = current_and_previous_amounts(
+                    candidate,
+                    multiplier,
+                    prefer_last_amounts=prefer_last_amounts,
+                )
+                needs_adjacent_amount = found_amounts[1] is None or (
+                    prefer_last_amounts and found_amounts[3] is None
+                )
+                if needs_adjacent_amount:
                     candidate_lines = [candidate]
                     for adjacent in raw_lines[line_index + len(candidate.splitlines()):line_index + 4]:
                         if any(

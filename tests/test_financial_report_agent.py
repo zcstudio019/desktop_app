@@ -380,7 +380,8 @@ def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_z
         "page": 1,
         "text": """小企业会计准则 现金流量表
 项目 行次 本年累计金额 上年金额
-一、销售产成品、商品、提供劳务收到的现金 1 81,530,980.95 14,260,100.00
+一、销售产成品、商品、提供劳务收到的现金 1 81,530,980.95
+14,260,100.00
 收到其他与经营活动有关的现金 2 63,196,820.37 3,069,962.48
 购买原材料、商品、接受劳务支付的现金 4 79,773,041.92 3,764,197.61
 支付的职工薪酬 5 3,246,766.56 600,760.98
@@ -399,7 +400,7 @@ def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_z
 筹资活动产生的现金流量净额 23 0.00 0.00
 现金净增加额 24 -4,684,611.09 4,803,622.66
 加：期初现金余额 25 4,803,622.66 0.00
-期末现金余额 26 119,011.57 4,803,622.66
+五、期末现金余额 26 119,011.57 4,803,622.66
 """,
     }]
     result = run_financial_report_agent(
@@ -431,6 +432,9 @@ def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_z
     assert cashflow["cash_received_from_borrowings"]["previous_normalized_value"] is None
     assert cashflow["beginning_cash_balance"]["normalized_value"] == 4803622.66
     assert cashflow["beginning_cash_balance"]["previous_normalized_value"] == 0.00
+    assert cashflow["ending_cash_balance"]["display_label"] == "期末现金余额"
+    assert cashflow["ending_cash_balance"]["normalized_value"] == 119011.57
+    assert cashflow["ending_cash_balance"]["previous_normalized_value"] == 4803622.66
     assert cashflow["operating_cash_inflow_total"]["source_text"] == "由现金流量明细项计算得出"
     assert cashflow["operating_cash_inflow_total"]["confidence"] == 0.90
     assert cashflow["cash_received_from_sales"]["template_type"] == "small_business_cash_flow"
@@ -487,3 +491,25 @@ def test_small_business_cash_flow_extracts_cumulative_columns_and_hides_double_z
     assert "| 收回投资收到的现金 | 0.00 | - |" not in markdown
     assert "| 取得借款收到的现金 | 0.00 | - |" not in markdown
     assert "| 筹资活动产生的现金流量净额 | 0.00 | 0.00 |" not in markdown
+    assert "五、期末现金余额" not in markdown
+
+
+def test_small_business_cash_flow_supports_standard_sales_label_with_comparison_amount() -> None:
+    pages = [{
+        "page": 1,
+        "text": """适用执行小企业会计准则的企业 现金流量表
+项目 行次 本年累计金额 上年金额
+销售商品、提供劳务收到的现金 1 81,530,980.95
+14,260,100.00
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="小企业会计准则现金流量表-标准销售标签.pdf",
+        metadata={"raw_pages": pages},
+    )
+    sales = result["structured_json"]["cash_flow_statement"]["cash_received_from_sales"]
+    assert sales["normalized_value"] == 81530980.95
+    assert sales["previous_normalized_value"] == 14260100.00
+    assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 | 1 | 0.96 |" in result["markdown_report"]
+    assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | - |" not in result["markdown_report"]

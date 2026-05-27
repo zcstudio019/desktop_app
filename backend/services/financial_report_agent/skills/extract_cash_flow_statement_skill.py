@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import re
 from typing import Any
 
 from ..evidence import build_evidence
@@ -134,6 +135,7 @@ SMALL_BUSINESS_DISPLAY_LABELS = {
     "cash_paid_for_debt_repayment": "偿还借款本金支付的现金",
 }
 ORIGINAL_CASH_BALANCE_LABEL_FIELDS = {"net_cash_increase", "beginning_cash_balance", "ending_cash_balance"}
+DISPLAY_PREFIX_RE = re.compile(r"^(?:(?:[一二三四五六七八九十]+)[、.]|[加减][:：])\s*")
 
 
 def _cash_flow_template(pages: list[dict[str, Any]]) -> str:
@@ -141,6 +143,10 @@ def _cash_flow_template(pages: list[dict[str, Any]]) -> str:
     if any(normalize_label(marker) in source for marker in SMALL_BUSINESS_MARKERS):
         return "small_business_cash_flow"
     return "enterprise_accounting_cash_flow"
+
+
+def _display_cash_flow_label(label: str) -> str:
+    return DISPLAY_PREFIX_RE.sub("", str(label or "").strip())
 
 
 def _decorate_original_rows(values: dict[str, AmountField], template_type: str) -> None:
@@ -158,7 +164,7 @@ def _decorate_original_rows(values: dict[str, AmountField], template_type: str) 
         )
         item.original_label = original_label
         if template_type == "small_business_cash_flow" and field in ORIGINAL_CASH_BALANCE_LABEL_FIELDS:
-            item.display_label = original_label.removeprefix("加：").removeprefix("加:")
+            item.display_label = _display_cash_flow_label(original_label)
         elif template_type == "small_business_cash_flow":
             item.display_label = SMALL_BUSINESS_DISPLAY_LABELS.get(field, CASH_FLOW_FIELDS[field][0])
         else:
