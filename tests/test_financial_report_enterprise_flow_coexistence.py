@@ -236,6 +236,27 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert "来源文件数：2" in markdown
 
 
+def test_customer_financial_summary_treats_blank_latest_long_term_loan_as_zero_without_changing_detail() -> None:
+    latest = copy.deepcopy(FINANCIAL_REPORTS[-1])
+    latest_report = latest["extracted_data"]["structured_json"]
+    latest_report["balance_sheet"]["long_term_loans"] = {
+        "raw_value": "",
+        "normalized_value": None,
+        "previous_raw_value": "1,714,285.60",
+        "previous_normalized_value": 1714285.60,
+        "source_page": 1,
+        "source_text": "长期借款 42  1,714,285.60",
+        "confidence": 0.96,
+    }
+    payload = asyncio.run(build_auto_profile_payload(_Storage([FINANCIAL_REPORTS[1], latest]), "customer-coexist"))
+    markdown = payload["markdown_content"]
+    summary_markdown, detail_markdown = markdown.split("### 财务报表明细（逐份）", 1)
+
+    assert "| 长期借款 | 0.00 元 | 1,714,285.60 元 | -1,714,285.60 元 | -100.00% |" in summary_markdown
+    assert "| 长期借款 | - | 1,714,285.60 | 1 | 0.96 |" in detail_markdown
+    assert "| 长期借款 | - | - | - | - |" not in summary_markdown
+
+
 def test_profile_financial_company_info_falls_back_across_reports_and_markdown() -> None:
     latest = copy.deepcopy(FINANCIAL_REPORTS[-1])
     latest["extraction_id"] = "financial-2025"

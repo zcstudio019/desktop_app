@@ -176,6 +176,21 @@ function previousBalanceAmount(section: JsonRecord, key: string): number | null 
   return assets !== null && liabilities !== null ? Math.round((assets - liabilities) * 100) / 100 : null;
 }
 
+function customerSummaryBalanceAmount(section: JsonRecord, key: string): { value: number | null; source: string } {
+  const current = balanceAmount(section, key);
+  if (current !== null) return { value: current, source: 'latest_report.normalized_value' };
+  const item = asRecord(section[key]);
+  const previous = previousBalanceAmount(section, key);
+  const hasOriginalRow = item.original_present === true
+    || optionalText(item.previous_raw_value) !== ''
+    || optionalText(item.source_text) !== ''
+    || item.source_page !== null && item.source_page !== undefined;
+  if (previous !== null && hasOriginalRow) {
+    return { value: 0, source: 'latest_report.blank_current_treated_as_zero_for_customer_summary' };
+  }
+  return { value: null, source: 'missing' };
+}
+
 function mapValue(value: unknown): string {
   const values: Record<string, string> = {
     financial_report: '财务报表',
@@ -485,13 +500,35 @@ export function buildFinancialReportCustomerSummary(inputs: unknown[], profileMa
     ['短期借款', 'short_term_loans'],
     ['长期借款', 'long_term_loans'],
     ['应付账款', 'accounts_payable'],
+    ['其他应付款', 'other_payables'],
     ['流动负债合计', 'current_liabilities_total'],
+    ['非流动负债合计', 'non_current_liabilities_total'],
     ['负债合计', 'total_liabilities'],
     ['所有者权益合计', 'total_equity'],
   ];
   const latestBalanceSheet = balanceFields.map(([label, key]) => {
-    const latestAmount = latestValue(latestBalance, key);
+    const resolvedLatest = customerSummaryBalanceAmount(latestBalance, key);
+    const latestAmount = resolvedLatest.value;
     const priorAmount = previousBalanceAmount(latestBalance, key) ?? latestValue(previousBalance, key);
+    if (['long_term_loans', 'short_term_loans', 'accounts_payable', 'total_liabilities', 'total_assets'].includes(key)) {
+      const item = asRecord(latestBalance[key]);
+      console.debug('[FinancialReportCustomerSummary][balance_row]', {
+        field_key: key,
+        label,
+        latest_report_file: latest.source_file,
+        latest_raw_value: item.raw_value,
+        latest_normalized_value: item.normalized_value,
+        latest_previous_raw_value: item.previous_raw_value,
+        latest_previous_normalized_value: item.previous_normalized_value,
+        previous_report_file: previous?.source_file,
+        previous_report_value: latestValue(previousBalance, key),
+        resolved_latest_value: latestAmount,
+        resolved_previous_value: priorAmount,
+        value_source: resolvedLatest.source,
+        change_amount: change(latestAmount, priorAmount),
+        change_rate: changeRate(latestAmount, priorAmount),
+      });
+    }
     return {
       label,
       latest: latestAmount,

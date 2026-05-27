@@ -2403,6 +2403,22 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                         pass
                 return financial_amount(reports[-2], section, key) if len(reports) > 1 else None
 
+            def financial_summary_balance_amount(key: str) -> tuple[float | None, str]:
+                item = (latest.get('balance_sheet') or {}).get(key) or {}
+                current = financial_amount(latest, 'balance_sheet', key)
+                if current is not None:
+                    return current, 'latest_report.normalized_value'
+                if isinstance(item, dict) and item.get('previous_normalized_value') is not None:
+                    has_original_row = bool(
+                        item.get('original_present') is True
+                        or item.get('previous_raw_value')
+                        or item.get('source_text')
+                        or item.get('source_page') is not None
+                    )
+                    if has_original_row:
+                        return 0.0, 'latest_report.blank_current_treated_as_zero_for_customer_summary'
+                return None, 'missing'
+
             def financial_amount_text(value: float | None) -> str:
                 return _format_amount_for_markdown(value) if value is not None else '-'
 
@@ -2514,14 +2530,37 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 ('short_term_loans', '短期借款'),
                 ('long_term_loans', '长期借款'),
                 ('accounts_payable', '应付账款'),
+                ('other_payables', '其他应付款'),
                 ('current_liabilities_total', '流动负债合计'),
+                ('non_current_liabilities_total', '非流动负债合计'),
                 ('total_liabilities', '负债合计'),
                 ('total_equity', '所有者权益合计'),
             ]
             for key, label in balance_fields:
-                current = financial_amount(latest, 'balance_sheet', key)
+                current, value_source = financial_summary_balance_amount(key)
                 previous = financial_previous_amount('balance_sheet', key)
                 change_amount, change_rate = financial_change_text(current, previous)
+                if key in {'long_term_loans', 'short_term_loans', 'accounts_payable', 'total_liabilities', 'total_assets'}:
+                    latest_item = (latest.get('balance_sheet') or {}).get(key) or {}
+                    logger.info(
+                        "[FinancialReportCustomerSummary][balance_row] %s",
+                        {
+                            'field_key': key,
+                            'label': label,
+                            'latest_report_file': latest.get('source_file') or '',
+                            'latest_raw_value': latest_item.get('raw_value') if isinstance(latest_item, dict) else '',
+                            'latest_normalized_value': latest_item.get('normalized_value') if isinstance(latest_item, dict) else current,
+                            'latest_previous_raw_value': latest_item.get('previous_raw_value') if isinstance(latest_item, dict) else '',
+                            'latest_previous_normalized_value': latest_item.get('previous_normalized_value') if isinstance(latest_item, dict) else None,
+                            'previous_report_file': (reports[-2].get('source_file') if len(reports) > 1 else ''),
+                            'previous_report_value': financial_amount(reports[-2], 'balance_sheet', key) if len(reports) > 1 else None,
+                            'resolved_latest_value': current,
+                            'resolved_previous_value': previous,
+                            'value_source': value_source,
+                            'change_amount': None if current is None or previous is None else current - previous,
+                            'change_rate': None if current is None or previous in (None, 0) else (current - previous) / previous,
+                        },
+                    )
                 financial_lines.append(
                     f"| {label} | {financial_amount_text(current)} | {financial_amount_text(previous)} | {change_amount} | {change_rate} |"
                 )

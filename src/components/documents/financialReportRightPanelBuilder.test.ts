@@ -148,6 +148,27 @@ describe('buildFinancialReportCustomerSummary', () => {
     expect(equity?.change).toBeCloseTo(7_968.69, 2);
   });
 
+  it('uses zero in customer summary when latest current balance is blank but its comparison column exists', () => {
+    const latest = structuredClone(reports[2]);
+    (latest.balance_sheet as Record<string, unknown>).long_term_loans = {
+      raw_value: '',
+      normalized_value: null,
+      previous_raw_value: '1,714,285.60',
+      previous_normalized_value: 1_714_285.60,
+      source_page: 1,
+      source_text: '长期借款 42  1,714,285.60',
+    };
+    const summary = buildFinancialReportCustomerSummary([reports[1], latest]);
+    const longTermLoan = summary.latestBalanceSheet.find((item) => item.label === '长期借款');
+
+    expect(summary.latestBalanceSheet.map((item) => item.label)).toContain('其他应付款');
+    expect(summary.latestBalanceSheet.map((item) => item.label)).toContain('非流动负债合计');
+    expect(longTermLoan?.latest).toBe(0);
+    expect(longTermLoan?.previous).toBe(1_714_285.60);
+    expect(longTermLoan?.change).toBe(-1_714_285.60);
+    expect(longTermLoan?.changeRate).toBe(-1);
+  });
+
   it('fills customer company info from historical reports and report markdown', () => {
     const previous = structuredClone(reports[1]);
     (previous.company_info as Record<string, unknown>).taxpayer_id = '913201055804841947';
