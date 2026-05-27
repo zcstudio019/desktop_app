@@ -760,6 +760,7 @@ def _extract_structured_data(
     file_path: str = "",
     customer_id: str = "",
     customer_name: str = "",
+    historical_financial_reports: list[dict[str, Any]] | None = None,
 ) -> FileProcessResponse:
     raw_pages = raw_pages or []
 
@@ -806,6 +807,7 @@ def _extract_structured_data(
             file_path=file_path,
             customer_id=customer_id,
             customer_name=customer_name,
+            historical_financial_reports=historical_financial_reports,
             ai_service=ai_service,
         )
         if document_type_code in {"property_report", "collateral", "mortgage_info"}:
@@ -841,6 +843,7 @@ async def _process_file_bytes(
     customer_id: str = "",
     customer_name: str = "",
     file_path: str = "",
+    historical_financial_reports: list[dict[str, Any]] | None = None,
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> FileProcessResponse:
     text_content, rows, raw_pages = await _extract_content_from_file(
@@ -909,7 +912,42 @@ async def _process_file_bytes(
         file_path=file_path,
         customer_id=customer_id,
         customer_name=customer_name,
+        historical_financial_reports=historical_financial_reports,
     )
+
+
+async def _load_historical_financial_reports(
+    customer_id: str,
+    *,
+    exclude_doc_id: str = "",
+) -> list[dict[str, Any]]:
+    if not customer_id:
+        return []
+    try:
+        extractions = await storage_service.get_extractions_by_customer(customer_id)
+    except Exception as exc:
+        logger.warning(
+            "[FinancialReportAgent] historical reports unavailable customer_id=%s error=%s",
+            customer_id,
+            exc,
+        )
+        return []
+    reports: list[dict[str, Any]] = []
+    for extraction in extractions:
+        if exclude_doc_id and str(extraction.get("doc_id") or "") == exclude_doc_id:
+            continue
+        if normalize_document_type_code(extraction.get("extraction_type") or "") != "financial_report":
+            continue
+        payload = extraction.get("extracted_data") or {}
+        report = (
+            payload.get("structured_json")
+            or payload.get("extracted_json")
+            or payload.get("data")
+            or payload
+        ) if isinstance(payload, dict) else {}
+        if isinstance(report, dict) and report.get("balance_sheet"):
+            reports.append(report)
+    return reports
 
 
 async def _run_file_process_job(
@@ -957,6 +995,7 @@ async def _run_file_process_job(
         file_type = file_service.get_file_type(original_filename)
         if file_type == "unknown":
             raise HTTPException(status_code=400, detail=UNSUPPORTED_FILE_FORMAT_MESSAGE)
+        historical_financial_reports = await _load_historical_financial_reports(requested_customer_id)
 
         process_result = await _process_file_bytes(
             file_bytes,
@@ -966,6 +1005,7 @@ async def _run_file_process_job(
             customer_id=requested_customer_id,
             customer_name=requested_customer_name,
             file_path=str(temp_path),
+            historical_financial_reports=historical_financial_reports,
             progress_callback=lambda message: _update_file_process_progress(job_id, message),
         )
 

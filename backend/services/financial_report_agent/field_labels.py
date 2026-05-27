@@ -19,6 +19,8 @@ FIELD_LABELS = {
     "normalized_value": "标准化数值",
     "previous_raw_value": "对比列原始值",
     "previous_normalized_value": "对比列标准化数值",
+    "previous_source": "对比列来源",
+    "previous_source_text": "对比列来源说明",
     "current_value": "当前值",
     "compare_value": "对比值",
     "current_column_label": "当前列名称",

@@ -55,6 +55,39 @@ def _non_empty_amount_count(section: Any) -> tuple[int, int]:
     return len(amount_fields), sum(1 for item in amount_fields if item.get("normalized_value") is not None)
 
 
+def _backfill_first_row_comparisons_from_history(
+    balance: Any,
+    cashflow: Any,
+    history: list[dict[str, Any]],
+) -> None:
+    """Backfill missing first-row comparisons from the prior stored report."""
+    if not history:
+        return
+    prior = sorted(history, key=_period)[-1]
+    targets = (
+        (balance, "balance_sheet", "cash_and_equivalents", "货币资金", "期末余额"),
+        (cashflow, "cash_flow_statement", "cash_received_from_sales", "销售商品、提供劳务收到的现金", "本期金额"),
+    )
+    for section_model, prior_section, field_name, label, prior_column_label in targets:
+        field = getattr(section_model, field_name, None)
+        if field is None or field.normalized_value is None or field.previous_normalized_value is not None:
+            continue
+        prior_field = ((prior.get(prior_section) or {}).get(field_name) or {})
+        prior_value = value_of(prior_field)
+        if prior_value is None:
+            continue
+        prior_file = str(prior.get("source_file") or "上一期财务报表")
+        field.previous_raw_value = f"{prior_value:,.2f}"
+        field.previous_normalized_value = prior_value
+        field.compare_value = prior_value
+        field.previous_source = "fallback_from_previous_report"
+        field.previous_source_text = f"由上一期财务报表{label}{prior_column_label}回填（{prior_file}）"
+        if field.source_text:
+            field.source_text = f"{field.source_text}；{field.previous_source_text}"
+        else:
+            field.source_text = field.previous_source_text
+
+
 def aggregate_financial_report_periods(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
@@ -98,8 +131,14 @@ def run_financial_report_agent(
     )
     _, multiplier = detect_unit(segmented["full_text"])
     balance, balance_evidence = extract_balance_sheet(segmented["sections"]["balance_sheet"], source_file, multiplier)
+    history = [
+        item for item in (metadata.get("historical_financial_reports") or [])
+        if isinstance(item, dict)
+    ]
+    cashflow, cashflow_evidence = extract_cash_flow_statement(segmented["sections"]["cash_flow_statement"], source_file, multiplier)
+    _backfill_first_row_comparisons_from_history(balance, cashflow, history)
     logger.info(
-        "[DEBUG][balance_sheet.cash_and_equivalents] = %s",
+        "[DEBUG][cash_and_equivalents] balance_sheet.cash_and_equivalents=%s",
         to_plain_dict(balance.cash_and_equivalents),
     )
     total_fields, non_empty = _non_empty_amount_count(balance)
@@ -107,9 +146,8 @@ def run_financial_report_agent(
     income, income_evidence = extract_income_statement(segmented["sections"]["income_statement"], source_file, multiplier)
     total_fields, non_empty = _non_empty_amount_count(income)
     logger.info("[FinancialReportAgent][DEBUG] income_statement_fields=%s non_empty=%s", total_fields, non_empty)
-    cashflow, cashflow_evidence = extract_cash_flow_statement(segmented["sections"]["cash_flow_statement"], source_file, multiplier)
     logger.info(
-        "[DEBUG][cash_flow_statement.cash_received_from_sales] = %s",
+        "[DEBUG][cash_received_from_sales] cash_flow_statement.cash_received_from_sales=%s",
         to_plain_dict(cashflow.cash_received_from_sales),
     )
     total_fields, non_empty = _non_empty_amount_count(cashflow)
@@ -118,10 +156,6 @@ def run_financial_report_agent(
     equity_evidence = []
     if any("所有者权益变动表" in page["text"] or "股东权益变动表" in page["text"] for page in segmented["pages"]):
         equity, equity_evidence = extract_equity_change_statement(segmented["sections"]["equity_change_statement"], source_file, multiplier)
-    history = [
-        item for item in (metadata.get("historical_financial_reports") or [])
-        if isinstance(item, dict)
-    ]
     prior = sorted(history, key=_period)[-1] if history else None
     provisional = FinancialReportExtractionResult(
         source_file=source_file,

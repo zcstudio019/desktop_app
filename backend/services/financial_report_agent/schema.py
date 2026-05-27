@@ -33,6 +33,8 @@ class AmountField(BaseModel):
     compare_value: float | None = None
     current_column_label: str = ""
     previous_column_label: str = ""
+    previous_source: str = ""
+    previous_source_text: str = ""
     source_page: int | None = None
     source_text: str = ""
     confidence: float = 0.0

@@ -9,7 +9,7 @@ from backend.services.agents.financing_judgement_agent import FinancingJudgement
 from backend.services.agents.orchestrator import _normalize_workflow_context
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.local_storage_service import LocalStorageService
-from backend.services.markdown_profile_service import build_auto_profile_payload
+from backend.services.markdown_profile_service import build_auto_profile_payload, get_or_create_customer_profile
 from backend.services.rag_service import RagService
 
 
@@ -151,6 +151,30 @@ class _Storage:
     async def replace_customer_chunks(self, customer_id: str, chunks: list[dict[str, Any]]) -> None:
         self.chunks = chunks
 
+    async def update_extraction(self, extraction_id: str, field: str, value: Any) -> bool:
+        item = next((entry for entry in self.extractions if entry["extraction_id"] == extraction_id), None)
+        if not item:
+            return False
+        item.setdefault("extracted_data", {})[field] = value
+        return True
+
+
+class _CachedProfileStorage(_Storage):
+    def __init__(self, extractions: list[dict[str, Any]]):
+        super().__init__(extractions)
+        self.saved_profile = {
+            "source_mode": "auto",
+            "markdown_content": "## 财务报表\n| 货币资金 | 119,011.57 | - |",
+            "source_snapshot": {"source_documents": [{"source_type": "financial_report"}]},
+        }
+
+    async def get_customer_profile(self, customer_id: str) -> dict[str, Any]:
+        return self.saved_profile
+
+    async def upsert_customer_profile(self, profile_data: dict[str, Any]) -> dict[str, Any]:
+        self.saved_profile = profile_data
+        return profile_data
+
 
 FINANCIAL_REPORTS = [
     _financial_report(2022, 84697985.94, 78474828.15, 140360769.35, 429625.06, -15841870.74),
@@ -268,6 +292,46 @@ def test_profile_financial_company_info_falls_back_across_reports_and_markdown()
     assert "| 会计准则 | unknown |" not in financial_summary
     assert "| 纳税人识别号 | - |" not in financial_summary
     assert "## 企业流水" in markdown
+
+
+def test_profile_repairs_legacy_first_row_comparisons_and_rerenders_detail_markdown() -> None:
+    prior = copy.deepcopy(FINANCIAL_REPORTS[1])
+    latest = copy.deepcopy(FINANCIAL_REPORTS[2])
+    prior_report = prior["extracted_data"]["structured_json"]
+    latest_report = latest["extracted_data"]["structured_json"]
+    prior_report["balance_sheet"]["cash_and_equivalents"]["normalized_value"] = 4803622.66
+    prior_report["cash_flow_statement"]["cash_received_from_sales"] = {"normalized_value": 14260100.00}
+    latest_report["balance_sheet"]["cash_and_equivalents"] = {"normalized_value": 119011.57}
+    latest_report["cash_flow_statement"]["cash_received_from_sales"] = {
+        "normalized_value": 81530980.95,
+        "source_text": "销售产成品、商品、提供劳务收到的现金 1 81,530,980.95",
+        "source_page": 1,
+        "confidence": 0.96,
+        "original_present": True,
+        "display_label": "销售商品、提供劳务收到的现金",
+    }
+    storage = _Storage([latest, prior])
+    payload = asyncio.run(build_auto_profile_payload(storage, "customer-coexist"))
+    repaired = latest["extracted_data"]["structured_json"]
+    markdown = payload["markdown_content"]
+
+    assert repaired["balance_sheet"]["cash_and_equivalents"]["previous_normalized_value"] == 4803622.66
+    assert repaired["balance_sheet"]["cash_and_equivalents"]["previous_source"] == "fallback_from_previous_report"
+    assert repaired["cash_flow_statement"]["cash_received_from_sales"]["previous_normalized_value"] == 14260100.00
+    assert repaired["cash_flow_statement"]["cash_received_from_sales"]["previous_source"] == "fallback_from_previous_report"
+    assert "| 货币资金 | 119,011.57 | 4,803,622.66 |" in markdown
+    assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | 14,260,100.00 |" in markdown
+    assert "| 货币资金 | 119,011.57 | - |" not in markdown
+    assert "| 销售商品、提供劳务收到的现金 | 81,530,980.95 | - |" not in markdown
+
+
+def test_cached_auto_profile_is_regenerated_once_for_financial_comparison_fix() -> None:
+    storage = _CachedProfileStorage([copy.deepcopy(FINANCIAL_REPORTS[1]), copy.deepcopy(FINANCIAL_REPORTS[2])])
+    profile, regenerated = asyncio.run(get_or_create_customer_profile(storage, "customer-coexist"))
+
+    assert regenerated is True
+    assert profile["source_snapshot"]["financial_comparison_backfill_version"] == "first-row-comparison-v1"
+    assert "### 财务数据总览" in profile["markdown_content"]
 
 
 def test_rag_index_keeps_financial_report_and_enterprise_flow_source_types() -> None:

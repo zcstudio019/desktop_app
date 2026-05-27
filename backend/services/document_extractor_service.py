@@ -8950,6 +8950,7 @@ def build_structured_extraction(
     file_path: str = "",
     customer_id: str = "",
     customer_name: str = "",
+    historical_financial_reports: list[dict[str, Any]] | None = None,
     ai_service: Any | None = None,
 ) -> dict[str, Any]:
     normalized_code = normalize_document_type_code(document_type_code) or document_type_code
@@ -8979,6 +8980,7 @@ def build_structured_extraction(
                 "table_rows": rows if normalized_code == "financial_report" else [],
                 "file_path": file_path,
                 "document_type": normalized_code,
+                "historical_financial_reports": historical_financial_reports or [],
             },
         )
         if isinstance(agent_result.raw_agent_result, dict):

@@ -63,7 +63,7 @@ from backend.services.document_extractor_service import (
     extract_company_articles_management_roles,
     extract_company_articles_role_evidence_lines,
 )
-from backend.routers.file import _process_file_bytes
+from backend.routers.file import _load_historical_financial_reports, _process_file_bytes
 from backend.services.activity_service import add_activity
 from backend.services.profile_sync_service import ProfileSyncService
 from backend.services.rag_service import RagService
@@ -2225,8 +2225,8 @@ async def re_extract_document(
 
     document, customer = await _load_accessible_document(doc_id, current_user)
     document_type = str(document.get("file_type") or "")
-    if document_type != "enterprise_credit":
-        raise HTTPException(status_code=400, detail="当前第一版仅支持企业征信重新提取")
+    if document_type not in {"enterprise_credit", "enterprise_credit_report", "financial_report"}:
+        raise HTTPException(status_code=400, detail="当前仅支持企业征信或财务报表重新提取")
 
     absolute_path = _resolve_document_absolute_path(document.get("file_path"))
     if not absolute_path or not absolute_path.exists():
@@ -2236,13 +2236,22 @@ async def re_extract_document(
     if not file_bytes:
         raise HTTPException(status_code=400, detail="原件为空，无法重新提取")
 
+    historical_financial_reports = (
+        await _load_historical_financial_reports(
+            document.get("customer_id") or "",
+            exclude_doc_id=doc_id,
+        )
+        if document_type == "financial_report"
+        else []
+    )
     process_result = await _process_file_bytes(
         file_bytes,
-        absolute_path.suffix,
+        FileService().get_file_type(document.get("file_name") or absolute_path.name),
         document.get("file_name") or absolute_path.name,
         document_type,
         customer_id=document.get("customer_id") or "",
         customer_name=customer.get("name") or "",
+        historical_financial_reports=historical_financial_reports,
     )
 
     content = process_result.content or {}
