@@ -16,6 +16,8 @@ import type {
   CustomerDocumentListItem,
   CustomerKycProfileResponse,
   DocumentDetailResponse,
+  ExtractionReviewResult,
+  FinancingKycDiagnosticResult,
   CustomerListItem,
   CustomerProfileMarkdownResponse,
   CustomerRagChatRequest,
@@ -34,6 +36,7 @@ import type {
   TableField,
   UpdateCustomerProfileMarkdownRequest,
   UpdateCurrentUserProfileRequest,
+  UpdateExtractionReviewPayload,
   UserInfo,
   ChangeCurrentUserPasswordRequest,
   SetCurrentUserSecurityQuestionRequest,
@@ -254,6 +257,32 @@ export async function previewDocumentOriginal(documentId: string, signal?: Abort
   const url = URL.createObjectURL(blob);
   window.open(url, '_blank', 'noopener,noreferrer');
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export async function getDocumentExtractionReview(
+  documentId: string,
+  signal?: AbortSignal
+): Promise<ExtractionReviewResult> {
+  const response = await fetch(`${API_BASE}/api/documents/${encodeURIComponent(documentId)}/extraction-review`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<ExtractionReviewResult>(response);
+}
+
+export async function updateDocumentExtractionReview(
+  documentId: string,
+  payload: UpdateExtractionReviewPayload,
+  signal?: AbortSignal
+): Promise<ExtractionReviewResult> {
+  const response = await fetch(`${API_BASE}/api/documents/${encodeURIComponent(documentId)}/extraction-review`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  return handleResponse<ExtractionReviewResult>(response);
 }
 
 export async function generateApplication(
@@ -837,6 +866,18 @@ export async function getCustomerKycProfile(
     signal,
   });
   return handleResponse<CustomerKycProfileResponse>(response);
+}
+
+export async function getCustomerFinancingKycDiagnostic(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<FinancingKycDiagnosticResult> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-kyc-diagnostic`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<FinancingKycDiagnosticResult>(response);
 }
 
 export async function getCustomerExtractions(

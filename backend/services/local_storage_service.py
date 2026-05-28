@@ -103,6 +103,15 @@ class LocalStorageService:
         cursor.execute(f"PRAGMA table_info({table_name})")
         return any(str(row[1]).lower() == column_name.lower() for row in cursor.fetchall())
 
+    def _get_table_columns(self, table_name: str) -> list[str]:
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            return [str(row[1]) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
     def _init_tables(self) -> None:
         """初始化数据库表结构和索引"""
         conn = self._get_connection()
@@ -187,11 +196,30 @@ class LocalStorageService:
                     extraction_type VARCHAR(50),
                     extracted_data TEXT,
                     confidence FLOAT,
+                    confirmed_data TEXT DEFAULT '{}',
+                    confirm_status VARCHAR(32) DEFAULT 'unconfirmed',
+                    confirmed_by VARCHAR(128) DEFAULT '',
+                    confirmed_at DATETIME,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (doc_id) REFERENCES documents(doc_id),
                     FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
                 )
             ''')
+
+            for col_def in [
+                "confirmed_data TEXT DEFAULT '{}'",
+                "confirm_status VARCHAR(32) DEFAULT 'unconfirmed'",
+                "confirmed_by VARCHAR(128) DEFAULT ''",
+                "confirmed_at DATETIME",
+            ]:
+                try:
+                    col_name = col_def.split()[0]
+                    if self._column_exists(cursor, "extractions", col_name):
+                        continue
+                    cursor.execute(f"ALTER TABLE extractions ADD COLUMN {col_def}")
+                    logger.info(f"[Migration] Added column {col_name} to extractions")
+                except sqlite3.OperationalError:
+                    pass
 
             # 创建索引
             cursor.execute('''
@@ -786,15 +814,20 @@ class LocalStorageService:
             cursor.execute('''
                 INSERT OR REPLACE INTO extractions (
                     extraction_id, doc_id, customer_id, extraction_type,
-                    extracted_data, confidence
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    extracted_data, confidence, confirmed_data, confirm_status,
+                    confirmed_by, confirmed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 payload['extraction_id'],
                 payload['doc_id'],
                 payload['customer_id'],
                 payload['extraction_type'],
                 extracted_data_json,
-                payload.get('confidence')
+                payload.get('confidence'),
+                json.dumps(payload.get('confirmed_data') or {}, ensure_ascii=False),
+                payload.get('confirm_status') or 'unconfirmed',
+                payload.get('confirmed_by') or '',
+                payload.get('confirmed_at') or None,
             ))
             conn.commit()
             return payload
@@ -978,6 +1011,44 @@ class LocalStorageService:
             return self._row_to_customer_profile(row)
         except sqlite3.Error as e:
             raise RuntimeError(f"Failed to load customer profile: {e}") from e
+        finally:
+            conn.close()
+
+    async def update_extraction_review(
+        self,
+        extraction_id: str,
+        *,
+        confirmed_data: dict,
+        confirm_status: str,
+        confirmed_by: str,
+        confirmed_at,
+    ) -> dict | None:
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                UPDATE extractions
+                SET confirmed_data = ?, confirm_status = ?, confirmed_by = ?, confirmed_at = ?
+                WHERE extraction_id = ?
+                ''',
+                (
+                    json.dumps(confirmed_data or {}, ensure_ascii=False),
+                    confirm_status,
+                    confirmed_by,
+                    confirmed_at.isoformat() if hasattr(confirmed_at, "isoformat") else str(confirmed_at or ""),
+                    extraction_id,
+                ),
+            )
+            conn.commit()
+            if cursor.rowcount <= 0:
+                return None
+            cursor.execute('SELECT * FROM extractions WHERE extraction_id = ?', (extraction_id,))
+            row = cursor.fetchone()
+            return self._row_to_extraction(row) if row else None
+        except sqlite3.Error as e:
+            conn.rollback()
+            raise RuntimeError(f"淇濆瓨浜哄伐纭缁撴灉澶辫触: {e}") from e
         finally:
             conn.close()
 
@@ -1340,6 +1411,15 @@ class LocalStorageService:
                 # 如果 JSON 解析失败,返回空字典
                 extracted_data = {}
 
+        columns = self._get_table_columns("extractions")
+        row_data = {columns[index]: row[index] for index in range(min(len(columns), len(row)))}
+        confirmed_data = {}
+        if row_data.get("confirmed_data"):
+            try:
+                confirmed_data = json.loads(row_data.get("confirmed_data") or "{}")
+            except json.JSONDecodeError:
+                confirmed_data = {}
+
         return {
             'extraction_id': row[1],
             'doc_id': row[2],
@@ -1347,7 +1427,11 @@ class LocalStorageService:
             'extraction_type': row[4],
             'extracted_data': extracted_data,
             'confidence': row[6],
-            'created_at': row[7]
+            'confirmed_data': confirmed_data,
+            'confirm_status': row_data.get('confirm_status') or 'unconfirmed',
+            'confirmed_by': row_data.get('confirmed_by') or '',
+            'confirmed_at': row_data.get('confirmed_at') or '',
+            'created_at': row_data.get('created_at') or row[7],
         }
 
     def _row_to_customer_profile(self, row: tuple) -> dict:

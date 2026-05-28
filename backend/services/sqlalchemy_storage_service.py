@@ -226,7 +226,7 @@ class SQLAlchemyStorageService:
             return
         table_columns = {
             "async_jobs": ["request_json", "execution_payload_json", "result_json", "error_message"],
-            "extractions": ["extracted_data", "extraction_error"],
+            "extractions": ["extracted_data", "extraction_error", "confirmed_data"],
             "customer_profiles": ["markdown_content", "source_snapshot_json", "rag_source_priority_json", "risk_report_schema_json"],
             "customer_document_chunks": ["chunk_text", "embedding_json", "metadata_json"],
             "customer_risk_reports": ["report_json", "report_markdown"],
@@ -289,6 +289,14 @@ class SQLAlchemyStorageService:
                 ddl_statements.append("ALTER TABLE extractions ADD COLUMN skill_version VARCHAR(50) DEFAULT ''")
             if "schema_version" not in extraction_columns:
                 ddl_statements.append("ALTER TABLE extractions ADD COLUMN schema_version VARCHAR(100) DEFAULT ''")
+            if "confirmed_data" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN confirmed_data LONGTEXT NULL")
+            if "confirm_status" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN confirm_status VARCHAR(32) DEFAULT 'unconfirmed'")
+            if "confirmed_by" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN confirmed_by VARCHAR(128) DEFAULT ''")
+            if "confirmed_at" not in extraction_columns:
+                ddl_statements.append("ALTER TABLE extractions ADD COLUMN confirmed_at DATETIME NULL")
             if not ddl_statements:
                 return
             with engine.begin() as conn:
@@ -635,6 +643,10 @@ class SQLAlchemyStorageService:
             "skill_name": row.skill_name or "",
             "skill_version": row.skill_version or "",
             "schema_version": row.schema_version or "",
+            "confirmed_data": self._loads(row.confirmed_data, {}),
+            "confirm_status": row.confirm_status or "unconfirmed",
+            "confirmed_by": row.confirmed_by or "",
+            "confirmed_at": row.confirmed_at.isoformat() if row.confirmed_at else "",
             "created_at": row.created_at.isoformat() if row.created_at else "",
         }
 
@@ -1315,6 +1327,31 @@ class SQLAlchemyStorageService:
                     self._db_error_detail(exc),
                 )
                 raise
+
+    async def update_extraction_review(
+        self,
+        extraction_id: str,
+        *,
+        confirmed_data: dict[str, Any],
+        confirm_status: str,
+        confirmed_by: str,
+        confirmed_at: datetime,
+    ) -> dict | None:
+        with self._session_factory() as db:
+            row = self._select_first_with_warning(
+                db,
+                select(Extraction).where(Extraction.extraction_id == extraction_id),
+                table_name="extractions",
+            )
+            if not row:
+                return None
+            row.confirmed_data = self._dumps(confirmed_data, "{}")
+            row.confirm_status = confirm_status
+            row.confirmed_by = confirmed_by
+            row.confirmed_at = confirmed_at
+            db.commit()
+            db.refresh(row)
+            return self._row_to_extraction(row)
             return True
 
     async def get_customer_profile(self, customer_id: str) -> dict | None:

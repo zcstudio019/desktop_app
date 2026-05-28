@@ -65,6 +65,14 @@ def _fields(payload: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _confirmed_fields(extraction: dict[str, Any]) -> dict[str, Any]:
+    confirmed = extraction.get("confirmed_data")
+    if not isinstance(confirmed, dict):
+        return {}
+    value = confirmed.get("confirmed_fields")
+    return value if isinstance(value, dict) else {}
+
+
 def _string(value: Any) -> str:
     if value is None:
         return ""
@@ -100,56 +108,112 @@ def _document_summary(extraction: dict[str, Any], data: dict[str, Any]) -> dict[
     }
 
 
-def _apply_latest_single(profile: dict[str, Any], section: str, values: dict[str, Any], source_document_id: str) -> None:
+def _effective_field(
+    fields: dict[str, Any],
+    confirmed_fields: dict[str, Any],
+    key: str,
+    source_document_id: str,
+) -> tuple[str, dict[str, Any]]:
+    if key in confirmed_fields and confirmed_fields.get(key) not in (None, ""):
+        value = _string(confirmed_fields.get(key))
+        return value, {
+            "value": value,
+            "source": "confirmed_data",
+            "source_document_id": source_document_id,
+            "confirmed": True,
+        }
+    value = _string(fields.get(key))
+    return value, {
+        "value": value,
+        "source": "extracted_data",
+        "source_document_id": source_document_id,
+        "confirmed": False,
+    }
+
+
+def _apply_latest_single(
+    profile: dict[str, Any],
+    section: str,
+    fields: dict[str, Any],
+    confirmed_fields: dict[str, Any],
+    field_map: dict[str, str],
+    source_document_id: str,
+) -> None:
     target = profile[section]
-    for key, value in values.items():
-        target[key] = _string(value)
+    field_sources = target.setdefault("field_sources", {})
+    for target_key, source_key in field_map.items():
+        value, source = _effective_field(fields, confirmed_fields, source_key, source_document_id)
+        target[target_key] = value
+        field_sources[target_key] = source
     target["source_document_id"] = source_document_id
 
 
-def _property_item(fields: dict[str, Any], source_document_id: str, doc_type: str) -> dict[str, Any]:
-    return {
+def _property_item(fields: dict[str, Any], source_document_id: str, doc_type: str, confirmed_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+    confirmed_fields = confirmed_fields or {}
+    field_map = {
+        "owner": "owner",
+        "co_owners": "co_owners",
+        "certificate_number": "certificate_number",
+        "property_unit_number": "property_unit_number",
+        "property_address": "property_address",
+        "right_type": "right_type",
+        "right_nature": "right_nature",
+        "use_type": "use_type",
+        "building_area": "building_area",
+        "land_area": "land_area",
+        "total_area": "total_area",
+        "mortgage_status": "mortgage_status",
+        "seizure_status": "seizure_status",
+        "issue_date": "issue_date",
+    }
+    item = {
         "doc_type": doc_type,
-        "owner": _string(fields.get("owner")),
-        "co_owners": fields.get("co_owners") or "",
-        "certificate_number": _string(fields.get("certificate_number")),
-        "property_unit_number": _string(fields.get("property_unit_number")),
-        "property_address": _string(fields.get("property_address")),
-        "right_type": _string(fields.get("right_type")),
-        "right_nature": _string(fields.get("right_nature")),
-        "use_type": _string(fields.get("use_type")),
-        "building_area": _string(fields.get("building_area")),
-        "land_area": _string(fields.get("land_area")),
-        "total_area": _string(fields.get("total_area")),
-        "mortgage_status": _string(fields.get("mortgage_status")),
-        "seizure_status": _string(fields.get("seizure_status")),
-        "issue_date": _string(fields.get("issue_date")),
+        "field_sources": {},
         "source_document_id": source_document_id,
     }
+    for target_key, source_key in field_map.items():
+        value, source = _effective_field(fields, confirmed_fields, source_key, source_document_id)
+        item[target_key] = value
+        item["field_sources"][target_key] = source
+    return item
 
 
-def _vehicle_item(fields: dict[str, Any], source_document_id: str) -> dict[str, Any]:
-    return {
-        "plate_number": _string(fields.get("plate_number")),
-        "vehicle_owner": _string(fields.get("vehicle_owner")),
-        "vehicle_type": _string(fields.get("vehicle_type")),
-        "brand_model": _string(fields.get("brand_model")),
-        "vehicle_identification_number": _string(fields.get("vehicle_identification_number")),
-        "engine_number": _string(fields.get("engine_number")),
-        "registration_date": _string(fields.get("registration_date")),
-        "issue_date": _string(fields.get("issue_date")),
+def _vehicle_item(fields: dict[str, Any], source_document_id: str, confirmed_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+    confirmed_fields = confirmed_fields or {}
+    field_map = {
+        "plate_number": "plate_number",
+        "vehicle_owner": "vehicle_owner",
+        "vehicle_type": "vehicle_type",
+        "brand_model": "brand_model",
+        "vehicle_identification_number": "vehicle_identification_number",
+        "engine_number": "engine_number",
+        "registration_date": "registration_date",
+        "issue_date": "issue_date",
+    }
+    item = {
+        "field_sources": {},
         "source_document_id": source_document_id,
     }
+    for target_key, source_key in field_map.items():
+        value, source = _effective_field(fields, confirmed_fields, source_key, source_document_id)
+        item[target_key] = value
+        item["field_sources"][target_key] = source
+    return item
 
 
-def _license_item(fields: dict[str, Any], data: dict[str, Any], source_document_id: str) -> dict[str, Any]:
+def _license_item(fields: dict[str, Any], data: dict[str, Any], source_document_id: str, confirmed_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+    confirmed_fields = confirmed_fields or {}
+    name, name_source = _effective_field(fields, confirmed_fields, "license_name", source_document_id)
+    if not name:
+        name = _string(confirmed_fields.get("company_name") or fields.get("company_name") or data.get("doc_type_name"))
     return {
         "doc_type": data.get("doc_type") or "",
         "doc_type_name": data.get("doc_type_name") or "",
-        "name": _string(fields.get("license_name") or fields.get("company_name") or data.get("doc_type_name")),
-        "certificate_number": _string(fields.get("certificate_number") or fields.get("license_number")),
-        "issuing_authority": _string(fields.get("issuing_authority") or fields.get("registration_authority")),
-        "issue_date": _string(fields.get("issue_date")),
+        "name": name,
+        "certificate_number": _effective_field(fields, confirmed_fields, "certificate_number", source_document_id)[0] or _string(confirmed_fields.get("license_number") or fields.get("license_number")),
+        "issuing_authority": _effective_field(fields, confirmed_fields, "issuing_authority", source_document_id)[0] or _string(confirmed_fields.get("registration_authority") or fields.get("registration_authority")),
+        "issue_date": _effective_field(fields, confirmed_fields, "issue_date", source_document_id)[0],
+        "field_sources": {"name": name_source},
         "source_document_id": source_document_id,
     }
 
@@ -182,6 +246,7 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
         if not isinstance(data, dict):
             continue
         fields = _fields(data)
+        confirmed_fields = _confirmed_fields(extraction)
         doc_type = str(data.get("doc_type") or extraction.get("extraction_type") or "")
         source_document_id = _source_doc_id(extraction)
         profile["documents"].append(_document_summary(extraction, data))
@@ -190,12 +255,14 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
             _apply_latest_single(
                 profile,
                 "person_identity",
+                fields,
+                confirmed_fields,
                 {
-                    "name": fields.get("name"),
-                    "id_number": fields.get("id_number"),
-                    "gender": fields.get("gender"),
-                    "birth_date": fields.get("birth_date"),
-                    "address": fields.get("address"),
+                    "name": "name",
+                    "id_number": "id_number",
+                    "gender": "gender",
+                    "birth_date": "birth_date",
+                    "address": "address",
                 },
                 source_document_id,
             )
@@ -203,14 +270,16 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
             _apply_latest_single(
                 profile,
                 "enterprise_identity",
+                fields,
+                confirmed_fields,
                 {
-                    "company_name": fields.get("company_name"),
-                    "unified_social_credit_code": fields.get("unified_social_credit_code"),
-                    "legal_representative": fields.get("legal_representative"),
-                    "registered_capital": fields.get("registered_capital"),
-                    "registered_address": fields.get("registered_address"),
-                    "business_scope": fields.get("business_scope"),
-                    "establishment_date": fields.get("establishment_date"),
+                    "company_name": "company_name",
+                    "unified_social_credit_code": "unified_social_credit_code",
+                    "legal_representative": "legal_representative",
+                    "registered_capital": "registered_capital",
+                    "registered_address": "registered_address",
+                    "business_scope": "business_scope",
+                    "establishment_date": "establishment_date",
                 },
                 source_document_id,
             )
@@ -218,31 +287,39 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
             _apply_latest_single(
                 profile,
                 "bank_account",
+                fields,
+                confirmed_fields,
                 {
-                    "account_name": fields.get("bank_account_name") or fields.get("company_name"),
-                    "account_number": fields.get("bank_account_number"),
-                    "opening_bank": fields.get("opening_bank"),
-                    "account_type": fields.get("account_type"),
+                    "account_name": "bank_account_name",
+                    "account_number": "bank_account_number",
+                    "opening_bank": "opening_bank",
+                    "account_type": "account_type",
                 },
                 source_document_id,
             )
+            if not profile["bank_account"].get("account_name"):
+                value, source = _effective_field(fields, confirmed_fields, "company_name", source_document_id)
+                profile["bank_account"]["account_name"] = value
+                profile["bank_account"].setdefault("field_sources", {})["account_name"] = source
         elif doc_type == "marriage_cert":
             _apply_latest_single(
                 profile,
                 "marriage",
+                fields,
+                confirmed_fields,
                 {
-                    "holder_name": fields.get("holder_name"),
-                    "spouse_name": fields.get("spouse_name"),
-                    "registration_date": fields.get("registration_date"),
+                    "holder_name": "holder_name",
+                    "spouse_name": "spouse_name",
+                    "registration_date": "registration_date",
                 },
                 source_document_id,
             )
         elif doc_type in PROPERTY_DOC_TYPES:
-            profile["assets"]["properties"].append(_property_item(fields, source_document_id, doc_type))
+            profile["assets"]["properties"].append(_property_item(fields, source_document_id, doc_type, confirmed_fields))
         elif doc_type in VEHICLE_DOC_TYPES:
-            profile["assets"]["vehicles"].append(_vehicle_item(fields, source_document_id))
+            profile["assets"]["vehicles"].append(_vehicle_item(fields, source_document_id, confirmed_fields))
         elif doc_type in LICENSE_DOC_TYPES:
-            profile["licenses"].append(_license_item(fields, data, source_document_id))
+            profile["licenses"].append(_license_item(fields, data, source_document_id, confirmed_fields))
 
     profile["updated_at"] = datetime.now(timezone.utc).isoformat()
     return profile

@@ -70,7 +70,14 @@ from backend.services.rag_service import RagService
 from backend.services.risk_assessment_service import RiskAssessmentService
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
+from backend.services.financing_kyc_diagnostic_service import build_financing_kyc_diagnostic
 from backend.services.kyc_completeness_service import evaluate_kyc_completeness
+from backend.services.kyc_extraction_review_service import (
+    build_confirmed_data,
+    build_extraction_review,
+    can_update_review,
+    is_kyc_extraction,
+)
 from backend.services.kyc_profile_sync_service import build_customer_kyc_profile
 from services.file_service import FileService
 from services.ocr_service import OCRService, OCRServiceError
@@ -118,6 +125,11 @@ class PersonalFlowIncomeConfirmationPayload(BaseModel):
     transaction_ids: list[str] = []
     manual_status: str = "confirmed"
     reason: str = ""
+
+
+class ExtractionReviewUpdatePayload(BaseModel):
+    confirmed_fields: dict[str, Any] = {}
+    confirm_status: str = "partial"
 
 
 def _model_payload(model: BaseModel) -> dict[str, Any]:
@@ -1052,6 +1064,43 @@ async def get_customer_kyc_profile(
     profile = await build_customer_kyc_profile(storage_service, customer_id)
     completeness = evaluate_kyc_completeness(profile)
     return {"profile": profile, "completeness": completeness}
+
+
+@router.get("/{customer_id}/financing-kyc-diagnostic")
+async def get_customer_financing_kyc_diagnostic(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    if not HAS_DB_STORAGE:
+        profile = {
+            "customer_id": customer_id,
+            "person_identity": {},
+            "enterprise_identity": {},
+            "bank_account": {},
+            "marriage": {},
+            "assets": {"properties": [], "vehicles": []},
+            "licenses": [],
+            "documents": [],
+            "updated_at": "",
+        }
+        completeness = evaluate_kyc_completeness(profile)
+        return build_financing_kyc_diagnostic(profile, completeness)
+    try:
+        customer = await storage_service.get_customer(customer_id)
+    except Exception as exc:
+        logger.warning("[FinancingKycDiagnostic] failed to lookup customer_id=%s error=%s", customer_id, exc)
+        customer = None
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if current_user.get("role") != "admin":
+        uploader = str((customer or {}).get("uploader") or "").strip()
+        username = str(current_user.get("username") or "").strip()
+        if uploader and uploader != username:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    profile = await build_customer_kyc_profile(storage_service, customer_id)
+    completeness = evaluate_kyc_completeness(profile)
+    return build_financing_kyc_diagnostic(profile, completeness)
 
 
 @router.get("/{record_id}", response_model=CustomerDetail)
@@ -2189,6 +2238,71 @@ async def get_document_detail(
         "original_status": original_status,
         "store_original": definition.store_original if definition else True,
     }
+
+
+def _latest_extraction_for_review(extractions: list[dict[str, Any]]) -> dict[str, Any]:
+    return extractions[0] if extractions else {}
+
+
+@documents_router.get("/{doc_id}/extraction-review")
+async def get_document_extraction_review(
+    doc_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+    document, _customer = await _load_accessible_document(doc_id, current_user)
+    extractions = await storage_service.get_extractions_by_doc(doc_id)
+    extraction = _latest_extraction_for_review(extractions)
+    if not extraction:
+        raise HTTPException(status_code=404, detail="未找到资料提取结果")
+    if not is_kyc_extraction(extraction):
+        raise HTTPException(status_code=400, detail="当前资料不是KYC资料，暂不支持人工确认")
+    return build_extraction_review(str(document.get("doc_id") or doc_id), extraction)
+
+
+@documents_router.patch("/{doc_id}/extraction-review")
+async def update_document_extraction_review(
+    doc_id: str,
+    payload: ExtractionReviewUpdatePayload,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="飞书模式暂不支持此功能")
+    role = str(current_user.get("role") or "").lower()
+    if not can_update_review(role):
+        raise HTTPException(status_code=403, detail="仅管理员或业务人员可以确认KYC字段")
+    document, _customer = await _load_accessible_document(doc_id, current_user)
+    extractions = await storage_service.get_extractions_by_doc(doc_id)
+    extraction = _latest_extraction_for_review(extractions)
+    if not extraction:
+        raise HTTPException(status_code=404, detail="未找到资料提取结果")
+    if not is_kyc_extraction(extraction):
+        raise HTTPException(status_code=400, detail="当前资料不是KYC资料，暂不支持人工确认")
+    confirmed_at = datetime.now(timezone.utc)
+    try:
+        confirmed_data = build_confirmed_data(
+            existing=extraction.get("confirmed_data") if isinstance(extraction.get("confirmed_data"), dict) else {},
+            confirmed_fields=payload.confirmed_fields or {},
+            confirm_status=payload.confirm_status,
+            confirmed_by=str(current_user.get("username") or ""),
+            confirmed_at=confirmed_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    updater = getattr(storage_service, "update_extraction_review", None)
+    if not callable(updater):
+        raise HTTPException(status_code=500, detail="当前存储后端不支持KYC人工确认")
+    updated = await updater(
+        extraction.get("extraction_id") or "",
+        confirmed_data=confirmed_data,
+        confirm_status=payload.confirm_status,
+        confirmed_by=str(current_user.get("username") or ""),
+        confirmed_at=confirmed_at,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="未找到资料提取结果")
+    return build_extraction_review(str(document.get("doc_id") or doc_id), updated)
 
 
 @documents_router.get("/{doc_id}/download")

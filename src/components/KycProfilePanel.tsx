@@ -33,7 +33,11 @@ function FieldGrid({ fields, data }: { fields: string[]; data?: Record<string, u
   );
 }
 
-const KycProfilePanel: React.FC<{ profile: CustomerKycProfile | null; loading?: boolean }> = ({ profile, loading }) => {
+const KycProfilePanel: React.FC<{
+  profile: CustomerKycProfile | null;
+  loading?: boolean;
+  onReviewDocument?: (documentId: string) => void;
+}> = ({ profile, loading, onReviewDocument }) => {
   const properties = profile?.assets?.properties || [];
   const vehicles = profile?.assets?.vehicles || [];
   const licenses = profile?.licenses || [];
@@ -111,6 +115,31 @@ const KycProfilePanel: React.FC<{ profile: CustomerKycProfile | null; loading?: 
             ) : (
               <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-500">暂无经营资质资料</div>
             )}
+          </div>
+          <div>
+            <h4 className="mb-2 text-sm font-semibold text-slate-800">KYC资料审核</h4>
+            <div className="grid gap-2 md:grid-cols-2">
+              {(profile?.documents || []).map((item, index) => {
+                const docId = String(item.doc_id || '');
+                return (
+                  <div key={`${docId || index}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-slate-800">{valueText(item.doc_type_name || item.doc_type)}</div>
+                      <div className="mt-0.5 truncate text-xs text-slate-500">{valueText(item.source_file || docId)}</div>
+                    </div>
+                    {docId && onReviewDocument ? (
+                      <button
+                        type="button"
+                        onClick={() => onReviewDocument(docId)}
+                        className="shrink-0 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                      >
+                        审核字段
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

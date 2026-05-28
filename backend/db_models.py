@@ -66,6 +66,10 @@ class Extraction(Base):
     skill_name = Column(String(100), default="")
     skill_version = Column(String(50), default="")
     schema_version = Column(String(100), default="")
+    confirmed_data = Column(LONGTEXT().with_variant(Text(), "sqlite"), default="{}")
+    confirm_status = Column(String(32), default="unconfirmed")
+    confirmed_by = Column(String(128), default="")
+    confirmed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 

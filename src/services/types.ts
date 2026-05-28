@@ -771,6 +771,55 @@ export interface CustomerKycProfileResponse {
   completeness: KycCompletenessResult;
 }
 
+export interface ExtractionReviewResult {
+  document_id: string;
+  doc_type: string;
+  doc_type_name: string;
+  agent_type: string;
+  extracted_data: Record<string, unknown>;
+  confirmed_data: {
+    confirmed_fields?: Record<string, unknown>;
+    confirm_status?: string;
+    confirmed_by?: string;
+    confirmed_at?: string;
+    [key: string]: unknown;
+  };
+  merged_fields: Record<string, unknown>;
+  confirm_status: 'unconfirmed' | 'partial' | 'confirmed' | string;
+  confirmed_by?: string;
+  confirmed_at?: string;
+  validation?: {
+    is_valid?: boolean;
+    warnings?: string[];
+    errors?: string[];
+  };
+  evidence?: Record<string, unknown>;
+  missing_fields?: string[];
+}
+
+export interface UpdateExtractionReviewPayload {
+  confirmed_fields: Record<string, unknown>;
+  confirm_status: 'partial' | 'confirmed';
+}
+
+export interface FinancingKycDiagnosticResult {
+  customer_id: string;
+  diagnostic_type: 'kyc_financing_readiness' | string;
+  material_completeness_score: number;
+  usable_for_financing: boolean;
+  readiness_level: 'not_ready' | 'basic_ready' | 'ready' | string;
+  summary: string;
+  identity_status: 'missing' | 'partial' | 'complete' | string;
+  enterprise_status: 'missing' | 'partial' | 'complete' | string;
+  bank_account_status: 'missing' | 'partial' | 'complete' | string;
+  asset_status: 'none' | 'partial' | 'complete' | string;
+  key_risks: string[];
+  missing_materials: string[];
+  conflicts: string[];
+  recommended_actions: string[];
+  next_step: string;
+}
+
 export interface UpdateCustomerProfileMarkdownRequest {
   markdown_content: string;
   title?: string;
