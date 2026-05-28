@@ -23,6 +23,27 @@ export interface FileProcessResponse {
   customerName: string | null;
 }
 
+export interface KycExtractionResult {
+  agent_type?: string;
+  doc_type: string;
+  doc_type_name: string;
+  owner_type?: string;
+  extraction_status: 'success' | 'partial' | 'failed';
+  fields: Record<string, unknown>;
+  validation?: {
+    is_valid?: boolean;
+    warnings?: string[];
+    errors?: string[];
+  };
+  confidence?: {
+    overall?: number;
+    fields?: Record<string, number>;
+  };
+  evidence?: Record<string, unknown>;
+  missing_fields?: string[];
+  markdown?: string;
+}
+
 // ============================================
 // Storage Save Types
 // ============================================
@@ -719,6 +740,35 @@ export interface CustomerProfileMarkdownResponse {
   rag_source_priority: string[];
   risk_report_schema: Record<string, unknown>;
   credit_debug?: Record<string, unknown>;
+}
+
+export interface CustomerKycProfile {
+  customer_id: string;
+  person_identity?: Record<string, unknown>;
+  enterprise_identity?: Record<string, unknown>;
+  bank_account?: Record<string, unknown>;
+  marriage?: Record<string, unknown>;
+  assets?: {
+    properties?: Array<Record<string, unknown>>;
+    vehicles?: Array<Record<string, unknown>>;
+  };
+  licenses?: Array<Record<string, unknown>>;
+  documents?: Array<Record<string, unknown>>;
+  updated_at?: string;
+}
+
+export interface KycCompletenessResult {
+  completeness_score: number;
+  required_missing: string[];
+  optional_missing: string[];
+  warnings: string[];
+  conflicts: string[];
+  suggestions: string[];
+}
+
+export interface CustomerKycProfileResponse {
+  profile: CustomerKycProfile;
+  completeness: KycCompletenessResult;
 }
 
 export interface UpdateCustomerProfileMarkdownRequest {

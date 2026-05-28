@@ -14,6 +14,7 @@ import type {
   ChatResponse,
   CustomerDetail,
   CustomerDocumentListItem,
+  CustomerKycProfileResponse,
   DocumentDetailResponse,
   CustomerListItem,
   CustomerProfileMarkdownResponse,
@@ -824,6 +825,18 @@ export async function getCustomerDetail(
     signal,
   });
   return handleResponse<CustomerDetail>(response);
+}
+
+export async function getCustomerKycProfile(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<CustomerKycProfileResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/kyc-profile`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<CustomerKycProfileResponse>(response);
 }
 
 export async function getCustomerExtractions(

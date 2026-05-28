@@ -11,6 +11,7 @@ import {
   getCustomerDocumentStatus,
   getCustomerExtractions,
   getCustomerEnterpriseFlowSummary,
+  getCustomerKycProfile,
   getCustomerPersonalFlowSummary,
   getCustomerProfileMarkdown,
   getLatestFinancingAgent,
@@ -19,7 +20,7 @@ import {
   runFinancingAgent,
   updateCustomerProfileMarkdown,
 } from '../services/api';
-import type { CustomerDocumentListItem, CustomerListItem, CustomerProfileMarkdownResponse, ExtractionGroup, ExtractionItem } from '../services/types';
+import type { CustomerDocumentListItem, CustomerKycProfileResponse, CustomerListItem, CustomerProfileMarkdownResponse, ExtractionGroup, ExtractionItem } from '../services/types';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard from './common/ProcessFeedbackCard';
 import EnterpriseBankStatementView, {
@@ -32,6 +33,8 @@ import EnterpriseBankStatementView, {
 import PersonalBankStatementView from './documents/PersonalBankStatementView';
 import FinancialReportView from './documents/FinancialReportView';
 import { hasFinancialReportStructuredData } from './documents/financialReportRightPanelBuilder';
+import KycCompletenessPanel from './KycCompletenessPanel';
+import KycProfilePanel from './KycProfilePanel';
 
 interface CustomerDataPageProps {
   onBack?: () => void;
@@ -2340,10 +2343,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [extractionGroups, setExtractionGroups] = useState<ExtractionGroup[]>([]);
   const [enterpriseFlowPreviewDoc, setEnterpriseFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
   const [personalFlowPreviewDoc, setPersonalFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
+  const [kycProfileResponse, setKycProfileResponse] = useState<CustomerKycProfileResponse | null>(null);
   const [documentStatusError, setDocumentStatusError] = useState<string | null>(null);
   const [enterpriseFlowPreviewError, setEnterpriseFlowPreviewError] = useState<string | null>(null);
   const [personalFlowPreviewError, setPersonalFlowPreviewError] = useState<string | null>(null);
   const [personalFlowPreviewLoading, setPersonalFlowPreviewLoading] = useState(false);
+  const [kycProfileLoading, setKycProfileLoading] = useState(false);
   const [backgroundRefreshNotice, setBackgroundRefreshNotice] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentResult, setAgentResult] = useState<Record<string, unknown> | null>(null);
@@ -2363,6 +2368,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const documentStatusLoadingRef = useRef<string | null>(null);
   const enterpriseFlowPreviewLoadingRef = useRef<string | null>(null);
   const personalFlowPreviewLoadingRef = useRef<string | null>(null);
+  const kycProfileLoadingRef = useRef<string | null>(null);
   const agentLatestLoadingRef = useRef<string | null>(null);
   const profileLoadingRef = useRef<string | null>(null);
   const profileRef = useRef<CustomerProfileMarkdownResponse | null>(null);
@@ -2594,6 +2600,24 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     }
   }, []);
 
+  const loadKycProfile = useCallback(async (customerId: string) => {
+    if (kycProfileLoadingRef.current === customerId) {
+      return;
+    }
+    kycProfileLoadingRef.current = customerId;
+    setKycProfileLoading(true);
+    try {
+      const result = await getCustomerKycProfile(customerId);
+      setKycProfileResponse(result);
+    } catch (err) {
+      console.warn('[KYC Profile] load failed', err);
+      setKycProfileResponse(null);
+    } finally {
+      kycProfileLoadingRef.current = null;
+      setKycProfileLoading(false);
+    }
+  }, []);
+
   const selectedCustomer = useMemo(
     () => customers.find((item) => item.record_id === selectedCustomerId) ?? null,
     [customers, selectedCustomerId]
@@ -2630,6 +2654,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setDraft('');
       setDocuments([]);
       setExtractionGroups([]);
+      setKycProfileResponse(null);
       setCurrentCustomer(null, null);
       return;
     }
@@ -2670,9 +2695,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     setExtractionGroups([]);
     void loadDocuments(requestCustomerId);
     void loadExtractions(requestCustomerId);
+    void loadKycProfile(requestCustomerId);
     void loadPersonalFlowPreview(requestCustomerId);
     void loadEnterpriseFlowPreview(requestCustomerId);
-  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadExtractions, loadPersonalFlowPreview, loadingCustomers, selectedCustomerId]);
+  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadExtractions, loadKycProfile, loadPersonalFlowPreview, loadingCustomers, selectedCustomerId]);
 
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearch.trim().toLowerCase();
@@ -3756,6 +3782,13 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               </details>
             </div>
           </section>
+        ) : null}
+
+        {selectedCustomerId ? (
+          <>
+            <KycProfilePanel profile={kycProfileResponse?.profile || null} loading={kycProfileLoading} />
+            <KycCompletenessPanel completeness={kycProfileResponse?.completeness || null} loading={kycProfileLoading} />
+          </>
         ) : null}
 
         {selectedCustomerId ? (

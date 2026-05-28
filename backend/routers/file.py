@@ -821,8 +821,9 @@ def _extract_structured_data(
         elif document_type_code == "marriage_cert" and text_content and text_content.strip():
             content["raw_text"] = text_content
         customer_name = extract_customer_name_from_content(content)
+        response_document_type = str(content.get("document_type_code") or document_type_code)
         return FileProcessResponse(
-            documentType=document_type_code,
+            documentType=response_document_type,
             content=content,
             customerName=customer_name,
         )

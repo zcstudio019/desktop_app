@@ -19,6 +19,9 @@ from backend.document_types import (
 from backend.extraction_skills.enterprise_credit import build_enterprise_credit_content
 from backend.services.document_agents import run_document_extraction_agent
 from backend.services.extraction_utils import normalize_amount, normalize_text, only_digits
+from backend.services.kyc_document_agent import KycDocumentAgent
+from backend.services.kyc_document_agent.classifier import classify as classify_kyc_document
+from backend.services.kyc_document_agent.schema import DOC_TYPE_NAMES
 from backend.services.personal_credit_report_agent import run_personal_credit_report_agent
 from prompts import get_prompt_for_type, load_prompts
 from utils.json_parser import parse_json
@@ -31,6 +34,40 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
     "enterprise_flow",
     "enterprise_bank_statement",
     "financial_report",
+}
+
+KYC_DOC_TYPES = {
+    "id_card",
+    "marriage_cert",
+    "divorce_cert",
+    "household_register",
+    "business_license",
+    "account_permit",
+    "basic_account_info",
+    "vehicle_license",
+    "driving_license",
+    "property_cert",
+    "real_estate_cert",
+    "lease_contract_keypage",
+    "real_estate_query",
+    "shareholder_id_card",
+    "articles_keypage",
+    "special_business_license",
+    "food_business_license",
+    "road_transport_license",
+    "account_receipt",
+    "taxpayer_qualification",
+}
+
+KYC_LEGACY_DOC_TYPE_ALIASES = {
+    "account_license": "account_permit",
+    "hukou": "household_register",
+    "collateral": "property_cert",
+    "property_report": "real_estate_query",
+    "property_certificate": "property_cert",
+    "real_estate_certificate": "real_estate_cert",
+    "company_articles": "articles_keypage",
+    "special_license": "special_business_license",
 }
 
 DATE_PATTERN = re.compile(r"((?:19|20)\d{2}[年/\-.](?:0?[1-9]|1[0-2])[月/\-.](?:0?[1-9]|[12]\d|3[01])日?)")
@@ -84,6 +121,10 @@ def detect_document_type_code(
 
     if _looks_like_personal_credit_report(text_content):
         return "personal_credit_report"
+
+    kyc_doc_type = classify_kyc_document(text_content or "")
+    if kyc_doc_type in KYC_DOC_TYPES:
+        return kyc_doc_type
 
     lower_text = (text_content or "").lower()
     for code, keywords in TYPE_KEYWORD_RULES:
@@ -2977,6 +3018,10 @@ def detect_document_type_code(
 
     if _looks_like_personal_credit_report(text_content):
         return "personal_credit_report"
+
+    kyc_doc_type = classify_kyc_document(text_content or "")
+    if kyc_doc_type in KYC_DOC_TYPES:
+        return kyc_doc_type
 
     lower_text = (text_content or "").lower()
     for code, keywords in TYPE_KEYWORD_RULES:
@@ -8940,6 +8985,144 @@ def extract_bank_statement_pdf_fields(
     }
 
 
+def _resolve_kyc_doc_type(text_content: str, declared_doc_type: str | None) -> str:
+    normalized = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
+    if normalized in KYC_LEGACY_DOC_TYPE_ALIASES:
+        return KYC_LEGACY_DOC_TYPE_ALIASES[normalized]
+    if normalized in KYC_DOC_TYPES:
+        return normalized
+    classified = classify_kyc_document(text_content or "")
+    return classified if classified in KYC_DOC_TYPES else ""
+
+
+def _pick_kyc_customer_name(result: dict[str, Any]) -> str:
+    fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
+    for key in (
+        "company_name",
+        "bank_account_name",
+        "name",
+        "holder_name",
+        "vehicle_owner",
+        "owner",
+        "spouse_name",
+    ):
+        value = fields.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _build_kyc_failure_result(doc_type: str, text_content: str, exc: Exception) -> dict[str, Any]:
+    doc_type = doc_type or "unknown"
+    error_message = str(exc) or "KYC资料结构化提取失败"
+    return {
+        "agent_type": "kyc_document_agent",
+        "doc_type": doc_type,
+        "doc_type_name": DOC_TYPE_NAMES.get(doc_type, doc_type),
+        "owner_type": "unknown",
+        "extraction_status": "failed",
+        "fields": {},
+        "validation": {
+            "is_valid": False,
+            "warnings": [],
+            "errors": [error_message],
+        },
+        "confidence": {
+            "overall": 0.0,
+            "fields": {},
+        },
+        "evidence": {},
+        "missing_fields": [],
+        "raw_text_preview": str(text_content or "")[:240],
+        "markdown": f"## {DOC_TYPE_NAMES.get(doc_type, doc_type)}\n\n- 抽取状态: `failed`\n- 错误信息: {error_message}",
+        "document_type_code": doc_type,
+        "document_type_name": DOC_TYPE_NAMES.get(doc_type, doc_type),
+        "storage_label": DOC_TYPE_NAMES.get(doc_type, doc_type),
+        "extraction_error": error_message,
+    }
+
+
+def _build_kyc_structured_extraction(
+    text_content: str,
+    doc_type: str,
+    *,
+    raw_pages: list[dict[str, Any]] | None = None,
+    filename: str = "",
+    customer_id: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    raw_pages = raw_pages or []
+    payload = {
+        "text": str(text_content or ""),
+        "pages": raw_pages,
+        "metadata": {
+            "filename": filename,
+            "customer_id": customer_id,
+            "source": "upload",
+            "declared_doc_type": doc_type,
+            **(metadata or {}),
+        },
+    }
+    try:
+        result = KycDocumentAgent().extract(payload)
+    except Exception as exc:  # pragma: no cover - defensive upload isolation
+        logger.exception("[KYC Document Agent] extraction failed doc_type=%s filename=%s", doc_type, filename)
+        result = _build_kyc_failure_result(doc_type, text_content, exc)
+
+    fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
+    content = {
+        **result,
+        "agent_type": "kyc_document_agent",
+        "document_type_code": result.get("doc_type") or doc_type,
+        "document_type_name": result.get("doc_type_name") or DOC_TYPE_NAMES.get(doc_type, doc_type),
+        "storage_label": result.get("doc_type_name") or DOC_TYPE_NAMES.get(doc_type, doc_type),
+        "customer_name": _pick_kyc_customer_name(result),
+        "raw_text": str(text_content or ""),
+    }
+    if isinstance(fields, dict):
+        for key in ("company_name", "name", "id_number", "unified_social_credit_code", "plate_number"):
+            if key in fields and key not in content:
+                content[key] = fields.get(key)
+    if raw_pages:
+        content["raw_pages"] = raw_pages
+    return content
+
+
+def run_document_extraction(
+    text: str,
+    pages: list | None,
+    filename: str,
+    customer_id: str | None,
+    declared_doc_type: str | None = None,
+    metadata: dict | None = None,
+) -> dict[str, Any]:
+    normalized_declared = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
+    kyc_doc_type = _resolve_kyc_doc_type(text, normalized_declared)
+    if kyc_doc_type:
+        return _build_kyc_structured_extraction(
+            text,
+            kyc_doc_type,
+            raw_pages=pages or [],
+            filename=filename,
+            customer_id=customer_id or "",
+            metadata=metadata or {},
+        )
+
+    document_type_code = detect_document_type_code(text, normalized_declared, rows=(metadata or {}).get("rows") or [])
+    return build_structured_extraction(
+        text,
+        document_type_code,
+        rows=(metadata or {}).get("rows") or [],
+        raw_pages=pages or [],
+        filename=filename,
+        file_path=str((metadata or {}).get("file_path") or ""),
+        customer_id=customer_id or "",
+        customer_name=str((metadata or {}).get("customer_name") or ""),
+        historical_financial_reports=(metadata or {}).get("historical_financial_reports") or [],
+        ai_service=(metadata or {}).get("ai_service"),
+    )
+
+
 def build_structured_extraction(
     text_content: str,
     document_type_code: str,
@@ -8956,6 +9139,25 @@ def build_structured_extraction(
     normalized_code = normalize_document_type_code(document_type_code) or document_type_code
     rows = rows or []
     raw_pages = raw_pages or []
+    kyc_doc_type = _resolve_kyc_doc_type(text_content, normalized_code)
+    if kyc_doc_type:
+        content = _build_kyc_structured_extraction(
+            text_content,
+            kyc_doc_type,
+            raw_pages=raw_pages,
+            filename=filename,
+            customer_id=customer_id,
+            metadata={
+                "customer_name": customer_name,
+                "rows": rows,
+                "file_path": file_path,
+                "historical_financial_reports": historical_financial_reports or [],
+            },
+        )
+        content.setdefault("document_type_code", content.get("doc_type") or kyc_doc_type)
+        content.setdefault("document_type_name", content.get("doc_type_name") or get_document_display_name(kyc_doc_type))
+        content.setdefault("storage_label", content.get("doc_type_name") or get_document_storage_label(kyc_doc_type))
+        return content
     if normalized_code == "bank_statement":
         logger.info("[bank_statement] raw_text_preview=%s", str(text_content or "")[:3000])
         for item in raw_pages:

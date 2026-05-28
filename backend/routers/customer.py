@@ -70,6 +70,8 @@ from backend.services.rag_service import RagService
 from backend.services.risk_assessment_service import RiskAssessmentService
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
+from backend.services.kyc_completeness_service import evaluate_kyc_completeness
+from backend.services.kyc_profile_sync_service import build_customer_kyc_profile
 from services.file_service import FileService
 from services.ocr_service import OCRService, OCRServiceError
 from ..middleware.auth import get_current_user
@@ -1013,6 +1015,44 @@ async def get_customers_table(
 # ============================================
 # Customer Detail Endpoint
 # ============================================
+
+@router.get("/{customer_id}/kyc-profile")
+async def get_customer_kyc_profile(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    if not HAS_DB_STORAGE:
+        return {
+            "profile": {
+                "customer_id": customer_id,
+                "person_identity": {},
+                "enterprise_identity": {},
+                "bank_account": {},
+                "marriage": {},
+                "assets": {"properties": [], "vehicles": []},
+                "licenses": [],
+                "documents": [],
+                "updated_at": "",
+            },
+            "completeness": evaluate_kyc_completeness({}),
+        }
+    try:
+        customer = await storage_service.get_customer(customer_id)
+    except Exception as exc:
+        logger.warning("[KYC Profile] failed to lookup customer_id=%s error=%s", customer_id, exc)
+        customer = None
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if current_user.get("role") != "admin":
+        uploader = str((customer or {}).get("uploader") or "").strip()
+        username = str(current_user.get("username") or "").strip()
+        if uploader and uploader != username:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    profile = await build_customer_kyc_profile(storage_service, customer_id)
+    completeness = evaluate_kyc_completeness(profile)
+    return {"profile": profile, "completeness": completeness}
+
 
 @router.get("/{record_id}", response_model=CustomerDetail)
 async def get_customer_detail(

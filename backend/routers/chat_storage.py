@@ -43,9 +43,13 @@ _PERSONAL_DOCUMENT_TYPE_CODES = frozenset({
     "personal_flow",
     "personal_tax",
     "id_card",
+    "shareholder_id_card",
     "hukou",
+    "household_register",
     "marriage_cert",
+    "divorce_cert",
     "vehicle_license",
+    "driving_license",
 })
 
 _MULTI_INSTANCE_DOCUMENT_TYPE_CODES = frozenset({

@@ -22,7 +22,8 @@ import { createFileProcessJob, downloadDocumentOriginal, getFileProcessJob, list
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp, type ExtractionResult, type UploadQueueItem } from '../context/AppContext';
-import { ApiError, classifyError, ErrorType, type ChatJobStatusResponse, type CustomerListItem } from '../services/types';
+import { ApiError, classifyError, ErrorType, type ChatJobStatusResponse, type CustomerListItem, type KycExtractionResult as KycExtractionResultType } from '../services/types';
+import KycExtractionResult, { isKycExtractionResult } from './KycExtractionResult';
 import ProcessFeedbackCard from './common/ProcessFeedbackCard';
 
 // ============================================
@@ -755,6 +756,7 @@ const UploadPage: React.FC = () => {
   const [customersLoading, setCustomersLoading] = useState(false);
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [autoRedirectMessage, setAutoRedirectMessage] = useState<string | null>(null);
+  const [previewResult, setPreviewResult] = useState<ExtractionResult | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const customerSelectRef = useRef<HTMLSelectElement>(null);
@@ -1462,7 +1464,10 @@ const UploadPage: React.FC = () => {
   }, []);
 
   const viewResult = useCallback((result: ExtractionResult) => {
-    void result;
+    if (isKycExtractionResult(result.content)) {
+      setPreviewResult(result);
+      return;
+    }
     alert('资料已提取完成。可前往“资料汇总”或“客户管理”查看整理后的内容。');
   }, []);
 
@@ -1810,6 +1815,29 @@ const UploadPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {previewResult && isKycExtractionResult(previewResult.content) ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+          <div className="max-h-[86vh] w-full max-w-4xl overflow-hidden rounded-lg bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <div className="text-base font-semibold text-slate-900">KYC资料提取结果</div>
+                <div className="mt-0.5 text-xs text-slate-500">{previewResult.documentType}</div>
+              </div>
+              <button
+                onClick={() => setPreviewResult(null)}
+                className="rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[calc(86vh-72px)] overflow-auto p-5">
+              <KycExtractionResult result={previewResult.content as unknown as KycExtractionResultType} />
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Error Toast */}
       {error && (
