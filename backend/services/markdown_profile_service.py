@@ -2552,6 +2552,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 ]),
                 ('所有者权益类', [
                     ('total_equity', '所有者权益合计'),
+                    ('total_liabilities_and_equity', '负债和所有者权益总计'),
                 ]),
             ]
             for group_title, balance_fields in balance_field_groups:

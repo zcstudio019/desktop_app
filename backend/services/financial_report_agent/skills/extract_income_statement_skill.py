@@ -24,6 +24,8 @@ def _income_aliases(*labels: str) -> tuple[str, ...]:
 INCOME_FIELDS = {
     "revenue": _income_aliases("营业收入"),
     "operating_cost": _income_aliases(
+        "业务成本", "减业务成本", "减：业务成本", "减:业务成本", "减 ： 业务成本",
+        "主营业务成本", "销售成本", "主营成本",
         "营业成本", "减营业成本", "减：营业成本", "减:营业成本", "减 ： 营业成本", "营业成本（减项）"
     ),
     "taxes_and_surcharges": _income_aliases("税金及附加", "营业税金及附加"),

@@ -978,3 +978,43 @@ def test_single_report_detail_does_not_fill_missing_comparison_from_previous_rep
     assert cash["normalized_value"] == 119011.57
     assert cash["previous_normalized_value"] is None
     assert "| 货币资金 | 119,011.57 | 44,541.34 |" not in result["markdown_report"]
+
+
+def test_balance_sheet_supports_liabilities_and_equity_total_with_shareholder_alias() -> None:
+    pages = [{
+        "page": 1,
+        "text": """资产负债表
+资产总计 31 231,536,626.49 195,677,269.12
+负债和所有者权益（或股东权益）总计 53 231,536,626.49 195,677,269.12
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="负债和所有者权益总计.pdf",
+        metadata={"raw_pages": pages},
+    )
+    field = result["structured_json"]["balance_sheet"]["total_liabilities_and_equity"]
+    assert field["normalized_value"] == 231536626.49
+    assert field["previous_normalized_value"] == 195677269.12
+    assert "| 负债和所有者权益总计 | 231,536,626.49 | 195,677,269.12 |" in result["markdown_report"]
+
+
+def test_income_statement_maps_business_cost_to_operating_cost() -> None:
+    pages = [{
+        "page": 1,
+        "text": """利润表
+项目 行次 本月（季）金额 本年度累计金额
+营业收入 1 54,125,057.66 143,400,382.79
+减：业务成本 2 48,600,046.13 130,161,194.84
+净利润 20 4,288,457.33 7,058,212.03
+""",
+    }]
+    result = run_financial_report_agent(
+        raw_text=pages[0]["text"],
+        filename="小企业利润表-业务成本.pdf",
+        metadata={"raw_pages": pages},
+    )
+    operating_cost = result["structured_json"]["income_statement"]["operating_cost"]
+    assert operating_cost["normalized_value"] == 48600046.13
+    assert operating_cost["previous_normalized_value"] == 130161194.84
+    assert "| 营业成本 | 48,600,046.13 | 130,161,194.84 |" in result["markdown_report"]

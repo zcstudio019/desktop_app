@@ -49,6 +49,7 @@ def _financial_report(
             "total_assets": _amount(assets),
             "total_liabilities": _amount(liabilities),
             "total_equity": _amount(assets - liabilities),
+            "total_liabilities_and_equity": _amount(assets),
         },
         "income_statement": {
             "revenue": _amount(revenue),
@@ -213,6 +214,7 @@ def test_profile_aggregates_multiple_financial_reports_and_enterprise_flows_sepa
     assert "#### 所有者权益类" in financial_summary
     assert "|  |" not in financial_summary
     assert "| |" not in financial_summary
+    assert "| 负债和所有者权益总计 | 54,688,482.62 元 | 69,320,214.02 元 | -14,631,731.40 元 | -21.11% |" in financial_summary
     assert "| 2022年报 | 140,360,769.35 元 |" in markdown
     assert "| 2024季报 | -1,989,500.82 元 |" in markdown
     assert "| 资产负债率 | 76.13% |" in markdown
@@ -344,6 +346,37 @@ def test_profile_keeps_explicit_monthly_financial_period_in_customer_summary() -
     assert "| 报表类型 | 月报 |" in markdown
     assert "| 报送日期/报表日 | 2023-01-15 |" in markdown
     assert "2022年报" not in markdown
+
+
+def test_profile_income_trend_uses_business_cost_as_operating_cost() -> None:
+    text = """利润表
+企业名称：上海耐吉电力集团有限公司
+纳税人识别号/社会信用代码：91310000761645460D
+所属期起：2022-12-01
+所属期止：2022-12-31
+适用执行小企业会计准则的企业
+项目 行次 本月（季）金额 本年度累计金额
+营业收入 1 54,125,057.66 143,400,382.79
+减：业务成本 2 48,600,046.13 130,161,194.84
+净利润 20 4,288,457.33 7,058,212.03
+"""
+    extracted = run_financial_report_agent(
+        raw_text=text,
+        filename="2022年12月财务报表.pdf",
+        metadata={"raw_pages": [{"page": 1, "text": text}]},
+    )
+    payload = asyncio.run(build_auto_profile_payload(_Storage([{
+        "extraction_id": "financial-business-cost-202212",
+        "doc_id": "doc-financial-business-cost-202212",
+        "customer_id": "customer-coexist",
+        "extraction_type": "financial_report",
+        "file_name": "2022年12月财务报表.pdf",
+        "extracted_data": extracted,
+    }]), "customer-coexist"))
+    markdown = payload["markdown_content"]
+
+    assert "| 2022年12月月报 | 54,125,057.66 元 | 48,600,046.13 元 | 5,525,011.53 元 | 4,288,457.33 元 | 10.21% | 7.92% |" in markdown
+    assert "| 2022年12月月报 | 54,125,057.66 元 | - |" not in markdown
 
 
 def test_profile_repairs_stored_monthly_report_period_from_source_file() -> None:
