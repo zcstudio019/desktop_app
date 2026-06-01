@@ -3,6 +3,7 @@ import { Wallet, Eye, EyeOff } from 'lucide-react';
 import { login, register, getSecurityQuestion, forgotPassword } from '../services/api';
 import { ApiError } from '../services/types';
 import { SYSTEM_INFO, getSystemVersionLabel } from '../config/systemInfo';
+import { BRAND } from '../config/brand';
 
 interface LoginPageProps {
   onLogin: (token: string, username: string, role: string) => void;
@@ -306,7 +307,30 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
           </div>
         </div>
 
-        <p className="mt-6 text-center text-xs text-gray-400">© 2026 {SYSTEM_INFO.name} · {SYSTEM_INFO.subtitle} · {getSystemVersionLabel()}</p>
+        <div className="mt-6 space-y-1 text-center text-xs leading-5 text-gray-400">
+          <p>主办单位：{BRAND.organizer}</p>
+          <p>
+            © 2026 {BRAND.organizer} · {SYSTEM_INFO.name} · {SYSTEM_INFO.subtitle} · {getSystemVersionLabel()}
+          </p>
+          <p>
+            <a href={BRAND.icpRecordUrl} rel="noreferrer" target="_blank" className="transition-colors hover:text-gray-500">
+              {BRAND.icpRecord}
+            </a>
+          </p>
+          {/*
+            公安联网备案号待确认后可启用：
+            <p className="police-beian">
+              <img src="/assets/image/head-logo.png" width="20" alt="" />
+              <a
+                href="https://beian.mps.gov.cn/#/query/webSearch?code=待替换公安备案code"
+                rel="noreferrer"
+                target="_blank"
+              >
+                沪公网安备待替换号
+              </a>
+            </p>
+          */}
+        </div>
       </div>
 
       {showForgot ? (
