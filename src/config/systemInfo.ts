@@ -1,8 +1,9 @@
 import { BUILD_INFO } from '../generated/build-info';
+import { BRAND } from './brand';
 
 export const SYSTEM_INFO = {
-  name: '贷款助手',
-  subtitle: '客户资料驱动的融资处理系统',
+  name: BRAND.appName,
+  subtitle: BRAND.subtitle,
   baseVersion: BUILD_INFO.version,
   version: BUILD_INFO.version,
   releaseDate: BUILD_INFO.releaseDate,

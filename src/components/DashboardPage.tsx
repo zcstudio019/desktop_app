@@ -27,6 +27,7 @@ import {
 import { PageType } from './layout/Sidebar';
 import type { CustomerListItem } from '../services/types';
 import { SYSTEM_INFO, getSystemVersionLabel } from '../config/systemInfo';
+import { BRAND } from '../config/brand';
 
 export interface DashboardPageProps {
   onNavigate: (page: PageType) => void;
@@ -666,8 +667,8 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
       <section className="mb-6 rounded-[28px] border border-slate-200/80 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.16),_transparent_36%),linear-gradient(135deg,#ffffff_0%,#f8fafc_100%)] p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">贷款助手工作台</h1>
-            <p className="mt-1 text-sm text-slate-500">集中查看客户业务进展、系统动态和方案产品库状态，适合日常处理与演示验收。</p>
+            <h1 className="text-2xl font-bold text-slate-800">{BRAND.workspaceTitle}</h1>
+            <p className="mt-1 text-sm text-slate-500">{BRAND.workspaceDescription}</p>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
               <span className="rounded-full border border-slate-200 bg-white px-3 py-1">{getSystemVersionLabel()}</span>
               <span className="rounded-full border border-slate-200 bg-white px-3 py-1">构建日期 {SYSTEM_INFO.releaseDate}</span>

@@ -37,6 +37,7 @@ import {
 import { useAbortController, useConversationState, useLoading, useResultPanelState, useTaskState } from '../hooks';
 import type { TaskViewSource } from '../hooks';
 import { useApp } from '../context/AppContext';
+import { BRAND } from '../config/brand';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
 import EnterpriseBankStatementView, { isEnterpriseBankStatementType } from './documents/EnterpriseBankStatementView';
 import {
@@ -2184,7 +2185,7 @@ const RiskReportCard: React.FC<{ report: CustomerRiskReportCardData }> = ({ repo
       <body>
         <div class="page-header">
           <div>
-            <div style="font-size:12px;color:#64748b;">贷款助手风险评估中心</div>
+            <div style="font-size:12px;color:#64748b;">${escapeHtml(BRAND.riskReportCenter)}</div>
             <div style="font-size:16px;font-weight:700;color:#0f172a;">${escapeHtml(summary.customer_name || '未命名客户')}</div>
           </div>
           <div style="text-align:right;font-size:12px;color:#64748b;">
@@ -2270,7 +2271,7 @@ const RiskReportCard: React.FC<{ report: CustomerRiskReportCardData }> = ({ repo
           `).join('')}
         </div>
         <div class="page-footer">
-          <div>贷款助手智能贷款审批管理系统</div>
+          <div>${escapeHtml(BRAND.riskReportFooter)}</div>
           <div>${escapeHtml(summary.customer_name || '未命名客户')} · ${escapeHtml(generatedAt ? formatLocalDateTime(generatedAt) : '刚刚生成')}</div>
         </div>
       </body>

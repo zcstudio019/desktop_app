@@ -13,6 +13,7 @@ import {
   Shield,
   LucideIcon,
 } from 'lucide-react';
+import { BRAND } from '../../config/brand';
 
 export type PageType =
   | 'dashboard'
@@ -93,8 +94,10 @@ const Logo: React.FC = () => (
       <Wallet size={18} className="text-white" />
     </div>
     <div className="min-w-0">
-      <div className="truncate text-lg font-semibold text-white">贷款助手</div>
-      <div className="truncate text-[11px] text-white/50">客户资料驱动的融资处理系统</div>
+      <div className="truncate text-base font-semibold text-white" title={BRAND.appName}>
+        {BRAND.appName}
+      </div>
+      <div className="truncate text-[11px] text-white/50">{BRAND.subtitle}</div>
     </div>
   </div>
 );
