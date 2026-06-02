@@ -74,7 +74,7 @@ def test_property_cert_fields_use_chinese_names():
     assert fields["权属性质"] == "国有建设用地使用权"
     assert fields["使用权取得方式"] == "出让"
     assert fields["建筑面积"] == "148.08 平方米"
-    assert fields["权证编号"] == "沪房地奉字（2014）第004478号"
+    assert fields["权证编号"] == "沪房地奉字(2014)第004478号"
 
 
 def test_property_cert_markdown_contains_chinese_doc_type_name():

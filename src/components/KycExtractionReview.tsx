@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ExtractionReviewResult } from '../services/types';
-import { getKycFieldLabel } from './KycExtractionResult';
+import { getKycDisplayFields, getKycFieldLabel } from './KycExtractionResult';
 
 function valueText(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -28,19 +28,21 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
     return fields && typeof fields === 'object' && !Array.isArray(fields) ? fields as Record<string, unknown> : {};
   }, [review.extracted_data]);
   const confirmedFields = review.confirmed_data?.confirmed_fields || {};
-  const fieldKeys = useMemo(
-    () => Array.from(new Set([...Object.keys(extractedFields), ...Object.keys(confirmedFields), ...Object.keys(review.merged_fields || {})])),
-    [confirmedFields, extractedFields, review.merged_fields]
-  );
+  const displayEntries = useMemo(() => {
+    const merged = { ...extractedFields, ...(review.merged_fields || {}), ...confirmedFields };
+    return getKycDisplayFields(merged);
+  }, [confirmedFields, extractedFields, review.merged_fields]);
+  const displayFieldMap = useMemo(() => Object.fromEntries(displayEntries), [displayEntries]);
+  const fieldKeys = useMemo(() => displayEntries.map(([field]) => field), [displayEntries]);
   const [draftFields, setDraftFields] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const next: Record<string, string> = {};
     fieldKeys.forEach((key) => {
-      next[key] = valueText(confirmedFields[key] ?? extractedFields[key] ?? '');
+      next[key] = valueText(confirmedFields[key] ?? displayFieldMap[key] ?? '');
     });
     setDraftFields(next);
-  }, [confirmedFields, extractedFields, fieldKeys]);
+  }, [confirmedFields, displayFieldMap, fieldKeys]);
 
   const submit = (status: 'partial' | 'confirmed') => {
     const payload: Record<string, unknown> = {};
@@ -52,7 +54,12 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
 
   const warnings = review.validation?.warnings || [];
   const errors = review.validation?.errors || [];
-  const evidenceEntries = Object.entries(review.evidence || {}).slice(0, 8);
+  const evidenceEntries = getKycDisplayFields(
+    Object.fromEntries(Object.entries(review.evidence || {}).map(([field, item]) => {
+      const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      return [field, record.evidence_text || record.value || ''];
+    }))
+  ).slice(0, 8);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
@@ -77,7 +84,7 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
             {fieldKeys.map((key) => (
               <div key={key} className="grid grid-cols-[160px_1fr_1fr] border-t border-slate-200 text-sm">
                 <div className="border-r border-slate-200 px-3 py-2 font-medium text-slate-700">{getKycFieldLabel(key)}</div>
-                <div className="break-words border-r border-slate-200 px-3 py-2 text-slate-600">{valueText(extractedFields[key]) || '未识别'}</div>
+                <div className="break-words border-r border-slate-200 px-3 py-2 text-slate-600">{valueText(displayFieldMap[key]) || '未识别'}</div>
                 <div className="px-3 py-2">
                   {canEdit ? (
                     <input
@@ -111,11 +118,10 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
               <div className="mb-2 text-sm font-semibold text-slate-800">证据摘要</div>
               <div className="grid gap-2 md:grid-cols-2">
                 {evidenceEntries.map(([field, item]) => {
-                  const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
                   return (
                     <div key={field} className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
                       <span className="font-medium text-slate-700">{getKycFieldLabel(field)}：</span>
-                      {valueText(record.evidence_text || record.value)}
+                      {valueText(item)}
                     </div>
                   );
                 })}

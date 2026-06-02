@@ -54,6 +54,8 @@ class KycDocumentAgent:
         if doc_type == "unknown":
             result = build_result("unknown")
             result["raw_text_preview"] = data["text"][:240]
+            result["metadata"] = metadata
+            result["agent_type"] = "kyc_document_agent"
             result["classification_reason"] = classification.get("reason") or "未命中支持的KYC资料关键词"
             result["validation"]["warnings"].append("未识别到支持的KYC资料类型，请检查扫描件清晰度或人工选择资料类型")
             result["markdown"] = render_markdown(result)
@@ -61,6 +63,8 @@ class KycDocumentAgent:
 
         skill_module = importlib.import_module(SKILL_MODULES[doc_type])
         result = skill_module.extract(data)
+        result["metadata"] = metadata
+        result["agent_type"] = "kyc_document_agent"
         result["classification_reason"] = classification.get("reason") or ""
         result = normalize_result(result)
         result = validate_result(result)

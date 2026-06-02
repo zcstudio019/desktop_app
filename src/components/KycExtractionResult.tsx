@@ -37,10 +37,20 @@ const FIELD_LABELS: Record<string, string> = {
   property_address: '房地坐落',
   right_type: '权利类型',
   right_nature: '权属性质',
-  use_type: '用途',
+  acquisition_method: '使用权取得方式',
+  land_use: '土地用途',
+  use_type: '房屋用途',
+  parcel_number: '宗地号',
   building_area: '建筑面积',
-  land_area: '土地面积',
-  total_area: '总面积',
+  land_area: '宗地面积',
+  usage_area: '使用权面积',
+  total_area: '使用权面积',
+  land_use_term: '土地使用期限',
+  room_number: '室号或部位',
+  building_type: '建筑类型',
+  total_floors: '总层数',
+  completion_date: '竣工日期',
+  issuing_unit: '填证单位',
   mortgage_status: '抵押状态',
   seizure_status: '查封状态',
   权利人: '权利人',
@@ -80,6 +90,56 @@ const FIELD_LABELS: Record<string, string> = {
   spouse_id_number: '配偶身份证号码',
 };
 
+const PROPERTY_FIELD_ORDER = [
+  '权利人',
+  '共有人',
+  '权证编号',
+  '房地坐落',
+  '权属性质',
+  '使用权取得方式',
+  '土地用途',
+  '宗地号',
+  '宗地面积',
+  '使用权面积',
+  '土地使用期限',
+  '室号或部位',
+  '建筑面积',
+  '建筑类型',
+  '房屋用途',
+  '总层数',
+  '竣工日期',
+  '登记日',
+  '填证单位',
+];
+
+const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
+  owner: '权利人',
+  co_owners: '共有人',
+  certificate_number: '权证编号',
+  property_address: '房地坐落',
+  right_type: '权利类型',
+  right_nature: '权属性质',
+  acquisition_method: '使用权取得方式',
+  land_use: '土地用途',
+  use_type: '房屋用途',
+  parcel_number: '宗地号',
+  land_area: '宗地面积',
+  usage_area: '使用权面积',
+  total_area: '使用权面积',
+  land_use_term: '土地使用期限',
+  room_number: '室号或部位',
+  building_area: '建筑面积',
+  building_type: '建筑类型',
+  total_floors: '总层数',
+  completion_date: '竣工日期',
+  registration_date: '登记日',
+  issue_date: '登记日',
+  issuing_unit: '填证单位',
+};
+
+const INVALID_DISPLAY_VALUES = new Set(['', '对', '的合法权益，对', '无', '未识别']);
+const INVALID_DISPLAY_KEYWORDS = ['合法权益', '房地产权利人', '本证是证明', '根据', '法律'];
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -95,13 +155,42 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
+function isInvalidDisplayValue(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (Array.isArray(value)) return value.length === 0 || value.every(isInvalidDisplayValue);
+  if (isRecord(value)) return Object.keys(value).length === 0;
+  const text = formatValue(value).trim();
+  return INVALID_DISPLAY_VALUES.has(text) || INVALID_DISPLAY_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
 export function isKycExtractionResult(value: unknown): value is KycExtractionResultType {
   if (!isRecord(value)) return false;
   return value.agent_type === 'kyc_document_agent' || (typeof value.doc_type === 'string' && isRecord(value.fields));
 }
 
 export function getKycFieldLabel(field: string): string {
-  return FIELD_LABELS[field] ?? field;
+  return FIELD_LABELS[field] ?? ENGLISH_TO_CHINESE_FIELDS[field] ?? field;
+}
+
+export function getKycDisplayFields(fields: Record<string, unknown> | undefined | null): Array<[string, unknown]> {
+  if (!fields || typeof fields !== 'object') return [];
+  const display = new Map<string, unknown>();
+  const orderedKeys = [...PROPERTY_FIELD_ORDER, ...Object.keys(ENGLISH_TO_CHINESE_FIELDS)];
+  orderedKeys.forEach((key) => {
+    if (!(key in fields)) return;
+    const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
+    if (display.has(label)) return;
+    const value = fields[key];
+    if (isInvalidDisplayValue(value)) return;
+    display.set(label, value);
+  });
+  Object.entries(fields).forEach(([key, value]) => {
+    const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
+    if (display.has(label) || key in ENGLISH_TO_CHINESE_FIELDS) return;
+    if (isInvalidDisplayValue(value)) return;
+    display.set(label, value);
+  });
+  return Array.from(display.entries());
 }
 
 interface Props {
@@ -109,14 +198,15 @@ interface Props {
 }
 
 const KycExtractionResult: React.FC<Props> = ({ result }) => {
-  const fields = Object.entries(result.fields || {}).filter(([, value]) => {
-    if (Array.isArray(value)) return value.length > 0;
-    if (isRecord(value)) return Object.keys(value).length > 0;
-    return value !== null && value !== undefined && value !== '';
-  });
+  const fields = getKycDisplayFields(result.fields || {});
   const warnings = result.validation?.warnings || [];
   const errors = result.validation?.errors || [];
-  const evidence = Object.entries(result.evidence || {}).slice(0, 6);
+  const displayFieldNames = new Set(fields.map(([field]) => field));
+  const evidence = Object.entries(result.evidence || {})
+    .map(([field, item]) => [ENGLISH_TO_CHINESE_FIELDS[field] ?? field, item] as const)
+    .filter(([field]) => displayFieldNames.has(field))
+    .filter(([field], index, entries) => entries.findIndex(([name]) => name === field) === index)
+    .slice(0, 6);
   const statusLabel = result.extraction_status === 'success' ? '提取成功' : result.extraction_status === 'partial' ? '部分提取' : '提取失败';
 
   return (

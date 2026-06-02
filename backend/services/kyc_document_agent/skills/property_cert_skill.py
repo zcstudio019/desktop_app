@@ -29,6 +29,8 @@ CHINESE_FIELDS = [
     "填证单位",
 ]
 
+PROPERTY_FIELD_ORDER = CHINESE_FIELDS[:]
+
 ENGLISH_ALIASES = {
     "权利人": "owner",
     "共有人": "co_owners",
@@ -41,6 +43,9 @@ ENGLISH_ALIASES = {
     "使用权面积": "total_area",
     "登记日": "issue_date",
 }
+
+INVALID_VALUE_EXACT = {"", "对", "无", "未识别"}
+INVALID_VALUE_KEYWORDS = ("合法权益", "房地产权利人", "本证是证明", "根据", "法律")
 
 
 def _clean_text(text: str) -> str:
@@ -55,6 +60,21 @@ def _compact_value(value: str) -> str:
     value = re.sub(r"\s+", " ", value or "").strip(" :：|,，;；")
     value = re.sub(r"^(?:为|是|:)\s*", "", value).strip()
     return value
+
+
+def _normalize_cert_number(value: str) -> str:
+    return _compact_value(value).replace("（", "(").replace("）", ")")
+
+
+def _is_valid_property_value(value: Any) -> bool:
+    if value in (None, [], {}):
+        return False
+    if isinstance(value, list):
+        return any(_is_valid_property_value(item) for item in value)
+    text = _compact_value(str(value))
+    if text in INVALID_VALUE_EXACT:
+        return False
+    return not any(keyword in text for keyword in INVALID_VALUE_KEYWORDS)
 
 
 def _lines(text: str) -> list[str]:
@@ -99,15 +119,16 @@ def _extract_cert_number(text: str) -> tuple[str, str]:
     for pattern in patterns:
         match = re.search(pattern, text or "")
         if match:
-            return _compact_value(match.group(1)), match.group(0)
-    return _extract_after_label(text, ["权证编号", "证号", "编号"])
+            return _normalize_cert_number(match.group(1)), match.group(0)
+    value, evidence = _extract_after_label(text, ["权证编号", "证号", "编号"])
+    return (_normalize_cert_number(value), evidence) if value else ("", "")
 
 
 def _extract_date_near(text: str, label: str) -> tuple[str, str]:
     value, evidence = _extract_after_label(text, [label])
     if value:
         match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}年", value)
-        return (match.group(0), evidence) if match else (value, evidence)
+        return (match.group(0), evidence) if match else ("", "")
     return "", ""
 
 
@@ -119,6 +140,44 @@ def _extract_area(text: str, labels: list[str]) -> tuple[str, str]:
     if match:
         return f"{match.group(1)} 平方米", evidence
     return value, evidence
+
+
+def _extract_owner(text: str) -> tuple[str, str]:
+    for line in _lines(text):
+        if not any(label in line for label in ("权利人", "房屋所有权人", "所有权人")):
+            continue
+        if any(keyword in line for keyword in INVALID_VALUE_KEYWORDS):
+            continue
+        value = re.sub(r".*?(?:权利人|房屋所有权人|所有权人)[:：]?", "", line, count=1)
+        value = re.split(r"(?:共有人|权证编号|房地坐落|房屋坐落|坐落|权属性质)", value, maxsplit=1)[0]
+        value = _compact_value(value)
+        if _is_valid_property_value(value):
+            return value, line
+    value, evidence = _extract_after_label(text, ["权利人", "房屋所有权人", "所有权人"])
+    if _is_valid_property_value(value):
+        return value, evidence
+    return "", ""
+
+
+def _extract_contextual_use(text: str, section_label: str, explicit_labels: list[str]) -> tuple[str, str]:
+    value, evidence = _extract_after_label(text, explicit_labels)
+    if _is_valid_property_value(value):
+        return value, evidence
+
+    source_lines = _lines(text)
+    for index, line in enumerate(source_lines):
+        if section_label not in line:
+            continue
+        section_lines = source_lines[index : index + 10]
+        for section_line in section_lines:
+            if "用途" not in section_line:
+                continue
+            value = re.sub(r".*?用途[:：]?", "", section_line, count=1)
+            value = re.split(r"(?:宗地号|宗地|使用期限|室号或部位|建筑面积|建筑类型|总层数|竣工日期)", value, maxsplit=1)[0]
+            value = _compact_value(value)
+            if _is_valid_property_value(value):
+                return value, section_line
+    return "", ""
 
 
 def _split_owners(owner: str) -> list[str]:
@@ -147,27 +206,27 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     data = normalize_input(payload)
     text = _clean_text(data["text"])
 
-    owner, owner_evidence = _extract_after_label(text, ["权利人", "房屋所有权人", "所有权人"])
+    owner, owner_evidence = _extract_owner(text)
     co_owner_value, co_owner_evidence = _extract_after_label(text, ["共有人", "共有情况"])
     cert_number, cert_evidence = _extract_cert_number(text)
     address, address_evidence = _extract_after_label(text, ["房地坐落", "房屋坐落", "坐落", "不动产坐落"])
     right_nature, right_nature_evidence = _extract_after_label(text, ["权属性质", "权利性质"])
     acquire_method, acquire_evidence = _extract_after_label(text, ["使用权取得方式", "取得方式"])
-    land_use, land_use_evidence = _extract_after_label(text, ["土地用途", "土地状况用途", "土地用途"])
+    land_use, land_use_evidence = _extract_contextual_use(text, "土地状况", ["土地用途", "土地状况用途"])
     parcel_number, parcel_evidence = _extract_after_label(text, ["宗地号", "地号"])
     land_area, land_area_evidence = _extract_area(text, ["宗地(丘)面积", "宗地面积", "土地面积"])
-    usage_area, usage_area_evidence = _extract_area(text, ["使用权面积"])
+    usage_area, usage_area_evidence = _extract_after_label(text, ["使用权面积"], stop_labels=["使用期限", "土地使用期限"])
     term, term_evidence = _extract_after_label(text, ["使用期限", "土地使用期限"])
     room, room_evidence = _extract_after_label(text, ["室号或部位", "室号", "部位"])
     building_area, building_area_evidence = _extract_area(text, ["建筑面积", "房屋建筑面积"])
     building_type, building_type_evidence = _extract_after_label(text, ["建筑类型"])
-    house_use, house_use_evidence = _extract_after_label(text, ["房屋用途", "房屋状况用途", "用途"])
+    house_use, house_use_evidence = _extract_contextual_use(text, "房屋状况", ["房屋用途", "房屋状况用途"])
     total_floors, total_floors_evidence = _extract_after_label(text, ["总层数"])
     completion_date, completion_evidence = _extract_date_near(text, "竣工日期")
     register_date, register_evidence = _extract_date_near(text, "登记日")
     issue_unit, issue_unit_evidence = _extract_after_label(text, ["填证单位"])
 
-    co_owners = _split_owners(co_owner_value)
+    co_owners = _split_owners(co_owner_value) if _is_valid_property_value(co_owner_value) else []
     if not co_owners and owner:
         owner_parts = _split_owners(owner)
         co_owners = owner_parts[1:] if len(owner_parts) > 1 else []
@@ -193,6 +252,11 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         "登记日": (register_date, register_evidence, 0.68),
         "填证单位": (issue_unit, issue_unit_evidence, 0.62),
     }
+    value_map = {
+        field: (value, evidence_text, confidence)
+        for field, (value, evidence_text, confidence) in value_map.items()
+        if _is_valid_property_value(value)
+    }
     fields, evidence, confidences = _build_evidence(value_map)
 
     # Compatibility aliases for profile sync and older integrations. UI/Markdown use Chinese labels.
@@ -208,7 +272,7 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     result["confidence"]["overall"] = round(sum(confidences.values()) / len(confidences), 4) if confidences else 0.0
     result["raw_text_preview"] = raw_preview(text)
     if fields:
-        result["validation"]["warnings"].append("部分字段来自扫描件识别，建议人工确认权利人和权证编号")
+        result["validation"]["warnings"].append("部分字段来自扫描件识别，建议人工确认权利人、权证编号和房地坐落。")
     return result
 
 
