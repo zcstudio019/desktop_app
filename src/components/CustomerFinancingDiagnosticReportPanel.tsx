@@ -1,5 +1,7 @@
 import React from 'react';
 import {
+  exportCustomerFinancingDiagnosticReportSnapshotDocx,
+  exportCustomerFinancingDiagnosticReportSnapshotPdf,
   getCustomerFinancingDiagnosticReportSnapshot,
   listCustomerFinancingDiagnosticReportSnapshots,
   saveCustomerFinancingDiagnosticReportSnapshot,
@@ -134,6 +136,7 @@ const CustomerFinancingDiagnosticReportPanel: React.FC<{
   const [snapshotDetail, setSnapshotDetail] = React.useState<FinancingDiagnosticReportSnapshotDetail | null>(null);
   const [snapshotLoading, setSnapshotLoading] = React.useState(false);
   const [snapshotSaving, setSnapshotSaving] = React.useState(false);
+  const [snapshotExporting, setSnapshotExporting] = React.useState<'docx' | 'pdf' | null>(null);
   const [snapshotError, setSnapshotError] = React.useState<string | null>(null);
 
   const loadSnapshots = React.useCallback(async () => {
@@ -190,6 +193,24 @@ const CustomerFinancingDiagnosticReportPanel: React.FC<{
       setSnapshotLoading(false);
     }
   }, [customerId]);
+
+  const handleExportSnapshot = React.useCallback(async (format: 'docx' | 'pdf') => {
+    if (!customerId || !snapshotDetail?.id || snapshotExporting) return;
+    setSnapshotExporting(format);
+    setSnapshotError(null);
+    try {
+      if (format === 'docx') {
+        await exportCustomerFinancingDiagnosticReportSnapshotDocx(customerId, snapshotDetail.id);
+      } else {
+        await exportCustomerFinancingDiagnosticReportSnapshotPdf(customerId, snapshotDetail.id);
+      }
+    } catch (err) {
+      const fallback = format === 'pdf' ? 'PDF 导出暂不可用，请先导出 Word' : 'Word 导出失败';
+      setSnapshotError(err instanceof Error ? err.message || fallback : fallback);
+    } finally {
+      setSnapshotExporting(null);
+    }
+  }, [customerId, snapshotDetail?.id, snapshotExporting]);
 
   if (loading) {
     return (
@@ -858,6 +879,24 @@ const CustomerFinancingDiagnosticReportPanel: React.FC<{
             <summary className="cursor-pointer text-sm font-semibold text-slate-800">
               历史快照报告预览：{snapshotDetail.report_version || '未记录版本'} · {formatDateTime(snapshotDetail.generated_at)}
             </summary>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void handleExportSnapshot('docx')}
+                disabled={snapshotExporting !== null}
+                className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {snapshotExporting === 'docx' ? 'Word 导出中...' : '导出 Word'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExportSnapshot('pdf')}
+                disabled={snapshotExporting !== null}
+                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {snapshotExporting === 'pdf' ? 'PDF 导出中...' : '导出 PDF'}
+              </button>
+            </div>
             <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-4 text-xs leading-6 text-slate-100">
               {snapshotDetail.report_markdown || '暂无历史报告正文'}
             </pre>

@@ -15,13 +15,14 @@ import re
 import sys
 import uuid
 import time
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 # Add desktop_app to path for imports
@@ -79,6 +80,11 @@ from backend.services.financial_statement_diagnostic_service import build_financ
 from backend.services.financing_diagnostic_report_snapshot_service import (
     FinancingDiagnosticReportSnapshotService,
     can_save_financing_diagnostic_report_snapshot,
+)
+from backend.services.financing_diagnostic_report_export_service import (
+    FinancingDiagnosticReportExportService,
+    PdfExportUnavailableError,
+    SnapshotNotFoundError,
 )
 from backend.services.kyc_completeness_service import evaluate_kyc_completeness
 from backend.services.kyc_extraction_review_service import (
@@ -1225,6 +1231,62 @@ async def get_customer_financing_diagnostic_report_snapshot(
     if not snapshot:
         raise HTTPException(status_code=404, detail="未找到该融资诊断报告快照")
     return snapshot
+
+
+def _download_response(export_result: dict[str, Any]) -> StreamingResponse:
+    filename = str(export_result.get("filename") or "融资诊断报告")
+    encoded_filename = quote(filename)
+    return StreamingResponse(
+        BytesIO(export_result.get("content") or b""),
+        media_type=str(export_result.get("media_type") or "application/octet-stream"),
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+    )
+
+
+@router.get("/{customer_id}/financing-diagnostic-report/snapshots/{report_id}/export/docx")
+async def export_customer_financing_diagnostic_report_snapshot_docx(
+    customer_id: str,
+    report_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> StreamingResponse:
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=404, detail="未找到该融资诊断报告快照")
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    await _ensure_local_customer_access(customer, current_user)
+    service = FinancingDiagnosticReportExportService(storage_service)
+    try:
+        return _download_response(await service.export_docx(customer_id, report_id))
+    except SnapshotNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("[FinancingDiagnosticExport] docx failed customer_id=%s report_id=%s error=%s", customer_id, report_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="融资诊断报告Word导出失败") from exc
+
+
+@router.get("/{customer_id}/financing-diagnostic-report/snapshots/{report_id}/export/pdf")
+async def export_customer_financing_diagnostic_report_snapshot_pdf(
+    customer_id: str,
+    report_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> StreamingResponse:
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=404, detail="未找到该融资诊断报告快照")
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    await _ensure_local_customer_access(customer, current_user)
+    service = FinancingDiagnosticReportExportService(storage_service)
+    try:
+        return _download_response(await service.export_pdf(customer_id, report_id))
+    except SnapshotNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PdfExportUnavailableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("[FinancingDiagnosticExport] pdf failed customer_id=%s report_id=%s error=%s", customer_id, report_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="融资诊断报告PDF导出失败") from exc
 
 
 @router.get("/{record_id}", response_model=CustomerDetail)

@@ -244,6 +244,65 @@ async function fetchDocumentBlob(
   return { blob, fileName };
 }
 
+function parseDownloadFileName(contentDisposition: string, fallback: string): string {
+  const encodedMatch = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition);
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1]);
+    } catch {
+      return encodedMatch[1];
+    }
+  }
+  const match = /filename="?([^"]+)"?/i.exec(contentDisposition);
+  return match?.[1] || fallback;
+}
+
+async function fetchSnapshotExportBlob(
+  customerId: string,
+  reportId: string,
+  format: 'docx' | 'pdf',
+  signal?: AbortSignal
+): Promise<{ blob: Blob; fileName: string }> {
+  const response = await fetch(
+    `${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-diagnostic-report/snapshots/${encodeURIComponent(reportId)}/export/${format}`,
+    {
+      method: 'GET',
+      headers: { ...getAuthHeaders() },
+      signal,
+    }
+  );
+
+  if (!response.ok) {
+    let errorMessage = format === 'pdf' ? 'PDF 导出暂不可用，请先导出 Word' : '报告导出失败';
+    try {
+      const errorBody = await response.json();
+      errorMessage = errorBody.error || errorBody.detail || errorBody.message || errorMessage;
+    } catch {
+      errorMessage = response.statusText || errorMessage;
+    }
+    if (format === 'pdf' && errorMessage.includes('PDF 导出依赖未配置')) {
+      errorMessage = 'PDF 导出暂不可用，请先导出 Word';
+    }
+    throw new ApiError(response.status, errorMessage);
+  }
+
+  const contentDisposition = response.headers.get('Content-Disposition') || '';
+  const fileName = parseDownloadFileName(contentDisposition, `融资诊断报告.${format}`);
+  const blob = await response.blob();
+  return { blob, fileName };
+}
+
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 export async function downloadDocumentOriginal(documentId: string, signal?: AbortSignal): Promise<void> {
   const { blob, fileName } = await fetchDocumentBlob(documentId, 'download', signal);
   const url = URL.createObjectURL(blob);
@@ -929,6 +988,24 @@ export async function getCustomerFinancingDiagnosticReportSnapshot(
     signal,
   });
   return handleResponse<FinancingDiagnosticReportSnapshotDetail>(response);
+}
+
+export async function exportCustomerFinancingDiagnosticReportSnapshotDocx(
+  customerId: string,
+  reportId: string,
+  signal?: AbortSignal
+): Promise<void> {
+  const { blob, fileName } = await fetchSnapshotExportBlob(customerId, reportId, 'docx', signal);
+  downloadBlob(blob, fileName);
+}
+
+export async function exportCustomerFinancingDiagnosticReportSnapshotPdf(
+  customerId: string,
+  reportId: string,
+  signal?: AbortSignal
+): Promise<void> {
+  const { blob, fileName } = await fetchSnapshotExportBlob(customerId, reportId, 'pdf', signal);
+  downloadBlob(blob, fileName);
 }
 
 export async function getCustomerExtractions(
