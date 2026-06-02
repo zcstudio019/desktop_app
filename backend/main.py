@@ -75,6 +75,22 @@ app.include_router(customer.router, prefix="/api")
 app.include_router(customer.documents_router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 
+
+@app.on_event("startup")
+async def log_registered_routes() -> None:
+    route_summaries: list[str] = []
+    for route in app.routes:
+        methods = sorted(getattr(route, "methods", []) or [])
+        path = getattr(route, "path", "")
+        if path:
+            route_summaries.append(f"{','.join(methods) or '-'} {path}")
+    logger.info("[FastAPI Routes] registered_routes=%s", route_summaries)
+    logger.info(
+        "[FastAPI Routes] file_jobs_route_present=%s",
+        any("POST /api/file/process/jobs" in item for item in route_summaries),
+    )
+
+
 static_dir = PROJECT_ROOT / "dist"
 
 if _should_serve_static() and static_dir.exists() and (static_dir / "index.html").exists():

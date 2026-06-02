@@ -91,6 +91,16 @@ function resolveDirectJobApiBase(): string {
 const API_BASE = resolveApiBase();
 const DIRECT_JOB_API_BASE = resolveDirectJobApiBase();
 
+function buildApiUrl(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  if (!API_BASE) return normalizedPath;
+  const normalizedBase = API_BASE.replace(/\/+$/, '');
+  if (normalizedBase.endsWith('/api') && normalizedPath.startsWith('/api/')) {
+    return `${normalizedBase}${normalizedPath.slice('/api'.length)}`;
+  }
+  return `${normalizedBase}${normalizedPath}`;
+}
+
 function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem('auth_token');
   if (token) {
@@ -174,19 +184,52 @@ export async function createFileProcessJob(
   const requestInit: RequestInit = {
     method: 'POST',
     body: formData,
-    signal,
   };
   if (Object.keys(authHeaders).length > 0) {
     requestInit.headers = authHeaders;
   }
+  const requestUrl = buildApiUrl('/api/file/process/jobs');
+  const formDataKeys = Array.from(formData.keys());
+  console.info('[UploadJob] create request', {
+    url: requestUrl,
+    method: requestInit.method,
+    formDataKeys,
+    customerId: options?.customerId || '',
+    customerName: options?.customerName || '',
+    documentType: options?.documentType || '',
+    filename: file.name,
+  });
+  if (
+    requestUrl.includes('undefined') ||
+    requestUrl.endsWith('/file/process/jobs') ||
+    requestUrl.includes('/api/file/process/job?') ||
+    requestUrl.includes('/api/files/process/jobs')
+  ) {
+    console.error('[UploadJob] unexpected create request url', requestUrl);
+  }
+  const timeoutController = new AbortController();
+  const timeoutId = window.setTimeout(() => timeoutController.abort('timeout'), 60000);
+  const abortListener = () => timeoutController.abort('abort');
+  signal?.addEventListener('abort', abortListener, { once: true });
+  requestInit.signal = timeoutController.signal;
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}/api/file/process/jobs`, requestInit);
+    response = await fetch(requestUrl, requestInit);
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw error;
-    }
-    throw new Error('上传任务创建失败，后端未成功返回 job_id，请检查服务日志');
+    console.error('[UploadJob] create fetch failed', {
+      url: requestUrl,
+      method: requestInit.method,
+      formDataKeys,
+      customerId: options?.customerId || '',
+      customerName: options?.customerName || '',
+      documentType: options?.documentType || '',
+      filename: file.name,
+      error,
+    });
+    throw new Error('上传任务请求未到达后端或后端未响应，请检查 Nginx/接口日志。');
+  } finally {
+    window.clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', abortListener);
   }
   const responseText = await response.text();
   let parsedBody: unknown = null;

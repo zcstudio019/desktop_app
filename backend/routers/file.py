@@ -1320,13 +1320,20 @@ async def create_file_process_job(
     customer_name: str | None = Form(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
+    requested_document_type = (documentType or document_type or "").strip()
+    normalized_customer_id = (customerId or customer_id or "").strip()
+    normalized_customer_name = str(customerName or customer_name or "").strip()
+    logger.info(
+        "[FileJobCreate] route_enter filename=%s customer_id=%s customer_name=%s document_type=%s",
+        file.filename or "",
+        normalized_customer_id,
+        normalized_customer_name,
+        requested_document_type,
+    )
     if not HAS_DB_STORAGE or not HAS_ASYNC_JOB_STORAGE:
         raise HTTPException(status_code=503, detail="当前环境不支持上传异步任务，请切换到本地数据库存储。")
 
     file_bytes, _ = await _validate_and_read_file(file)
-    requested_document_type = (documentType or document_type or "").strip()
-    normalized_customer_id = (customerId or customer_id or "").strip()
-    normalized_customer_name = str(customerName or customer_name or "").strip()
     if normalized_customer_id and not normalized_customer_name:
         normalized_customer_name = _derive_customer_name_from_customer_id(normalized_customer_id)
     logger.info(
@@ -1449,6 +1456,12 @@ async def create_file_process_job(
         "message": "文件已上传，正在后台处理" if enqueue_success else "文件已上传，但后台任务派发失败，请查看任务状态",
         "enqueue_success": enqueue_success,
     })
+
+
+@router.post("/process/jobs/ping")
+async def ping_file_process_jobs() -> dict[str, Any]:
+    logger.info("[FileJobCreate] ping route_enter")
+    return {"ok": True, "message": "file jobs route reachable"}
 
 
 @router.get("/process/jobs/{job_id}", response_model=ChatJobStatusResponse)
