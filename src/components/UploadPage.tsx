@@ -1077,7 +1077,7 @@ const UploadPage: React.FC = () => {
             jobId: createdJob.jobId,
             status: 'processing' as const,
             progress: 20,
-            progressMessage: '文件上传完成，后台处理中',
+            progressMessage: createdJob.message || '文件上传完成，后台处理中',
           }
           : q
       ));

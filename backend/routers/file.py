@@ -70,6 +70,7 @@ HAS_ASYNC_JOB_STORAGE = all(
 _ACTIVE_FILE_PROCESS_JOB_TASKS: set[asyncio.Task[None]] = set()
 _UPLOAD_JOB_TEMP_ROOT = Path(__file__).parent.parent.parent / "data" / "upload_job_files"
 FILE_PROCESS_JOB_TYPE = "file_process"
+FILE_PROCESS_ENQUEUE_TIMEOUT_SECONDS = 3.0
 
 NO_FILENAME_MESSAGE = "未提供文件名。"
 FILE_READ_FAILED_MESSAGE = "文件读取失败，请重新上传后再试。"
@@ -1034,7 +1035,8 @@ async def _run_file_process_job(
             or await _get_customer_name_by_id(requested_customer_id)
         )
     logger.info(
-        "[File Job Payload] customerId=%s customerName=%s documentType=%s",
+        "[File Job Payload] job_id=%s customerId=%s customerName=%s documentType=%s",
+        job_id,
         requested_customer_id,
         requested_customer_name,
         explicit_document_type,
@@ -1076,6 +1078,15 @@ async def _run_file_process_job(
             file_path=str(temp_path),
             historical_financial_reports=historical_financial_reports,
             progress_callback=lambda message: _update_file_process_progress(job_id, message),
+        )
+        content_payload = process_result.content if isinstance(process_result.content, dict) else {}
+        agent_type = str(content_payload.get("agent_type") or content_payload.get("agentType") or "")
+        logger.info(
+            "[File Job] extraction finished job_id=%s document_id=%s document_type=%s agent_type=%s status=extracted error_message=",
+            job_id,
+            "",
+            process_result.documentType,
+            agent_type,
         )
 
         final_customer_name = _resolve_customer_name_after_extraction(requested_customer_name, process_result)
@@ -1149,8 +1160,23 @@ async def _run_file_process_job(
             error_message="",
             finished_at=_utc_now_iso(),
         )
+        logger.info(
+            "[File Job] completed job_id=%s document_id=%s document_type=%s agent_type=%s status=success error_message=",
+            job_id,
+            document_id or "",
+            process_result.documentType,
+            agent_type,
+        )
     except Exception as exc:
-        logger.error("[File Job] failed job_id=%s error=%s", job_id, exc, exc_info=True)
+        logger.error(
+            "[File Job] failed job_id=%s document_id=%s document_type=%s agent_type=%s status=failed error_message=%s",
+            job_id,
+            "",
+            explicit_document_type,
+            "",
+            exc,
+            exc_info=True,
+        )
         await _update_file_process_job(
             job_id,
             status="failed",
@@ -1166,8 +1192,28 @@ async def _run_file_process_job(
 async def execute_file_process_job_from_job(job_id: str) -> None:
     execution_payload = await job_storage_service.get_async_job_execution_payload(job_id)
     if not execution_payload:
-        raise ValueError(f"async job {job_id} execution payload not found")
-    await _run_file_process_job(job_id, execution_payload)
+        error_message = f"async job {job_id} execution payload not found"
+        await _update_file_process_job(
+            job_id,
+            status="failed",
+            progress_message="处理失败",
+            error_message=error_message,
+            finished_at=_utc_now_iso(),
+        )
+        raise ValueError(error_message)
+    try:
+        await _run_file_process_job(job_id, execution_payload)
+    except Exception as exc:
+        current_job = await job_storage_service.get_async_job(job_id)
+        if not current_job or current_job.get("status") != "failed":
+            await _update_file_process_job(
+                job_id,
+                status="failed",
+                progress_message="处理失败",
+                error_message=str(exc) or "文件处理任务执行失败",
+                finished_at=_utc_now_iso(),
+            )
+        raise
 
 
 def _launch_file_process_job(job_id: str) -> None:
@@ -1188,7 +1234,7 @@ async def _dispatch_file_process_job(
     job_id: str,
     current_user_payload: dict[str, Any],
     customer_id: str,
-) -> None:
+) -> tuple[bool, str, str]:
     logger.info(
         "[File Job] submit start job_id=%s queue_enabled=%s customer_id=%s username=%s",
         job_id,
@@ -1199,7 +1245,18 @@ async def _dispatch_file_process_job(
     if TASK_QUEUE_ENABLED:
         from backend.celery_app import FILE_PROCESS_TASK_NAME, HEAVY_QUEUE_NAME, celery_app
 
-        async_result = celery_app.send_task(FILE_PROCESS_TASK_NAME, args=[job_id], queue=HEAVY_QUEUE_NAME)
+        def _send_task() -> Any:
+            return celery_app.send_task(
+                FILE_PROCESS_TASK_NAME,
+                args=[job_id],
+                queue=HEAVY_QUEUE_NAME,
+                retry=False,
+            )
+
+        async_result = await asyncio.wait_for(
+            asyncio.to_thread(_send_task),
+            timeout=FILE_PROCESS_ENQUEUE_TIMEOUT_SECONDS,
+        )
         await job_storage_service.mark_async_job_dispatched(
             job_id,
             async_result.id,
@@ -1212,7 +1269,7 @@ async def _dispatch_file_process_job(
             customer_id,
             current_user_payload.get("username") or "",
         )
-        return
+        return True, "", str(async_result.id)
 
     logger.warning(
         "[File Job] fallback to in-process execution job_id=%s customer_id=%s username=%s",
@@ -1221,6 +1278,7 @@ async def _dispatch_file_process_job(
         current_user_payload.get("username") or "",
     )
     _launch_file_process_job(job_id)
+    return True, "", "in_process"
 
 
 @router.post("/process", response_model=FileProcessResponse)
@@ -1265,7 +1323,9 @@ async def create_file_process_job(
     if normalized_customer_id and not normalized_customer_name:
         normalized_customer_name = _derive_customer_name_from_customer_id(normalized_customer_id)
     logger.info(
-        "[File Job Create] customerId=%s customerName=%s documentType=%s",
+        "[File Job Create] received filename=%s file_size=%s customer_id=%s customer_name=%s document_type=%s",
+        file.filename or "",
+        len(file_bytes),
         normalized_customer_id,
         normalized_customer_name,
         documentType or "",
@@ -1306,22 +1366,52 @@ async def create_file_process_job(
             "execution_payload_json": execution_payload,
         }
     )
+    enqueue_success = False
+    enqueue_error = ""
+    celery_task_id = ""
     try:
-        await _dispatch_file_process_job(job_id, {"username": username, "role": role}, normalized_customer_id)
+        enqueue_success, enqueue_error, celery_task_id = await _dispatch_file_process_job(job_id, {"username": username, "role": role}, normalized_customer_id)
     except Exception as exc:
-        _cleanup_upload_job_temp_dir(job_id)
+        enqueue_error = str(exc) or "上传处理任务派发失败"
         await job_storage_service.update_async_job(
             job_id,
             {
                 "status": "failed",
                 "progress_message": "任务派发失败",
-                "error_message": str(exc) or "上传处理任务派发失败",
+                "error_message": enqueue_error,
                 "finished_at": _utc_now_iso(),
             },
         )
-        raise HTTPException(status_code=500, detail="上传处理任务创建失败，请稍后重试。") from exc
+        logger.error(
+            "[File Job Create] enqueue failed filename=%s file_size=%s customer_id=%s document_type=%s job_id=%s enqueue_success=%s error=%s",
+            file.filename or "",
+            len(file_bytes),
+            normalized_customer_id,
+            documentType or "",
+            job_id,
+            False,
+            enqueue_error,
+            exc_info=True,
+        )
 
-    return JSONResponse(content={"jobId": job_id, "status": "pending"})
+    logger.info(
+        "[File Job Create] created filename=%s file_size=%s customer_id=%s document_type=%s job_id=%s enqueue_success=%s celery_task_id=%s",
+        file.filename or "",
+        len(file_bytes),
+        normalized_customer_id,
+        documentType or "",
+        job_id,
+        enqueue_success,
+        celery_task_id,
+    )
+
+    return JSONResponse(content={
+        "jobId": job_id,
+        "job_id": job_id,
+        "status": "pending" if enqueue_success else "failed",
+        "message": "文件已上传，正在后台处理" if enqueue_success else "文件已上传，但后台任务派发失败，请查看任务状态",
+        "enqueue_success": enqueue_success,
+    })
 
 
 @router.get("/process/jobs/{job_id}", response_model=ChatJobStatusResponse)

@@ -171,8 +171,21 @@ export async function createFileProcessJob(
   if (Object.keys(authHeaders).length > 0) {
     requestInit.headers = authHeaders;
   }
-  const response = await fetch(`${API_BASE}/api/file/process/jobs`, requestInit);
-  return handleResponse<ChatJobCreateResponse>(response);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/file/process/jobs`, requestInit);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error;
+    }
+    throw new Error('上传任务创建失败，后端未成功返回 job_id，请检查服务日志');
+  }
+  const created = await handleResponse<ChatJobCreateResponse>(response);
+  const jobId = created.jobId || created.job_id || '';
+  if (!jobId) {
+    throw new Error('上传任务创建失败，后端未成功返回 job_id，请检查服务日志');
+  }
+  return { ...created, jobId };
 }
 
 export async function getFileProcessJob(

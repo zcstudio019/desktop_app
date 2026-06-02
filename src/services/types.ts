@@ -502,7 +502,10 @@ export interface ChatSessionSummary {
 
 export interface ChatJobCreateResponse {
   jobId: string;
+  job_id?: string;
   status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | 'timeout' | 'interrupted' | string;
+  message?: string;
+  enqueue_success?: boolean;
 }
 
 export interface ChatIntentAsyncJob {
