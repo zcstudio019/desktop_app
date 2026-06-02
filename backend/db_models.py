@@ -174,6 +174,23 @@ class CustomerRiskReport(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class CustomerFinancingDiagnosticReportSnapshot(Base):
+    __tablename__ = "customer_financing_diagnostic_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_id = Column(String(64), unique=True, nullable=False, index=True)
+    customer_id = Column(String(64), nullable=False, index=True)
+    report_version = Column(String(32), nullable=False, index=True)
+    report_status = Column(String(32), default="draft")
+    report_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="{}")
+    report_markdown = Column(Text().with_variant(LONGTEXT(), "mysql"), default="")
+    source_summary = Column(Text().with_variant(LONGTEXT(), "mysql"), default="{}")
+    generated_by = Column(String(128), default="")
+    generated_at = Column(String(64), nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
 

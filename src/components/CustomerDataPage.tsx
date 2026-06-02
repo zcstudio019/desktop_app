@@ -11,6 +11,7 @@ import {
   getCustomerDocumentStatus,
   getCustomerExtractions,
   getCustomerEnterpriseFlowSummary,
+  getCustomerFinancingDiagnosticReport,
   getCustomerFinancingKycDiagnostic,
   getCustomerKycProfile,
   getCustomerPersonalFlowSummary,
@@ -23,7 +24,7 @@ import {
   updateDocumentExtractionReview,
   updateCustomerProfileMarkdown,
 } from '../services/api';
-import type { CustomerDocumentListItem, CustomerKycProfileResponse, CustomerListItem, CustomerProfileMarkdownResponse, ExtractionGroup, ExtractionItem, ExtractionReviewResult, FinancingKycDiagnosticResult } from '../services/types';
+import type { CustomerDocumentListItem, CustomerFinancingDiagnosticReport, CustomerKycProfileResponse, CustomerListItem, CustomerProfileMarkdownResponse, ExtractionGroup, ExtractionItem, ExtractionReviewResult, FinancingKycDiagnosticResult } from '../services/types';
 import { useApp } from '../context/AppContext';
 import ProcessFeedbackCard from './common/ProcessFeedbackCard';
 import EnterpriseBankStatementView, {
@@ -36,6 +37,7 @@ import EnterpriseBankStatementView, {
 import PersonalBankStatementView from './documents/PersonalBankStatementView';
 import FinancialReportView from './documents/FinancialReportView';
 import { hasFinancialReportStructuredData } from './documents/financialReportRightPanelBuilder';
+import CustomerFinancingDiagnosticReportPanel from './CustomerFinancingDiagnosticReportPanel';
 import FinancingKycDiagnosticPanel from './FinancingKycDiagnosticPanel';
 import KycCompletenessPanel from './KycCompletenessPanel';
 import KycExtractionReview from './KycExtractionReview';
@@ -2350,6 +2352,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [personalFlowPreviewDoc, setPersonalFlowPreviewDoc] = useState<Record<string, unknown> | null>(null);
   const [kycProfileResponse, setKycProfileResponse] = useState<CustomerKycProfileResponse | null>(null);
   const [financingKycDiagnostic, setFinancingKycDiagnostic] = useState<FinancingKycDiagnosticResult | null>(null);
+  const [financingDiagnosticReport, setFinancingDiagnosticReport] = useState<CustomerFinancingDiagnosticReport | null>(null);
   const [reviewResult, setReviewResult] = useState<ExtractionReviewResult | null>(null);
   const [documentStatusError, setDocumentStatusError] = useState<string | null>(null);
   const [enterpriseFlowPreviewError, setEnterpriseFlowPreviewError] = useState<string | null>(null);
@@ -2357,6 +2360,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const [personalFlowPreviewLoading, setPersonalFlowPreviewLoading] = useState(false);
   const [kycProfileLoading, setKycProfileLoading] = useState(false);
   const [financingKycDiagnosticLoading, setFinancingKycDiagnosticLoading] = useState(false);
+  const [financingDiagnosticReportLoading, setFinancingDiagnosticReportLoading] = useState(false);
   const [reviewSaving, setReviewSaving] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [backgroundRefreshNotice, setBackgroundRefreshNotice] = useState<string | null>(null);
@@ -2380,6 +2384,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
   const personalFlowPreviewLoadingRef = useRef<string | null>(null);
   const kycProfileLoadingRef = useRef<string | null>(null);
   const financingKycDiagnosticLoadingRef = useRef<string | null>(null);
+  const financingDiagnosticReportLoadingRef = useRef<string | null>(null);
   const agentLatestLoadingRef = useRef<string | null>(null);
   const profileLoadingRef = useRef<string | null>(null);
   const profileRef = useRef<CustomerProfileMarkdownResponse | null>(null);
@@ -2648,6 +2653,24 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     }
   }, []);
 
+  const loadFinancingDiagnosticReport = useCallback(async (customerId: string) => {
+    if (financingDiagnosticReportLoadingRef.current === customerId) {
+      return;
+    }
+    financingDiagnosticReportLoadingRef.current = customerId;
+    setFinancingDiagnosticReportLoading(true);
+    try {
+      const result = await getCustomerFinancingDiagnosticReport(customerId);
+      setFinancingDiagnosticReport(result);
+    } catch (err) {
+      console.warn('[FinancingDiagnosticReport] load failed', err);
+      setFinancingDiagnosticReport(null);
+    } finally {
+      financingDiagnosticReportLoadingRef.current = null;
+      setFinancingDiagnosticReportLoading(false);
+    }
+  }, []);
+
   const openKycReview = useCallback(async (documentId: string) => {
     setReviewLoading(true);
     try {
@@ -2683,13 +2706,14 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       if (customerId) {
         await loadKycProfile(customerId);
         await loadFinancingKycDiagnostic(customerId);
+        await loadFinancingDiagnosticReport(customerId);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'KYC字段确认保存失败');
     } finally {
       setReviewSaving(false);
     }
-  }, [activeCustomerId, loadFinancingKycDiagnostic, loadKycProfile, reviewResult, selectedCustomerId]);
+  }, [activeCustomerId, loadFinancingDiagnosticReport, loadFinancingKycDiagnostic, loadKycProfile, reviewResult, selectedCustomerId]);
 
   useEffect(() => {
     void loadCustomers();
@@ -2719,6 +2743,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
       setExtractionGroups([]);
       setKycProfileResponse(null);
       setFinancingKycDiagnostic(null);
+      setFinancingDiagnosticReport(null);
       setCurrentCustomer(null, null);
       return;
     }
@@ -2761,9 +2786,10 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     void loadExtractions(requestCustomerId);
     void loadKycProfile(requestCustomerId);
     void loadFinancingKycDiagnostic(requestCustomerId);
+    void loadFinancingDiagnosticReport(requestCustomerId);
     void loadPersonalFlowPreview(requestCustomerId);
     void loadEnterpriseFlowPreview(requestCustomerId);
-  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadExtractions, loadFinancingKycDiagnostic, loadKycProfile, loadPersonalFlowPreview, loadingCustomers, selectedCustomerId]);
+  }, [customerIdCandidates, loadDocuments, loadEnterpriseFlowPreview, loadExtractions, loadFinancingDiagnosticReport, loadFinancingKycDiagnostic, loadKycProfile, loadPersonalFlowPreview, loadingCustomers, selectedCustomerId]);
 
   const filteredCustomers = useMemo(() => {
     const keyword = customerSearch.trim().toLowerCase();
@@ -3854,6 +3880,12 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
             <KycProfilePanel profile={kycProfileResponse?.profile || null} loading={kycProfileLoading || reviewLoading} onReviewDocument={(documentId) => void openKycReview(documentId)} />
             <KycCompletenessPanel completeness={kycProfileResponse?.completeness || null} loading={kycProfileLoading} />
             <FinancingKycDiagnosticPanel diagnostic={financingKycDiagnostic} loading={financingKycDiagnosticLoading} />
+            <CustomerFinancingDiagnosticReportPanel
+              customerId={selectedCustomerId}
+              report={financingDiagnosticReport}
+              loading={financingDiagnosticReportLoading}
+              userRole={currentAuthRole}
+            />
           </>
         ) : null}
 

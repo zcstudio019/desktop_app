@@ -143,6 +143,7 @@ def _repair_mysql_charset_and_text_columns(connection) -> None:
         "customer_document_chunks": ["chunk_text", "embedding_json", "metadata_json"],
         "risk_reports": ["risk_json", "report_markdown"],
         "customer_risk_reports": ["report_json", "report_markdown"],
+        "customer_financing_diagnostic_reports": ["report_json", "report_markdown", "source_summary"],
         "application_records": ["application_json", "report_markdown"],
         "saved_applications": ["application_data", "stale_reason"],
         "activity_logs": ["description", "metadata_json"],

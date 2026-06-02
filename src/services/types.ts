@@ -820,6 +820,232 @@ export interface FinancingKycDiagnosticResult {
   next_step: string;
 }
 
+export interface EnterpriseCreditDiagnostic {
+  has_enterprise_credit_report: boolean;
+  credit_status: 'unknown' | 'normal' | 'attention' | 'risky' | string;
+  debt_summary: {
+    total_unsettled_balance?: number | null;
+    short_term_loan_balance?: number | null;
+    long_term_loan_balance?: number | null;
+    credit_limit_total?: number | null;
+    used_credit_total?: number | null;
+    credit_usage_rate?: number | null;
+  };
+  loan_summary: {
+    active_loan_count: number;
+    upcoming_due_loans: Array<Record<string, unknown>>;
+    overdue_loans: Array<Record<string, unknown>>;
+    abnormal_classification_loans: Array<Record<string, unknown>>;
+  };
+  guarantee_summary: {
+    has_external_guarantee: boolean;
+    external_guarantee_balance?: number | null;
+    guarantee_risks: string[];
+  };
+  key_risks: string[];
+  positive_signals: string[];
+  recommended_actions: string[];
+  summary: string;
+}
+
+export interface PersonalCreditDiagnostic {
+  has_personal_credit_report: boolean;
+  credit_status: 'unknown' | 'normal' | 'attention' | 'risky' | string;
+  debt_summary: {
+    loan_balance?: number | null;
+    credit_card_used_amount?: number | null;
+    external_guarantee_balance?: number | null;
+  };
+  overdue_summary: {
+    has_loan_overdue: boolean;
+    has_credit_card_overdue: boolean;
+    overdue_records: Array<Record<string, unknown>>;
+  };
+  query_summary: {
+    last_3_months_query_count?: number | null;
+    last_6_months_query_count?: number | null;
+    query_risk_level: 'unknown' | 'low' | 'medium' | 'high' | string;
+  };
+  serious_negative_summary: {
+    has_serious_negative: boolean;
+    items: Array<Record<string, unknown>>;
+  };
+  key_risks: string[];
+  positive_signals: string[];
+  recommended_actions: string[];
+  summary: string;
+}
+
+export interface EnterpriseBankFlowDiagnostic {
+  has_enterprise_bank_flow: boolean;
+  flow_status: 'unknown' | 'normal' | 'attention' | 'risky' | string;
+  summary_metrics: {
+    period_start?: string | null;
+    period_end?: string | null;
+    month_count: number;
+    total_income?: number | null;
+    total_expense?: number | null;
+    net_income?: number | null;
+    average_monthly_income?: number | null;
+    average_monthly_expense?: number | null;
+    average_monthly_net_income?: number | null;
+  };
+  quality_metrics: {
+    stable_month_count: number;
+    zero_or_low_income_month_count: number;
+    large_in_out_count: number;
+    internal_transfer_amount?: number | null;
+    internal_transfer_ratio?: number | null;
+    real_income_amount?: number | null;
+    real_income_ratio?: number | null;
+  };
+  account_consistency: {
+    account_name: string;
+    company_name: string;
+    is_consistent?: boolean | null;
+    warnings: string[];
+  };
+  key_risks: string[];
+  positive_signals: string[];
+  recommended_actions: string[];
+  summary: string;
+}
+
+export interface FinancialStatementDiagnostic {
+  has_financial_statement: boolean;
+  financial_status: 'unknown' | 'normal' | 'attention' | 'risky' | string;
+  period: {
+    latest_period?: string | null;
+    statement_type?: string | null;
+  };
+  profitability: {
+    revenue?: number | null;
+    operating_cost?: number | null;
+    gross_profit?: number | null;
+    net_profit?: number | null;
+    net_profit_margin?: number | null;
+  };
+  debt_capacity: {
+    total_assets?: number | null;
+    total_liabilities?: number | null;
+    owner_equity?: number | null;
+    asset_liability_ratio?: number | null;
+    short_term_borrowing?: number | null;
+    long_term_borrowing?: number | null;
+  };
+  liquidity: {
+    current_assets?: number | null;
+    current_liabilities?: number | null;
+    current_ratio?: number | null;
+    cash_balance?: number | null;
+  };
+  cash_flow: {
+    operating_cash_flow_net?: number | null;
+  };
+  key_risks: string[];
+  positive_signals: string[];
+  recommended_actions: string[];
+  summary: string;
+}
+
+export interface ComprehensiveFinancingAdvice {
+  overall_status: 'not_ready' | 'cautious' | 'recommendable' | 'high_quality' | string;
+  financing_readiness_score: number;
+  recommended_product_directions: Array<{
+    product_type:
+      | 'mortgage_loan'
+      | 'credit_business_loan'
+      | 'tax_invoice_loan'
+      | 'bank_flow_loan'
+      | 'renewal_or_refinance'
+      | 'short_term_turnover'
+      | 'defer_application'
+      | string;
+    product_name: string;
+    fit_level: 'high' | 'medium' | 'low' | 'not_suitable' | string;
+    reason: string;
+  }>;
+  main_shortcomings: string[];
+  key_strengths: string[];
+  priority_actions: string[];
+  risk_summary: string[];
+  sales_follow_up_script: string;
+  summary: string;
+}
+
+export interface CustomerFinancingDiagnosticReport {
+  customer_id: string;
+  report_type: 'customer_financing_diagnostic' | string;
+  report_status: 'draft' | string;
+  customer_summary: {
+    customer_name?: string;
+    customer_type?: string;
+    phone?: string;
+    intent_level?: string;
+    status?: string;
+    [key: string]: unknown;
+  };
+  kyc_diagnostic: FinancingKycDiagnosticResult | Record<string, unknown>;
+  enterprise_credit_diagnostic?: EnterpriseCreditDiagnostic;
+  personal_credit_diagnostic?: PersonalCreditDiagnostic;
+  enterprise_bank_flow_diagnostic?: EnterpriseBankFlowDiagnostic;
+  financial_statement_diagnostic?: FinancialStatementDiagnostic;
+  comprehensive_financing_advice?: ComprehensiveFinancingAdvice;
+  material_checklist: {
+    required_missing: string[];
+    optional_missing: string[];
+    recommended_supplements: string[];
+  };
+  risk_highlights: string[];
+  financing_readiness: {
+    usable_for_financing: boolean;
+    readiness_level: 'not_ready' | 'basic_ready' | 'ready' | string;
+    score: number;
+    summary: string;
+  };
+  next_actions: string[];
+  report_markdown: string;
+}
+
+export interface FinancingDiagnosticReportSnapshotSummary {
+  id: string;
+  report_version: string;
+  report_status: 'draft' | string;
+  generated_by: string;
+  generated_at: string;
+  source_summary: {
+    has_kyc_profile?: boolean;
+    has_enterprise_credit_report?: boolean;
+    has_personal_credit_report?: boolean;
+    has_enterprise_bank_flow?: boolean;
+    has_financial_statement?: boolean;
+    overall_status?: string;
+    financing_readiness_score?: number;
+    [key: string]: unknown;
+  };
+  summary: string;
+}
+
+export interface FinancingDiagnosticReportSnapshotDetail {
+  id: string;
+  customer_id: string;
+  report_version: string;
+  report_status: 'draft' | string;
+  report_json: CustomerFinancingDiagnosticReport | Record<string, unknown>;
+  report_markdown: string;
+  source_summary: FinancingDiagnosticReportSnapshotSummary['source_summary'];
+  generated_by: string;
+  generated_at: string;
+}
+
+export interface SaveFinancingDiagnosticReportSnapshotResponse {
+  success: boolean;
+  report_id: string;
+  report_version: string;
+  generated_at: string;
+  message: string;
+}
+
 export interface UpdateCustomerProfileMarkdownRequest {
   markdown_content: string;
   title?: string;

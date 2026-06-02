@@ -21,6 +21,7 @@ from backend.db_models import (
     ChatSession,
     Customer,
     CustomerDocumentChunk,
+    CustomerFinancingDiagnosticReportSnapshot,
     CustomerProfile,
     CustomerRiskReport,
     CustomerSchemeSnapshot,
@@ -123,6 +124,7 @@ class SQLAlchemyStorageService:
                 ChatMessageRecord.__table__,
                 ProductCacheEntry.__table__,
                 AsyncJobRecord.__table__,
+                CustomerFinancingDiagnosticReportSnapshot.__table__,
             ],
             checkfirst=True,
         )
@@ -230,6 +232,7 @@ class SQLAlchemyStorageService:
             "customer_profiles": ["markdown_content", "source_snapshot_json", "rag_source_priority_json", "risk_report_schema_json"],
             "customer_document_chunks": ["chunk_text", "embedding_json", "metadata_json"],
             "customer_risk_reports": ["report_json", "report_markdown"],
+            "customer_financing_diagnostic_reports": ["report_json", "report_markdown", "source_summary"],
             "saved_applications": ["application_data", "stale_reason"],
             "activity_logs": ["description", "metadata_json"],
             "chat_messages": ["content"],
@@ -700,6 +703,31 @@ class SQLAlchemyStorageService:
             "report_json": self._loads(row.report_json, {}),
             "report_markdown": row.report_markdown or "",
             "created_at": row.created_at.isoformat() if row.created_at else "",
+        }
+
+    def _row_to_financing_diagnostic_report_snapshot(
+        self,
+        row: CustomerFinancingDiagnosticReportSnapshot,
+    ) -> dict[str, Any]:
+        report_json = self._loads(row.report_json, {})
+        return {
+            "id": row.report_id,
+            "report_id": row.report_id,
+            "customer_id": row.customer_id,
+            "report_version": row.report_version or "",
+            "report_status": row.report_status or "draft",
+            "report_json": report_json,
+            "report_markdown": row.report_markdown or "",
+            "source_summary": self._loads(row.source_summary, {}),
+            "generated_by": row.generated_by or "",
+            "generated_at": row.generated_at or "",
+            "created_at": row.created_at.isoformat() if row.created_at else "",
+            "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+            "summary": str(
+                (report_json.get("comprehensive_financing_advice") or {}).get("summary")
+                or (report_json.get("financing_readiness") or {}).get("summary")
+                or ""
+            ),
         }
 
     def _row_to_application(self, row: SavedApplicationRecord) -> dict[str, Any]:
@@ -1513,6 +1541,58 @@ class SQLAlchemyStorageService:
     async def get_latest_customer_risk_report(self, customer_id: str) -> dict | None:
         reports = await self.list_customer_risk_reports(customer_id, limit=1)
         return reports[0] if reports else None
+
+    async def create_financing_diagnostic_report_snapshot(self, snapshot_data: dict[str, Any]) -> dict[str, Any]:
+        with self._session_factory() as db:
+            report_id = snapshot_data.get("report_id") or uuid.uuid4().hex
+            row = CustomerFinancingDiagnosticReportSnapshot(
+                report_id=report_id,
+                customer_id=snapshot_data["customer_id"],
+                report_version=snapshot_data.get("report_version") or "v1",
+                report_status=snapshot_data.get("report_status") or "draft",
+                report_json=self._dumps(snapshot_data.get("report_json"), "{}"),
+                report_markdown=snapshot_data.get("report_markdown") or "",
+                source_summary=self._dumps(snapshot_data.get("source_summary"), "{}"),
+                generated_by=snapshot_data.get("generated_by") or "",
+                generated_at=snapshot_data.get("generated_at") or "",
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return self._row_to_financing_diagnostic_report_snapshot(row)
+
+    async def list_financing_diagnostic_report_snapshots(
+        self,
+        customer_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        with self._session_factory() as db:
+            rows = db.execute(
+                select(CustomerFinancingDiagnosticReportSnapshot)
+                .where(CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id)
+                .order_by(
+                    desc(CustomerFinancingDiagnosticReportSnapshot.generated_at),
+                    desc(CustomerFinancingDiagnosticReportSnapshot.id),
+                )
+                .limit(max(1, int(limit)))
+            ).scalars().all()
+            return [self._row_to_financing_diagnostic_report_snapshot(row) for row in rows]
+
+    async def get_financing_diagnostic_report_snapshot(
+        self,
+        customer_id: str,
+        report_id: str,
+    ) -> dict[str, Any] | None:
+        with self._session_factory() as db:
+            row = self._select_first_with_warning(
+                db,
+                select(CustomerFinancingDiagnosticReportSnapshot).where(
+                    CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id,
+                    CustomerFinancingDiagnosticReportSnapshot.report_id == report_id,
+                ),
+                table_name="customer_financing_diagnostic_reports",
+            )
+            return self._row_to_financing_diagnostic_report_snapshot(row) if row else None
 
     async def save_application_record(self, application_data: dict[str, Any]) -> dict[str, Any]:
         with self._session_factory() as db:

@@ -71,6 +71,15 @@ from backend.services.risk_assessment_service import RiskAssessmentService
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from backend.services.financing_kyc_diagnostic_service import build_financing_kyc_diagnostic
+from backend.services.customer_financing_diagnostic_report_service import build_customer_financing_diagnostic_report
+from backend.services.enterprise_credit_diagnostic_service import build_enterprise_credit_diagnostic
+from backend.services.personal_credit_diagnostic_service import build_personal_credit_diagnostic
+from backend.services.enterprise_bank_flow_diagnostic_service import build_enterprise_bank_flow_diagnostic
+from backend.services.financial_statement_diagnostic_service import build_financial_statement_diagnostic
+from backend.services.financing_diagnostic_report_snapshot_service import (
+    FinancingDiagnosticReportSnapshotService,
+    can_save_financing_diagnostic_report_snapshot,
+)
 from backend.services.kyc_completeness_service import evaluate_kyc_completeness
 from backend.services.kyc_extraction_review_service import (
     build_confirmed_data,
@@ -1101,6 +1110,121 @@ async def get_customer_financing_kyc_diagnostic(
     profile = await build_customer_kyc_profile(storage_service, customer_id)
     completeness = evaluate_kyc_completeness(profile)
     return build_financing_kyc_diagnostic(profile, completeness)
+
+
+@router.get("/{customer_id}/financing-diagnostic-report")
+async def get_customer_financing_diagnostic_report(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    if not HAS_DB_STORAGE:
+        profile = {
+            "customer_id": customer_id,
+            "person_identity": {},
+            "enterprise_identity": {},
+            "bank_account": {},
+            "marriage": {},
+            "assets": {"properties": [], "vehicles": []},
+            "licenses": [],
+            "documents": [],
+            "updated_at": "",
+        }
+        completeness = evaluate_kyc_completeness(profile)
+        diagnostic = build_financing_kyc_diagnostic(profile, completeness)
+        enterprise_credit = await build_enterprise_credit_diagnostic(None, customer_id)
+        personal_credit = await build_personal_credit_diagnostic(None, customer_id)
+        enterprise_flow = await build_enterprise_bank_flow_diagnostic(None, customer_id, profile)
+        financial_statement = await build_financial_statement_diagnostic(None, customer_id)
+        return build_customer_financing_diagnostic_report(customer_id, {}, profile, completeness, diagnostic, enterprise_credit, personal_credit, enterprise_flow, financial_statement)
+    try:
+        customer = await storage_service.get_customer(customer_id)
+    except Exception as exc:
+        logger.warning("[FinancingDiagnosticReport] failed to lookup customer_id=%s error=%s", customer_id, exc)
+        customer = None
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if current_user.get("role") != "admin":
+        uploader = str((customer or {}).get("uploader") or "").strip()
+        username = str(current_user.get("username") or "").strip()
+        if uploader and uploader != username:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    profile = await build_customer_kyc_profile(storage_service, customer_id)
+    completeness = evaluate_kyc_completeness(profile)
+    diagnostic = build_financing_kyc_diagnostic(profile, completeness)
+    enterprise_credit = await build_enterprise_credit_diagnostic(storage_service, customer_id)
+    personal_credit = await build_personal_credit_diagnostic(storage_service, customer_id)
+    enterprise_flow = await build_enterprise_bank_flow_diagnostic(storage_service, customer_id, profile)
+    financial_statement = await build_financial_statement_diagnostic(storage_service, customer_id)
+    return build_customer_financing_diagnostic_report(customer_id, customer, profile, completeness, diagnostic, enterprise_credit, personal_credit, enterprise_flow, financial_statement)
+
+
+@router.post("/{customer_id}/financing-diagnostic-report/snapshot")
+async def save_customer_financing_diagnostic_report_snapshot(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=400, detail="当前模式暂不支持融资诊断报告快照")
+    if not can_save_financing_diagnostic_report_snapshot(str(current_user.get("role") or "")):
+        raise HTTPException(status_code=403, detail="仅管理员或业务人员可以保存融资诊断报告快照")
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    await _ensure_local_customer_access(customer, current_user)
+    service = FinancingDiagnosticReportSnapshotService(storage_service)
+    try:
+        return await service.save_current_report_snapshot(
+            customer_id,
+            customer=customer,
+            generated_by=str(current_user.get("username") or ""),
+        )
+    except Exception as exc:
+        logger.error("[FinancingDiagnosticSnapshot] save failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="融资诊断报告快照保存失败") from exc
+
+
+@router.get("/{customer_id}/financing-diagnostic-report/snapshots")
+async def list_customer_financing_diagnostic_report_snapshots(
+    customer_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: dict = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    if not HAS_DB_STORAGE:
+        return []
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    await _ensure_local_customer_access(customer, current_user)
+    service = FinancingDiagnosticReportSnapshotService(storage_service)
+    try:
+        return await service.list_snapshots(customer_id, limit=limit)
+    except Exception as exc:
+        logger.error("[FinancingDiagnosticSnapshot] list failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="融资诊断报告历史获取失败") from exc
+
+
+@router.get("/{customer_id}/financing-diagnostic-report/snapshots/{report_id}")
+async def get_customer_financing_diagnostic_report_snapshot(
+    customer_id: str,
+    report_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    if not HAS_DB_STORAGE:
+        raise HTTPException(status_code=404, detail="未找到该融资诊断报告快照")
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    await _ensure_local_customer_access(customer, current_user)
+    service = FinancingDiagnosticReportSnapshotService(storage_service)
+    try:
+        snapshot = await service.get_snapshot(customer_id, report_id)
+    except Exception as exc:
+        logger.error("[FinancingDiagnosticSnapshot] detail failed customer_id=%s report_id=%s error=%s", customer_id, report_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="融资诊断报告详情获取失败") from exc
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="未找到该融资诊断报告快照")
+    return snapshot
 
 
 @router.get("/{record_id}", response_model=CustomerDetail)

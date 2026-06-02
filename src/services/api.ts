@@ -14,6 +14,9 @@ import type {
   ChatResponse,
   CustomerDetail,
   CustomerDocumentListItem,
+  CustomerFinancingDiagnosticReport,
+  FinancingDiagnosticReportSnapshotDetail,
+  FinancingDiagnosticReportSnapshotSummary,
   CustomerKycProfileResponse,
   DocumentDetailResponse,
   ExtractionReviewResult,
@@ -37,6 +40,7 @@ import type {
   UpdateCustomerProfileMarkdownRequest,
   UpdateCurrentUserProfileRequest,
   UpdateExtractionReviewPayload,
+  SaveFinancingDiagnosticReportSnapshotResponse,
   UserInfo,
   ChangeCurrentUserPasswordRequest,
   SetCurrentUserSecurityQuestionRequest,
@@ -878,6 +882,53 @@ export async function getCustomerFinancingKycDiagnostic(
     signal,
   });
   return handleResponse<FinancingKycDiagnosticResult>(response);
+}
+
+export async function getCustomerFinancingDiagnosticReport(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<CustomerFinancingDiagnosticReport> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-diagnostic-report`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<CustomerFinancingDiagnosticReport>(response);
+}
+
+export async function saveCustomerFinancingDiagnosticReportSnapshot(
+  customerId: string
+): Promise<SaveFinancingDiagnosticReportSnapshotResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-diagnostic-report/snapshot`, {
+    method: 'POST',
+    headers: { ...getAuthHeaders() },
+  });
+  return handleResponse<SaveFinancingDiagnosticReportSnapshotResponse>(response);
+}
+
+export async function listCustomerFinancingDiagnosticReportSnapshots(
+  customerId: string,
+  signal?: AbortSignal
+): Promise<FinancingDiagnosticReportSnapshotSummary[]> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-diagnostic-report/snapshots`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<FinancingDiagnosticReportSnapshotSummary[]>(response);
+}
+
+export async function getCustomerFinancingDiagnosticReportSnapshot(
+  customerId: string,
+  reportId: string,
+  signal?: AbortSignal
+): Promise<FinancingDiagnosticReportSnapshotDetail> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-diagnostic-report/snapshots/${encodeURIComponent(reportId)}`, {
+    method: 'GET',
+    headers: { ...getAuthHeaders() },
+    signal,
+  });
+  return handleResponse<FinancingDiagnosticReportSnapshotDetail>(response);
 }
 
 export async function getCustomerExtractions(

@@ -337,6 +337,32 @@ class LocalStorageService:
             ''')
 
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS customer_financing_diagnostic_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id VARCHAR(64) UNIQUE NOT NULL,
+                    customer_id VARCHAR(64) NOT NULL,
+                    report_version VARCHAR(32) NOT NULL,
+                    report_status VARCHAR(32) DEFAULT 'draft',
+                    report_json TEXT DEFAULT '{}',
+                    report_markdown TEXT DEFAULT '',
+                    source_summary TEXT DEFAULT '{}',
+                    generated_by VARCHAR(128) DEFAULT '',
+                    generated_at VARCHAR(64) NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_financing_diagnostic_reports_customer_id
+                ON customer_financing_diagnostic_reports(customer_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_financing_diagnostic_reports_generated_at
+                ON customer_financing_diagnostic_reports(generated_at)
+            ''')
+
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS table_fields (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     field_id VARCHAR(64) UNIQUE NOT NULL,
@@ -1311,6 +1337,148 @@ class LocalStorageService:
         """Get the most recent risk report snapshot for a customer."""
         reports = await self.list_customer_risk_reports(customer_id, limit=1)
         return reports[0] if reports else None
+
+    async def create_financing_diagnostic_report_snapshot(self, snapshot_data: dict) -> dict:
+        """Persist one customer financing diagnostic report snapshot."""
+        customer_id = snapshot_data.get("customer_id")
+        generated_at = snapshot_data.get("generated_at")
+        if not customer_id or not generated_at:
+            raise ValueError("customer_id and generated_at are required")
+
+        report_id = snapshot_data.get("report_id") or str(uuid.uuid4())[:12]
+        report_json = snapshot_data.get("report_json") or {}
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                INSERT INTO customer_financing_diagnostic_reports (
+                    report_id, customer_id, report_version, report_status,
+                    report_json, report_markdown, source_summary,
+                    generated_by, generated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    report_id,
+                    customer_id,
+                    snapshot_data.get("report_version") or "v1",
+                    snapshot_data.get("report_status") or "draft",
+                    json.dumps(report_json, ensure_ascii=False),
+                    snapshot_data.get("report_markdown") or "",
+                    json.dumps(snapshot_data.get("source_summary") or {}, ensure_ascii=False),
+                    snapshot_data.get("generated_by") or "",
+                    generated_at,
+                ),
+            )
+            conn.commit()
+            return {
+                "id": report_id,
+                "report_id": report_id,
+                "customer_id": customer_id,
+                "report_version": snapshot_data.get("report_version") or "v1",
+                "report_status": snapshot_data.get("report_status") or "draft",
+                "report_json": report_json,
+                "report_markdown": snapshot_data.get("report_markdown") or "",
+                "source_summary": snapshot_data.get("source_summary") or {},
+                "generated_by": snapshot_data.get("generated_by") or "",
+                "generated_at": generated_at,
+                "summary": str(
+                    (report_json.get("comprehensive_financing_advice") or {}).get("summary")
+                    or (report_json.get("financing_readiness") or {}).get("summary")
+                    or ""
+                ),
+            }
+        except sqlite3.Error as e:
+            conn.rollback()
+            raise RuntimeError(f"Failed to save financing diagnostic report snapshot: {e}") from e
+        finally:
+            conn.close()
+
+    async def list_financing_diagnostic_report_snapshots(self, customer_id: str, limit: int = 20) -> list[dict]:
+        """List financing diagnostic report snapshots for one customer."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                SELECT report_id, customer_id, report_version, report_status,
+                       report_json, report_markdown, source_summary, generated_by, generated_at
+                FROM customer_financing_diagnostic_reports
+                WHERE customer_id = ?
+                ORDER BY datetime(generated_at) DESC, id DESC
+                LIMIT ?
+                ''',
+                (customer_id, max(1, int(limit))),
+            )
+            rows = cursor.fetchall()
+            items: list[dict] = []
+            for row in rows:
+                report_json = json.loads(row[4]) if row[4] else {}
+                items.append(
+                    {
+                        "id": row[0],
+                        "report_id": row[0],
+                        "customer_id": row[1],
+                        "report_version": row[2] or "",
+                        "report_status": row[3] or "draft",
+                        "report_json": report_json,
+                        "report_markdown": row[5] or "",
+                        "source_summary": json.loads(row[6]) if row[6] else {},
+                        "generated_by": row[7] or "",
+                        "generated_at": row[8] or "",
+                        "summary": str(
+                            (report_json.get("comprehensive_financing_advice") or {}).get("summary")
+                            or (report_json.get("financing_readiness") or {}).get("summary")
+                            or ""
+                        ),
+                    }
+                )
+            return items
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to list financing diagnostic report snapshots: {e}") from e
+        finally:
+            conn.close()
+
+    async def get_financing_diagnostic_report_snapshot(self, customer_id: str, report_id: str) -> dict | None:
+        """Get one financing diagnostic report snapshot scoped by customer."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                SELECT report_id, customer_id, report_version, report_status,
+                       report_json, report_markdown, source_summary, generated_by, generated_at
+                FROM customer_financing_diagnostic_reports
+                WHERE customer_id = ? AND report_id = ?
+                LIMIT 1
+                ''',
+                (customer_id, report_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            report_json = json.loads(row[4]) if row[4] else {}
+            return {
+                "id": row[0],
+                "report_id": row[0],
+                "customer_id": row[1],
+                "report_version": row[2] or "",
+                "report_status": row[3] or "draft",
+                "report_json": report_json,
+                "report_markdown": row[5] or "",
+                "source_summary": json.loads(row[6]) if row[6] else {},
+                "generated_by": row[7] or "",
+                "generated_at": row[8] or "",
+                "summary": str(
+                    (report_json.get("comprehensive_financing_advice") or {}).get("summary")
+                    or (report_json.get("financing_readiness") or {}).get("summary")
+                    or ""
+                ),
+            }
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to get financing diagnostic report snapshot: {e}") from e
+        finally:
+            conn.close()
 
     async def get_customer_chunks(self, customer_id: str) -> list[dict]:
         """List all stored RAG chunks for a customer."""
