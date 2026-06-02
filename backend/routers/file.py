@@ -306,6 +306,9 @@ def _build_file_process_job_request_snapshot(
         "jobType": FILE_PROCESS_JOB_TYPE,
         "customerId": customer_id,
         "customerName": customer_name,
+        "documentType": document_type,
+        "fileName": original_filename,
+        "fileSize": file_size,
         "username": username,
         "files": [
             {
@@ -1310,16 +1313,20 @@ async def process_file(
 async def create_file_process_job(
     file: UploadFile = File(...),
     documentType: str | None = Form(default=None),
+    document_type: str | None = Form(default=None),
     customerId: str | None = Form(default=None),
+    customer_id: str | None = Form(default=None),
     customerName: str | None = Form(default=None),
+    customer_name: str | None = Form(default=None),
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
     if not HAS_DB_STORAGE or not HAS_ASYNC_JOB_STORAGE:
         raise HTTPException(status_code=503, detail="当前环境不支持上传异步任务，请切换到本地数据库存储。")
 
     file_bytes, _ = await _validate_and_read_file(file)
-    normalized_customer_id = (customerId or "").strip()
-    normalized_customer_name = str(customerName or "").strip()
+    requested_document_type = (documentType or document_type or "").strip()
+    normalized_customer_id = (customerId or customer_id or "").strip()
+    normalized_customer_name = str(customerName or customer_name or "").strip()
     if normalized_customer_id and not normalized_customer_name:
         normalized_customer_name = _derive_customer_name_from_customer_id(normalized_customer_id)
     logger.info(
@@ -1328,14 +1335,14 @@ async def create_file_process_job(
         len(file_bytes),
         normalized_customer_id,
         normalized_customer_name,
-        documentType or "",
+        requested_document_type,
     )
     job_id = uuid.uuid4().hex
     username = current_user.get("username") or "anonymous"
     role = current_user.get("role") or ""
     temp_file_path = _persist_upload_job_temp_file(job_id, file.filename or "uploaded_file", file_bytes)
     request_payload = _build_file_process_job_request_snapshot(
-        document_type=documentType or "",
+        document_type=requested_document_type,
         customer_id=normalized_customer_id,
         customer_name=normalized_customer_name,
         username=username,
@@ -1346,7 +1353,7 @@ async def create_file_process_job(
         job_id=job_id,
         temp_file_path=str(temp_file_path),
         original_filename=file.filename or "uploaded_file",
-        document_type=documentType or "",
+        document_type=requested_document_type,
         customer_id=normalized_customer_id,
         customer_name=normalized_customer_name,
         username=username,
@@ -1354,18 +1361,40 @@ async def create_file_process_job(
         file_size=len(file_bytes),
     )
 
-    await job_storage_service.create_async_job(
-        {
-            "job_id": job_id,
-            "job_type": FILE_PROCESS_JOB_TYPE,
-            "customer_id": normalized_customer_id,
-            "username": username,
-            "status": "pending",
-            "progress_message": "文件已接收，等待处理",
-            "request_json": request_payload,
-            "execution_payload_json": execution_payload,
-        }
-    )
+    try:
+        await job_storage_service.create_async_job(
+            {
+                "job_id": job_id,
+                "job_type": FILE_PROCESS_JOB_TYPE,
+                "customer_id": normalized_customer_id[:64],
+                "username": username,
+                "status": "pending",
+                "progress_message": "文件已接收，等待处理",
+                "request_json": request_payload,
+                "execution_payload_json": execution_payload,
+            }
+        )
+    except Exception as exc:
+        _cleanup_upload_job_temp_dir(job_id)
+        logger.error(
+            "[File Job Create] async_jobs create failed filename=%s file_size=%s customer_id=%s document_type=%s job_id=%s error=%s",
+            file.filename or "",
+            len(file_bytes),
+            normalized_customer_id,
+            requested_document_type,
+            job_id,
+            exc,
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "任务创建失败：async_jobs 写入失败",
+                "job_id": job_id,
+                "status": "failed",
+                "error_message": str(exc) or "async_jobs 创建失败",
+            },
+        )
     enqueue_success = False
     enqueue_error = ""
     celery_task_id = ""
@@ -1387,11 +1416,20 @@ async def create_file_process_job(
             file.filename or "",
             len(file_bytes),
             normalized_customer_id,
-            documentType or "",
+            requested_document_type,
             job_id,
             False,
             enqueue_error,
             exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "任务创建失败：后台队列不可用",
+                "job_id": job_id,
+                "status": "failed",
+                "error_message": enqueue_error,
+            },
         )
 
     logger.info(
@@ -1399,14 +1437,13 @@ async def create_file_process_job(
         file.filename or "",
         len(file_bytes),
         normalized_customer_id,
-        documentType or "",
+        requested_document_type,
         job_id,
         enqueue_success,
         celery_task_id,
     )
 
     return JSONResponse(content={
-        "jobId": job_id,
         "job_id": job_id,
         "status": "pending" if enqueue_success else "failed",
         "message": "文件已上传，正在后台处理" if enqueue_success else "文件已上传，但后台任务派发失败，请查看任务状态",

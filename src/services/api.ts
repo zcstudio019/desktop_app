@@ -142,6 +142,14 @@ export async function processFile(
   return handleResponse<FileProcessResponse>(response);
 }
 
+export function normalizeJobId(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return '';
+  const record = payload as Record<string, unknown>;
+  const nested = record.data && typeof record.data === 'object' ? record.data as Record<string, unknown> : {};
+  const candidate = record.job_id ?? record.jobId ?? record.id ?? nested.job_id ?? nested.jobId;
+  return typeof candidate === 'string' ? candidate.trim() : '';
+}
+
 export async function createFileProcessJob(
   file: File,
   options?: {
@@ -180,10 +188,33 @@ export async function createFileProcessJob(
     }
     throw new Error('上传任务创建失败，后端未成功返回 job_id，请检查服务日志');
   }
-  const created = await handleResponse<ChatJobCreateResponse>(response);
-  const jobId = created.jobId || created.job_id || '';
+  const responseText = await response.text();
+  let parsedBody: unknown = null;
+  try {
+    parsedBody = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    parsedBody = null;
+  }
+  const logPayload = {
+    status: response.status,
+    ok: response.ok,
+    body: parsedBody ?? responseText,
+  };
+  if (response.ok) {
+    console.debug('[UploadJob] create response', logPayload);
+  } else {
+    console.error('[UploadJob] create failed response', logPayload);
+  }
+  if (!response.ok) {
+    const errorBody = parsedBody && typeof parsedBody === 'object' ? parsedBody as Record<string, unknown> : {};
+    const message = String(errorBody.error_message || errorBody.detail || errorBody.message || response.statusText || '上传任务创建失败');
+    throw new ApiError(response.status, message, parsedBody ?? responseText);
+  }
+  const created = (parsedBody || {}) as ChatJobCreateResponse;
+  const jobId = normalizeJobId(created);
   if (!jobId) {
-    throw new Error('上传任务创建失败，后端未成功返回 job_id，请检查服务日志');
+    console.error('[UploadJob] create response missing job_id', created);
+    throw new Error('上传任务创建失败，后端返回格式异常');
   }
   return { ...created, jobId };
 }

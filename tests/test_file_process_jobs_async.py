@@ -65,7 +65,7 @@ async def test_process_jobs_returns_job_id_without_running_extraction(monkeypatc
     )
 
     body = response.body.decode("utf-8")
-    assert "jobId" in body
+    assert "job_id" in body
     assert "文件已上传，正在后台处理" in body
     assert called["extract"] is False
     assert len(fake_storage.jobs) == 1
@@ -91,7 +91,7 @@ async def test_process_jobs_collateral_returns_fast_job_id(monkeypatch: pytest.M
         current_user={"username": "operator", "role": "operator"},
     )
 
-    assert "jobId" in response.body.decode("utf-8")
+    assert "job_id" in response.body.decode("utf-8")
     job = next(iter(fake_storage.jobs.values()))
     assert job["execution_payload_json"]["documentType"] == "collateral"
 

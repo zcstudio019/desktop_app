@@ -503,9 +503,15 @@ export interface ChatSessionSummary {
 export interface ChatJobCreateResponse {
   jobId: string;
   job_id?: string;
+  id?: string;
+  data?: {
+    job_id?: string;
+    jobId?: string;
+  };
   status: 'pending' | 'running' | 'retrying' | 'success' | 'failed' | 'timeout' | 'interrupted' | string;
   message?: string;
   enqueue_success?: boolean;
+  error_message?: string;
 }
 
 export interface ChatIntentAsyncJob {
