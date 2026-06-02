@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .classifier import classify as classify_doc_type
+from .classifier import classify as classify_doc_type, classify_with_reason
 from .normalizer import normalize_result
 from .renderer import render_markdown
 from .schema import build_result, normalize_input
@@ -42,21 +42,26 @@ class KycDocumentAgent:
         self.save_results = save_results
         self.save_dir = Path(save_dir or "data/kyc_document_results")
 
-    def classify(self, text: str) -> str:
-        return classify_doc_type(text)
+    def classify(self, text: str, filename: str = "") -> str:
+        return classify_doc_type(text, filename=filename)
 
     def extract(self, payload: dict[str, Any] | str) -> dict[str, Any]:
         data = normalize_input(payload)
-        doc_type = self.classify(data["text"])
+        metadata = data.get("metadata") or {}
+        filename = str(metadata.get("filename") or metadata.get("source_file") or "")
+        classification = classify_with_reason(data["text"], filename=filename)
+        doc_type = classification["doc_type"]
         if doc_type == "unknown":
             result = build_result("unknown")
             result["raw_text_preview"] = data["text"][:240]
-            result["validation"]["warnings"].append("未识别到支持的KYC资料类型")
+            result["classification_reason"] = classification.get("reason") or "未命中支持的KYC资料关键词"
+            result["validation"]["warnings"].append("未识别到支持的KYC资料类型，请检查扫描件清晰度或人工选择资料类型")
             result["markdown"] = render_markdown(result)
             return result
 
         skill_module = importlib.import_module(SKILL_MODULES[doc_type])
         result = skill_module.extract(data)
+        result["classification_reason"] = classification.get("reason") or ""
         result = normalize_result(result)
         result = validate_result(result)
         result["markdown"] = render_markdown(result)

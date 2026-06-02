@@ -32,17 +32,36 @@ const FIELD_LABELS: Record<string, string> = {
   account_status: '账户状态',
   owner: '权利人',
   co_owners: '共有人',
-  certificate_number: '证书编号',
+  certificate_number: '权证编号',
   property_unit_number: '不动产单元号',
-  property_address: '房产地址',
+  property_address: '房地坐落',
   right_type: '权利类型',
-  right_nature: '权利性质',
+  right_nature: '权属性质',
   use_type: '用途',
   building_area: '建筑面积',
   land_area: '土地面积',
   total_area: '总面积',
   mortgage_status: '抵押状态',
   seizure_status: '查封状态',
+  权利人: '权利人',
+  共有人: '共有人',
+  权证编号: '权证编号',
+  房地坐落: '房地坐落',
+  权属性质: '权属性质',
+  使用权取得方式: '使用权取得方式',
+  土地用途: '土地用途',
+  宗地号: '宗地号',
+  宗地面积: '宗地面积',
+  使用权面积: '使用权面积',
+  土地使用期限: '土地使用期限',
+  室号或部位: '室号或部位',
+  建筑面积: '建筑面积',
+  建筑类型: '建筑类型',
+  房屋用途: '房屋用途',
+  总层数: '总层数',
+  竣工日期: '竣工日期',
+  登记日: '登记日',
+  填证单位: '填证单位',
   plate_number: '车牌号码',
   vehicle_owner: '车辆所有人',
   vehicle_type: '车辆类型',
@@ -105,7 +124,7 @@ const KycExtractionResult: React.FC<Props> = ({ result }) => {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-base font-semibold text-slate-900">{result.doc_type_name || 'KYC资料'}</div>
-          <div className="mt-1 text-xs text-slate-500">资料类型：{result.doc_type || 'unknown'}</div>
+          <div className="mt-1 text-xs text-slate-500">资料类型编码：{result.doc_type || 'unknown'}</div>
         </div>
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">{statusLabel}</span>

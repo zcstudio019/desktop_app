@@ -8985,13 +8985,13 @@ def extract_bank_statement_pdf_fields(
     }
 
 
-def _resolve_kyc_doc_type(text_content: str, declared_doc_type: str | None) -> str:
+def _resolve_kyc_doc_type(text_content: str, declared_doc_type: str | None, filename: str = "") -> str:
     normalized = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
     if normalized in KYC_LEGACY_DOC_TYPE_ALIASES:
         return KYC_LEGACY_DOC_TYPE_ALIASES[normalized]
     if normalized in KYC_DOC_TYPES:
         return normalized
-    classified = classify_kyc_document(text_content or "")
+    classified = classify_kyc_document(text_content or "", filename=filename)
     return classified if classified in KYC_DOC_TYPES else ""
 
 
@@ -9097,7 +9097,7 @@ def run_document_extraction(
     metadata: dict | None = None,
 ) -> dict[str, Any]:
     normalized_declared = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
-    kyc_doc_type = _resolve_kyc_doc_type(text, normalized_declared)
+    kyc_doc_type = _resolve_kyc_doc_type(text, normalized_declared, filename)
     if kyc_doc_type:
         return _build_kyc_structured_extraction(
             text,
@@ -9139,7 +9139,7 @@ def build_structured_extraction(
     normalized_code = normalize_document_type_code(document_type_code) or document_type_code
     rows = rows or []
     raw_pages = raw_pages or []
-    kyc_doc_type = _resolve_kyc_doc_type(text_content, normalized_code)
+    kyc_doc_type = _resolve_kyc_doc_type(text_content, normalized_code, filename)
     if kyc_doc_type:
         content = _build_kyc_structured_extraction(
             text_content,

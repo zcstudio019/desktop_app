@@ -33,6 +33,11 @@ from backend.services import get_storage_service, supports_structured_storage
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
 from backend.services.job_display_config import build_job_result_summary, get_job_target_page, get_job_type_label
 from backend.services.index_rebuild_service import IndexRebuildService
+from backend.services.kyc_document_agent.classifier import (
+    PROPERTY_KEYWORDS,
+    chinese_keyword_score,
+    is_low_chinese_quality,
+)
 from backend.services.markdown_profile_service import regenerate_customer_profile
 from backend.services.profile_sync_service import ProfileSyncService
 from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
@@ -387,6 +392,61 @@ def _ocr_pdf_pages(file_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
     return _build_raw_text_from_pages(raw_pages), raw_pages
 
 
+def _filename_suggests_property_cert(filename: str) -> bool:
+    return any(keyword in (filename or "") for keyword in ("产证", "房产证", "房地产权证", "不动产权证", "房本"))
+
+
+def _rotate_image_bytes(image_bytes: bytes, angle: int) -> bytes:
+    if angle == 0:
+        return image_bytes
+    with Image.open(BytesIO(image_bytes)) as image:
+        rotated = image.rotate(-angle, expand=True)
+        buffer = BytesIO()
+        rotated.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+
+def _score_property_ocr_text(text: str) -> int:
+    score = chinese_keyword_score(text, PROPERTY_KEYWORDS) * 10
+    score += len(re.findall(r"[\u4e00-\u9fff]", text or "")) // 20
+    score -= len(re.findall(r"[A-Za-z]{5,}", text or "")) // 3
+    return score
+
+
+def _ocr_pdf_pages_with_property_rotation(file_bytes: bytes, filename: str) -> tuple[str, list[dict[str, Any]]]:
+    images = file_service.pdf_to_images(file_bytes)
+    if not images:
+        raise HTTPException(status_code=400, detail=PDF_TO_IMAGE_FAILED_MESSAGE)
+
+    raw_pages: list[dict[str, Any]] = []
+    for index, img_bytes in enumerate(images, start=1):
+        best_text = ""
+        best_angle = 0
+        best_score = -10**9
+        for angle in (0, 90, 180, 270):
+            try:
+                rotated = _rotate_image_bytes(img_bytes, angle)
+                compressed = file_service.compress_image(rotated)
+                page_text = ocr_service.recognize_image(compressed)
+                score = _score_property_ocr_text(page_text)
+                if score > best_score:
+                    best_text = page_text
+                    best_angle = angle
+                    best_score = score
+            except OCRServiceError as exc:
+                logger.warning("Property OCR rotation failed page=%s angle=%s filename=%s error=%s", index, angle, filename, exc)
+            except Exception as exc:  # pragma: no cover - best-effort rotation OCR
+                logger.warning("Property OCR rotation failed page=%s angle=%s filename=%s error=%s", index, angle, filename, exc)
+        raw_pages.append({
+            "page": index,
+            "text": best_text or OCR_PAGE_FAILED_PLACEHOLDER,
+            "source": "ocr_rotated",
+            "rotation": best_angle,
+            "keyword_score": best_score,
+        })
+    return _build_raw_text_from_pages(raw_pages), raw_pages
+
+
 def _financial_report_needs_ocr_supplement(text_content: str, raw_pages: list[dict[str, Any]]) -> bool:
     if raw_pages and any(str(page.get("source") or "") == "ocr" for page in raw_pages if isinstance(page, dict)):
         return False
@@ -693,7 +753,15 @@ async def _extract_content_from_file(
                 logger.info("PDF text extraction invalid for %s, falling back to OCR", filename)
                 if progress_callback:
                     await progress_callback("正在 OCR 识别")
-                text_content, raw_pages = _ocr_pdf_pages(file_bytes)
+                if _filename_suggests_property_cert(filename):
+                    text_content, raw_pages = _ocr_pdf_pages_with_property_rotation(file_bytes, filename)
+                else:
+                    text_content, raw_pages = _ocr_pdf_pages(file_bytes)
+            elif _filename_suggests_property_cert(filename) and is_low_chinese_quality(text_content):
+                logger.info("PDF text Chinese quality low for property certificate %s, trying rotated OCR", filename)
+                if progress_callback:
+                    await progress_callback("正在 OCR 识别")
+                text_content, raw_pages = _ocr_pdf_pages_with_property_rotation(file_bytes, filename)
             return text_content, [], raw_pages
         if file_type == "image":
             if progress_callback:
