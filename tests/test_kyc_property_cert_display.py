@@ -167,16 +167,17 @@ def test_english_and_chinese_duplicate_fields_display_chinese_only():
 
 def test_frontend_kyc_component_uses_display_filter():
     source = Path("src/components/KycExtractionResult.tsx").read_text(encoding="utf-8")
+    util_source = Path("src/utils/kycDisplayFields.ts").read_text(encoding="utf-8")
 
-    assert "getKycDisplayFields" in source
+    assert "getKycDisplayEntries" in source
     assert "renderKycDisplayMarkdown" in source
     assert "{displayMarkdown}" in source
     assert "result.markdown" not in source
-    assert "权证编号" in source
+    assert "权证编号" in util_source
     assert "doc type" not in source.lower()
     assert "owner type" not in source.lower()
-    assert "certificate_number" in source
-    assert "property_address" in source
+    assert "certificate_number" in util_source
+    assert "property_address" in util_source
 
 
 def test_customer_profile_page_rerenders_legacy_property_cert_markdown():
@@ -187,4 +188,5 @@ def test_customer_profile_page_rerenders_legacy_property_cert_markdown():
     assert "renderKycPropertyDisplayMarkdown" in source
     assert "## 房产证/房地产权证" in source
     assert "getKycDisplayFields(fields, 'property_cert')" in source
-    assert "formatKycDisplayValue(value)" in source
+    display_source = source[source.index("function renderKycPropertyDisplayMarkdown"):source.index("function sanitizeProfileMarkdown")]
+    assert "- fields:" not in display_source

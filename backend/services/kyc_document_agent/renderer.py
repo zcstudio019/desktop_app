@@ -158,22 +158,9 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_markdown(result: dict[str, Any]) -> str:
-    doc_type = result.get("doc_type") or "unknown"
     doc_type_name = result.get("doc_type_name") or "未知资料"
-    metadata = result.get("metadata") or {}
-    filename = metadata.get("filename") or metadata.get("source_file") or result.get("filename") or result.get("source_file") or ""
-    agent_type = result.get("agent_type") or "kyc_document_agent"
     lines = [
         f"## {doc_type_name}",
-        "",
-        f"- 资料类型编码: {doc_type}",
-        f"- 资料名称: {doc_type_name}",
-        f"- 归属类型: {OWNER_TYPE_LABELS.get(str(result.get('owner_type') or 'unknown'), str(result.get('owner_type') or 'unknown'))}",
-        f"- 来源文件: {filename or '未记录'}",
-        "- 原件状态: 可查看",
-        f"- 提取状态: {STATUS_LABELS.get(str(result.get('extraction_status') or 'failed'), str(result.get('extraction_status') or 'failed'))}",
-        f"- 处理 Agent: {AGENT_LABELS.get(str(agent_type), str(agent_type))}",
-        f"- 置信度: {result.get('confidence', {}).get('overall', 0):.2f}",
         "",
         "### 关键字段",
     ]
@@ -182,30 +169,5 @@ def render_markdown(result: dict[str, Any]) -> str:
         for key, value in fields.items():
             lines.append(f"- {field_label(key)}: {_format_value(value)}")
     else:
-        lines.append("- 无")
-
-    lines.extend(["", "### 缺失字段"])
-    missing = result.get("missing_fields") or []
-    lines.append("- " + "、".join(field_label(str(item)) for item in missing) if missing else "- 无")
-
-    validation = result.get("validation") or {}
-    notices = (validation.get("errors") or []) + (validation.get("warnings") or [])
-    lines.extend(["", "### 校验提醒"])
-    if notices:
-        lines.extend(f"- {notice}" for notice in notices)
-    else:
-        lines.append("- 无")
-
-    lines.extend(["", "### 证据摘要"])
-    evidence = result.get("evidence") or {}
-    if evidence:
-        seen_evidence: set[str] = set()
-        for field, item in evidence.items():
-            display_field = ENGLISH_TO_CHINESE_FIELDS.get(str(field), str(field))
-            if display_field not in fields or display_field in seen_evidence or not isinstance(item, dict):
-                continue
-            seen_evidence.add(display_field)
-            lines.append(f"- {field_label(display_field)}: {item.get('evidence_text', '')}")
-    else:
-        lines.append("- 无")
+        lines.append("- 暂无可展示字段")
     return "\n".join(lines)

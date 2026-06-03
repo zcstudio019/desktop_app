@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ExtractionReviewResult } from '../services/types';
-import { formatKycDisplayValue, getKycDisplayFields, getKycFieldLabel } from './KycExtractionResult';
+import { formatKycDisplayValue, getKycDisplayEntries, getKycFieldLabel } from '../utils/kycDisplayFields';
 
 function valueText(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -30,8 +30,8 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
   const confirmedFields = review.confirmed_data?.confirmed_fields || {};
   const displayEntries = useMemo(() => {
     const merged = { ...extractedFields, ...(review.merged_fields || {}), ...confirmedFields };
-    return getKycDisplayFields(merged);
-  }, [confirmedFields, extractedFields, review.merged_fields]);
+    return getKycDisplayEntries(merged, review.doc_type);
+  }, [confirmedFields, extractedFields, review.doc_type, review.merged_fields]);
   const displayFieldMap = useMemo(() => Object.fromEntries(displayEntries), [displayEntries]);
   const fieldKeys = useMemo(() => displayEntries.map(([field]) => field), [displayEntries]);
   const [draftFields, setDraftFields] = useState<Record<string, string>>({});
@@ -54,11 +54,12 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
 
   const warnings = review.validation?.warnings || [];
   const errors = review.validation?.errors || [];
-  const evidenceEntries = getKycDisplayFields(
+  const evidenceEntries = getKycDisplayEntries(
     Object.fromEntries(Object.entries(review.evidence || {}).map(([field, item]) => {
       const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       return [field, record.evidence_text || record.value || ''];
-    }))
+    })),
+    review.doc_type
   ).slice(0, 8);
 
   return (

@@ -1,14 +1,14 @@
 import React from 'react';
 import type { CustomerKycProfile } from '../services/types';
-import { getKycFieldLabel } from './KycExtractionResult';
+import { formatKycDisplayValue, getKycFieldLabel } from '../utils/kycDisplayFields';
 
 function valueText(value: unknown): string {
   if (value === null || value === undefined || value === '') return '未识别';
   if (typeof value === 'object') {
     if (Array.isArray(value)) return value.length ? value.map(valueText).join('、') : '未识别';
     const record = value as Record<string, unknown>;
-    if ('amount' in record && 'unit' in record) return `${record.amount ?? ''}${record.unit ?? ''}`;
-    if ('value' in record && 'unit' in record) return `${record.value ?? ''}${record.unit ?? ''}`;
+    if ('amount' in record && 'unit' in record) return formatKycDisplayValue(value);
+    if ('value' in record && 'unit' in record) return formatKycDisplayValue(value);
   }
   return String(value);
 }

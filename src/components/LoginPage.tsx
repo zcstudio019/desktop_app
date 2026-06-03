@@ -2,7 +2,7 @@
 import { Wallet, Eye, EyeOff } from 'lucide-react';
 import { login, register, getSecurityQuestion, forgotPassword } from '../services/api';
 import { ApiError } from '../services/types';
-import { SYSTEM_INFO, getSystemVersionLabel } from '../config/systemInfo';
+import { SYSTEM_INFO } from '../config/systemInfo';
 import { BRAND } from '../config/brand';
 
 interface LoginPageProps {
@@ -211,8 +211,8 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
           <div className="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-500 shadow-lg">
             <Wallet size={32} className="text-white" />
           </div>
-          <h1 className="text-2xl font-bold text-gray-800">{SYSTEM_INFO.name}</h1>
-          <p className="mt-1 text-sm text-gray-500">{SYSTEM_INFO.subtitle}</p>
+          <h1 className="text-2xl font-bold text-gray-800">{BRAND.loginTitle}</h1>
+          <p className="mt-1 text-sm text-gray-500">{BRAND.loginSubtitle}</p>
         </div>
 
         <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-xl">
@@ -310,7 +310,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
         <div className="mt-6 space-y-1 text-center text-xs leading-5 text-gray-400">
           <p>主办单位：{BRAND.organizer}</p>
           <p>
-            © 2026 {BRAND.organizer} · {SYSTEM_INFO.name} · {SYSTEM_INFO.subtitle} · {getSystemVersionLabel()}
+            © 2026 {BRAND.organizer} · {SYSTEM_INFO.name} · {BRAND.loginSubtitle} · {BRAND.loginVersionLabel}
           </p>
           <p>
             <a href={BRAND.icpRecordUrl} rel="noreferrer" target="_blank" className="transition-colors hover:text-gray-500">

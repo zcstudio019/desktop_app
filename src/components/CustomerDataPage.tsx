@@ -42,7 +42,7 @@ import FinancingKycDiagnosticPanel from './FinancingKycDiagnosticPanel';
 import KycCompletenessPanel from './KycCompletenessPanel';
 import KycExtractionReview from './KycExtractionReview';
 import KycProfilePanel from './KycProfilePanel';
-import { formatKycDisplayValue, getKycDisplayFields, getKycFieldLabel } from './KycExtractionResult';
+import { getKycDisplayFields } from '../utils/kycDisplayFields';
 
 interface CustomerDataPageProps {
   onBack?: () => void;
@@ -2247,19 +2247,52 @@ function extractJsonObjectAfterIndex(text: string, startIndex: number): Record<s
 
 function extractLegacyKycFieldsFromMarkdownSection(section: string): Record<string, unknown> | null {
   const fieldsMatch = /(?:^|\n)\s*-?\s*fields\s*:/i.exec(section);
-  if (!fieldsMatch) return null;
-  return extractJsonObjectAfterIndex(section, fieldsMatch.index + fieldsMatch[0].length);
+  if (fieldsMatch) {
+    const parsed = extractJsonObjectAfterIndex(section, fieldsMatch.index + fieldsMatch[0].length);
+    if (parsed) return parsed;
+  }
+
+  const fallback: Record<string, unknown> = {};
+  [
+    '权利人',
+    '共有人',
+    '权证编号',
+    '房地坐落',
+    '权属性质',
+    '使用权取得方式',
+    '土地用途',
+    '宗地号',
+    '宗地面积',
+    '使用权面积',
+    '土地使用期限',
+    '室号或部位',
+    '建筑面积',
+    '建筑类型',
+    '房屋用途',
+    '总层数',
+    '竣工日期',
+    '登记日',
+    '填证单位',
+  ].forEach((label) => {
+    const pattern = new RegExp(`["'-]?${label}["']?\\s*[:：]\\s*["']?([^"',\\n}]+)`, 'i');
+    const match = section.match(pattern);
+    if (match?.[1]) {
+      fallback[label] = match[1].trim();
+    }
+  });
+  return Object.keys(fallback).length ? fallback : null;
 }
 
 function renderKycPropertyDisplayMarkdown(fields: Record<string, unknown>): string {
   const displayFields = getKycDisplayFields(fields, 'property_cert');
   const lines = ['## 房产证/房地产权证', ''];
-  if (displayFields.length === 0) {
+  const entries = Object.entries(displayFields);
+  if (entries.length === 0) {
     lines.push('- 暂无可展示字段');
     return lines.join('\n');
   }
-  displayFields.forEach(([field, value]) => {
-    lines.push(`- ${getKycFieldLabel(field)}: ${formatKycDisplayValue(value)}`);
+  entries.forEach(([field, value]) => {
+    lines.push(`- ${field}: ${value}`);
   });
   return lines.join('\n');
 }
@@ -2273,15 +2306,7 @@ function sanitizeKycPropertyMarkdownSections(markdown: string): string {
     const leadingNewline = matched.startsWith('\n') ? '\n' : '';
     const section = leadingNewline ? matched.slice(1) : matched;
     const fields = extractLegacyKycFieldsFromMarkdownSection(section);
-    if (fields) {
-      return `${leadingNewline}${renderKycPropertyDisplayMarkdown(fields)}`;
-    }
-
-    return `${leadingNewline}${section
-      .replace(/^##.*$/m, '## 房产证/房地产权证')
-      .replace(/(?:^|\n)\s*-?\s*(doc type|doc type name|owner type|fields|validation|confidence|missing fields|raw text preview|agent type)\s*:[\s\S]*?(?=\n\s*-\s*(?:doc type|doc type name|owner type|fields|validation|confidence|missing fields|raw text preview|agent type)\s*:|\n##\s|$)/gi, '')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()}`;
+    return `${leadingNewline}${renderKycPropertyDisplayMarkdown(fields || {})}`;
   });
 }
 
