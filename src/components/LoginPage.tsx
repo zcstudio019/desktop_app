@@ -2,7 +2,6 @@
 import { Wallet, Eye, EyeOff } from 'lucide-react';
 import { login, register, getSecurityQuestion, forgotPassword } from '../services/api';
 import { ApiError } from '../services/types';
-import { SYSTEM_INFO } from '../config/systemInfo';
 import { BRAND } from '../config/brand';
 
 interface LoginPageProps {
@@ -310,8 +309,9 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
         <div className="mt-6 space-y-1 text-center text-xs leading-5 text-gray-400">
           <p>主办单位：{BRAND.organizer}</p>
           <p>
-            © 2026 {BRAND.organizer} · {SYSTEM_INFO.name} · {BRAND.loginSubtitle} · {BRAND.loginVersionLabel}
+            © 2026 {BRAND.organizer} · {BRAND.loginSubtitle}
           </p>
+          <p>{BRAND.loginVersionLabel}</p>
           <p>
             <a href={BRAND.icpRecordUrl} rel="noreferrer" target="_blank" className="transition-colors hover:text-gray-500">
               {BRAND.icpRecord}
