@@ -5,7 +5,7 @@ export const SYSTEM_INFO = {
   name: BRAND.appName,
   subtitle: BRAND.subtitle,
   baseVersion: BUILD_INFO.version,
-  version: BUILD_INFO.version,
+  version: BRAND.version,
   releaseDate: BUILD_INFO.releaseDate,
   buildTime: BUILD_INFO.buildTime,
   commitHash: BUILD_INFO.commitHash,

@@ -2,6 +2,7 @@
 import { Wallet, Eye, EyeOff } from 'lucide-react';
 import { login, register, getSecurityQuestion, forgotPassword } from '../services/api';
 import { ApiError } from '../services/types';
+import { getSystemVersionLabel } from '../config/systemInfo';
 import { BRAND } from '../config/brand';
 
 interface LoginPageProps {
@@ -311,7 +312,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
           <p>
             © 2026 {BRAND.organizer} · {BRAND.loginSubtitle}
           </p>
-          <p>{BRAND.loginVersionLabel}</p>
+          <p>{getSystemVersionLabel()}</p>
           <p>
             <a href={BRAND.icpRecordUrl} rel="noreferrer" target="_blank" className="transition-colors hover:text-gray-500">
               {BRAND.icpRecord}
