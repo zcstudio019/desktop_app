@@ -90,6 +90,7 @@ function resolveDirectJobApiBase(): string {
 
 const API_BASE = resolveApiBase();
 const DIRECT_JOB_API_BASE = resolveDirectJobApiBase();
+export const FILE_JOB_CREATE_TIMEOUT_MS = 120000;
 
 function buildApiUrl(path: string): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -212,7 +213,7 @@ export async function createFileProcessJob(
   const timeoutId = window.setTimeout(() => {
     requestTimedOut = true;
     timeoutController.abort('timeout');
-  }, 15000);
+  }, FILE_JOB_CREATE_TIMEOUT_MS);
   const abortListener = () => timeoutController.abort('abort');
   signal?.addEventListener('abort', abortListener, { once: true });
   requestInit.signal = timeoutController.signal;
@@ -231,7 +232,7 @@ export async function createFileProcessJob(
       error,
     });
     if (requestTimedOut) {
-      throw new Error('创建上传任务超时，后端 jobs 接口没有及时返回 job_id。请检查 [FileJobCreate] 分段日志。');
+      throw new Error('文件上传超时，请检查网络或稍后重试');
     }
     throw new Error('上传任务请求未到达后端或后端未响应，请检查 Nginx/接口日志。');
   } finally {

@@ -638,8 +638,8 @@ function resolveUploadStage(
     return { stage: 'failed', stageLabel: '失败', description: message || '处理失败' };
   }
 
-  if (message.includes('文件上传中')) {
-    return { stage: 'uploading', stageLabel: '文件上传中', description: '文件上传中' };
+  if (message.includes('文件上传中') || message.includes('文件正在上传并创建处理任务')) {
+    return { stage: 'uploading', stageLabel: '文件上传中', description: message || '文件正在上传并创建处理任务，请稍候...' };
   }
 
   if (!message || message.includes('文件已接收') || message.includes('等待处理')) {
@@ -676,7 +676,7 @@ function getProgressFromJobStatus(status: ChatJobStatusResponse, currentProgress
   if (status.status === 'success') return 100;
   if (status.status === 'failed') return currentProgress;
   if (status.status === 'pending') return 10;
-  if (message.includes('文件上传中')) return 20;
+  if (message.includes('文件上传中') || message.includes('文件正在上传并创建处理任务')) return 20;
   if (message.includes('文件已接收')) return 20;
   if (message.includes('正在解析文件')) return 30;
   if (/ocr/i.test(message) || message.includes('OCR')) return 40;
@@ -1032,7 +1032,7 @@ const UploadPage: React.FC = () => {
   const processQueueItem = useCallback(async (item: QueueItem, customerNameOverride: string): Promise<void> => {
     const signal = getSignal();
     setUploadQueue((prev) => prev.map((q) => 
-      q.id === item.id ? { ...q, status: 'processing' as const, progress: 10, progressMessage: '文件上传中...' } : q
+      q.id === item.id ? { ...q, status: 'processing' as const, progress: 10, progressMessage: '文件正在上传并创建处理任务，请稍候...' } : q
     ));
 
     try {
@@ -1077,7 +1077,7 @@ const UploadPage: React.FC = () => {
             jobId: createdJob.jobId,
             status: 'processing' as const,
             progress: 20,
-            progressMessage: createdJob.message || '文件上传完成，后台处理中',
+            progressMessage: createdJob.message || '文件已上传，正在后台 OCR/提取...',
           }
           : q
       ));
@@ -1093,7 +1093,7 @@ const UploadPage: React.FC = () => {
               jobId: createdJob.jobId,
               status: jobStatus.status === 'failed' ? 'error' as const : jobStatus.status === 'success' ? 'success' as const : 'processing' as const,
               progress: getProgressFromJobStatus(jobStatus, q.progress),
-              progressMessage: jobStatus.progressMessage || '后台处理中',
+              progressMessage: jobStatus.progressMessage || '文件已上传，正在后台 OCR/提取...',
               error: jobStatus.status === 'failed' ? (jobStatus.errorMessage || '处理失败') : undefined,
             }
             : q

@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageEnhance, ImageOps
+from starlette.requests import ClientDisconnect
 
 desktop_app_path = Path(__file__).parent.parent.parent
 if str(desktop_app_path) not in sys.path:
@@ -1339,7 +1340,18 @@ async def create_file_process_job(
         raise HTTPException(status_code=503, detail="当前环境不支持上传异步任务，请切换到本地数据库存储。")
 
     log_step("form_read_start")
-    form = await request.form()
+    try:
+        form = await request.form()
+    except ClientDisconnect:
+        logger.warning(
+            "[FileJobCreate] client_disconnected_during_form_read cost_ms=%s customer_id=%s document_type=%s filename=%s file_size=%s",
+            round((time.perf_counter() - start_time) * 1000, 2),
+            normalized_customer_id,
+            requested_document_type,
+            filename,
+            file_size,
+        )
+        raise HTTPException(status_code=499, detail="客户端在文件上传过程中断开连接，请重新上传")
     file_value = form.get("file")
     if not hasattr(file_value, "read") or not hasattr(file_value, "filename"):
         raise HTTPException(status_code=400, detail=NO_FILENAME_MESSAGE)
