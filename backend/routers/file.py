@@ -11,13 +11,14 @@ import logging
 import re
 import shutil
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageEnhance, ImageOps
 
@@ -1311,35 +1312,52 @@ async def process_file(
 
 @router.post("/process/jobs", response_model=ChatJobCreateResponse)
 async def create_file_process_job(
-    file: UploadFile = File(...),
-    documentType: str | None = Form(default=None),
-    document_type: str | None = Form(default=None),
-    customerId: str | None = Form(default=None),
-    customer_id: str | None = Form(default=None),
-    customerName: str | None = Form(default=None),
-    customer_name: str | None = Form(default=None),
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
-    requested_document_type = (documentType or document_type or "").strip()
-    normalized_customer_id = (customerId or customer_id or "").strip()
-    normalized_customer_name = str(customerName or customer_name or "").strip()
-    logger.info(
-        "[FileJobCreate] route_enter filename=%s customer_id=%s customer_name=%s document_type=%s",
-        file.filename or "",
-        normalized_customer_id,
-        normalized_customer_name,
-        requested_document_type,
-    )
+    start_time = time.perf_counter()
+    filename = ""
+    file_size = 0
+    requested_document_type = ""
+    normalized_customer_id = ""
+    normalized_customer_name = ""
+
+    def log_step(step: str) -> None:
+        logger.info(
+            "[FileJobCreate] step=%s cost_ms=%s customer_id=%s document_type=%s filename=%s file_size=%s",
+            step,
+            round((time.perf_counter() - start_time) * 1000, 2),
+            normalized_customer_id,
+            requested_document_type,
+            filename,
+            file_size,
+        )
+
+    log_step("route_enter")
+    log_step("auth_done")
     if not HAS_DB_STORAGE or not HAS_ASYNC_JOB_STORAGE:
         raise HTTPException(status_code=503, detail="当前环境不支持上传异步任务，请切换到本地数据库存储。")
 
+    log_step("form_read_start")
+    form = await request.form()
+    file_value = form.get("file")
+    if not hasattr(file_value, "read") or not hasattr(file_value, "filename"):
+        raise HTTPException(status_code=400, detail=NO_FILENAME_MESSAGE)
+    file = file_value
+    requested_document_type = str(form.get("documentType") or form.get("document_type") or "").strip()
+    normalized_customer_id = str(form.get("customerId") or form.get("customer_id") or "").strip()
+    normalized_customer_name = str(form.get("customerName") or form.get("customer_name") or "").strip()
+    filename = file.filename or ""
+    log_step("form_read_done")
+
     file_bytes, _ = await _validate_and_read_file(file)
+    file_size = len(file_bytes)
     if normalized_customer_id and not normalized_customer_name:
         normalized_customer_name = _derive_customer_name_from_customer_id(normalized_customer_id)
     logger.info(
         "[File Job Create] received filename=%s file_size=%s customer_id=%s customer_name=%s document_type=%s",
-        file.filename or "",
-        len(file_bytes),
+        filename,
+        file_size,
         normalized_customer_id,
         normalized_customer_name,
         requested_document_type,
@@ -1347,28 +1365,33 @@ async def create_file_process_job(
     job_id = uuid.uuid4().hex
     username = current_user.get("username") or "anonymous"
     role = current_user.get("role") or ""
-    temp_file_path = _persist_upload_job_temp_file(job_id, file.filename or "uploaded_file", file_bytes)
+    log_step("file_save_start")
+    temp_file_path = _persist_upload_job_temp_file(job_id, filename or "uploaded_file", file_bytes)
+    log_step("file_save_done")
+    log_step("create_document_start")
+    log_step("create_document_done")
     request_payload = _build_file_process_job_request_snapshot(
         document_type=requested_document_type,
         customer_id=normalized_customer_id,
         customer_name=normalized_customer_name,
         username=username,
-        original_filename=file.filename or "uploaded_file",
-        file_size=len(file_bytes),
+        original_filename=filename or "uploaded_file",
+        file_size=file_size,
     )
     execution_payload = _build_file_process_job_execution_payload(
         job_id=job_id,
         temp_file_path=str(temp_file_path),
-        original_filename=file.filename or "uploaded_file",
+        original_filename=filename or "uploaded_file",
         document_type=requested_document_type,
         customer_id=normalized_customer_id,
         customer_name=normalized_customer_name,
         username=username,
         role=role,
-        file_size=len(file_bytes),
+        file_size=file_size,
     )
 
     try:
+        log_step("create_job_start")
         await job_storage_service.create_async_job(
             {
                 "job_id": job_id,
@@ -1381,12 +1404,13 @@ async def create_file_process_job(
                 "execution_payload_json": execution_payload,
             }
         )
+        log_step("create_job_done")
     except Exception as exc:
         _cleanup_upload_job_temp_dir(job_id)
         logger.error(
             "[File Job Create] async_jobs create failed filename=%s file_size=%s customer_id=%s document_type=%s job_id=%s error=%s",
-            file.filename or "",
-            len(file_bytes),
+            filename,
+            file_size,
             normalized_customer_id,
             requested_document_type,
             job_id,
@@ -1406,7 +1430,9 @@ async def create_file_process_job(
     enqueue_error = ""
     celery_task_id = ""
     try:
+        log_step("enqueue_start")
         enqueue_success, enqueue_error, celery_task_id = await _dispatch_file_process_job(job_id, {"username": username, "role": role}, normalized_customer_id)
+        log_step("enqueue_done")
     except Exception as exc:
         enqueue_error = str(exc) or "上传处理任务派发失败"
         await job_storage_service.update_async_job(
@@ -1420,8 +1446,8 @@ async def create_file_process_job(
         )
         logger.error(
             "[File Job Create] enqueue failed filename=%s file_size=%s customer_id=%s document_type=%s job_id=%s enqueue_success=%s error=%s",
-            file.filename or "",
-            len(file_bytes),
+            filename,
+            file_size,
             normalized_customer_id,
             requested_document_type,
             job_id,
@@ -1441,14 +1467,15 @@ async def create_file_process_job(
 
     logger.info(
         "[File Job Create] created filename=%s file_size=%s customer_id=%s document_type=%s job_id=%s enqueue_success=%s celery_task_id=%s",
-        file.filename or "",
-        len(file_bytes),
+        filename,
+        file_size,
         normalized_customer_id,
         requested_document_type,
         job_id,
         enqueue_success,
         celery_task_id,
     )
+    log_step("response_return")
 
     return JSONResponse(content={
         "job_id": job_id,

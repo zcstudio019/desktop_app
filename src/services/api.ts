@@ -208,7 +208,11 @@ export async function createFileProcessJob(
     console.error('[UploadJob] unexpected create request url', requestUrl);
   }
   const timeoutController = new AbortController();
-  const timeoutId = window.setTimeout(() => timeoutController.abort('timeout'), 60000);
+  let requestTimedOut = false;
+  const timeoutId = window.setTimeout(() => {
+    requestTimedOut = true;
+    timeoutController.abort('timeout');
+  }, 15000);
   const abortListener = () => timeoutController.abort('abort');
   signal?.addEventListener('abort', abortListener, { once: true });
   requestInit.signal = timeoutController.signal;
@@ -226,6 +230,9 @@ export async function createFileProcessJob(
       filename: file.name,
       error,
     });
+    if (requestTimedOut) {
+      throw new Error('创建上传任务超时，后端 jobs 接口没有及时返回 job_id。请检查 [FileJobCreate] 分段日志。');
+    }
     throw new Error('上传任务请求未到达后端或后端未响应，请检查 Nginx/接口日志。');
   } finally {
     window.clearTimeout(timeoutId);
