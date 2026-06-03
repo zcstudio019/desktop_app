@@ -137,7 +137,7 @@ const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
   issuing_unit: '填证单位',
 };
 
-const INVALID_DISPLAY_VALUES = new Set(['', '对', '的合法权益，对', '无', '未识别']);
+const INVALID_DISPLAY_VALUES = new Set(['', '对', '的合法权益，对', '无', '未识别', 'null', 'none']);
 const INVALID_DISPLAY_KEYWORDS = ['合法权益', '房地产权利人', '本证是证明', '根据', '法律'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -148,11 +148,16 @@ function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '未识别';
   if (Array.isArray(value)) return value.length > 0 ? value.map(formatValue).join('、') : '未识别';
   if (isRecord(value)) {
-    if ('amount' in value && 'unit' in value) return `${value.amount ?? ''}${value.unit ?? ''}`;
-    if ('value' in value && 'unit' in value) return `${value.value ?? ''}${value.unit ?? ''}`;
+    if ('amount' in value && 'unit' in value) return `${value.amount ?? ''} ${value.unit ?? ''}`.trim();
+    if ('value' in value && 'unit' in value) return `${value.value ?? ''} ${value.unit ?? ''}`.trim();
     return Object.entries(value).map(([key, item]) => `${FIELD_LABELS[key] ?? key}: ${formatValue(item)}`).join('，');
   }
-  return String(value);
+  const text = String(value);
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(text)) {
+    const [year, month, day] = text.split('-');
+    return `${year}年${Number(month)}月${Number(day)}日`;
+  }
+  return text;
 }
 
 function isInvalidDisplayValue(value: unknown): boolean {
@@ -161,6 +166,17 @@ function isInvalidDisplayValue(value: unknown): boolean {
   if (isRecord(value)) return Object.keys(value).length === 0;
   const text = formatValue(value).trim();
   return INVALID_DISPLAY_VALUES.has(text) || INVALID_DISPLAY_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function isInvalidForDisplayField(field: string, value: unknown): boolean {
+  const text = formatValue(value).trim();
+  if (field === '竣工日期') {
+    return !text.includes('年') && !/^\d{4}-\d{1,2}-\d{1,2}$/.test(text);
+  }
+  if (field === '房屋用途') {
+    return ['住宅用地', '城镇住宅用地', '住宅用地/居住用地'].includes(text);
+  }
+  return false;
 }
 
 export function isKycExtractionResult(value: unknown): value is KycExtractionResultType {
@@ -172,7 +188,7 @@ export function getKycFieldLabel(field: string): string {
   return FIELD_LABELS[field] ?? ENGLISH_TO_CHINESE_FIELDS[field] ?? field;
 }
 
-export function getKycDisplayFields(fields: Record<string, unknown> | undefined | null): Array<[string, unknown]> {
+export function getKycDisplayFields(fields: Record<string, unknown> | undefined | null, _docType?: string): Array<[string, unknown]> {
   if (!fields || typeof fields !== 'object') return [];
   const display = new Map<string, unknown>();
   const orderedKeys = [...PROPERTY_FIELD_ORDER, ...Object.keys(ENGLISH_TO_CHINESE_FIELDS)];
@@ -181,16 +197,38 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
     const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
     if (display.has(label)) return;
     const value = fields[key];
-    if (isInvalidDisplayValue(value)) return;
+    if (isInvalidDisplayValue(value) || isInvalidForDisplayField(label, value)) return;
     display.set(label, value);
   });
   Object.entries(fields).forEach(([key, value]) => {
     const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
     if (display.has(label) || key in ENGLISH_TO_CHINESE_FIELDS) return;
-    if (isInvalidDisplayValue(value)) return;
+    if (isInvalidDisplayValue(value) || isInvalidForDisplayField(label, value)) return;
     display.set(label, value);
   });
   return Array.from(display.entries());
+}
+
+function renderKycDisplayMarkdown(result: KycExtractionResultType, fields: Array<[string, unknown]>): string {
+  const lines = [
+    `## ${result.doc_type_name || 'KYC资料'}`,
+    '',
+    `- 资料类型编码: ${result.doc_type || 'unknown'}`,
+    `- 资料名称: ${result.doc_type_name || 'KYC资料'}`,
+    `- 归属类型: ${result.owner_type === 'asset' ? '资产资料' : result.owner_type || '未知'}`,
+    `- 提取状态: ${result.extraction_status === 'success' ? '成功' : result.extraction_status === 'partial' ? '部分成功' : '失败'}`,
+    '- 处理 Agent: KYC资料识别',
+    '',
+    '### 关键字段',
+  ];
+  if (fields.length) {
+    fields.forEach(([field, value]) => {
+      lines.push(`- ${getKycFieldLabel(field)}: ${formatValue(value)}`);
+    });
+  } else {
+    lines.push('- 无');
+  }
+  return lines.join('\n');
 }
 
 interface Props {
@@ -198,7 +236,8 @@ interface Props {
 }
 
 const KycExtractionResult: React.FC<Props> = ({ result }) => {
-  const fields = getKycDisplayFields(result.fields || {});
+  const fields = getKycDisplayFields(result.fields || {}, result.doc_type);
+  const displayMarkdown = renderKycDisplayMarkdown(result, fields);
   const warnings = result.validation?.warnings || [];
   const errors = result.validation?.errors || [];
   const displayFieldNames = new Set(fields.map(([field]) => field));
@@ -230,8 +269,9 @@ const KycExtractionResult: React.FC<Props> = ({ result }) => {
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             {fields.map(([field, value]) => (
               <div key={field} className="rounded-md border border-slate-200 bg-white px-3 py-2">
-                <div className="text-xs text-slate-500">{getKycFieldLabel(field)}</div>
-                <div className="mt-1 break-words font-medium text-slate-900">{formatValue(value)}</div>
+                <div className="break-words font-medium text-slate-900">
+                  <span className="text-slate-500">{getKycFieldLabel(field)}：</span>{formatValue(value)}
+                </div>
               </div>
             ))}
           </div>
@@ -284,11 +324,11 @@ const KycExtractionResult: React.FC<Props> = ({ result }) => {
         </div>
       )}
 
-      {result.markdown ? (
+      {displayMarkdown ? (
         <div>
           <div className="mb-2 font-medium text-slate-900">Markdown预览</div>
           <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-100">
-            {result.markdown}
+            {displayMarkdown}
           </pre>
         </div>
       ) : null}

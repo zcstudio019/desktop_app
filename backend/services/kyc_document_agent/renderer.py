@@ -67,7 +67,7 @@ AGENT_LABELS = {
     "kyc_document_agent": "KYC资料识别",
 }
 
-INVALID_DISPLAY_VALUES = {"", "对", "的合法权益，对", "无", "未识别"}
+INVALID_DISPLAY_VALUES = {"", "对", "的合法权益，对", "无", "未识别", "null", "None", "none"}
 INVALID_DISPLAY_KEYWORDS = ("合法权益", "房地产权利人", "本证是证明", "根据", "法律")
 
 FIELD_LABELS = {
@@ -112,12 +112,30 @@ def _is_empty_or_invalid(value: Any) -> bool:
     return any(keyword in text for keyword in INVALID_DISPLAY_KEYWORDS)
 
 
+def _is_invalid_for_display_field(field: str, value: Any) -> bool:
+    text = _format_value(value).strip()
+    if field == "竣工日期":
+        return not ("年" in text or (len(text) == 10 and text[4] == "-" and text[7] == "-"))
+    if field == "房屋用途":
+        return text in {"住宅用地", "城镇住宅用地", "住宅用地/居住用地"}
+    return False
+
+
 def _format_value(value: Any) -> str:
     if isinstance(value, list):
         return "、".join(str(item) for item in value if item not in ("", None)) or "未识别"
     if isinstance(value, dict):
+        if "value" in value and "unit" in value:
+            return f"{value.get('value') or ''} {value.get('unit') or ''}".strip()
+        if "amount" in value and "unit" in value:
+            return f"{value.get('amount') or ''} {value.get('unit') or ''}".strip()
         return "，".join(f"{field_label(str(key))}: {_format_value(item)}" for key, item in value.items())
-    return str(value)
+    text = str(value)
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        year, month, day = text.split("-")
+        if year.isdigit() and month.isdigit() and day.isdigit():
+            return f"{year}年{int(month)}月{int(day)}日"
+    return text
 
 
 def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
@@ -134,7 +152,7 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
         if display_key in display_fields:
             continue
         value = fields.get(source_key)
-        if _is_empty_or_invalid(value):
+        if _is_empty_or_invalid(value) or _is_invalid_for_display_field(display_key, value):
             continue
         display_fields[display_key] = value
 
@@ -142,7 +160,7 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
         display_key = ENGLISH_TO_CHINESE_FIELDS.get(str(source_key), str(source_key))
         if display_key in display_fields or source_key in ENGLISH_TO_CHINESE_FIELDS:
             continue
-        if _is_empty_or_invalid(value):
+        if _is_empty_or_invalid(value) or _is_invalid_for_display_field(display_key, value):
             continue
         display_fields[display_key] = value
     return display_fields
