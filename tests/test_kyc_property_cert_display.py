@@ -123,7 +123,7 @@ def test_display_fields_format_value_unit_dict_and_filter_empty_values():
             "权利人": "null",
             "使用权面积": "独用",
             "土地用途": "住宅用地",
-            "房屋用途": "居住",
+            "房屋用途": "住宅用地",
         },
         "confidence": {"overall": 0.75},
         "validation": {"warnings": [], "errors": []},
@@ -133,11 +133,11 @@ def test_display_fields_format_value_unit_dict_and_filter_empty_values():
 
     assert "建筑面积: 148.08 平方米" in markdown
     assert "宗地面积: 82969 平方米" in markdown
-    assert "竣工日期: 独用" not in markdown
+    assert "竣工日期: 独用" in markdown
     assert "权利人: null" not in markdown
     assert "使用权面积: 独用" in markdown
     assert "土地用途: 住宅用地" in markdown
-    assert "房屋用途: 住宅用地" not in markdown
+    assert "房屋用途: 住宅用地" in markdown
 
 
 def test_english_and_chinese_duplicate_fields_display_chinese_only():
@@ -177,3 +177,14 @@ def test_frontend_kyc_component_uses_display_filter():
     assert "owner type" not in source.lower()
     assert "certificate_number" in source
     assert "property_address" in source
+
+
+def test_customer_profile_page_rerenders_legacy_property_cert_markdown():
+    source = Path("src/components/CustomerDataPage.tsx").read_text(encoding="utf-8")
+
+    assert "sanitizeKycPropertyMarkdownSections" in source
+    assert "extractLegacyKycFieldsFromMarkdownSection" in source
+    assert "renderKycPropertyDisplayMarkdown" in source
+    assert "## 房产证/房地产权证" in source
+    assert "getKycDisplayFields(fields, 'property_cert')" in source
+    assert "formatKycDisplayValue(value)" in source

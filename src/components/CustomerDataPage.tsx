@@ -42,6 +42,7 @@ import FinancingKycDiagnosticPanel from './FinancingKycDiagnosticPanel';
 import KycCompletenessPanel from './KycCompletenessPanel';
 import KycExtractionReview from './KycExtractionReview';
 import KycProfilePanel from './KycProfilePanel';
+import { formatKycDisplayValue, getKycDisplayFields, getKycFieldLabel } from './KycExtractionResult';
 
 interface CustomerDataPageProps {
   onBack?: () => void;
@@ -2203,7 +2204,89 @@ function sortDocumentsWithinGroup(items: CustomerDocumentListItem[]): CustomerDo
   });
 }
 
+function extractJsonObjectAfterIndex(text: string, startIndex: number): Record<string, unknown> | null {
+  const objectStart = text.indexOf('{', startIndex);
+  if (objectStart < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = objectStart; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        const rawJson = text.slice(objectStart, index + 1);
+        try {
+          const parsed = JSON.parse(rawJson);
+          return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function extractLegacyKycFieldsFromMarkdownSection(section: string): Record<string, unknown> | null {
+  const fieldsMatch = /(?:^|\n)\s*-?\s*fields\s*:/i.exec(section);
+  if (!fieldsMatch) return null;
+  return extractJsonObjectAfterIndex(section, fieldsMatch.index + fieldsMatch[0].length);
+}
+
+function renderKycPropertyDisplayMarkdown(fields: Record<string, unknown>): string {
+  const displayFields = getKycDisplayFields(fields, 'property_cert');
+  const lines = ['## 房产证/房地产权证', ''];
+  if (displayFields.length === 0) {
+    lines.push('- 暂无可展示字段');
+    return lines.join('\n');
+  }
+  displayFields.forEach(([field, value]) => {
+    lines.push(`- ${getKycFieldLabel(field)}: ${formatKycDisplayValue(value)}`);
+  });
+  return lines.join('\n');
+}
+
+function sanitizeKycPropertyMarkdownSections(markdown: string): string {
+  if (!markdown || !/(##\s*property_cert|doc\s*type\s*:\s*property_cert|certificate_number|property_address|building_area)/i.test(markdown)) {
+    return markdown;
+  }
+
+  return markdown.replace(/(^|\n)##\s*(?:property_cert|房产证\/房地产权证)[^\n]*[\s\S]*?(?=\n##\s|$)/g, (matched) => {
+    const leadingNewline = matched.startsWith('\n') ? '\n' : '';
+    const section = leadingNewline ? matched.slice(1) : matched;
+    const fields = extractLegacyKycFieldsFromMarkdownSection(section);
+    if (fields) {
+      return `${leadingNewline}${renderKycPropertyDisplayMarkdown(fields)}`;
+    }
+
+    return `${leadingNewline}${section
+      .replace(/^##.*$/m, '## 房产证/房地产权证')
+      .replace(/(?:^|\n)\s*-?\s*(doc type|doc type name|owner type|fields|validation|confidence|missing fields|raw text preview|agent type)\s*:[\s\S]*?(?=\n\s*-\s*(?:doc type|doc type name|owner type|fields|validation|confidence|missing fields|raw text preview|agent type)\s*:|\n##\s|$)/gi, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()}`;
+  });
+}
+
 function sanitizeProfileMarkdown(markdown: string): string {
+  const kycSanitizedMarkdown = sanitizeKycPropertyMarkdownSections(markdown);
   const invalidLegalPersonValues = [
     '姓名或者名称',
     '姓名或名称',
@@ -2279,7 +2362,7 @@ function sanitizeProfileMarkdown(markdown: string): string {
       invalidLegalPersonValues.reduce((current, value) => (
         current.replace(new RegExp(`(- ${roleLabel}：)\\s*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'gm'), '$1暂无')
       ), roleCurrent)
-    ), markdown);
+    ), kycSanitizedMarkdown);
     const sanitizedRoleFragmentMarkdown = roleLabels.reduce((current, roleLabel) => (
       current.replace(
         new RegExp(`(- ${roleLabel}：)[^\\n]*(制度|印章|用章|动用|使用|印鉴)[^\\n]*`, 'g'),
@@ -2293,7 +2376,7 @@ function sanitizeProfileMarkdown(markdown: string): string {
       )
     ), sanitizedRoleFragmentMarkdown);
 
-    return markdown
+    return kycSanitizedMarkdown
       ? sanitizedBusinessFragmentMarkdown
       .replace(/^>.*customer_id=.*$/gm, '')
     .replace(/^- 客户ID：.*$/gm, '')
@@ -3014,9 +3097,11 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
     [companyArticlesShareholderViews]
   );
   const renderedDraft = useMemo(
-    () => synchronizeHukouMarkdown(
-      synchronizeCompanyArticlesMarkdown(draft, companyArticlesInsight, companyArticlesEquityRatioSummary),
-      hukouInsight,
+    () => sanitizeKycPropertyMarkdownSections(
+      synchronizeHukouMarkdown(
+        synchronizeCompanyArticlesMarkdown(draft, companyArticlesInsight, companyArticlesEquityRatioSummary),
+        hukouInsight,
+      )
     ),
     [draft, companyArticlesInsight, companyArticlesEquityRatioSummary, hukouInsight]
   );

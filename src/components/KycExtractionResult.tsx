@@ -144,13 +144,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-function formatValue(value: unknown): string {
+export function formatKycDisplayValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '未识别';
-  if (Array.isArray(value)) return value.length > 0 ? value.map(formatValue).join('、') : '未识别';
+  if (Array.isArray(value)) return value.length > 0 ? value.map(formatKycDisplayValue).join('、') : '未识别';
   if (isRecord(value)) {
     if ('amount' in value && 'unit' in value) return `${value.amount ?? ''} ${value.unit ?? ''}`.trim();
     if ('value' in value && 'unit' in value) return `${value.value ?? ''} ${value.unit ?? ''}`.trim();
-    return Object.entries(value).map(([key, item]) => `${FIELD_LABELS[key] ?? key}: ${formatValue(item)}`).join('，');
+    return Object.entries(value).map(([key, item]) => `${FIELD_LABELS[key] ?? key}: ${formatKycDisplayValue(item)}`).join('，');
   }
   const text = String(value);
   if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(text)) {
@@ -164,19 +164,8 @@ function isInvalidDisplayValue(value: unknown): boolean {
   if (value === null || value === undefined) return true;
   if (Array.isArray(value)) return value.length === 0 || value.every(isInvalidDisplayValue);
   if (isRecord(value)) return Object.keys(value).length === 0;
-  const text = formatValue(value).trim();
+  const text = formatKycDisplayValue(value).trim();
   return INVALID_DISPLAY_VALUES.has(text) || INVALID_DISPLAY_KEYWORDS.some((keyword) => text.includes(keyword));
-}
-
-function isInvalidForDisplayField(field: string, value: unknown): boolean {
-  const text = formatValue(value).trim();
-  if (field === '竣工日期') {
-    return !text.includes('年') && !/^\d{4}-\d{1,2}-\d{1,2}$/.test(text);
-  }
-  if (field === '房屋用途') {
-    return ['住宅用地', '城镇住宅用地', '住宅用地/居住用地'].includes(text);
-  }
-  return false;
 }
 
 export function isKycExtractionResult(value: unknown): value is KycExtractionResultType {
@@ -197,19 +186,19 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
     const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
     if (display.has(label)) return;
     const value = fields[key];
-    if (isInvalidDisplayValue(value) || isInvalidForDisplayField(label, value)) return;
+    if (isInvalidDisplayValue(value)) return;
     display.set(label, value);
   });
   Object.entries(fields).forEach(([key, value]) => {
     const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
     if (display.has(label) || key in ENGLISH_TO_CHINESE_FIELDS) return;
-    if (isInvalidDisplayValue(value) || isInvalidForDisplayField(label, value)) return;
+    if (isInvalidDisplayValue(value)) return;
     display.set(label, value);
   });
   return Array.from(display.entries());
 }
 
-function renderKycDisplayMarkdown(result: KycExtractionResultType, fields: Array<[string, unknown]>): string {
+export function renderKycDisplayMarkdown(result: KycExtractionResultType, fields: Array<[string, unknown]>): string {
   const lines = [
     `## ${result.doc_type_name || 'KYC资料'}`,
     '',
@@ -223,7 +212,7 @@ function renderKycDisplayMarkdown(result: KycExtractionResultType, fields: Array
   ];
   if (fields.length) {
     fields.forEach(([field, value]) => {
-      lines.push(`- ${getKycFieldLabel(field)}: ${formatValue(value)}`);
+      lines.push(`- ${getKycFieldLabel(field)}: ${formatKycDisplayValue(value)}`);
     });
   } else {
     lines.push('- 无');
@@ -270,7 +259,7 @@ const KycExtractionResult: React.FC<Props> = ({ result }) => {
             {fields.map(([field, value]) => (
               <div key={field} className="rounded-md border border-slate-200 bg-white px-3 py-2">
                 <div className="break-words font-medium text-slate-900">
-                  <span className="text-slate-500">{getKycFieldLabel(field)}：</span>{formatValue(value)}
+                <span className="text-slate-500">{getKycFieldLabel(field)}：</span>{formatKycDisplayValue(value)}
                 </div>
               </div>
             ))}
@@ -316,7 +305,7 @@ const KycExtractionResult: React.FC<Props> = ({ result }) => {
               return (
                 <div key={field} className="rounded-md bg-slate-50 px-3 py-2">
                   <span className="font-medium text-slate-700">{getKycFieldLabel(field)}：</span>
-                  <span className="text-slate-600">{formatValue(record.evidence_text || record.value || '')}</span>
+                  <span className="text-slate-600">{formatKycDisplayValue(record.evidence_text || record.value || '')}</span>
                 </div>
               );
             })}

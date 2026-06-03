@@ -1,15 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ExtractionReviewResult } from '../services/types';
-import { getKycDisplayFields, getKycFieldLabel } from './KycExtractionResult';
+import { formatKycDisplayValue, getKycDisplayFields, getKycFieldLabel } from './KycExtractionResult';
 
 function valueText(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'object') {
     if (Array.isArray(value)) return value.join('、');
     const record = value as Record<string, unknown>;
-    if ('amount' in record && 'unit' in record) return `${record.amount ?? ''}${record.unit ?? ''}`;
-    if ('value' in record && 'unit' in record) return `${record.value ?? ''}${record.unit ?? ''}`;
-    return JSON.stringify(value);
+    if ('amount' in record && 'unit' in record) return formatKycDisplayValue(value);
+    if ('value' in record && 'unit' in record) return formatKycDisplayValue(value);
+    return formatKycDisplayValue(value);
   }
   return String(value);
 }
