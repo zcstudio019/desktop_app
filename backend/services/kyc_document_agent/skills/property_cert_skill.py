@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from backend.services.kyc_document_agent.evidence import raw_preview
 from backend.services.kyc_document_agent.schema import build_result, normalize_input
 
+
+logger = logging.getLogger(__name__)
 
 CHINESE_FIELDS = [
     "权利人",
@@ -375,7 +378,11 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     term, term_evidence = _extract_after_label(text, ["使用期限", "土地使用期限"])
     room, room_evidence = _extract_after_label(text, ["室号或部位", "室号", "部位"])
     building_area, building_area_evidence = _extract_area(text, ["建筑面积", "房屋建筑面积"])
-    building_type, building_type_evidence = _extract_after_label(text, ["建筑类型"])
+    building_type, building_type_evidence = _extract_after_label(
+        text,
+        ["建筑类型"],
+        stop_labels=["用途", "房屋用途", "总层数", "竣工日期"],
+    )
     house_use, house_use_evidence = _extract_house_use(text)
     if not house_use:
         house_use, house_use_evidence = _extract_contextual_use(text, "房屋状况", ["房屋用途", "房屋状况用途"])
@@ -430,6 +437,12 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
                 fields[alias] = fields["房屋用途"]
                 evidence[alias] = {**evidence["房屋用途"], "value": fields["房屋用途"]}
                 confidences[alias] = max(0.55, confidences["房屋用途"] - 0.02)
+
+    logger.info("[PropertyCertSkill] fields keys=%s", list(fields.keys()))
+    logger.info("[PropertyCertSkill] land_use=%s", fields.get("land_use"))
+    logger.info("[PropertyCertSkill] house_use=%s", fields.get("house_use"))
+    logger.info("[PropertyCertSkill] building_use=%s", fields.get("building_use"))
+    logger.info("[PropertyCertSkill] 房屋用途=%s", fields.get("房屋用途"))
 
     result = build_result(doc_type, fields, evidence)
     result["doc_type_name"] = "房产证/房地产权证" if doc_type == "property_cert" else result["doc_type_name"]

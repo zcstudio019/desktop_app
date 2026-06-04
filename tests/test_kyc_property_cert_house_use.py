@@ -36,6 +36,15 @@ def test_house_use_extracts_from_broken_usage_lines():
     assert result["fields"]["房屋用途"] == "居住"
 
 
+def test_house_use_extracts_from_compact_building_table_row():
+    result = _extract("上海市 房地产权证\n土地状况\n用途 住宅用地\n房屋状况\n建筑类型 公寓 用途 居住 总层数 14\n竣工日期 2011年")
+
+    assert result["fields"]["土地用途"] == "住宅用地"
+    assert result["fields"]["房屋用途"] == "居住"
+    assert result["fields"]["house_use"] == "居住"
+    assert result["fields"]["building_use"] == "居住"
+
+
 def test_house_use_fallback_from_building_section_context():
     result = _extract("上海市 房地产权证\n土地状况\n用途 住宅用地\n房屋状况\n室号或部位 1101\n建筑面积 148.08 平方米\n建筑类型 公寓\n居住\n总层数 14\n竣工日期 2011年")
 
@@ -54,3 +63,28 @@ def test_property_cert_display_contains_house_and_land_use_without_generic_usage
     assert "房屋用途: 住宅用地" not in markdown
     assert "土地用途: 居住" not in markdown
     assert markdown.index("建筑类型: 公寓") < markdown.index("房屋用途: 居住") < markdown.index("总层数: 14")
+
+
+def test_house_use_aliases_render_as_chinese_house_use():
+    for alias in ("house_use", "building_use", "use_type"):
+        markdown = render_markdown({
+            "doc_type": "property_cert",
+            "doc_type_name": "房产证/房地产权证",
+            "fields": {
+                "land_use": "住宅用地",
+                "building_type": "公寓",
+                alias: "居住",
+                "total_floors": "14",
+            },
+            "validation": {"warnings": [], "errors": []},
+            "missing_fields": [],
+            "confidence": {"overall": 0.8},
+            "evidence": {},
+        })
+
+        assert "土地用途: 住宅用地" in markdown
+        assert "房屋用途: 居住" in markdown
+        assert "\n- 用途:" not in markdown
+        assert "house_use" not in markdown
+        assert "building_use" not in markdown
+        assert "use_type" not in markdown

@@ -259,7 +259,12 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
     display.set(label, text);
   });
 
-  return Object.fromEntries(display.entries());
+  const displayFields = Object.fromEntries(display.entries());
+  if (isPropertyCert) {
+    console.debug('[KycDisplayFields] docType=%s rawFields=', docType, fields);
+    console.debug('[KycDisplayFields] displayFields=', displayFields);
+  }
+  return displayFields;
 }
 
 export function getKycDisplayEntries(fields: Record<string, unknown> | undefined | null, docType?: string): Array<[string, string]> {

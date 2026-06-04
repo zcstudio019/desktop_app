@@ -31,12 +31,51 @@ export function renderKycDisplayMarkdown(result: KycExtractionResultType, fields
   return lines.join('\n');
 }
 
+export function enrichPropertyFieldsForDisplay(result: KycExtractionResultType): Record<string, unknown> {
+  const rawFields = isRecord(result.fields) ? result.fields : {};
+  const fields: Record<string, unknown> = { ...rawFields };
+  const isPropertyCert = result.doc_type === 'property_cert' || result.doc_type === 'real_estate_cert';
+  if (!isPropertyCert) return fields;
+
+  const hasHouseUse = Boolean(fields['房屋用途'] || fields.house_use || fields.building_use || fields.use_type);
+  if (hasHouseUse) return fields;
+
+  const hasBuildingContext = Boolean(
+    fields['室号或部位'] ||
+      fields.room_number ||
+      fields['建筑面积'] ||
+      fields.building_area ||
+      fields['建筑类型'] ||
+      fields.building_type ||
+      fields['总层数'] ||
+      fields.total_floors ||
+      fields['竣工日期'] ||
+      fields.completion_date,
+  );
+  const { markdown, raw_text_preview: rawTextPreview } = result as { markdown?: unknown; raw_text_preview?: unknown };
+  const sourceText = [
+    typeof rawTextPreview === 'string' ? rawTextPreview : '',
+    typeof markdown === 'string' ? markdown : '',
+    result.evidence ? JSON.stringify(result.evidence) : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  if (hasBuildingContext && sourceText.includes('居住')) {
+    fields['房屋用途'] = '居住';
+    fields.house_use = '居住';
+    fields.building_use = '居住';
+  }
+
+  return fields;
+}
+
 interface Props {
   result: KycExtractionResultType;
 }
 
 const KycExtractionResult: React.FC<Props> = ({ result }) => {
-  const fields = getKycDisplayEntries(result.fields || {}, result.doc_type);
+  const fields = getKycDisplayEntries(enrichPropertyFieldsForDisplay(result), result.doc_type);
   const displayMarkdown = renderKycDisplayMarkdown(result, fields);
   const warnings = result.validation?.warnings || [];
   const errors = result.validation?.errors || [];

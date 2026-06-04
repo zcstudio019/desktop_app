@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from .renderer import render_markdown
 from .schema import build_result, normalize_input
 from .validator import validate_result
 
+
+logger = logging.getLogger(__name__)
 
 SKILL_MODULES = {
     "id_card": "backend.services.kyc_document_agent.skills.id_card_skill",
@@ -68,6 +71,11 @@ class KycDocumentAgent:
         result["classification_reason"] = classification.get("reason") or ""
         result = normalize_result(result)
         result = validate_result(result)
+        if result.get("doc_type") in {"property_cert", "real_estate_cert"}:
+            fields = result.get("fields") or {}
+            logger.info("[KycDocumentAgent] final fields keys=%s", list(fields.keys()))
+            logger.info("[KycDocumentAgent] 房屋用途=%s", fields.get("房屋用途"))
+            logger.info("[KycDocumentAgent] house_use=%s", fields.get("house_use"))
         result["markdown"] = render_markdown(result)
         if self.save_results:
             result["saved_path"] = str(self.save_structured_result(result, data.get("metadata") or {}))
