@@ -71,6 +71,21 @@ AGENT_LABELS = {
 
 INVALID_DISPLAY_VALUES = {"", "对", "的合法权益，对", "无", "未识别", "null", "None", "none"}
 INVALID_DISPLAY_KEYWORDS = ("合法权益", "房地产权利人", "本证是证明", "根据", "法律")
+FORBIDDEN_DISPLAY_KEYS = {
+    "historical_financial_reports",
+    "financial_reports",
+    "enterprise_credit_reports",
+    "personal_credit_reports",
+    "enterprise_flows",
+    "bank_flows",
+    "financial_statement_diagnostic",
+    "financing_diagnostic_report",
+    "comprehensive_financing_advice",
+    "customer_profile_markdown",
+    "customer_context",
+    "customer_profile",
+    "profile_context",
+}
 
 FIELD_LABELS = {
     "owner": "权利人",
@@ -183,7 +198,11 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
         display_fields[display_key] = value
 
     for source_key, value in fields.items():
+        if str(source_key) in FORBIDDEN_DISPLAY_KEYS:
+            continue
         display_key = ENGLISH_TO_CHINESE_FIELDS.get(str(source_key), str(source_key))
+        if result.get("doc_type") in {"property_cert", "real_estate_cert"} and display_key not in PROPERTY_FIELD_ORDER:
+            continue
         if display_key in display_fields or source_key in ENGLISH_TO_CHINESE_FIELDS:
             continue
         if _is_empty_or_invalid(value) or _is_hidden_property_display_field(display_key, value):

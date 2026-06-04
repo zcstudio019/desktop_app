@@ -43,6 +43,12 @@ PROPERTY_KEYWORDS = (
 )
 
 PROPERTY_FILENAME_KEYWORDS = ("产证", "房产证", "房地产权证", "不动产权证", "房本")
+DECLARED_DOC_TYPE_ALIASES = {
+    "property_certificate": "property_cert",
+    "real_estate_certificate": "real_estate_cert",
+    "account_license": "account_permit",
+    "hukou": "household_register",
+}
 
 
 def chinese_keyword_score(text: str, keywords: tuple[str, ...] = PROPERTY_KEYWORDS) -> int:
@@ -63,7 +69,28 @@ def _filename_suggests_property(filename: str) -> bool:
     return any(keyword in (filename or "") for keyword in PROPERTY_FILENAME_KEYWORDS)
 
 
-def classify_with_reason(text: str, filename: str = "") -> dict[str, str]:
+def normalize_declared_doc_type(declared_doc_type: str | None, filename: str = "") -> str:
+    normalized = (declared_doc_type or "").strip()
+    if not normalized:
+        return ""
+    normalized = DECLARED_DOC_TYPE_ALIASES.get(normalized, normalized)
+    if normalized == "collateral" and _filename_suggests_property(filename):
+        return "property_cert"
+    if normalized in DOC_TYPE_NAMES and normalized != "unknown":
+        return normalized
+    return ""
+
+
+def classify_with_reason(text: str, filename: str = "", declared_doc_type: str | None = None) -> dict[str, str]:
+    declared = normalize_declared_doc_type(declared_doc_type, filename=filename)
+    if declared:
+        return {
+            "doc_type": declared,
+            "doc_type_name": DOC_TYPE_NAMES[declared],
+            "owner_type": OWNER_TYPES.get(declared, "unknown"),
+            "reason": f"declared_doc_type 指定为 {declared}",
+        }
+
     normalized = text or ""
     compact = re.sub(r"\s+", "", normalized)
 
@@ -138,5 +165,5 @@ def classify_with_reason(text: str, filename: str = "") -> dict[str, str]:
     }
 
 
-def classify(text: str, filename: str = "") -> str:
-    return classify_with_reason(text, filename=filename)["doc_type"]
+def classify(text: str, filename: str = "", declared_doc_type: str | None = None) -> str:
+    return classify_with_reason(text, filename=filename, declared_doc_type=declared_doc_type)["doc_type"]

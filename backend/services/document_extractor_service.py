@@ -20,7 +20,7 @@ from backend.extraction_skills.enterprise_credit import build_enterprise_credit_
 from backend.services.document_agents import run_document_extraction_agent
 from backend.services.extraction_utils import normalize_amount, normalize_text, only_digits
 from backend.services.kyc_document_agent import KycDocumentAgent
-from backend.services.kyc_document_agent.classifier import classify as classify_kyc_document
+from backend.services.kyc_document_agent.classifier import classify as classify_kyc_document, normalize_declared_doc_type
 from backend.services.kyc_document_agent.schema import DOC_TYPE_NAMES
 from backend.services.personal_credit_report_agent import run_personal_credit_report_agent
 from prompts import get_prompt_for_type, load_prompts
@@ -68,6 +68,37 @@ KYC_LEGACY_DOC_TYPE_ALIASES = {
     "real_estate_certificate": "real_estate_cert",
     "company_articles": "articles_keypage",
     "special_license": "special_business_license",
+}
+
+KYC_ALLOWED_METADATA_KEYS = {
+    "filename",
+    "source_file",
+    "customer_id",
+    "customer_name",
+    "source",
+    "declared_doc_type",
+    "original_document_type",
+    "document_type",
+    "documentType",
+}
+
+KYC_FORBIDDEN_CONTEXT_KEYS = {
+    "historical_financial_reports",
+    "financial_reports",
+    "enterprise_credit_reports",
+    "personal_credit_reports",
+    "enterprise_flows",
+    "bank_flows",
+    "financial_statement_diagnostic",
+    "financing_diagnostic_report",
+    "comprehensive_financing_advice",
+    "customer_profile_markdown",
+    "customer_context",
+    "customer_profile",
+    "profile_context",
+    "aggregate_customer",
+    "diagnostic_report",
+    "financing_report",
 }
 
 DATE_PATTERN = re.compile(r"((?:19|20)\d{2}[年/\-.](?:0?[1-9]|1[0-2])[月/\-.](?:0?[1-9]|[12]\d|3[01])日?)")
@@ -8987,12 +9018,74 @@ def extract_bank_statement_pdf_fields(
 
 def _resolve_kyc_doc_type(text_content: str, declared_doc_type: str | None, filename: str = "") -> str:
     normalized = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
+    normalized = normalize_declared_doc_type(normalized, filename=filename) or normalized
     if normalized in KYC_LEGACY_DOC_TYPE_ALIASES:
-        return KYC_LEGACY_DOC_TYPE_ALIASES[normalized]
+        mapped = KYC_LEGACY_DOC_TYPE_ALIASES[normalized]
+        if normalized == "collateral" and mapped == "property_cert":
+            return mapped if any(keyword in (filename or "") for keyword in ("房产", "产证", "房本", "不动产", "房地产权证")) else ""
+        return mapped
     if normalized in KYC_DOC_TYPES:
         return normalized
     classified = classify_kyc_document(text_content or "", filename=filename)
     return classified if classified in KYC_DOC_TYPES else ""
+
+
+def _sanitize_kyc_metadata(metadata: dict[str, Any] | None, *, filename: str, customer_id: str, doc_type: str) -> dict[str, Any]:
+    source = metadata or {}
+    sanitized = {key: source.get(key) for key in KYC_ALLOWED_METADATA_KEYS if key in source}
+    sanitized["filename"] = filename or str(sanitized.get("filename") or "")
+    sanitized["customer_id"] = customer_id or str(sanitized.get("customer_id") or "")
+    sanitized["source"] = str(sanitized.get("source") or "upload")
+    declared = source.get("declared_doc_type") or source.get("document_type") or source.get("documentType") or doc_type
+    normalized_declared = normalize_declared_doc_type(str(declared or ""), filename=filename) or doc_type
+    sanitized["declared_doc_type"] = normalized_declared
+    if declared and str(declared).strip() != normalized_declared:
+        sanitized["original_document_type"] = str(declared).strip()
+    return {key: value for key, value in sanitized.items() if key not in KYC_FORBIDDEN_CONTEXT_KEYS}
+
+
+def _strip_kyc_context_pollution(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_kyc_context_pollution(item)
+            for key, item in value.items()
+            if key not in KYC_FORBIDDEN_CONTEXT_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_kyc_context_pollution(item) for item in value]
+    return value
+
+
+def _sanitize_kyc_extraction_content(content: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "agent_type",
+        "doc_type",
+        "doc_type_name",
+        "owner_type",
+        "extraction_status",
+        "fields",
+        "validation",
+        "confidence",
+        "evidence",
+        "missing_fields",
+        "raw_text_preview",
+        "markdown",
+        "metadata",
+        "classification_reason",
+        "document_type_code",
+        "document_type_name",
+        "storage_label",
+        "customer_name",
+        "extraction_error",
+    }
+    sanitized = {key: value for key, value in content.items() if key in allowed and key not in KYC_FORBIDDEN_CONTEXT_KEYS}
+    if isinstance(sanitized.get("metadata"), dict):
+        sanitized["metadata"] = {
+            key: value
+            for key, value in sanitized["metadata"].items()
+            if key in KYC_ALLOWED_METADATA_KEYS and key not in KYC_FORBIDDEN_CONTEXT_KEYS
+        }
+    return _strip_kyc_context_pollution(sanitized)
 
 
 def _pick_kyc_customer_name(result: dict[str, Any]) -> str:
@@ -9052,16 +9145,11 @@ def _build_kyc_structured_extraction(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_pages = raw_pages or []
+    safe_metadata = _sanitize_kyc_metadata(metadata, filename=filename, customer_id=customer_id, doc_type=doc_type)
     payload = {
         "text": str(text_content or ""),
         "pages": raw_pages,
-        "metadata": {
-            "filename": filename,
-            "customer_id": customer_id,
-            "source": "upload",
-            "declared_doc_type": doc_type,
-            **(metadata or {}),
-        },
+        "metadata": safe_metadata,
     }
     try:
         result = KycDocumentAgent().extract(payload)
@@ -9077,15 +9165,12 @@ def _build_kyc_structured_extraction(
         "document_type_name": result.get("doc_type_name") or DOC_TYPE_NAMES.get(doc_type, doc_type),
         "storage_label": result.get("doc_type_name") or DOC_TYPE_NAMES.get(doc_type, doc_type),
         "customer_name": _pick_kyc_customer_name(result),
-        "raw_text": str(text_content or ""),
     }
     if isinstance(fields, dict):
         for key in ("company_name", "name", "id_number", "unified_social_credit_code", "plate_number"):
             if key in fields and key not in content:
                 content[key] = fields.get(key)
-    if raw_pages:
-        content["raw_pages"] = raw_pages
-    return content
+    return _sanitize_kyc_extraction_content(content)
 
 
 def run_document_extraction(
@@ -9149,9 +9234,8 @@ def build_structured_extraction(
             customer_id=customer_id,
             metadata={
                 "customer_name": customer_name,
-                "rows": rows,
-                "file_path": file_path,
-                "historical_financial_reports": historical_financial_reports or [],
+                "declared_doc_type": kyc_doc_type,
+                "original_document_type": normalized_code if normalized_code != kyc_doc_type else "",
             },
         )
         content.setdefault("document_type_code", content.get("doc_type") or kyc_doc_type)

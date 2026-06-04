@@ -162,6 +162,21 @@ const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
 
 const INVALID_DISPLAY_VALUES = new Set(['', '对', '的合法权益，对', '无', '未识别', 'null', 'none']);
 const INVALID_DISPLAY_KEYWORDS = ['合法权益', '房地产权利人', '本证是证是', '根据', '法律'];
+const FORBIDDEN_KYC_DISPLAY_KEYS = new Set([
+  'historical_financial_reports',
+  'financial_reports',
+  'enterprise_credit_reports',
+  'personal_credit_reports',
+  'enterprise_flows',
+  'bank_flows',
+  'financial_statement_diagnostic',
+  'financing_diagnostic_report',
+  'comprehensive_financing_advice',
+  'customer_profile_markdown',
+  'customer_context',
+  'customer_profile',
+  'profile_context',
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -241,6 +256,7 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
 
   orderedKeys.forEach((key) => {
     if (!(key in fields)) return;
+    if (FORBIDDEN_KYC_DISPLAY_KEYS.has(key)) return;
     const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
     if (display.has(label)) return;
     const value = fields[key];
@@ -251,7 +267,9 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
   });
 
   Object.entries(fields).forEach(([key, value]) => {
+    if (FORBIDDEN_KYC_DISPLAY_KEYS.has(key)) return;
     const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
+    if (isPropertyCert && !PROPERTY_CERT_FIELD_ORDER.includes(label)) return;
     if (display.has(label) || key in ENGLISH_TO_CHINESE_FIELDS) return;
     if (isInvalidDisplayValue(value) || (isPropertyCert && isHiddenPropertyField(label, value))) return;
     const text = formatKycDisplayValue(value);

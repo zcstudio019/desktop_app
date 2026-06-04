@@ -36,6 +36,37 @@ from backend.utils.text_sanitize import sanitize_payload_for_db, sanitize_text_f
 logger = logging.getLogger(__name__)
 JOB_PAYLOAD_PREVIEW_LIMIT = max(120, int(os.getenv("JOB_PAYLOAD_PREVIEW_LIMIT", "300")))
 JOB_STALE_TIMEOUT_SECONDS = max(300, int(os.getenv("JOB_STALE_TIMEOUT_SECONDS", "900")))
+KYC_FORBIDDEN_EXTRACTION_KEYS = {
+    "historical_financial_reports",
+    "financial_reports",
+    "enterprise_credit_reports",
+    "personal_credit_reports",
+    "bank_flows",
+    "enterprise_flows",
+    "financial_statement_diagnostic",
+    "financing_diagnostic_report",
+    "comprehensive_financing_advice",
+    "customer_profile_markdown",
+    "customer_context",
+    "customer_profile",
+    "profile_context",
+    "aggregate_customer",
+    "diagnostic_report",
+    "financing_report",
+    "balance_sheet",
+    "income_statement",
+    "cash_flow_statement",
+}
+KYC_ALLOWED_METADATA_KEYS = {
+    "filename",
+    "source_file",
+    "file_path",
+    "customer_id",
+    "customer_name",
+    "source",
+    "declared_doc_type",
+    "original_document_type",
+}
 
 
 def sanitize_async_job_error_message(error_message: str | None) -> str:
@@ -73,6 +104,43 @@ def sanitize_async_job_error_message(error_message: str | None) -> str:
         return "任务可能已中断，请重新提交。"
 
     return raw_message
+
+
+def _strip_kyc_extraction_context(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_kyc_extraction_context(item)
+            for key, item in value.items()
+            if key not in KYC_FORBIDDEN_EXTRACTION_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_kyc_extraction_context(item) for item in value]
+    return value
+
+
+def sanitize_kyc_extracted_data(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    is_kyc = data.get("agent_type") == "kyc_document_agent" or str(data.get("doc_type") or "") in {
+        "property_cert",
+        "real_estate_cert",
+        "id_card",
+        "business_license",
+        "account_permit",
+        "basic_account_info",
+        "vehicle_license",
+        "marriage_cert",
+    }
+    if not is_kyc:
+        return data
+    cleaned = _strip_kyc_extraction_context(data)
+    if isinstance(cleaned.get("metadata"), dict):
+        cleaned["metadata"] = {
+            key: value
+            for key, value in cleaned["metadata"].items()
+            if key in KYC_ALLOWED_METADATA_KEYS and key not in KYC_FORBIDDEN_EXTRACTION_KEYS
+        }
+    return cleaned
 
 
 def normalize_async_job_error_message(error_message: str | None) -> str:
@@ -634,12 +702,13 @@ class SQLAlchemyStorageService:
         }
 
     def _row_to_extraction(self, row: Extraction) -> dict[str, Any]:
+        extracted_data = sanitize_kyc_extracted_data(self._loads(row.extracted_data, {}))
         return {
             "extraction_id": row.extraction_id,
             "doc_id": row.doc_id,
             "customer_id": row.customer_id,
             "extraction_type": row.extraction_type or "",
-            "extracted_data": self._loads(row.extracted_data, {}),
+            "extracted_data": extracted_data,
             "confidence": row.confidence or 0.0,
             "extraction_status": row.extraction_status or "success",
             "extraction_error": row.extraction_error or "",
@@ -1228,6 +1297,7 @@ class SQLAlchemyStorageService:
         with self._session_factory() as db:
             payload = extraction_data.copy()
             payload["extraction_type"] = normalize_document_type_code(payload.get("extraction_type") or "") or payload.get("extraction_type")
+            payload["extracted_data"] = sanitize_kyc_extracted_data(payload.get("extracted_data"))
             payload["extracted_data"] = self._dumps(payload.get("extracted_data"), "{}")
             extracted_json_text = payload["extracted_data"]
             markdown_summary = ""

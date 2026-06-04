@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .classifier import classify as classify_doc_type, classify_with_reason
+from .classifier import classify as classify_doc_type, classify_with_reason, normalize_declared_doc_type
 from .normalizer import normalize_result
 from .renderer import render_markdown
 from .schema import build_result, normalize_input
@@ -15,6 +15,18 @@ from .validator import validate_result
 
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_METADATA_KEYS = {
+    "filename",
+    "source_file",
+    "customer_id",
+    "customer_name",
+    "source",
+    "declared_doc_type",
+    "original_document_type",
+    "document_type",
+    "documentType",
+}
 
 SKILL_MODULES = {
     "id_card": "backend.services.kyc_document_agent.skills.id_card_skill",
@@ -45,14 +57,33 @@ class KycDocumentAgent:
         self.save_results = save_results
         self.save_dir = Path(save_dir or "data/kyc_document_results")
 
-    def classify(self, text: str, filename: str = "") -> str:
-        return classify_doc_type(text, filename=filename)
+    def classify(self, text: str, filename: str = "", declared_doc_type: str | None = None) -> str:
+        return classify_doc_type(text, filename=filename, declared_doc_type=declared_doc_type)
+
+    @staticmethod
+    def _sanitize_metadata(metadata: dict[str, Any] | None, filename: str = "") -> dict[str, Any]:
+        metadata = metadata or {}
+        sanitized = {key: metadata.get(key) for key in ALLOWED_METADATA_KEYS if key in metadata}
+        declared = (
+            metadata.get("declared_doc_type")
+            or metadata.get("document_type")
+            or metadata.get("documentType")
+        )
+        normalized_declared = normalize_declared_doc_type(str(declared or ""), filename=filename)
+        if normalized_declared:
+            sanitized["declared_doc_type"] = normalized_declared
+            if declared and str(declared).strip() != normalized_declared:
+                sanitized["original_document_type"] = str(declared).strip()
+        return sanitized
 
     def extract(self, payload: dict[str, Any] | str) -> dict[str, Any]:
         data = normalize_input(payload)
-        metadata = data.get("metadata") or {}
+        raw_metadata = data.get("metadata") or {}
+        raw_filename = str(raw_metadata.get("filename") or raw_metadata.get("source_file") or "")
+        metadata = self._sanitize_metadata(raw_metadata, filename=raw_filename)
         filename = str(metadata.get("filename") or metadata.get("source_file") or "")
-        classification = classify_with_reason(data["text"], filename=filename)
+        declared_doc_type = str(metadata.get("declared_doc_type") or "")
+        classification = classify_with_reason(data["text"], filename=filename, declared_doc_type=declared_doc_type)
         doc_type = classification["doc_type"]
         if doc_type == "unknown":
             result = build_result("unknown")

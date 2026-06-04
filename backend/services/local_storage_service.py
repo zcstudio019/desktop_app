@@ -23,6 +23,74 @@ DEFAULT_RAG_SOURCE_PRIORITY = [
     "scheme_match_summary",
     "application_summary",
 ]
+KYC_FORBIDDEN_EXTRACTION_KEYS = {
+    "historical_financial_reports",
+    "financial_reports",
+    "enterprise_credit_reports",
+    "personal_credit_reports",
+    "bank_flows",
+    "enterprise_flows",
+    "financial_statement_diagnostic",
+    "financing_diagnostic_report",
+    "comprehensive_financing_advice",
+    "customer_profile_markdown",
+    "customer_context",
+    "customer_profile",
+    "profile_context",
+    "aggregate_customer",
+    "diagnostic_report",
+    "financing_report",
+    "balance_sheet",
+    "income_statement",
+    "cash_flow_statement",
+}
+KYC_ALLOWED_METADATA_KEYS = {
+    "filename",
+    "source_file",
+    "file_path",
+    "customer_id",
+    "customer_name",
+    "source",
+    "declared_doc_type",
+    "original_document_type",
+}
+
+
+def _strip_kyc_extraction_context(value):
+    if isinstance(value, dict):
+        return {
+            key: _strip_kyc_extraction_context(item)
+            for key, item in value.items()
+            if key not in KYC_FORBIDDEN_EXTRACTION_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_kyc_extraction_context(item) for item in value]
+    return value
+
+
+def sanitize_kyc_extracted_data(data):
+    if not isinstance(data, dict):
+        return data
+    is_kyc = data.get("agent_type") == "kyc_document_agent" or str(data.get("doc_type") or "") in {
+        "property_cert",
+        "real_estate_cert",
+        "id_card",
+        "business_license",
+        "account_permit",
+        "basic_account_info",
+        "vehicle_license",
+        "marriage_cert",
+    }
+    if not is_kyc:
+        return data
+    cleaned = _strip_kyc_extraction_context(data)
+    if isinstance(cleaned.get("metadata"), dict):
+        cleaned["metadata"] = {
+            key: value
+            for key, value in cleaned["metadata"].items()
+            if key in KYC_ALLOWED_METADATA_KEYS and key not in KYC_FORBIDDEN_EXTRACTION_KEYS
+        }
+    return cleaned
 
 
 def _build_extraction_summary(data: dict, max_chars: int = _SUMMARY_MAX_CHARS) -> str:
@@ -827,6 +895,7 @@ class LocalStorageService:
 
         payload = dict(extraction_data)
         payload['extraction_type'] = normalize_document_type_code(payload.get('extraction_type') or '') or payload.get('extraction_type')
+        payload['extracted_data'] = sanitize_kyc_extracted_data(payload.get('extracted_data', {}))
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -1578,6 +1647,7 @@ class LocalStorageService:
             except json.JSONDecodeError:
                 # 如果 JSON 解析失败,返回空字典
                 extracted_data = {}
+        extracted_data = sanitize_kyc_extracted_data(extracted_data)
 
         columns = self._get_table_columns("extractions")
         row_data = {columns[index]: row[index] for index in range(min(len(columns), len(row)))}

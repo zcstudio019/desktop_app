@@ -52,6 +52,29 @@ from ..models.schemas import ChatJobCreateResponse, ChatJobStatusResponse, FileP
 
 logger = logging.getLogger(__name__)
 
+KYC_EXTRACTION_TYPES = {
+    "id_card",
+    "marriage_cert",
+    "divorce_cert",
+    "household_register",
+    "business_license",
+    "account_permit",
+    "basic_account_info",
+    "vehicle_license",
+    "driving_license",
+    "property_cert",
+    "real_estate_cert",
+    "lease_contract_keypage",
+    "real_estate_query",
+    "shareholder_id_card",
+    "articles_keypage",
+    "special_business_license",
+    "food_business_license",
+    "road_transport_license",
+    "account_receipt",
+    "taxpayer_qualification",
+}
+
 router = APIRouter(prefix="/file", tags=["File Processing"])
 
 file_service = FileService()
@@ -886,10 +909,12 @@ def _extract_structured_data(
         )
         if document_type_code in {"property_report", "collateral", "mortgage_info"}:
             logger.info("[property] extracted result=%s", content)
-        if raw_pages:
+        content_doc_type = str(content.get("doc_type") or content.get("document_type_code") or document_type_code)
+        is_kyc_content = content.get("agent_type") == "kyc_document_agent" or content_doc_type in KYC_EXTRACTION_TYPES
+        if raw_pages and not is_kyc_content:
             content["raw_pages"] = raw_pages
             content["raw_text"] = _build_raw_text_from_pages(raw_pages)
-        elif document_type_code in {"property_report", "collateral", "mortgage_info"} and text_content and text_content.strip():
+        elif document_type_code in {"property_report", "collateral", "mortgage_info"} and text_content and text_content.strip() and not is_kyc_content:
             content["raw_pages"] = [{"page": 1, "text": text_content}]
             content["raw_text"] = text_content
         elif document_type_code == "marriage_cert" and text_content and text_content.strip():
