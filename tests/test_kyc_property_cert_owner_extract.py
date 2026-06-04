@@ -14,34 +14,34 @@ def _extract(text: str) -> dict:
     })
 
 
-def test_property_cert_owner_inline_extracts_owner_and_co_owner():
+def test_property_cert_owner_inline_keeps_full_owner_name():
     result = _extract("上海市 房地产权证\n权利人 林勇、黄晓囡\n权证编号 沪房地奉字(2014)第004478号")
 
-    assert result["fields"]["权利人"] == "林勇"
-    assert result["fields"]["共有人"] == ["黄晓囡"]
-    assert result["fields"]["owner"] == "林勇"
-    assert result["fields"]["co_owners"] == ["黄晓囡"]
+    assert result["fields"]["权利人"] == "林勇、黄晓囡"
+    assert "共有人" not in result["fields"]
+    assert result["fields"]["owner"] == "林勇、黄晓囡"
+    assert "co_owners" not in result["fields"]
 
 
-def test_property_cert_owner_colon_extracts_owner_and_co_owner():
+def test_property_cert_owner_colon_keeps_full_owner_name():
     result = _extract("上海市 房地产权证\n权利人：林勇、黄晓囡\n房地坐落 奉贤区泽丰路88弄2号")
 
-    assert result["fields"]["权利人"] == "林勇"
-    assert result["fields"]["共有人"] == ["黄晓囡"]
+    assert result["fields"]["权利人"] == "林勇、黄晓囡"
+    assert "共有人" not in result["fields"]
 
 
-def test_property_cert_owner_next_line_extracts_owner_and_co_owner():
+def test_property_cert_owner_next_line_keeps_full_owner_name():
     result = _extract("上海市 房地产权证\n权利人\n林勇、黄晓囡\n房地坐落 奉贤区泽丰路88弄2号")
 
-    assert result["fields"]["权利人"] == "林勇"
-    assert result["fields"]["共有人"] == ["黄晓囡"]
+    assert result["fields"]["权利人"] == "林勇、黄晓囡"
+    assert "共有人" not in result["fields"]
 
 
-def test_property_cert_owner_spaced_label_extracts_owner_and_co_owner():
+def test_property_cert_owner_spaced_label_keeps_full_owner_name():
     result = _extract("上海市 房地产权证\n权 利 人 林勇、黄晓囡\n房地坐落 奉贤区泽丰路88弄2号")
 
-    assert result["fields"]["权利人"] == "林勇"
-    assert result["fields"]["共有人"] == ["黄晓囡"]
+    assert result["fields"]["权利人"] == "林勇、黄晓囡"
+    assert "共有人" not in result["fields"]
 
 
 def test_property_cert_owner_invalid_values_are_not_used():
@@ -52,7 +52,7 @@ def test_property_cert_owner_invalid_values_are_not_used():
     assert "owner" not in result["fields"]
 
 
-def test_property_cert_owner_appears_first_in_markdown():
+def test_property_cert_owner_merges_legacy_co_owners_in_markdown():
     markdown = render_markdown({
         "doc_type": "property_cert",
         "doc_type_name": "房产证/房地产权证",
@@ -64,15 +64,16 @@ def test_property_cert_owner_appears_first_in_markdown():
         },
     })
 
-    owner_index = markdown.index("权利人: 林勇")
-    co_owner_index = markdown.index("共有人: 黄晓囡")
+    owner_index = markdown.index("权利人: 林勇、黄晓囡")
     cert_index = markdown.index("权证编号: 沪房地奉字(2014)第004478号")
-    assert owner_index < co_owner_index < cert_index
+    assert owner_index < cert_index
+    assert "共有人:" not in markdown
 
 
-def test_frontend_property_display_mapping_contains_owner_first():
+def test_frontend_property_display_mapping_contains_owner_first_and_hides_co_owner():
     source = Path("src/utils/kycDisplayFields.ts").read_text(encoding="utf-8")
 
     assert "owner: '权利人'" in source
     assert "co_owners: '共有人'" in source
-    assert source.index("'权利人'") < source.index("'共有人'") < source.index("'权证编号'")
+    assert "if (label === '共有人') return true" in source
+    assert source.index("'权利人'") < source.index("'权证编号'")

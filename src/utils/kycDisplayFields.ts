@@ -58,7 +58,7 @@ const FIELD_LABELS: Record<string, string> = {
   right_type: '权利类型',
   right_nature: '权属性质',
   acquisition_method: '使用权取得方式',
-  land_use: '土地用途',
+  land_use: '用途',
   use_type: '房屋用途',
   parcel_number: '宗地号',
   land_area: '宗地面积',
@@ -95,7 +95,8 @@ const FIELD_LABELS: Record<string, string> = {
   房地坐落: '房地坐落',
   权属性质: '权属性质',
   使用权取得方式: '使用权取得方式',
-  土地用途: '土地用途',
+  土地用途: '用途',
+  用途: '用途',
   宗地号: '宗地号',
   宗地面积: '宗地面积',
   使用权面积: '使用权面积',
@@ -112,15 +113,13 @@ const FIELD_LABELS: Record<string, string> = {
 
 export const PROPERTY_CERT_FIELD_ORDER = [
   '权利人',
-  '共有人',
   '权证编号',
   '房地坐落',
   '权属性质',
   '使用权取得方式',
-  '土地用途',
+  '用途',
   '宗地号',
   '宗地面积',
-  '使用权面积',
   '土地使用期限',
   '室号或部位',
   '建筑面积',
@@ -140,7 +139,7 @@ const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
   right_type: '权利类型',
   right_nature: '权属性质',
   acquisition_method: '使用权取得方式',
-  land_use: '土地用途',
+  land_use: '用途',
   use_type: '房屋用途',
   parcel_number: '宗地号',
   land_area: '宗地面积',
@@ -195,6 +194,30 @@ function isInvalidDisplayValue(value: unknown): boolean {
   return INVALID_DISPLAY_VALUES.has(text) || INVALID_DISPLAY_KEYWORDS.some((keyword) => text.includes(keyword));
 }
 
+function mergeOwnerFields(fields: Record<string, unknown>): string {
+  const owner = fields['权利人'] ?? fields.owner;
+  const coOwners = fields['共有人'] ?? fields.co_owners;
+  const values = [owner, coOwners]
+    .map(formatKycDisplayValue)
+    .flatMap((value) => value.replace(/[,，]/g, '、').split('、'))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return Array.from(new Set(values)).join('、');
+}
+
+function isHiddenPropertyField(label: string, value: unknown): boolean {
+  if (label === '共有人') return true;
+  if (label === '使用权面积') {
+    const text = formatKycDisplayValue(value).trim();
+    return !text || text === '独用' || !/\d/.test(text);
+  }
+  if (label === '竣工日期') {
+    const text = formatKycDisplayValue(value).trim();
+    return !text.includes('年') && !/^\d{4}-\d{1,2}-\d{1,2}$/.test(text);
+  }
+  return false;
+}
+
 export function isKycDocType(docType?: unknown): boolean {
   return typeof docType === 'string' && KYC_DOC_TYPES.has(docType);
 }
@@ -203,7 +226,12 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
   if (!fields || typeof fields !== 'object') return {};
 
   const display = new Map<string, string>();
-  const orderedKeys = docType === 'property_cert' || docType === 'real_estate_cert'
+  const isPropertyCert = docType === 'property_cert' || docType === 'real_estate_cert';
+  const ownerDisplay = isPropertyCert ? mergeOwnerFields(fields) : '';
+  if (ownerDisplay) {
+    display.set('权利人', ownerDisplay);
+  }
+  const orderedKeys = isPropertyCert
     ? [...PROPERTY_CERT_FIELD_ORDER, ...Object.keys(ENGLISH_TO_CHINESE_FIELDS)]
     : [...Object.keys(FIELD_LABELS), ...Object.keys(ENGLISH_TO_CHINESE_FIELDS), ...Object.keys(fields)];
 
@@ -212,7 +240,7 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
     const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
     if (display.has(label)) return;
     const value = fields[key];
-    if (isInvalidDisplayValue(value)) return;
+    if (isInvalidDisplayValue(value) || (isPropertyCert && isHiddenPropertyField(label, value))) return;
     const text = formatKycDisplayValue(value);
     if (!text) return;
     display.set(label, text);
@@ -221,7 +249,7 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
   Object.entries(fields).forEach(([key, value]) => {
     const label = ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
     if (display.has(label) || key in ENGLISH_TO_CHINESE_FIELDS) return;
-    if (isInvalidDisplayValue(value)) return;
+    if (isInvalidDisplayValue(value) || (isPropertyCert && isHiddenPropertyField(label, value))) return;
     const text = formatKycDisplayValue(value);
     if (!text) return;
     display.set(label, text);

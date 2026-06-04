@@ -5,15 +5,13 @@ from typing import Any
 
 PROPERTY_FIELD_ORDER = [
     "权利人",
-    "共有人",
     "权证编号",
     "房地坐落",
     "权属性质",
     "使用权取得方式",
-    "土地用途",
+    "用途",
     "宗地号",
     "宗地面积",
-    "使用权面积",
     "土地使用期限",
     "室号或部位",
     "建筑面积",
@@ -33,7 +31,7 @@ ENGLISH_TO_CHINESE_FIELDS = {
     "right_type": "权利类型",
     "right_nature": "权属性质",
     "acquisition_method": "使用权取得方式",
-    "land_use": "土地用途",
+    "land_use": "用途",
     "use_type": "房屋用途",
     "parcel_number": "宗地号",
     "land_area": "宗地面积",
@@ -48,6 +46,8 @@ ENGLISH_TO_CHINESE_FIELDS = {
     "registration_date": "登记日",
     "issue_date": "登记日",
     "issuing_unit": "填证单位",
+    "土地用途": "用途",
+    "用途": "用途",
 }
 
 OWNER_TYPE_LABELS = {
@@ -79,6 +79,7 @@ FIELD_LABELS = {
     "right_type": "权利类型",
     "right_nature": "权属性质",
     "use_type": "房屋用途",
+    "land_use": "用途",
     "building_area": "建筑面积",
     "land_area": "宗地面积",
     "total_area": "使用权面积",
@@ -112,6 +113,33 @@ def _is_empty_or_invalid(value: Any) -> bool:
     return any(keyword in text for keyword in INVALID_DISPLAY_KEYWORDS)
 
 
+def _merge_owner_fields(fields: dict[str, Any]) -> Any:
+    owner = fields.get("权利人") or fields.get("owner")
+    co_owners = fields.get("共有人") or fields.get("co_owners")
+    owner_text = _format_value(owner).strip() if owner not in (None, "", [], {}) else ""
+    co_owner_text = _format_value(co_owners).strip() if co_owners not in (None, "", [], {}) else ""
+    parts: list[str] = []
+    for text in (owner_text, co_owner_text):
+        if not text or _is_empty_or_invalid(text):
+            continue
+        for part in [item.strip() for item in text.replace("，", "、").replace(",", "、").split("、")]:
+            if part and part not in parts:
+                parts.append(part)
+    return "、".join(parts)
+
+
+def _is_hidden_property_display_field(display_key: str, value: Any) -> bool:
+    if display_key == "共有人":
+        return True
+    if display_key == "使用权面积":
+        text = _format_value(value).strip()
+        return not text or text == "独用" or not any(char.isdigit() for char in text)
+    if display_key == "竣工日期":
+        text = _format_value(value).strip()
+        return not ("年" in text or (len(text) == 10 and text[4] == "-" and text[7] == "-"))
+    return False
+
+
 def _format_value(value: Any) -> str:
     if isinstance(value, list):
         return "、".join(str(item) for item in value if item not in ("", None)) or "未识别"
@@ -135,6 +163,9 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     display_fields: dict[str, Any] = {}
+    owner_display = _merge_owner_fields(fields)
+    if owner_display:
+        display_fields["权利人"] = owner_display
     source_keys = PROPERTY_FIELD_ORDER + list(ENGLISH_TO_CHINESE_FIELDS)
     for source_key in source_keys:
         if source_key not in fields:
@@ -143,7 +174,7 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
         if display_key in display_fields:
             continue
         value = fields.get(source_key)
-        if _is_empty_or_invalid(value):
+        if _is_empty_or_invalid(value) or _is_hidden_property_display_field(display_key, value):
             continue
         display_fields[display_key] = value
 
@@ -151,7 +182,7 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
         display_key = ENGLISH_TO_CHINESE_FIELDS.get(str(source_key), str(source_key))
         if display_key in display_fields or source_key in ENGLISH_TO_CHINESE_FIELDS:
             continue
-        if _is_empty_or_invalid(value):
+        if _is_empty_or_invalid(value) or _is_hidden_property_display_field(display_key, value):
             continue
         display_fields[display_key] = value
     return display_fields

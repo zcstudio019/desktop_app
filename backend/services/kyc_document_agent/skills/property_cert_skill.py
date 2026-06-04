@@ -9,15 +9,13 @@ from backend.services.kyc_document_agent.schema import build_result, normalize_i
 
 CHINESE_FIELDS = [
     "权利人",
-    "共有人",
     "权证编号",
     "房地坐落",
     "权属性质",
     "使用权取得方式",
-    "土地用途",
+    "用途",
     "宗地号",
     "宗地面积",
-    "使用权面积",
     "土地使用期限",
     "室号或部位",
     "建筑面积",
@@ -33,14 +31,12 @@ PROPERTY_FIELD_ORDER = CHINESE_FIELDS[:]
 
 ENGLISH_ALIASES = {
     "权利人": "owner",
-    "共有人": "co_owners",
     "权证编号": "certificate_number",
     "房地坐落": "property_address",
     "权属性质": "right_nature",
-    "土地用途": "use_type",
+    "用途": "land_use",
     "建筑面积": "building_area",
     "宗地面积": "land_area",
-    "使用权面积": "total_area",
     "登记日": "issue_date",
 }
 
@@ -181,6 +177,15 @@ def _extract_area(text: str, labels: list[str]) -> tuple[str, str]:
     return value, evidence
 
 
+def _extract_usage_area(text: str) -> tuple[str, str]:
+    value, evidence = _extract_after_label(text, ["使用权面积"], stop_labels=["使用期限", "土地使用期限"])
+    if not value:
+        return "", ""
+    if "独用" in value or not re.search(r"\d", value):
+        return "", ""
+    return _extract_area(text, ["使用权面积"])
+
+
 def _extract_owner(text: str) -> tuple[str, str]:
     source_lines = _lines(text)
     for index, line in enumerate(source_lines):
@@ -274,7 +279,7 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     land_use, land_use_evidence = _extract_contextual_use(text, "土地状况", ["土地用途", "土地状况用途"])
     parcel_number, parcel_evidence = _extract_after_label(text, ["宗地号", "地号"])
     land_area, land_area_evidence = _extract_area(text, ["宗地(丘)面积", "宗地面积", "土地面积"])
-    usage_area, usage_area_evidence = _extract_after_label(text, ["使用权面积"], stop_labels=["使用期限", "土地使用期限"])
+    usage_area, usage_area_evidence = _extract_usage_area(text)
     term, term_evidence = _extract_after_label(text, ["使用期限", "土地使用期限"])
     room, room_evidence = _extract_after_label(text, ["室号或部位", "室号", "部位"])
     building_area, building_area_evidence = _extract_area(text, ["建筑面积", "房屋建筑面积"])
@@ -285,20 +290,18 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     register_date, register_evidence = _extract_date_near(text, "登记日")
     issue_unit, issue_unit_evidence = _extract_after_label(text, ["填证单位"])
 
-    co_owners = _split_owners(co_owner_value) if _is_valid_property_value(co_owner_value) else []
-    owner_parts = _split_owners(owner)
-    primary_owner = owner_parts[0] if owner_parts else owner
-    if not co_owners and len(owner_parts) > 1:
-        co_owners = owner_parts[1:]
+    explicit_co_owners = _split_owners(co_owner_value) if _is_valid_property_value(co_owner_value) else []
+    owner_display = owner
+    if explicit_co_owners:
+        owner_display = "、".join(_split_owners(owner) + explicit_co_owners)
 
     value_map: dict[str, tuple[Any, str, float]] = {
-        "权利人": (primary_owner, owner_evidence, 0.78),
-        "共有人": (co_owners, co_owner_evidence or owner_evidence, 0.62),
+        "权利人": (owner_display, owner_evidence or co_owner_evidence, 0.78),
         "权证编号": (cert_number, cert_evidence, 0.76),
         "房地坐落": (address, address_evidence, 0.78),
         "权属性质": (right_nature, right_nature_evidence, 0.74),
         "使用权取得方式": (acquire_method, acquire_evidence, 0.72),
-        "土地用途": (land_use, land_use_evidence, 0.7),
+        "用途": (land_use, land_use_evidence, 0.7),
         "宗地号": (parcel_number, parcel_evidence, 0.72),
         "宗地面积": (land_area, land_area_evidence, 0.72),
         "使用权面积": (usage_area, usage_area_evidence, 0.7),
