@@ -35,9 +35,15 @@ ENGLISH_ALIASES = {
     "房地坐落": "property_address",
     "权属性质": "right_nature",
     "用途": "land_use",
+    "宗地号": "parcel_number",
     "建筑面积": "building_area",
+    "建筑类型": "building_type",
+    "房屋用途": "use_type",
+    "总层数": "total_floors",
+    "竣工日期": "completion_date",
     "宗地面积": "land_area",
     "登记日": "issue_date",
+    "填证单位": "issuing_unit",
 }
 
 INVALID_VALUE_EXACT = {"", "对", "无", "未识别"}
@@ -167,6 +173,11 @@ def _extract_date_near(text: str, label: str) -> tuple[str, str]:
     return "", ""
 
 
+def _extract_valid_year_or_date(value: str) -> str:
+    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}|\d{4}年", value or "")
+    return match.group(0) if match else ""
+
+
 def _extract_area(text: str, labels: list[str]) -> tuple[str, str]:
     value, evidence = _extract_after_label(text, labels)
     if not value:
@@ -184,6 +195,61 @@ def _extract_usage_area(text: str) -> tuple[str, str]:
     if "独用" in value or not re.search(r"\d", value):
         return "", ""
     return _extract_area(text, ["使用权面积"])
+
+
+def _section_between(text: str, start_label: str, end_label: str | None = None, max_lines: int = 18) -> str:
+    source_lines = _lines(text)
+    start_index = next((index for index, line in enumerate(source_lines) if start_label in line), -1)
+    if start_index < 0:
+        return ""
+    end_index = min(len(source_lines), start_index + max_lines)
+    if end_label:
+        for index in range(start_index + 1, min(len(source_lines), start_index + max_lines)):
+            if end_label in source_lines[index]:
+                end_index = index
+                break
+    return "\n".join(source_lines[start_index:end_index])
+
+
+def _extract_land_use(text: str) -> tuple[str, str]:
+    land_section = _section_between(text, "土地状况", "房屋状况")
+    candidates = [land_section, _clean_text(text)]
+    for section in candidates:
+        if not section:
+            continue
+        for pattern in [
+            r"用\s*途[:：\s]*([\u4e00-\u9fa5]{2,12}用地)",
+            r"用\s*\n\s*途\s*\n\s*([\u4e00-\u9fa5]{2,12}用地)",
+        ]:
+            match = re.search(pattern, section)
+            if match:
+                return _compact_value(match.group(1)), match.group(0)
+    if land_section and "住宅用地" in land_section and "国有建设用地使用权" in text and "宗地号" in text:
+        return "住宅用地", "土地状况\n住宅用地"
+    return "", ""
+
+
+def _extract_completion_date(text: str) -> tuple[str, str]:
+    building_section = _section_between(text, "房屋状况", None)
+    candidates = [building_section, _clean_text(text)]
+    for section in candidates:
+        if not section:
+            continue
+        for pattern in [
+            r"竣\s*工\s*日\s*期[:：\s]*([0-9]{4}年(?:\d{1,2}月\d{1,2}日)?|[0-9]{4}-\d{1,2}-\d{1,2})",
+            r"竣\s*工\s*日\s*期\s*\n\s*([0-9]{4}年(?:\d{1,2}月\d{1,2}日)?|[0-9]{4}-\d{1,2}-\d{1,2})",
+        ]:
+            match = re.search(pattern, section)
+            if match:
+                value = _extract_valid_year_or_date(match.group(1))
+                if value:
+                    return value, match.group(0)
+    if "竣工日期" in text:
+        start = text.find("竣工日期")
+        value = _extract_valid_year_or_date(text[start:start + 80])
+        if value:
+            return value, "竣工日期"
+    return "", ""
 
 
 def _extract_owner(text: str) -> tuple[str, str]:
@@ -276,7 +342,9 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     address, address_evidence = _extract_after_label(text, ["房地坐落", "房屋坐落", "坐落", "不动产坐落"])
     right_nature, right_nature_evidence = _extract_after_label(text, ["权属性质", "权利性质"])
     acquire_method, acquire_evidence = _extract_after_label(text, ["使用权取得方式", "取得方式"])
-    land_use, land_use_evidence = _extract_contextual_use(text, "土地状况", ["土地用途", "土地状况用途"])
+    land_use, land_use_evidence = _extract_land_use(text)
+    if not land_use:
+        land_use, land_use_evidence = _extract_contextual_use(text, "土地状况", ["土地用途", "土地状况用途"])
     parcel_number, parcel_evidence = _extract_after_label(text, ["宗地号", "地号"])
     land_area, land_area_evidence = _extract_area(text, ["宗地(丘)面积", "宗地面积", "土地面积"])
     usage_area, usage_area_evidence = _extract_usage_area(text)
@@ -286,7 +354,9 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     building_type, building_type_evidence = _extract_after_label(text, ["建筑类型"])
     house_use, house_use_evidence = _extract_contextual_use(text, "房屋状况", ["房屋用途", "房屋状况用途"])
     total_floors, total_floors_evidence = _extract_after_label(text, ["总层数"])
-    completion_date, completion_evidence = _extract_date_near(text, "竣工日期")
+    completion_date, completion_evidence = _extract_completion_date(text)
+    if not completion_date:
+        completion_date, completion_evidence = _extract_date_near(text, "竣工日期")
     register_date, register_evidence = _extract_date_near(text, "登记日")
     issue_unit, issue_unit_evidence = _extract_after_label(text, ["填证单位"])
 
