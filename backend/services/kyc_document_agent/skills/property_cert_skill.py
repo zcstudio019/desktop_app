@@ -46,6 +46,25 @@ ENGLISH_ALIASES = {
 
 INVALID_VALUE_EXACT = {"", "对", "无", "未识别"}
 INVALID_VALUE_KEYWORDS = ("合法权益", "房地产权利人", "本证是证明", "根据", "法律")
+OWNER_INVALID_KEYWORDS = (
+    "房地产权证",
+    "合法权益",
+    "房地产权利人",
+    "权利人的合法权益",
+    "本证是证明",
+    "本证",
+    "证明",
+    "根据",
+    "法律",
+    "状况",
+    "土地",
+    "房屋",
+    "坐落",
+    "用途",
+    "面积",
+)
+OWNER_LABEL_PATTERN = r"权\s*利\s*人|权利\s*人|房屋所有权人|所有权人"
+OWNER_STOP_PATTERN = r"共\s*有\s*人|共有情况|权证编号|房地坐落|房屋坐落|坐落|权属性质|土地状况|房屋状况|用途|面积"
 
 
 def _clean_text(text: str) -> str:
@@ -75,6 +94,23 @@ def _is_valid_property_value(value: Any) -> bool:
     if text in INVALID_VALUE_EXACT:
         return False
     return not any(keyword in text for keyword in INVALID_VALUE_KEYWORDS)
+
+
+def _clean_owner_candidate(value: str) -> str:
+    value = re.sub(OWNER_LABEL_PATTERN, "", value or "", count=1)
+    value = re.split(OWNER_STOP_PATTERN, value, maxsplit=1)[0]
+    value = _compact_value(value)
+    value = re.sub(r"\s+", "", value)
+    return value.strip(" :：|,，;；。")
+
+
+def _is_valid_owner_value(value: str) -> bool:
+    text = _clean_owner_candidate(value)
+    if not text or text in INVALID_VALUE_EXACT:
+        return False
+    if any(keyword in text for keyword in OWNER_INVALID_KEYWORDS):
+        return False
+    return bool(re.fullmatch(r"[\u4e00-\u9fa5、，,/]{2,30}", text))
 
 
 def _lines(text: str) -> list[str]:
@@ -114,14 +150,17 @@ def _extract_after_label(text: str, labels: list[str], stop_labels: list[str] | 
 def _extract_cert_number(text: str) -> tuple[str, str]:
     patterns = [
         r"(沪房地[\u4e00-\u9fa5]{0,6}字[（(]?\d{4}[）)]?第?\d+号)",
-        r"((?:房地|房权|沪房地)[^\n]{0,30}?第?\d+号)",
+        r"((?:房权|沪房地)[^\n]{0,30}?第?\d+号)",
     ]
     for pattern in patterns:
         match = re.search(pattern, text or "")
         if match:
             return _normalize_cert_number(match.group(1)), match.group(0)
     value, evidence = _extract_after_label(text, ["权证编号", "证号", "编号"])
-    return (_normalize_cert_number(value), evidence) if value else ("", "")
+    normalized = _normalize_cert_number(value)
+    if normalized and "坐落" not in normalized and re.search(r"(?:沪房地|房权|字.*号|第.*号)", normalized):
+        return normalized, evidence
+    return "", ""
 
 
 def _extract_date_near(text: str, label: str) -> tuple[str, str]:
@@ -143,18 +182,38 @@ def _extract_area(text: str, labels: list[str]) -> tuple[str, str]:
 
 
 def _extract_owner(text: str) -> tuple[str, str]:
-    for line in _lines(text):
-        if not any(label in line for label in ("权利人", "房屋所有权人", "所有权人")):
+    source_lines = _lines(text)
+    for index, line in enumerate(source_lines):
+        match = re.search(OWNER_LABEL_PATTERN, line)
+        if not match:
             continue
         if any(keyword in line for keyword in INVALID_VALUE_KEYWORDS):
             continue
-        value = re.sub(r".*?(?:权利人|房屋所有权人|所有权人)[:：]?", "", line, count=1)
-        value = re.split(r"(?:共有人|权证编号|房地坐落|房屋坐落|坐落|权属性质)", value, maxsplit=1)[0]
-        value = _compact_value(value)
-        if _is_valid_property_value(value):
+        value = _clean_owner_candidate(line[match.end():])
+        if _is_valid_owner_value(value):
             return value, line
+
+        for next_line in source_lines[index + 1 : index + 3]:
+            if re.search(OWNER_STOP_PATTERN, next_line):
+                break
+            value = _clean_owner_candidate(next_line)
+            if _is_valid_owner_value(value):
+                return value, f"{line}\n{next_line}"
+
+    for pattern in [
+        rf"(?:{OWNER_LABEL_PATTERN})[:：\s]+([\u4e00-\u9fa5、，,/]{{2,30}})",
+        rf"(?:{OWNER_LABEL_PATTERN})\s*([\u4e00-\u9fa5、，,/]{{2,30}})",
+    ]:
+        match = re.search(pattern, text or "")
+        if not match:
+            continue
+        value = _clean_owner_candidate(match.group(1))
+        if _is_valid_owner_value(value):
+            return value, match.group(0)
+
     value, evidence = _extract_after_label(text, ["权利人", "房屋所有权人", "所有权人"])
-    if _is_valid_property_value(value):
+    value = _clean_owner_candidate(value)
+    if _is_valid_owner_value(value):
         return value, evidence
     return "", ""
 
@@ -227,12 +286,13 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     issue_unit, issue_unit_evidence = _extract_after_label(text, ["填证单位"])
 
     co_owners = _split_owners(co_owner_value) if _is_valid_property_value(co_owner_value) else []
-    if not co_owners and owner:
-        owner_parts = _split_owners(owner)
-        co_owners = owner_parts[1:] if len(owner_parts) > 1 else []
+    owner_parts = _split_owners(owner)
+    primary_owner = owner_parts[0] if owner_parts else owner
+    if not co_owners and len(owner_parts) > 1:
+        co_owners = owner_parts[1:]
 
     value_map: dict[str, tuple[Any, str, float]] = {
-        "权利人": (owner, owner_evidence, 0.78),
+        "权利人": (primary_owner, owner_evidence, 0.78),
         "共有人": (co_owners, co_owner_evidence or owner_evidence, 0.62),
         "权证编号": (cert_number, cert_evidence, 0.76),
         "房地坐落": (address, address_evidence, 0.78),
