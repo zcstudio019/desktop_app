@@ -13,7 +13,7 @@ CHINESE_FIELDS = [
     "房地坐落",
     "权属性质",
     "使用权取得方式",
-    "用途",
+    "土地用途",
     "宗地号",
     "宗地面积",
     "土地使用期限",
@@ -34,11 +34,11 @@ ENGLISH_ALIASES = {
     "权证编号": "certificate_number",
     "房地坐落": "property_address",
     "权属性质": "right_nature",
-    "用途": "land_use",
+    "土地用途": "land_use",
     "宗地号": "parcel_number",
     "建筑面积": "building_area",
     "建筑类型": "building_type",
-    "房屋用途": "use_type",
+    "房屋用途": "house_use",
     "总层数": "total_floors",
     "竣工日期": "completion_date",
     "宗地面积": "land_area",
@@ -371,7 +371,7 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         "房地坐落": (address, address_evidence, 0.78),
         "权属性质": (right_nature, right_nature_evidence, 0.74),
         "使用权取得方式": (acquire_method, acquire_evidence, 0.72),
-        "用途": (land_use, land_use_evidence, 0.7),
+        "土地用途": (land_use, land_use_evidence, 0.7),
         "宗地号": (parcel_number, parcel_evidence, 0.72),
         "宗地面积": (land_area, land_area_evidence, 0.72),
         "使用权面积": (usage_area, usage_area_evidence, 0.7),
@@ -398,6 +398,12 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
             fields[en_key] = fields[zh_key]
             evidence[en_key] = {**evidence[zh_key], "value": fields[zh_key]}
             confidences[en_key] = max(0.55, confidences[zh_key] - 0.02)
+    if "房屋用途" in fields:
+        for alias in ("use_type", "building_use"):
+            if alias not in fields:
+                fields[alias] = fields["房屋用途"]
+                evidence[alias] = {**evidence["房屋用途"], "value": fields["房屋用途"]}
+                confidences[alias] = max(0.55, confidences["房屋用途"] - 0.02)
 
     result = build_result(doc_type, fields, evidence)
     result["doc_type_name"] = "房产证/房地产权证" if doc_type == "property_cert" else result["doc_type_name"]

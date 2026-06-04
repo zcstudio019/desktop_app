@@ -81,7 +81,7 @@ def test_property_cert_markdown_displays_expected_chinese_fields():
     assert "权证编号: 沪房地奉字(2014)第004478号" in markdown
     assert "房地坐落: 奉贤区泽丰路88弄2号" in markdown
     assert "权利人: 林勇、黄晓囡" in markdown
-    assert "用途: 住宅用地" in markdown
+    assert "土地用途: 住宅用地" in markdown
     assert "建筑面积: 148.08 平方米" in markdown
     assert "房屋用途: 居住" in markdown
     assert "登记日: 2014年3月17日" in markdown
@@ -109,7 +109,7 @@ def test_completion_date_and_house_use_are_not_polluted_by_land_fields():
 
     assert fields["竣工日期"] == "2011年"
     assert fields["竣工日期"] != "独用"
-    assert fields["用途"] == "住宅用地"
+    assert fields["土地用途"] == "住宅用地"
     assert fields["房屋用途"] == "居住"
     assert fields["房屋用途"] != "住宅用地"
 
@@ -141,8 +141,8 @@ def test_display_fields_format_value_unit_dict_and_filter_empty_values():
     assert "竣工日期: 独用" not in markdown
     assert "权利人: null" not in markdown
     assert "使用权面积: 独用" not in markdown
-    assert "用途: 住宅用地" in markdown
-    assert "土地用途: 住宅用地" not in markdown
+    assert "土地用途: 住宅用地" in markdown
+    assert "\n- 用途: 住宅用地" not in markdown
     assert "房屋用途: 居住" in markdown
 
 

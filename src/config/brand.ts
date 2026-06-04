@@ -1,4 +1,4 @@
-import { APP_VERSION } from './app';
+import { APP_VERSION } from './version';
 
 export const BRAND = {
   appName: '上海孜友信息科技有限公司企业信息服务平台',

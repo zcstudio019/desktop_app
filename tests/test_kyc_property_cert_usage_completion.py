@@ -15,21 +15,21 @@ def _extract(text: str) -> dict:
 def test_land_use_extracts_from_normal_usage_label():
     result = _extract("上海市 房地产权证\n土地状况\n权属性质 国有建设用地使用权\n用途 住宅用地\n宗地号 奉贤区光明镇2街坊1/5丘\n房屋状况")
 
-    assert result["fields"]["用途"] == "住宅用地"
+    assert result["fields"]["土地用途"] == "住宅用地"
     assert result["fields"]["land_use"] == "住宅用地"
 
 
 def test_land_use_extracts_from_spaced_usage_label():
     result = _extract("上海市 房地产权证\n土地状况\n权属性质 国有建设用地使用权\n用 途 住宅用地\n宗地号 奉贤区光明镇2街坊1/5丘\n房屋状况")
 
-    assert result["fields"]["用途"] == "住宅用地"
+    assert result["fields"]["土地用途"] == "住宅用地"
     assert result["fields"]["land_use"] == "住宅用地"
 
 
 def test_land_use_extracts_from_broken_usage_lines():
     result = _extract("上海市 房地产权证\n土地状况\n权属性质 国有建设用地使用权\n用\n途\n住宅用地\n宗地号 奉贤区光明镇2街坊1/5丘\n房屋状况")
 
-    assert result["fields"]["用途"] == "住宅用地"
+    assert result["fields"]["土地用途"] == "住宅用地"
 
 
 def test_completion_date_extracts_from_normal_label():
@@ -72,8 +72,8 @@ def test_property_cert_markdown_displays_usage_and_completion_date():
     )
     markdown = render_markdown(result)
 
-    assert "用途: 住宅用地" in markdown
+    assert "土地用途: 住宅用地" in markdown
     assert "房屋用途: 居住" in markdown
     assert "竣工日期: 2011年" in markdown
-    assert "土地用途" not in markdown
+    assert "\n- 用途: 住宅用地" not in markdown
     assert "竣工日期: 独用" not in markdown
