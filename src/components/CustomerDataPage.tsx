@@ -2283,8 +2283,35 @@ function extractLegacyKycFieldsFromMarkdownSection(section: string): Record<stri
   return Object.keys(fallback).length ? fallback : null;
 }
 
-function renderKycPropertyDisplayMarkdown(fields: Record<string, unknown>): string {
-  const displayFields = getKycDisplayFields(fields, 'property_cert');
+function hasLegacyHouseContext(fields: Record<string, unknown>): boolean {
+  return Boolean(
+    fields['室号或部位'] ||
+      fields.room_number ||
+      fields['建筑面积'] ||
+      fields.building_area ||
+      fields['建筑类型'] ||
+      fields.building_type ||
+      fields['总层数'] ||
+      fields.total_floors ||
+      fields['竣工日期'] ||
+      fields.completion_date,
+  );
+}
+
+function enrichLegacyKycPropertyFields(fields: Record<string, unknown>, sourceText = ''): Record<string, unknown> {
+  const enriched = { ...fields };
+  const hasHouseUse = Boolean(enriched['房屋用途'] || enriched.house_use || enriched.building_use || enriched.use_type);
+  if (!hasHouseUse && hasLegacyHouseContext(enriched) && sourceText.includes('居住')) {
+    enriched['房屋用途'] = '居住';
+    enriched.house_use = '居住';
+    enriched.building_use = '居住';
+    enriched.use_type = '居住';
+  }
+  return enriched;
+}
+
+function renderKycPropertyDisplayMarkdown(fields: Record<string, unknown>, sourceText = ''): string {
+  const displayFields = getKycDisplayFields(enrichLegacyKycPropertyFields(fields, sourceText), 'property_cert');
   const lines = ['## 房产证/房地产权证', ''];
   const entries = Object.entries(displayFields);
   if (entries.length === 0) {
@@ -2306,7 +2333,7 @@ function sanitizeKycPropertyMarkdownSections(markdown: string): string {
     const leadingNewline = matched.startsWith('\n') ? '\n' : '';
     const section = leadingNewline ? matched.slice(1) : matched;
     const fields = extractLegacyKycFieldsFromMarkdownSection(section);
-    return `${leadingNewline}${renderKycPropertyDisplayMarkdown(fields || {})}`;
+    return `${leadingNewline}${renderKycPropertyDisplayMarkdown(fields || {}, section)}`;
   });
 }
 

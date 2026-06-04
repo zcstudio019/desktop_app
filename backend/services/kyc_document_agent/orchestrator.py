@@ -73,9 +73,11 @@ class KycDocumentAgent:
         result = validate_result(result)
         if result.get("doc_type") in {"property_cert", "real_estate_cert"}:
             fields = result.get("fields") or {}
-            logger.info("[KycDocumentAgent] final fields keys=%s", list(fields.keys()))
-            logger.info("[KycDocumentAgent] 房屋用途=%s", fields.get("房屋用途"))
-            logger.info("[KycDocumentAgent] house_use=%s", fields.get("house_use"))
+            logger.info("[KycDocumentAgent][DEBUG] final_fields_keys=%s", list(fields.keys()))
+            logger.info("[KycDocumentAgent][DEBUG] final_房屋用途=%s", fields.get("房屋用途"))
+            logger.info("[KycDocumentAgent][DEBUG] final_house_use=%s", fields.get("house_use"))
+            logger.info("[KycDocumentAgent][DEBUG] final_building_use=%s", fields.get("building_use"))
+            logger.info("[KycDocumentAgent][DEBUG] final_use_type=%s", fields.get("use_type"))
         result["markdown"] = render_markdown(result)
         if self.save_results:
             result["saved_path"] = str(self.save_structured_result(result, data.get("metadata") or {}))

@@ -179,6 +179,7 @@ def test_frontend_kyc_component_uses_display_filter():
     assert "renderKycDisplayMarkdown" in source
     assert "{displayMarkdown}" in source
     assert "result.markdown" not in source
+    assert "enrichPropertyFieldsForDisplay" in source
     assert "权证编号" in util_source
     assert "doc type" not in source.lower()
     assert "owner type" not in source.lower()
@@ -191,8 +192,9 @@ def test_customer_profile_page_rerenders_legacy_property_cert_markdown():
 
     assert "sanitizeKycPropertyMarkdownSections" in source
     assert "extractLegacyKycFieldsFromMarkdownSection" in source
+    assert "enrichLegacyKycPropertyFields" in source
     assert "renderKycPropertyDisplayMarkdown" in source
     assert "## 房产证/房地产权证" in source
-    assert "getKycDisplayFields(fields, 'property_cert')" in source
+    assert "getKycDisplayFields(enrichLegacyKycPropertyFields(fields, sourceText), 'property_cert')" in source
     display_source = source[source.index("function renderKycPropertyDisplayMarkdown"):source.index("function sanitizeProfileMarkdown")]
     assert "- fields:" not in display_source

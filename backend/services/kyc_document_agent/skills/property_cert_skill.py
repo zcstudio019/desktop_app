@@ -359,6 +359,11 @@ def _build_evidence(value_map: dict[str, tuple[Any, str, float]]) -> tuple[dict[
     return fields, evidence, confidences
 
 
+def _has_house_context_fields(fields: dict[str, Any]) -> bool:
+    context_keys = ("室号或部位", "建筑面积", "建筑类型", "总层数", "竣工日期")
+    return sum(1 for key in context_keys if _is_valid_property_value(fields.get(key))) >= 2
+
+
 def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str, Any]:
     data = normalize_input(payload)
     text = _clean_text(data["text"])
@@ -425,6 +430,21 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     }
     fields, evidence, confidences = _build_evidence(value_map)
 
+    if (
+        doc_type in {"property_cert", "real_estate_cert"}
+        and "房屋用途" not in fields
+        and "居住" in text
+        and _has_house_context_fields(fields)
+    ):
+        fields["房屋用途"] = "居住"
+        evidence["房屋用途"] = {
+            "value": "居住",
+            "evidence_text": "房屋状况\n居住",
+            "page": None,
+            "confidence": 0.62,
+        }
+        confidences["房屋用途"] = 0.62
+
     # Compatibility aliases for profile sync and older integrations. UI/Markdown use Chinese labels.
     for zh_key, en_key in ENGLISH_ALIASES.items():
         if zh_key in fields and en_key not in fields:
@@ -438,11 +458,12 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
                 evidence[alias] = {**evidence["房屋用途"], "value": fields["房屋用途"]}
                 confidences[alias] = max(0.55, confidences["房屋用途"] - 0.02)
 
-    logger.info("[PropertyCertSkill] fields keys=%s", list(fields.keys()))
-    logger.info("[PropertyCertSkill] land_use=%s", fields.get("land_use"))
-    logger.info("[PropertyCertSkill] house_use=%s", fields.get("house_use"))
-    logger.info("[PropertyCertSkill] building_use=%s", fields.get("building_use"))
-    logger.info("[PropertyCertSkill] 房屋用途=%s", fields.get("房屋用途"))
+    logger.info("[PropertyCertSkill][DEBUG] raw_text_contains_居住=%s", str("居住" in text).lower())
+    logger.info("[PropertyCertSkill][DEBUG] fields_keys=%s", list(fields.keys()))
+    logger.info("[PropertyCertSkill][DEBUG] 房屋用途=%s", fields.get("房屋用途"))
+    logger.info("[PropertyCertSkill][DEBUG] house_use=%s", fields.get("house_use"))
+    logger.info("[PropertyCertSkill][DEBUG] building_use=%s", fields.get("building_use"))
+    logger.info("[PropertyCertSkill][DEBUG] use_type=%s", fields.get("use_type"))
 
     result = build_result(doc_type, fields, evidence)
     result["doc_type_name"] = "房产证/房地产权证" if doc_type == "property_cert" else result["doc_type_name"]

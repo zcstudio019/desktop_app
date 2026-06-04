@@ -261,8 +261,9 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
 
   const displayFields = Object.fromEntries(display.entries());
   if (isPropertyCert) {
-    console.debug('[KycDisplayFields] docType=%s rawFields=', docType, fields);
-    console.debug('[KycDisplayFields] displayFields=', displayFields);
+    console.debug('[KycDisplayFields][DEBUG] docType=%s', docType);
+    console.debug('[KycDisplayFields][DEBUG] rawFields=', fields);
+    console.debug('[KycDisplayFields][DEBUG] displayFields=', displayFields);
   }
   return displayFields;
 }
