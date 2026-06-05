@@ -318,19 +318,17 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
               {BRAND.icpRecord}
             </a>
           </p>
-          {/*
-            公安联网备案号待确认后可启用：
-            <p className="police-beian">
-              <img src="/assets/image/head-logo.png" width="20" alt="" />
-              <a
-                href="https://beian.mps.gov.cn/#/query/webSearch?code=待替换公安备案code"
-                rel="noreferrer"
-                target="_blank"
-              >
-                沪公网安备待替换号
-              </a>
-            </p>
-          */}
+          <p>
+            <a
+              href="https://beian.mps.gov.cn/#/query/webSearch?code=31010702010353"
+              rel="noreferrer"
+              target="_blank"
+              className="inline-flex items-center justify-center gap-1 text-xs text-gray-400 transition-colors hover:text-gray-500"
+            >
+              <img src="/assets/image/beian-police.png" alt="公安备案图标" className="h-4 w-4" />
+              <span>沪公网安备31010702010353号</span>
+            </a>
+          </p>
         </div>
       </div>
 
