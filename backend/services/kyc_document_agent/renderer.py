@@ -5,13 +5,20 @@ from typing import Any
 
 PROPERTY_FIELD_ORDER = [
     "权利人",
+    "共有情况",
     "权证编号",
+    "坐落",
     "房地坐落",
+    "不动产单元号",
+    "权利类型",
     "权属性质",
+    "权利性质",
     "使用权取得方式",
     "土地用途",
     "宗地号",
+    "地号",
     "宗地面积",
+    "使用期限",
     "土地使用期限",
     "室号或部位",
     "建筑面积",
@@ -28,6 +35,7 @@ ENGLISH_TO_CHINESE_FIELDS = {
     "co_owners": "共有人",
     "certificate_number": "权证编号",
     "property_address": "房地坐落",
+    "property_unit_number": "不动产单元号",
     "right_type": "权利类型",
     "right_nature": "权属性质",
     "acquisition_method": "使用权取得方式",
@@ -50,6 +58,13 @@ ENGLISH_TO_CHINESE_FIELDS = {
     "issuing_unit": "填证单位",
     "土地用途": "土地用途",
     "用途": "土地用途",
+    "共有情况": "共有情况",
+    "坐落": "坐落",
+    "不动产单元号": "不动产单元号",
+    "权利类型": "权利类型",
+    "权利性质": "权利性质",
+    "地号": "地号",
+    "使用期限": "使用期限",
 }
 
 OWNER_TYPE_LABELS = {

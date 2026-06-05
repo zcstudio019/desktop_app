@@ -131,6 +131,38 @@ def _effective_field(
     }
 
 
+def _effective_any_field(
+    fields: dict[str, Any],
+    confirmed_fields: dict[str, Any],
+    keys: list[str],
+    source_document_id: str,
+) -> tuple[str, dict[str, Any]]:
+    for key in keys:
+        if key in confirmed_fields and confirmed_fields.get(key) not in (None, ""):
+            value = _string(confirmed_fields.get(key))
+            return value, {
+                "value": value,
+                "source": "confirmed_data",
+                "source_document_id": source_document_id,
+                "confirmed": True,
+            }
+    for key in keys:
+        value = _string(fields.get(key))
+        if value:
+            return value, {
+                "value": value,
+                "source": "extracted_data",
+                "source_document_id": source_document_id,
+                "confirmed": False,
+            }
+    return "", {
+        "value": "",
+        "source": "extracted_data",
+        "source_document_id": source_document_id,
+        "confirmed": False,
+    }
+
+
 def _apply_latest_single(
     profile: dict[str, Any],
     section: str,
@@ -151,31 +183,52 @@ def _apply_latest_single(
 def _property_item(fields: dict[str, Any], source_document_id: str, doc_type: str, confirmed_fields: dict[str, Any] | None = None) -> dict[str, Any]:
     confirmed_fields = confirmed_fields or {}
     field_map = {
-        "owner": "owner",
-        "co_owners": "co_owners",
-        "certificate_number": "certificate_number",
-        "property_unit_number": "property_unit_number",
-        "property_address": "property_address",
-        "right_type": "right_type",
-        "right_nature": "right_nature",
-        "use_type": "use_type",
-        "building_area": "building_area",
-        "land_area": "land_area",
-        "total_area": "total_area",
-        "mortgage_status": "mortgage_status",
-        "seizure_status": "seizure_status",
-        "issue_date": "issue_date",
+        "owner": ["owner", "权利人"],
+        "co_owners": ["co_owners", "共有情况", "共有人"],
+        "certificate_number": ["certificate_number", "权证编号"],
+        "property_unit_number": ["property_unit_number", "不动产单元号"],
+        "property_address": ["property_address", "坐落", "房地坐落"],
+        "right_type": ["right_type", "权利类型"],
+        "right_nature": ["right_nature", "权利性质", "权属性质"],
+        "use_type": ["use_type", "house_use", "building_use", "房屋用途"],
+        "land_use": ["land_use", "土地用途"],
+        "building_area": ["building_area", "建筑面积"],
+        "land_area": ["land_area", "宗地面积"],
+        "total_area": ["total_area", "使用权面积"],
+        "land_use_term": ["land_use_term", "使用期限", "土地使用期限"],
+        "parcel_number": ["parcel_number", "地号", "宗地号"],
+        "mortgage_status": ["mortgage_status"],
+        "seizure_status": ["seizure_status"],
+        "issue_date": ["issue_date", "登记日"],
     }
     item = {
         "doc_type": doc_type,
         "field_sources": {},
         "source_document_id": source_document_id,
     }
-    for target_key, source_key in field_map.items():
-        value, source = _effective_field(fields, confirmed_fields, source_key, source_document_id)
+    for target_key, source_keys in field_map.items():
+        value, source = _effective_any_field(fields, confirmed_fields, source_keys, source_document_id)
         item[target_key] = value
         item["field_sources"][target_key] = source
     return item
+
+
+def _property_completeness_score(item: dict[str, Any]) -> int:
+    keys = (
+        "owner",
+        "certificate_number",
+        "property_unit_number",
+        "property_address",
+        "right_type",
+        "right_nature",
+        "land_use",
+        "use_type",
+        "building_area",
+        "land_area",
+        "land_use_term",
+        "parcel_number",
+    )
+    return sum(1 for key in keys if _string(item.get(key)))
 
 
 def _vehicle_item(fields: dict[str, Any], source_document_id: str, confirmed_fields: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -321,5 +374,9 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
         elif doc_type in LICENSE_DOC_TYPES:
             profile["licenses"].append(_license_item(fields, data, source_document_id, confirmed_fields))
 
+    profile["assets"]["properties"].sort(
+        key=lambda item: (_property_completeness_score(item), _string(item.get("source_document_id"))),
+        reverse=True,
+    )
     profile["updated_at"] = datetime.now(timezone.utc).isoformat()
     return profile

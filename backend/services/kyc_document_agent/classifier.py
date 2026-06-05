@@ -31,10 +31,16 @@ PROPERTY_KEYWORDS = (
     "房地产权证",
     "房产证",
     "不动产权证",
+    "不动产权证书",
+    "不动产单元号",
+    "国有建设用地使用权/房屋所有权",
     "权利人",
     "房地坐落",
+    "坐落",
     "建筑面积",
     "权属性质",
+    "权利性质",
+    "权利类型",
     "使用权面积",
     "宗地号",
     "室号或部位",
@@ -42,7 +48,7 @@ PROPERTY_KEYWORDS = (
     "竣工日期",
 )
 
-PROPERTY_FILENAME_KEYWORDS = ("产证", "房产证", "房地产权证", "不动产权证", "房本")
+PROPERTY_FILENAME_KEYWORDS = ("房产", "产证", "房产证", "房地产权证", "不动产权证", "房本")
 DECLARED_DOC_TYPE_ALIASES = {
     "property_certificate": "property_cert",
     "real_estate_certificate": "real_estate_cert",
@@ -94,12 +100,17 @@ def classify_with_reason(text: str, filename: str = "", declared_doc_type: str |
     normalized = text or ""
     compact = re.sub(r"\s+", "", normalized)
 
-    if "不动产权证书" in compact or "不动产单元号" in compact:
+    if (
+        "不动产权证书" in compact
+        or "不动产权证" in compact
+        or "不动产单元号" in compact
+        or "国有建设用地使用权/房屋所有权" in compact
+    ):
         return {
-            "doc_type": "real_estate_cert",
-            "doc_type_name": DOC_TYPE_NAMES["real_estate_cert"],
-            "owner_type": OWNER_TYPES["real_estate_cert"],
-            "reason": "文本包含不动产权证书或不动产单元号",
+            "doc_type": "property_cert",
+            "doc_type_name": DOC_TYPE_NAMES["property_cert"],
+            "owner_type": OWNER_TYPES["property_cert"],
+            "reason": "文本包含不动产权证/不动产单元号关键词",
         }
 
     if "上海市房地产权证" in compact or "房地产权证" in compact:
@@ -117,6 +128,9 @@ def classify_with_reason(text: str, filename: str = "", declared_doc_type: str |
         ("宗地号", "建筑面积"),
         ("权利人", "建筑面积"),
         ("房地坐落", "建筑面积"),
+        ("坐落", "不动产单元号"),
+        ("权利类型", "权利性质"),
+        ("权利人", "不动产单元号"),
     )
     for left, right in property_combinations:
         if left in compact and right in compact:
