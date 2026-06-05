@@ -313,22 +313,20 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
             © 2026 {BRAND.organizer} · {BRAND.loginSubtitle}
           </p>
           <p>{getSystemVersionLabel()}</p>
-          <p>
-            <a href={BRAND.icpRecordUrl} rel="noreferrer" target="_blank" className="transition-colors hover:text-gray-500">
-              {BRAND.icpRecord}
-            </a>
-          </p>
-          <p>
+          <div className="flex items-center justify-center gap-4 text-xs text-gray-400">
             <a
               href="https://beian.mps.gov.cn/#/query/webSearch?code=31010702010353"
               rel="noreferrer"
               target="_blank"
-              className="inline-flex items-center justify-center gap-1 text-xs text-gray-400 transition-colors hover:text-gray-500"
+              className="inline-flex items-center gap-1 transition-colors hover:text-gray-500"
             >
               <img src="/assets/image/beian-police.png" alt="公安备案图标" className="h-4 w-4" />
               <span>沪公网安备31010702010353号</span>
             </a>
-          </p>
+            <a href={BRAND.icpRecordUrl} rel="noreferrer" target="_blank" className="transition-colors hover:text-gray-500">
+              {BRAND.icpRecord}
+            </a>
+          </div>
         </div>
       </div>
 
