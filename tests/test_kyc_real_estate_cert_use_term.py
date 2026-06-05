@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from backend.services.kyc_document_agent.orchestrator import run_kyc_document_agent
 from backend.services.kyc_document_agent.renderer import get_display_fields
+from backend.services.kyc_document_agent.skills.property_cert_skill import extract_use_term_from_property_cert_text
 
 
 def _extract(text: str) -> dict:
@@ -36,14 +37,26 @@ def test_real_estate_cert_extracts_cross_line_use_term():
     assert result["fields"]["使用期限"] == "2015年10月16日起2076年12月28日止"
 
 
-def test_real_estate_cert_keeps_term_without_stop_when_ocr_misses_stop():
+def test_real_estate_cert_normalizes_term_without_stop_when_ocr_misses_stop():
     result = _extract(
         "不动产权证书 权利人 沃志方 不动产单元号 310104019001GB00045F00430086 "
         "使用期限：2015年10月16日起2076年12月28日 "
         "建筑面积：62.40平方米"
     )
 
-    assert result["fields"]["使用期限"] == "2015年10月16日起2076年12月28日"
+    assert result["fields"]["使用期限"] == "2015年10月16日起2076年12月28日止"
+
+
+def test_extract_use_term_from_property_cert_text_uses_label_line_and_next_lines():
+    text = (
+        "用途：土地用途：住宅/房屋用途：居住\n"
+        "使用期限\n"
+        "国有建设用地使用权使用期限：2015年10月16日起2076\n"
+        "年12月28日止\n"
+        "房屋状况：室号部位：1705"
+    )
+
+    assert extract_use_term_from_property_cert_text(text) == "2015年10月16日起2076年12月28日止"
 
 
 def test_use_term_aliases_render_as_use_term_for_new_real_estate_cert():
