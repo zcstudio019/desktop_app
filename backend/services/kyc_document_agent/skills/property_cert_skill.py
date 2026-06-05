@@ -133,6 +133,10 @@ def _clean_text(text: str) -> str:
     )
 
 
+def _dense_text(text: str) -> str:
+    return re.sub(r"\s+", "", _clean_text(text or ""))
+
+
 def _compact_value(value: str) -> str:
     value = re.sub(r"\s+", " ", value or "").strip(" :：|,，;；")
     value = re.sub(r"^(?:为|是|:)\s*", "", value).strip()
@@ -237,6 +241,99 @@ def _extract_after_label(text: str, labels: list[str], stop_labels: list[str] | 
         if value:
             return value, match.group(0)[:80]
     return "", ""
+
+
+def _dense_between(dense: str, start: str, stops: tuple[str, ...], *, max_len: int = 120) -> tuple[str, str]:
+    start_index = dense.find(start)
+    if start_index < 0:
+        return "", ""
+    value_start = start_index + len(start)
+    while value_start < len(dense) and dense[value_start] in ":：;；,，":
+        value_start += 1
+    value_end = min(len(dense), value_start + max_len)
+    for stop in stops:
+        stop_index = dense.find(stop, value_start)
+        if value_start <= stop_index < value_end:
+            value_end = stop_index
+    value = _compact_value(dense[value_start:value_end])
+    return value, dense[start_index:value_end]
+
+
+def _extract_new_version_dense_fields(text: str) -> dict[str, tuple[str, str, float]]:
+    dense = _dense_text(text)
+    extracted: dict[str, tuple[str, str, float]] = {}
+
+    def add(field: str, value: str, evidence: str, confidence: float = 0.72) -> None:
+        value = _compact_value(value)
+        if value and _is_valid_property_value(value) and field not in extracted:
+            extracted[field] = (value, evidence or value, confidence)
+
+    cert_match = re.search(r"([\u4e00-\u9fa5]?[（(]\d{4}[）)][\u4e00-\u9fa5]{1,8}字?不动产权第\d+号)", dense)
+    if cert_match:
+        add("权证编号", _normalize_cert_number(cert_match.group(1)).replace("字不动产权", "字不动产权"), cert_match.group(0), 0.78)
+
+    owner, evidence = _dense_between(dense, "权利人", ("共有情况", "坐落", "不动产单元号"), max_len=30)
+    if _is_valid_owner_value(owner):
+        add("权利人", _clean_owner_candidate(owner), evidence, 0.78)
+
+    shared, evidence = _dense_between(dense, "共有情况", ("坐落", "不动产单元号", "权利类型"), max_len=30)
+    add("共有情况", shared, evidence, 0.72)
+
+    address, evidence = _dense_between(dense, "坐落", ("不动产单元号", "权利类型", "权利性质"), max_len=80)
+    add("坐落", address, evidence, 0.78)
+    add("房地坐落", address, evidence, 0.78)
+
+    unit_match = re.search(r"不动产单元号[:：]?([0-9A-Z]{20,40})", dense)
+    if unit_match:
+        add("不动产单元号", unit_match.group(1), unit_match.group(0), 0.78)
+
+    right_type, evidence = _dense_between(dense, "权利类型", ("权利性质", "用途", "面积"), max_len=80)
+    add("权利类型", right_type, evidence, 0.74)
+
+    right_nature, evidence = _dense_between(dense, "权利性质", ("用途", "面积", "使用期限"), max_len=80)
+    if right_nature == "土地":
+        nature_match = re.search(r"权利性质土地权利性质[:：]?([\u4e00-\u9fa5]+)", dense)
+        if nature_match:
+            right_nature = f"土地权利性质:{nature_match.group(1)}"
+    add("权利性质", right_nature, evidence, 0.74)
+    add("权属性质", right_nature, evidence, 0.74)
+
+    use_match = re.search(r"土地用途[:：]?([\u4e00-\u9fa5]{1,12})/?房屋用途[:：]?([\u4e00-\u9fa5]{1,12})", dense)
+    if use_match:
+        add("土地用途", use_match.group(1), use_match.group(0), 0.72)
+        add("房屋用途", use_match.group(2), use_match.group(0), 0.72)
+
+    area_match = re.search(r"宗地面积[:：]?(\d+(?:\.\d+)?)平方米/?建筑面积[:：]?(\d+(?:\.\d+)?)平方米", dense)
+    if area_match:
+        add("宗地面积", f"{area_match.group(1)} 平方米", area_match.group(0), 0.74)
+        add("建筑面积", f"{area_match.group(2)} 平方米", area_match.group(0), 0.78)
+
+    term_match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日起?\d{4}年\d{1,2}月\d{1,2}日止?)", dense)
+    if term_match:
+        add("使用期限", term_match.group(1), term_match.group(0), 0.72)
+        add("土地使用期限", term_match.group(1), term_match.group(0), 0.72)
+
+    parcel, evidence = _dense_between(dense, "地号", ("房屋状况", "室号", "室号部位", "建筑面积", "建筑类型", "类型", "总层数"), max_len=80)
+    add("地号", parcel, evidence, 0.7)
+    add("宗地号", parcel, evidence, 0.7)
+
+    room_match = re.search(r"室号(?:或部位|部位)?[:：]?([0-9A-Za-z-]{1,20})", dense)
+    if room_match:
+        add("室号或部位", room_match.group(1), room_match.group(0), 0.72)
+
+    building_type_match = re.search(r"(?:建筑类型|类型)[:：]?([\u4e00-\u9fa5]{1,8})[;；,，。:]?(?:总层数|竣工日期)", dense)
+    if building_type_match:
+        add("建筑类型", building_type_match.group(1), building_type_match.group(0), 0.7)
+
+    floor_match = re.search(r"总层数[:：]?(\d+)", dense)
+    if floor_match:
+        add("总层数", floor_match.group(1), floor_match.group(0), 0.68)
+
+    completion_match = re.search(r"竣工日期[:：]?(\d{4}年(?:\d{1,2}月\d{1,2}日)?)", dense)
+    if completion_match:
+        add("竣工日期", completion_match.group(1), completion_match.group(0), 0.68)
+
+    return extracted
 
 
 def _extract_cert_number(text: str) -> tuple[str, str]:
@@ -413,6 +510,10 @@ def _extract_new_version_area(text: str, label: str) -> tuple[str, str]:
 
 
 def _extract_term(text: str) -> tuple[str, str]:
+    dense = _dense_text(text)
+    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日起?\d{4}年\d{1,2}月\d{1,2}日止?", dense)
+    if match:
+        return match.group(0), match.group(0)
     value, evidence = _extract_after_label(text, ["使用期限", "土地使用期限"], stop_labels=["权利其他状况", "附记", "室号或部位"])
     if not value:
         return "", ""
@@ -598,6 +699,21 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         for field, (value, evidence_text, confidence) in value_map.items()
         if _is_valid_property_value(value)
     }
+    dense_fields = _extract_new_version_dense_fields(text)
+    dense_override_fields = {
+        "权证编号",
+        "宗地号",
+        "地号",
+        "使用期限",
+        "土地使用期限",
+        "室号或部位",
+        "建筑类型",
+        "总层数",
+        "竣工日期",
+    }
+    for field, value_tuple in dense_fields.items():
+        if field in dense_override_fields or field not in value_map:
+            value_map[field] = value_tuple
     fields, evidence, confidences = _build_evidence(value_map)
 
     if (
@@ -629,6 +745,11 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
                 confidences[alias] = max(0.55, confidences["房屋用途"] - 0.02)
 
     logger.info("[PropertyCertSkill][DEBUG] raw_text_contains_居住=%s", str("居住" in text).lower())
+    logger.info("[PropertyCertSkill] raw_text_preview=%s", raw_preview(text))
+    logger.info("[PropertyCertSkill] contains_权利人=%s", str("权利人" in _dense_text(text)).lower())
+    logger.info("[PropertyCertSkill] contains_不动产单元号=%s", str("不动产单元号" in _dense_text(text)).lower())
+    logger.info("[PropertyCertSkill] contains_沃志方=%s", str("沃志方" in _dense_text(text)).lower())
+    logger.info("[PropertyCertSkill] extracted_fields=%s", fields)
     logger.info("[PropertyCertSkill][DEBUG] fields_keys=%s", list(fields.keys()))
     logger.info("[PropertyCertSkill][DEBUG] 房屋用途=%s", fields.get("房屋用途"))
     logger.info("[PropertyCertSkill][DEBUG] house_use=%s", fields.get("house_use"))
@@ -645,6 +766,8 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         result["validation"]["warnings"].append("部分字段来自扫描件识别，建议人工确认权利人、权证编号和房地坐落。")
     elif selected_role != "detail_page":
         result["validation"]["warnings"].append("仅识别到房产证/不动产权证封面或说明页，未识别到权利人、坐落、面积等字段页，请补充上传正面字段页或人工确认。")
+    else:
+        result["validation"]["warnings"].append("已识别为房产证/不动产权证，但字段页 OCR 未能提取关键字段，请检查扫描清晰度或人工确认。")
     return result
 
 
