@@ -75,6 +75,14 @@ KYC_EXTRACTION_TYPES = {
     "taxpayer_qualification",
 }
 
+PROPERTY_CERT_PROCESS_TYPES = {
+    "property_report",
+    "collateral",
+    "mortgage_info",
+    "property_cert",
+    "real_estate_cert",
+}
+
 router = APIRouter(prefix="/file", tags=["File Processing"])
 
 file_service = FileService()
@@ -422,7 +430,22 @@ def _ocr_pdf_pages(file_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
 
 
 def _filename_suggests_property_cert(filename: str) -> bool:
-    return any(keyword in (filename or "") for keyword in ("产证", "房产证", "房地产权证", "不动产权证", "房本"))
+    return any(keyword in (filename or "") for keyword in ("产证", "房产", "房产证", "房地产权证", "不动产权证", "房本"))
+
+
+def _log_property_ocr_text(filename: str, text_content: str) -> None:
+    dense_text = re.sub(r"\s+", "", text_content or "")
+    logger.info("[PropertyCertOCR] filename=%s", filename)
+    logger.info("[PropertyCertOCR] raw_text_length=%s", len(text_content or ""))
+    logger.info("[PropertyCertOCR] raw_text_preview=%s", (text_content or "")[:1000])
+    logger.info("[PropertyCertOCR] contains_沃志方=%s", str("沃志方" in dense_text).lower())
+    logger.info("[PropertyCertOCR] contains_不动产单元号=%s", str("不动产单元号" in dense_text).lower())
+    logger.info(
+        "[PropertyCertOCR] contains_310104019001GB00045F00430086=%s",
+        str("310104019001GB00045F00430086" in dense_text).lower(),
+    )
+    logger.info("[PropertyCertOCR] contains_华发路=%s", str("华发路" in dense_text).lower())
+    logger.info("[PropertyCertOCR] contains_居住=%s", str("居住" in dense_text).lower())
 
 
 def _rotate_image_bytes(image_bytes: bytes, angle: int) -> bytes:
@@ -563,6 +586,119 @@ def _build_seal_ocr_variants(region_bytes: bytes) -> list[tuple[str, bytes]]:
             ("gray_high_contrast", _image_to_jpeg_bytes(high_contrast)),
             ("red_stamp_mask", _image_to_jpeg_bytes(red_mask)),
         ]
+
+
+def _build_property_field_ocr_variants(image_bytes: bytes) -> list[tuple[str, bytes]]:
+    with Image.open(BytesIO(image_bytes)) as image:
+        rgb = image.convert("RGB")
+        grayscale = ImageOps.grayscale(rgb)
+        high_contrast = ImageEnhance.Contrast(grayscale).enhance(2.4)
+        binary = high_contrast.point(lambda pixel: 255 if pixel > 165 else 0)
+        upscale_size = (max(1, binary.width * 2), max(1, binary.height * 2))
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        upscaled = binary.resize(upscale_size, resampling)
+        return [
+            ("original", _image_to_jpeg_bytes(rgb)),
+            ("gray_high_contrast", _image_to_jpeg_bytes(high_contrast)),
+            ("gray_contrast_binary_2x", _image_to_jpeg_bytes(upscaled)),
+        ]
+
+
+def _property_certificate_field_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[int, int, int, int]]]:
+    with Image.open(BytesIO(image_bytes)) as image:
+        width, height = image.size
+    return [
+        ("left_table_70_95", (0, 0, max(1, int(width * 0.70)), max(1, int(height * 0.95)))),
+    ]
+
+
+def _ocr_property_certificate_field_pages(
+    file_bytes: bytes,
+    file_type: str,
+    filename: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    logger.info("[PropertyCertOCR] start field-page OCR filename=%s file_type=%s", filename, file_type)
+    try:
+        if file_type == "pdf":
+            images = file_service.pdf_to_images(file_bytes, dpi=300)
+            if not images:
+                logger.warning("[PropertyCertOCR] field-page OCR skipped: no rendered PDF images filename=%s", filename)
+                return "", []
+            source_images = images
+        elif file_type == "image":
+            source_images = [file_bytes]
+        else:
+            return "", []
+
+        raw_pages: list[dict[str, Any]] = []
+        for page_index, source_image in enumerate(source_images, start=1):
+            page_parts: list[str] = []
+            whole_page_variants = _build_property_field_ocr_variants(source_image)
+            for variant_name, variant_bytes in whole_page_variants:
+                try:
+                    page_text = ocr_service.recognize_image(variant_bytes).strip()
+                    logger.info(
+                        "[PropertyCertOCR] page=%s region=full variant=%s text=%s",
+                        page_index,
+                        variant_name,
+                        page_text[:1000] or "(empty)",
+                    )
+                    if page_text:
+                        page_parts.append(
+                            f"--- Property Certificate Field OCR page={page_index} region=full variant={variant_name} ---\n{page_text}"
+                        )
+                except OCRServiceError as exc:
+                    logger.warning(
+                        "[PropertyCertOCR] full-page OCR failed page=%s variant=%s filename=%s error=%s",
+                        page_index,
+                        variant_name,
+                        filename,
+                        exc,
+                    )
+
+            for region_name, box in _property_certificate_field_crop_boxes(source_image):
+                try:
+                    region_bytes = _crop_image_region(source_image, box)
+                    for variant_name, variant_bytes in _build_property_field_ocr_variants(region_bytes):
+                        try:
+                            region_text = ocr_service.recognize_image(variant_bytes).strip()
+                            logger.info(
+                                "[PropertyCertOCR] page=%s region=%s variant=%s text=%s",
+                                page_index,
+                                region_name,
+                                variant_name,
+                                region_text[:1000] or "(empty)",
+                            )
+                            if region_text:
+                                page_parts.append(
+                                    f"--- Property Certificate Field OCR page={page_index} region={region_name} variant={variant_name} box={box} ---\n{region_text}"
+                                )
+                        except OCRServiceError as exc:
+                            logger.warning(
+                                "[PropertyCertOCR] field-region OCR failed page=%s region=%s variant=%s filename=%s error=%s",
+                                page_index,
+                                region_name,
+                                variant_name,
+                                filename,
+                                exc,
+                            )
+                except Exception as exc:  # pragma: no cover - best-effort crop fallback
+                    logger.warning(
+                        "[PropertyCertOCR] field-region crop failed page=%s region=%s filename=%s error=%s",
+                        page_index,
+                        region_name,
+                        filename,
+                        exc,
+                    )
+            page_text = "\n\n".join(page_parts)
+            if page_text:
+                raw_pages.append({"page": page_index, "text": page_text, "source": "property_field_ocr"})
+        text_content = _build_raw_text_from_pages(raw_pages)
+        _log_property_ocr_text(filename, text_content)
+        return text_content, raw_pages
+    except Exception as exc:  # pragma: no cover - best-effort OCR fallback
+        logger.warning("[PropertyCertOCR] field-page OCR failed filename=%s error=%s", filename, exc)
+        return "", []
 
 
 def _business_license_seal_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[int, int, int, int]]]:
@@ -889,7 +1025,7 @@ def _extract_structured_data(
             logger.info("[enterprise_credit] raw_text_preview=%s", (text_content or "")[:3000])
             for item in raw_pages_for_log:
                 logger.info("[enterprise_credit] page=%s preview=%s", item.get("page"), str(item.get("text") or "")[:1500])
-        if document_type_code in {"property_report", "collateral", "mortgage_info"}:
+        if document_type_code in PROPERTY_CERT_PROCESS_TYPES:
             logger.info("[property] document_type=%s filename=%s", document_type_code, filename)
             logger.info("[property] raw_pages count=%s", len(raw_pages_for_log))
             logger.info("[property] raw_text preview=%s", (text_content or "")[:2000])
@@ -907,14 +1043,14 @@ def _extract_structured_data(
             historical_financial_reports=historical_financial_reports,
             ai_service=ai_service,
         )
-        if document_type_code in {"property_report", "collateral", "mortgage_info"}:
+        if document_type_code in PROPERTY_CERT_PROCESS_TYPES:
             logger.info("[property] extracted result=%s", content)
         content_doc_type = str(content.get("doc_type") or content.get("document_type_code") or document_type_code)
         is_kyc_content = content.get("agent_type") == "kyc_document_agent" or content_doc_type in KYC_EXTRACTION_TYPES
         if raw_pages and not is_kyc_content:
             content["raw_pages"] = raw_pages
             content["raw_text"] = _build_raw_text_from_pages(raw_pages)
-        elif document_type_code in {"property_report", "collateral", "mortgage_info"} and text_content and text_content.strip() and not is_kyc_content:
+        elif document_type_code in PROPERTY_CERT_PROCESS_TYPES and text_content and text_content.strip() and not is_kyc_content:
             content["raw_pages"] = [{"page": 1, "text": text_content}]
             content["raw_text"] = text_content
         elif document_type_code == "marriage_cert" and text_content and text_content.strip():
@@ -953,7 +1089,10 @@ async def _process_file_bytes(
         progress_callback=progress_callback,
     )
     explicit_normalized = normalize_document_type_code(explicit_document_type)
-    if (not text_content or not text_content.strip()) and not rows and explicit_normalized not in {"enterprise_flow", "enterprise_bank_statement"}:
+    if (
+        not text_content
+        or not text_content.strip()
+    ) and not rows and explicit_normalized not in {"enterprise_flow", "enterprise_bank_statement", *PROPERTY_CERT_PROCESS_TYPES}:
         raise HTTPException(status_code=400, detail=NO_TEXT_EXTRACTED_MESSAGE)
 
     document_type_code = _resolve_document_type_code(text_content, explicit_document_type, rows)
@@ -971,11 +1110,16 @@ async def _process_file_bytes(
         front_page_ocr_text = _ocr_company_articles_front_pages(file_bytes, file_type, filename)
         if front_page_ocr_text:
             text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
-    if document_type_code in {"property_report", "collateral", "mortgage_info"}:
+    if document_type_code in PROPERTY_CERT_PROCESS_TYPES:
+        field_page_text, field_pages = _ocr_property_certificate_field_pages(file_bytes, file_type, filename)
+        if field_page_text:
+            text_content = f"{text_content}\n\n--- Property Certificate Field Page OCR ---\n{field_page_text}".strip()
+            raw_pages.extend(field_pages)
         seal_region_text = _ocr_property_certificate_seal_region(file_bytes, file_type, filename)
         if seal_region_text:
             text_content = f"{text_content}\n\n--- Property Certificate Seal Region OCR ---\n{seal_region_text}"
             raw_pages.append({"page": len(raw_pages) + 1, "text": seal_region_text})
+        _log_property_ocr_text(filename, text_content)
     if document_type_code == "financial_report" and file_type == "pdf" and _financial_report_needs_ocr_supplement(text_content, raw_pages):
         logger.info("[FinancialReportAgent][OCR_FALLBACK] native layout text incomplete, OCR all pages filename=%s", filename)
         try:

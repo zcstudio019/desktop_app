@@ -104,6 +104,9 @@ class KycDocumentAgent:
         result = validate_result(result)
         if result.get("doc_type") in {"property_cert", "real_estate_cert"}:
             fields = result.get("fields") or {}
+            logger.info("[KycDocumentAgent] final_doc_type=%s", result.get("doc_type"))
+            logger.info("[KycDocumentAgent] final_fields_keys=%s", list(fields.keys()))
+            logger.info("[KycDocumentAgent] final_fields=%s", fields)
             logger.info("[KycDocumentAgent][DEBUG] final_fields_keys=%s", list(fields.keys()))
             logger.info("[KycDocumentAgent][DEBUG] final_房屋用途=%s", fields.get("房屋用途"))
             logger.info("[KycDocumentAgent][DEBUG] final_house_use=%s", fields.get("house_use"))
