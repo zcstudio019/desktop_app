@@ -1504,12 +1504,14 @@ def _merge_kyc_property_supplement_fields(best_data: dict[str, Any], supplement_
         fields = data.get("fields") if isinstance(data.get("fields"), dict) else data
         if not isinstance(fields, dict):
             continue
+        logger.info("[PropertyMerge] cover_fields 登记日期=%s", fields.get("登记日期") or fields.get("registration_date") or fields.get("登记日"))
         for target_key, aliases in supplement_field_groups:
             if any(str(base_fields.get(alias) or "").strip() for alias in aliases):
                 continue
             value = next((fields.get(alias) for alias in aliases if str(fields.get(alias) or "").strip()), "")
             if value not in ("", None, [], {}):
                 base_fields[target_key] = value
+        logger.info("[PropertyMerge] merged 登记日期=%s", base_fields.get("登记日期") or base_fields.get("registration_date") or base_fields.get("登记日"))
     merged["fields"] = base_fields
     return merged
 

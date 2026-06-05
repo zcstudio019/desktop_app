@@ -581,9 +581,16 @@ def _build_seal_ocr_variants(region_bytes: bytes) -> list[tuple[str, bytes]]:
                     target_pixels[x, y] = 0
 
         red_mask = ImageEnhance.Contrast(red_mask).enhance(2.5)
+        binary = high_contrast.point(lambda pixel: 255 if pixel > 165 else 0)
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        binary_2x = binary.resize((max(1, binary.width * 2), max(1, binary.height * 2)), resampling)
+        binary_3x = binary.resize((max(1, binary.width * 3), max(1, binary.height * 3)), resampling)
         return [
             ("original", _image_to_jpeg_bytes(rgb)),
             ("gray_high_contrast", _image_to_jpeg_bytes(high_contrast)),
+            ("binary", _image_to_jpeg_bytes(binary)),
+            ("binary_2x", _image_to_jpeg_bytes(binary_2x)),
+            ("binary_3x", _image_to_jpeg_bytes(binary_3x)),
             ("red_stamp_mask", _image_to_jpeg_bytes(red_mask)),
         ]
 

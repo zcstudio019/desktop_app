@@ -391,24 +391,29 @@ def _normalize_chinese_date(value: str) -> str:
 
 
 def _extract_cover_registration_date(text: str) -> tuple[str, str]:
-    candidates: list[str] = []
-    for keyword in ("登记机构", "登记专用章", "颁发此证", "专用章", "Seal", "OCR"):
+    candidates: list[tuple[int, str]] = []
+    for keyword in ("cover_seal_date_ocr", "seal_region_ocr", "Seal Region OCR", "登记机构", "登记专用章", "不动产登记专用章", "颁发此证", "专用章", "Seal", "OCR"):
         index = text.find(keyword)
         if index >= 0:
-            candidates.append(text[max(0, index - 120): index + 180])
-    candidates.append(text)
-    patterns = [
-        r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?",
-        r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}",
-    ]
-    for candidate in candidates:
-        for pattern in patterns:
-            match = re.search(pattern, candidate or "")
-            if not match:
+            priority = 0 if keyword in {"cover_seal_date_ocr", "seal_region_ocr", "Seal Region OCR"} else 1
+            candidates.append((priority, text[max(0, index - 180): index + 240]))
+    candidates.append((9, text))
+    pattern = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?(?:章|印|登记|（?\d{1,2}）?)?"
+    matched_dates: list[tuple[int, str, str]] = []
+    for priority, candidate in candidates:
+        for match in re.finditer(pattern, candidate or ""):
+            year, month, day = (int(part) for part in match.groups())
+            if not (2010 <= year <= 2035 and 1 <= month <= 12 and 1 <= day <= 31):
                 continue
-            value = _normalize_chinese_date(match.group(0))
-            if value:
-                return value, match.group(0)
+            value = f"{year}年{month}月{day}日"
+            matched_dates.append((priority, value, match.group(0)))
+    selected = sorted(matched_dates, key=lambda item: (item[0], item[1]))[0] if matched_dates else None
+    logger.info("[CoverPageDateOCR] raw_text_contains_2018=%s", str("2018" in (text or "")).lower())
+    logger.info("[CoverPageDateOCR] seal_region_text=%s", "\n---\n".join(candidate for _, candidate in candidates[:4]))
+    logger.info("[CoverPageDateOCR] matched_dates=%s", matched_dates)
+    logger.info("[CoverPageDateOCR] selected_registration_date=%s", selected[1] if selected else "")
+    if selected:
+        return selected[1], selected[2]
     return "", ""
 
 

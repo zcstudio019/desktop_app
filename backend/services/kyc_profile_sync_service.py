@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
+
+logger = logging.getLogger(__name__)
 
 KYC_AGENT_TYPE = "kyc_document_agent"
 PROPERTY_DOC_TYPES = {"property_cert", "real_estate_cert", "real_estate_query"}
@@ -480,5 +483,8 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
                         **(supplement.get("field_sources", {}) or {}).get(field_name, {}),
                         "source_document_id": supplement.get("source_document_id") or "",
                     }
+            if _string(supplement.get("registration_date")):
+                logger.info("[PropertyMerge] cover_fields 登记日期=%s", supplement.get("registration_date"))
+                logger.info("[PropertyMerge] merged 登记日期=%s", main_property.get("registration_date"))
     profile["updated_at"] = datetime.now(timezone.utc).isoformat()
     return profile
