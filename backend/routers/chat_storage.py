@@ -69,6 +69,8 @@ _PROPERTY_MULTI_FILE_DOCUMENT_TYPE_CODES = frozenset({
     "property_report",
     "mortgage_info",
     "property_certificate",
+    "property_cert",
+    "real_estate_cert",
 })
 
 ENTERPRISE_CREDIT_VALID_DAYS = 90

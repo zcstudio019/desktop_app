@@ -598,6 +598,10 @@ class CustomerDocumentListItem(BaseModel):
     original_status: str = Field(default="", description="Human-readable original retention status")
     store_original: bool = Field(default=True, description="Whether this type should retain originals by policy")
     is_latest: bool = Field(default=False, description="Whether this document is the latest version within its type")
+    quality_score: int | None = Field(default=None, description="KYC property certificate quality score when available")
+    page_role: str = Field(default="", description="KYC page role such as cover_page/detail_page")
+    display_role: str = Field(default="", description="Business display role such as main material or supplement")
+    field_count: int | None = Field(default=None, description="Extracted field count when available")
 
 
 class CustomerProfileMarkdownResponse(BaseModel):

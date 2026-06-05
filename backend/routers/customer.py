@@ -71,6 +71,7 @@ from backend.services.rag_service import RagService
 from backend.services.risk_assessment_service import RiskAssessmentService
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
+from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
 from backend.services.financing_kyc_diagnostic_service import build_financing_kyc_diagnostic
 from backend.services.customer_financing_diagnostic_report_service import build_customer_financing_diagnostic_report
 from backend.services.enterprise_credit_diagnostic_service import build_enterprise_credit_diagnostic
@@ -561,6 +562,58 @@ def _build_document_original_status(document: dict[str, Any]) -> tuple[bool, str
     if not absolute_path.exists() or not absolute_path.is_file():
         return False, DOCUMENT_FILE_MISSING_MESSAGE
     return True, "可查看原件"
+
+
+PROPERTY_CERT_DOCUMENT_TYPES = {"property_cert", "real_estate_cert", "collateral", "property_report", "mortgage_info"}
+
+
+def _is_property_cert_document_type(value: str) -> bool:
+    normalized = normalize_document_type_code(value) or str(value or "").strip()
+    return normalized in PROPERTY_CERT_DOCUMENT_TYPES
+
+
+async def _load_property_cert_document_quality(customer_id: str) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    try:
+        extractions = await storage_service.get_extractions_by_customer(customer_id)
+    except Exception as exc:
+        logger.warning("[DocumentStatus] property quality unavailable customer_id=%s error=%s", customer_id, exc)
+        return {}, set()
+
+    quality_by_doc: dict[str, dict[str, Any]] = {}
+    for extraction in extractions or []:
+        if not isinstance(extraction, dict):
+            continue
+        data = extraction.get("extracted_data") or {}
+        if not isinstance(data, dict):
+            continue
+        doc_type = str(data.get("doc_type") or extraction.get("extraction_type") or "")
+        if doc_type not in {"property_cert", "real_estate_cert"}:
+            continue
+        doc_id = str(extraction.get("doc_id") or extraction.get("document_id") or "")
+        if not doc_id:
+            continue
+        score = score_kyc_property_cert_extraction(extraction)
+        current = quality_by_doc.get(doc_id)
+        if current and int(current.get("quality_score") or -100) >= score:
+            continue
+        page_role = str(data.get("page_role") or "")
+        fields = data.get("fields") if isinstance(data.get("fields"), dict) else {}
+        quality_by_doc[doc_id] = {
+            "quality_score": score,
+            "page_role": page_role,
+            "display_role": "主资料 / 字段完整" if score >= 40 else "封面页 / 补充页",
+            "field_count": len(fields),
+        }
+
+    if not quality_by_doc:
+        return {}, set()
+    best_score = max(int(item.get("quality_score") or -100) for item in quality_by_doc.values())
+    main_doc_ids = {
+        doc_id
+        for doc_id, item in quality_by_doc.items()
+        if int(item.get("quality_score") or -100) == best_score and best_score > -40
+    }
+    return quality_by_doc, main_doc_ids
 
 
 def _is_company_articles_role_missing_or_invalid(value: Any) -> bool:
@@ -1912,19 +1965,25 @@ async def get_customer_documents(
         logger.error("Failed to load documents for customer %s: %s", customer_id, exc)
         raise HTTPException(status_code=500, detail="获取客户资料列表失败") from exc
 
+    property_quality_by_doc, main_property_doc_ids = await _load_property_cert_document_quality(customer_id)
     latest_seen_types: set[str] = set()
     items: list[CustomerDocumentListItem] = []
 
     for document in documents:
         file_type = str(document.get("file_type") or "")
+        doc_id = document.get("doc_id") or ""
         original_available, original_status = _build_document_original_status(document)
         definition = get_document_type_definition(file_type)
-        is_latest = bool(document.get("is_active")) if file_type == "enterprise_credit" else file_type not in latest_seen_types
-        latest_seen_types.add(file_type)
+        property_quality = property_quality_by_doc.get(str(doc_id), {}) if _is_property_cert_document_type(file_type) else {}
+        if property_quality:
+            is_latest = str(doc_id) in main_property_doc_ids
+        else:
+            is_latest = bool(document.get("is_active")) if file_type == "enterprise_credit" else file_type not in latest_seen_types
+            latest_seen_types.add(file_type)
 
         items.append(
             CustomerDocumentListItem(
-                doc_id=document.get("doc_id") or "",
+                doc_id=doc_id,
                 customer_id=document.get("customer_id") or customer_id,
                 file_name=document.get("file_name") or "",
                 file_type=file_type,
@@ -1935,6 +1994,10 @@ async def get_customer_documents(
                 original_status=original_status,
                 store_original=definition.store_original if definition else True,
                 is_latest=is_latest,
+                quality_score=property_quality.get("quality_score"),
+                page_role=property_quality.get("page_role") or "",
+                display_role=property_quality.get("display_role") or "",
+                field_count=property_quality.get("field_count"),
             )
         )
 
@@ -1966,10 +2029,12 @@ async def get_customer_document_status(
         logger.exception("[DocumentStatus] failed customer_id=%s", customer_id)
         raise HTTPException(status_code=500, detail="获取来源文档状态失败") from exc
 
+    property_quality_by_doc, main_property_doc_ids = await _load_property_cert_document_quality(customer_id)
     latest_seen_types: set[str] = set()
     items: list[dict[str, Any]] = []
     for document in documents:
         document_type = str(document.get("file_type") or document.get("document_type") or "")
+        doc_id = str(document.get("doc_id") or document.get("document_id") or "")
         if should_store_original(document_type) and bool(document.get("file_path")):
             original_available, original_status = True, "可查看原件"
         elif should_store_original(document_type):
@@ -1977,12 +2042,16 @@ async def get_customer_document_status(
         else:
             original_available, original_status = False, DOCUMENT_NOT_RETAINED_MESSAGE
         definition = get_document_type_definition(document_type)
-        is_latest = bool(document.get("is_active")) if document_type == "enterprise_credit" else document_type not in latest_seen_types
-        latest_seen_types.add(document_type)
+        property_quality = property_quality_by_doc.get(doc_id, {}) if _is_property_cert_document_type(document_type) else {}
+        if property_quality:
+            is_latest = doc_id in main_property_doc_ids
+        else:
+            is_latest = bool(document.get("is_active")) if document_type == "enterprise_credit" else document_type not in latest_seen_types
+            latest_seen_types.add(document_type)
         items.append(
             {
-                "document_id": document.get("doc_id") or document.get("document_id") or "",
-                "doc_id": document.get("doc_id") or document.get("document_id") or "",
+                "document_id": doc_id,
+                "doc_id": doc_id,
                 "customer_id": document.get("customer_id") or customer_id,
                 "document_type": document_type,
                 "file_type": document_type,
@@ -2005,6 +2074,10 @@ async def get_customer_document_status(
                 "extraction_status": document.get("extraction_status") or "",
                 "summary_available": bool(document.get("summary_available")),
                 "is_latest": is_latest,
+                "quality_score": property_quality.get("quality_score"),
+                "page_role": property_quality.get("page_role") or "",
+                "display_role": property_quality.get("display_role") or "",
+                "field_count": property_quality.get("field_count"),
             }
         )
 

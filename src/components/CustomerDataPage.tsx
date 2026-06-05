@@ -273,7 +273,7 @@ const DOCUMENT_GROUPS = {
   },
   asset: {
     title: '资产资料',
-    types: ['property_report', 'vehicle_license'],
+    types: ['property_report', 'property_cert', 'real_estate_cert', 'collateral', 'vehicle_license'],
   },
   financial: {
     title: '财务资料',
@@ -502,6 +502,20 @@ function getDocumentGroupKey(fileType: string): string {
   return 'other';
 }
 
+function isPropertyCertificateDocument(document: CustomerDocumentListItem): boolean {
+  return ['property_report', 'property_cert', 'real_estate_cert', 'collateral', 'mortgage_info'].includes(
+    String(document.file_type || '').trim(),
+  );
+}
+
+function getDocumentVersionLabel(document: CustomerDocumentListItem): string {
+  if (isPropertyCertificateDocument(document)) {
+    if (document.display_role) return document.display_role;
+    return document.is_latest ? '主资料 / 字段完整' : '封面页 / 补充页';
+  }
+  return document.is_latest ? '最新' : '历史版本';
+}
+
 function getDocumentGroupTitle(groupKey: string, fallbackTitle?: string): string {
   if (groupKey in DOCUMENT_GROUPS) {
     return DOCUMENT_GROUPS[groupKey as keyof typeof DOCUMENT_GROUPS].title;
@@ -529,6 +543,9 @@ function getDocumentTypeDisplayNameByCode(fileType: string): string {
     hukou: '户口本',
     marriage_cert: '结婚证',
     property_report: '房产证 / 产调',
+    property_cert: '房产证 / 不动产权证',
+    real_estate_cert: '不动产权证',
+    collateral: '抵押物/房产资料',
     vehicle_license: '行驶证',
     financial_report: '财务报表',
     financial_data: '财务报表',
@@ -5089,7 +5106,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         </button>
                         <div className="flex flex-wrap items-center gap-2 text-xs">
                           <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-700">
-                            最新 {group.latestCount} 份
+                            主资料 {group.latestCount} 份
                           </span>
                           <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-emerald-700">
                             可查看原件 {group.originalCount} 份
@@ -5149,7 +5166,7 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                                           : 'border-slate-200 bg-white text-slate-500'
                                       }`}
                                     >
-                                      {document.is_latest ? '最新' : '历史版本'}
+                                      {getDocumentVersionLabel(document)}
                                     </span>
                                   </div>
                                   <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">

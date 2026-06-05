@@ -97,8 +97,62 @@ def _is_kyc_extraction(extraction: dict[str, Any]) -> bool:
     return isinstance(data, dict) and data.get("agent_type") == KYC_AGENT_TYPE
 
 
+def _effective_fields_for_score(extraction: dict[str, Any]) -> dict[str, Any]:
+    data = extraction.get("extracted_data")
+    fields = _fields(data) if isinstance(data, dict) else {}
+    confirmed_fields = _confirmed_fields(extraction)
+    if confirmed_fields:
+        merged = dict(fields)
+        merged.update({key: value for key, value in confirmed_fields.items() if value not in (None, "", [], {})})
+        return merged
+    return fields
+
+
+def score_kyc_property_cert_extraction(extraction: dict[str, Any]) -> int:
+    data = extraction.get("extracted_data") if isinstance(extraction, dict) else {}
+    if not isinstance(data, dict):
+        return -100
+    doc_type = str(data.get("doc_type") or extraction.get("extraction_type") or "")
+    if doc_type not in {"property_cert", "real_estate_cert"}:
+        return -100
+
+    fields = _effective_fields_for_score(extraction)
+    score = 10
+    if fields:
+        score += 20
+    else:
+        score -= 50
+
+    def has_any(keys: tuple[str, ...]) -> bool:
+        return any(_string(fields.get(key)) for key in keys)
+
+    if has_any(("权利人", "owner")):
+        score += 15
+    if has_any(("权证编号", "certificate_number")):
+        score += 15
+    if has_any(("坐落", "房地坐落", "property_address")):
+        score += 15
+    if has_any(("不动产单元号", "property_unit_number")):
+        score += 10
+    if has_any(("建筑面积", "building_area")):
+        score += 10
+    if has_any(("土地用途", "land_use")) or has_any(("房屋用途", "house_use", "building_use", "use_type")):
+        score += 10
+    if has_any(("竣工日期", "completion_date")) or has_any(("总层数", "total_floors")):
+        score += 5
+
+    page_role = str(data.get("page_role") or "").strip()
+    warnings = data.get("validation", {}).get("warnings") if isinstance(data.get("validation"), dict) else []
+    warning_text = " ".join(str(item) for item in warnings or [])
+    if page_role == "cover_page":
+        score -= 30
+    if "仅识别到" in warning_text and ("封面" in warning_text or "说明页" in warning_text):
+        score -= 30
+    return score
+
+
 def _document_summary(extraction: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
-    return {
+    summary = {
         "doc_id": _source_doc_id(extraction),
         "doc_type": data.get("doc_type") or extraction.get("extraction_type") or "",
         "doc_type_name": data.get("doc_type_name") or "",
@@ -106,6 +160,12 @@ def _document_summary(extraction: dict[str, Any], data: dict[str, Any]) -> dict[
         "source_file": extraction.get("file_name") or extraction.get("source_file") or "",
         "created_at": extraction.get("created_at") or "",
     }
+    if summary["doc_type"] in {"property_cert", "real_estate_cert"}:
+        score = score_kyc_property_cert_extraction(extraction)
+        summary["quality_score"] = score
+        summary["page_role"] = data.get("page_role") or ""
+        summary["display_role"] = "主资料 / 字段完整" if score >= 40 else "封面页 / 补充页"
+    return summary
 
 
 def _effective_field(
@@ -210,6 +270,23 @@ def _property_item(fields: dict[str, Any], source_document_id: str, doc_type: st
         value, source = _effective_any_field(fields, confirmed_fields, source_keys, source_document_id)
         item[target_key] = value
         item["field_sources"][target_key] = source
+    return item
+
+
+def _property_item_from_extraction(
+    extraction: dict[str, Any],
+    fields: dict[str, Any],
+    source_document_id: str,
+    doc_type: str,
+    confirmed_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = extraction.get("extracted_data") if isinstance(extraction.get("extracted_data"), dict) else {}
+    item = _property_item(fields, source_document_id, doc_type, confirmed_fields)
+    score = score_kyc_property_cert_extraction(extraction)
+    item["quality_score"] = score
+    item["page_role"] = data.get("page_role") or ""
+    item["source_file"] = extraction.get("file_name") or extraction.get("source_file") or ""
+    item["display_role"] = "主资料 / 字段完整" if score >= 40 else "封面页 / 补充页"
     return item
 
 
@@ -368,14 +445,14 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
                 source_document_id,
             )
         elif doc_type in PROPERTY_DOC_TYPES:
-            profile["assets"]["properties"].append(_property_item(fields, source_document_id, doc_type, confirmed_fields))
+            profile["assets"]["properties"].append(_property_item_from_extraction(extraction, fields, source_document_id, doc_type, confirmed_fields))
         elif doc_type in VEHICLE_DOC_TYPES:
             profile["assets"]["vehicles"].append(_vehicle_item(fields, source_document_id, confirmed_fields))
         elif doc_type in LICENSE_DOC_TYPES:
             profile["licenses"].append(_license_item(fields, data, source_document_id, confirmed_fields))
 
     profile["assets"]["properties"].sort(
-        key=lambda item: (_property_completeness_score(item), _string(item.get("source_document_id"))),
+        key=lambda item: (int(item.get("quality_score") or 0), _property_completeness_score(item), _string(item.get("source_document_id"))),
         reverse=True,
     )
     profile["updated_at"] = datetime.now(timezone.utc).isoformat()

@@ -87,7 +87,19 @@ const KycProfilePanel: React.FC<{
                 <div className="mb-2 text-sm font-medium text-slate-700">房产列表</div>
                 {properties.length ? properties.map((item, index) => (
                   <div key={`${item.source_document_id || index}`} className="mb-2 rounded-lg bg-white px-3 py-2 text-sm text-slate-700 last:mb-0">
-                    {valueText(item.property_address)} · 权利人：{valueText(item.owner)}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span>{valueText(item.property_address)} · 权利人：{valueText(item.owner)}</span>
+                      <span className={`rounded-full border px-2 py-0.5 text-xs ${
+                        index === 0
+                          ? 'border-amber-200 bg-amber-50 text-amber-700'
+                          : 'border-slate-200 bg-slate-50 text-slate-500'
+                      }`}>
+                        {valueText(item.display_role || (index === 0 ? '主资料 / 字段完整' : '补充页'))}
+                      </span>
+                    </div>
+                    {item.source_file ? (
+                      <div className="mt-1 text-xs text-slate-500">资料来源：{valueText(item.source_file)}</div>
+                    ) : null}
                   </div>
                 )) : <div className="text-sm text-slate-500">暂无房产资料</div>}
               </div>

@@ -324,6 +324,10 @@ export interface CustomerDocumentListItem {
   original_status: string;
   store_original: boolean;
   is_latest: boolean;
+  quality_score?: number | null;
+  page_role?: string;
+  display_role?: string;
+  field_count?: number | null;
 }
 
 // Legacy aliases kept for compatibility with existing imports.

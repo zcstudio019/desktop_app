@@ -303,4 +303,9 @@ def should_append_same_type_document(value: str | None) -> bool:
         "银行流水",
         "enterprise_credit_report",
         "financial_report",
+        "property_cert",
+        "real_estate_cert",
+        "collateral",
+        "property_report",
+        "mortgage_info",
     }
