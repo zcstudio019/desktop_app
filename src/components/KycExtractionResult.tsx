@@ -16,11 +16,8 @@ export function isKycExtractionResult(value: unknown): value is KycExtractionRes
   return value.agent_type === 'kyc_document_agent' || isKycDocType(value.doc_type);
 }
 
-export function renderKycDisplayMarkdown(result: KycExtractionResultType, fields: Array<[string, string]>): string {
-  const title = result.doc_type === 'property_cert'
-    ? '房产证/房地产权证'
-    : result.doc_type_name || 'KYC资料';
-  const lines = [`## ${title}`, '', '### 关键字段'];
+export function renderKycDisplayMarkdown(fields: Array<[string, string]>): string {
+  const lines = ['### 关键字段'];
   if (fields.length) {
     fields.forEach(([field, value]) => {
       lines.push(`- ${getKycFieldLabel(field)}: ${value}`);
@@ -76,7 +73,7 @@ interface Props {
 
 const KycExtractionResult: React.FC<Props> = ({ result }) => {
   const fields = getKycDisplayEntries(enrichPropertyFieldsForDisplay(result), result.doc_type);
-  const displayMarkdown = renderKycDisplayMarkdown(result, fields);
+  const displayMarkdown = renderKycDisplayMarkdown(fields);
   const warnings = result.validation?.warnings || [];
   const errors = result.validation?.errors || [];
   const displayFieldNames = new Set(fields.map(([field]) => field));

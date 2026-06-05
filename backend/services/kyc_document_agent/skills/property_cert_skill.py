@@ -22,6 +22,7 @@ CHINESE_FIELDS = [
     "权利性质",
     "使用权取得方式",
     "土地用途",
+    "房屋用途",
     "宗地号",
     "地号",
     "宗地面积",
@@ -30,7 +31,6 @@ CHINESE_FIELDS = [
     "室号或部位",
     "建筑面积",
     "建筑类型",
-    "房屋用途",
     "总层数",
     "竣工日期",
     "登记日",
@@ -41,6 +41,7 @@ PROPERTY_FIELD_ORDER = CHINESE_FIELDS[:]
 
 ENGLISH_ALIASES = {
     "权利人": "owner",
+    "共有情况": "co_ownership",
     "权证编号": "certificate_number",
     "坐落": "property_address",
     "房地坐落": "property_address",
@@ -57,9 +58,15 @@ ENGLISH_ALIASES = {
     "总层数": "total_floors",
     "竣工日期": "completion_date",
     "宗地面积": "land_area",
-    "使用期限": "land_use_term",
+    "使用期限": "use_term",
     "登记日": "issue_date",
     "填证单位": "issuing_unit",
+}
+
+EXTRA_FIELD_ALIASES = {
+    "共有情况": ("shared_status", "ownership_status"),
+    "不动产单元号": ("real_estate_unit_no", "real_estate_unit_number"),
+    "使用期限": ("land_use_term",),
 }
 
 INVALID_VALUE_EXACT = {"", "对", "无", "未识别"}
@@ -140,6 +147,7 @@ def _dense_text(text: str) -> str:
 def _compact_value(value: str) -> str:
     value = re.sub(r"\s+", " ", value or "").strip(" :：|,，;；")
     value = re.sub(r"^(?:为|是|:)\s*", "", value).strip()
+    value = value.replace("土地权利性质:", "土地权利性质：")
     return value
 
 
@@ -308,12 +316,17 @@ def _extract_new_version_dense_fields(text: str) -> dict[str, tuple[str, str, fl
         add("宗地面积", f"{area_match.group(1)} 平方米", area_match.group(0), 0.74)
         add("建筑面积", f"{area_match.group(2)} 平方米", area_match.group(0), 0.78)
 
-    term_match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日起?\d{4}年\d{1,2}月\d{1,2}日止?)", dense)
+    term_match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日(?:止)?)", dense)
     if term_match:
         add("使用期限", term_match.group(1), term_match.group(0), 0.72)
         add("土地使用期限", term_match.group(1), term_match.group(0), 0.72)
 
-    parcel, evidence = _dense_between(dense, "地号", ("房屋状况", "室号", "室号部位", "建筑面积", "建筑类型", "类型", "总层数"), max_len=80)
+    parcel, evidence = _dense_between(
+        dense,
+        "地号",
+        ("使用权面积", "独用面积", "分摊面积", "房屋状况", "室号", "室号部位", "建筑面积", "建筑类型", "类型", "总层数"),
+        max_len=80,
+    )
     add("地号", parcel, evidence, 0.7)
     add("宗地号", parcel, evidence, 0.7)
 
@@ -511,13 +524,13 @@ def _extract_new_version_area(text: str, label: str) -> tuple[str, str]:
 
 def _extract_term(text: str) -> tuple[str, str]:
     dense = _dense_text(text)
-    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日起?\d{4}年\d{1,2}月\d{1,2}日止?", dense)
+    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日(?:止)?", dense)
     if match:
         return match.group(0), match.group(0)
     value, evidence = _extract_after_label(text, ["使用期限", "土地使用期限"], stop_labels=["权利其他状况", "附记", "室号或部位"])
     if not value:
         return "", ""
-    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日起?\s*\d{4}年\d{1,2}月\d{1,2}日止?", value)
+    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日?起\s*\d{4}年\d{1,2}月\d{1,2}日(?:止)?", value)
     if match:
         return match.group(0), evidence
     return value, evidence
@@ -637,7 +650,11 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         land_use, land_use_evidence = _extract_land_use(text)
     if not land_use:
         land_use, land_use_evidence = _extract_contextual_use(text, "土地状况", ["土地用途", "土地状况用途"])
-    parcel_number, parcel_evidence = _extract_after_label(text, ["宗地号", "地号"], stop_labels=["面积", "使用期限"])
+    parcel_number, parcel_evidence = _extract_after_label(
+        text,
+        ["宗地号", "地号"],
+        stop_labels=["使用权面积", "独用面积", "分摊面积", "面积", "使用期限", "房屋状况"],
+    )
     land_area, land_area_evidence = _extract_new_version_area(text, "宗地面积")
     if not land_area:
         land_area, land_area_evidence = _extract_new_version_area(text, "土地面积")
@@ -737,6 +754,14 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
             fields[en_key] = fields[zh_key]
             evidence[en_key] = {**evidence[zh_key], "value": fields[zh_key]}
             confidences[en_key] = max(0.55, confidences[zh_key] - 0.02)
+    for zh_key, aliases in EXTRA_FIELD_ALIASES.items():
+        if zh_key not in fields:
+            continue
+        for alias in aliases:
+            if alias not in fields:
+                fields[alias] = fields[zh_key]
+                evidence[alias] = {**evidence[zh_key], "value": fields[zh_key]}
+                confidences[alias] = max(0.55, confidences[zh_key] - 0.02)
     if "房屋用途" in fields:
         for alias in ("use_type", "building_use"):
             if alias not in fields:
