@@ -33,6 +33,9 @@ CHINESE_FIELDS = [
     "建筑类型",
     "总层数",
     "竣工日期",
+    "登记日期",
+    "登记机构",
+    "封面编号",
     "登记日",
     "填证单位",
 ]
@@ -59,6 +62,9 @@ ENGLISH_ALIASES = {
     "竣工日期": "completion_date",
     "宗地面积": "land_area",
     "使用期限": "use_term",
+    "登记日期": "registration_date",
+    "登记机构": "registration_authority",
+    "封面编号": "cover_certificate_number",
     "登记日": "issue_date",
     "填证单位": "issuing_unit",
 }
@@ -419,6 +425,25 @@ def _extract_cover_certificate_number(text: str) -> tuple[str, str]:
     match = re.search(r"编号[№NnOo\.]*([A-Z]?\d{8,20})", dense)
     if match:
         return match.group(1), match.group(0)
+    return "", ""
+
+
+def _extract_cover_registration_authority(text: str) -> tuple[str, str]:
+    dense = _dense_text(text)
+    if "中华人民共和国国土资源部监制" in dense and "不动产登记专用章" not in dense:
+        return "", ""
+    match = re.search(r"上海市\s*不动产\s*登记\s*专用章", text or "")
+    if match:
+        return "上海市不动产登记专用章", match.group(0)
+    if "上海市不动产登记专用章" in dense:
+        return "上海市不动产登记专用章", "上海市不动产登记专用章"
+    match = re.search(r"[\u4e00-\u9fa5]{2,12}市\s*不动产\s*登记\s*专用章", text or "")
+    if match:
+        return re.sub(r"\s+", "", match.group(0)), match.group(0)
+    if "不动产登记专用章" in dense:
+        return "不动产登记专用章", "不动产登记专用章"
+    if "登记专用章" in dense and "国土资源部监制" not in dense:
+        return "登记专用章", "登记专用章"
     return "", ""
 
 
@@ -802,9 +827,11 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     if not text and selected_role == "cover_page":
         cover_cert_number, cover_cert_evidence = _extract_cover_certificate_number(source_text)
         cover_register_date, cover_register_evidence = _extract_cover_registration_date(source_text)
+        cover_authority, cover_authority_evidence = _extract_cover_registration_authority(source_text)
         cover_value_map: dict[str, tuple[Any, str, float]] = {
-            "权证编号": (cover_cert_number, cover_cert_evidence, 0.68),
-            "登记日": (cover_register_date, cover_register_evidence, 0.66),
+            "封面编号": (cover_cert_number, cover_cert_evidence, 0.68),
+            "登记日期": (cover_register_date, cover_register_evidence, 0.66),
+            "登记机构": (cover_authority, cover_authority_evidence, 0.64),
         }
         fields, evidence, confidences = _build_evidence(
             {
@@ -818,6 +845,10 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
                 fields[en_key] = fields[zh_key]
                 evidence[en_key] = {**evidence[zh_key], "value": fields[zh_key]}
                 confidences[en_key] = max(0.55, confidences[zh_key] - 0.02)
+        if fields.get("登记机构") == "不动产登记专用章":
+            result_warning = "登记机构城市需人工确认。"
+        else:
+            result_warning = ""
         result = build_result(doc_type, fields, evidence)
         result["doc_type_name"] = "房产证/房地产权证" if doc_type == "property_cert" else result["doc_type_name"]
         result["raw_text_preview"] = raw_preview(source_text)
@@ -826,6 +857,8 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         result["validation"]["warnings"].append(
             "仅识别到房产证/不动产权证封面或说明页，未识别到权利人、坐落、面积等字段页，请补充上传正面字段页或人工确认。"
         )
+        if result_warning:
+            result["validation"]["warnings"].append(result_warning)
         result["page_role"] = "cover_page"
         return result
 

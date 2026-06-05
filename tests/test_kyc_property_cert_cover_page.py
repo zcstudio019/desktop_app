@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from backend.services.kyc_document_agent.orchestrator import run_kyc_document_agent
 from backend.services.kyc_document_agent.renderer import get_display_fields
+from backend.services.markdown_profile_service import _merge_kyc_property_supplement_fields
 from backend.services.kyc_profile_sync_service import build_customer_kyc_profile
 
 
@@ -9,7 +10,7 @@ COVER_TEXT = """
 不动产权证书
 根据《中华人民共和国物权法》，为保护不动产权利人合法权益，经审查核实，准予登记，颁发此证。
 登记机构 上海市徐汇区不动产登记事务中心
-不动产登记专用章 2018年10月23日
+上海市不动产登记专用章 2018年10月23日
 国土资源部监制
 编号№D31001337469
 """
@@ -47,8 +48,13 @@ def test_cover_page_extracts_registration_date_and_certificate_number():
     fields = result["fields"]
 
     assert result["page_role"] == "cover_page"
-    assert fields["登记日"] == "2018年10月23日"
-    assert fields["权证编号"] == "D31001337469"
+    assert fields["登记日期"] == "2018年10月23日"
+    assert fields["registration_date"] == "2018年10月23日"
+    assert fields["登记机构"] == "上海市不动产登记专用章"
+    assert fields["registration_authority"] == "上海市不动产登记专用章"
+    assert fields["封面编号"] == "D31001337469"
+    assert fields["cover_certificate_number"] == "D31001337469"
+    assert "权证编号" not in fields
     assert "权利人" not in fields
 
 
@@ -56,8 +62,9 @@ def test_cover_page_display_has_fields_and_warning_not_empty_placeholder():
     result = _extract(COVER_TEXT, "房产.pdf")
     display_fields = get_display_fields(result)
 
-    assert display_fields["登记日"] == "2018年10月23日"
-    assert display_fields["权证编号"] == "D31001337469"
+    assert display_fields["登记日期"] == "2018年10月23日"
+    assert display_fields["登记机构"] == "上海市不动产登记专用章"
+    assert display_fields["封面编号"] == "D31001337469"
     assert "暂无可展示字段" not in result["markdown"]
     assert "仅识别到房产证/不动产权证封面" in " ".join(result["validation"]["warnings"])
 
@@ -105,5 +112,24 @@ def test_cover_page_does_not_override_detail_page_and_supplements_issue_date():
 
     assert properties[0]["source_document_id"] == "doc-detail"
     assert properties[0]["owner"] == "沃志方"
-    assert properties[0]["issue_date"] == "2018年10月23日"
+    assert properties[0]["certificate_number"] == "沪(2018)徐字不动产权第015979号"
+    assert properties[0]["registration_date"] == "2018年10月23日"
+    assert properties[0]["registration_authority"] == "上海市不动产登记专用章"
+    assert properties[0]["cover_certificate_number"] == "D31001337469"
     assert properties[1]["page_role"] == "cover_page"
+
+
+def test_markdown_property_merge_supplements_cover_fields_without_overriding_detail_cert_number():
+    detail = _extract(DETAIL_TEXT, "房产正面.pdf")
+    cover = _extract(COVER_TEXT, "房产.pdf")
+
+    merged = _merge_kyc_property_supplement_fields(
+        detail,
+        [{"extracted_data": cover}],
+    )
+    fields = merged["fields"]
+
+    assert fields["权证编号"] == "沪(2018)徐字不动产权第015979号"
+    assert fields["登记日期"] == "2018年10月23日"
+    assert fields["登记机构"] == "上海市不动产登记专用章"
+    assert fields["封面编号"] == "D31001337469"

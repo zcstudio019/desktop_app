@@ -259,7 +259,10 @@ def _property_item(fields: dict[str, Any], source_document_id: str, doc_type: st
         "parcel_number": ["parcel_number", "地号", "宗地号"],
         "mortgage_status": ["mortgage_status"],
         "seizure_status": ["seizure_status"],
-        "issue_date": ["登记日", "issue_date", "registration_date"],
+        "issue_date": ["登记日", "issue_date"],
+        "registration_date": ["登记日期", "registration_date", "登记日", "issue_date"],
+        "registration_authority": ["登记机构", "registration_authority"],
+        "cover_certificate_number": ["封面编号", "cover_certificate_number"],
     }
     item = {
         "doc_type": doc_type,
@@ -470,5 +473,12 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
                     **(supplement.get("field_sources", {}) or {}).get("certificate_number", {}),
                     "source_document_id": supplement.get("source_document_id") or "",
                 }
+            for field_name in ("registration_date", "registration_authority", "cover_certificate_number"):
+                if not _string(main_property.get(field_name)) and _string(supplement.get(field_name)):
+                    main_property[field_name] = supplement.get(field_name)
+                    main_property.setdefault("field_sources", {})[field_name] = {
+                        **(supplement.get("field_sources", {}) or {}).get(field_name, {}),
+                        "source_document_id": supplement.get("source_document_id") or "",
+                    }
     profile["updated_at"] = datetime.now(timezone.utc).isoformat()
     return profile

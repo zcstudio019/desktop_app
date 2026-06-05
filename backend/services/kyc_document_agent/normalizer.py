@@ -68,5 +68,7 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
             fields[field] = normalize_area(value)
         elif isinstance(value, str):
             fields[field] = re.sub(r"\s+", " ", value).strip(" :：,，")
+    if result.get("doc_type") in {"property_cert", "real_estate_cert"} and fields.get("登记日期"):
+        fields["registration_date"] = fields["登记日期"]
     result["fields"] = fields
     return result

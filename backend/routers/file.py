@@ -807,6 +807,7 @@ def _property_certificate_seal_crop_boxes(image_bytes: bytes) -> list[tuple[str,
         ("bottom_full_35", (0, max(0, int(height * 0.65)), width, height)),
         ("bottom_right_40_35", (max(0, int(width * 0.60)), max(0, int(height * 0.65)), width, height)),
         ("middle_right_45_45", (max(0, int(width * 0.52)), max(0, int(height * 0.48)), width, min(height, int(height * 0.93)))),
+        ("cover_seal_date_ocr", (max(0, int(width * 0.40)), max(0, int(height * 0.45)), min(width, int(width * 0.85)), min(height, int(height * 0.75)))),
         ("bottom_center_45", (max(0, int(width * 0.25)), max(0, int(height * 0.55)), min(width, int(width * 0.95)), height)),
     ]
 

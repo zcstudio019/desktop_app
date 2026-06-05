@@ -1493,8 +1493,9 @@ def _merge_kyc_property_supplement_fields(best_data: dict[str, Any], supplement_
     merged = dict(best_data or {})
     base_fields = dict(merged.get("fields") or {}) if isinstance(merged.get("fields"), dict) else dict(merged)
     supplement_field_groups = [
-        ("登记日", ("登记日", "issue_date", "registration_date")),
-        ("权证编号", ("权证编号", "certificate_number")),
+        ("登记日期", ("登记日期", "registration_date", "登记日", "issue_date")),
+        ("登记机构", ("登记机构", "registration_authority")),
+        ("封面编号", ("封面编号", "cover_certificate_number")),
     ]
     for item in supplement_items:
         data = item.get("extracted_data") if isinstance(item, dict) else {}
