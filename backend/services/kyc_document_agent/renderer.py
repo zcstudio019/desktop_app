@@ -223,14 +223,17 @@ def _collapse_property_synonym_fields(fields: dict[str, Any], display_fields: di
     collapsed = dict(display_fields)
     is_new_version = _is_new_real_estate_cert(fields, collapsed)
     groups = [
-        ("坐落", "房地坐落") if is_new_version else ("房地坐落", "坐落"),
-        ("权利性质", "权属性质") if is_new_version else ("权属性质", "权利性质"),
-        ("地号", "宗地号") if is_new_version else ("宗地号", "地号"),
-        ("使用期限", "土地使用期限") if is_new_version else ("土地使用期限", "使用期限"),
+        ("坐落", ("房地坐落",), ("property_address", "address", "location")) if is_new_version else ("房地坐落", ("坐落",), ("property_address", "address", "location")),
+        ("权利性质", ("权属性质",), ("right_nature",)) if is_new_version else ("权属性质", ("权利性质",), ("right_nature",)),
+        ("地号", ("宗地号",), ("parcel_number",)) if is_new_version else ("宗地号", ("地号",), ("parcel_number",)),
+        ("使用期限", ("土地使用期限",), ("use_term", "land_use_term")) if is_new_version else ("土地使用期限", ("使用期限",), ("use_term", "land_use_term")),
     ]
-    for preferred, alias in groups:
-        values = [collapsed.get(preferred), collapsed.get(alias)]
-        collapsed.pop(alias, None)
+    for preferred, aliases, raw_aliases in groups:
+        values = [collapsed.get(preferred)]
+        values.extend(collapsed.get(alias) for alias in aliases)
+        values.extend(fields.get(alias) for alias in raw_aliases)
+        for alias in aliases:
+            collapsed.pop(alias, None)
         best: Any = ""
         for value in values:
             best = _more_complete_display_value(best, value)

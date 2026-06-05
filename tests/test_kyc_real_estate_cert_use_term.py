@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from backend.services.kyc_document_agent.orchestrator import run_kyc_document_agent
+from backend.services.kyc_document_agent.renderer import get_display_fields
 
 
 def _extract(text: str) -> dict:
@@ -43,3 +44,40 @@ def test_real_estate_cert_keeps_term_without_stop_when_ocr_misses_stop():
     )
 
     assert result["fields"]["使用期限"] == "2015年10月16日起2076年12月28日"
+
+
+def test_use_term_aliases_render_as_use_term_for_new_real_estate_cert():
+    display = get_display_fields(
+        {
+            "doc_type": "property_cert",
+            "fields": {
+                "权证编号": "沪(2018)徐字不动产权第015979号",
+                "不动产单元号": "310104019001GB00045F00430086",
+                "宗地面积": "135460.00 平方米",
+                "land_use_term": "2015年10月16日起2076年12月28日止",
+                "室号或部位": "1705",
+            },
+        }
+    )
+    keys = list(display)
+
+    assert display["使用期限"] == "2015年10月16日起2076年12月28日止"
+    assert "土地使用期限" not in display
+    assert keys.index("宗地面积") < keys.index("使用期限") < keys.index("室号或部位")
+
+
+def test_use_term_wins_over_truncated_land_use_term_alias():
+    display = get_display_fields(
+        {
+            "doc_type": "property_cert",
+            "fields": {
+                "权证编号": "沪(2018)徐字不动产权第015979号",
+                "不动产单元号": "310104019001GB00045F00430086",
+                "使用期限": "2015年10月16日起2076",
+                "land_use_term": "2015年10月16日起2076年12月28日止",
+            },
+        }
+    )
+
+    assert display["使用期限"] == "2015年10月16日起2076年12月28日止"
+    assert "土地使用期限" not in display

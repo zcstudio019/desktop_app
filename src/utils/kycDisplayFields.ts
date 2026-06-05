@@ -299,14 +299,18 @@ function moreCompleteDisplayValue(current?: string, candidate?: string): string 
 function collapsePropertySynonymFields(display: Map<string, string>, fields: Record<string, unknown>): Map<string, string> {
   const next = new Map(display);
   const isNewVersion = isNewRealEstateCert(fields, next);
-  const groups = [
-    isNewVersion ? ['坐落', '房地坐落'] : ['房地坐落', '坐落'],
-    isNewVersion ? ['权利性质', '权属性质'] : ['权属性质', '权利性质'],
-    isNewVersion ? ['地号', '宗地号'] : ['宗地号', '地号'],
-    isNewVersion ? ['使用期限', '土地使用期限'] : ['土地使用期限', '使用期限'],
+  const groups: Array<[string, string[], string[]]> = [
+    isNewVersion ? ['坐落', ['房地坐落'], ['property_address', 'address', 'location']] : ['房地坐落', ['坐落'], ['property_address', 'address', 'location']],
+    isNewVersion ? ['权利性质', ['权属性质'], ['right_nature']] : ['权属性质', ['权利性质'], ['right_nature']],
+    isNewVersion ? ['地号', ['宗地号'], ['parcel_number']] : ['宗地号', ['地号'], ['parcel_number']],
+    isNewVersion ? ['使用期限', ['土地使用期限'], ['use_term', 'land_use_term']] : ['土地使用期限', ['使用期限'], ['use_term', 'land_use_term']],
   ];
-  groups.forEach(([preferred, ...aliases]) => {
-    const values = [next.get(preferred), ...aliases.map((alias) => next.get(alias))].filter(Boolean) as string[];
+  groups.forEach(([preferred, aliases, rawAliases]) => {
+    const values = [
+      next.get(preferred),
+      ...aliases.map((alias) => next.get(alias)),
+      ...rawAliases.map((alias) => formatKycDisplayValue(fields[alias])),
+    ].filter(Boolean) as string[];
     aliases.forEach((alias) => next.delete(alias));
     if (!values.length) return;
     const best = values.reduce((current, candidate) => moreCompleteDisplayValue(current, candidate), '');
@@ -370,6 +374,11 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
   if (isPropertyCert) {
     console.debug('[KycDisplayFields][DEBUG] docType=%s', docType);
     console.debug('[KycDisplayFields][DEBUG] rawFields=', fields);
+    console.debug('[KycDisplayFields][DEBUG] raw 使用期限 =', fields['使用期限']);
+    console.debug('[KycDisplayFields][DEBUG] raw 土地使用期限 =', fields['土地使用期限']);
+    console.debug('[KycDisplayFields][DEBUG] raw land_use_term =', fields.land_use_term);
+    console.debug('[KycDisplayFields][DEBUG] raw use_term =', fields.use_term);
+    console.debug('[KycDisplayFields][DEBUG] display 使用期限 =', displayFields['使用期限']);
     console.debug('[KycDisplayFields][DEBUG] displayFields=', displayFields);
   }
   return displayFields;

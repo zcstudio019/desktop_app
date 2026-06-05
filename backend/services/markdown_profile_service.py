@@ -1489,6 +1489,30 @@ def _kyc_property_extracted_data_for_display(extracted_data: dict[str, Any]) -> 
     }
 
 
+def _merge_kyc_property_supplement_fields(best_data: dict[str, Any], supplement_items: list[dict[str, Any]]) -> dict[str, Any]:
+    merged = dict(best_data or {})
+    base_fields = dict(merged.get("fields") or {}) if isinstance(merged.get("fields"), dict) else dict(merged)
+    supplement_field_groups = [
+        ("登记日", ("登记日", "issue_date", "registration_date")),
+        ("权证编号", ("权证编号", "certificate_number")),
+    ]
+    for item in supplement_items:
+        data = item.get("extracted_data") if isinstance(item, dict) else {}
+        if not isinstance(data, dict):
+            continue
+        fields = data.get("fields") if isinstance(data.get("fields"), dict) else data
+        if not isinstance(fields, dict):
+            continue
+        for target_key, aliases in supplement_field_groups:
+            if any(str(base_fields.get(alias) or "").strip() for alias in aliases):
+                continue
+            value = next((fields.get(alias) for alias in aliases if str(fields.get(alias) or "").strip()), "")
+            if value not in ("", None, [], {}):
+                base_fields[target_key] = value
+    merged["fields"] = base_fields
+    return merged
+
+
 def _build_kyc_property_profile_section_lines(
     file_names: list[str],
     original_available: bool,
@@ -2450,7 +2474,9 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                         _merge_property_extracted_data(merged_property_data, data)
                 best_data = merged_property_data
             main_files = [str(best_item.get("file_name") or "")] if best_item else []
-            supplement_files = [str(item.get("file_name") or "") for item in scored_property_items[1:]]
+            supplement_items = scored_property_items[1:]
+            best_data = _merge_kyc_property_supplement_fields(best_data, supplement_items)
+            supplement_files = [str(item.get("file_name") or "") for item in supplement_items]
             property_original_available = any(bool(item.get("file_path")) for item in scored_property_items)
             logger.info("[property merge] selected main=%s score=%s fields=%s", main_files, best_item.get("score"), list((best_data.get("fields") or {}).keys()) if isinstance(best_data.get("fields"), dict) else list(best_data.keys()))
             sections.append(

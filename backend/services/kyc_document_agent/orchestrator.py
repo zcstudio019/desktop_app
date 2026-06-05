@@ -112,6 +112,10 @@ class KycDocumentAgent:
             logger.info("[KycDocumentAgent][DEBUG] final_house_use=%s", fields.get("house_use"))
             logger.info("[KycDocumentAgent][DEBUG] final_building_use=%s", fields.get("building_use"))
             logger.info("[KycDocumentAgent][DEBUG] final_use_type=%s", fields.get("use_type"))
+            logger.info("[KycDocumentAgent][DEBUG] final 使用期限 = %s", fields.get("使用期限"))
+            logger.info("[KycDocumentAgent][DEBUG] final 土地使用期限 = %s", fields.get("土地使用期限"))
+            logger.info("[KycDocumentAgent][DEBUG] final land_use_term = %s", fields.get("land_use_term"))
+            logger.info("[KycDocumentAgent][DEBUG] final use_term = %s", fields.get("use_term"))
         result["markdown"] = render_markdown(result)
         if self.save_results:
             result["saved_path"] = str(self.save_structured_result(result, data.get("metadata") or {}))

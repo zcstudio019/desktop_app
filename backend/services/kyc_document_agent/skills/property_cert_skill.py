@@ -376,6 +376,52 @@ def _extract_date_near(text: str, label: str) -> tuple[str, str]:
     return "", ""
 
 
+def _normalize_chinese_date(value: str) -> str:
+    text = re.sub(r"\s+", "", value or "")
+    match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日?", text)
+    if match:
+        return f"{match.group(1)}年{int(match.group(2))}月{int(match.group(3))}日"
+    return ""
+
+
+def _extract_cover_registration_date(text: str) -> tuple[str, str]:
+    candidates: list[str] = []
+    for keyword in ("登记机构", "登记专用章", "颁发此证", "专用章", "Seal", "OCR"):
+        index = text.find(keyword)
+        if index >= 0:
+            candidates.append(text[max(0, index - 120): index + 180])
+    candidates.append(text)
+    patterns = [
+        r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?",
+        r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}",
+    ]
+    for candidate in candidates:
+        for pattern in patterns:
+            match = re.search(pattern, candidate or "")
+            if not match:
+                continue
+            value = _normalize_chinese_date(match.group(0))
+            if value:
+                return value, match.group(0)
+    return "", ""
+
+
+def _extract_cover_certificate_number(text: str) -> tuple[str, str]:
+    patterns = [
+        r"编号\s*[№NnOo\.\s]*([A-Z]?\d{8,20})",
+        r"(?:NO|No|no|№)\s*([A-Z]?\d{8,20})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text or "")
+        if match:
+            return match.group(1), match.group(0)
+    dense = _dense_text(text)
+    match = re.search(r"编号[№NnOo\.]*([A-Z]?\d{8,20})", dense)
+    if match:
+        return match.group(1), match.group(0)
+    return "", ""
+
+
 def _extract_valid_year_or_date(value: str) -> str:
     match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}|\d{4}年", value or "")
     return match.group(0) if match else ""
@@ -523,6 +569,21 @@ def _extract_new_version_area(text: str, label: str) -> tuple[str, str]:
     return "", ""
 
 
+def _extract_complete_use_term_window(text: str) -> tuple[str, str]:
+    dense = _dense_text(text)
+    term_pattern = r"\d{4}年\d{1,2}月\d{1,2}日?\s*起\s*\d{4}年\d{1,2}月\d{1,2}日?\s*止?"
+    candidates = [dense]
+    for label in ("国有建设用地使用权使用期限", "使用期限", "土地使用期限"):
+        label_index = dense.find(label)
+        if label_index >= 0:
+            candidates.insert(0, dense[label_index: label_index + 180])
+    for candidate in candidates:
+        match = re.search(term_pattern, candidate)
+        if match:
+            return _normalize_use_term(match.group(0)), match.group(0)
+    return "", ""
+
+
 def _extract_term(text: str) -> tuple[str, str]:
     dense = _dense_text(text)
     match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日?\s*起\s*\d{4}年\d{1,2}月\d{1,2}日?\s*止?", dense)
@@ -639,9 +700,29 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     source_text = _clean_text(data["text"])
     text, selected_role = _select_detail_text(data)
     if not text and selected_role == "cover_page":
-        result = build_result(doc_type, {}, {})
+        cover_cert_number, cover_cert_evidence = _extract_cover_certificate_number(source_text)
+        cover_register_date, cover_register_evidence = _extract_cover_registration_date(source_text)
+        cover_value_map: dict[str, tuple[Any, str, float]] = {
+            "权证编号": (cover_cert_number, cover_cert_evidence, 0.68),
+            "登记日": (cover_register_date, cover_register_evidence, 0.66),
+        }
+        fields, evidence, confidences = _build_evidence(
+            {
+                field: value_tuple
+                for field, value_tuple in cover_value_map.items()
+                if _is_valid_property_value(value_tuple[0])
+            }
+        )
+        for zh_key, en_key in ENGLISH_ALIASES.items():
+            if zh_key in fields and en_key not in fields:
+                fields[en_key] = fields[zh_key]
+                evidence[en_key] = {**evidence[zh_key], "value": fields[zh_key]}
+                confidences[en_key] = max(0.55, confidences[zh_key] - 0.02)
+        result = build_result(doc_type, fields, evidence)
         result["doc_type_name"] = "房产证/房地产权证" if doc_type == "property_cert" else result["doc_type_name"]
         result["raw_text_preview"] = raw_preview(source_text)
+        result["confidence"]["fields"] = confidences
+        result["confidence"]["overall"] = round(sum(confidences.values()) / len(confidences), 4) if confidences else 0.0
         result["validation"]["warnings"].append(
             "仅识别到房产证/不动产权证封面或说明页，未识别到权利人、坐落、面积等字段页，请补充上传正面字段页或人工确认。"
         )
@@ -675,6 +756,9 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         land_area, land_area_evidence = _extract_area(text, ["宗地(丘)面积", "宗地面积", "土地面积"])
     usage_area, usage_area_evidence = _extract_usage_area(text)
     term, term_evidence = _extract_term(text)
+    complete_term, complete_term_evidence = _extract_complete_use_term_window(text)
+    if complete_term and (not term or len(complete_term) > len(term) or "止" in complete_term and "止" not in term):
+        term, term_evidence = complete_term, complete_term_evidence
     room, room_evidence = _extract_after_label(text, ["室号或部位", "室号", "部位"])
     building_area, building_area_evidence = _extract_new_version_area(text, "建筑面积")
     if not building_area:
@@ -783,6 +867,9 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
                 confidences[alias] = max(0.55, confidences["房屋用途"] - 0.02)
 
     logger.info("[PropertyCertSkill][DEBUG] raw_text_contains_居住=%s", str("居住" in text).lower())
+    logger.info("[PropertyCertSkill][DEBUG] raw_text contains 使用期限 = %s", str("使用期限" in text).lower())
+    logger.info("[PropertyCertSkill][DEBUG] raw_text contains 2015年10月16日 = %s", str("2015年10月16日" in text).lower())
+    logger.info("[PropertyCertSkill][DEBUG] raw_text contains 2076年12月28日 = %s", str("2076年12月28日" in text).lower())
     logger.info("[PropertyCertSkill] raw_text_preview=%s", raw_preview(text))
     logger.info("[PropertyCertSkill] contains_权利人=%s", str("权利人" in _dense_text(text)).lower())
     logger.info("[PropertyCertSkill] contains_不动产单元号=%s", str("不动产单元号" in _dense_text(text)).lower())
@@ -793,6 +880,10 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
     logger.info("[PropertyCertSkill][DEBUG] house_use=%s", fields.get("house_use"))
     logger.info("[PropertyCertSkill][DEBUG] building_use=%s", fields.get("building_use"))
     logger.info("[PropertyCertSkill][DEBUG] use_type=%s", fields.get("use_type"))
+    logger.info("[PropertyCertSkill][DEBUG] fields[使用期限]=%s", fields.get("使用期限"))
+    logger.info("[PropertyCertSkill][DEBUG] fields[土地使用期限]=%s", fields.get("土地使用期限"))
+    logger.info("[PropertyCertSkill][DEBUG] fields[land_use_term]=%s", fields.get("land_use_term"))
+    logger.info("[PropertyCertSkill][DEBUG] fields[use_term]=%s", fields.get("use_term"))
 
     result = build_result(doc_type, fields, evidence)
     result["doc_type_name"] = "房产证/房地产权证" if doc_type == "property_cert" else result["doc_type_name"]

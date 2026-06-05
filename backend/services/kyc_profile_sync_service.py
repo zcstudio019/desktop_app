@@ -259,7 +259,7 @@ def _property_item(fields: dict[str, Any], source_document_id: str, doc_type: st
         "parcel_number": ["parcel_number", "地号", "宗地号"],
         "mortgage_status": ["mortgage_status"],
         "seizure_status": ["seizure_status"],
-        "issue_date": ["issue_date", "登记日"],
+        "issue_date": ["登记日", "issue_date", "registration_date"],
     }
     item = {
         "doc_type": doc_type,
@@ -455,5 +455,20 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
         key=lambda item: (int(item.get("quality_score") or 0), _property_completeness_score(item), _string(item.get("source_document_id"))),
         reverse=True,
     )
+    if profile["assets"]["properties"]:
+        main_property = profile["assets"]["properties"][0]
+        for supplement in profile["assets"]["properties"][1:]:
+            if not _string(main_property.get("issue_date")) and _string(supplement.get("issue_date")):
+                main_property["issue_date"] = supplement.get("issue_date")
+                main_property.setdefault("field_sources", {})["issue_date"] = {
+                    **(supplement.get("field_sources", {}) or {}).get("issue_date", {}),
+                    "source_document_id": supplement.get("source_document_id") or "",
+                }
+            if not _string(main_property.get("certificate_number")) and _string(supplement.get("certificate_number")):
+                main_property["certificate_number"] = supplement.get("certificate_number")
+                main_property.setdefault("field_sources", {})["certificate_number"] = {
+                    **(supplement.get("field_sources", {}) or {}).get("certificate_number", {}),
+                    "source_document_id": supplement.get("source_document_id") or "",
+                }
     profile["updated_at"] = datetime.now(timezone.utc).isoformat()
     return profile
