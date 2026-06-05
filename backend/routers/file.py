@@ -609,6 +609,15 @@ def _property_certificate_field_crop_boxes(image_bytes: bytes) -> list[tuple[str
         width, height = image.size
     return [
         ("left_table_70_95", (0, 0, max(1, int(width * 0.70)), max(1, int(height * 0.95)))),
+        (
+            "use_term_region_15_70_38_55",
+            (
+                max(0, int(width * 0.15)),
+                max(0, int(height * 0.38)),
+                max(1, int(width * 0.70)),
+                max(1, int(height * 0.55)),
+            ),
+        ),
     ]
 
 

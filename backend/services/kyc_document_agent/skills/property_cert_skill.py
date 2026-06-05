@@ -585,17 +585,51 @@ def _use_term_debug_lines(text: str) -> str:
     return "\n---\n".join(snippets[:5])
 
 
-def extract_use_term_from_property_cert_text(text: str) -> str | None:
-    """Extract the land use term from property certificate OCR text."""
+def _use_term_candidate_debug(text: str) -> dict[str, Any]:
     lines = _lines(text)
-    term_pattern = r"\d{4}年\d{1,2}月\d{1,2}日?\s*起\s*\d{4}年\d{1,2}月\d{1,2}日?\s*止?"
+    lines_with_term = [line for line in lines if "期限" in line]
+    lines_with_2015 = [line for line in lines if "2015" in line or "２０１５" in line]
+    lines_with_2076 = [line for line in lines if "2076" in line or "２０７６" in line]
+    snippets: list[str] = []
+    for index, line in enumerate(lines):
+        dense_line = _dense_text(line)
+        if (
+            "使用期限" in dense_line
+            or "期限" in dense_line
+            or "2015年10月16" in dense_line
+            or "2076" in dense_line
+        ):
+            start = max(0, index - 1)
+            end = min(len(lines), index + 4)
+            snippets.append("\n".join(lines[start:end]))
+    return {
+        "lines_count": len(lines),
+        "lines_with_期限": lines_with_term,
+        "lines_with_2015": lines_with_2015,
+        "lines_with_2076": lines_with_2076,
+        "candidate_lines_around_use_term": "\n---\n".join(snippets[:8]),
+    }
+
+
+def extract_real_estate_use_term(text: str) -> str | None:
+    """Extract complete real-estate land-use term from noisy OCR text."""
+    lines = _lines(text)
+    term_pattern = r"\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日?止?"
+    term_without_stop_pattern = r"\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日?"
     candidates: list[str] = []
 
     for index, line in enumerate(lines):
         dense_line = _dense_text(line)
-        if "使用期限" not in dense_line and not ("使用" in dense_line and "期限" in dense_line):
+        if not (
+            "使用期限" in dense_line
+            or "期限" in dense_line
+            or "2015年10月16" in dense_line
+            or "2076" in dense_line
+        ):
             continue
-        candidates.append(_dense_text("".join(lines[index:index + 3])))
+        start = max(0, index - 1)
+        end = min(len(lines), index + 4)
+        candidates.append(_dense_text("".join(lines[start:end])))
 
     dense = _dense_text(text)
     for label in ("国有建设用地使用权使用期限", "使用期限", "土地使用期限"):
@@ -605,14 +639,28 @@ def extract_use_term_from_property_cert_text(text: str) -> str | None:
     candidates.append(dense)
 
     for candidate in candidates:
+        candidate = (
+            candidate.replace("：", "")
+            .replace(":", "")
+            .replace(" ", "")
+            .replace("\n", "")
+        )
         match = re.search(term_pattern, candidate)
+        if match:
+            return _normalize_use_term_result(match.group(0))
+        match = re.search(term_without_stop_pattern, candidate)
         if match:
             return _normalize_use_term_result(match.group(0))
     return None
 
 
+def extract_use_term_from_property_cert_text(text: str) -> str | None:
+    """Backward-compatible alias for the dedicated real-estate use-term extractor."""
+    return extract_real_estate_use_term(text)
+
+
 def _extract_complete_use_term_window(text: str) -> tuple[str, str]:
-    value = extract_use_term_from_property_cert_text(text)
+    value = extract_real_estate_use_term(text)
     return (value or "", value or "")
 
 
@@ -729,6 +777,8 @@ def _has_house_context_fields(fields: dict[str, Any]) -> bool:
 
 def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str, Any]:
     data = normalize_input(payload)
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    filename = str(metadata.get("filename") or metadata.get("source_file") or metadata.get("fileName") or "")
     source_text = _clean_text(data["text"])
     text, selected_role = _select_detail_text(data)
     if not text and selected_role == "cover_page":
@@ -862,7 +912,7 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
             value_map[field] = value_tuple
     fields, evidence, confidences = _build_evidence(value_map)
 
-    matched_use_term = extract_use_term_from_property_cert_text(text)
+    matched_use_term = extract_real_estate_use_term(text)
     if matched_use_term:
         for field in ("使用期限", "土地使用期限", "use_term", "land_use_term"):
             fields[field] = matched_use_term
@@ -910,13 +960,27 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
                 evidence[alias] = {**evidence["房屋用途"], "value": fields["房屋用途"]}
                 confidences[alias] = max(0.55, confidences["房屋用途"] - 0.02)
 
+    if "房产正面" in filename:
+        use_term_debug = _use_term_candidate_debug(text)
+        logger.info("[USE_TERM_DEBUG] filename=%s", filename)
+        logger.info("[USE_TERM_DEBUG] raw_text_length=%s", len(text or ""))
+        logger.info("[USE_TERM_DEBUG] raw_text_full=%s", text)
+        logger.info("[USE_TERM_DEBUG] lines_count=%s", use_term_debug["lines_count"])
+        logger.info("[USE_TERM_DEBUG] lines_with_期限=%s", use_term_debug["lines_with_期限"])
+        logger.info("[USE_TERM_DEBUG] lines_with_2015=%s", use_term_debug["lines_with_2015"])
+        logger.info("[USE_TERM_DEBUG] lines_with_2076=%s", use_term_debug["lines_with_2076"])
+        logger.info("[USE_TERM_DEBUG] candidate_lines_around_use_term=%s", use_term_debug["candidate_lines_around_use_term"])
+        logger.info("[USE_TERM_DEBUG] matched_use_term=%s", matched_use_term)
+        logger.info("[USE_TERM_DEBUG] final_fields_keys=%s", list(fields.keys()))
+        logger.info("[USE_TERM_DEBUG] final_使用期限=%s", fields.get("使用期限"))
+        logger.info("[USE_TERM_DEBUG] final_use_term=%s", fields.get("use_term"))
+        logger.info("[USE_TERM_DEBUG] final_land_use_term=%s", fields.get("land_use_term"))
     logger.info("[PropertyCertSkill][DEBUG] raw_text_contains_居住=%s", str("居住" in text).lower())
     logger.info("[PropertyCertSkill][DEBUG] raw_text contains 使用期限 = %s", str("使用期限" in text).lower())
     logger.info("[PropertyCertSkill][DEBUG] raw_text contains 2015年10月16日 = %s", str("2015年10月16日" in text).lower())
     logger.info("[PropertyCertSkill][DEBUG] raw_text contains 2076年12月28日 = %s", str("2076年12月28日" in text).lower())
-    logger.info("[PropertyCertSkill][USE_TERM_DEBUG] raw_text=%s", text)
     logger.info("[PropertyCertSkill][USE_TERM_DEBUG] lines around 使用期限=%s", _use_term_debug_lines(text))
-    logger.info("[PropertyCertSkill][USE_TERM_DEBUG] matched_use_term=%s", extract_use_term_from_property_cert_text(text))
+    logger.info("[PropertyCertSkill][USE_TERM_DEBUG] matched_use_term=%s", matched_use_term)
     logger.info("[PropertyCertSkill] raw_text_preview=%s", raw_preview(text))
     logger.info("[PropertyCertSkill] contains_权利人=%s", str("权利人" in _dense_text(text)).lower())
     logger.info("[PropertyCertSkill] contains_不动产单元号=%s", str("不动产单元号" in _dense_text(text)).lower())

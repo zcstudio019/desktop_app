@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from backend.services.kyc_document_agent.orchestrator import run_kyc_document_agent
 from backend.services.kyc_document_agent.renderer import get_display_fields
-from backend.services.kyc_document_agent.skills.property_cert_skill import extract_use_term_from_property_cert_text
+from backend.services.kyc_document_agent.skills.property_cert_skill import (
+    extract_real_estate_use_term,
+    extract_use_term_from_property_cert_text,
+)
 
 
 def _extract(text: str) -> dict:
@@ -57,6 +60,28 @@ def test_extract_use_term_from_property_cert_text_uses_label_line_and_next_lines
     )
 
     assert extract_use_term_from_property_cert_text(text) == "2015年10月16日起2076年12月28日止"
+
+
+def test_extract_real_estate_use_term_uses_2015_2076_neighbor_lines():
+    text = (
+        "面积：宗地面积：135460.00平方米/建筑面积：62.40平方米\n"
+        "国有建设用地使用权\n"
+        "2015年10月16日起2076\n"
+        "年12月28日止\n"
+        "房屋状况：室号部位：1705；类型：公寓"
+    )
+
+    assert extract_real_estate_use_term(text) == "2015年10月16日起2076年12月28日止"
+
+
+def test_extract_real_estate_use_term_from_appended_use_term_region_ocr():
+    text = (
+        "不动产权证书 权利人 沃志方 不动产单元号 310104019001GB00045F00430086\n"
+        "--- Property Certificate Field OCR page=1 region=use_term_region_15_70_38_55 variant=contrast_x2 ---\n"
+        "国有建设用地使用权使用期限：2015年10月16日起2076年12月28日止"
+    )
+
+    assert extract_real_estate_use_term(text) == "2015年10月16日起2076年12月28日止"
 
 
 def test_use_term_aliases_render_as_use_term_for_new_real_estate_cert():
