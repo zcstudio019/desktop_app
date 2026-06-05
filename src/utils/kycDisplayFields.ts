@@ -267,6 +267,54 @@ function isHiddenPropertyField(label: string, value: unknown): boolean {
   return false;
 }
 
+function isNewRealEstateCert(fields: Record<string, unknown>, display: Map<string, string>): boolean {
+  const certNumber = formatKycDisplayValue(fields['权证编号'] ?? fields.certificate_number ?? display.get('权证编号'));
+  if (certNumber.includes('房地') || certNumber.includes('房权')) return false;
+  return Boolean(
+    fields['不动产单元号'] ||
+      fields.real_estate_unit_no ||
+      fields.real_estate_unit_number ||
+      fields['共有情况'] ||
+      fields.co_ownership ||
+      fields.shared_status ||
+      fields.ownership_status ||
+      fields['权利类型'] ||
+      fields.right_type ||
+      fields['权利性质'] ||
+      certNumber.includes('不动产权'),
+  );
+}
+
+function moreCompleteDisplayValue(current?: string, candidate?: string): string {
+  const currentText = String(current ?? '').trim();
+  const candidateText = String(candidate ?? '').trim();
+  if (!currentText) return candidateText;
+  if (!candidateText) return currentText;
+  if (candidateText === currentText) return currentText;
+  const currentScore = currentText.length + (currentText.includes('止') ? 20 : 0) + ((currentText.match(/年/g) || []).length * 4);
+  const candidateScore = candidateText.length + (candidateText.includes('止') ? 20 : 0) + ((candidateText.match(/年/g) || []).length * 4);
+  return candidateScore > currentScore ? candidateText : currentText;
+}
+
+function collapsePropertySynonymFields(display: Map<string, string>, fields: Record<string, unknown>): Map<string, string> {
+  const next = new Map(display);
+  const isNewVersion = isNewRealEstateCert(fields, next);
+  const groups = [
+    isNewVersion ? ['坐落', '房地坐落'] : ['房地坐落', '坐落'],
+    isNewVersion ? ['权利性质', '权属性质'] : ['权属性质', '权利性质'],
+    isNewVersion ? ['地号', '宗地号'] : ['宗地号', '地号'],
+    isNewVersion ? ['使用期限', '土地使用期限'] : ['土地使用期限', '使用期限'],
+  ];
+  groups.forEach(([preferred, ...aliases]) => {
+    const values = [next.get(preferred), ...aliases.map((alias) => next.get(alias))].filter(Boolean) as string[];
+    aliases.forEach((alias) => next.delete(alias));
+    if (!values.length) return;
+    const best = values.reduce((current, candidate) => moreCompleteDisplayValue(current, candidate), '');
+    next.set(preferred, best);
+  });
+  return next;
+}
+
 export function isKycDocType(docType?: unknown): boolean {
   return typeof docType === 'string' && KYC_DOC_TYPES.has(docType);
 }
@@ -307,7 +355,18 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
     display.set(label, text);
   });
 
-  const displayFields = Object.fromEntries(display.entries());
+  const collapsedDisplay = isPropertyCert ? collapsePropertySynonymFields(display, fields) : display;
+  const orderedDisplay = new Map<string, string>();
+  if (isPropertyCert) {
+    PROPERTY_CERT_FIELD_ORDER.forEach((label) => {
+      const value = collapsedDisplay.get(label);
+      if (value) orderedDisplay.set(label, value);
+    });
+    collapsedDisplay.forEach((value, label) => {
+      if (!orderedDisplay.has(label)) orderedDisplay.set(label, value);
+    });
+  }
+  const displayFields = Object.fromEntries((isPropertyCert ? orderedDisplay : collapsedDisplay).entries());
   if (isPropertyCert) {
     console.debug('[KycDisplayFields][DEBUG] docType=%s', docType);
     console.debug('[KycDisplayFields][DEBUG] rawFields=', fields);

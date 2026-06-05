@@ -182,6 +182,71 @@ def _is_hidden_property_display_field(display_key: str, value: Any) -> bool:
     return False
 
 
+def _is_new_real_estate_cert(fields: dict[str, Any], display_fields: dict[str, Any]) -> bool:
+    cert_number = _format_value(
+        fields.get("权证编号")
+        or fields.get("certificate_number")
+        or display_fields.get("权证编号")
+    )
+    if "房地" in cert_number or "房权" in cert_number:
+        return False
+    return bool(
+        fields.get("不动产单元号")
+        or fields.get("real_estate_unit_no")
+        or fields.get("real_estate_unit_number")
+        or fields.get("共有情况")
+        or fields.get("co_ownership")
+        or fields.get("shared_status")
+        or fields.get("ownership_status")
+        or fields.get("权利类型")
+        or fields.get("right_type")
+        or fields.get("权利性质")
+        or "不动产权" in cert_number
+    )
+
+
+def _more_complete_display_value(current: Any, candidate: Any) -> Any:
+    current_text = _format_value(current).strip() if current not in (None, "", [], {}) else ""
+    candidate_text = _format_value(candidate).strip() if candidate not in (None, "", [], {}) else ""
+    if not current_text:
+        return candidate
+    if not candidate_text:
+        return current
+    if current_text == candidate_text:
+        return current
+    current_score = len(current_text) + (20 if "止" in current_text else 0) + current_text.count("年") * 4
+    candidate_score = len(candidate_text) + (20 if "止" in candidate_text else 0) + candidate_text.count("年") * 4
+    return candidate if candidate_score > current_score else current
+
+
+def _collapse_property_synonym_fields(fields: dict[str, Any], display_fields: dict[str, Any]) -> dict[str, Any]:
+    collapsed = dict(display_fields)
+    is_new_version = _is_new_real_estate_cert(fields, collapsed)
+    groups = [
+        ("坐落", "房地坐落") if is_new_version else ("房地坐落", "坐落"),
+        ("权利性质", "权属性质") if is_new_version else ("权属性质", "权利性质"),
+        ("地号", "宗地号") if is_new_version else ("宗地号", "地号"),
+        ("使用期限", "土地使用期限") if is_new_version else ("土地使用期限", "使用期限"),
+    ]
+    for preferred, alias in groups:
+        values = [collapsed.get(preferred), collapsed.get(alias)]
+        collapsed.pop(alias, None)
+        best: Any = ""
+        for value in values:
+            best = _more_complete_display_value(best, value)
+        if best not in (None, "", [], {}):
+            collapsed[preferred] = best
+
+    ordered: dict[str, Any] = {}
+    for label in PROPERTY_FIELD_ORDER:
+        if label in collapsed:
+            ordered[label] = collapsed[label]
+    for label, value in collapsed.items():
+        if label not in ordered:
+            ordered[label] = value
+    return ordered
+
+
 def _format_value(value: Any) -> str:
     if isinstance(value, list):
         return "、".join(str(item) for item in value if item not in ("", None)) or "未识别"
@@ -231,6 +296,8 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
         if _is_empty_or_invalid(value) or _is_hidden_property_display_field(display_key, value):
             continue
         display_fields[display_key] = value
+    if result.get("doc_type") in {"property_cert", "real_estate_cert"}:
+        return _collapse_property_synonym_fields(fields, display_fields)
     return display_fields
 
 

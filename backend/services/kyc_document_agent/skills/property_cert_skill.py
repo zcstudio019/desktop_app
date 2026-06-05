@@ -316,10 +316,11 @@ def _extract_new_version_dense_fields(text: str) -> dict[str, tuple[str, str, fl
         add("宗地面积", f"{area_match.group(1)} 平方米", area_match.group(0), 0.74)
         add("建筑面积", f"{area_match.group(2)} 平方米", area_match.group(0), 0.78)
 
-    term_match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日(?:止)?)", dense)
+    term_match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日?\s*起\s*\d{4}年\d{1,2}月\d{1,2}日?\s*止?)", dense)
     if term_match:
-        add("使用期限", term_match.group(1), term_match.group(0), 0.72)
-        add("土地使用期限", term_match.group(1), term_match.group(0), 0.72)
+        term_value = _normalize_use_term(term_match.group(1))
+        add("使用期限", term_value, term_match.group(0), 0.72)
+        add("土地使用期限", term_value, term_match.group(0), 0.72)
 
     parcel, evidence = _dense_between(
         dense,
@@ -524,16 +525,28 @@ def _extract_new_version_area(text: str, label: str) -> tuple[str, str]:
 
 def _extract_term(text: str) -> tuple[str, str]:
     dense = _dense_text(text)
-    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日(?:止)?", dense)
+    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日?\s*起\s*\d{4}年\d{1,2}月\d{1,2}日?\s*止?", dense)
     if match:
-        return match.group(0), match.group(0)
+        return _normalize_use_term(match.group(0)), match.group(0)
     value, evidence = _extract_after_label(text, ["使用期限", "土地使用期限"], stop_labels=["权利其他状况", "附记", "室号或部位"])
     if not value:
         return "", ""
-    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日?起\s*\d{4}年\d{1,2}月\d{1,2}日(?:止)?", value)
+    compact_value = _dense_text(value)
+    match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日?\s*起\s*\d{4}年\d{1,2}月\d{1,2}日?\s*止?", compact_value)
     if match:
-        return match.group(0), evidence
-    return value, evidence
+        return _normalize_use_term(match.group(0)), evidence
+    if re.fullmatch(r"\d{4}年\d{1,2}月\d{1,2}日?起\d{4}", compact_value or ""):
+        return "", ""
+    return _normalize_use_term(value), evidence
+
+
+def _normalize_use_term(value: str) -> str:
+    text = re.sub(r"\s+", "", value or "")
+    text = re.sub(r"^.*?使用期限[:：]?", "", text)
+    match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日?止?)", text)
+    if match:
+        return match.group(1)
+    return _compact_value(text)
 
 
 def _extract_owner(text: str) -> tuple[str, str]:

@@ -74,7 +74,7 @@ def test_display_fields_are_ordered_and_only_non_empty_values_rendered():
     keys = list(display_fields)
 
     assert keys.index("权利人") < keys.index("共有情况") < keys.index("权证编号")
-    assert keys.index("土地用途") < keys.index("房屋用途") < keys.index("宗地号")
+    assert keys.index("土地用途") < keys.index("房屋用途") < keys.index("地号")
     assert "使用权面积" not in display_fields
 
 
