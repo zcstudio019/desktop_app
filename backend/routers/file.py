@@ -570,8 +570,10 @@ def _build_seal_ocr_variants(region_bytes: bytes) -> list[tuple[str, bytes]]:
         high_contrast = ImageEnhance.Contrast(grayscale).enhance(2.8)
 
         red_mask = Image.new("L", rgb.size, 255)
+        red_removed = rgb.copy()
         source_pixels = rgb.load()
         target_pixels = red_mask.load()
+        red_removed_pixels = red_removed.load()
         width, height = rgb.size
         for y in range(height):
             for x in range(width):
@@ -579,18 +581,31 @@ def _build_seal_ocr_variants(region_bytes: bytes) -> list[tuple[str, bytes]]:
                 # Red stamp text is often ignored by normal OCR; convert red-dominant pixels to black.
                 if red >= 120 and red > green * 1.18 and red > blue * 1.18:
                     target_pixels[x, y] = 0
+                if red > 120 and red > green * 1.2 and red > blue * 1.2:
+                    red_removed_pixels[x, y] = (255, 255, 255)
 
         red_mask = ImageEnhance.Contrast(red_mask).enhance(2.5)
+        red_removed_gray = ImageOps.grayscale(red_removed)
+        red_removed_gray = ImageEnhance.Contrast(red_removed_gray).enhance(2.8)
+        red_removed_binary = red_removed_gray.point(lambda pixel: 255 if pixel > 155 else 0)
+        black_text_enhance = grayscale.point(lambda pixel: 0 if pixel < 120 else 255)
         binary = high_contrast.point(lambda pixel: 255 if pixel > 165 else 0)
         resampling = getattr(Image, "Resampling", Image).LANCZOS
         binary_2x = binary.resize((max(1, binary.width * 2), max(1, binary.height * 2)), resampling)
         binary_3x = binary.resize((max(1, binary.width * 3), max(1, binary.height * 3)), resampling)
+        red_removed_gray_3x = red_removed_gray.resize((max(1, red_removed_gray.width * 3), max(1, red_removed_gray.height * 3)), resampling)
+        red_removed_binary_3x = red_removed_binary.resize((max(1, red_removed_binary.width * 3), max(1, red_removed_binary.height * 3)), resampling)
+        black_text_enhance_3x = black_text_enhance.resize((max(1, black_text_enhance.width * 3), max(1, black_text_enhance.height * 3)), resampling)
         return [
             ("original", _image_to_jpeg_bytes(rgb)),
             ("gray_high_contrast", _image_to_jpeg_bytes(high_contrast)),
+            ("upscale_3x", _image_to_jpeg_bytes(grayscale.resize((max(1, grayscale.width * 3), max(1, grayscale.height * 3)), resampling))),
             ("binary", _image_to_jpeg_bytes(binary)),
             ("binary_2x", _image_to_jpeg_bytes(binary_2x)),
             ("binary_3x", _image_to_jpeg_bytes(binary_3x)),
+            ("remove_red_stamp_then_gray", _image_to_jpeg_bytes(red_removed_gray_3x)),
+            ("remove_red_stamp_then_binary", _image_to_jpeg_bytes(red_removed_binary_3x)),
+            ("black_text_enhance", _image_to_jpeg_bytes(black_text_enhance_3x)),
             ("red_stamp_mask", _image_to_jpeg_bytes(red_mask)),
         ]
 
@@ -815,6 +830,8 @@ def _property_certificate_seal_crop_boxes(image_bytes: bytes) -> list[tuple[str,
         ("bottom_right_40_35", (max(0, int(width * 0.60)), max(0, int(height * 0.65)), width, height)),
         ("middle_right_45_45", (max(0, int(width * 0.52)), max(0, int(height * 0.48)), width, min(height, int(height * 0.93)))),
         ("cover_seal_date_ocr", (max(0, int(width * 0.40)), max(0, int(height * 0.45)), min(width, int(width * 0.85)), min(height, int(height * 0.75)))),
+        ("cover_registration_date_region", (max(0, int(width * 0.42)), max(0, int(height * 0.48)), min(width, int(width * 0.78)), min(height, int(height * 0.66)))),
+        ("cover_registration_date_line", (max(0, int(width * 0.43)), max(0, int(height * 0.54)), min(width, int(width * 0.76)), min(height, int(height * 0.61)))),
         ("bottom_center_45", (max(0, int(width * 0.25)), max(0, int(height * 0.55)), min(width, int(width * 0.95)), height)),
     ]
 
@@ -848,6 +865,13 @@ def _ocr_property_certificate_seal_region(file_bytes: bytes, file_type: str, fil
                             variant_name,
                             seal_text[:1000] or "(empty)",
                         )
+                        if region_name in {"cover_registration_date_region", "cover_registration_date_line"}:
+                            logger.info(
+                                "[CoverDateOCR] region=%s variant=%s text=%s",
+                                region_name,
+                                variant_name,
+                                seal_text[:1000] or "(empty)",
+                            )
                         if seal_text:
                             ocr_parts.append(
                                 f"--- Property Certificate Seal OCR page={page_index} region={region_name} variant={variant_name} box={box} ---\n{seal_text}"

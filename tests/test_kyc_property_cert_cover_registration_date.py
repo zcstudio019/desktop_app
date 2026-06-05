@@ -34,6 +34,26 @@ def test_cover_registration_date_cleans_suffix_noise():
         assert value == "2018年10月23日"
 
 
+def test_cover_registration_date_ignores_stamp_polluted_false_date():
+    value, _ = _extract_cover_registration_date("登记机构\n2018年动登专用章日\n(04)")
+
+    assert value == ""
+
+
+def test_cover_registration_date_prefers_remove_red_stamp_region_text():
+    value, _ = _extract_cover_registration_date(
+        """
+登记机构
+2018年动登专用章日
+(04)
+--- Property Certificate Seal OCR page=1 region=cover_registration_date_region variant=remove_red_stamp_then_gray ---
+2018 年 10 月 23 日
+"""
+    )
+
+    assert value == "2018年10月23日"
+
+
 def test_cover_page_fields_include_registration_date_alias():
     result = _extract_cover(
         """
@@ -49,6 +69,7 @@ def test_cover_page_fields_include_registration_date_alias():
     assert result["page_role"] == "cover_page"
     assert result["fields"]["登记日期"] == "2018年10月23日"
     assert result["fields"]["registration_date"] == "2018年10月23日"
+    assert result["fields"]["登记日"] == "2018年10月23日"
 
 
 def test_cover_detail_merge_displays_registration_date_after_completion_date_before_authority():

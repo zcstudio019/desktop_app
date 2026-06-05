@@ -234,6 +234,7 @@ def _collapse_property_synonym_fields(fields: dict[str, Any], display_fields: di
         ("权利性质", ("权属性质",), ("right_nature",)) if is_new_version else ("权属性质", ("权利性质",), ("right_nature",)),
         ("地号", ("宗地号",), ("parcel_number",)) if is_new_version else ("宗地号", ("地号",), ("parcel_number",)),
         ("使用期限", ("土地使用期限",), ("use_term", "land_use_term")) if is_new_version else ("土地使用期限", ("使用期限",), ("use_term", "land_use_term")),
+        ("登记日期", ("登记日",), ("registration_date", "issue_date")),
     ]
     for preferred, aliases, raw_aliases in groups:
         values = [collapsed.get(preferred)]

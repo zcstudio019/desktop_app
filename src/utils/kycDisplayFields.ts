@@ -308,6 +308,7 @@ function collapsePropertySynonymFields(display: Map<string, string>, fields: Rec
     isNewVersion ? ['权利性质', ['权属性质'], ['right_nature']] : ['权属性质', ['权利性质'], ['right_nature']],
     isNewVersion ? ['地号', ['宗地号'], ['parcel_number']] : ['宗地号', ['地号'], ['parcel_number']],
     isNewVersion ? ['使用期限', ['土地使用期限'], ['use_term', 'land_use_term']] : ['土地使用期限', ['使用期限'], ['use_term', 'land_use_term']],
+    ['登记日期', ['登记日'], ['registration_date', 'issue_date']],
   ];
   groups.forEach(([preferred, aliases, rawAliases]) => {
     const values = [

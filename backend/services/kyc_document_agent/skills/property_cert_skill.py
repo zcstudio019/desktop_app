@@ -392,10 +392,23 @@ def _normalize_chinese_date(value: str) -> str:
 
 def _extract_cover_registration_date(text: str) -> tuple[str, str]:
     candidates: list[tuple[int, str]] = []
-    for keyword in ("cover_seal_date_ocr", "seal_region_ocr", "Seal Region OCR", "登记机构", "登记专用章", "不动产登记专用章", "颁发此证", "专用章", "Seal", "OCR"):
+    for keyword in (
+        "cover_registration_date_region",
+        "cover_registration_date_line",
+        "cover_seal_date_ocr",
+        "seal_region_ocr",
+        "Seal Region OCR",
+        "登记机构",
+        "登记专用章",
+        "不动产登记专用章",
+        "颁发此证",
+        "专用章",
+        "Seal",
+        "OCR",
+    ):
         index = text.find(keyword)
         if index >= 0:
-            priority = 0 if keyword in {"cover_seal_date_ocr", "seal_region_ocr", "Seal Region OCR"} else 1
+            priority = 0 if keyword in {"cover_registration_date_region", "cover_registration_date_line", "cover_seal_date_ocr", "seal_region_ocr", "Seal Region OCR"} else 1
             candidates.append((priority, text[max(0, index - 180): index + 240]))
     candidates.append((9, text))
     pattern = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?(?:章|印|登记|（?\d{1,2}）?)?"
@@ -408,10 +421,10 @@ def _extract_cover_registration_date(text: str) -> tuple[str, str]:
             value = f"{year}年{month}月{day}日"
             matched_dates.append((priority, value, match.group(0)))
     selected = sorted(matched_dates, key=lambda item: (item[0], item[1]))[0] if matched_dates else None
-    logger.info("[CoverPageDateOCR] raw_text_contains_2018=%s", str("2018" in (text or "")).lower())
-    logger.info("[CoverPageDateOCR] seal_region_text=%s", "\n---\n".join(candidate for _, candidate in candidates[:4]))
-    logger.info("[CoverPageDateOCR] matched_dates=%s", matched_dates)
-    logger.info("[CoverPageDateOCR] selected_registration_date=%s", selected[1] if selected else "")
+    logger.info("[CoverDateOCR] raw_text_contains_2018=%s", str("2018" in (text or "")).lower())
+    logger.info("[CoverDateOCR] seal_region_text=%s", "\n---\n".join(candidate for _, candidate in candidates[:4]))
+    logger.info("[CoverDateOCR] matched_dates=%s", matched_dates)
+    logger.info("[CoverDateOCR] selected_registration_date=%s", selected[1] if selected else "")
     if selected:
         return selected[1], selected[2]
     return "", ""
@@ -836,6 +849,7 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         cover_value_map: dict[str, tuple[Any, str, float]] = {
             "封面编号": (cover_cert_number, cover_cert_evidence, 0.68),
             "登记日期": (cover_register_date, cover_register_evidence, 0.66),
+            "登记日": (cover_register_date, cover_register_evidence, 0.62),
             "登记机构": (cover_authority, cover_authority_evidence, 0.64),
         }
         fields, evidence, confidences = _build_evidence(
@@ -854,6 +868,9 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
             result_warning = "登记机构城市需人工确认。"
         else:
             result_warning = ""
+        date_warning = ""
+        if not cover_register_date and re.search(r"20\d{2}年.*(?:专章|专用章|登记|印章)", source_text or ""):
+            date_warning = "登记日期疑似存在但 OCR 未能准确识别，请人工确认。"
         result = build_result(doc_type, fields, evidence)
         result["doc_type_name"] = "房产证/房地产权证" if doc_type == "property_cert" else result["doc_type_name"]
         result["raw_text_preview"] = raw_preview(source_text)
@@ -864,6 +881,8 @@ def _extract_property(payload: dict[str, Any] | str, doc_type: str) -> dict[str,
         )
         if result_warning:
             result["validation"]["warnings"].append(result_warning)
+        if date_warning:
+            result["validation"]["warnings"].append(date_warning)
         result["page_role"] = "cover_page"
         return result
 
