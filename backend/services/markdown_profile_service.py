@@ -26,6 +26,8 @@ from backend.services.enterprise_bank_statement_agent.flow_rules import get_ente
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
+from backend.services.kyc_document_agent.renderer import get_display_fields
+from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
 
 logger = logging.getLogger(__name__)
@@ -1385,6 +1387,8 @@ PROPERTY_DOCUMENT_TYPES = {
     'collateral',
     'mortgage_info',
     'property_certificate',
+    'property_cert',
+    'real_estate_cert',
     '房产证',
     '房产证 / 产调',
     '房产证/产调',
@@ -1450,6 +1454,66 @@ def _resolve_property_display_value(key: str, value: Any, file_names: list[str])
         if '房产.pdf' in joined_names or '房产正面.pdf' in joined_names:
             return '上海市徐汇区不动产登记事务中心'
     return text
+
+
+def _kyc_property_extracted_data_for_display(extracted_data: dict[str, Any]) -> dict[str, Any]:
+    if extracted_data.get("agent_type") == "kyc_document_agent" or str(extracted_data.get("doc_type") or "") in {"property_cert", "real_estate_cert"}:
+        return extracted_data
+    fields = extracted_data.get("fields")
+    if isinstance(fields, dict):
+        return {
+            "agent_type": "kyc_document_agent",
+            "doc_type": extracted_data.get("doc_type") or "property_cert",
+            "doc_type_name": extracted_data.get("doc_type_name") or "房产证/房地产权证",
+            "fields": fields,
+        }
+    return {
+        "agent_type": "kyc_document_agent",
+        "doc_type": "property_cert",
+        "doc_type_name": "房产证/房地产权证",
+        "fields": {
+            "权证编号": extracted_data.get("certificate_number") or extracted_data.get("real_estate_certificate_no"),
+            "权利人": extracted_data.get("right_holder"),
+            "共有情况": extracted_data.get("ownership_status"),
+            "坐落": extracted_data.get("property_location"),
+            "不动产单元号": extracted_data.get("real_estate_unit_no"),
+            "权利类型": extracted_data.get("right_type"),
+            "权利性质": extracted_data.get("right_nature"),
+            "土地用途": extracted_data.get("land_use") or extracted_data.get("usage"),
+            "建筑面积": extracted_data.get("building_area"),
+            "宗地面积": extracted_data.get("land_area"),
+            "使用期限": extracted_data.get("land_use_term"),
+            "登记日": extracted_data.get("registration_date"),
+            "填证单位": extracted_data.get("registration_authority"),
+        },
+    }
+
+
+def _build_kyc_property_profile_section_lines(
+    file_names: list[str],
+    original_available: bool,
+    best_extracted_data: dict[str, Any],
+    supplement_file_names: list[str] | None = None,
+) -> list[str]:
+    file_name_text = '、'.join(dict.fromkeys([name for name in file_names if name])) or '暂无'
+    original_status = '可查看' if original_available else '原件文件不存在或已不可用'
+    lines = [
+        '- 资料类型：房产证/不动产权证',
+        f'- 来源文件：{file_name_text}',
+        f'- 原件状态：{original_status}',
+    ]
+    supplements = [name for name in dict.fromkeys(supplement_file_names or []) if name and name not in file_names]
+    if supplements:
+        lines.append(f"- 补充文件：{'、'.join(supplements)}")
+    lines.extend(['', '### 结构化提取结果'])
+
+    display_fields = get_display_fields(_kyc_property_extracted_data_for_display(best_extracted_data))
+    if not display_fields:
+        lines.append("- 提示：已识别为房产证/不动产权证，但字段页 OCR 未能提取关键字段，请检查扫描清晰度或人工确认。")
+        return lines
+    for key, value in display_fields.items():
+        lines.append(f"- {key}：{_marriage_display(value)}")
+    return lines
 
 
 def _build_property_section_lines(file_names: list[str], original_available: bool, extracted_data: dict[str, Any]) -> list[str]:
@@ -2083,6 +2147,18 @@ async def get_or_create_customer_profile(storage_service: Any, customer_id: str)
             or 'revolving_balance_without_details' in markdown
         )
         debug = existing.get('credit_debug') or snapshot.get('credit_debug') or {}
+        has_stale_property_section = (
+            markdown.count('## 房产证/房地产权证') > 1
+            or markdown.count('## 房产证/不动产权证') > 1
+            or ('## 房产证/房地产权证' in markdown and '暂无可展示字段' in markdown)
+            or ('土地使用期限: 2015年10月16日起2076' in markdown)
+            or ('土地使用期限：2015年10月16日起2076' in markdown)
+        )
+        if existing.get('source_mode') != 'manual' and has_stale_property_section:
+            logger.warning("[PropertyCert][PROFILE] stale property profile detected customer_id=%s; regenerate", customer_id)
+            generated = await build_auto_profile_payload(storage_service, customer_id)
+            saved = await storage_service.upsert_customer_profile(generated)
+            return saved, True
         if (
             existing.get('source_mode') != 'manual'
             and
@@ -2329,9 +2405,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
 
     if property_extractions:
         try:
-            merged_property_data: dict[str, Any] = {}
-            property_file_names: list[str] = []
-            property_original_available = False
+            scored_property_items: list[dict[str, Any]] = []
             logger.info("[property merge] found property docs count=%s", len(property_extractions))
             for extraction in property_extractions:
                 extraction_type = extraction.get('extraction_type') or ''
@@ -2345,12 +2419,17 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                         logger.warning("profile_markdown property_document_meta_failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
                 file_name = (document or {}).get('file_name') or '暂无'
                 file_path = (document or {}).get('file_path') or ''
-                logger.info("[property merge] source=%s content_keys=%s", file_name, list(extracted_data.keys()))
-                logger.info("[property merge] before=%s", merged_property_data)
-                _merge_property_extracted_data(merged_property_data, extracted_data)
-                logger.info("[property merge] after merge source=%s merged=%s", file_name, merged_property_data)
-                property_file_names.append(file_name)
-                property_original_available = property_original_available or bool(file_path)
+                score = score_kyc_property_cert_extraction(extraction)
+                logger.info("[property merge] source=%s score=%s content_keys=%s", file_name, score, list(extracted_data.keys()))
+                scored_property_items.append({
+                    "extraction": extraction,
+                    "extraction_type": extraction_type,
+                    "extracted_data": extracted_data,
+                    "file_name": file_name,
+                    "file_path": file_path,
+                    "score": score,
+                    "doc_id": doc_id,
+                })
                 source_documents.append({
                     'source_type': extraction_type,
                     'source_type_name': '房产证',
@@ -2360,8 +2439,26 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     'original_status': '可查看' if file_path else '原件文件不存在或已不可用',
                     'original_available': bool(file_path),
                 })
-            logger.info("[property merge] final merged=%s", merged_property_data)
-            sections.append(_markdown_section('房产证', _build_property_section_lines(property_file_names, property_original_available, merged_property_data)))
+            scored_property_items.sort(key=lambda item: (int(item.get("score") or -100), str(item.get("file_name") or "")), reverse=True)
+            best_item = scored_property_items[0] if scored_property_items else {}
+            best_data = best_item.get("extracted_data") if isinstance(best_item.get("extracted_data"), dict) else {}
+            if not best_data:
+                merged_property_data: dict[str, Any] = {}
+                for item in scored_property_items:
+                    data = item.get("extracted_data")
+                    if isinstance(data, dict):
+                        _merge_property_extracted_data(merged_property_data, data)
+                best_data = merged_property_data
+            main_files = [str(best_item.get("file_name") or "")] if best_item else []
+            supplement_files = [str(item.get("file_name") or "") for item in scored_property_items[1:]]
+            property_original_available = any(bool(item.get("file_path")) for item in scored_property_items)
+            logger.info("[property merge] selected main=%s score=%s fields=%s", main_files, best_item.get("score"), list((best_data.get("fields") or {}).keys()) if isinstance(best_data.get("fields"), dict) else list(best_data.keys()))
+            sections.append(
+                _markdown_section(
+                    '房产证/不动产权证',
+                    _build_kyc_property_profile_section_lines(main_files, property_original_available, best_data, supplement_files),
+                )
+            )
         except Exception as exc:
             logger.warning("profile_markdown property_section_failed customer_id=%s error=%s", customer_id, exc, exc_info=True)
             sections.append(_markdown_section('房产证', ['- 提示：房产证资料整理失败，请查看来源文档列表或重新上传。']))

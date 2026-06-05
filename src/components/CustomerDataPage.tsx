@@ -2272,20 +2272,25 @@ function extractLegacyKycFieldsFromMarkdownSection(section: string): Record<stri
   const fallback: Record<string, unknown> = {};
   [
     '权利人',
-    '共有人',
+    '共有情况',
     '权证编号',
+    '坐落',
     '房地坐落',
+    '不动产单元号',
+    '权利类型',
     '权属性质',
+    '权利性质',
     '使用权取得方式',
     '土地用途',
+    '房屋用途',
     '宗地号',
+    '地号',
     '宗地面积',
-    '使用权面积',
+    '使用期限',
     '土地使用期限',
     '室号或部位',
     '建筑面积',
     '建筑类型',
-    '房屋用途',
     '总层数',
     '竣工日期',
     '登记日',
@@ -2332,7 +2337,7 @@ function renderKycPropertyDisplayMarkdown(fields: Record<string, unknown>, sourc
   const lines = ['## 房产证/房地产权证', ''];
   const entries = Object.entries(displayFields);
   if (entries.length === 0) {
-    lines.push('- 暂无可展示字段');
+    lines.push('- 提示: 已识别为房产证/不动产权证，但字段页 OCR 未能提取关键字段，请检查扫描清晰度或人工确认。');
     return lines.join('\n');
   }
   entries.forEach(([field, value]) => {
@@ -2342,15 +2347,49 @@ function renderKycPropertyDisplayMarkdown(fields: Record<string, unknown>, sourc
 }
 
 function sanitizeKycPropertyMarkdownSections(markdown: string): string {
-  if (!markdown || !/(##\s*property_cert|doc\s*type\s*:\s*property_cert|certificate_number|property_address|building_area)/i.test(markdown)) {
+  if (!markdown) {
     return markdown;
   }
 
-  return markdown.replace(/(^|\n)##\s*(?:property_cert|房产证\/房地产权证)[^\n]*[\s\S]*?(?=\n##\s|$)/g, (matched) => {
+  const propertySectionPattern = /(^|\n)##\s*(?:property_cert|房产证\/房地产权证|房产证\/不动产权证|房产证(?:\s*\/\s*不动产权证)?)[^\n]*[\s\S]*?(?=\n##\s|$)/g;
+  const matches = Array.from(markdown.matchAll(propertySectionPattern));
+  const hasLegacyPropertyNoise = /(doc\s*type\s*:\s*property_cert|certificate_number|property_address|building_area|暂无可展示字段|土地使用期限[:：]\s*2015年10月16日起2076)/i.test(markdown);
+  if (matches.length === 0 || (matches.length === 1 && !hasLegacyPropertyNoise)) {
+    return markdown;
+  }
+
+  const scoreFields = (fields: Record<string, unknown> | null, section: string): number => {
+    const displayFields = getKycDisplayFields(enrichLegacyKycPropertyFields(fields || {}, section), 'property_cert');
+    const important = ['权利人', '共有情况', '权证编号', '坐落', '房地坐落', '不动产单元号', '权利类型', '建筑面积', '土地用途', '房屋用途', '竣工日期'];
+    let score = Object.keys(displayFields).length;
+    important.forEach((key) => {
+      if (displayFields[key]) score += 5;
+    });
+    if (/暂无可展示字段/.test(section)) score -= 20;
+    return score;
+  };
+
+  const candidates = matches.map((match, index) => {
+    const matched = match[0];
     const leadingNewline = matched.startsWith('\n') ? '\n' : '';
     const section = leadingNewline ? matched.slice(1) : matched;
     const fields = extractLegacyKycFieldsFromMarkdownSection(section);
-    return `${leadingNewline}${renderKycPropertyDisplayMarkdown(fields || {}, section)}`;
+    return {
+      index,
+      fields: fields || {},
+      section,
+      score: scoreFields(fields, section),
+    };
+  });
+  const best = candidates.reduce((current, item) => (item.score > current.score ? item : current), candidates[0]);
+  let renderedOnce = false;
+  return markdown.replace(propertySectionPattern, (matched) => {
+    const leadingNewline = matched.startsWith('\n') ? '\n' : '';
+    if (renderedOnce) {
+      return leadingNewline;
+    }
+    renderedOnce = true;
+    return `${leadingNewline}${renderKycPropertyDisplayMarkdown(best.fields, best.section)}`;
   });
 }
 
