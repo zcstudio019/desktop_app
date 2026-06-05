@@ -616,6 +616,11 @@ def extract_real_estate_use_term(text: str) -> str | None:
     lines = _lines(text)
     term_pattern = r"\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日?止?"
     term_without_stop_pattern = r"\d{4}年\d{1,2}月\d{1,2}日?起\d{4}年\d{1,2}月\d{1,2}日?"
+    split_term_pattern = (
+        r"(\d{4}年\d{1,2}月\d{1,2}日?起\d{4})"
+        r"(?:使用期限|土地使用期限|期限|土地状况|建筑面积|平方米|[:：\s]*){0,8}"
+        r"(年\d{1,2}月\d{1,2}日?止?)"
+    )
     candidates: list[str] = []
 
     for index, line in enumerate(lines):
@@ -627,7 +632,7 @@ def extract_real_estate_use_term(text: str) -> str | None:
             or "2076" in dense_line
         ):
             continue
-        start = max(0, index - 1)
+        start = max(0, index - 3)
         end = min(len(lines), index + 4)
         candidates.append(_dense_text("".join(lines[start:end])))
 
@@ -645,9 +650,22 @@ def extract_real_estate_use_term(text: str) -> str | None:
             .replace(" ", "")
             .replace("\n", "")
         )
+        candidate = re.sub(
+            r"(\d{4}年\d{1,2}月\d{1,2}日?起\d{4})使用期限(年\d{1,2}月\d{1,2}日?止?)",
+            r"\1\2",
+            candidate,
+        )
+        candidate = re.sub(
+            r"(\d{4}年\d{1,2}月\d{1,2}日?起\d{4})(?:土地使用期限|期限)(年\d{1,2}月\d{1,2}日?止?)",
+            r"\1\2",
+            candidate,
+        )
         match = re.search(term_pattern, candidate)
         if match:
             return _normalize_use_term_result(match.group(0))
+        match = re.search(split_term_pattern, candidate)
+        if match:
+            return _normalize_use_term_result(f"{match.group(1)}{match.group(2)}")
         match = re.search(term_without_stop_pattern, candidate)
         if match:
             return _normalize_use_term_result(match.group(0))

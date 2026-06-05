@@ -84,6 +84,38 @@ def test_extract_real_estate_use_term_from_appended_use_term_region_ocr():
     assert extract_real_estate_use_term(text) == "2015年10月16日起2076年12月28日止"
 
 
+def test_extract_real_estate_use_term_when_ocr_inserts_use_term_label_between_year_and_month():
+    text = """
+建筑面积:62.40平方米
+国有建设用地使用权使用期限:2015年10月16日起2076
+使用期限
+年12月28日止
+土地状况:
+"""
+
+    value = extract_real_estate_use_term(text)
+
+    assert value == "2015年10月16日起2076年12月28日止"
+    assert value is not None
+    assert value != "2015年10月16日起2076"
+
+
+def test_extract_real_estate_use_term_when_ocr_inserts_land_status_between_year_and_month():
+    text = """
+建筑面积:62.40平方米
+国有建设用地使用权使用期限:2015年10月16日起2076
+土地状况
+年12月28日止
+地号:徐汇区华泾镇448街坊2/3丘
+"""
+
+    value = extract_real_estate_use_term(text)
+
+    assert value == "2015年10月16日起2076年12月28日止"
+    assert value is not None
+    assert value != "2015年10月16日起2076"
+
+
 def test_use_term_aliases_render_as_use_term_for_new_real_estate_cert():
     display = get_display_fields(
         {
