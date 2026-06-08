@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
 from .evidence import build_evidence
@@ -15,6 +17,22 @@ from .skills.cover_page_skill import extract as extract_cover_page
 from .skills.mortgage_page_skill import extract as extract_mortgage_page
 from .skills.new_real_estate_cert_skill import extract as extract_new_detail_page
 from .skills.old_shanghai_property_cert_skill import extract as extract_old_detail_page
+
+logger = logging.getLogger(__name__)
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def _has_new_real_estate_strong_feature(text: str) -> bool:
+    compact = _compact(text)
+    return "不动产权第" in compact or "不动产单元号" in compact
+
+
+def _has_old_shanghai_strong_feature(text: str) -> bool:
+    compact = _compact(text)
+    return "沪房地" in compact or "房地产权证" in compact or "房地坐落" in compact
 
 
 class PropertyCertAgent:
@@ -41,18 +59,30 @@ class PropertyCertAgent:
             page_text = str(page.get("text") or "")
             role = detect_page_role(page_text, page.get("metadata") if isinstance(page.get("metadata"), dict) else None)
             skill_payload = {"text": page_text, "metadata": page.get("metadata") or {}}
-            if role == "cover_page":
+            if _has_new_real_estate_strong_feature(page_text):
+                role = "new_real_estate_detail_page"
+                logger.info("[PropertySkillRouter] selected_skill=new_real_estate_cert_skill role=%s", role)
+                extracted = extract_new_detail_page(skill_payload)
+            elif role == "cover_page":
+                logger.info("[PropertySkillRouter] selected_skill=cover_page_skill role=%s", role)
                 extracted = extract_cover_page(skill_payload)
-            elif role == "old_property_detail_page":
+            elif role == "old_property_detail_page" or _has_old_shanghai_strong_feature(page_text):
+                role = "old_property_detail_page"
+                logger.info("[PropertySkillRouter] selected_skill=old_shanghai_property_cert_skill role=%s", role)
                 extracted = extract_old_detail_page(skill_payload)
             elif role == "attachment_page":
+                logger.info("[PropertySkillRouter] selected_skill=attachment_page_skill role=%s", role)
                 extracted = extract_attachment_page(skill_payload)
             elif role == "mortgage_page":
+                logger.info("[PropertySkillRouter] selected_skill=mortgage_page_skill role=%s", role)
                 extracted = extract_mortgage_page(skill_payload)
             else:
-                role = "detail_page" if role == "unknown" else role
+                role = "new_real_estate_detail_page" if role in {"unknown", "detail_page"} else role
+                logger.info("[PropertySkillRouter] selected_skill=new_real_estate_cert_skill role=%s", role)
                 extracted = extract_new_detail_page(skill_payload)
             fields = extracted.get("fields") if isinstance(extracted.get("fields"), dict) else {}
+            if role == "new_real_estate_detail_page":
+                logger.info("[NewRealEstateSkill] fields_keys=%s", list(fields.keys()))
             warnings.extend(str(item) for item in extracted.get("warnings") or [])
             pages.append(
                 {

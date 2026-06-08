@@ -51,7 +51,7 @@ def score_page(page: dict[str, Any]) -> int:
         score += 10
     if fields.get("使用期限") or fields.get("土地使用期限"):
         score += 10
-    if role == "detail_page":
+    if role in {"detail_page", "new_real_estate_detail_page"}:
         score += 30
     if role == "old_property_detail_page":
         score += 30
@@ -61,7 +61,7 @@ def score_page(page: dict[str, Any]) -> int:
 
 
 def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
-    detail_pages = [page for page in pages if page.get("page_role") in {"detail_page", "old_property_detail_page"}]
+    detail_pages = [page for page in pages if page.get("page_role") in {"detail_page", "new_real_estate_detail_page", "old_property_detail_page"}]
     main = max(detail_pages or pages, key=score_page, default={})
     old_version = is_old_version(str(main.get("page_role") or ""), main.get("fields") if isinstance(main.get("fields"), dict) else {})
     fields = dict(main.get("fields") or {})
