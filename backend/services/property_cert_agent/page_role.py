@@ -54,9 +54,25 @@ def _score(text: str, keywords: tuple[str, ...]) -> int:
 def detect_page_role(text: str, image_metadata: dict[str, Any] | None = None) -> str:
     scores = {role: _score(text, keywords) for role, keywords in ROLE_KEYWORDS.items()}
     compact = re.sub(r"\s+", "", str(text or ""))
+    old_chinese_hits = sum(
+        1
+        for keyword in (
+            "上海市",
+            "房地产权证",
+            "沪房地",
+            "房地坐落",
+            "权属性质",
+            "使用权取得方式",
+            "宗地号",
+            "宗地(丘)面积",
+            "土地状况",
+            "房屋状况",
+        )
+        if keyword in compact
+    )
     if scores["mortgage_page"] >= 2:
         return "mortgage_page"
-    if "上海市房地产权证" in compact or scores["old_property_detail_page"] >= 3:
+    if old_chinese_hits >= 2 or "上海市房地产权证" in compact or scores["old_property_detail_page"] >= 3:
         return "old_property_detail_page"
     if scores["detail_page"] >= 3:
         return "detail_page"
