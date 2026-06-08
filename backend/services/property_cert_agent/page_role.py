@@ -72,6 +72,21 @@ OLD_SHANGHAI_STRONG_KEYWORDS = (
     "宗地丘面积",
 )
 
+ATTACHMENT_TABLE_KEYWORDS = (
+    "不动产单元号",
+    "土地状况",
+    "房屋状况",
+    "室号或部位",
+    "室号部位",
+    "建筑面积",
+    "房屋用途",
+    "土地用途",
+    "总层数",
+    "竣工日期",
+    "类型",
+    "合计",
+)
+
 
 def _score(text: str, keywords: tuple[str, ...]) -> int:
     compact = re.sub(r"\s+", "", str(text or ""))
@@ -83,6 +98,12 @@ def detect_page_role(text: str, image_metadata: dict[str, Any] | None = None) ->
     compact = re.sub(r"\s+", "", str(text or ""))
     new_hits = sum(1 for keyword in NEW_REAL_ESTATE_STRONG_KEYWORDS if keyword in compact)
     old_hits = sum(1 for keyword in OLD_SHANGHAI_STRONG_KEYWORDS if keyword in compact)
+    attachment_hits = sum(1 for keyword in ATTACHMENT_TABLE_KEYWORDS if keyword in compact)
+    if "附记" in compact and attachment_hits >= 2:
+        page_no = (image_metadata or {}).get("page_no") or (image_metadata or {}).get("page")
+        logger.info("[AttachmentPageRole] detected=true page=%s hits=%s", page_no or "", attachment_hits)
+        logger.info("[PropertyPageRole] detected_role=attachment_page")
+        return "attachment_page"
     if "不动产权第" in compact or "不动产单元号" in compact:
         logger.info("[PropertyPageRole] detected_role=new_real_estate_detail_page new_hits=%s old_hits=%s", new_hits, old_hits)
         return "new_real_estate_detail_page"

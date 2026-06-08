@@ -131,6 +131,7 @@ CO_OWNER_VALUES = ("单独所有", "共同共有", "按份共有", "共有", "�
 LAND_USE_VALUES = ("其它商服用地", "其他商服用地", "城镇住宅用地", "住宅用地", "商业用地", "工业用地", "办公用地", "仓储用地", "住宅", "商业", "办公", "工业", "仓储")
 HOUSE_USE_VALUES = ("办公", "居住", "住宅", "商业", "工业", "仓储", "车库", "公寓", "商铺", "非居住")
 BUILDING_TYPE_VALUES = ("办公楼", "公寓", "住宅", "商业", "工业", "厂房", "车库", "仓库", "商铺", "别墅", "非居住", "居住")
+ATTACHMENT_PLACEHOLDERS = ("详见附记", "详见附页", "见附记", "详见附表", "详见附记页", "详见附件")
 
 
 def clean_value(value: Any) -> str:
@@ -138,6 +139,11 @@ def clean_value(value: Any) -> str:
     text = text.replace("\\n", "\n")
     text = re.sub(r"\s+", " ", text).strip(" :：,，;；。")
     return text
+
+
+def is_attachment_placeholder(value: Any) -> bool:
+    text = clean_value(value)
+    return bool(text and any(placeholder in text for placeholder in ATTACHMENT_PLACEHOLDERS))
 
 
 def _compact(text: str) -> str:
@@ -339,6 +345,10 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
     logger.info("[PropertyNormalizer][OWNER] invalid_owner_removed=%s", str(invalid_owner).lower())
     if invalid_owner:
         source.pop("权利人", None)
+    for key, value in list(source.items()):
+        if is_attachment_placeholder(value):
+            logger.info("[PropertyNormalizer] placeholder_field_removed field=%s value=%s", key, value)
+            source.pop(key, None)
 
     if new_version:
         address = _first_non_empty(source, NEW_ADDRESS_KEYS)
@@ -458,6 +468,9 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
         if "\\n" in value or "\n" in value:
             logger.info("[PropertyNormalizer] dirty_field_removed field=%s", key)
             continue
+        if is_attachment_placeholder(value):
+            logger.info("[PropertyNormalizer] placeholder_field_removed field=%s value=%s", key, value)
+            continue
         normalized[key] = value
     logger.info("[PropertyNormalizer] after_fields=%s", normalized)
     return normalized
@@ -499,7 +512,11 @@ def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> di
     if not old_version:
         return normalize_property_cert_fields(fields, page_role="")
     old_version = old_version or is_old_version("", fields or {})
-    cleaned = {key: clean_value(value) for key, value in (fields or {}).items() if clean_value(value)}
+    cleaned = {
+        key: clean_value(value)
+        for key, value in (fields or {}).items()
+        if clean_value(value) and not is_attachment_placeholder(value)
+    }
     for alias, target in FIELD_ALIASES.items():
         if cleaned.get(alias) and not cleaned.get(target):
             cleaned[target] = cleaned.pop(alias)

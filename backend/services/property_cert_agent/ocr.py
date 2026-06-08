@@ -13,6 +13,7 @@ from typing import Any, Callable
 from PIL import Image, ImageEnhance, ImageOps
 
 from .page_role import detect_page_role
+from .skills.attachment_page_skill import extract as extract_attachment_page
 from .skills.cover_page_skill import extract as extract_cover_page
 from .skills.new_real_estate_cert_skill import extract as extract_new_detail_page
 from .skills.old_shanghai_property_cert_skill import extract as extract_old_detail_page
@@ -36,6 +37,7 @@ REGIONS = {
     "cover_registration_date_region": RegionSpec("cover_registration_date_region", 0.35, 0.45, 0.85, 0.75),
     "cover_bottom_number_region": RegionSpec("cover_bottom_number_region", 0.20, 0.70, 0.80, 0.95),
     "use_term_region": RegionSpec("use_term_region", 0.15, 0.35, 0.75, 0.55),
+    "attachment_table_region": RegionSpec("attachment_table_region", 0.02, 0.05, 0.98, 0.96),
 }
 
 LEGACY_REGION_ALIASES = {
@@ -211,9 +213,15 @@ def _variant_image(image: Image.Image, variant: str) -> Image.Image:
     rgb = image.convert("RGB")
     if variant == "original":
         return rgb
+    if variant == "rotate90":
+        return rgb.rotate(90, expand=True)
+    if variant == "rotate270":
+        return rgb.rotate(270, expand=True)
     gray = ImageOps.grayscale(rgb)
     if variant in {"gray", "gray_high_contrast"}:
         return ImageEnhance.Contrast(gray).enhance(1.8).convert("RGB")
+    if variant == "binary":
+        return gray.point(lambda p: 255 if p > 170 else 0).convert("RGB")
     if variant == "remove_red_stamp_then_gray":
         pixels = rgb.load()
         for y in range(rgb.height):
@@ -242,6 +250,8 @@ def _extract_fields_for_role(text: str, role: str) -> dict[str, Any]:
         return extract_cover_page({"text": text}).get("fields") or {}
     if role == "old_property_detail_page":
         return extract_old_detail_page({"text": text}).get("fields") or {}
+    if role == "attachment_page":
+        return extract_attachment_page({"text": text}).get("fields") or {}
     if role in {"detail_page", "unknown"}:
         return extract_new_detail_page({"text": text}).get("fields") or {}
     return {}
@@ -266,6 +276,9 @@ def _planned_regions_for_role(role: str, fields: dict[str, Any]) -> list[tuple[s
                 ]
             )
         return plan
+    if role == "attachment_page":
+        logger.info("[AttachmentOCR] rotated=false text_length=%s", 0)
+        return [("attachment_table_region", ("original", "rotate90", "rotate270", "gray", "binary"), "附记")]
     plan = []
     if "权证编号" in missing:
         plan.append(("top_certificate_number_region", ("original", "gray"), "权证编号"))
@@ -393,6 +406,8 @@ def run_property_cert_ocr_plan(
                     ocr_func=ocr_func,
                     stats=stats,
                 )
+                if role == "attachment_page":
+                    logger.info("[AttachmentOCR] rotated=%s text_length=%s", str(variant in {"rotate90", "rotate270"}).lower(), len(text))
                 if text:
                     parts.append(f"--- Property Certificate OCR page={page_no} region={region} variant={variant} ---\n{text}")
                     page_text = f"{page_text}\n{text}".strip()

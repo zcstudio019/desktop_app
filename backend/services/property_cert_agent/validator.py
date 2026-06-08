@@ -9,7 +9,7 @@ DETAIL_REQUIRED_FIELDS = ("权利人", "权证编号", "坐落", "房地坐落",
 def validate_property_cert(fields: dict[str, Any], page_roles: list[str]) -> tuple[dict[str, Any], list[str], str]:
     warnings: list[str] = []
     errors: list[str] = []
-    has_detail = any(role in {"detail_page", "old_property_detail_page"} for role in page_roles)
+    has_detail = any(role in {"detail_page", "new_real_estate_detail_page", "old_property_detail_page"} for role in page_roles)
     if not has_detail and "cover_page" in page_roles:
         warnings.append("仅识别到封面页，未识别到字段页，请补充上传正面字段页或人工确认。")
     if not fields:

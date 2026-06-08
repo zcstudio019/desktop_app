@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any
 
-from .normalizer import normalize_property_cert_fields
+from .normalizer import is_attachment_placeholder, normalize_property_cert_fields
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +235,7 @@ def render_markdown(result: dict[str, Any]) -> str:
         for section in sections:
             if isinstance(section, dict):
                 for key, value in section.items():
-                    if value:
+                    if value and not is_attachment_placeholder(value):
                         lines.append(f"- {key}: {value}")
     if warnings:
         lines.extend(["", "### 校验提醒"])
@@ -243,5 +243,6 @@ def render_markdown(result: dict[str, Any]) -> str:
     markdown = "\n".join(lines).strip()
     logger.info("[PropertyRenderer][ADDRESS] markdown_contains_address=%s", str(("房地坐落" in markdown) or ("坐落" in markdown)).lower())
     logger.info("[PropertyRenderer][FINAL_ADDRESS] markdown_contains=%s", str(bool(address_info["final_value"]) and address_info["final_value"] in markdown).lower())
+    logger.info("[PropertyRenderer] markdown_contains_详见附记=%s", str("详见附记" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_dirty_newline=%s", str("\\n" in markdown).lower())
     return markdown

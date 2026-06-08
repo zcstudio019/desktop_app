@@ -60,7 +60,10 @@ class PropertyCertAgent:
             page_text = str(page.get("text") or "")
             role = detect_page_role(page_text, page.get("metadata") if isinstance(page.get("metadata"), dict) else None)
             skill_payload = {"text": page_text, "metadata": page.get("metadata") or {}}
-            if _has_new_real_estate_strong_feature(page_text):
+            if role == "attachment_page":
+                logger.info("[PropertySkillRouter] selected_skill=attachment_page_skill role=%s", role)
+                extracted = extract_attachment_page(skill_payload)
+            elif _has_new_real_estate_strong_feature(page_text):
                 role = "new_real_estate_detail_page"
                 logger.info("[PropertySkillRouter] selected_skill=new_real_estate_cert_skill role=%s", role)
                 extracted = extract_new_detail_page(skill_payload)
@@ -71,9 +74,6 @@ class PropertyCertAgent:
                 role = "old_property_detail_page"
                 logger.info("[PropertySkillRouter] selected_skill=old_shanghai_property_cert_skill role=%s", role)
                 extracted = extract_old_detail_page(skill_payload)
-            elif role == "attachment_page":
-                logger.info("[PropertySkillRouter] selected_skill=attachment_page_skill role=%s", role)
-                extracted = extract_attachment_page(skill_payload)
             elif role == "mortgage_page":
                 logger.info("[PropertySkillRouter] selected_skill=mortgage_page_skill role=%s", role)
                 extracted = extract_mortgage_page(skill_payload)
@@ -96,6 +96,7 @@ class PropertyCertAgent:
             )
 
         merged = merge_pages(pages)
+        warnings.extend(str(item) for item in merged.get("warnings") or [])
         page_roles = [str(page.get("page_role") or "unknown") for page in pages]
         fields = normalize_property_cert_fields(
             merged["fields"],

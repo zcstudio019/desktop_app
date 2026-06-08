@@ -10,6 +10,18 @@ logger = logging.getLogger(__name__)
 
 OLD_ADDRESS_KEYS = ("房地坐落", "坐落", "property_address", "address")
 NEW_ADDRESS_KEYS = ("坐落", "房地坐落", "property_address", "address")
+ATTACHMENT_PLACEHOLDERS = ("详见附记", "详见附页", "见附记", "详见附表", "详见附记页", "详见附件")
+ATTACHMENT_FILL_MAP = {
+    "不动产单元号": "不动产单元号列表",
+    "房屋用途": "房屋用途列表",
+    "建筑类型": "建筑类型列表",
+    "室号或部位": "室号或部位列表",
+    "总层数": "总层数列表",
+    "竣工日期": "竣工日期列表",
+    "土地用途": "土地用途列表",
+    "权利性质": "权利性质列表",
+    "使用期限": "使用期限列表",
+}
 
 
 def _first_non_empty(fields: dict[str, Any], keys: tuple[str, ...]) -> str:
@@ -29,6 +41,58 @@ def _apply_address_priority(fields: dict[str, Any], *, old_version: bool) -> Non
         address = _first_non_empty(fields, NEW_ADDRESS_KEYS)
         if address:
             fields["坐落"] = address
+
+
+def is_attachment_placeholder(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and any(placeholder in text for placeholder in ATTACHMENT_PLACEHOLDERS))
+
+
+def _attachment_values(attachment_pages: list[dict[str, Any]], list_key: str) -> list[str]:
+    values: list[str] = []
+    for page_fields in attachment_pages:
+        raw = page_fields.get(list_key)
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    continue
+                value = str(item or "").strip()
+                if value and value not in values:
+                    values.append(value)
+        elif raw:
+            value = str(raw).strip()
+            if value and value not in values:
+                values.append(value)
+    return values
+
+
+def _display_attachment_section(page_fields: dict[str, Any]) -> dict[str, Any]:
+    display: dict[str, Any] = {}
+    if page_fields.get("附记明细"):
+        display["附记明细"] = page_fields["附记明细"]
+    return display
+
+
+def merge_detail_page_with_attachment_pages(
+    detail_fields: dict[str, Any],
+    attachment_pages: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    fields = dict(detail_fields or {})
+    warnings: list[str] = []
+    if not attachment_pages:
+        return fields, warnings
+
+    for target_key, list_key in ATTACHMENT_FILL_MAP.items():
+        values = _attachment_values(attachment_pages, list_key)
+        current = fields.get(target_key)
+        if values and (not current or is_attachment_placeholder(current)):
+            new_value = "、".join(values)
+            logger.info("[PropertyMerger][AttachmentFill] field=%s old=%s new=%s", target_key, current or "", new_value)
+            fields[target_key] = new_value
+        elif is_attachment_placeholder(current):
+            fields.pop(target_key, None)
+            warnings.append(f"{target_key} 需要附件页回填，但未解析到可回填内容")
+    return fields, warnings
 
 
 def score_page(page: dict[str, Any]) -> int:
@@ -71,6 +135,8 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
     logger.info("[PropertyMerger][ADDRESS] merged_before_房地坐落=%s", fields.get("房地坐落"))
     supplemental_files: list[str] = []
     risk_sections: dict[str, list[dict[str, Any]]] = {"附记": [], "抵押": []}
+    attachment_pages: list[dict[str, Any]] = []
+    warnings: list[str] = []
     for page in pages:
         role = str(page.get("page_role") or "")
         page_fields = page.get("fields") if isinstance(page.get("fields"), dict) else {}
@@ -85,7 +151,10 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
                     fields[key] = page_fields[key]
             continue
         if role == "attachment_page":
-            risk_sections["附记"].append(page_fields)
+            attachment_pages.append(page_fields)
+            display_section = _display_attachment_section(page_fields)
+            if display_section:
+                risk_sections["附记"].append(display_section)
             continue
         if role == "mortgage_page":
             risk_sections["抵押"].append(page_fields)
@@ -98,6 +167,8 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
             if value and key not in fields and key != "封面编号":
                 fields[key] = value
+    fields, attachment_warnings = merge_detail_page_with_attachment_pages(fields, attachment_pages)
+    warnings.extend(attachment_warnings)
     _apply_address_priority(fields, old_version=old_version)
     normalized_fields = normalize_fields(fields, old_version=old_version)
     logger.info("[PropertyMerger][ADDRESS] merged_after_房地坐落=%s", normalized_fields.get("房地坐落"))
@@ -108,4 +179,5 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
         "supplemental_files": sorted(set(supplemental_files)),
         "risk_sections": {key: value for key, value in risk_sections.items() if value},
         "old_version": old_version,
+        "warnings": warnings,
     }
