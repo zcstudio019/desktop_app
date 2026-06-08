@@ -35,6 +35,7 @@ POLLUTION_WORDS = (
 )
 LABELS = (
     "权利人",
+    "幢号",
     "房地坐落",
     "权属性质",
     "使用权取得方式",
@@ -55,6 +56,7 @@ LABELS = (
     "竣工日期",
     "登记日",
     "填证单位",
+    "面积单位",
 )
 
 
@@ -79,6 +81,13 @@ def _is_label(line: str) -> bool:
     return normalized in {_normalized_label(label) for label in LABELS} or normalized.endswith("状况")
 
 
+def _looks_like_address(value: str) -> bool:
+    compact = _compact(value)
+    if not compact or _is_label(value):
+        return False
+    return any(marker in compact for marker in ("区", "县", "市", "镇", "路", "弄", "号", "街坊", "室"))
+
+
 def _address_debug(text: str) -> tuple[bool, list[str], list[str]]:
     split_lines = _lines(text)
     lines_with_address: list[str] = []
@@ -88,6 +97,34 @@ def _address_debug(text: str) -> tuple[bool, list[str], list[str]]:
             lines_with_address.append(line)
             next_lines.extend(split_lines[index + 1 : index + 4])
     return "房地坐落" in _compact(text), lines_with_address, next_lines
+
+
+def _address_label_value(text: str) -> tuple[str, str, str]:
+    split_lines = _lines(text)
+    labels = ("房地坐落", "房屋坐落")
+    for index, line in enumerate(split_lines):
+        normalized = _normalized_label(line)
+        for label in labels:
+            normalized_label = _normalized_label(label)
+            if normalized == normalized_label:
+                for next_line in split_lines[index + 1 : index + 4]:
+                    if _is_label(next_line):
+                        continue
+                    candidate = _strip_after_label(next_line)
+                    if _looks_like_address(candidate):
+                        return line, candidate, candidate
+                return line, "", ""
+            if normalized.startswith(normalized_label) and normalized != normalized_label:
+                if "：" in line or ":" in line:
+                    value = re.split(r"[:：]", line, maxsplit=1)[-1]
+                else:
+                    value = line
+                    for item in labels:
+                        value = re.sub(re.escape(item), "", value, count=1)
+                value = _strip_after_label(value)
+                if _looks_like_address(value):
+                    return line, value, value
+    return "", "", ""
 
 
 def _strip_after_label(value: str) -> str:
@@ -258,11 +295,11 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     text = str(payload.get("text") or "")
     fields: dict[str, Any] = {}
     contains_address, address_lines, address_next_lines = _address_debug(text)
-    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] raw_text_contains_房地坐落=%s", contains_address)
-    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] lines_with_房地坐落=%s", address_lines)
-    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] next_lines_after_房地坐落=%s", address_next_lines)
-    extracted_address = _label_next_line(text, ("房地坐落", "房屋坐落"), max_next_lines=3)
-    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] extracted_房地坐落=%s", extracted_address)
+    address_label_line, address_next_value, extracted_address = _address_label_value(text)
+    logger.info("[OldShanghaiSkill][ADDRESS] raw_has_label=%s", str(contains_address).lower())
+    logger.info("[OldShanghaiSkill][ADDRESS] label_line=%s", address_label_line or (address_lines[0] if address_lines else ""))
+    logger.info("[OldShanghaiSkill][ADDRESS] next_value=%s", address_next_value)
+    logger.info("[OldShanghaiSkill][ADDRESS] extracted_fields_房地坐落=%s", extracted_address)
 
     simple_fields = (
         ("权利人", _owner(text)),
@@ -291,5 +328,5 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     if house_use:
         fields["房屋用途"] = house_use
 
-    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] fields_房地坐落=%s", fields.get("房地坐落"))
+    logger.info("[OldShanghaiSkill][ADDRESS] fields_keys=%s", list(fields.keys()))
     return {"fields": fields, "warnings": [], "page_role": "old_property_detail_page"}

@@ -21,7 +21,8 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines.append("- 原件状态: 可查看")
     if fields:
         lines.extend(["", "### 结构化提取结果"])
-        logger.info("[PropertyCertRenderer][ADDRESS_DEBUG] display_房地坐落=%s", fields.get("房地坐落"))
+        logger.info("[PropertyRenderer][ADDRESS] display_keys=%s", list(fields.keys()))
+        logger.info("[PropertyRenderer][ADDRESS] display_房地坐落=%s", fields.get("房地坐落"))
         for key, value in fields.items():
             if value:
                 lines.append(f"- {key}: {value}")
@@ -37,4 +38,6 @@ def render_markdown(result: dict[str, Any]) -> str:
     if warnings:
         lines.extend(["", "### 校验提醒"])
         lines.extend(f"- {warning}" for warning in warnings)
-    return "\n".join(lines).strip()
+    markdown = "\n".join(lines).strip()
+    logger.info("[PropertyRenderer][ADDRESS] markdown_contains_房地坐落=%s", str("房地坐落" in markdown).lower())
+    return markdown

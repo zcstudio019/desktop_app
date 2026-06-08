@@ -72,7 +72,9 @@ def is_old_version(page_role: str, fields: dict[str, Any]) -> bool:
 def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> dict[str, Any]:
     cleaned = {key: clean_value(value) for key, value in (fields or {}).items() if clean_value(value)}
     if old_version:
-        logger.info("[PropertyCertNormalizer][ADDRESS_DEBUG] before_房地坐落=%s", cleaned.get("房地坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] before_keys=%s", list(cleaned.keys()))
+        logger.info("[PropertyNormalizer][ADDRESS] before_房地坐落=%s", cleaned.get("房地坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] before_坐落=%s", cleaned.get("坐落"))
     for new_key, old_key in SYNONYM_GROUPS:
         if old_version:
             if new_key in cleaned and old_key in cleaned:
@@ -90,7 +92,9 @@ def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> di
         if key not in ordered:
             ordered[key] = value
     if old_version:
-        logger.info("[PropertyCertNormalizer][ADDRESS_DEBUG] after_房地坐落=%s", ordered.get("房地坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] after_keys=%s", list(ordered.keys()))
+        logger.info("[PropertyNormalizer][ADDRESS] after_房地坐落=%s", ordered.get("房地坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] after_坐落=%s", ordered.get("坐落"))
     return ordered
 
 

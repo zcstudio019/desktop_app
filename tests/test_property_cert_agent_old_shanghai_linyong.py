@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.services.property_cert_agent import run_property_cert_agent
+from backend.services.property_cert_agent.normalizer import normalize_fields
 from backend.services.property_cert_agent.page_role import detect_page_role
+from backend.services.property_cert_agent.skills.old_shanghai_property_cert_skill import extract as extract_old_shanghai
 
 
 LINYONG_OCR_TEXT = """
@@ -108,3 +110,29 @@ def test_linyong_old_shanghai_frontend_order_keeps_address() -> None:
     assert "'房地坐落'," in source
     assert source.index("'权证编号'") < source.index("'房地坐落'") < source.index("'封面编号'")
     assert "[ADDRESS_DEBUG] display 房地坐落" in source
+
+
+def test_linyong_old_shanghai_skill_extracts_address_variants() -> None:
+    variants = [
+        "房地坐落\n奉贤区泽丰路88弄2号\n权属性质\n国有建设用地使用权",
+        "房地坐落：奉贤区泽丰路88弄2号\n权属性质\n国有建设用地使用权",
+        "房 地 坐 落\n奉贤区泽丰路88弄2号\n权属性质\n国有建设用地使用权",
+    ]
+    for text in variants:
+        fields = extract_old_shanghai({"text": text})["fields"]
+        assert fields["房地坐落"] == "奉贤区泽丰路88弄2号"
+
+
+def test_linyong_old_shanghai_normalizer_keeps_old_address_label() -> None:
+    normalized = normalize_fields(
+        {
+            "权证编号": "沪房地奉字(2014)第004478号",
+            "坐落": "不应展示的新字段",
+            "房地坐落": "奉贤区泽丰路88弄2号",
+            "权属性质": "国有建设用地使用权",
+        },
+        old_version=True,
+    )
+
+    assert normalized["房地坐落"] == "奉贤区泽丰路88弄2号"
+    assert "坐落" not in normalized
