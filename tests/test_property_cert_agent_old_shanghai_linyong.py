@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.services.property_cert_agent import run_property_cert_agent
+from backend.services.property_cert_agent.merger import merge_pages
 from backend.services.property_cert_agent.normalizer import normalize_fields
 from backend.services.property_cert_agent.page_role import detect_page_role
+from backend.services.property_cert_agent.renderer import render_markdown
 from backend.services.property_cert_agent.skills.old_shanghai_property_cert_skill import extract as extract_old_shanghai
 
 
@@ -109,7 +111,11 @@ def test_linyong_old_shanghai_frontend_order_keeps_address() -> None:
     source = Path("src/utils/kycDisplayFields.ts").read_text(encoding="utf-8")
     assert "'房地坐落'," in source
     assert source.index("'权证编号'") < source.index("'房地坐落'") < source.index("'封面编号'")
-    assert "[ADDRESS_DEBUG] display 房地坐落" in source
+    assert "property_address: '房地坐落'" in source
+    assert "address: '坐落'" in source
+    assert "[KycDisplayFields][ADDRESS] raw_房地坐落=" in source
+    assert "[KycDisplayFields][ADDRESS] raw_坐落=" in source
+    assert "[KycDisplayFields][ADDRESS] display_address=" in source
 
 
 def test_linyong_old_shanghai_skill_extracts_address_variants() -> None:
@@ -136,3 +142,82 @@ def test_linyong_old_shanghai_normalizer_keeps_old_address_label() -> None:
 
     assert normalized["房地坐落"] == "奉贤区泽丰路88弄2号"
     assert "坐落" not in normalized
+
+
+def test_linyong_old_shanghai_normalizer_auto_detects_old_version() -> None:
+    normalized = normalize_fields(
+        {
+            "权证编号": "沪房地奉字(2014)第004478号",
+            "坐落": "不应展示的新字段",
+            "房地坐落": "奉贤区泽丰路88弄2号",
+        }
+    )
+
+    assert normalized["房地坐落"] == "奉贤区泽丰路88弄2号"
+    assert "坐落" not in normalized
+
+
+def test_linyong_old_shanghai_merger_keeps_address() -> None:
+    merged = merge_pages(
+        [
+            {
+                "page_role": "old_property_detail_page",
+                "fields": {
+                    "权证编号": "沪房地奉字(2014)第004478号",
+                    "坐落": "",
+                    "房地坐落": "奉贤区泽丰路88弄2号",
+                    "权属性质": "国有建设用地使用权",
+                },
+            }
+        ]
+    )
+
+    assert merged["fields"]["房地坐落"] == "奉贤区泽丰路88弄2号"
+    assert "坐落" not in merged["fields"]
+
+
+def test_linyong_old_shanghai_normalizer_keeps_old_address_from_aliases() -> None:
+    normalized = normalize_fields(
+        {
+            "权证编号": "沪房地奉字(2014)第004478号",
+            "property_address": "奉贤区泽丰路88弄2号",
+            "address": "不应优先展示",
+        },
+        old_version=True,
+    )
+
+    assert normalized["房地坐落"] == "奉贤区泽丰路88弄2号"
+    assert "坐落" not in normalized
+    assert "property_address" not in normalized
+    assert "address" not in normalized
+
+
+def test_linyong_old_shanghai_renderer_prefers_old_address_label() -> None:
+    markdown = render_markdown(
+        {
+            "old_version": True,
+            "fields": {
+                "权利人": "林勇、黄晓回",
+                "权证编号": "沪房地奉字(2014)第004478号",
+                "房地坐落": "奉贤区泽丰路88弄2号",
+                "坐落": "不应展示的新字段",
+                "权属性质": "国有建设用地使用权",
+            },
+            "metadata": {"filename": "林勇产证.pdf"},
+            "validation": {},
+        }
+    )
+
+    assert "房地坐落: 奉贤区泽丰路88弄2号" in markdown
+    assert "坐落: 不应展示的新字段" not in markdown
+    assert markdown.index("权证编号: 沪房地奉字(2014)第004478号") < markdown.index("房地坐落: 奉贤区泽丰路88弄2号")
+    assert markdown.index("房地坐落: 奉贤区泽丰路88弄2号") < markdown.index("权属性质: 国有建设用地使用权")
+
+
+def test_new_property_cert_renderer_keeps_new_address_label() -> None:
+    normalized = normalize_fields({"坐落": "华发路406弄10号"}, old_version=False)
+    markdown = render_markdown({"fields": normalized, "metadata": {}, "validation": {}})
+
+    assert normalized["坐落"] == "华发路406弄10号"
+    assert "坐落: 华发路406弄10号" in markdown
+    assert "房地坐落: 华发路406弄10号" not in markdown

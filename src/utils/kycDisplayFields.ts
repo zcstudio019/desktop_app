@@ -384,8 +384,9 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
     console.debug('[KycDisplayFields][DEBUG] raw 土地使用期限 =', fields['土地使用期限']);
     console.debug('[KycDisplayFields][DEBUG] raw land_use_term =', fields.land_use_term);
     console.debug('[KycDisplayFields][DEBUG] raw use_term =', fields.use_term);
-    console.debug('[KycDisplayFields][ADDRESS_DEBUG] raw 房地坐落 =', fields['房地坐落']);
-    console.debug('[KycDisplayFields][ADDRESS_DEBUG] display 房地坐落 =', displayFields['房地坐落']);
+    console.debug('[KycDisplayFields][ADDRESS] raw_房地坐落=', fields['房地坐落']);
+    console.debug('[KycDisplayFields][ADDRESS] raw_坐落=', fields['坐落']);
+    console.debug('[KycDisplayFields][ADDRESS] display_address=', displayFields['房地坐落'] ?? displayFields['坐落']);
     console.debug('[KycDisplayFields][DEBUG] display 使用期限 =', displayFields['使用期限']);
     console.debug('[KycDisplayFields][DEBUG] displayFields=', displayFields);
   }

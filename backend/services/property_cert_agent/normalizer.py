@@ -51,12 +51,14 @@ OLD_FIELD_ORDER = [
 ]
 
 SYNONYM_GROUPS = (
-    ("坐落", "房地坐落"),
     ("权利性质", "权属性质"),
     ("地号", "宗地号"),
     ("使用期限", "土地使用期限"),
     ("登记日期", "登记日"),
 )
+
+OLD_ADDRESS_KEYS = ("房地坐落", "坐落", "property_address", "address")
+NEW_ADDRESS_KEYS = ("坐落", "房地坐落", "property_address", "address")
 
 
 def clean_value(value: Any) -> str:
@@ -66,15 +68,44 @@ def clean_value(value: Any) -> str:
 
 
 def is_old_version(page_role: str, fields: dict[str, Any]) -> bool:
-    return page_role == "old_property_detail_page" or any(key in fields for key in ("房地坐落", "权属性质", "宗地号", "土地使用期限"))
+    cert_number = str(fields.get("权证编号") or fields.get("certificate_number") or "")
+    return (
+        page_role == "old_property_detail_page"
+        or any(key in fields for key in ("房地坐落", "权属性质", "使用权取得方式", "宗地号", "土地使用期限"))
+        or "沪房地" in cert_number
+    )
+
+
+def _first_non_empty(fields: dict[str, str], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = fields.get(key, "")
+        if value:
+            return value
+    return ""
+
+
+def _normalize_address_aliases(fields: dict[str, str], *, old_version: bool) -> None:
+    if old_version:
+        address = _first_non_empty(fields, OLD_ADDRESS_KEYS)
+        if address:
+            fields["房地坐落"] = address
+        fields.pop("坐落", None)
+    else:
+        address = _first_non_empty(fields, NEW_ADDRESS_KEYS)
+        if address:
+            fields["坐落"] = address
+        fields.pop("房地坐落", None)
+    fields.pop("property_address", None)
+    fields.pop("address", None)
 
 
 def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> dict[str, Any]:
+    old_version = old_version or is_old_version("", fields or {})
     cleaned = {key: clean_value(value) for key, value in (fields or {}).items() if clean_value(value)}
     if old_version:
-        logger.info("[PropertyNormalizer][ADDRESS] before_keys=%s", list(cleaned.keys()))
-        logger.info("[PropertyNormalizer][ADDRESS] before_房地坐落=%s", cleaned.get("房地坐落"))
-        logger.info("[PropertyNormalizer][ADDRESS] before_坐落=%s", cleaned.get("坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] input_房地坐落=%s", cleaned.get("房地坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] input_坐落=%s", cleaned.get("坐落"))
+    _normalize_address_aliases(cleaned, old_version=old_version)
     for new_key, old_key in SYNONYM_GROUPS:
         if old_version:
             if new_key in cleaned and old_key in cleaned:
@@ -92,9 +123,9 @@ def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> di
         if key not in ordered:
             ordered[key] = value
     if old_version:
-        logger.info("[PropertyNormalizer][ADDRESS] after_keys=%s", list(ordered.keys()))
-        logger.info("[PropertyNormalizer][ADDRESS] after_房地坐落=%s", ordered.get("房地坐落"))
-        logger.info("[PropertyNormalizer][ADDRESS] after_坐落=%s", ordered.get("坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] output_房地坐落=%s", ordered.get("房地坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] output_坐落=%s", ordered.get("坐落"))
+        logger.info("[PropertyNormalizer][ADDRESS] output_keys=%s", list(ordered.keys()))
     return ordered
 
 

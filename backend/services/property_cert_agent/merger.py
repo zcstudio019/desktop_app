@@ -1,8 +1,34 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .normalizer import is_old_version, normalize_fields
+
+logger = logging.getLogger(__name__)
+
+
+OLD_ADDRESS_KEYS = ("房地坐落", "坐落", "property_address", "address")
+NEW_ADDRESS_KEYS = ("坐落", "房地坐落", "property_address", "address")
+
+
+def _first_non_empty(fields: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(fields.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _apply_address_priority(fields: dict[str, Any], *, old_version: bool) -> None:
+    if old_version:
+        address = _first_non_empty(fields, OLD_ADDRESS_KEYS)
+        if address:
+            fields["房地坐落"] = address
+    else:
+        address = _first_non_empty(fields, NEW_ADDRESS_KEYS)
+        if address:
+            fields["坐落"] = address
 
 
 def score_page(page: dict[str, Any]) -> int:
@@ -39,11 +65,13 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
     main = max(detail_pages or pages, key=score_page, default={})
     old_version = is_old_version(str(main.get("page_role") or ""), main.get("fields") if isinstance(main.get("fields"), dict) else {})
     fields = dict(main.get("fields") or {})
+    logger.info("[PropertyMerger][ADDRESS] merged_before_房地坐落=%s", fields.get("房地坐落"))
     supplemental_files: list[str] = []
     risk_sections: dict[str, list[dict[str, Any]]] = {"附记": [], "抵押": []}
     for page in pages:
         role = str(page.get("page_role") or "")
         page_fields = page.get("fields") if isinstance(page.get("fields"), dict) else {}
+        logger.info("[PropertyMerger][ADDRESS] page_fields_房地坐落=%s", page_fields.get("房地坐落"))
         if page is not main and page.get("filename"):
             supplemental_files.append(str(page.get("filename")))
         if role == "cover_page":
@@ -62,8 +90,12 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
         for key, value in page_fields.items():
             if value and key not in fields and key != "封面编号":
                 fields[key] = value
+    _apply_address_priority(fields, old_version=old_version)
+    normalized_fields = normalize_fields(fields, old_version=old_version)
+    logger.info("[PropertyMerger][ADDRESS] merged_after_房地坐落=%s", normalized_fields.get("房地坐落"))
+    logger.info("[PropertyMerger][ADDRESS] merged_keys=%s", list(normalized_fields.keys()))
     return {
-        "fields": normalize_fields(fields, old_version=old_version),
+        "fields": normalized_fields,
         "main_page": main,
         "supplemental_files": sorted(set(supplemental_files)),
         "risk_sections": {key: value for key, value in risk_sections.items() if value},
