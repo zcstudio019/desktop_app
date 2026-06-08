@@ -616,13 +616,22 @@ def _build_property_field_ocr_variants(image_bytes: bytes) -> list[tuple[str, by
         grayscale = ImageOps.grayscale(rgb)
         high_contrast = ImageEnhance.Contrast(grayscale).enhance(2.4)
         binary = high_contrast.point(lambda pixel: 255 if pixel > 165 else 0)
-        upscale_size = (max(1, binary.width * 2), max(1, binary.height * 2))
         resampling = getattr(Image, "Resampling", Image).LANCZOS
-        upscaled = binary.resize(upscale_size, resampling)
+        binary_2x = binary.resize((max(1, binary.width * 2), max(1, binary.height * 2)), resampling)
+        binary_3x = binary.resize((max(1, binary.width * 3), max(1, binary.height * 3)), resampling)
+        gray_2x = high_contrast.resize((max(1, high_contrast.width * 2), max(1, high_contrast.height * 2)), resampling)
+        gray_3x = high_contrast.resize((max(1, high_contrast.width * 3), max(1, high_contrast.height * 3)), resampling)
+        light_text_enhance = grayscale.point(lambda pixel: 0 if pixel < 210 else 255)
+        light_text_enhance_3x = light_text_enhance.resize((max(1, light_text_enhance.width * 3), max(1, light_text_enhance.height * 3)), resampling)
         return [
             ("original", _image_to_jpeg_bytes(rgb)),
             ("gray_high_contrast", _image_to_jpeg_bytes(high_contrast)),
-            ("gray_contrast_binary_2x", _image_to_jpeg_bytes(upscaled)),
+            ("upscale_2x", _image_to_jpeg_bytes(gray_2x)),
+            ("upscale_3x", _image_to_jpeg_bytes(gray_3x)),
+            ("light_text_enhance", _image_to_jpeg_bytes(light_text_enhance_3x)),
+            ("binary", _image_to_jpeg_bytes(binary)),
+            ("gray_contrast_binary_2x", _image_to_jpeg_bytes(binary_2x)),
+            ("gray_contrast_binary_3x", _image_to_jpeg_bytes(binary_3x)),
         ]
 
 
@@ -630,6 +639,7 @@ def _property_certificate_field_crop_boxes(image_bytes: bytes) -> list[tuple[str
     with Image.open(BytesIO(image_bytes)) as image:
         width, height = image.size
     return [
+        ("top_certificate_number_region", (0, 0, width, max(1, int(height * 0.12)))),
         ("left_table_70_95", (0, 0, max(1, int(width * 0.70)), max(1, int(height * 0.95)))),
         (
             "use_term_region_15_70_38_55",

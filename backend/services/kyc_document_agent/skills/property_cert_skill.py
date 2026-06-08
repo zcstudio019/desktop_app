@@ -189,6 +189,19 @@ def _is_valid_owner_value(value: str) -> bool:
     return bool(re.fullmatch(r"[\u4e00-\u9fa5、，,/]{2,30}", text))
 
 
+def _is_valid_owner_or_company_value(value: str) -> bool:
+    text = _clean_owner_candidate(value)
+    if not text or text in INVALID_VALUE_EXACT:
+        return False
+    if any(keyword in text for keyword in OWNER_INVALID_KEYWORDS):
+        return False
+    if re.fullmatch(r"[\u4e00-\u9fa5、，,/]{2,30}", text):
+        return True
+    if any(keyword in text for keyword in ("公司", "有限公司", "集团", "科技", "中心", "厂", "企业")):
+        return bool(re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9（）()·\-—、，,/]{4,80}", text))
+    return False
+
+
 def _lines(text: str) -> list[str]:
     return [_compact_value(line) for line in re.split(r"[\r\n]+", _clean_text(text)) if _compact_value(line)]
 
@@ -282,12 +295,17 @@ def _extract_new_version_dense_fields(text: str) -> dict[str, tuple[str, str, fl
         if value and _is_valid_property_value(value) and field not in extracted:
             extracted[field] = (value, evidence or value, confidence)
 
-    cert_match = re.search(r"([\u4e00-\u9fa5]?[（(]\d{4}[）)][\u4e00-\u9fa5]{1,8}字?不动产权第\d+号)", dense)
+    cert_match = re.search(r"(沪[（(]?\d{4}[）)]?[\u4e00-\u9fa5]{1,8}字?不动产权第\d+号?)", dense)
+    if not cert_match:
+        cert_match = re.search(r"(沪[（(]?\d{4}[）)]?[\u4e00-\u9fa5]{1,8}字).{0,8}?(不动产权第\d+号?)", dense)
     if cert_match:
-        add("权证编号", _normalize_cert_number(cert_match.group(1)).replace("字不动产权", "字不动产权"), cert_match.group(0), 0.78)
+        cert_value = "".join(group for group in cert_match.groups() if group) if len(cert_match.groups()) > 1 else cert_match.group(1)
+        if not cert_value.endswith("号"):
+            cert_value = f"{cert_value}号"
+        add("权证编号", _normalize_cert_number(cert_value).replace("字不动产权", "字不动产权"), cert_match.group(0), 0.82)
 
-    owner, evidence = _dense_between(dense, "权利人", ("共有情况", "坐落", "不动产单元号"), max_len=30)
-    if _is_valid_owner_value(owner):
+    owner, evidence = _dense_between(dense, "权利人", ("共有情况", "坐落", "不动产单元号"), max_len=90)
+    if _is_valid_owner_or_company_value(owner):
         add("权利人", _clean_owner_candidate(owner), evidence, 0.78)
 
     shared, evidence = _dense_between(dense, "共有情况", ("坐落", "不动产单元号", "权利类型"), max_len=30)
@@ -312,7 +330,7 @@ def _extract_new_version_dense_fields(text: str) -> dict[str, tuple[str, str, fl
     add("权利性质", right_nature, evidence, 0.74)
     add("权属性质", right_nature, evidence, 0.74)
 
-    use_match = re.search(r"土地用途[:：]?([\u4e00-\u9fa5]{1,12})/?房屋用途[:：]?([\u4e00-\u9fa5]{1,12})", dense)
+    use_match = re.search(r"土地用途[:：]?([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})/?房屋用途[:：]?([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})", dense)
     if use_match:
         add("土地用途", use_match.group(1), use_match.group(0), 0.72)
         add("房屋用途", use_match.group(2), use_match.group(0), 0.72)
@@ -337,9 +355,10 @@ def _extract_new_version_dense_fields(text: str) -> dict[str, tuple[str, str, fl
     add("地号", parcel, evidence, 0.7)
     add("宗地号", parcel, evidence, 0.7)
 
-    room_match = re.search(r"室号(?:或部位|部位)?[:：]?([0-9A-Za-z-]{1,20})", dense)
+    room_match = re.search(r"室号(?:或部位|部位)?[:：]?([0-9A-Za-z\-室号部位]{1,20})", dense)
     if room_match:
-        add("室号或部位", room_match.group(1), room_match.group(0), 0.72)
+        room_value = re.sub(r"^(?:室号|部位)+", "", room_match.group(1))
+        add("室号或部位", room_value, room_match.group(0), 0.72)
 
     building_type_match = re.search(r"(?:建筑类型|类型)[:：]?([\u4e00-\u9fa5]{1,8})[;；,，。:]?(?:总层数|竣工日期)", dense)
     if building_type_match:
@@ -357,8 +376,16 @@ def _extract_new_version_dense_fields(text: str) -> dict[str, tuple[str, str, fl
 
 
 def _extract_cert_number(text: str) -> tuple[str, str]:
+    dense = _dense_text(text)
+    top_match = re.search(r"(沪[（(]?\d{4}[）)]?[\u4e00-\u9fa5]{1,8}字).{0,8}?(不动产权第\d+号?)", dense)
+    if top_match:
+        value = f"{top_match.group(1)}{top_match.group(2)}"
+        if not value.endswith("号"):
+            value = f"{value}号"
+        return _normalize_cert_number(value), top_match.group(0)
     patterns = [
         r"(沪[（(]\d{4}[）)][\u4e00-\u9fa5]{1,6}字不动产权第\d+号)",
+        r"(沪[（(]?\d{4}[）)]?[\u4e00-\u9fa5]{1,8}字?不动产权第\d+号?)",
         r"([\u4e00-\u9fa5][（(]\d{4}[）)][\u4e00-\u9fa5]{1,8}不动产权第\d+号)",
         r"(沪房地[\u4e00-\u9fa5]{0,6}字[（(]?\d{4}[）)]?第?\d+号)",
         r"((?:房权|沪房地)[^\n]{0,30}?第?\d+号)",
@@ -366,10 +393,13 @@ def _extract_cert_number(text: str) -> tuple[str, str]:
     for pattern in patterns:
         match = re.search(pattern, text or "")
         if match:
-            return _normalize_cert_number(match.group(1)), match.group(0)
+            value = _normalize_cert_number(match.group(1))
+            if "不动产权第" in value and not value.endswith("号"):
+                value = f"{value}号"
+            return value, match.group(0)
     value, evidence = _extract_after_label(text, ["权证编号", "证号", "编号"])
     normalized = _normalize_cert_number(value)
-    if normalized and "坐落" not in normalized and re.search(r"(?:沪房地|房权|不动产权|字.*号|第.*号)", normalized):
+    if normalized and not re.fullmatch(r"[A-Z]?\d{8,20}", normalized) and "坐落" not in normalized and re.search(r"(?:沪房地|房权|不动产权|字.*号|第.*号)", normalized):
         return normalized, evidence
     return "", ""
 
@@ -504,7 +534,7 @@ def _section_between(text: str, start_label: str, end_label: str | None = None, 
 
 
 def _extract_land_use(text: str) -> tuple[str, str]:
-    combined = re.search(r"土地用途[:：\s]*([\u4e00-\u9fa5]{1,12})\s*/\s*房屋用途[:：\s]*([\u4e00-\u9fa5]{1,12})", text or "")
+    combined = re.search(r"土地用途[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})\s*/\s*房屋用途[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})", text or "")
     if combined:
         return _compact_value(combined.group(1)), combined.group(0)
     land_section = _section_between(text, "土地状况", "房屋状况")
@@ -513,8 +543,8 @@ def _extract_land_use(text: str) -> tuple[str, str]:
         if not section:
             continue
         for pattern in [
-            r"用\s*途[:：\s]*([\u4e00-\u9fa5]{2,12}用地)",
-            r"用\s*\n\s*途\s*\n\s*([\u4e00-\u9fa5]{2,12}用地)",
+            r"用\s*途[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()]{2,20}(?:用地)?)",
+            r"用\s*\n\s*途\s*\n\s*([\u4e00-\u9fa5A-Za-z0-9（）()]{2,20}(?:用地)?)",
         ]:
             match = re.search(pattern, section)
             if match:
@@ -525,7 +555,7 @@ def _extract_land_use(text: str) -> tuple[str, str]:
 
 
 def _extract_house_and_land_use(text: str) -> tuple[str, str, str, str]:
-    combined = re.search(r"土地用途[:：\s]*([\u4e00-\u9fa5]{1,12})\s*/\s*房屋用途[:：\s]*([\u4e00-\u9fa5]{1,12})", text or "")
+    combined = re.search(r"土地用途[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})\s*/\s*房屋用途[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})", text or "")
     if combined:
         return _compact_value(combined.group(1)), combined.group(0), _compact_value(combined.group(2)), combined.group(0)
     return "", "", "", ""
@@ -555,7 +585,7 @@ def _extract_completion_date(text: str) -> tuple[str, str]:
 
 
 def _extract_house_use(text: str) -> tuple[str, str]:
-    combined = re.search(r"土地用途[:：\s]*([\u4e00-\u9fa5]{1,12})\s*/\s*房屋用途[:：\s]*([\u4e00-\u9fa5]{1,12})", text or "")
+    combined = re.search(r"土地用途[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})\s*/\s*房屋用途[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})", text or "")
     if combined:
         value = _compact_value(combined.group(2))
         if value and "用地" not in value:
@@ -566,8 +596,8 @@ def _extract_house_use(text: str) -> tuple[str, str]:
         if not section:
             continue
         for pattern in [
-            r"(?:房屋用途|用\s*途)[:：\s]*([\u4e00-\u9fa5]{2,8})(?=\s|$)",
-            r"用\s*\n\s*途\s*\n\s*([\u4e00-\u9fa5]{2,8})(?=\s|$)",
+            r"(?:房屋用途|用\s*途)[:：\s]*([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})(?=\s|$)",
+            r"用\s*\n\s*途\s*\n\s*([\u4e00-\u9fa5A-Za-z0-9（）()]{1,20})(?=\s|$)",
         ]:
             match = re.search(pattern, section)
             if not match:
@@ -760,30 +790,30 @@ def _extract_owner(text: str) -> tuple[str, str]:
         if any(keyword in line for keyword in INVALID_VALUE_KEYWORDS):
             continue
         value = _clean_owner_candidate(line[match.end():])
-        if _is_valid_owner_value(value):
+        if _is_valid_owner_or_company_value(value):
             return value, line
 
         for next_line in source_lines[index + 1 : index + 3]:
             if re.search(OWNER_STOP_PATTERN, next_line):
                 break
             value = _clean_owner_candidate(next_line)
-            if _is_valid_owner_value(value):
+            if _is_valid_owner_or_company_value(value):
                 return value, f"{line}\n{next_line}"
 
     for pattern in [
-        rf"(?:{OWNER_LABEL_PATTERN})[:：\s]+([\u4e00-\u9fa5、，,/]{{2,30}})",
-        rf"(?:{OWNER_LABEL_PATTERN})\s*([\u4e00-\u9fa5、，,/]{{2,30}})",
+        rf"(?:{OWNER_LABEL_PATTERN})[:：\s]+([\u4e00-\u9fa5A-Za-z0-9（）()·\-—、，,/]{{2,80}})",
+        rf"(?:{OWNER_LABEL_PATTERN})\s*([\u4e00-\u9fa5A-Za-z0-9（）()·\-—、，,/]{{2,80}})",
     ]:
         match = re.search(pattern, text or "")
         if not match:
             continue
         value = _clean_owner_candidate(match.group(1))
-        if _is_valid_owner_value(value):
+        if _is_valid_owner_or_company_value(value):
             return value, match.group(0)
 
     value, evidence = _extract_after_label(text, ["权利人", "房屋所有权人", "所有权人"])
     value = _clean_owner_candidate(value)
-    if _is_valid_owner_value(value):
+    if _is_valid_owner_or_company_value(value):
         return value, evidence
     return "", ""
 
