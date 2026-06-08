@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from backend.services.property_cert_agent import run_property_cert_agent
 from backend.services.property_cert_agent.page_role import detect_page_role
+from backend.services.property_cert_agent.skills.new_real_estate_cert_skill import extract as extract_new_real_estate
 
 
 WZHF_OCR_TEXT = """
@@ -31,12 +32,11 @@ WZHF_OCR_TEXT = """
 国有建设用地使用权使用期限：2015年10月16日起2076
 使用期限
 年12月28日止
-室号部位
-1705
+房屋状况：
+室号部位：1705；
+类型：公寓；
 建筑面积
 62.40
-建筑类型
-公寓
 总层数
 29
 竣工日期
@@ -49,7 +49,11 @@ D31001337469
 
 
 def test_wzhf_new_real_estate_role_and_fields_are_complete() -> None:
+    assert "类型：公寓" in WZHF_OCR_TEXT
     assert detect_page_role(WZHF_OCR_TEXT) == "new_real_estate_detail_page"
+    skill_fields = extract_new_real_estate({"text": WZHF_OCR_TEXT})["fields"]
+    assert skill_fields["建筑类型"] == "公寓"
+    assert skill_fields["权利类型"] == "国有建设用地使用权/房屋所有权"
 
     result = run_property_cert_agent(
         {
@@ -88,5 +92,7 @@ def test_wzhf_new_real_estate_role_and_fields_are_complete() -> None:
     assert "权证编号: 沪(2018)徐字不动产权第015979号" in markdown
     assert "坐落: 华发路406弄10号" in markdown
     assert "使用期限: 2015年10月16日起2076年12月28日止" in markdown
+    assert "建筑类型: 公寓" in markdown
     assert "房地坐落:" not in markdown
     assert markdown.index("权证编号: 沪(2018)徐字不动产权第015979号") < markdown.index("封面编号: D31001337469") < markdown.index("坐落: 华发路406弄10号")
+    assert markdown.index("室号或部位: 1705") < markdown.index("建筑类型: 公寓") < markdown.index("总层数: 29")

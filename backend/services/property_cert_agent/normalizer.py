@@ -59,6 +59,10 @@ SYNONYM_GROUPS = (
 
 OLD_ADDRESS_KEYS = ("房地坐落", "坐落", "property_address", "address")
 NEW_ADDRESS_KEYS = ("坐落", "房地坐落", "property_address", "address")
+FIELD_ALIASES = {
+    "building_type": "建筑类型",
+    "house_type": "建筑类型",
+}
 
 
 def clean_value(value: Any) -> str:
@@ -102,6 +106,11 @@ def _normalize_address_aliases(fields: dict[str, str], *, old_version: bool) -> 
 def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> dict[str, Any]:
     old_version = old_version or is_old_version("", fields or {})
     cleaned = {key: clean_value(value) for key, value in (fields or {}).items() if clean_value(value)}
+    for alias, target in FIELD_ALIASES.items():
+        if cleaned.get(alias) and not cleaned.get(target):
+            cleaned[target] = cleaned.pop(alias)
+        else:
+            cleaned.pop(alias, None)
     if old_version:
         logger.info("[PropertyNormalizer][ADDRESS] input_房地坐落=%s", cleaned.get("房地坐落"))
         logger.info("[PropertyNormalizer][ADDRESS] input_坐落=%s", cleaned.get("坐落"))
