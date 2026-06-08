@@ -113,6 +113,20 @@ DIRTY_STOP_LABELS = (
     "登记机构",
 )
 FIELD_STOP_LABELS = tuple(dict.fromkeys((*DIRTY_STOP_LABELS, *NEW_FIELD_ORDER, *OLD_FIELD_ORDER, "不动产单元号", "共有情况", "权利类型", "权利性质", "封面编号")))
+INVALID_OWNER_KEYWORDS = (
+    "合法权益",
+    "申请登记",
+    "经审查核实",
+    "准予登记",
+    "颁发此证",
+    "不动产权利人申请",
+    "根据《中华人民共和国物权法》",
+    "登记机构",
+    "国土资源部监制",
+    "权利人合法权益",
+    "对不动产权利人",
+)
+CO_OWNER_VALUES = ("单独所有", "共同共有", "按份共有", "共有", "单独所有/共同共有")
 
 LAND_USE_VALUES = ("其它商服用地", "其他商服用地", "城镇住宅用地", "住宅用地", "商业用地", "工业用地", "办公用地", "仓储用地", "住宅", "商业", "办公", "工业", "仓储")
 HOUSE_USE_VALUES = ("办公", "居住", "住宅", "商业", "工业", "仓储", "车库", "公寓", "商铺", "非居住")
@@ -194,6 +208,56 @@ def _label_value(raw_text: str, labels: tuple[str, ...], *, max_next_lines: int 
     return ""
 
 
+def is_invalid_property_owner(value: Any) -> bool:
+    text = clean_value(value)
+    return bool(text and any(keyword in text for keyword in INVALID_OWNER_KEYWORDS))
+
+
+def _is_field_label(value: str) -> bool:
+    compact = re.sub(r"[\s:：,，;；。]+", "", str(value or ""))
+    return any(compact == re.sub(r"[\s:：,，;；。]+", "", label) for label in FIELD_STOP_LABELS)
+
+
+def _recover_owner_and_co_owner(raw_text: str) -> tuple[str, str]:
+    split_lines = _lines(raw_text)
+    for index, line in enumerate(split_lines):
+        if re.sub(r"[\s:：,，;；。]+", "", line) != "权利人":
+            continue
+        owner = ""
+        for candidate_line in split_lines[index + 1 : index + 5]:
+            candidate = clean_value(candidate_line)
+            if not candidate or _is_field_label(candidate):
+                break
+            if is_invalid_property_owner(candidate):
+                owner = ""
+                break
+            owner = candidate
+            break
+        if not owner:
+            continue
+        co_owner = ""
+        for offset, candidate_line in enumerate(split_lines[index + 1 : index + 9], start=index + 1):
+            compact = re.sub(r"[\s:：,，;；。]+", "", candidate_line)
+            if compact != "共有情况" and not compact.startswith("共有情况"):
+                continue
+            after = clean_value(candidate_line.replace("共有情况", ""))
+            values = [after, *split_lines[offset + 1 : offset + 3]]
+            for value in values:
+                value = clean_value(value)
+                if not value or _is_field_label(value):
+                    continue
+                co_owner = value
+                break
+            break
+        if co_owner:
+            for value in CO_OWNER_VALUES:
+                if value in co_owner:
+                    co_owner = value
+                    break
+        return owner, co_owner
+    return "", ""
+
+
 def _recover_new_cert_number(raw_text: str) -> str:
     compact = _compact(raw_text)
     match = re.search(r"([沪京津渝苏浙粤鲁豫川湘鄂闽皖赣辽吉黑冀晋陕甘青桂琼贵云藏宁新内][（(]?\d{4}[）)]?[^第号]{0,8}字?不动产权第\d{4,8}号)", compact)
@@ -269,6 +333,12 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
 
     old_version = is_old_version(page_role, source) and not _is_new_version(source, raw_text, page_role, cert_version)
     new_version = not old_version
+    before_owner = source.get("权利人")
+    invalid_owner = is_invalid_property_owner(before_owner)
+    logger.info("[PropertyNormalizer][OWNER] before_权利人=%s", before_owner or "")
+    logger.info("[PropertyNormalizer][OWNER] invalid_owner_removed=%s", str(invalid_owner).lower())
+    if invalid_owner:
+        source.pop("权利人", None)
 
     if new_version:
         address = _first_non_empty(source, NEW_ADDRESS_KEYS)
@@ -316,11 +386,19 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
         source["权证编号"] = cert
         logger.info("[PropertyNormalizer] recovered_field field=权证编号 value=%s", cert)
 
+    recovered_owner, recovered_co_owner = _recover_owner_and_co_owner(raw_text)
     if not source.get("权利人"):
-        owner = _label_value(raw_text, ("权利人",), max_next_lines=2)
+        owner = recovered_owner or _label_value(raw_text, ("权利人",), max_next_lines=2)
+        if is_invalid_property_owner(owner):
+            owner = ""
         if owner:
             source["权利人"] = owner
             logger.info("[PropertyNormalizer] recovered_field field=权利人 value=%s", owner)
+            logger.info("[PropertyNormalizer][OWNER] recovered_权利人=%s", owner)
+    if new_version and (not source.get("共有情况") or _dirty(str(source.get("共有情况")))):
+        if recovered_co_owner:
+            source["共有情况"] = recovered_co_owner
+            logger.info("[PropertyNormalizer][CO_OWNER] recovered_共有情况=%s", recovered_co_owner)
 
     if new_version:
         for key, labels in (

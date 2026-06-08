@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .normalizer import is_old_version, normalize_fields
+from .normalizer import is_invalid_property_owner, is_old_version, normalize_fields
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,9 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
     main = max(detail_pages or pages, key=score_page, default={})
     old_version = is_old_version(str(main.get("page_role") or ""), main.get("fields") if isinstance(main.get("fields"), dict) else {})
     fields = dict(main.get("fields") or {})
+    if is_invalid_property_owner(fields.get("权利人")):
+        logger.info("[PropertyMerger][OWNER] cover_owner_ignored=true")
+        fields.pop("权利人", None)
     logger.info("[PropertyMerger][ADDRESS] merged_before_房地坐落=%s", fields.get("房地坐落"))
     supplemental_files: list[str] = []
     risk_sections: dict[str, list[dict[str, Any]]] = {"附记": [], "抵押": []}
@@ -75,6 +78,8 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
         if page is not main and page.get("filename"):
             supplemental_files.append(str(page.get("filename")))
         if role == "cover_page":
+            if page_fields.get("权利人") or page_fields.get("共有情况"):
+                logger.info("[PropertyMerger][OWNER] cover_owner_ignored=true")
             for key in ("登记日期", "登记机构", "封面编号"):
                 if page_fields.get(key) and not fields.get(key):
                     fields[key] = page_fields[key]
@@ -88,6 +93,9 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
         if page is main:
             continue
         for key, value in page_fields.items():
+            if key in {"权利人", "共有情况"} and (role == "cover_page" or is_invalid_property_owner(value)):
+                logger.info("[PropertyMerger][OWNER] cover_owner_ignored=true")
+                continue
             if value and key not in fields and key != "封面编号":
                 fields[key] = value
     _apply_address_priority(fields, old_version=old_version)

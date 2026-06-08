@@ -222,6 +222,8 @@ def render_markdown(result: dict[str, Any]) -> str:
         logger.info("[PropertyRenderer][ADDRESS] fields_房地坐落=%s", fields.get("房地坐落"))
         logger.info("[PropertyRenderer][ADDRESS] fields_坐落=%s", fields.get("坐落"))
         logger.info("[PropertyRenderer][ADDRESS] display_order=%s", list(fields.keys()))
+        logger.info("[PropertyRenderer] display_权利人=%s", fields.get("权利人") or "")
+        logger.info("[PropertyRenderer] display_共有情况=%s", fields.get("共有情况") or "")
         logger.info("[PropertyRenderer] display_建筑类型=%s", fields.get("建筑类型") or "")
         for key, value in fields.items():
             if value:

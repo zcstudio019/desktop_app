@@ -9,6 +9,46 @@ from .common import certificate_number, clean, label_value, lines, normalize_use
 logger = logging.getLogger(__name__)
 
 BUILDING_TYPE_VALUES = ("公寓", "办公楼", "住宅", "商业", "工业", "厂房", "车库", "仓库", "商铺", "别墅", "非居住", "居住")
+CO_OWNER_VALUES = ("单独所有", "共同共有", "按份共有", "共有", "单独所有/共同共有")
+FIELD_LABELS = (
+    "权利人",
+    "共有情况",
+    "坐落",
+    "不动产单元号",
+    "权利类型",
+    "权利性质",
+    "用途",
+    "面积",
+    "使用期限",
+    "土地状况",
+    "房屋状况",
+    "地号",
+    "使用权面积",
+    "独用面积",
+    "分摊面积",
+    "室号部位",
+    "室号或部位",
+    "权利其他状况",
+    "类型",
+    "总层数",
+    "竣工日期",
+    "登记机构",
+    "编号",
+    "附记",
+)
+INVALID_OWNER_KEYWORDS = (
+    "合法权益",
+    "申请登记",
+    "经审查核实",
+    "准予登记",
+    "颁发此证",
+    "不动产权利人申请",
+    "根据《中华人民共和国物权法》",
+    "登记机构",
+    "国土资源部监制",
+    "权利人合法权益",
+    "对不动产权利人",
+)
 
 
 def _right_nature(text: str) -> str:
@@ -31,6 +71,65 @@ def _area(value: str) -> str:
     if text and re.fullmatch(r"\d+(?:\.\d+)?", text):
         return f"{text} 平方米"
     return text
+
+
+def _normalized_label(text: str) -> str:
+    return re.sub(r"[\s:：,，;；。]+", "", str(text or ""))
+
+
+def _is_field_label(text: str) -> bool:
+    compact = _normalized_label(text)
+    return any(compact == _normalized_label(label) for label in FIELD_LABELS)
+
+
+def _invalid_owner(value: str) -> bool:
+    text = clean(value)
+    return not text or any(keyword in text for keyword in INVALID_OWNER_KEYWORDS)
+
+
+def _owner_and_co_owner(text: str) -> tuple[str, str, list[str]]:
+    split_lines = lines(text)
+    candidates: list[str] = []
+    owner = ""
+    co_owner = ""
+    for index, line in enumerate(split_lines):
+        if _normalized_label(line) != "权利人":
+            continue
+        for candidate_line in split_lines[index + 1 : index + 4]:
+            candidate = clean(candidate_line)
+            if not candidate:
+                continue
+            if _normalized_label(candidate) == "共有情况":
+                break
+            if _is_field_label(candidate):
+                break
+            candidates.append(candidate)
+            if _invalid_owner(candidate):
+                continue
+            owner = candidate
+            break
+        if owner:
+            for offset, candidate_line in enumerate(split_lines[index + 1 : index + 8], start=index + 1):
+                if _normalized_label(candidate_line) != "共有情况":
+                    continue
+                after = clean(candidate_line.replace("共有情况", ""))
+                if after:
+                    co_owner = after
+                    break
+                for next_line in split_lines[offset + 1 : offset + 3]:
+                    value = clean(next_line)
+                    if not value or _is_field_label(value):
+                        break
+                    co_owner = value
+                    break
+                break
+            break
+    if co_owner:
+        for candidate in CO_OWNER_VALUES:
+            if candidate in co_owner:
+                co_owner = candidate
+                break
+    return owner, co_owner, candidates
 
 
 def _clean_building_type(value: str) -> str:
@@ -75,8 +174,6 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     if cert_no:
         fields["权证编号"] = cert_no
     mappings = (
-        ("权利人", ("权利人",)),
-        ("共有情况", ("共有情况",)),
         ("坐落", ("坐落",)),
         ("不动产单元号", ("不动产单元号",)),
         ("权利类型", ("权利类型",)),
@@ -90,6 +187,14 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
         ("登记日期", ("登记日期", "登记日")),
         ("封面编号", ("封面编号",)),
     )
+    owner, co_owner, owner_candidates = _owner_and_co_owner(text)
+    logger.info("[NewRealEstateSkill][OWNER] candidate_lines=%s", owner_candidates)
+    if owner:
+        fields["权利人"] = owner
+    if co_owner:
+        fields["共有情况"] = co_owner
+    logger.info("[NewRealEstateSkill][OWNER] extracted_权利人=%s", fields.get("权利人") or "")
+    logger.info("[NewRealEstateSkill][CO_OWNER] extracted_共有情况=%s", fields.get("共有情况") or "")
     for output_key, labels in mappings:
         value = label_value(text, labels)
         if value:

@@ -4,6 +4,7 @@ from backend.services.property_cert_agent import run_property_cert_agent
 
 
 BAOSHAN_ENTERPRISE_TEXT = """
+为保护不动产权利人合法权益，对不动产权利人申请登记，经审查核实，准予登记，颁发此证。
 沪（2022）宝字
 不动产权第011468
 号
@@ -50,6 +51,7 @@ def test_enterprise_owner_baoshan_markdown_is_standardized() -> None:
     markdown = result["markdown"]
 
     assert fields["权利人"] == "智先生数字科技（上海）有限公司"
+    assert fields["共有情况"] == "单独所有"
     assert fields["权证编号"] == "沪(2022)宝字不动产权第011468号"
     assert fields["封面编号"] == "D31003610514"
     assert fields["土地用途"] == "其它商服用地"
@@ -61,6 +63,9 @@ def test_enterprise_owner_baoshan_markdown_is_standardized() -> None:
 
     assert "权证编号: D31003610514" not in markdown
     assert "权证编号: 沪(2022)宝字不动产权第011468号" in markdown
+    assert "权利人: 智先生数字科技（上海）有限公司" in markdown
+    assert "共有情况: 单独所有" in markdown
+    assert "合法权益，对" not in markdown
     assert "土地用途: 其它商服用地" in markdown
     assert "房屋用途: 办公" in markdown
     assert "地号: 宝山区高境镇9街坊73/7丘" in markdown
