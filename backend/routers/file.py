@@ -42,6 +42,7 @@ from backend.services.kyc_document_agent.classifier import (
 )
 from backend.services.markdown_profile_service import regenerate_customer_profile
 from backend.services.profile_sync_service import ProfileSyncService
+from backend.services.property_cert_agent.ocr import run_property_cert_ocr_plan
 from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
 from services.ai_service import AIService, AIServiceError
 from services.file_service import FileService
@@ -1162,14 +1163,24 @@ async def _process_file_bytes(
         if front_page_ocr_text:
             text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
     if document_type_code in PROPERTY_CERT_PROCESS_TYPES:
-        field_page_text, field_pages = _ocr_property_certificate_field_pages(file_bytes, file_type, filename)
-        if field_page_text:
-            text_content = f"{text_content}\n\n--- Property Certificate Field Page OCR ---\n{field_page_text}".strip()
-            raw_pages.extend(field_pages)
-        seal_region_text = _ocr_property_certificate_seal_region(file_bytes, file_type, filename)
-        if seal_region_text:
-            text_content = f"{text_content}\n\n--- Property Certificate Seal Region OCR ---\n{seal_region_text}"
-            raw_pages.append({"page": len(raw_pages) + 1, "text": seal_region_text})
+        if progress_callback:
+            await progress_callback("正在判断页面类型")
+        property_ocr_text, property_ocr_pages, property_ocr_summary = run_property_cert_ocr_plan(
+            file_bytes=file_bytes,
+            file_type=file_type,
+            filename=filename,
+            pdf_to_images=lambda data: file_service.pdf_to_images(data, dpi=220),
+            ocr_func=lambda image_bytes: ocr_service.recognize_image(image_bytes),
+            max_calls=6,
+        )
+        if property_ocr_pages:
+            if progress_callback:
+                page_count = property_ocr_summary.get("pages") or len(property_ocr_pages)
+                await progress_callback(f"正在识别房产证第 1/{page_count} 页")
+            text_content = f"{text_content}\n\n--- Property Certificate OCR Plan ---\n{property_ocr_text}".strip()
+            raw_pages.extend(property_ocr_pages)
+        if progress_callback:
+            await progress_callback("正在合并房产证字段")
         _log_property_ocr_text(filename, text_content)
     if document_type_code == "financial_report" and file_type == "pdf" and _financial_report_needs_ocr_supplement(text_content, raw_pages):
         logger.info("[FinancialReportAgent][OCR_FALLBACK] native layout text incomplete, OCR all pages filename=%s", filename)
@@ -1181,7 +1192,7 @@ async def _process_file_bytes(
         except Exception as exc:  # pragma: no cover - best-effort extraction supplement
             logger.warning("[FinancialReportAgent][OCR_FALLBACK] failed filename=%s error=%s", filename, exc)
     if progress_callback:
-        await progress_callback("正在结构化提取")
+        await progress_callback("正在保存结构化结果" if document_type_code in PROPERTY_CERT_PROCESS_TYPES else "正在结构化提取")
     if document_type_code == "bank_statement" and (
         "工商银行" in filename
         or "中国工商银行账户明细清单" in text_content
