@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 LAND_USE_VALUES = (
@@ -74,6 +77,17 @@ def _normalized_label(line: str) -> str:
 def _is_label(line: str) -> bool:
     normalized = _normalized_label(line)
     return normalized in {_normalized_label(label) for label in LABELS} or normalized.endswith("状况")
+
+
+def _address_debug(text: str) -> tuple[bool, list[str], list[str]]:
+    split_lines = _lines(text)
+    lines_with_address: list[str] = []
+    next_lines: list[str] = []
+    for index, line in enumerate(split_lines):
+        if "房地坐落" in _normalized_label(line):
+            lines_with_address.append(line)
+            next_lines.extend(split_lines[index + 1 : index + 4])
+    return "房地坐落" in _compact(text), lines_with_address, next_lines
 
 
 def _strip_after_label(value: str) -> str:
@@ -243,11 +257,17 @@ def _registration_date(text: str) -> str:
 def extract(payload: dict[str, Any]) -> dict[str, Any]:
     text = str(payload.get("text") or "")
     fields: dict[str, Any] = {}
+    contains_address, address_lines, address_next_lines = _address_debug(text)
+    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] raw_text_contains_房地坐落=%s", contains_address)
+    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] lines_with_房地坐落=%s", address_lines)
+    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] next_lines_after_房地坐落=%s", address_next_lines)
+    extracted_address = _label_next_line(text, ("房地坐落", "房屋坐落"), max_next_lines=3)
+    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] extracted_房地坐落=%s", extracted_address)
 
     simple_fields = (
         ("权利人", _owner(text)),
         ("权证编号", _old_certificate_number(text)),
-        ("房地坐落", _label_next_line(text, ("房地坐落", "房屋坐落"), max_next_lines=3)),
+        ("房地坐落", extracted_address),
         ("权属性质", _label_next_line(text, ("权属性质",), max_next_lines=3)),
         ("使用权取得方式", _label_next_line(text, ("使用权取得方式",), max_next_lines=3)),
         ("宗地号", _label_next_line(text, ("宗地号",), max_next_lines=3)),
@@ -271,4 +291,5 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     if house_use:
         fields["房屋用途"] = house_use
 
+    logger.info("[OldPropertyCertSkill][ADDRESS_DEBUG] fields_房地坐落=%s", fields.get("房地坐落"))
     return {"fields": fields, "warnings": [], "page_role": "old_property_detail_page"}

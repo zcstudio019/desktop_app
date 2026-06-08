@@ -131,6 +131,7 @@ export const PROPERTY_CERT_FIELD_ORDER = [
   '权利人',
   '共有情况',
   '权证编号',
+  '房地坐落',
   '封面编号',
   '坐落',
   '不动产单元号',
@@ -383,6 +384,8 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
     console.debug('[KycDisplayFields][DEBUG] raw 土地使用期限 =', fields['土地使用期限']);
     console.debug('[KycDisplayFields][DEBUG] raw land_use_term =', fields.land_use_term);
     console.debug('[KycDisplayFields][DEBUG] raw use_term =', fields.use_term);
+    console.debug('[KycDisplayFields][ADDRESS_DEBUG] raw 房地坐落 =', fields['房地坐落']);
+    console.debug('[KycDisplayFields][ADDRESS_DEBUG] display 房地坐落 =', displayFields['房地坐落']);
     console.debug('[KycDisplayFields][DEBUG] display 使用期限 =', displayFields['使用期限']);
     console.debug('[KycDisplayFields][DEBUG] displayFields=', displayFields);
   }

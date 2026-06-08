@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 NEW_FIELD_ORDER = [
     "权利人",
@@ -33,16 +36,17 @@ OLD_FIELD_ORDER = [
     "权属性质",
     "使用权取得方式",
     "土地用途",
+    "房屋用途",
     "宗地号",
     "宗地面积",
     "土地使用期限",
     "室号或部位",
     "建筑面积",
     "建筑类型",
-    "房屋用途",
     "总层数",
     "竣工日期",
     "登记日",
+    "登记日期",
     "填证单位",
 ]
 
@@ -67,6 +71,8 @@ def is_old_version(page_role: str, fields: dict[str, Any]) -> bool:
 
 def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> dict[str, Any]:
     cleaned = {key: clean_value(value) for key, value in (fields or {}).items() if clean_value(value)}
+    if old_version:
+        logger.info("[PropertyCertNormalizer][ADDRESS_DEBUG] before_房地坐落=%s", cleaned.get("房地坐落"))
     for new_key, old_key in SYNONYM_GROUPS:
         if old_version:
             if new_key in cleaned and old_key in cleaned:
@@ -83,6 +89,8 @@ def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> di
     for key, value in cleaned.items():
         if key not in ordered:
             ordered[key] = value
+    if old_version:
+        logger.info("[PropertyCertNormalizer][ADDRESS_DEBUG] after_房地坐落=%s", ordered.get("房地坐落"))
     return ordered
 
 

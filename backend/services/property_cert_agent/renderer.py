@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def render_markdown(result: dict[str, Any]) -> str:
@@ -18,6 +21,7 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines.append("- 原件状态: 可查看")
     if fields:
         lines.extend(["", "### 结构化提取结果"])
+        logger.info("[PropertyCertRenderer][ADDRESS_DEBUG] display_房地坐落=%s", fields.get("房地坐落"))
         for key, value in fields.items():
             if value:
                 lines.append(f"- {key}: {value}")

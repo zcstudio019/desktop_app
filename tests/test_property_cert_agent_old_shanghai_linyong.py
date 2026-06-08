@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from backend.services.property_cert_agent import run_property_cert_agent
 from backend.services.property_cert_agent.page_role import detect_page_role
 
@@ -90,9 +92,19 @@ def test_linyong_old_shanghai_fields_are_clean() -> None:
     assert "宗地面积" not in fields["房屋用途"]
 
     markdown = result["markdown"]
+    assert "房地坐落: 奉贤区泽丰路88弄2号" in markdown
+    assert markdown.index("权证编号: 沪房地奉字(2014)第004478号") < markdown.index("房地坐落: 奉贤区泽丰路88弄2号")
+    assert markdown.index("房地坐落: 奉贤区泽丰路88弄2号") < markdown.index("权属性质: 国有建设用地使用权")
     assert "土地用途: 住宅用地状况" not in markdown
     assert "房屋用途: 5丘况总层数" not in markdown
     assert "使用权面积: 独用" not in markdown
     assert "- 用途:" not in markdown
     assert "land_use" not in markdown
     assert "house_use" not in markdown
+
+
+def test_linyong_old_shanghai_frontend_order_keeps_address() -> None:
+    source = Path("src/utils/kycDisplayFields.ts").read_text(encoding="utf-8")
+    assert "'房地坐落'," in source
+    assert source.index("'权证编号'") < source.index("'房地坐落'") < source.index("'封面编号'")
+    assert "[ADDRESS_DEBUG] display 房地坐落" in source
