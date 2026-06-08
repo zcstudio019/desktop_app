@@ -35,8 +35,6 @@ SKILL_MODULES = {
     "basic_account_info": "backend.services.kyc_document_agent.skills.basic_account_info_skill",
     "vehicle_license": "backend.services.kyc_document_agent.skills.vehicle_license_skill",
     "driving_license": "backend.services.kyc_document_agent.skills.driving_license_skill",
-    "property_cert": "backend.services.kyc_document_agent.skills.property_cert_skill",
-    "real_estate_cert": "backend.services.kyc_document_agent.skills.real_estate_cert_skill",
     "lease_contract_keypage": "backend.services.kyc_document_agent.skills.lease_contract_keypage_skill",
     "real_estate_query": "backend.services.kyc_document_agent.skills.real_estate_query_skill",
     "shareholder_id_card": "backend.services.kyc_document_agent.skills.shareholder_id_card_skill",
@@ -85,6 +83,15 @@ class KycDocumentAgent:
         declared_doc_type = str(metadata.get("declared_doc_type") or "")
         classification = classify_with_reason(data["text"], filename=filename, declared_doc_type=declared_doc_type)
         doc_type = classification["doc_type"]
+        if doc_type in {"property_cert", "real_estate_cert"}:
+            result = build_result("unknown")
+            result["raw_text_preview"] = data["text"][:240]
+            result["metadata"] = metadata
+            result["agent_type"] = "kyc_document_agent"
+            result["classification_reason"] = "房产证/不动产权证已迁移到 PropertyCertAgent"
+            result["validation"]["warnings"].append("房产证/不动产权证不再由轻量 KYC Agent 处理，请走 PropertyCertAgent。")
+            result["markdown"] = render_markdown(result)
+            return result
         if doc_type == "unknown":
             result = build_result("unknown")
             result["raw_text_preview"] = data["text"][:240]

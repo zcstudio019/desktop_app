@@ -23,6 +23,7 @@ from backend.services.kyc_document_agent import KycDocumentAgent
 from backend.services.kyc_document_agent.classifier import classify as classify_kyc_document, normalize_declared_doc_type
 from backend.services.kyc_document_agent.schema import DOC_TYPE_NAMES
 from backend.services.personal_credit_report_agent import run_personal_credit_report_agent
+from backend.services.property_cert_agent.classifier import should_route_to_property_cert
 from prompts import get_prompt_for_type, load_prompts
 from utils.json_parser import parse_json
 
@@ -34,6 +35,8 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
     "enterprise_flow",
     "enterprise_bank_statement",
     "financial_report",
+    "property_cert",
+    "real_estate_cert",
 }
 
 KYC_DOC_TYPES = {
@@ -46,8 +49,6 @@ KYC_DOC_TYPES = {
     "basic_account_info",
     "vehicle_license",
     "driving_license",
-    "property_cert",
-    "real_estate_cert",
     "lease_contract_keypage",
     "real_estate_query",
     "shareholder_id_card",
@@ -62,10 +63,7 @@ KYC_DOC_TYPES = {
 KYC_LEGACY_DOC_TYPE_ALIASES = {
     "account_license": "account_permit",
     "hukou": "household_register",
-    "collateral": "property_cert",
     "property_report": "real_estate_query",
-    "property_certificate": "property_cert",
-    "real_estate_certificate": "real_estate_cert",
     "company_articles": "articles_keypage",
     "special_license": "special_business_license",
 }
@@ -9018,16 +9016,56 @@ def extract_bank_statement_pdf_fields(
 
 def _resolve_kyc_doc_type(text_content: str, declared_doc_type: str | None, filename: str = "") -> str:
     normalized = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
+    if should_route_to_property_cert(declared_doc_type=normalized, filename=filename, text=text_content):
+        return ""
     normalized = normalize_declared_doc_type(normalized, filename=filename) or normalized
+    if normalized in {"property_cert", "real_estate_cert"}:
+        return ""
     if normalized in KYC_LEGACY_DOC_TYPE_ALIASES:
         mapped = KYC_LEGACY_DOC_TYPE_ALIASES[normalized]
-        if normalized == "collateral" and mapped == "property_cert":
-            return mapped if any(keyword in (filename or "") for keyword in ("房产", "产证", "房本", "不动产", "房地产权证")) else ""
         return mapped
     if normalized in KYC_DOC_TYPES:
         return normalized
     classified = classify_kyc_document(text_content or "", filename=filename)
+    if should_route_to_property_cert(classified_doc_type=classified, filename=filename, text=text_content):
+        return ""
     return classified if classified in KYC_DOC_TYPES else ""
+
+
+def _build_property_cert_structured_extraction(
+    text_content: str,
+    *,
+    raw_pages: list[dict[str, Any]] | None = None,
+    filename: str = "",
+    customer_id: str = "",
+    customer_name: str = "",
+    declared_doc_type: str = "property_cert",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_metadata = metadata or {}
+    agent_result = run_document_extraction_agent(
+        document_type="property_cert",
+        raw_text=str(text_content or ""),
+        filename=filename,
+        customer_id=customer_id,
+        metadata={
+            **source_metadata,
+            "customer_name": customer_name or str(source_metadata.get("customer_name") or ""),
+            "raw_pages": raw_pages or [],
+            "declared_doc_type": declared_doc_type or "property_cert",
+            "document_type": "property_cert",
+            "source": str(source_metadata.get("source") or "upload"),
+        },
+    )
+    content = dict(agent_result.raw_agent_result or agent_result.extracted_json or {})
+    content["agent_type"] = "property_cert_agent"
+    content["document_type_code"] = "property_cert"
+    content["document_type_name"] = "房产证/不动产权证"
+    content["storage_label"] = "房产证/不动产权证"
+    content.setdefault("doc_type", "property_cert")
+    content.setdefault("doc_type_name", "房产证/不动产权证")
+    content.setdefault("markdown", agent_result.markdown_summary)
+    return content
 
 
 def _sanitize_kyc_metadata(metadata: dict[str, Any] | None, *, filename: str, customer_id: str, doc_type: str) -> dict[str, Any]:
@@ -9182,6 +9220,22 @@ def run_document_extraction(
     metadata: dict | None = None,
 ) -> dict[str, Any]:
     normalized_declared = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
+    classified_for_property = classify_kyc_document(text or "", filename=filename)
+    if should_route_to_property_cert(
+        declared_doc_type=normalized_declared,
+        classified_doc_type=classified_for_property,
+        filename=filename,
+        text=text,
+    ):
+        return _build_property_cert_structured_extraction(
+            text,
+            raw_pages=pages or [],
+            filename=filename,
+            customer_id=customer_id or "",
+            customer_name=str((metadata or {}).get("customer_name") or ""),
+            declared_doc_type=normalized_declared or "property_cert",
+            metadata=metadata or {},
+        )
     kyc_doc_type = _resolve_kyc_doc_type(text, normalized_declared, filename)
     if kyc_doc_type:
         return _build_kyc_structured_extraction(
@@ -9224,6 +9278,21 @@ def build_structured_extraction(
     normalized_code = normalize_document_type_code(document_type_code) or document_type_code
     rows = rows or []
     raw_pages = raw_pages or []
+    if should_route_to_property_cert(document_type=normalized_code, filename=filename, text=text_content):
+        return _build_property_cert_structured_extraction(
+            text_content,
+            raw_pages=raw_pages,
+            filename=filename,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            declared_doc_type=normalized_code or "property_cert",
+            metadata={
+                "customer_name": customer_name,
+                "file_path": file_path,
+                "declared_doc_type": normalized_code or "property_cert",
+                "document_type": normalized_code or "property_cert",
+            },
+        )
     kyc_doc_type = _resolve_kyc_doc_type(text_content, normalized_code, filename)
     if kyc_doc_type:
         content = _build_kyc_structured_extraction(

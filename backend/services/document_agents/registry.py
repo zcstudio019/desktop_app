@@ -11,6 +11,7 @@ from backend.services.enterprise_bank_statement_agent.adapter import (
 )
 from backend.services.financial_report_agent.adapter import FinancialReportAgentAdapter
 from backend.services.personal_bank_statement_agent.adapter import PersonalBankStatementAgentAdapter
+from backend.services.property_cert_agent import PropertyCertAgent
 
 from .base import BaseDocumentAgent
 from .result import DocumentAgentResult
@@ -109,11 +110,49 @@ class PersonalCreditReportAgentAdapter(BaseDocumentAgent):
         )
 
 
+class PropertyCertAgentAdapter(BaseDocumentAgent):
+    agent_name = "property_cert_agent"
+    supported_document_types = ["property_cert", "real_estate_cert"]
+    schema_version = "property_cert_agent.v1"
+
+    def extract(
+        self,
+        *,
+        raw_text: str,
+        filename: str,
+        customer_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> DocumentAgentResult:
+        metadata = metadata or {}
+        result = PropertyCertAgent().extract(
+            file_bytes=metadata.get("file_bytes") if isinstance(metadata.get("file_bytes"), bytes) else b"",
+            filename=filename,
+            customer_id=customer_id or str(metadata.get("customer_id") or ""),
+            customer_name=str(metadata.get("customer_name") or ""),
+            declared_doc_type=str(metadata.get("declared_doc_type") or metadata.get("document_type") or "property_cert"),
+            metadata={**metadata, "raw_text": raw_text},
+        )
+        content = result.to_dict()
+        return DocumentAgentResult(
+            document_type="property_cert",
+            agent_name=self.agent_name,
+            schema_version=self.schema_version,
+            confidence=float((content.get("confidence") or {}).get("overall") or 0.0),
+            extracted_json=content,
+            markdown_summary=str(content.get("markdown") or ""),
+            evidence=content.get("evidence") if isinstance(content.get("evidence"), dict) else {},
+            warnings=list((content.get("validation") or {}).get("warnings") or []),
+            debug={"skill_name": self.agent_name, "page_roles": content.get("page_roles") or []},
+            raw_agent_result=content,
+        )
+
+
 _ENTERPRISE_CREDIT_AGENT = EnterpriseCreditReportAgentAdapter()
 _PERSONAL_CREDIT_AGENT = PersonalCreditReportAgentAdapter()
 _ENTERPRISE_BANK_STATEMENT_AGENT = EnterpriseBankStatementAgentAdapterV2()
 _PERSONAL_BANK_STATEMENT_AGENT = PersonalBankStatementAgentAdapter()
 _FINANCIAL_REPORT_AGENT = FinancialReportAgentAdapter()
+_PROPERTY_CERT_AGENT = PropertyCertAgentAdapter()
 
 DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "enterprise_credit_report": _ENTERPRISE_CREDIT_AGENT,
@@ -132,6 +171,8 @@ DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "个人银行流水": _PERSONAL_BANK_STATEMENT_AGENT,
     "financial_report": _FINANCIAL_REPORT_AGENT,
     "financial_data": _FINANCIAL_REPORT_AGENT,
+    "property_cert": _PROPERTY_CERT_AGENT,
+    "real_estate_cert": _PROPERTY_CERT_AGENT,
     "财务报表": _FINANCIAL_REPORT_AGENT,
     "财务数据": _FINANCIAL_REPORT_AGENT,
     "企业流水": _ENTERPRISE_BANK_STATEMENT_AGENT,
