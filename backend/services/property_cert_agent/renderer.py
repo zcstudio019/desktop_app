@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Any
 
+from .normalizer import normalize_property_cert_fields
+
 logger = logging.getLogger(__name__)
 
 OLD_DISPLAY_ORDER = [
@@ -194,7 +196,11 @@ def render_markdown(result: dict[str, Any]) -> str:
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     raw_fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
     raw_text = str(result.get("_raw_text") or result.get("raw_text") or result.get("raw_text_preview") or "")
-    fields, address_info = _ensure_property_address_for_render_with_info(raw_fields, raw_text, str(result.get("doc_version") or ""), result)
+    page_roles = result.get("page_roles") if isinstance(result.get("page_roles"), list) else []
+    page_role = str(page_roles[0] if page_roles else result.get("page_role") or "")
+    fields = normalize_property_cert_fields(raw_fields, raw_text=raw_text, page_role=page_role, cert_version=str(result.get("doc_version") or ""))
+    fields, address_info = _ensure_property_address_for_render_with_info(fields, raw_text, str(result.get("doc_version") or ""), result)
+    logger.info("[PropertyRenderer] using_normalized_fields=true")
     logger.info("[PropertyRenderer][FINAL_ADDRESS] old_version=%s", str(address_info["old_version"]).lower())
     logger.info("[PropertyRenderer][FINAL_ADDRESS] input_房地坐落=%s", raw_fields.get("房地坐落"))
     logger.info("[PropertyRenderer][FINAL_ADDRESS] input_坐落=%s", raw_fields.get("坐落"))
@@ -235,4 +241,5 @@ def render_markdown(result: dict[str, Any]) -> str:
     markdown = "\n".join(lines).strip()
     logger.info("[PropertyRenderer][ADDRESS] markdown_contains_address=%s", str(("房地坐落" in markdown) or ("坐落" in markdown)).lower())
     logger.info("[PropertyRenderer][FINAL_ADDRESS] markdown_contains=%s", str(bool(address_info["final_value"]) and address_info["final_value"] in markdown).lower())
+    logger.info("[PropertyRenderer] markdown_contains_dirty_newline=%s", str("\\n" in markdown).lower())
     return markdown

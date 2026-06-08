@@ -28,6 +28,7 @@ from backend.services.financial_report_agent.display_mapper import to_display_js
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from backend.services.kyc_document_agent.renderer import get_display_fields
 from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
+from backend.services.property_cert_agent.normalizer import normalize_property_cert_fields
 from backend.services.property_cert_agent.renderer import ensure_property_address_for_render
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
 
@@ -1548,6 +1549,12 @@ def _build_kyc_property_profile_section_lines(
         display_source_fields,
         raw_text=raw_text,
         doc_version=str(best_extracted_data.get("doc_version") or best_extracted_data.get("page_role") or ""),
+    )
+    data_for_display["fields"] = normalize_property_cert_fields(
+        data_for_display["fields"],
+        raw_text=raw_text,
+        page_role=str(best_extracted_data.get("page_role") or ""),
+        cert_version=str(best_extracted_data.get("doc_version") or ""),
     )
     display_fields = get_display_fields(data_for_display)
     display_fields = {**data_for_display["fields"], **display_fields}

@@ -6,6 +6,7 @@ from typing import Any
 
 from .evidence import build_evidence
 from .merger import merge_pages
+from .normalizer import normalize_property_cert_fields
 from .ocr import full_page_ocr
 from .page_role import detect_page_role
 from .result import PropertyCertAgentResult
@@ -95,8 +96,13 @@ class PropertyCertAgent:
             )
 
         merged = merge_pages(pages)
-        fields = merged["fields"]
         page_roles = [str(page.get("page_role") or "unknown") for page in pages]
+        fields = normalize_property_cert_fields(
+            merged["fields"],
+            raw_text=raw_text,
+            page_role=page_roles[0] if page_roles else "",
+            cert_version="old_shanghai_property_cert" if merged.get("old_version") else "",
+        )
         validation, missing_fields, status = validate_property_cert(fields, page_roles)
         validation["warnings"] = list(dict.fromkeys([*validation.get("warnings", []), *warnings]))
         result_metadata = {
