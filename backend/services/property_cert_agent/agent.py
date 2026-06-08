@@ -95,6 +95,7 @@ class PropertyCertAgent:
             risk_sections=merged.get("risk_sections") or {},
         )
         output = result.to_dict()
+        output["_raw_text"] = raw_text
         result.markdown = render_markdown(output)
         return result
 

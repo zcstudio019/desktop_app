@@ -6,7 +6,7 @@ from backend.services.property_cert_agent import run_property_cert_agent
 from backend.services.property_cert_agent.merger import merge_pages
 from backend.services.property_cert_agent.normalizer import normalize_fields
 from backend.services.property_cert_agent.page_role import detect_page_role
-from backend.services.property_cert_agent.renderer import render_markdown
+from backend.services.property_cert_agent.renderer import ensure_property_address_for_render, render_markdown
 from backend.services.property_cert_agent.skills.old_shanghai_property_cert_skill import extract as extract_old_shanghai
 
 
@@ -212,6 +212,35 @@ def test_linyong_old_shanghai_renderer_prefers_old_address_label() -> None:
     assert "坐落: 不应展示的新字段" not in markdown
     assert markdown.index("权证编号: 沪房地奉字(2014)第004478号") < markdown.index("房地坐落: 奉贤区泽丰路88弄2号")
     assert markdown.index("房地坐落: 奉贤区泽丰路88弄2号") < markdown.index("权属性质: 国有建设用地使用权")
+
+
+def test_linyong_old_shanghai_renderer_recovers_address_from_raw_text() -> None:
+    raw_text = """
+上海市房地产权证
+沪房地奉字(2014)第004478号
+房地坐落
+奉贤区泽丰路88弄2号
+权属性质
+国有建设用地使用权
+"""
+    fields = {
+        "权利人": "林勇、黄晓回",
+        "权证编号": "沪房地奉字(2014)第004478号",
+        "权属性质": "国有建设用地使用权",
+    }
+    ensured = ensure_property_address_for_render(fields, raw_text)
+    markdown = render_markdown(
+        {
+            "_raw_text": raw_text,
+            "fields": fields,
+            "metadata": {"filename": "林勇产证.pdf"},
+            "validation": {},
+        }
+    )
+
+    assert ensured["房地坐落"] == "奉贤区泽丰路88弄2号"
+    assert "房地坐落: 奉贤区泽丰路88弄2号" in markdown
+    assert "\n- 坐落: 奉贤区泽丰路88弄2号" not in markdown
 
 
 def test_new_property_cert_renderer_keeps_new_address_label() -> None:
