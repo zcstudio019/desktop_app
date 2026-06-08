@@ -572,6 +572,69 @@ def _is_property_cert_document_type(value: str) -> bool:
     return normalized in PROPERTY_CERT_DOCUMENT_TYPES
 
 
+def _property_markdown_from_payload(payload: dict[str, Any]) -> str:
+    extracted_json = payload.get("extracted_json") if isinstance(payload.get("extracted_json"), dict) else {}
+    return str(
+        payload.get("markdown")
+        or payload.get("markdown_summary")
+        or payload.get("report_markdown")
+        or payload.get("markdown_report")
+        or extracted_json.get("markdown")
+        or extracted_json.get("markdown_summary")
+        or ""
+    )
+
+
+def _property_fields_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    fields = payload.get("fields")
+    if isinstance(fields, dict):
+        return fields
+    extracted_json = payload.get("extracted_json")
+    if isinstance(extracted_json, dict) and isinstance(extracted_json.get("fields"), dict):
+        return extracted_json.get("fields") or {}
+    return {}
+
+
+def _log_debug_markdown_source(
+    *,
+    endpoint: str,
+    customer_id: str,
+    markdown: str,
+    extractions: list[dict[str, Any]] | None = None,
+) -> None:
+    logger.info(
+        "[DEBUG_MARKDOWN_SOURCE] endpoint=%s customer_id=%s markdown_contains_房地坐落=%s markdown_preview=%s",
+        endpoint,
+        customer_id,
+        str("房地坐落" in str(markdown or "")).lower(),
+        str(markdown or "")[:1000].replace("\n", "\\n"),
+    )
+    for extraction in extractions or []:
+        if not isinstance(extraction, dict):
+            continue
+        payload = extraction.get("extracted_data") if isinstance(extraction.get("extracted_data"), dict) else {}
+        doc_type = str(payload.get("doc_type") or extraction.get("extraction_type") or "")
+        if doc_type not in {"property_cert", "real_estate_cert", "collateral", "property_report", "mortgage_info"}:
+            continue
+        fields = _property_fields_from_payload(payload)
+        saved_markdown = _property_markdown_from_payload(payload)
+        logger.info(
+            "[DEBUG_MARKDOWN_SOURCE] endpoint=%s document_id=%s extraction_id=%s source_file=%s agent_type=%s doc_type=%s markdown_contains_房地坐落=%s fields_contains_房地坐落=%s fields_房地坐落=%s created_at=%s updated_at=%s markdown_preview=%s",
+            endpoint,
+            extraction.get("doc_id") or extraction.get("document_id") or "",
+            extraction.get("extraction_id") or "",
+            extraction.get("file_name") or extraction.get("source_file") or "",
+            payload.get("agent_type") or "",
+            doc_type,
+            str("房地坐落" in saved_markdown).lower(),
+            str("房地坐落" in fields).lower(),
+            fields.get("房地坐落") or "",
+            extraction.get("created_at") or "",
+            extraction.get("updated_at") or extraction.get("created_at") or "",
+            saved_markdown[:1000].replace("\n", "\\n"),
+        )
+
+
 async def _load_property_cert_document_quality(customer_id: str) -> tuple[dict[str, dict[str, Any]], set[str]]:
     try:
         extractions = await storage_service.get_extractions_by_customer(customer_id)
@@ -1552,6 +1615,17 @@ async def get_customer_profile_markdown(
         logger.error("Failed to get profile markdown for %s: %s", customer_id, exc)
         raise HTTPException(status_code=500, detail="获取资料汇总失败") from exc
 
+    try:
+        extractions = await storage_service.get_extractions_by_customer(customer_id)
+    except Exception as exc:
+        logger.warning("[DEBUG_MARKDOWN_SOURCE] endpoint=GET /api/customers/{customer_id}/profile-markdown extraction_debug_failed customer_id=%s error=%s", customer_id, exc)
+        extractions = []
+    _log_debug_markdown_source(
+        endpoint="GET /api/customers/{customer_id}/profile-markdown",
+        customer_id=customer_id,
+        markdown=str(profile.get("markdown_content") or ""),
+        extractions=extractions,
+    )
     return _build_profile_response(customer, profile, auto_generated)
 
 
@@ -2001,6 +2075,12 @@ async def get_customer_documents(
             )
         )
 
+    _log_debug_markdown_source(
+        endpoint="GET /api/customers/{customer_id}/documents",
+        customer_id=customer_id,
+        markdown="",
+        extractions=[],
+    )
     return items
 
 
@@ -2471,6 +2551,12 @@ async def get_document_detail(
     if document_type == "financial_report" and not report_markdown and structured_json:
         display_json = extracted_data.get("display_json") or to_financial_report_display_json(structured_json)
         report_markdown = render_financial_report_markdown(display_json)
+    _log_debug_markdown_source(
+        endpoint="GET /api/documents/{doc_id}",
+        customer_id=str(document.get("customer_id") or ""),
+        markdown=report_markdown,
+        extractions=[latest_extraction] if latest_extraction else [],
+    )
     return {
         "document_id": document.get("doc_id") or "",
         "doc_id": document.get("doc_id") or "",
@@ -2517,6 +2603,13 @@ async def get_document_extraction_review(
         raise HTTPException(status_code=404, detail="未找到资料提取结果")
     if not is_kyc_extraction(extraction):
         raise HTTPException(status_code=400, detail="当前资料不是KYC资料，暂不支持人工确认")
+    payload = extraction.get("extracted_data") if isinstance(extraction.get("extracted_data"), dict) else {}
+    _log_debug_markdown_source(
+        endpoint="GET /api/documents/{doc_id}/extraction-review",
+        customer_id=str(extraction.get("customer_id") or document.get("customer_id") or ""),
+        markdown=_property_markdown_from_payload(payload),
+        extractions=[extraction],
+    )
     return build_extraction_review(str(document.get("doc_id") or doc_id), extraction)
 
 
@@ -2638,8 +2731,8 @@ async def re_extract_document(
 
     document, customer = await _load_accessible_document(doc_id, current_user)
     document_type = str(document.get("file_type") or "")
-    if document_type not in {"enterprise_credit", "enterprise_credit_report", "financial_report"}:
-        raise HTTPException(status_code=400, detail="当前仅支持企业征信或财务报表重新提取")
+    if document_type not in {"enterprise_credit", "enterprise_credit_report", "financial_report", "property_cert", "real_estate_cert", "collateral"}:
+        raise HTTPException(status_code=400, detail="当前仅支持企业征信、财务报表或房产证重新提取")
 
     absolute_path = _resolve_document_absolute_path(document.get("file_path"))
     if not absolute_path or not absolute_path.exists():

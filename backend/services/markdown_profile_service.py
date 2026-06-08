@@ -28,6 +28,7 @@ from backend.services.financial_report_agent.display_mapper import to_display_js
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from backend.services.kyc_document_agent.renderer import get_display_fields
 from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
+from backend.services.property_cert_agent.renderer import ensure_property_address_for_render
 from .local_storage_service import DEFAULT_RAG_SOURCE_PRIORITY
 
 logger = logging.getLogger(__name__)
@@ -1534,12 +1535,40 @@ def _build_kyc_property_profile_section_lines(
         lines.append(f"- 补充文件：{'、'.join(supplements)}")
     lines.extend(['', '### 结构化提取结果'])
 
-    display_fields = get_display_fields(_kyc_property_extracted_data_for_display(best_extracted_data))
+    data_for_display = _kyc_property_extracted_data_for_display(best_extracted_data)
+    display_source_fields = data_for_display.get("fields") if isinstance(data_for_display.get("fields"), dict) else {}
+    raw_text = str(
+        best_extracted_data.get("_raw_text")
+        or best_extracted_data.get("raw_text")
+        or best_extracted_data.get("raw_text_preview")
+        or best_extracted_data.get("markdown")
+        or ""
+    )
+    data_for_display["fields"] = ensure_property_address_for_render(
+        display_source_fields,
+        raw_text=raw_text,
+        doc_version=str(best_extracted_data.get("doc_version") or best_extracted_data.get("page_role") or ""),
+    )
+    display_fields = get_display_fields(data_for_display)
+    display_fields = {**data_for_display["fields"], **display_fields}
+    display_fields = ensure_property_address_for_render(
+        display_fields,
+        raw_text=raw_text,
+        doc_version=str(best_extracted_data.get("doc_version") or best_extracted_data.get("page_role") or ""),
+    )
+    logger.info(
+        "[DEBUG_MARKDOWN_SOURCE] endpoint=profile_markdown_builder source_file=%s doc_type=%s markdown_contains_房地坐落=%s fields_contains_房地坐落=%s fields_房地坐落=%s",
+        file_name_text,
+        data_for_display.get("doc_type") or best_extracted_data.get("doc_type") or "",
+        str(bool(display_fields.get("房地坐落"))).lower(),
+        str("房地坐落" in display_fields).lower(),
+        display_fields.get("房地坐落") or "",
+    )
     if not display_fields:
         lines.append("- 提示：已识别为房产证/不动产权证，但字段页 OCR 未能提取关键字段，请检查扫描清晰度或人工确认。")
         return lines
     for key, value in display_fields.items():
-        lines.append(f"- {key}：{_marriage_display(value)}")
+        lines.append(f"- {key}: {_marriage_display(value)}")
     return lines
 
 

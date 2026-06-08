@@ -1298,6 +1298,20 @@ class SQLAlchemyStorageService:
             payload = extraction_data.copy()
             payload["extraction_type"] = normalize_document_type_code(payload.get("extraction_type") or "") or payload.get("extraction_type")
             payload["extracted_data"] = sanitize_kyc_extracted_data(payload.get("extracted_data"))
+            extracted_payload_for_log = payload.get("extracted_data") if isinstance(payload.get("extracted_data"), dict) else {}
+            fields_for_log = extracted_payload_for_log.get("fields") if isinstance(extracted_payload_for_log.get("fields"), dict) else {}
+            markdown_for_log = str(
+                extracted_payload_for_log.get("markdown")
+                or extracted_payload_for_log.get("markdown_summary")
+                or extracted_payload_for_log.get("report_markdown")
+                or ""
+            )
+            doc_type_for_log = str(extracted_payload_for_log.get("doc_type") or payload.get("extraction_type") or "")
+            if doc_type_for_log in {"property_cert", "real_estate_cert", "collateral", "property_report", "mortgage_info"}:
+                logger.info("[PropertySave][ADDRESS] before_save_fields_房地坐落=%s", fields_for_log.get("房地坐落"))
+                logger.info("[PropertySave][ADDRESS] before_save_markdown_contains_房地坐落=%s", str("房地坐落" in markdown_for_log).lower())
+                logger.info("[PropertySave][ADDRESS] saved_extraction_id=%s", payload.get("extraction_id") or "")
+                logger.info("[PropertySave][ADDRESS] saved_document_id=%s", payload.get("doc_id") or payload.get("document_id") or "")
             payload["extracted_data"] = self._dumps(payload.get("extracted_data"), "{}")
             extracted_json_text = payload["extracted_data"]
             markdown_summary = ""

@@ -8,6 +8,7 @@ from backend.services.property_cert_agent.normalizer import normalize_fields
 from backend.services.property_cert_agent.page_role import detect_page_role
 from backend.services.property_cert_agent.renderer import ensure_property_address_for_render, render_markdown
 from backend.services.property_cert_agent.skills.old_shanghai_property_cert_skill import extract as extract_old_shanghai
+from backend.services.markdown_profile_service import _build_kyc_property_profile_section_lines
 
 
 LINYONG_OCR_TEXT = """
@@ -239,6 +240,26 @@ def test_linyong_old_shanghai_renderer_recovers_address_from_raw_text() -> None:
     )
 
     assert ensured["房地坐落"] == "奉贤区泽丰路88弄2号"
+    assert "房地坐落: 奉贤区泽丰路88弄2号" in markdown
+    assert "\n- 坐落: 奉贤区泽丰路88弄2号" not in markdown
+
+
+def test_linyong_profile_markdown_builder_keeps_property_address() -> None:
+    lines = _build_kyc_property_profile_section_lines(
+        ["林勇产证.pdf"],
+        True,
+        {
+            "doc_type": "property_cert",
+            "fields": {
+                "权利人": "林勇、黄晓回",
+                "权证编号": "沪房地奉字(2014)第004478号",
+                "房地坐落": "奉贤区泽丰路88弄2号",
+                "权属性质": "国有建设用地使用权",
+            },
+        },
+    )
+    markdown = "\n".join(lines)
+
     assert "房地坐落: 奉贤区泽丰路88弄2号" in markdown
     assert "\n- 坐落: 奉贤区泽丰路88弄2号" not in markdown
 
