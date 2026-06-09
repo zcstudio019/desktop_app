@@ -332,7 +332,7 @@ def render_markdown(result: dict[str, Any]) -> str:
     logger.info("[PropertyRenderer][FINAL_ADDRESS] markdown_contains=%s", str(bool(address_info["final_value"]) and address_info["final_value"] in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_详见附记=%s", str("详见附记" in markdown).lower())
     logger.info("[PropertyRenderer][DISPLAY] markdown_contains_房屋用途=%s", str("房屋用途: 商业" in markdown or "房屋用途：商业" in markdown).lower())
-    logger.info("[PropertyRenderer][DISPLAY] markdown_contains_房屋用途=true" if ("房屋用途: 商业" in markdown or "房屋用途：商业" in markdown) else "[PropertyRenderer][DISPLAY] markdown_contains_房屋用途=false")
+    logger.info("[PropertyRenderer][DISPLAY] markdown_contains_总层数=%s", str("总层数: 6、4" in markdown or "总层数：6、4" in markdown).lower())
     logger.info("[PropertyRenderer][DISPLAY] markdown_contains_建筑类型=%s", str("建筑类型: 商场" in markdown or "建筑类型：商场" in markdown).lower())
     logger.info("[PropertyRenderer][DISPLAY] markdown_contains_附记明细=%s", str("### 附记明细" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_invalid_unit_number=%s", str("不动产单元号: 使用权" in markdown or "不动产单元号：使用权" in markdown).lower())

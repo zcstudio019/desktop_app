@@ -226,15 +226,34 @@ def _completion_years(text: str) -> list[str]:
     return years
 
 
-def _total_floor_values(text: str) -> list[str]:
+def _total_floor_candidates(text: str) -> tuple[list[str], list[str]]:
+    compact = re.sub(r"\s+", "", text)
     values = [match.group(1) for match in re.finditer(r"总层数[:：]?\s*(\d{1,2})", text)]
+    for match in re.finditer(
+        r"(?:商场|办公楼|公寓|厂房|仓库|商铺|车库|别墅|非居住)"
+        r"(?:商业|办公|居住|住宅|工业|仓储|车库|商铺)?"
+        r"([1-9]\d?)(?:19|20)\d{2}年",
+        compact,
+    ):
+        values.append(match.group(1))
+    for match in re.finditer(
+        r"(?:商业|办公|居住|住宅|工业|仓储|车库|商铺)"
+        r"(?:商场|办公楼|公寓|厂房|仓库|商铺|车库|别墅|非居住)"
+        r"([1-9]\d?)(?:19|20)\d{2}年",
+        compact,
+    ):
+        values.append(match.group(1))
     marker = text.find("总层数")
     if marker >= 0:
         tail = text[marker + len("总层数") :]
         stop_positions = [pos for token in ("竣工日期", "权利性质", "使用期限") if (pos := tail.find(token)) >= 0]
         segment = tail[: min(stop_positions)] if stop_positions else tail[:80]
         values.extend(re.findall(r"(?<!\d)(\d{1,2})(?!\d)", segment))
-    return _dedupe(values)
+    return values, _dedupe(values)
+
+
+def _total_floor_values(text: str) -> list[str]:
+    return _total_floor_candidates(text)[1]
 
 
 def _clean_field_value(value: str, *, keep_labels: tuple[str, ...] = ()) -> str:
@@ -382,7 +401,8 @@ def extract_attachment_house_details(text: str) -> dict[str, Any]:
         house_usages = ["商业"]
     room_numbers = _dedupe([row["室号或部位"] for row in rows if row.get("室号或部位")])
     building_areas = _dedupe([row["建筑面积"] for row in rows if row.get("建筑面积")])
-    total_floors = _dedupe([row["总层数"] for row in rows if row.get("总层数")])
+    raw_total_floor_candidates, fallback_total_floors = _total_floor_candidates(_house_section_text(lines))
+    total_floors = _dedupe([row["总层数"] for row in rows if row.get("总层数")] or fallback_total_floors)
     completion_dates = _dedupe([row["竣工日期"] for row in rows if row.get("竣工日期")])
     return {
         "附记明细": rows,
@@ -394,6 +414,7 @@ def extract_attachment_house_details(text: str) -> dict[str, Any]:
         "总层数列表": total_floors,
         "竣工日期列表": completion_dates,
         "_房屋用途候选": raw_house_usage_candidates,
+        "_总层数候选": raw_total_floor_candidates,
     }
 
 
@@ -412,6 +433,7 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     total_floors = details["总层数列表"]
     completion_dates = details["竣工日期列表"]
     raw_house_usage_candidates = details.get("_房屋用途候选") if isinstance(details.get("_房屋用途候选"), list) else []
+    raw_total_floor_candidates = details.get("_总层数候选") if isinstance(details.get("_总层数候选"), list) else []
     land_usages = _dedupe([row["土地用途"] for row in rows if row.get("土地用途")] or _extract_label_values(lines, ("土地用途",), LAND_USE_VALUES))
     right_natures = _dedupe([row["权利性质"] for row in rows if row.get("权利性质")] or _extract_label_values(lines, ("权利性质",), RIGHT_NATURE_VALUES))
     use_terms = _dedupe([row["使用期限"] for row in rows if row.get("使用期限")])
@@ -445,7 +467,8 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     logger.info("[AttachmentSkill][HOUSE_USAGE] final_house_usages=%s", house_usages)
     logger.info("[AttachmentSkill] building_types=%s", building_types)
     logger.info("[AttachmentSkill] total_floors=%s", total_floors)
-    logger.info("[AttachmentSkill][TOTAL_FLOORS] total_floors=%s", total_floors)
+    logger.info("[AttachmentSkill][TOTAL_FLOORS] raw_candidates=%s", raw_total_floor_candidates)
+    logger.info("[AttachmentSkill][TOTAL_FLOORS] final_total_floors=%s", total_floors)
     logger.info("[AttachmentSkill] completion_dates=%s", completion_dates)
     logger.info("[AttachmentSkill] rows_count=%s", len(rows))
     warnings = []

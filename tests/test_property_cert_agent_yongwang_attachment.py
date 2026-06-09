@@ -104,6 +104,7 @@ def test_merger_backfills_yongwang_attachment_fields() -> None:
     assert merged["fields"]["不动产单元号"] == "、".join(EXPECTED_UNITS)
     normalized = normalize_property_cert_fields(merged["fields"], page_role="new_real_estate_detail_page")
     assert normalized["房屋用途"] == "商业"
+    assert normalized["总层数"] == "6、4"
     assert normalized["土地用途"] == "商业用地"
 
 
@@ -137,7 +138,9 @@ def test_yongwang_attachment_backfills_final_markdown() -> None:
     assert "建筑类型: 商场" in markdown
     assert "室号或部位: 200号1层、200号2层、200号3层、200号4层、200号5层、200号6层、14幢1-2层、4层东2间" in markdown
     assert "总层数: 6、4" in markdown
+    assert markdown.index("建筑类型: 商场") < markdown.index("总层数: 6、4") < markdown.index("竣工日期: 1990年、1979年")
     assert "竣工日期: 1990年、1979年" in markdown
+    assert "总层数: 详见附记" not in markdown
     assert "建筑面积: 12379.00 平方米" in markdown
     assert "### 附记明细" in markdown
     assert "| 不动产单元号 | 室号或部位 | 建筑面积 | 房屋用途 | 建筑类型 | 总层数 | 竣工日期 |" in markdown

@@ -107,8 +107,14 @@ def merge_detail_page_with_attachment_pages(
             logger.info("[PropertyMerger][AttachmentFill] skip_invalid_unit_number=%s", current)
         if values and (not current or is_attachment_placeholder(current) or current_invalid_unit or current_invalid_building_type):
             new_value = "、".join(values)
-            if target_key == "房屋用途":
-                logger.info("[PropertyMerger][AttachmentFill] field=房屋用途 old=%s attachment_house_usages=%s new=%s", current or "", values, new_value)
+            if target_key in ("房屋用途", "总层数"):
+                logger.info(
+                    "[PropertyMerger][AttachmentFill] field=%s old=%s attachment_values=%s new=%s",
+                    target_key,
+                    current or "",
+                    values,
+                    new_value,
+                )
             logger.info("[PropertyMerger][AttachmentFill] field=%s old=%s new=%s", target_key, current or "", new_value)
             fields[target_key] = new_value
         elif is_attachment_placeholder(current) or current_invalid_unit or current_invalid_building_type:
