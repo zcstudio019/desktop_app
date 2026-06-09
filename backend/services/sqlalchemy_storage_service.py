@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -141,6 +142,11 @@ def sanitize_kyc_extracted_data(data: Any) -> Any:
             if key in KYC_ALLOWED_METADATA_KEYS and key not in KYC_FORBIDDEN_EXTRACTION_KEYS
         }
     return cleaned
+
+
+def _mask_id_card_value(value: Any) -> str:
+    text_value = str(value or "")
+    return re.sub(r"(?<!\d)(\d{6})\d{8}(\d{3}[\dXx])(?!\d)", r"\1********\2", text_value)
 
 
 def normalize_async_job_error_message(error_message: str | None) -> str:
@@ -1318,6 +1324,12 @@ class SQLAlchemyStorageService:
                 logger.info("[PropertySave][MARKDOWN] contains_总层数=%s", str("总层数" in markdown_for_log).lower())
                 logger.info("[PropertySave][MARKDOWN] contains_竣工日期=%s", str("竣工日期" in markdown_for_log).lower())
                 logger.info("[PropertySave][MARKDOWN] preview=%s", markdown_for_log[:500])
+            if doc_type_for_log == "id_card":
+                logger.info(
+                    "[IDCardSave][EXTRACTED_DATA_FIELDS] keys=%s values=%s",
+                    list(fields_for_log.keys()),
+                    {key: _mask_id_card_value(value) for key, value in fields_for_log.items()},
+                )
             payload["extracted_data"] = self._dumps(payload.get("extracted_data"), "{}")
             extracted_json_text = payload["extracted_data"]
             markdown_summary = ""

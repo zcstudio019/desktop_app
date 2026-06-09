@@ -4,6 +4,7 @@ import {
   formatKycDisplayValue,
   getKycDisplayEntries,
   getKycFieldLabel,
+  normalizeKycExtractionResult,
   isKycDocType,
 } from '../utils/kycDisplayFields';
 
@@ -72,32 +73,36 @@ interface Props {
 }
 
 const KycExtractionResult: React.FC<Props> = ({ result }) => {
-  const fields = getKycDisplayEntries(enrichPropertyFieldsForDisplay(result), result.doc_type);
+  const normalizedResult = normalizeKycExtractionResult(result) as unknown as KycExtractionResultType;
+  const fields = getKycDisplayEntries(enrichPropertyFieldsForDisplay(normalizedResult), normalizedResult.doc_type);
+  if (normalizedResult.doc_type === 'id_card') {
+    console.debug('[KycExtractionResult] doc_type=id_card fields=', normalizedResult.fields);
+  }
   const displayMarkdown = renderKycDisplayMarkdown(fields);
-  const warnings = result.validation?.warnings || [];
-  const errors = result.validation?.errors || [];
+  const warnings = normalizedResult.validation?.warnings || [];
+  const errors = normalizedResult.validation?.errors || [];
   const displayFieldNames = new Set(fields.map(([field]) => field));
-  const evidence = Object.entries(result.evidence || {})
+  const evidence = Object.entries(normalizedResult.evidence || {})
     .map(([field, item]) => [getKycFieldLabel(field), item] as const)
     .filter(([field]) => displayFieldNames.has(field))
     .filter(([field], index, entries) => entries.findIndex(([name]) => name === field) === index)
     .slice(0, 6);
-  const statusLabel = result.extraction_status === 'success' ? '提取成功' : result.extraction_status === 'partial' ? '部分提取' : '提取失败';
-  const title = result.doc_type === 'property_cert'
+  const statusLabel = normalizedResult.extraction_status === 'success' ? '提取成功' : normalizedResult.extraction_status === 'partial' ? '部分提取' : '提取失败';
+  const title = normalizedResult.doc_type === 'property_cert'
     ? '房产证/房地产权证'
-    : result.doc_type_name || 'KYC资料';
+    : normalizedResult.doc_type_name || 'KYC资料';
 
   return (
     <div className="space-y-4 text-sm text-slate-700">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-base font-semibold text-slate-900">{title}</div>
-          <div className="mt-1 text-xs text-slate-500">资料类型编码：{result.doc_type || 'unknown'}</div>
+          <div className="mt-1 text-xs text-slate-500">资料类型编码：{normalizedResult.doc_type || 'unknown'}</div>
         </div>
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">{statusLabel}</span>
           <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-            置信度：{typeof result.confidence?.overall === 'number' ? `${Math.round(result.confidence.overall * 100)}%` : '未计算'}
+            置信度：{typeof normalizedResult.confidence?.overall === 'number' ? `${Math.round(normalizedResult.confidence.overall * 100)}%` : '未计算'}
           </span>
         </div>
       </div>
@@ -119,11 +124,11 @@ const KycExtractionResult: React.FC<Props> = ({ result }) => {
         )}
       </div>
 
-      {(result.missing_fields || []).length > 0 && (
+      {(normalizedResult.missing_fields || []).length > 0 && (
         <div>
           <div className="mb-2 font-medium text-slate-900">缺失字段</div>
           <div className="flex flex-wrap gap-2">
-            {(result.missing_fields || []).map((field) => (
+            {(normalizedResult.missing_fields || []).map((field) => (
               <span key={field} className="rounded-full bg-amber-50 px-2.5 py-1 text-xs text-amber-700">
                 {getKycFieldLabel(field)}
               </span>

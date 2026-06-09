@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -91,6 +92,11 @@ def sanitize_kyc_extracted_data(data):
             if key in KYC_ALLOWED_METADATA_KEYS and key not in KYC_FORBIDDEN_EXTRACTION_KEYS
         }
     return cleaned
+
+
+def _mask_id_card_value(value):
+    text_value = str(value or "")
+    return re.sub(r"(?<!\d)(\d{6})\d{8}(\d{3}[\dXx])(?!\d)", r"\1********\2", text_value)
 
 
 def _build_extraction_summary(data: dict, max_chars: int = _SUMMARY_MAX_CHARS) -> str:
@@ -910,6 +916,12 @@ class LocalStorageService:
             logger.info("[PropertySave][ADDRESS] before_save_markdown_contains_房地坐落=%s", str('房地坐落' in markdown_for_log).lower())
             logger.info("[PropertySave][ADDRESS] saved_extraction_id=%s", payload.get('extraction_id') or '')
             logger.info("[PropertySave][ADDRESS] saved_document_id=%s", payload.get('doc_id') or payload.get('document_id') or '')
+        if doc_type_for_log == 'id_card':
+            logger.info(
+                "[IDCardSave][EXTRACTED_DATA_FIELDS] keys=%s values=%s",
+                list(fields_for_log.keys()),
+                {key: _mask_id_card_value(value) for key, value in fields_for_log.items()},
+            )
         conn = self._get_connection()
         cursor = conn.cursor()
 

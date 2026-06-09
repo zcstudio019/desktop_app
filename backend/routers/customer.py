@@ -164,6 +164,10 @@ storage_service = get_storage_service()  # 根据配置返回本地存储或飞�
 HAS_DB_STORAGE = supports_structured_storage(storage_service)
 
 
+def _mask_sensitive_id_number(value: str) -> str:
+    return re.sub(r"(?<!\d)(\d{6})\d{8}(\d{3}[\dXx])(?!\d)", r"\1********\2", str(value or ""))
+
+
 async def _refresh_customer_after_document_delete(customer_id: str, doc_id: str) -> None:
     try:
         logger.info("[DocumentDelete] background refresh start customer_id=%s document_id=%s", customer_id, doc_id)
@@ -1194,6 +1198,16 @@ async def get_customer_kyc_profile(
 
     profile = await build_customer_kyc_profile(storage_service, customer_id)
     completeness = evaluate_kyc_completeness(profile)
+    person_identity = profile.get("person_identity") if isinstance(profile.get("person_identity"), dict) else {}
+    logger.info(
+        "[KYCDisplay][ID_CARD_LATEST] endpoint=kyc-profile customer_id=%s document_id=%s has_fields=%s fields_keys=%s name=%s id_number=%s",
+        customer_id,
+        person_identity.get("source_document_id") or "",
+        any(person_identity.get(key) for key in ("name", "id_number", "gender", "birth_date", "address")),
+        [key for key in ("name", "id_number", "gender", "birth_date", "address") if person_identity.get(key)],
+        bool(person_identity.get("name")),
+        _mask_sensitive_id_number(str(person_identity.get("id_number") or "")),
+    )
     return {"profile": profile, "completeness": completeness}
 
 

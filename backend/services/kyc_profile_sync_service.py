@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -95,6 +96,10 @@ def _created_sort_key(extraction: dict[str, Any]) -> str:
     return str(extraction.get("created_at") or extraction.get("updated_at") or extraction.get("upload_time") or "")
 
 
+def _mask_id_number(value: Any) -> str:
+    return re.sub(r"(?<!\d)(\d{6})\d{8}(\d{3}[\dXx])(?!\d)", r"\1********\2", str(value or ""))
+
+
 def _is_kyc_extraction(extraction: dict[str, Any]) -> bool:
     data = extraction.get("extracted_data")
     return isinstance(data, dict) and data.get("agent_type") == KYC_AGENT_TYPE
@@ -109,6 +114,13 @@ def _effective_fields_for_score(extraction: dict[str, Any]) -> dict[str, Any]:
         merged.update({key: value for key, value in confirmed_fields.items() if value not in (None, "", [], {})})
         return merged
     return fields
+
+
+def _id_card_field_score(fields: dict[str, Any], confirmed_fields: dict[str, Any]) -> int:
+    merged = dict(fields)
+    merged.update({key: value for key, value in confirmed_fields.items() if value not in (None, "", [], {})})
+    important = ("name", "id_number", "gender", "birth_date", "address", "issuing_authority", "valid_from", "valid_to")
+    return sum(1 for key in important if _string(merged.get(key)))
 
 
 def score_kyc_property_cert_extraction(extraction: dict[str, Any]) -> int:
@@ -377,6 +389,7 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
     if not kyc_extractions:
         return profile
 
+    id_card_candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, int]] = []
     for extraction in kyc_extractions:
         data = extraction.get("extracted_data") or {}
         if not isinstance(data, dict):
@@ -388,20 +401,9 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
         profile["documents"].append(_document_summary(extraction, data))
 
         if doc_type in {"id_card", "shareholder_id_card"}:
-            _apply_latest_single(
-                profile,
-                "person_identity",
-                fields,
-                confirmed_fields,
-                {
-                    "name": "name",
-                    "id_number": "id_number",
-                    "gender": "gender",
-                    "birth_date": "birth_date",
-                    "address": "address",
-                },
-                source_document_id,
-            )
+            score = _id_card_field_score(fields, confirmed_fields)
+            if score > 0:
+                id_card_candidates.append((extraction, fields, confirmed_fields, source_document_id, score))
         elif doc_type == "business_license":
             _apply_latest_single(
                 profile,
@@ -456,6 +458,38 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
             profile["assets"]["vehicles"].append(_vehicle_item(fields, source_document_id, confirmed_fields))
         elif doc_type in LICENSE_DOC_TYPES:
             profile["licenses"].append(_license_item(fields, data, source_document_id, confirmed_fields))
+
+    if id_card_candidates:
+        id_card_candidates.sort(
+            key=lambda item: (item[4], _created_sort_key(item[0]), str(item[0].get("extraction_id") or "")),
+            reverse=True,
+        )
+        selected_extraction, selected_fields, selected_confirmed_fields, selected_source_document_id, selected_score = id_card_candidates[0]
+        logger.info(
+            "[KYCDisplay][ID_CARD_LATEST] document_id=%s filename=%s created_at=%s has_fields=%s fields_keys=%s name=%s id_number=%s score=%s",
+            selected_source_document_id,
+            selected_extraction.get("file_name") or selected_extraction.get("source_file") or "",
+            selected_extraction.get("created_at") or "",
+            bool(selected_fields),
+            list(selected_fields.keys()),
+            bool(_string(selected_confirmed_fields.get("name") or selected_fields.get("name"))),
+            _mask_id_number(selected_confirmed_fields.get("id_number") or selected_fields.get("id_number")),
+            selected_score,
+        )
+        _apply_latest_single(
+            profile,
+            "person_identity",
+            selected_fields,
+            selected_confirmed_fields,
+            {
+                "name": "name",
+                "id_number": "id_number",
+                "gender": "gender",
+                "birth_date": "birth_date",
+                "address": "address",
+            },
+            selected_source_document_id,
+        )
 
     profile["assets"]["properties"].sort(
         key=lambda item: (int(item.get("quality_score") or 0), _property_completeness_score(item), _string(item.get("source_document_id"))),

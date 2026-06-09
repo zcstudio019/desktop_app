@@ -217,6 +217,119 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function parseMaybeRecord(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return isRecord(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function pickFirstRecord(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    const record = parseMaybeRecord(value);
+    if (Object.keys(record).length) return record;
+  }
+  return {};
+}
+
+function getFieldsRecord(value: unknown): Record<string, unknown> {
+  const record = parseMaybeRecord(value);
+  const fields = parseMaybeRecord(record.fields);
+  return Object.keys(fields).length ? fields : {};
+}
+
+function getConfirmedFieldsRecord(value: unknown): Record<string, unknown> {
+  const record = parseMaybeRecord(value);
+  const confirmed = parseMaybeRecord(record.confirmed_data ?? record.confirmedData);
+  const fields = parseMaybeRecord(confirmed.confirmed_fields ?? confirmed.confirmedFields);
+  return Object.keys(fields).length ? fields : {};
+}
+
+export function getKycFieldValue(source: unknown, fieldName: string): unknown {
+  const root = parseMaybeRecord(source);
+  const document = parseMaybeRecord(root.document);
+  const extraction = parseMaybeRecord(root.extraction);
+  const candidatePayloads = [
+    root,
+    root.extracted_data,
+    root.extractedData,
+    root.extracted_json,
+    root.extractedJson,
+    root.data,
+    root.agent_result,
+    root.agentResult,
+    document.extracted_data,
+    document.extractedData,
+    extraction.extracted_data,
+    extraction.extractedData,
+  ];
+  const candidates: Record<string, unknown>[] = [
+    ...candidatePayloads.map(getConfirmedFieldsRecord),
+    ...candidatePayloads.map(getFieldsRecord),
+    parseMaybeRecord(root.fields),
+  ];
+  for (const fields of candidates) {
+    if (fields && Object.prototype.hasOwnProperty.call(fields, fieldName)) {
+      return fields[fieldName];
+    }
+  }
+  return undefined;
+}
+
+export function normalizeKycExtractionResult(source: unknown): Record<string, unknown> {
+  const root = parseMaybeRecord(source);
+  const document = parseMaybeRecord(root.document);
+  const extraction = parseMaybeRecord(root.extraction);
+  const payload = pickFirstRecord(
+    root.extracted_data,
+    root.extractedData,
+    root.extracted_json,
+    root.extractedJson,
+    root.data,
+    root.agent_result,
+    root.agentResult,
+    document.extracted_data,
+    document.extractedData,
+    extraction.extracted_data,
+    extraction.extractedData,
+    root,
+  );
+  const fieldNames = Array.from(new Set([
+    ...Object.keys(getFieldsRecord(payload)),
+    ...Object.keys(getFieldsRecord(root)),
+    ...Object.keys(getConfirmedFieldsRecord(root)),
+    ...Object.keys(getConfirmedFieldsRecord(payload)),
+  ]));
+  const fields: Record<string, unknown> = {};
+  fieldNames.forEach((fieldName) => {
+    const value = getKycFieldValue(source, fieldName);
+    if (value !== undefined && value !== null && value !== '') {
+      fields[fieldName] = value;
+    }
+  });
+  return {
+    ...payload,
+    ...root,
+    agent_type: root.agent_type || payload.agent_type || 'kyc_document_agent',
+    doc_type: root.doc_type || payload.doc_type || root.extraction_type || payload.extraction_type || '',
+    doc_type_name: root.doc_type_name || payload.doc_type_name || '',
+    owner_type: root.owner_type || payload.owner_type || '',
+    extraction_status: root.extraction_status || payload.extraction_status || 'partial',
+    fields,
+    validation: parseMaybeRecord(root.validation).is_valid !== undefined ? root.validation : payload.validation,
+    confidence: root.confidence || payload.confidence,
+    evidence: root.evidence || payload.evidence || {},
+    missing_fields: root.missing_fields || payload.missing_fields || [],
+    markdown: root.markdown || payload.markdown || '',
+  };
+}
+
 export function getKycFieldLabel(field: string): string {
   return FIELD_LABELS[field] ?? ENGLISH_TO_CHINESE_FIELDS[field] ?? field;
 }
