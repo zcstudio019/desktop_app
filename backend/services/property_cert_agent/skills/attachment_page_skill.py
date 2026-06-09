@@ -158,6 +158,18 @@ def _known_values(text: str, candidates: tuple[str, ...]) -> list[str]:
     return [candidate for candidate in candidates if candidate in compact]
 
 
+def _house_usage_values(text: str) -> tuple[list[str], list[str]]:
+    compact = re.sub(r"\s+", "", text)
+    raw_candidates: list[str] = []
+    for candidate in HOUSE_USE_VALUES:
+        if candidate in compact:
+            if candidate == "商业" and "商业用地" in compact and "商场" not in compact and "房屋状况" not in compact and "用途" not in compact:
+                continue
+            raw_candidates.append(candidate)
+    final = _dedupe(raw_candidates)
+    return raw_candidates, final
+
+
 def is_valid_building_type(value: Any) -> bool:
     text = _clean(value)
     return bool(text and text in BUILDING_TYPE_VALUES and text not in INVALID_BUILDING_TYPE_VALUES)
@@ -309,7 +321,7 @@ def _extract_column_rows(lines: list[str]) -> list[dict[str, str]]:
     text = _house_section_text(lines)
     rooms = _room_values(text)
     areas = _dedupe([f"{float(match.group(1)):.2f}平方米" for match in AREA_RE.finditer(text)] or [f"{float(match.group(1)):.2f}平方米" for match in BARE_AREA_RE.finditer(text)])
-    house_usages = _dedupe(_known_values(text, HOUSE_USE_VALUES))
+    _raw_house_usages, house_usages = _house_usage_values(text)
     building_types = _dedupe(_building_type_values(text))
     floors = _total_floor_values(text)
     years = _dedupe(_completion_years(text))
@@ -362,8 +374,12 @@ def extract_attachment_house_details(text: str) -> dict[str, Any]:
     _log_invalid_unit_tokens(text)
     rows = _merge_rows(_extract_attachment_rows(lines), _extract_column_rows(lines))
     unit_numbers = _dedupe([row["不动产单元号"] for row in rows if is_valid_unit_number(row.get("不动产单元号"))])
-    house_usages = _dedupe([row["房屋用途"] for row in rows if row.get("房屋用途")] or _extract_label_values(lines, ("房屋用途", "用途"), HOUSE_USE_VALUES))
+    raw_house_usage_candidates, fallback_house_usages = _house_usage_values(_house_section_text(lines))
+    house_usages = _dedupe([row["房屋用途"] for row in rows if row.get("房屋用途")] or fallback_house_usages or _extract_label_values(lines, ("房屋用途", "用途"), HOUSE_USE_VALUES))
     building_types = _dedupe([row["建筑类型"] for row in rows if is_valid_building_type(row.get("建筑类型"))] or _building_type_values(_house_section_text(lines)))
+    if not house_usages and "商场" in building_types:
+        raw_house_usage_candidates.append("商业")
+        house_usages = ["商业"]
     room_numbers = _dedupe([row["室号或部位"] for row in rows if row.get("室号或部位")])
     building_areas = _dedupe([row["建筑面积"] for row in rows if row.get("建筑面积")])
     total_floors = _dedupe([row["总层数"] for row in rows if row.get("总层数")])
@@ -377,6 +393,7 @@ def extract_attachment_house_details(text: str) -> dict[str, Any]:
         "建筑类型列表": building_types,
         "总层数列表": total_floors,
         "竣工日期列表": completion_dates,
+        "_房屋用途候选": raw_house_usage_candidates,
     }
 
 
@@ -394,6 +411,7 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     building_areas = details["建筑面积列表"]
     total_floors = details["总层数列表"]
     completion_dates = details["竣工日期列表"]
+    raw_house_usage_candidates = details.get("_房屋用途候选") if isinstance(details.get("_房屋用途候选"), list) else []
     land_usages = _dedupe([row["土地用途"] for row in rows if row.get("土地用途")] or _extract_label_values(lines, ("土地用途",), LAND_USE_VALUES))
     right_natures = _dedupe([row["权利性质"] for row in rows if row.get("权利性质")] or _extract_label_values(lines, ("权利性质",), RIGHT_NATURE_VALUES))
     use_terms = _dedupe([row["使用期限"] for row in rows if row.get("使用期限")])
@@ -423,7 +441,8 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     logger.info("[AttachmentSkill] room_parts=%s", room_numbers)
     logger.info("[AttachmentSkill] building_areas=%s", building_areas)
     logger.info("[AttachmentSkill] house_usages=%s", house_usages)
-    logger.info("[AttachmentSkill][HOUSE_USAGE] house_usages=%s", house_usages)
+    logger.info("[AttachmentSkill][HOUSE_USAGE] raw_candidates=%s", raw_house_usage_candidates)
+    logger.info("[AttachmentSkill][HOUSE_USAGE] final_house_usages=%s", house_usages)
     logger.info("[AttachmentSkill] building_types=%s", building_types)
     logger.info("[AttachmentSkill] total_floors=%s", total_floors)
     logger.info("[AttachmentSkill][TOTAL_FLOORS] total_floors=%s", total_floors)

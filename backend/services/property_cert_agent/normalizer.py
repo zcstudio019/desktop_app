@@ -334,6 +334,7 @@ def _dirty(value: str) -> bool:
 def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", page_role: str = "", cert_version: str = "") -> dict[str, Any]:
     logger.info("[PropertyNormalizer] before_fields=%s", fields)
     source = dict(fields or {})
+    logger.info("[PropertyNormalizer][HOUSE_USAGE] before=%s", source.get("房屋用途") or "")
     for alias, target in FIELD_ALIASES.items():
         if source.get(alias) and not source.get(target):
             source[target] = source.get(alias)
@@ -488,6 +489,12 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
         normalized[key] = value
     logger.info("[PropertyNormalizer] after_fields=%s", normalized)
     logger.info("[PropertyNormalizer][ADDRESS] final_坐落=%s", normalized.get("坐落") or "")
+    logger.info("[PropertyNormalizer][HOUSE_USAGE] after=%s", normalized.get("房屋用途") or "")
+    logger.info(
+        "[PropertyNormalizer][HOUSE_USAGE] land_usage=%s house_usage=%s",
+        normalized.get("土地用途") or "",
+        normalized.get("房屋用途") or "",
+    )
     for debug_key in ("房屋用途", "建筑类型", "室号或部位", "总层数", "竣工日期"):
         logger.info("[PropertyNormalizer][AFTER] %s=%s", debug_key, normalized.get(debug_key))
     return normalized

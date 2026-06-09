@@ -1,5 +1,6 @@
 from backend.services.property_cert_agent.agent import run_property_cert_agent
 from backend.services.property_cert_agent.merger import merge_pages
+from backend.services.property_cert_agent.normalizer import normalize_property_cert_fields
 from backend.services.property_cert_agent.page_role import detect_page_role
 from backend.services.property_cert_agent.skills.attachment_page_skill import extract as extract_attachment_page
 
@@ -91,7 +92,7 @@ def test_merger_backfills_yongwang_attachment_fields() -> None:
     attachment_fields = extract_attachment_page({"text": ATTACHMENT_TEXT, "metadata": {"page_no": 5}})["fields"]
     merged = merge_pages(
         [
-            {"page_role": "new_real_estate_detail_page", "fields": {"房屋用途": "详见附记", "建筑类型": "国有"}},
+            {"page_role": "new_real_estate_detail_page", "fields": {"土地用途": "商业用地", "房屋用途": "详见附记", "建筑类型": "国有"}},
             {"page_role": "attachment_page", "fields": attachment_fields},
         ]
     )
@@ -101,6 +102,9 @@ def test_merger_backfills_yongwang_attachment_fields() -> None:
     assert merged["fields"]["总层数"] == "6、4"
     assert merged["fields"]["竣工日期"] == "1990年、1979年"
     assert merged["fields"]["不动产单元号"] == "、".join(EXPECTED_UNITS)
+    normalized = normalize_property_cert_fields(merged["fields"], page_role="new_real_estate_detail_page")
+    assert normalized["房屋用途"] == "商业"
+    assert normalized["土地用途"] == "商业用地"
 
 
 def test_yongwang_attachment_backfills_final_markdown() -> None:
@@ -127,7 +131,9 @@ def test_yongwang_attachment_backfills_final_markdown() -> None:
     assert "权利人: 北京咏旺物业管理有限公司" in markdown
     assert "坐落: 惠南镇东门大街200号1-6层，惠南镇东门大街200号14幢1-2层、4层东2间" in markdown
     assert "坐落: 惠南镇东门大街200号1-6层，惠南镇东门大街200号14\n" not in markdown
+    assert "土地用途: 商业用地" in markdown
     assert "房屋用途: 商业" in markdown
+    assert markdown.index("土地用途: 商业用地") < markdown.index("房屋用途: 商业") < markdown.index("地号: 惠南镇6街坊33/2丘")
     assert "建筑类型: 商场" in markdown
     assert "室号或部位: 200号1层、200号2层、200号3层、200号4层、200号5层、200号6层、14幢1-2层、4层东2间" in markdown
     assert "总层数: 6、4" in markdown

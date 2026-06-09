@@ -98,6 +98,8 @@ def merge_detail_page_with_attachment_pages(
 
     for target_key, list_key in ATTACHMENT_FILL_MAP.items():
         values = _attachment_values(attachment_pages, list_key)
+        if target_key == "房屋用途" and not values and "商场" in _attachment_values(attachment_pages, "建筑类型列表"):
+            values = ["商业"]
         current = fields.get(target_key)
         current_invalid_unit = target_key == "不动产单元号" and bool(current) and not is_valid_unit_number_value(current)
         current_invalid_building_type = target_key == "建筑类型" and bool(current) and not is_valid_building_type(current)
@@ -105,6 +107,8 @@ def merge_detail_page_with_attachment_pages(
             logger.info("[PropertyMerger][AttachmentFill] skip_invalid_unit_number=%s", current)
         if values and (not current or is_attachment_placeholder(current) or current_invalid_unit or current_invalid_building_type):
             new_value = "、".join(values)
+            if target_key == "房屋用途":
+                logger.info("[PropertyMerger][AttachmentFill] field=房屋用途 old=%s attachment_house_usages=%s new=%s", current or "", values, new_value)
             logger.info("[PropertyMerger][AttachmentFill] field=%s old=%s new=%s", target_key, current or "", new_value)
             fields[target_key] = new_value
         elif is_attachment_placeholder(current) or current_invalid_unit or current_invalid_building_type:
