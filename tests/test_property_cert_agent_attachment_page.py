@@ -24,6 +24,6 @@ def test_attachment_page_skill_extracts_table_lists() -> None:
     ]
     assert fields["房屋用途列表"] == ["商业"]
     assert fields["建筑类型列表"] == ["商场"]
-    assert fields["建筑面积列表"] == ["2783.21 平方米", "2638.43 平方米"]
+    assert fields["建筑面积列表"] == ["2783.21平方米", "2638.43平方米"]
     assert fields["竣工日期列表"] == ["1990年"]
     assert len(fields["附记明细"]) == 2

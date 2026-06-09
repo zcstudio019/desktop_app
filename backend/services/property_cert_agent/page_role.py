@@ -93,13 +93,18 @@ def _score(text: str, keywords: tuple[str, ...]) -> int:
     return sum(1 for keyword in keywords if keyword in compact)
 
 
+def _has_attachment_title(text: str) -> bool:
+    lines = [re.sub(r"[\s:：,，;；。]+", "", line) for line in str(text or "").splitlines() if line.strip()]
+    return any(line == "附记" for line in lines[:5])
+
+
 def detect_page_role(text: str, image_metadata: dict[str, Any] | None = None) -> str:
     scores = {role: _score(text, keywords) for role, keywords in ROLE_KEYWORDS.items()}
     compact = re.sub(r"\s+", "", str(text or ""))
     new_hits = sum(1 for keyword in NEW_REAL_ESTATE_STRONG_KEYWORDS if keyword in compact)
     old_hits = sum(1 for keyword in OLD_SHANGHAI_STRONG_KEYWORDS if keyword in compact)
     attachment_hits = sum(1 for keyword in ATTACHMENT_TABLE_KEYWORDS if keyword in compact)
-    if "附记" in compact and attachment_hits >= 2:
+    if _has_attachment_title(text) and attachment_hits >= 2:
         page_no = (image_metadata or {}).get("page_no") or (image_metadata or {}).get("page")
         logger.info("[AttachmentPageRole] detected=true page=%s hits=%s", page_no or "", attachment_hits)
         logger.info("[PropertyPageRole] detected_role=attachment_page")

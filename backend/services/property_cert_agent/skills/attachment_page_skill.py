@@ -6,15 +6,51 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-UNIT_NUMBER_RE = re.compile(r"\d{12}GB\d{5}F\d{8,}", re.IGNORECASE)
+UNIT_NUMBER_RE = re.compile(r"\d{6,}GB[A-Z0-9]+F[A-Z0-9]+", re.IGNORECASE)
 AREA_RE = re.compile(r"(?<![\dA-Z])(\d{1,8}(?:\.\d{1,2})?)\s*平方米")
+BARE_AREA_RE = re.compile(r"(?<![\dA-Z])(\d{2,8}\.\d{2})(?![\dA-Z])")
 YEAR_RE = re.compile(r"(?:19|20)\d{2}年")
 USE_TERM_RE = re.compile(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日(?:起|至).{0,24}?(?:19|20)\d{2}年\d{1,2}月\d{1,2}日止?")
 
 LAND_USE_VALUES = ("其它商服用地", "其他商服用地", "城镇住宅用地", "住宅用地", "商业用地", "工业用地", "办公用地", "仓储用地", "住宅", "商业", "办公", "工业", "仓储")
 HOUSE_USE_VALUES = ("办公", "居住", "住宅", "商业", "工业", "仓储", "车库", "公寓", "商铺", "非居住")
-BUILDING_TYPE_VALUES = ("办公楼", "商场", "公寓", "住宅", "商业", "工业", "厂房", "车库", "仓库", "商铺", "别墅", "非居住", "居住")
+BUILDING_TYPE_VALUES = ("办公楼", "商场", "公寓", "厂房", "车库", "仓库", "商铺", "别墅", "非居住")
 RIGHT_NATURE_VALUES = ("出让", "划拨", "租赁", "作价出资", "授权经营")
+INVALID_UNIT_NUMBER_VALUES = (
+    "使用权",
+    "使用权面积",
+    "土地使用权",
+    "权利性质",
+    "土地用途",
+    "房屋状况",
+    "土地状况",
+    "室号或部位",
+    "建筑面积",
+    "类型",
+    "用途",
+    "总层数",
+    "竣工日期",
+    "合计",
+    "出让",
+    "商业",
+    "商场",
+    "办公",
+    "详见附记",
+)
+POLLUTION_LABELS = (
+    "使用权面积",
+    "独用面积",
+    "分摊面积",
+    "房屋状况",
+    "土地状况",
+    "权利其他状况",
+    "室号部位",
+    "类型",
+    "用途",
+    "总层数",
+    "竣工日期",
+    "合计",
+)
 
 LABELS = (
     "附记",
@@ -36,7 +72,37 @@ LABELS = (
 
 
 def _clean(value: Any) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip(" :：,，;；。")
+    text = str(value or "").replace("\\n", " ")
+    text = text.replace("详见附记", "").replace("合计", "")
+    text = re.sub(r"\s+", " ", text).strip(" :：,，;；。")
+    return text
+
+
+def is_valid_unit_number(value: Any) -> bool:
+    text = re.sub(r"\s+", "", str(value or "")).upper()
+    if not text or text in INVALID_UNIT_NUMBER_VALUES:
+        return False
+    return len(text) >= 20 and "GB" in text and "F" in text and bool(UNIT_NUMBER_RE.fullmatch(text))
+
+
+def is_valid_unit_number_value(value: Any) -> bool:
+    parts = [part for part in re.split(r"[、,，;；\s]+", str(value or "")) if part]
+    return bool(parts) and all(is_valid_unit_number(part) for part in parts)
+
+
+def _valid_unit_numbers(text: str) -> list[str]:
+    values: list[str] = []
+    for match in UNIT_NUMBER_RE.finditer(str(text or "")):
+        value = match.group(0).upper()
+        if is_valid_unit_number(value) and value not in values:
+            values.append(value)
+    return values
+
+
+def _log_invalid_unit_tokens(text: str) -> None:
+    for token in INVALID_UNIT_NUMBER_VALUES:
+        if token in str(text or "") and not is_valid_unit_number(token):
+            logger.info("[AttachmentSkill] invalid_unit_number_removed=%s", token)
 
 
 def _lines(text: str) -> list[str]:
@@ -58,6 +124,24 @@ def _known_value(text: str, candidates: tuple[str, ...]) -> str:
         if candidate in compact:
             return candidate
     return ""
+
+
+def _known_values(text: str, candidates: tuple[str, ...]) -> list[str]:
+    compact = re.sub(r"\s+", "", text)
+    return [candidate for candidate in candidates if candidate in compact]
+
+
+def _clean_field_value(value: str, *, keep_labels: tuple[str, ...] = ()) -> str:
+    text = _clean(value)
+    for label in POLLUTION_LABELS:
+        if label in keep_labels:
+            continue
+        idx = text.find(label)
+        if idx > 0:
+            text = text[:idx]
+        elif idx == 0:
+            text = text.replace(label, "")
+    return _clean(text)
 
 
 def _extract_label_values(lines: list[str], labels: tuple[str, ...], candidates: tuple[str, ...] | None = None) -> list[str]:
@@ -88,25 +172,24 @@ def _nearby_value(lines: list[str], unit_line_index: int, candidates: tuple[str,
 
 def _extract_attachment_rows(lines: list[str]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for index, line in enumerate(lines):
-        unit_match = UNIT_NUMBER_RE.search(line)
-        if not unit_match:
+    text = "\n".join(lines)
+    matches = list(UNIT_NUMBER_RE.finditer(text))
+    for index, unit_match in enumerate(matches):
+        unit_number = unit_match.group(0).upper()
+        if not is_valid_unit_number(unit_number):
+            logger.info("[AttachmentSkill] invalid_unit_number_removed=%s", unit_number)
             continue
-        row_parts = [line]
-        for next_line in lines[index + 1 : index + 3]:
-            if UNIT_NUMBER_RE.search(next_line):
-                break
-            row_parts.append(next_line)
-        row_text = " ".join(row_parts)
-        row = {"不动产单元号": unit_match.group(0).upper()}
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        row_text = text[unit_match.end() : next_start]
+        row = {"不动产单元号": unit_number}
         house_use = _known_value(row_text, HOUSE_USE_VALUES) or _nearby_value(lines, index, HOUSE_USE_VALUES)
         building_type = _known_value(row_text, BUILDING_TYPE_VALUES) or _nearby_value(lines, index, BUILDING_TYPE_VALUES)
         right_nature = _known_value(row_text, RIGHT_NATURE_VALUES) or _nearby_value(lines, index, RIGHT_NATURE_VALUES)
         use_term = USE_TERM_RE.search(row_text)
         completion = YEAR_RE.search(row_text)
-        areas = [match.group(1) for match in AREA_RE.finditer(row_text)]
+        areas = [match.group(1) for match in AREA_RE.finditer(row_text)] or [match.group(1) for match in BARE_AREA_RE.finditer(row_text)]
         floors = re.search(r"(?:总层数[:：]?)?(\d{1,2})(?:层|$)", row_text)
-        room = re.search(r"(?:室号或部位|室号部位|部位|室号)[:：]?\s*([A-Za-z0-9\-号幢室层单元]+)", row_text)
+        room = re.search(r"(\d+号\d+(?:-\d+)?层|\d+号\d+层|[0-9]+幢\d+(?:-\d+)?层|[0-9]+幢[0-9A-Za-z\-层东间]+)", row_text)
         if house_use:
             row["房屋用途"] = house_use
         if building_type:
@@ -116,24 +199,72 @@ def _extract_attachment_rows(lines: list[str]) -> list[dict[str, str]]:
         if use_term:
             row["使用期限"] = use_term.group(0)
         if areas:
-            row["建筑面积"] = f"{areas[-1]} 平方米"
+            row["建筑面积"] = f"{float(areas[0]):.2f}平方米"
         if floors:
             row["总层数"] = floors.group(1)
         if completion:
             row["竣工日期"] = completion.group(0)
         if room:
-            row["室号或部位"] = _clean(room.group(1))
+            row["室号或部位"] = _clean_field_value(room.group(1))
         rows.append(row)
     return rows
+
+
+def _extract_column_rows(lines: list[str]) -> list[dict[str, str]]:
+    text = " ".join(lines)
+    rooms = _dedupe(
+        [
+            _clean_field_value(match.group(0))
+            for match in re.finditer(r"\d+号\d+(?:-\d+)?层|[0-9]+幢\d+(?:-\d+)?层|[0-9]+幢[0-9A-Za-z\-层东间]+", text)
+        ]
+    )
+    areas = _dedupe([f"{float(match.group(1)):.2f}平方米" for match in AREA_RE.finditer(text)] or [f"{float(match.group(1)):.2f}平方米" for match in BARE_AREA_RE.finditer(text)])
+    house_usages = _dedupe(_known_values(text, HOUSE_USE_VALUES))
+    building_types = _dedupe(_known_values(text, BUILDING_TYPE_VALUES))
+    floors = _dedupe([match.group(1) for match in re.finditer(r"总层数[:：]?\s*(\d{1,2})", text)])
+    years = _dedupe([match.group(0) for match in YEAR_RE.finditer(text)])
+    units = _valid_unit_numbers(text)
+    row_count = max(len(units), len(rooms), len(areas), 0)
+    rows: list[dict[str, str]] = []
+    for index in range(row_count):
+        row: dict[str, str] = {}
+        if index < len(units):
+            row["不动产单元号"] = units[index]
+        if index < len(rooms):
+            row["室号或部位"] = rooms[index]
+        if index < len(areas):
+            row["建筑面积"] = areas[index]
+        if house_usages:
+            row["房屋用途"] = house_usages[min(index, len(house_usages) - 1)]
+        if building_types:
+            row["建筑类型"] = building_types[min(index, len(building_types) - 1)]
+        if floors:
+            row["总层数"] = floors[min(index, len(floors) - 1)]
+        if years:
+            row["竣工日期"] = years[min(index, len(years) - 1)]
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _merge_rows(primary: list[dict[str, str]], fallback: list[dict[str, str]]) -> list[dict[str, str]]:
+    if not primary:
+        return fallback
+    if len(fallback) > len(primary):
+        for index, row in enumerate(primary):
+            for key, value in fallback[index].items():
+                row.setdefault(key, value)
+    return primary
 
 
 def extract(payload: dict[str, Any]) -> dict[str, Any]:
     text = str(payload.get("text") or "").strip()
     lines = _lines(text)
-    rows = _extract_attachment_rows(lines)
+    _log_invalid_unit_tokens(text)
+    rows = _merge_rows(_extract_attachment_rows(lines), _extract_column_rows(lines))
     fields: dict[str, Any] = {"附记": text[:1000]} if text else {}
 
-    unit_numbers = _dedupe([row["不动产单元号"] for row in rows if row.get("不动产单元号")])
+    unit_numbers = _dedupe([row["不动产单元号"] for row in rows if is_valid_unit_number(row.get("不动产单元号"))])
     house_usages = _dedupe([row["房屋用途"] for row in rows if row.get("房屋用途")] or _extract_label_values(lines, ("房屋用途",), HOUSE_USE_VALUES))
     building_types = _dedupe([row["建筑类型"] for row in rows if row.get("建筑类型")] or _extract_label_values(lines, ("建筑类型", "类型"), BUILDING_TYPE_VALUES))
     room_numbers = _dedupe([row["室号或部位"] for row in rows if row.get("室号或部位")])
@@ -161,7 +292,12 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     if rows:
         fields["附记明细"] = rows
 
-    logger.info("[AttachmentSkill] rows_count=%s", len(rows))
-    logger.info("[AttachmentSkill] unit_numbers=%s", unit_numbers)
+    logger.info("[AttachmentSkill] selected_ocr_variant=%s", payload.get("selected_ocr_variant") or payload.get("metadata", {}).get("selected_ocr_variant") or "")
+    logger.info("[AttachmentSkill] valid_unit_numbers=%s", unit_numbers)
     logger.info("[AttachmentSkill] house_usages=%s", house_usages)
-    return {"fields": fields, "warnings": [], "page_role": "attachment_page", "supplemental": True}
+    logger.info("[AttachmentSkill] building_types=%s", building_types)
+    logger.info("[AttachmentSkill] rows_count=%s", len(rows))
+    warnings = []
+    if "不动产单元号" in text and not unit_numbers:
+        warnings.append("不动产单元号在附记页中，系统未能识别到合法编号，请人工确认。")
+    return {"fields": fields, "warnings": warnings, "page_role": "attachment_page", "supplemental": True}

@@ -4,6 +4,8 @@ import re
 import logging
 from typing import Any
 
+from .skills.attachment_page_skill import is_valid_unit_number_value
+
 logger = logging.getLogger(__name__)
 
 NEW_FIELD_ORDER = [
@@ -349,6 +351,9 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
         if is_attachment_placeholder(value):
             logger.info("[PropertyNormalizer] placeholder_field_removed field=%s value=%s", key, value)
             source.pop(key, None)
+    if source.get("不动产单元号") and not is_valid_unit_number_value(source.get("不动产单元号")):
+        logger.info("[PropertyNormalizer] invalid_unit_number_removed=%s", source.get("不动产单元号"))
+        source.pop("不动产单元号", None)
 
     if new_version:
         address = _first_non_empty(source, NEW_ADDRESS_KEYS)
@@ -471,6 +476,9 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
         if is_attachment_placeholder(value):
             logger.info("[PropertyNormalizer] placeholder_field_removed field=%s value=%s", key, value)
             continue
+        if key == "不动产单元号" and not is_valid_unit_number_value(value):
+            logger.info("[PropertyNormalizer] invalid_unit_number_removed=%s", value)
+            continue
         normalized[key] = value
     logger.info("[PropertyNormalizer] after_fields=%s", normalized)
     return normalized
@@ -517,6 +525,9 @@ def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> di
         for key, value in (fields or {}).items()
         if clean_value(value) and not is_attachment_placeholder(value)
     }
+    if cleaned.get("不动产单元号") and not is_valid_unit_number_value(cleaned.get("不动产单元号")):
+        logger.info("[PropertyNormalizer] invalid_unit_number_removed=%s", cleaned.get("不动产单元号"))
+        cleaned.pop("不动产单元号", None)
     for alias, target in FIELD_ALIASES.items():
         if cleaned.get(alias) and not cleaned.get(target):
             cleaned[target] = cleaned.pop(alias)

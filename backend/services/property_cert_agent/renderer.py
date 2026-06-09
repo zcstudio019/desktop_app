@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from .normalizer import is_attachment_placeholder, normalize_property_cert_fields
+from .skills.attachment_page_skill import is_valid_unit_number
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ ADDRESS_STOP_LABELS = {
     "登记日",
     "填证单位",
 }
+ATTACHMENT_DETAIL_COLUMNS = ("不动产单元号", "室号或部位", "建筑面积", "房屋用途", "建筑类型", "总层数", "竣工日期")
 
 
 def _normalize_label(text: str) -> str:
@@ -192,6 +194,41 @@ def _display_fields(fields: dict[str, Any], result: dict[str, Any]) -> dict[str,
     return ensured
 
 
+def _attachment_detail_rows(risk_sections: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    sections = risk_sections.get("附记") if isinstance(risk_sections, dict) else None
+    if not isinstance(sections, list):
+        return rows
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        details = section.get("附记明细")
+        if isinstance(details, list):
+            rows.extend(row for row in details if isinstance(row, dict))
+    return rows
+
+
+def _append_attachment_detail_table(lines: list[str], rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    columns = [column for column in ATTACHMENT_DETAIL_COLUMNS if any(str(row.get(column) or "").strip() for row in rows)]
+    if "不动产单元号" in columns and not any(is_valid_unit_number(row.get("不动产单元号")) for row in rows):
+        columns = [column for column in columns if column != "不动产单元号"]
+    if not columns:
+        return
+    lines.extend(["", "### 附记明细"])
+    lines.append("| " + " | ".join(columns) + " |")
+    lines.append("| " + " | ".join("---" for _ in columns) + " |")
+    for row in rows:
+        values: list[str] = []
+        for column in columns:
+            value = str(row.get(column) or "").replace("\\n", " ").replace("\n", " ").replace("|", "/").strip(" ;；")
+            if column == "不动产单元号" and value and not is_valid_unit_number(value):
+                value = ""
+            values.append(value)
+        lines.append("| " + " | ".join(values) + " |")
+
+
 def render_markdown(result: dict[str, Any]) -> str:
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     raw_fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
@@ -230,7 +267,11 @@ def render_markdown(result: dict[str, Any]) -> str:
                 lines.append(f"- {key}: {value}")
     warnings = list(validation.get("warnings") or [])
     risk_sections = result.get("risk_sections") if isinstance(result.get("risk_sections"), dict) else {}
+    attachment_rows = _attachment_detail_rows(risk_sections)
+    _append_attachment_detail_table(lines, attachment_rows)
     for title, sections in risk_sections.items():
+        if title == "附记" and attachment_rows:
+            continue
         lines.extend(["", f"### {title}信息"])
         for section in sections:
             if isinstance(section, dict):
@@ -244,5 +285,6 @@ def render_markdown(result: dict[str, Any]) -> str:
     logger.info("[PropertyRenderer][ADDRESS] markdown_contains_address=%s", str(("房地坐落" in markdown) or ("坐落" in markdown)).lower())
     logger.info("[PropertyRenderer][FINAL_ADDRESS] markdown_contains=%s", str(bool(address_info["final_value"]) and address_info["final_value"] in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_详见附记=%s", str("详见附记" in markdown).lower())
+    logger.info("[PropertyRenderer] markdown_contains_invalid_unit_number=%s", str("不动产单元号: 使用权" in markdown or "不动产单元号：使用权" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_dirty_newline=%s", str("\\n" in markdown).lower())
     return markdown

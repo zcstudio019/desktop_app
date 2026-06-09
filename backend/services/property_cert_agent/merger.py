@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from .normalizer import is_invalid_property_owner, is_old_version, normalize_fields
+from .skills.attachment_page_skill import is_valid_unit_number, is_valid_unit_number_value
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +58,16 @@ def _attachment_values(attachment_pages: list[dict[str, Any]], list_key: str) ->
                 if isinstance(item, dict):
                     continue
                 value = str(item or "").strip()
+                if list_key == "不动产单元号列表" and not is_valid_unit_number(value):
+                    logger.info("[PropertyMerger][AttachmentFill] skip_invalid_unit_number=%s", value)
+                    continue
                 if value and value not in values:
                     values.append(value)
         elif raw:
             value = str(raw).strip()
+            if list_key == "不动产单元号列表" and not is_valid_unit_number(value):
+                logger.info("[PropertyMerger][AttachmentFill] skip_invalid_unit_number=%s", value)
+                continue
             if value and value not in values:
                 values.append(value)
     return values
@@ -85,13 +92,19 @@ def merge_detail_page_with_attachment_pages(
     for target_key, list_key in ATTACHMENT_FILL_MAP.items():
         values = _attachment_values(attachment_pages, list_key)
         current = fields.get(target_key)
-        if values and (not current or is_attachment_placeholder(current)):
+        current_invalid_unit = target_key == "不动产单元号" and bool(current) and not is_valid_unit_number_value(current)
+        if current_invalid_unit:
+            logger.info("[PropertyMerger][AttachmentFill] skip_invalid_unit_number=%s", current)
+        if values and (not current or is_attachment_placeholder(current) or current_invalid_unit):
             new_value = "、".join(values)
             logger.info("[PropertyMerger][AttachmentFill] field=%s old=%s new=%s", target_key, current or "", new_value)
             fields[target_key] = new_value
-        elif is_attachment_placeholder(current):
+        elif is_attachment_placeholder(current) or current_invalid_unit:
             fields.pop(target_key, None)
-            warnings.append(f"{target_key} 需要附件页回填，但未解析到可回填内容")
+            if target_key == "不动产单元号":
+                warnings.append("不动产单元号在附记页中，系统未能识别到合法编号，请人工确认。")
+            else:
+                warnings.append(f"{target_key} 需要附件页回填，但未解析到可回填内容")
     return fields, warnings
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ LEGACY_REGION_ALIASES = {
 OCR_CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "ocr_cache" / "property_cert"
 DEFAULT_MAX_OCR_BYTES = 3_500_000
 HARD_OCR_LIMIT_BYTES = 4_000_000
+ATTACHMENT_UNIT_RE = r"\d{6,}GB[A-Z0-9]+F[A-Z0-9]+"
 
 
 def decode_text_bytes(file_bytes: bytes) -> str:
@@ -180,6 +182,13 @@ def score_property_ocr_text(text: str) -> int:
     if ("土地用途" in compact and "房屋用途" in compact) or "用途" in compact:
         score += 10
     return score
+
+
+def _attachment_ocr_score(text: str) -> tuple[int, int]:
+    compact = "".join(str(text or "").split()).upper()
+    unit_count = len(re.findall(ATTACHMENT_UNIT_RE, compact))
+    table_hits = sum(1 for keyword in ("室号", "建筑面积", "用途", "总层数", "竣工日期") if keyword in compact)
+    return unit_count, table_hits
 
 
 def property_fields_complete(fields: dict[str, Any]) -> bool:
@@ -394,6 +403,8 @@ def run_property_cert_ocr_plan(
                 logger.info("[PropertyCertOCRSkip] reason=field_already_extracted field=%s", target_field)
                 continue
             crop = _crop_region(image, region)
+            best_attachment_variant = ""
+            best_attachment_score = (-1, -1)
             for variant in variants:
                 if stats["calls"] >= max_calls:
                     break
@@ -407,7 +418,11 @@ def run_property_cert_ocr_plan(
                     stats=stats,
                 )
                 if role == "attachment_page":
-                    logger.info("[AttachmentOCR] rotated=%s text_length=%s", str(variant in {"rotate90", "rotate270"}).lower(), len(text))
+                    unit_count, table_hits = _attachment_ocr_score(text)
+                    logger.info("[AttachmentOCR] variant=%s unit_count=%s table_hits=%s", variant, unit_count, table_hits)
+                    if (unit_count, table_hits) > best_attachment_score:
+                        best_attachment_score = (unit_count, table_hits)
+                        best_attachment_variant = variant
                 if text:
                     parts.append(f"--- Property Certificate OCR page={page_no} region={region} variant={variant} ---\n{text}")
                     page_text = f"{page_text}\n{text}".strip()
@@ -415,6 +430,8 @@ def run_property_cert_ocr_plan(
                 if score >= 60:
                     logger.info("[PropertyCertOCRStop] reason=score_enough score=%s", score)
                     break
+            if role == "attachment_page" and best_attachment_variant:
+                logger.info("[AttachmentOCR] selected_variant=%s", best_attachment_variant)
             if score_property_ocr_text(page_text) >= 60:
                 break
         if parts:
