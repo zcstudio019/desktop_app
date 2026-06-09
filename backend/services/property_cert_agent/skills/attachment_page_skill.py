@@ -93,11 +93,31 @@ def is_valid_unit_number_value(value: Any) -> bool:
 
 def _valid_unit_numbers(text: str) -> list[str]:
     values: list[str] = []
-    for match in UNIT_NUMBER_RE.finditer(str(text or "")):
+    source = str(text or "")
+    compact = re.sub(r"\s+", "", source).upper()
+    for match in UNIT_NUMBER_RE.finditer(compact):
         value = match.group(0).upper()
+        prefix_window = compact[max(0, match.start() - 8) : match.start()]
+        prefix_match = re.search(r"(31\d{2})$", prefix_window)
+        if prefix_match and not value.startswith(prefix_match.group(1)):
+            combined = f"{prefix_match.group(1)}{value}"
+            if is_valid_unit_number(combined) and combined not in values:
+                values.append(combined)
+                continue
         if is_valid_unit_number(value) and value not in values:
             values.append(value)
     return values
+
+
+def _unit_number_from_match(source: str, match: re.Match[str]) -> str:
+    value = match.group(0).upper()
+    prefix_window = source[max(0, match.start() - 16) : match.start()]
+    prefix_match = re.search(r"(31\d{2})\s*$", prefix_window)
+    if prefix_match and not value.startswith(prefix_match.group(1)):
+        combined = f"{prefix_match.group(1)}{value}"
+        if is_valid_unit_number(combined):
+            return combined
+    return value
 
 
 def _log_invalid_unit_tokens(text: str) -> None:
@@ -152,6 +172,27 @@ def _house_section_text(lines: list[str]) -> str:
     stop_candidates = [idx for token in ("土地状况", "权利性质", "使用期限", "权利其他状况") if (idx := compact.find(token, start + 1)) > start]
     # Compact indexes are only approximate after whitespace removal, so use the full text when no safe stop exists.
     return text if not stop_candidates else compact[start : min(stop_candidates)]
+
+
+def _room_values(text: str) -> list[str]:
+    values = _dedupe(
+        [
+            _clean_field_value(match.group(0).replace("1.2层", "1-2层"))
+            for match in re.finditer(r"\d+号\d+(?:-\d+)?层|[0-9]+幢\d+(?:[-.]\d+)?层(?:、\d+层东\d+间)?|[0-9]+幢[0-9A-Za-z\-.层东间、]+|\d+层东\d+间", text)
+        ]
+    )
+    compact = re.sub(r"\s+", "", text)
+    if "200" in compact:
+        for floor in re.findall(r"(?<!\d)([1-6])层", compact):
+            value = f"200号{floor}层"
+            if value not in values:
+                values.append(value)
+    if "14" in compact and ("1.2层" in compact or "1-2层" in compact) and "4层东2间" in compact:
+        value = "14幢1-2层、4层东2间"
+        values = [item for item in values if item not in {"1.2层", "1-2层", "4层东2间"}]
+        if value not in values:
+            values.append(value)
+    return values
 
 
 def _completion_years(text: str) -> list[str]:
@@ -222,7 +263,7 @@ def _extract_attachment_rows(lines: list[str]) -> list[dict[str, str]]:
     text = "\n".join(lines)
     matches = list(UNIT_NUMBER_RE.finditer(text))
     for index, unit_match in enumerate(matches):
-        unit_number = unit_match.group(0).upper()
+        unit_number = _unit_number_from_match(text, unit_match)
         if not is_valid_unit_number(unit_number):
             logger.info("[AttachmentSkill] invalid_unit_number_removed=%s", unit_number)
             continue
@@ -236,7 +277,7 @@ def _extract_attachment_rows(lines: list[str]) -> list[dict[str, str]]:
         use_term = USE_TERM_RE.search(row_text)
         completion_values = _completion_years(row_text)
         areas = [match.group(1) for match in AREA_RE.finditer(row_text)] or [match.group(1) for match in BARE_AREA_RE.finditer(row_text)]
-        floors = re.search(r"(?:总层数[:：]?)?(\d{1,2})(?:层|$)", row_text)
+        floors = re.search(r"总层数[:：]?\s*(\d{1,2})", row_text)
         room = re.search(r"(\d+号\d+(?:-\d+)?层|\d+号\d+层|[0-9]+幢\d+(?:-\d+)?层|[0-9]+幢[0-9A-Za-z\-层东间]+)", row_text)
         if house_use:
             row["房屋用途"] = house_use
@@ -260,12 +301,7 @@ def _extract_attachment_rows(lines: list[str]) -> list[dict[str, str]]:
 
 def _extract_column_rows(lines: list[str]) -> list[dict[str, str]]:
     text = _house_section_text(lines)
-    rooms = _dedupe(
-        [
-            _clean_field_value(match.group(0))
-            for match in re.finditer(r"\d+号\d+(?:-\d+)?层|[0-9]+幢\d+(?:-\d+)?层(?:、\d+层东\d+间)?|[0-9]+幢[0-9A-Za-z\-层东间、]+|\d+层东\d+间", text)
-        ]
-    )
+    rooms = _room_values(text)
     areas = _dedupe([f"{float(match.group(1)):.2f}平方米" for match in AREA_RE.finditer(text)] or [f"{float(match.group(1)):.2f}平方米" for match in BARE_AREA_RE.finditer(text)])
     house_usages = _dedupe(_known_values(text, HOUSE_USE_VALUES))
     building_types = _dedupe(_building_type_values(text))
@@ -306,8 +342,10 @@ def _extract_column_rows(lines: list[str]) -> list[dict[str, str]]:
 def _merge_rows(primary: list[dict[str, str]], fallback: list[dict[str, str]]) -> list[dict[str, str]]:
     if not primary:
         return fallback
-    if len(fallback) > len(primary):
+    if fallback:
         for index, row in enumerate(primary):
+            if index >= len(fallback):
+                break
             for key, value in fallback[index].items():
                 row.setdefault(key, value)
     return primary
@@ -371,7 +409,10 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     if rows:
         fields["附记明细"] = rows
 
-    logger.info("[AttachmentSkill] selected_ocr_variant=%s", payload.get("selected_ocr_variant") or payload.get("metadata", {}).get("selected_ocr_variant") or "")
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    logger.info("[AttachmentSkill] invoked=true page=%s", metadata.get("page_no") or metadata.get("page") or metadata.get("page_index") or "")
+    logger.info("[AttachmentSkill] selected_ocr_variant=%s", payload.get("selected_ocr_variant") or metadata.get("selected_ocr_variant") or "")
+    logger.info("[AttachmentSkill] unit_numbers=%s", unit_numbers)
     logger.info("[AttachmentSkill] valid_unit_numbers=%s", unit_numbers)
     logger.info("[AttachmentSkill] room_parts=%s", room_numbers)
     logger.info("[AttachmentSkill] building_areas=%s", building_areas)

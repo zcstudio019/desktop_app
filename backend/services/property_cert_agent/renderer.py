@@ -329,5 +329,7 @@ def render_markdown(result: dict[str, Any]) -> str:
     logger.info("[PropertyRenderer] markdown_contains_详见附记=%s", str("详见附记" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_invalid_unit_number=%s", str("不动产单元号: 使用权" in markdown or "不动产单元号：使用权" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_建筑类型_国有=%s", str("建筑类型: 国有" in markdown or "建筑类型：国有" in markdown).lower())
+    attachment_fields_present = all(item in markdown for item in ("房屋用途: 商业", "建筑类型: 商场", "总层数: 6、4", "竣工日期: 1990年、1979年"))
+    logger.info("[PropertyRenderer] markdown_contains_attachment_fields=%s", str(attachment_fields_present).lower())
     logger.info("[PropertyRenderer] markdown_contains_dirty_newline=%s", str("\\n" in markdown).lower())
     return markdown

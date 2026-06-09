@@ -56,9 +56,12 @@ class PropertyCertAgent:
         raw_pages = metadata.get("raw_pages") if isinstance(metadata.get("raw_pages"), list) else metadata.get("pages")
         pages = []
         warnings: list[str] = []
-        for page in segment_pages(raw_text, raw_pages if isinstance(raw_pages, list) else [], filename):
+        segmented_pages = segment_pages(raw_text, raw_pages if isinstance(raw_pages, list) else [], filename)
+        logger.info("[PropertyAgent] pages_count=%s", len(segmented_pages))
+        for page in segmented_pages:
             page_text = str(page.get("text") or "")
             role = detect_page_role(page_text, page.get("metadata") if isinstance(page.get("metadata"), dict) else None)
+            logger.info("[PropertyAgent] page=%s role=%s", page.get("page_index") or page.get("page") or "", role)
             skill_payload = {"text": page_text, "metadata": page.get("metadata") or {}}
             if role == "attachment_page":
                 logger.info("[PropertySkillRouter] selected_skill=attachment_page_skill role=%s", role)
@@ -84,6 +87,8 @@ class PropertyCertAgent:
             fields = extracted.get("fields") if isinstance(extracted.get("fields"), dict) else {}
             if role == "new_real_estate_detail_page":
                 logger.info("[NewRealEstateSkill] fields_keys=%s", list(fields.keys()))
+            if role == "attachment_page":
+                logger.info("[AttachmentSkill] extracted_fields=%s", fields)
             warnings.extend(str(item) for item in extracted.get("warnings") or [])
             pages.append(
                 {
@@ -96,6 +101,10 @@ class PropertyCertAgent:
             )
 
         merged = merge_pages(pages)
+        attachment_pages = [page for page in pages if page.get("page_role") == "attachment_page"]
+        logger.info("[PropertyAgent] attachment_pages_count=%s", len(attachment_pages))
+        attachment_keys = sorted({key for page in attachment_pages for key in (page.get("fields") or {}).keys()})
+        logger.info("[PropertyAgent] attachment_fields_keys=%s", attachment_keys)
         warnings.extend(str(item) for item in merged.get("warnings") or [])
         page_roles = [str(page.get("page_role") or "unknown") for page in pages]
         fields = normalize_property_cert_fields(
