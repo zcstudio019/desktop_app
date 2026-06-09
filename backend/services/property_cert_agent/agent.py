@@ -61,28 +61,30 @@ class PropertyCertAgent:
         for page in segmented_pages:
             page_text = str(page.get("text") or "")
             role = detect_page_role(page_text, page.get("metadata") if isinstance(page.get("metadata"), dict) else None)
-            logger.info("[PropertyAgent] page=%s role=%s", page.get("page_index") or page.get("page") or "", role)
+            page_no = page.get("page_index") or page.get("page") or ""
+            logger.info("[PropertyAgent] page=%s role=%s", page_no, role)
+            logger.info("[PropertyAgent][PAGE] page_no=%s role=%s", page_no, role)
             skill_payload = {"text": page_text, "metadata": page.get("metadata") or {}}
             if role == "attachment_page":
-                logger.info("[PropertySkillRouter] selected_skill=attachment_page_skill role=%s", role)
+                logger.info("[PropertySkillRouter] page_no=%s selected_skill=attachment_page_skill role=%s", page_no, role)
                 extracted = extract_attachment_page(skill_payload)
             elif _has_new_real_estate_strong_feature(page_text):
                 role = "new_real_estate_detail_page"
-                logger.info("[PropertySkillRouter] selected_skill=new_real_estate_cert_skill role=%s", role)
+                logger.info("[PropertySkillRouter] page_no=%s selected_skill=new_real_estate_cert_skill role=%s", page_no, role)
                 extracted = extract_new_detail_page(skill_payload)
             elif role == "cover_page":
-                logger.info("[PropertySkillRouter] selected_skill=cover_page_skill role=%s", role)
+                logger.info("[PropertySkillRouter] page_no=%s selected_skill=cover_page_skill role=%s", page_no, role)
                 extracted = extract_cover_page(skill_payload)
             elif role == "old_property_detail_page" or _has_old_shanghai_strong_feature(page_text):
                 role = "old_property_detail_page"
-                logger.info("[PropertySkillRouter] selected_skill=old_shanghai_property_cert_skill role=%s", role)
+                logger.info("[PropertySkillRouter] page_no=%s selected_skill=old_shanghai_property_cert_skill role=%s", page_no, role)
                 extracted = extract_old_detail_page(skill_payload)
             elif role == "mortgage_page":
-                logger.info("[PropertySkillRouter] selected_skill=mortgage_page_skill role=%s", role)
+                logger.info("[PropertySkillRouter] page_no=%s selected_skill=mortgage_page_skill role=%s", page_no, role)
                 extracted = extract_mortgage_page(skill_payload)
             else:
                 role = "new_real_estate_detail_page" if role in {"unknown", "detail_page"} else role
-                logger.info("[PropertySkillRouter] selected_skill=new_real_estate_cert_skill role=%s", role)
+                logger.info("[PropertySkillRouter] page_no=%s selected_skill=new_real_estate_cert_skill role=%s", page_no, role)
                 extracted = extract_new_detail_page(skill_payload)
             fields = extracted.get("fields") if isinstance(extracted.get("fields"), dict) else {}
             if role == "new_real_estate_detail_page":
@@ -105,6 +107,23 @@ class PropertyCertAgent:
         logger.info("[PropertyAgent] attachment_pages_count=%s", len(attachment_pages))
         attachment_keys = sorted({key for page in attachment_pages for key in (page.get("fields") or {}).keys()})
         logger.info("[PropertyAgent] attachment_fields_keys=%s", attachment_keys)
+        logger.info("[PropertyAgent][ATTACHMENT_SUMMARY] attachment_pages_count=%s", len(attachment_pages))
+        logger.info("[PropertyAgent][ATTACHMENT_SUMMARY] attachment_fields_keys=%s", attachment_keys)
+        merged_attachment_fields: dict[str, list[str]] = {}
+        for page in attachment_pages:
+            page_fields = page.get("fields") if isinstance(page.get("fields"), dict) else {}
+            for key in ("房屋用途列表", "建筑类型列表", "室号或部位列表", "总层数列表", "竣工日期列表"):
+                values = page_fields.get(key)
+                if isinstance(values, list):
+                    merged_attachment_fields.setdefault(key, [])
+                    for value in values:
+                        if value not in merged_attachment_fields[key]:
+                            merged_attachment_fields[key].append(value)
+        logger.info("[PropertyAgent][ATTACHMENT_SUMMARY] house_usages=%s", merged_attachment_fields.get("房屋用途列表", []))
+        logger.info("[PropertyAgent][ATTACHMENT_SUMMARY] building_types=%s", merged_attachment_fields.get("建筑类型列表", []))
+        logger.info("[PropertyAgent][ATTACHMENT_SUMMARY] room_parts=%s", merged_attachment_fields.get("室号或部位列表", []))
+        logger.info("[PropertyAgent][ATTACHMENT_SUMMARY] total_floors=%s", merged_attachment_fields.get("总层数列表", []))
+        logger.info("[PropertyAgent][ATTACHMENT_SUMMARY] completion_dates=%s", merged_attachment_fields.get("竣工日期列表", []))
         warnings.extend(str(item) for item in merged.get("warnings") or [])
         page_roles = [str(page.get("page_role") or "unknown") for page in pages]
         fields = normalize_property_cert_fields(

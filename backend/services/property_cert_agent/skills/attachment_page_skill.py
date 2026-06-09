@@ -6,7 +6,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-UNIT_NUMBER_RE = re.compile(r"\d{6,}GB[A-Z0-9]+F[A-Z0-9]+", re.IGNORECASE)
+UNIT_NUMBER_RE = re.compile(r"\d{6,}GB[A-Z0-9]+[FP][A-Z0-9]+", re.IGNORECASE)
 AREA_RE = re.compile(r"(?<![\dA-Z])(\d{1,8}(?:\.\d{1,2})?)\s*平方米")
 BARE_AREA_RE = re.compile(r"(?<![\dA-Z])(\d{2,8}\.\d{2})(?![\dA-Z])")
 YEAR_RE = re.compile(r"(?:19|20)\d{2}年")
@@ -80,10 +80,16 @@ def _clean(value: Any) -> str:
 
 
 def is_valid_unit_number(value: Any) -> bool:
-    text = re.sub(r"\s+", "", str(value or "")).upper()
+    text = _normalize_unit_number(value)
     if not text or text in INVALID_UNIT_NUMBER_VALUES:
         return False
-    return len(text) >= 20 and "GB" in text and "F" in text and bool(UNIT_NUMBER_RE.fullmatch(text))
+    return len(text) >= 20 and "GB" in text and "F" in text and bool(re.fullmatch(r"\d{6,}GB[A-Z0-9]+F[A-Z0-9]+", text))
+
+
+def _normalize_unit_number(value: Any) -> str:
+    text = re.sub(r"\s+", "", str(value or "")).upper()
+    text = re.sub(r"(GB[A-Z0-9]+)P(?=\d{8,}$)", r"\1F", text)
+    return text
 
 
 def is_valid_unit_number_value(value: Any) -> bool:
@@ -96,7 +102,7 @@ def _valid_unit_numbers(text: str) -> list[str]:
     source = str(text or "")
     compact = re.sub(r"\s+", "", source).upper()
     for match in UNIT_NUMBER_RE.finditer(compact):
-        value = match.group(0).upper()
+        value = _normalize_unit_number(match.group(0))
         prefix_window = compact[max(0, match.start() - 8) : match.start()]
         prefix_match = re.search(r"(31\d{2})$", prefix_window)
         if prefix_match and not value.startswith(prefix_match.group(1)):
@@ -110,7 +116,7 @@ def _valid_unit_numbers(text: str) -> list[str]:
 
 
 def _unit_number_from_match(source: str, match: re.Match[str]) -> str:
-    value = match.group(0).upper()
+    value = _normalize_unit_number(match.group(0))
     prefix_window = source[max(0, match.start() - 16) : match.start()]
     prefix_match = re.search(r"(31\d{2})\s*$", prefix_window)
     if prefix_match and not value.startswith(prefix_match.group(1)):

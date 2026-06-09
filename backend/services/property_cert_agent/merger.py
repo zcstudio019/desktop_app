@@ -154,6 +154,8 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
         logger.info("[PropertyMerger][OWNER] cover_owner_ignored=true")
         fields.pop("权利人", None)
     logger.info("[PropertyMerger][ADDRESS] merged_before_房地坐落=%s", fields.get("房地坐落"))
+    for debug_key in ("房屋用途", "建筑类型", "室号或部位", "总层数", "竣工日期"):
+        logger.info("[PropertyMerger][BEFORE] %s=%s", debug_key, fields.get(debug_key))
     supplemental_files: list[str] = []
     risk_sections: dict[str, list[dict[str, Any]]] = {"附记": [], "抵押": []}
     attachment_pages: list[dict[str, Any]] = []
@@ -190,6 +192,8 @@ def merge_pages(pages: list[dict[str, Any]]) -> dict[str, Any]:
                 fields[key] = value
     fields, attachment_warnings = merge_detail_page_with_attachment_pages(fields, attachment_pages)
     warnings.extend(attachment_warnings)
+    for debug_key in ("房屋用途", "建筑类型", "室号或部位", "总层数", "竣工日期"):
+        logger.info("[PropertyMerger][AFTER] %s=%s", debug_key, fields.get(debug_key))
     _apply_address_priority(fields, old_version=old_version)
     normalized_fields = normalize_fields(fields, old_version=old_version)
     logger.info("[PropertyMerger][ADDRESS] merged_after_房地坐落=%s", normalized_fields.get("房地坐落"))

@@ -487,6 +487,8 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
             continue
         normalized[key] = value
     logger.info("[PropertyNormalizer] after_fields=%s", normalized)
+    for debug_key in ("房屋用途", "建筑类型", "室号或部位", "总层数", "竣工日期"):
+        logger.info("[PropertyNormalizer][AFTER] %s=%s", debug_key, normalized.get(debug_key))
     return normalized
 
 

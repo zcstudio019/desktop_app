@@ -301,6 +301,8 @@ def render_markdown(result: dict[str, Any]) -> str:
         logger.info("[PropertyRenderer] display_权利人=%s", fields.get("权利人") or "")
         logger.info("[PropertyRenderer] display_共有情况=%s", fields.get("共有情况") or "")
         logger.info("[PropertyRenderer] display_建筑类型=%s", fields.get("建筑类型") or "")
+        for debug_key in ("房屋用途", "建筑类型", "室号或部位", "总层数", "竣工日期"):
+            logger.info("[PropertyRenderer][DISPLAY] %s=%s", debug_key, fields.get(debug_key) or "")
         for key, value in fields.items():
             if value:
                 lines.append(f"- {key}: {value}")
@@ -327,6 +329,9 @@ def render_markdown(result: dict[str, Any]) -> str:
     logger.info("[PropertyRenderer][ADDRESS] markdown_contains_address=%s", str(("房地坐落" in markdown) or ("坐落" in markdown)).lower())
     logger.info("[PropertyRenderer][FINAL_ADDRESS] markdown_contains=%s", str(bool(address_info["final_value"]) and address_info["final_value"] in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_详见附记=%s", str("详见附记" in markdown).lower())
+    logger.info("[PropertyRenderer][DISPLAY] markdown_contains_房屋用途=%s", str("房屋用途: 商业" in markdown or "房屋用途：商业" in markdown).lower())
+    logger.info("[PropertyRenderer][DISPLAY] markdown_contains_建筑类型=%s", str("建筑类型: 商场" in markdown or "建筑类型：商场" in markdown).lower())
+    logger.info("[PropertyRenderer][DISPLAY] markdown_contains_附记明细=%s", str("### 附记明细" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_invalid_unit_number=%s", str("不动产单元号: 使用权" in markdown or "不动产单元号：使用权" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_建筑类型_国有=%s", str("建筑类型: 国有" in markdown or "建筑类型：国有" in markdown).lower())
     attachment_fields_present = all(item in markdown for item in ("房屋用途: 商业", "建筑类型: 商场", "总层数: 6、4", "竣工日期: 1990年、1979年"))

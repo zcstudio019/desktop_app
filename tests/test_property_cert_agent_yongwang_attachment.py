@@ -1,5 +1,6 @@
 from backend.services.property_cert_agent.agent import run_property_cert_agent
 from backend.services.property_cert_agent.merger import merge_pages
+from backend.services.property_cert_agent.page_role import detect_page_role
 from backend.services.property_cert_agent.skills.attachment_page_skill import extract as extract_attachment_page
 
 
@@ -39,7 +40,6 @@ D31004264460
 """
 
 ATTACHMENT_TEXT = """
-附记
 不动产单元号 使用权面积 房屋状况 室号或部位 建筑面积 类型 用途 总层数 竣工日期
 3101
 15030001GB00325F00020006 使用权 200号1层 2783.21平方米 商业 商场 总层数6 1990年
@@ -52,7 +52,7 @@ ATTACHMENT_TEXT = """
 3101
 15030001GB00325F00020001 使用权 200号5层 1115.72平方米 商业 商场 总层数6 1990年
 3101
-15030001GB00325F00020002 使用权 200号6层 590.40平方米 商业 商场 总层数6 1990年
+15030001GB00325P00020002 使用权 200号6层 590.40平方米 商业 商场 总层数6 1990年
 3101
 15030001GB00325F00030001 使用权 14 1.2层、4层东2间 371.00平方米 商业 商场 总层数4 1979年
 使用权 4层东2间 371.00平方米 商业 商场 总层数4 1979年
@@ -68,6 +68,10 @@ EXPECTED_UNITS = [
     "310115030001GB00325F00020002",
     "310115030001GB00325F00030001",
 ]
+
+
+def test_yongwang_page_5_is_attachment_page_without_attachment_title() -> None:
+    assert detect_page_role(ATTACHMENT_TEXT, {"page_no": 5}) == "attachment_page"
 
 
 def test_attachment_page_skill_extracts_yongwang_lists() -> None:

@@ -78,13 +78,42 @@ ATTACHMENT_TABLE_KEYWORDS = (
     "房屋状况",
     "室号或部位",
     "室号部位",
+    "室号部",
     "建筑面积",
     "房屋用途",
+    "房屋类",
     "土地用途",
     "总层数",
+    "总层",
     "竣工日期",
+    "竣工",
     "类型",
     "合计",
+    "套数",
+)
+
+ATTACHMENT_TABLE_STRONG_KEYWORDS = (
+    "使用权面积",
+    "使用权面",
+    "独用面",
+    "分摊面",
+    "幢号",
+    "室号部",
+    "房屋类",
+    "竣工H",
+    "合计",
+    "套数",
+)
+
+MAIN_DETAIL_KEYWORDS = (
+    "权利人",
+    "共有情况",
+    "权证编号",
+    "坐落",
+    "房地坐落",
+    "权利类型",
+    "权利性质",
+    "权属性质",
 )
 
 
@@ -104,7 +133,9 @@ def detect_page_role(text: str, image_metadata: dict[str, Any] | None = None) ->
     new_hits = sum(1 for keyword in NEW_REAL_ESTATE_STRONG_KEYWORDS if keyword in compact)
     old_hits = sum(1 for keyword in OLD_SHANGHAI_STRONG_KEYWORDS if keyword in compact)
     attachment_hits = sum(1 for keyword in ATTACHMENT_TABLE_KEYWORDS if keyword in compact)
-    if _has_attachment_title(text) and attachment_hits >= 2:
+    attachment_strong_hits = sum(1 for keyword in ATTACHMENT_TABLE_STRONG_KEYWORDS if keyword in compact)
+    main_detail_hits = sum(1 for keyword in MAIN_DETAIL_KEYWORDS if keyword in compact)
+    if (_has_attachment_title(text) and attachment_hits >= 2) or (attachment_hits >= 4 and attachment_strong_hits >= 1 and main_detail_hits < 3):
         page_no = (image_metadata or {}).get("page_no") or (image_metadata or {}).get("page")
         logger.info("[AttachmentPageRole] detected=true page=%s hits=%s", page_no or "", attachment_hits)
         logger.info("[PropertyPageRole] detected_role=attachment_page")

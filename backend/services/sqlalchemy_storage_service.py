@@ -1312,6 +1312,12 @@ class SQLAlchemyStorageService:
                 logger.info("[PropertySave][ADDRESS] before_save_markdown_contains_房地坐落=%s", str("房地坐落" in markdown_for_log).lower())
                 logger.info("[PropertySave][ADDRESS] saved_extraction_id=%s", payload.get("extraction_id") or "")
                 logger.info("[PropertySave][ADDRESS] saved_document_id=%s", payload.get("doc_id") or payload.get("document_id") or "")
+                logger.info("[PropertySave][MARKDOWN] contains_房屋用途=%s", str("房屋用途" in markdown_for_log).lower())
+                logger.info("[PropertySave][MARKDOWN] contains_建筑类型=%s", str("建筑类型" in markdown_for_log).lower())
+                logger.info("[PropertySave][MARKDOWN] contains_室号或部位=%s", str("室号或部位" in markdown_for_log).lower())
+                logger.info("[PropertySave][MARKDOWN] contains_总层数=%s", str("总层数" in markdown_for_log).lower())
+                logger.info("[PropertySave][MARKDOWN] contains_竣工日期=%s", str("竣工日期" in markdown_for_log).lower())
+                logger.info("[PropertySave][MARKDOWN] preview=%s", markdown_for_log[:500])
             payload["extracted_data"] = self._dumps(payload.get("extracted_data"), "{}")
             extracted_json_text = payload["extracted_data"]
             markdown_summary = ""
