@@ -33,6 +33,11 @@ from backend.routers.chat_helpers import extract_customer_name as extract_custom
 from backend.routers.chat_storage import _save_to_local_storage
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
+from backend.services.id_card_ocr_preprocess_service import (
+    ID_CARD_LOW_QUALITY_MESSAGE,
+    ocr_id_card_with_variants,
+    score_id_card_ocr_text,
+)
 from backend.services.job_display_config import build_job_result_summary, get_job_target_page, get_job_type_label
 from backend.services.index_rebuild_service import IndexRebuildService
 from backend.services.kyc_document_agent.classifier import (
@@ -428,6 +433,63 @@ def _ocr_pdf_pages(file_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
             logger.warning("OCR failed for page %s: %s", index, exc)
             raw_pages.append({"page": index, "text": OCR_PAGE_FAILED_PLACEHOLDER, "source": "ocr"})
     return _build_raw_text_from_pages(raw_pages), raw_pages
+
+
+def _filename_suggests_id_card(filename: str) -> bool:
+    normalized = str(filename or "").lower()
+    return any(keyword in normalized for keyword in ("身份证", "居民身份证", "法人身份证", "idcard", "id_card"))
+
+
+def _should_use_id_card_ocr(explicit_document_type: str | None, filename: str) -> bool:
+    normalized = normalize_document_type_code(explicit_document_type) or str(explicit_document_type or "").strip()
+    return normalized in {"id_card", "shareholder_id_card"} or _filename_suggests_id_card(filename)
+
+
+def _id_card_ocr_func(image_bytes: bytes) -> str:
+    return ocr_service.recognize_image(file_service.compress_image(image_bytes))
+
+
+def _ocr_image_with_id_card_variants(image_bytes: bytes) -> tuple[str, dict[str, Any]]:
+    result = ocr_id_card_with_variants(image_bytes, _id_card_ocr_func)
+    return str(result.get("text") or ""), result
+
+
+def _ocr_pdf_pages_with_id_card_variants(file_bytes: bytes, filename: str) -> tuple[str, list[dict[str, Any]]]:
+    images = file_service.pdf_to_images(file_bytes, dpi=300)
+    if not images:
+        raise HTTPException(status_code=400, detail=PDF_TO_IMAGE_FAILED_MESSAGE)
+
+    raw_pages: list[dict[str, Any]] = []
+    for index, img_bytes in enumerate(images, start=1):
+        try:
+            result = ocr_id_card_with_variants(img_bytes, _id_card_ocr_func)
+            text = str(result.get("text") or "").strip()
+            raw_pages.append(
+                {
+                    "page": index,
+                    "text": text or OCR_PAGE_FAILED_PLACEHOLDER,
+                    "source": "id_card_ocr_variants",
+                    "best_variant": result.get("best_variant") or "",
+                    "score": result.get("score") or 0,
+                    "candidates": result.get("candidates") or [],
+                    "ocr_quality": result.get("ocr_quality") or {},
+                }
+            )
+        except OCRServiceError as exc:
+            logger.warning("[IDCardOCR][PAGE_FAILED] filename=%s page=%s error=%s", filename, index, exc)
+            raw_pages.append({"page": index, "text": OCR_PAGE_FAILED_PLACEHOLDER, "source": "id_card_ocr_variants"})
+    return _build_raw_text_from_pages(raw_pages), raw_pages
+
+
+def _best_id_card_ocr_quality(raw_pages: list[dict[str, Any]]) -> dict[str, Any]:
+    quality_items = [
+        page.get("ocr_quality")
+        for page in raw_pages
+        if isinstance(page, dict) and isinstance(page.get("ocr_quality"), dict)
+    ]
+    if not quality_items:
+        return {}
+    return max(quality_items, key=lambda item: int(item.get("best_score") or item.get("score") or 0))
 
 
 def _filename_suggests_property_cert(filename: str) -> bool:
@@ -953,10 +1015,16 @@ async def _extract_content_from_file(
     file_type: str,
     filename: str,
     *,
+    explicit_document_type: str | None = None,
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, list[dict], list[dict[str, Any]]]:
     try:
         if file_type == "pdf":
+            if _should_use_id_card_ocr(explicit_document_type, filename):
+                if progress_callback:
+                    await progress_callback("正在进行身份证专用 OCR 识别")
+                text_content, raw_pages = _ocr_pdf_pages_with_id_card_variants(file_bytes, filename)
+                return text_content, [], raw_pages
             if progress_callback:
                 await progress_callback("正在解析文件")
             extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
@@ -983,6 +1051,19 @@ async def _extract_content_from_file(
         if file_type == "image":
             if progress_callback:
                 await progress_callback("正在 OCR 识别")
+            if _should_use_id_card_ocr(explicit_document_type, filename):
+                text_content, ocr_result = _ocr_image_with_id_card_variants(file_bytes)
+                return text_content, [], [
+                    {
+                        "page": 1,
+                        "text": text_content,
+                        "source": "id_card_ocr_variants",
+                        "best_variant": ocr_result.get("best_variant") or "",
+                        "score": ocr_result.get("score") or 0,
+                        "candidates": ocr_result.get("candidates") or [],
+                        "ocr_quality": ocr_result.get("ocr_quality") or {},
+                    }
+                ]
             compressed = file_service.compress_image(file_bytes)
             text_content = ocr_service.recognize_image(compressed)
             return text_content, [], [{"page": 1, "text": text_content}]
@@ -1138,6 +1219,7 @@ async def _process_file_bytes(
         file_bytes,
         file_type,
         filename,
+        explicit_document_type=explicit_document_type,
         progress_callback=progress_callback,
     )
     explicit_normalized = normalize_document_type_code(explicit_document_type)
@@ -1154,6 +1236,37 @@ async def _process_file_bytes(
         document_type_code,
         get_document_display_name(document_type_code),
     )
+    if document_type_code in {"id_card", "shareholder_id_card"} and not any(
+        isinstance(page, dict) and page.get("source") == "id_card_ocr_variants"
+        for page in raw_pages
+    ):
+        current_score = score_id_card_ocr_text(text_content)
+        if file_type in {"pdf", "image"} and current_score < 30:
+            logger.info(
+                "[IDCardOCR][FALLBACK] filename=%s current_score=%s rerun_variants=true",
+                filename,
+                current_score,
+            )
+            if progress_callback:
+                await progress_callback("正在进行身份证专用 OCR 识别")
+            if file_type == "pdf":
+                id_text, id_pages = _ocr_pdf_pages_with_id_card_variants(file_bytes, filename)
+            else:
+                id_text, id_result = _ocr_image_with_id_card_variants(file_bytes)
+                id_pages = [
+                    {
+                        "page": 1,
+                        "text": id_text,
+                        "source": "id_card_ocr_variants",
+                        "best_variant": id_result.get("best_variant") or "",
+                        "score": id_result.get("score") or 0,
+                        "candidates": id_result.get("candidates") or [],
+                        "ocr_quality": id_result.get("ocr_quality") or {},
+                    }
+                ]
+            if score_id_card_ocr_text(id_text) >= current_score:
+                text_content = id_text
+                raw_pages = id_pages
     if document_type_code == "business_license":
         seal_region_text = _ocr_business_license_seal_region(file_bytes, file_type, filename)
         if seal_region_text:
@@ -1209,7 +1322,7 @@ async def _process_file_bytes(
                 }
             else:
                 raw_pages.append({"page": 1, "text": header_region_text})
-    return _extract_structured_data(
+    process_result = _extract_structured_data(
         text_content,
         document_type_code,
         rows,
@@ -1220,6 +1333,27 @@ async def _process_file_bytes(
         customer_name=customer_name,
         historical_financial_reports=historical_financial_reports,
     )
+    if document_type_code in {"id_card", "shareholder_id_card"}:
+        quality = _best_id_card_ocr_quality(raw_pages)
+        if not quality:
+            score = score_id_card_ocr_text(text_content)
+            quality = {
+                "status": "low_quality" if score < 30 else "ok",
+                "best_score": score,
+                "best_variant": "",
+                **({"message": ID_CARD_LOW_QUALITY_MESSAGE} if score < 30 else {}),
+            }
+        content = process_result.content if isinstance(process_result.content, dict) else {}
+        content["ocr_quality"] = quality
+        if quality.get("status") == "low_quality":
+            validation = content.setdefault("validation", {})
+            if isinstance(validation, dict):
+                warnings = validation.setdefault("warnings", [])
+                if isinstance(warnings, list) and ID_CARD_LOW_QUALITY_MESSAGE not in warnings:
+                    warnings.append(ID_CARD_LOW_QUALITY_MESSAGE)
+            content["extraction_status"] = content.get("extraction_status") or "failed"
+        process_result.content = content
+    return process_result
 
 
 async def _load_historical_financial_reports(
