@@ -87,6 +87,28 @@ def _invalid_owner(value: str) -> bool:
     return not text or any(keyword in text for keyword in INVALID_OWNER_KEYWORDS)
 
 
+def _multiline_label_value(text: str, label: str, stop_labels: tuple[str, ...]) -> tuple[str, list[str]]:
+    split_lines = lines(text)
+    for index, line in enumerate(split_lines):
+        normalized = _normalized_label(line)
+        normalized_label = _normalized_label(label)
+        if normalized != normalized_label and not normalized.startswith(normalized_label):
+            continue
+        after = clean(line.split(label, 1)[-1]) if label in line else ""
+        raw_values: list[str] = [after] if after else []
+        for next_line in split_lines[index + 1 :]:
+            candidate = clean(next_line)
+            if not candidate:
+                continue
+            candidate_label = _normalized_label(candidate)
+            if any(candidate_label == _normalized_label(stop) or candidate_label.startswith(_normalized_label(stop)) for stop in stop_labels):
+                break
+            raw_values.append(candidate)
+        value = clean("".join(raw_values))
+        return value, raw_values
+    return "", []
+
+
 def _owner_and_co_owner(text: str) -> tuple[str, str, list[str]]:
     split_lines = lines(text)
     candidates: list[str] = []
@@ -196,7 +218,26 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     logger.info("[NewRealEstateSkill][OWNER] extracted_权利人=%s", fields.get("权利人") or "")
     logger.info("[NewRealEstateSkill][CO_OWNER] extracted_共有情况=%s", fields.get("共有情况") or "")
     for output_key, labels in mappings:
-        value = label_value(text, labels)
+        if output_key == "坐落":
+            value, raw_address_lines = _multiline_label_value(
+                text,
+                "坐落",
+                (
+                    "不动产单元号",
+                    "权利类型",
+                    "权利性质",
+                    "用途",
+                    "面积",
+                    "使用期限",
+                    "土地状况",
+                    "房屋状况",
+                    "权利其他状况",
+                ),
+            )
+            logger.info("[NewRealEstateSkill][ADDRESS] raw_lines_after_label=%s", raw_address_lines)
+            logger.info("[NewRealEstateSkill][ADDRESS] extracted_坐落=%s", value)
+        else:
+            value = label_value(text, labels)
         if value:
             if output_key in {"宗地面积", "建筑面积"}:
                 value = _area(value)

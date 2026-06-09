@@ -423,8 +423,10 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
     logger.info("[AttachmentSkill] room_parts=%s", room_numbers)
     logger.info("[AttachmentSkill] building_areas=%s", building_areas)
     logger.info("[AttachmentSkill] house_usages=%s", house_usages)
+    logger.info("[AttachmentSkill][HOUSE_USAGE] house_usages=%s", house_usages)
     logger.info("[AttachmentSkill] building_types=%s", building_types)
     logger.info("[AttachmentSkill] total_floors=%s", total_floors)
+    logger.info("[AttachmentSkill][TOTAL_FLOORS] total_floors=%s", total_floors)
     logger.info("[AttachmentSkill] completion_dates=%s", completion_dates)
     logger.info("[AttachmentSkill] rows_count=%s", len(rows))
     warnings = []

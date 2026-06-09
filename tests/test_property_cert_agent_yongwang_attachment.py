@@ -14,7 +14,8 @@ DETAIL_TEXT = """
 封面编号
 D31004264460
 坐落
-惠南镇东门大街200号1-6层，惠南镇东门大街200号14幢1-2层、4层东2间
+惠南镇东门大街200号1-6层，惠南镇东门大街200号14
+幢1-2层、4层东2间
 不动产单元号
 详见附记
 权利类型
@@ -124,6 +125,8 @@ def test_yongwang_attachment_backfills_final_markdown() -> None:
     assert "建筑类型: 国有" not in markdown
     assert f"不动产单元号: {'、'.join(EXPECTED_UNITS)}" in markdown
     assert "权利人: 北京咏旺物业管理有限公司" in markdown
+    assert "坐落: 惠南镇东门大街200号1-6层，惠南镇东门大街200号14幢1-2层、4层东2间" in markdown
+    assert "坐落: 惠南镇东门大街200号1-6层，惠南镇东门大街200号14\n" not in markdown
     assert "房屋用途: 商业" in markdown
     assert "建筑类型: 商场" in markdown
     assert "室号或部位: 200号1层、200号2层、200号3层、200号4层、200号5层、200号6层、14幢1-2层、4层东2间" in markdown
