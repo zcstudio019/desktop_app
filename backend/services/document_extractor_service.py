@@ -42,6 +42,7 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
 KYC_DOC_TYPES = {
     "id_card",
     "marriage_cert",
+    "marriage_certificate",
     "divorce_cert",
     "household_register",
     "business_license",
@@ -66,6 +67,7 @@ KYC_LEGACY_DOC_TYPE_ALIASES = {
     "property_report": "real_estate_query",
     "company_articles": "articles_keypage",
     "special_license": "special_business_license",
+    "marriage_cert": "marriage_certificate",
 }
 
 KYC_ALLOWED_METADATA_KEYS = {

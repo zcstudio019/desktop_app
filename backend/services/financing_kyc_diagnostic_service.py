@@ -65,6 +65,7 @@ def build_financing_kyc_diagnostic(
     enterprise = _section(profile, "enterprise_identity")
     identity = _section(profile, "person_identity")
     bank = _section(profile, "bank_account")
+    marriage = _section(profile, "marriage")
 
     enterprise_status = _status_for_section(enterprise, ["company_name", "unified_social_credit_code", "legal_representative"])
     identity_status = _status_for_section(identity, ["name", "id_number"])
@@ -95,6 +96,9 @@ def build_financing_kyc_diagnostic(
         key_risks.extend(conflicts)
         for conflict in conflicts:
             recommended_actions.append(f"请核对字段冲突：{conflict}")
+
+    if marriage.get("marital_status") == "已婚" and not marriage.get("holder_2_id_number"):
+        recommended_actions.append("建议补充结婚证或配偶身份证，用于部分银行核验配偶信息")
 
     serious_conflict = _has_serious_conflict(conflicts)
     has_required_missing = bool(missing_materials)

@@ -45,6 +45,7 @@ SKILL_MODULES = {
     "account_receipt": "backend.services.kyc_document_agent.skills.account_receipt_skill",
     "taxpayer_qualification": "backend.services.kyc_document_agent.skills.taxpayer_qualification_skill",
     "marriage_cert": "backend.services.kyc_document_agent.skills.marriage_cert_skill",
+    "marriage_certificate": "backend.services.kyc_document_agent.skills.marriage_cert_skill",
     "divorce_cert": "backend.services.kyc_document_agent.skills.divorce_cert_skill",
     "household_register": "backend.services.kyc_document_agent.skills.household_register_skill",
 }

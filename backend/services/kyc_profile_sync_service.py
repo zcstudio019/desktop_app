@@ -54,10 +54,20 @@ def _empty_profile(customer_id: str) -> dict[str, Any]:
             "source_document_id": "",
         },
         "marriage": {
+            "marital_status": "",
+            "certificate_no": "",
             "holder_name": "",
+            "holder_1_name": "",
+            "holder_1_id_number": "",
             "spouse_name": "",
+            "holder_2_name": "",
+            "holder_2_id_number": "",
+            "marriage_date": "",
             "registration_date": "",
+            "registration_authority": "",
+            "issue_date": "",
             "source_document_id": "",
+            "confirmed": False,
         },
         "assets": {
             "properties": [],
@@ -472,19 +482,26 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
                 value, source = _effective_field(fields, confirmed_fields, "company_name", source_document_id)
                 profile["bank_account"]["account_name"] = value
                 profile["bank_account"].setdefault("field_sources", {})["account_name"] = source
-        elif doc_type == "marriage_cert":
-            _apply_latest_single(
-                profile,
-                "marriage",
-                fields,
-                confirmed_fields,
-                {
-                    "holder_name": "holder_name",
-                    "spouse_name": "spouse_name",
-                    "registration_date": "registration_date",
-                },
-                source_document_id,
-            )
+        elif doc_type in {"marriage_certificate", "marriage_cert"}:
+            holder_1 = confirmed_fields.get("holder_1") if isinstance(confirmed_fields.get("holder_1"), dict) else fields.get("holder_1")
+            holder_2 = confirmed_fields.get("holder_2") if isinstance(confirmed_fields.get("holder_2"), dict) else fields.get("holder_2")
+            holder_1 = holder_1 if isinstance(holder_1, dict) else {}
+            holder_2 = holder_2 if isinstance(holder_2, dict) else {}
+            marriage = profile["marriage"]
+            marriage["marital_status"] = _string(confirmed_fields.get("marital_status") or fields.get("marital_status") or "已婚")
+            marriage["certificate_no"] = _string(confirmed_fields.get("certificate_no") or fields.get("certificate_no") or confirmed_fields.get("certificate_number") or fields.get("certificate_number"))
+            marriage["holder_name"] = _string(holder_1.get("name") or confirmed_fields.get("holder_name") or fields.get("holder_name"))
+            marriage["holder_1_name"] = marriage["holder_name"]
+            marriage["holder_1_id_number"] = _string(holder_1.get("id_number") or confirmed_fields.get("holder_id_number") or fields.get("holder_id_number"))
+            marriage["spouse_name"] = _string(holder_2.get("name") or confirmed_fields.get("spouse_name") or fields.get("spouse_name"))
+            marriage["holder_2_name"] = marriage["spouse_name"]
+            marriage["holder_2_id_number"] = _string(holder_2.get("id_number") or confirmed_fields.get("spouse_id_number") or fields.get("spouse_id_number"))
+            marriage["marriage_date"] = _string(confirmed_fields.get("marriage_date") or fields.get("marriage_date") or confirmed_fields.get("registration_date") or fields.get("registration_date"))
+            marriage["registration_date"] = marriage["marriage_date"]
+            marriage["registration_authority"] = _string(confirmed_fields.get("registration_authority") or fields.get("registration_authority") or confirmed_fields.get("issuing_authority") or fields.get("issuing_authority"))
+            marriage["issue_date"] = _string(confirmed_fields.get("issue_date") or fields.get("issue_date"))
+            marriage["source_document_id"] = source_document_id
+            marriage["confirmed"] = bool(confirmed_fields)
         elif doc_type in PROPERTY_DOC_TYPES:
             profile["assets"]["properties"].append(_property_item_from_extraction(extraction, fields, source_document_id, doc_type, confirmed_fields))
         elif doc_type in VEHICLE_DOC_TYPES:

@@ -1,6 +1,7 @@
 export const KYC_DOC_TYPES = new Set([
   'id_card',
   'marriage_cert',
+  'marriage_certificate',
   'divorce_cert',
   'household_register',
   'business_license',
@@ -98,6 +99,13 @@ const FIELD_LABELS: Record<string, string> = {
   spouse_name: '配偶姓名',
   holder_id_number: '持证人身份证号码',
   spouse_id_number: '配偶身份证号码',
+  certificate_no: '结婚证字号',
+  marital_status: '婚姻状态',
+  marriage_date: '登记日期',
+  holder_1_name: '配偶一姓名',
+  holder_1_id_number: '配偶一身份证号',
+  holder_2_name: '配偶二姓名',
+  holder_2_id_number: '配偶二身份证号',
   权利人: '权利人',
   共有人: '共有人',
   共有情况: '共有情况',
@@ -447,6 +455,34 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
 
   const display = new Map<string, string>();
   const isPropertyCert = docType === 'property_cert' || docType === 'real_estate_cert';
+  const isMarriageCert = docType === 'marriage_certificate' || docType === 'marriage_cert';
+  if (isMarriageCert) {
+    const holder1 = parseMaybeRecord(fields.holder_1);
+    const holder2 = parseMaybeRecord(fields.holder_2);
+    const entries: Array<[string, unknown]> = [
+      ['婚姻状态', fields.marital_status || '已婚'],
+      ['结婚证字号', fields.certificate_no || fields.certificate_number],
+      ['登记机关', fields.registration_authority || fields.issuing_authority],
+      ['发证日期', fields.issue_date],
+      ['登记日期', fields.marriage_date || fields.registration_date],
+      ['配偶一姓名', holder1.name || fields.holder_name || fields.holder_1_name],
+      ['配偶一性别', holder1.gender],
+      ['配偶一国籍', holder1.nationality],
+      ['配偶一出生日期', holder1.birth_date],
+      ['配偶一身份证号', holder1.id_number || fields.holder_id_number || fields.holder_1_id_number],
+      ['配偶二姓名', holder2.name || fields.spouse_name || fields.holder_2_name],
+      ['配偶二性别', holder2.gender],
+      ['配偶二国籍', holder2.nationality],
+      ['配偶二出生日期', holder2.birth_date],
+      ['配偶二身份证号', holder2.id_number || fields.spouse_id_number || fields.holder_2_id_number],
+    ];
+    entries.forEach(([label, value]) => {
+      if (isInvalidDisplayValue(value)) return;
+      const text = formatKycDisplayValue(value);
+      if (text) display.set(label, text);
+    });
+    return Object.fromEntries(display.entries());
+  }
   const ownerDisplay = isPropertyCert ? mergeOwnerFields(fields) : '';
   if (ownerDisplay) {
     display.set('权利人', ownerDisplay);

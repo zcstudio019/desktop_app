@@ -1,38 +1,227 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from backend.services.kyc_document_agent.evidence import build_field_maps, first_match, raw_preview
+from backend.services.kyc_document_agent.evidence import build_field_maps, raw_preview
 from backend.services.kyc_document_agent.schema import build_result, normalize_input
+
+
+STOP_LABELS = (
+    "姓名",
+    "性别",
+    "国籍",
+    "出生日期",
+    "身份证件号",
+    "身份证号",
+    "婚姻登记机关",
+    "登记机关",
+    "发证日期",
+    "结婚证字号",
+    "持证人",
+)
+
+
+def _compact_label_text(text: str) -> str:
+    replacements = {
+        "姓 名": "姓名",
+        "性 别": "性别",
+        "国 籍": "国籍",
+        "出生 日期": "出生日期",
+        "身份证 件号": "身份证件号",
+        "身份证件 号": "身份证件号",
+    }
+    value = str(text or "").replace("：", ":")
+    for old, new in replacements.items():
+        value = value.replace(old, new)
+    return re.sub(r"[ \t]+", " ", value)
+
+
+def _normalize_date(value: str) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"(\d{4})\s*[年./-]\s*(\d{1,2})\s*[月./-]\s*(\d{1,2})\s*日?", text)
+    if not match:
+        match = re.search(r"(\d{4})(\d{2})(\d{2})", text)
+    if not match:
+        return text
+    year, month, day = (int(item) for item in match.groups())
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _normalize_id(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "")).upper()
+
+
+def _id_birth(id_number: str) -> str:
+    code = _normalize_id(id_number)
+    if re.fullmatch(r"\d{17}[\dX]", code):
+        return _normalize_date(code[6:14])
+    return ""
+
+
+def _id_gender(id_number: str) -> str:
+    code = _normalize_id(id_number)
+    if re.fullmatch(r"\d{17}[\dX]", code):
+        return "男" if int(code[16]) % 2 else "女"
+    return ""
+
+
+def _clean_name(value: str) -> str:
+    text = re.sub(r"\s+", "", str(value or ""))
+    text = re.split("|".join(STOP_LABELS), text)[0]
+    match = re.search(r"[\u4e00-\u9fa5·]{2,8}", text)
+    return match.group(0) if match else ""
+
+
+def _extract_certificate_no(text: str) -> tuple[str, str]:
+    patterns = [
+        r"(结婚证字号|证字号|字号)\s*[:：]?\s*([A-Za-z]\d[\w-]{4,}|[\u4e00-\u9fa5]{1,4}字第?\d{3,12}号)",
+        r"(结婚证字号|证字号|字号)\s*[:：]?\s*([^\n\r]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = re.sub(r"\s+", "", match.group(2)).strip(" :：,，;；")
+            value = re.split(r"(姓名|持证人|婚姻登记机关|发证日期)", value)[0].strip()
+            return value, match.group(0)
+    return "", ""
+
+
+def _extract_labeled_values(text: str, label: str, value_pattern: str) -> list[tuple[str, str]]:
+    pattern = rf"{label}\s*[:：]?\s*({value_pattern})"
+    return [(match.group(1).strip(), match.group(0)) for match in re.finditer(pattern, text)]
+
+
+def _extract_names(text: str) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    for match in re.finditer(r"姓名\s*[:：]?\s*([^\n\r]{1,30})", text):
+        name = _clean_name(match.group(1))
+        if name and name not in {"姓名", "性别", "国籍", "出生日期"}:
+            values.append((name, match.group(0)))
+    return values
+
+
+def _extract_ids(text: str) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    for match in re.finditer(r"(?<!\d)(\d(?:\s*\d){16}\s*[\dXx])(?!\d)", text):
+        values.append((_normalize_id(match.group(1)), match.group(0)))
+    return values
+
+
+def _extract_authority(text: str) -> tuple[str, str]:
+    match = re.search(r"(?:婚姻登记机关|登记机关|发证机关)\s*[:：]?\s*([^\n\r]+)", text)
+    if not match:
+        return "", ""
+    value = re.split(r"(发证日期|登记日期|结婚证字号|姓名)", match.group(1))[0].strip(" :：,，;；")
+    return value, match.group(0)
+
+
+def _extract_issue_date(text: str) -> tuple[str, str]:
+    match = re.search(r"(?:发证日期|登记日期|日期)\s*[:：]?\s*(\d{4}\s*[年./-]\s*\d{1,2}\s*[月./-]\s*\d{1,2}\s*日?)", text)
+    if not match:
+        return "", ""
+    return _normalize_date(match.group(1)), match.group(0)
+
+
+def _pair_holders(text: str, warnings: list[str]) -> tuple[list[dict[str, str]], dict[str, str]]:
+    names = _extract_names(text)
+    genders = _extract_labeled_values(text, "性别", r"[男女]")
+    nationalities = _extract_labeled_values(text, "国籍", r"[\u4e00-\u9fa5]{1,8}")
+    births = [
+        (_normalize_date(value), evidence)
+        for value, evidence in _extract_labeled_values(
+            text,
+            "出生日期",
+            r"\d{4}\s*[年./-]\s*\d{1,2}\s*[月./-]\s*\d{1,2}\s*日?",
+        )
+    ]
+    ids = _extract_ids(text)
+    holders: list[dict[str, str]] = []
+    evidence: dict[str, str] = {}
+    count = max(len(names), len(ids), len(genders), len(births), 2)
+    for index in range(min(count, 2)):
+        holder: dict[str, str] = {
+            "name": names[index][0] if index < len(names) else "",
+            "gender": genders[index][0] if index < len(genders) else "",
+            "nationality": nationalities[index][0] if index < len(nationalities) else "",
+            "birth_date": births[index][0] if index < len(births) else "",
+            "id_number": ids[index][0] if index < len(ids) else "",
+        }
+        if holder["nationality"] in {"中", "中国人"}:
+            holder["nationality"] = "中国"
+        if not holder["birth_date"] and holder["id_number"]:
+            holder["birth_date"] = _id_birth(holder["id_number"])
+            if holder["birth_date"]:
+                warnings.append(f"配偶{index + 1}出生日期由身份证号推断")
+        if not holder["gender"] and holder["id_number"]:
+            holder["gender"] = _id_gender(holder["id_number"])
+            if holder["gender"]:
+                warnings.append(f"配偶{index + 1}性别由身份证号推断")
+        holders.append(holder)
+        prefix = f"holder_{index + 1}"
+        if index < len(names):
+            evidence[f"{prefix}.name"] = names[index][1]
+        if index < len(ids):
+            evidence[f"{prefix}.id_number"] = ids[index][1]
+        if index < len(births):
+            evidence[f"{prefix}.birth_date"] = births[index][1]
+    while len(holders) < 2:
+        holders.append({"name": "", "gender": "", "nationality": "", "birth_date": "", "id_number": ""})
+    return holders, evidence
 
 
 def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     data = normalize_input(payload)
-    text = data["text"]
-    holder_name, holder_evidence = first_match(text, [r"(?:持证人|姓名)\s*[:：]?\s*([\u4e00-\u9fa5·]{2,20})"])
-    spouse_name, spouse_evidence = first_match(text, [r"(?:配偶|另一方|女方|男方)姓名\s*[:：]?\s*([\u4e00-\u9fa5·]{2,20})", r"配偶\s*[:：]?\s*([\u4e00-\u9fa5·]{2,20})"])
-    ids = [match.group(1).upper() for match in __import__("re").finditer(r"([1-9]\d{16}[\dXx])", text)]
-    holder_id = ids[0] if ids else ""
-    spouse_id = ids[1] if len(ids) > 1 else ""
-    holder_id_evidence = holder_id
-    spouse_id_evidence = spouse_id
-    registration_date, registration_evidence = first_match(text, [r"登记日期\s*[:：]?\s*(\d{4}年\d{1,2}月\d{1,2}日|\d{4}[-./]\d{1,2}[-./]\d{1,2})"])
-    authority, authority_evidence = first_match(text, [r"(?:登记机关|发证机关)\s*[:：]?\s*([^\n]+)"])
-    cert_number, cert_evidence = first_match(text, [r"(?:结婚证字号|证字号|证书编号)\s*[:：]?\s*([^\n]+)"])
-    fields, evidence, confidences = build_field_maps(
-        text,
-        {
-            "holder_name": (holder_name, holder_evidence, 0.78),
-            "spouse_name": (spouse_name, spouse_evidence, 0.76),
-            "holder_id_number": (holder_id, holder_id_evidence, 0.78),
-            "spouse_id_number": (spouse_id, spouse_id_evidence, 0.78),
-            "registration_date": (registration_date, registration_evidence, 0.82),
-            "issuing_authority": (authority, authority_evidence, 0.76),
-            "certificate_number": (cert_number, cert_evidence, 0.72),
-        },
-    )
-    result = build_result("marriage_cert", fields, evidence)
+    text = _compact_label_text(data["text"])
+    warnings: list[str] = []
+
+    certificate_no, cert_evidence = _extract_certificate_no(text)
+    authority, authority_evidence = _extract_authority(text)
+    issue_date, issue_evidence = _extract_issue_date(text)
+    holders, holder_evidence = _pair_holders(text, warnings)
+    holder_1, holder_2 = holders[0], holders[1]
+    marriage_date = issue_date
+
+    fields = {
+        "certificate_no": certificate_no,
+        "holder_1": holder_1,
+        "holder_2": holder_2,
+        "marriage_date": marriage_date,
+        "registration_authority": authority,
+        "issue_date": issue_date,
+        "marital_status": "已婚",
+        "holder_name": holder_1.get("name") or "",
+        "spouse_name": holder_2.get("name") or "",
+        "holder_id_number": holder_1.get("id_number") or "",
+        "spouse_id_number": holder_2.get("id_number") or "",
+        "registration_date": marriage_date,
+        "issuing_authority": authority,
+        "certificate_number": certificate_no,
+    }
+    evidence_payload: dict[str, Any] = {}
+    raw_evidence = {
+        "certificate_no": cert_evidence,
+        "registration_authority": authority_evidence,
+        "issue_date": issue_evidence,
+        **holder_evidence,
+    }
+    for field, evidence_text in raw_evidence.items():
+        if evidence_text:
+            evidence_payload[field] = {"value": field, "evidence_text": evidence_text, "page": None, "confidence": 0.78}
+
+    flat_for_confidence = {
+        "certificate_no": (certificate_no, cert_evidence, 0.82),
+        "holder_name": (fields["holder_name"], holder_evidence.get("holder_1.name", ""), 0.8),
+        "spouse_name": (fields["spouse_name"], holder_evidence.get("holder_2.name", ""), 0.8),
+        "holder_id_number": (fields["holder_id_number"], holder_evidence.get("holder_1.id_number", ""), 0.82),
+        "spouse_id_number": (fields["spouse_id_number"], holder_evidence.get("holder_2.id_number", ""), 0.82),
+        "registration_authority": (authority, authority_evidence, 0.72),
+        "issue_date": (issue_date, issue_evidence, 0.72),
+    }
+    _, _, confidences = build_field_maps(text, flat_for_confidence)
+    result = build_result("marriage_certificate", fields, evidence_payload)
     result["confidence"]["fields"] = confidences
-    result["confidence"]["overall"] = round(sum(confidences.values()) / len(confidences), 4)
+    result["confidence"]["overall"] = round(sum(confidences.values()) / len(confidences), 4) if confidences else 0.0
     result["raw_text_preview"] = raw_preview(text)
+    result["validation"]["warnings"].extend(warnings)
     return result

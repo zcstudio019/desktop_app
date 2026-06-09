@@ -58,6 +58,7 @@ DECLARED_DOC_TYPE_ALIASES = {
     "real_estate_certificate": "real_estate_cert",
     "account_license": "account_permit",
     "hukou": "household_register",
+    "marriage_cert": "marriage_certificate",
 }
 
 
@@ -111,11 +112,35 @@ def classify_with_reason(text: str, filename: str = "", declared_doc_type: str |
             "owner_type": OWNER_TYPES["household_register"],
             "reason": "文本命中户口本关键词，排除身份证误判",
         }
+    if "离婚证" in compact or "离婚登记" in compact:
+        return {
+            "doc_type": "divorce_cert",
+            "doc_type_name": DOC_TYPE_NAMES["divorce_cert"],
+            "owner_type": OWNER_TYPES["divorce_cert"],
+            "reason": "文本命中离婚证关键词，优先排除结婚证误判",
+        }
+    marriage_patterns = (
+        ("结婚证字号",),
+        ("结婚证", "姓名", "身份证件号"),
+        ("中华人民共和国民政部监制", "持证人"),
+        ("婚姻登记机关", "发给此证"),
+        ("符合《中华人民共和国婚姻法》", "准予登记"),
+        ("结婚证", "身份证件号"),
+        ("婚姻登记员",),
+    )
+    for keywords in marriage_patterns:
+        if all(keyword in compact for keyword in keywords):
+            return {
+                "doc_type": "marriage_certificate",
+                "doc_type_name": DOC_TYPE_NAMES["marriage_certificate"],
+                "owner_type": OWNER_TYPES["marriage_certificate"],
+                "reason": f"文本命中结婚证关键词：{'+'.join(keywords)}",
+            }
     if "结婚证" in compact or "婚姻登记员" in compact:
         return {
-            "doc_type": "marriage_cert",
-            "doc_type_name": DOC_TYPE_NAMES["marriage_cert"],
-            "owner_type": OWNER_TYPES["marriage_cert"],
+            "doc_type": "marriage_certificate",
+            "doc_type_name": DOC_TYPE_NAMES["marriage_certificate"],
+            "owner_type": OWNER_TYPES["marriage_certificate"],
             "reason": "文本命中结婚证关键词，排除身份证号误判",
         }
 

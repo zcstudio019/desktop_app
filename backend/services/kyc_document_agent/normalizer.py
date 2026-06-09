@@ -66,7 +66,35 @@ def normalize_text_field(value: Any) -> str:
 
 
 def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("doc_type") == "marriage_cert":
+        result["doc_type"] = "marriage_certificate"
+        result["doc_type_name"] = "结婚证"
     fields = result.get("fields") or {}
+    if result.get("doc_type") == "marriage_certificate":
+        for holder_key in ("holder_1", "holder_2"):
+            holder = fields.get(holder_key)
+            if isinstance(holder, dict):
+                if holder.get("id_number"):
+                    holder["id_number"] = normalize_id_number(holder.get("id_number"))
+                if holder.get("birth_date"):
+                    holder["birth_date"] = normalize_date(holder.get("birth_date"))
+                if holder.get("gender"):
+                    gender = str(holder.get("gender") or "").strip()
+                    holder["gender"] = gender if gender in {"男", "女"} else ""
+                if holder.get("nationality"):
+                    nationality = normalize_text_field(holder.get("nationality"))
+                    holder["nationality"] = "中国" if nationality in {"中", "中国", "中华人民共和国"} else nationality
+        for field in ("holder_id_number", "spouse_id_number"):
+            if fields.get(field):
+                fields[field] = normalize_id_number(fields.get(field))
+        for field in ("marriage_date", "registration_date", "issue_date"):
+            if fields.get(field):
+                fields[field] = normalize_date(fields.get(field))
+        if fields.get("certificate_no"):
+            fields["certificate_no"] = re.sub(r"\s+", "", str(fields.get("certificate_no") or "")).strip()
+        if fields.get("certificate_number"):
+            fields["certificate_number"] = re.sub(r"\s+", "", str(fields.get("certificate_number") or "")).strip()
+        fields["marital_status"] = "已婚"
     for field, value in list(fields.items()):
         if result.get("doc_type") == "id_card" and field == "id_number":
             fields[field] = normalize_id_number(value)

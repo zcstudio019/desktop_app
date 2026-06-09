@@ -90,6 +90,58 @@ def _validate_id_card_result(result: dict[str, Any], warnings: list[str], errors
     result["extraction_status"] = "failed"
 
 
+def _holder(fields: dict[str, Any], key: str) -> dict[str, Any]:
+    value = fields.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _validate_marriage_certificate_result(result: dict[str, Any], warnings: list[str], errors: list[str]) -> None:
+    fields = result.get("fields") or {}
+    holder_1 = _holder(fields, "holder_1")
+    holder_2 = _holder(fields, "holder_2")
+    missing: list[str] = []
+    if not fields.get("certificate_no") and not fields.get("certificate_number"):
+        missing.append("结婚证字号")
+    if not holder_1.get("name") and not fields.get("holder_name"):
+        missing.append("配偶一姓名")
+    if not holder_2.get("name") and not fields.get("spouse_name"):
+        missing.append("配偶二姓名")
+    id_1 = str(holder_1.get("id_number") or fields.get("holder_id_number") or "").strip().upper()
+    id_2 = str(holder_2.get("id_number") or fields.get("spouse_id_number") or "").strip().upper()
+    if not id_1:
+        missing.append("配偶一身份证号")
+    if not id_2:
+        missing.append("配偶二身份证号")
+    result["missing_fields"] = missing
+
+    if id_1 and not validate_id_number(id_1):
+        warnings.append("配偶一身份证号格式或校验位不合法")
+    if id_2 and not validate_id_number(id_2):
+        warnings.append("配偶二身份证号格式或校验位不合法")
+    for index, (holder, id_number) in enumerate(((holder_1, id_1), (holder_2, id_2)), start=1):
+        birth_date = str(holder.get("birth_date") or "").strip()
+        if id_number and birth_date and re.fullmatch(r"\d{17}[\dX]", id_number):
+            id_birth = f"{id_number[6:10]}-{id_number[10:12]}-{id_number[12:14]}"
+            if _is_valid_date(id_birth) and birth_date != id_birth:
+                warnings.append(f"配偶{index}身份证号中的出生日期与 OCR 出生日期不一致")
+    if id_1 and id_2 and id_1 == id_2:
+        errors.append("两位配偶身份证号相同")
+    name_1 = str(holder_1.get("name") or fields.get("holder_name") or "").strip()
+    name_2 = str(holder_2.get("name") or fields.get("spouse_name") or "").strip()
+    if name_1 and name_2 and name_1 == name_2:
+        warnings.append("两位配偶姓名相同，请人工复核")
+    fields["marital_status"] = "已婚"
+
+    if errors:
+        result["extraction_status"] = "partial" if fields else "failed"
+    elif missing:
+        result["extraction_status"] = "partial"
+    elif fields:
+        result["extraction_status"] = "success"
+    else:
+        result["extraction_status"] = "failed"
+
+
 def validate_result(result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") or {}
     doc_type = result.get("doc_type") or "unknown"
@@ -98,6 +150,9 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
 
     if doc_type == "id_card":
         _validate_id_card_result(result, warnings, errors)
+    elif doc_type in {"marriage_certificate", "marriage_cert"}:
+        result["doc_type"] = "marriage_certificate"
+        _validate_marriage_certificate_result(result, warnings, errors)
     else:
         required = REQUIRED_FIELDS.get(doc_type, [])
         missing = [field for field in required if not fields.get(field)]
@@ -130,7 +185,7 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         "warnings": list(dict.fromkeys(warnings)),
         "errors": list(dict.fromkeys(errors)),
     }
-    if doc_type != "id_card":
+    if result.get("doc_type") not in {"id_card", "marriage_certificate"}:
         if errors:
             result["extraction_status"] = "partial" if fields else "failed"
         elif result.get("missing_fields"):

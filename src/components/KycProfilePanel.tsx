@@ -77,6 +77,22 @@ const KycProfilePanel: React.FC<{
             <FieldGrid data={profile?.person_identity} fields={['name', 'id_number', 'gender', 'birth_date', 'address']} />
           </div>
           <div>
+            <h4 className="mb-2 text-sm font-semibold text-slate-800">婚姻信息</h4>
+            <FieldGrid
+              data={profile?.marriage}
+              fields={[
+                'marital_status',
+                'certificate_no',
+                'holder_1_name',
+                'holder_1_id_number',
+                'holder_2_name',
+                'holder_2_id_number',
+                'marriage_date',
+                'registration_authority',
+              ]}
+            />
+          </div>
+          <div>
             <h4 className="mb-2 text-sm font-semibold text-slate-800">银行账户信息</h4>
             <FieldGrid data={profile?.bank_account} fields={['account_name', 'account_number', 'opening_bank', 'account_type']} />
           </div>

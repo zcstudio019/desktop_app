@@ -22,6 +22,7 @@ DOC_TYPE_NAMES = {
     "account_receipt": "开户信息回单",
     "taxpayer_qualification": "纳税人资格证明",
     "marriage_cert": "结婚证",
+    "marriage_certificate": "结婚证",
     "divorce_cert": "离婚证",
     "household_register": "户口本",
     "unknown": "未知资料",
@@ -31,6 +32,7 @@ OWNER_TYPES = {
     "id_card": "person",
     "shareholder_id_card": "person",
     "marriage_cert": "person",
+    "marriage_certificate": "person",
     "divorce_cert": "person",
     "household_register": "person",
     "business_license": "enterprise",
@@ -59,6 +61,7 @@ REQUIRED_FIELDS = {
     "real_estate_cert": ["owner", "certificate_number", "property_unit_number", "property_address"],
     "vehicle_license": ["plate_number", "vehicle_owner", "vehicle_identification_number"],
     "marriage_cert": ["holder_name", "spouse_name", "registration_date"],
+    "marriage_certificate": ["certificate_no", "holder_1", "holder_2"],
 }
 
 

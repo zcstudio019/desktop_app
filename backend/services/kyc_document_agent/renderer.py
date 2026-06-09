@@ -127,6 +127,15 @@ FIELD_LABELS = {
     "issuing_authority": "签发机关",
     "valid_from": "有效期限起",
     "valid_to": "有效期限止",
+    "certificate_no": "结婚证字号",
+    "certificate_number": "结婚证字号",
+    "marital_status": "婚姻状态",
+    "marriage_date": "登记日期",
+    "registration_authority": "登记机关",
+    "holder_name": "配偶一姓名",
+    "spouse_name": "配偶二姓名",
+    "holder_id_number": "配偶一身份证号",
+    "spouse_id_number": "配偶二身份证号",
     "owner": "权利人",
     "co_owners": "共有人",
     "certificate_number": "权证编号",
@@ -343,6 +352,50 @@ def render_markdown(result: dict[str, Any]) -> str:
         if missing:
             lines.extend(["", "### 缺失字段"])
             lines.extend(f"- {field_label(str(item))}" for item in missing)
+        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+        notices = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
+        if notices:
+            lines.extend(["", "### 校验提醒"])
+            lines.extend(f"- {item}" for item in dict.fromkeys(str(item) for item in notices))
+        return "\n".join(lines)
+
+    if result.get("doc_type") in {"marriage_certificate", "marriage_cert"}:
+        fields = result.get("fields") or {}
+        holder_1 = fields.get("holder_1") if isinstance(fields.get("holder_1"), dict) else {}
+        holder_2 = fields.get("holder_2") if isinstance(fields.get("holder_2"), dict) else {}
+        lines = [
+            "## 结婚证",
+            f"- 资料类型：结婚证",
+            f"- 婚姻状态：{_format_value(fields.get('marital_status') or '已婚')}",
+        ]
+        for label, value in (
+            ("结婚证字号", fields.get("certificate_no") or fields.get("certificate_number")),
+            ("登记机关", fields.get("registration_authority") or fields.get("issuing_authority")),
+            ("发证日期", fields.get("issue_date")),
+            ("登记日期", fields.get("marriage_date") or fields.get("registration_date")),
+        ):
+            if value:
+                lines.append(f"- {label}：{_format_value(value)}")
+        lines.extend(["", "### 配偶一"])
+        for label, value in (
+            ("姓名", holder_1.get("name") or fields.get("holder_name")),
+            ("性别", holder_1.get("gender")),
+            ("国籍", holder_1.get("nationality")),
+            ("出生日期", holder_1.get("birth_date")),
+            ("身份证号", holder_1.get("id_number") or fields.get("holder_id_number")),
+        ):
+            if value:
+                lines.append(f"- {label}：{_format_value(value)}")
+        lines.extend(["", "### 配偶二"])
+        for label, value in (
+            ("姓名", holder_2.get("name") or fields.get("spouse_name")),
+            ("性别", holder_2.get("gender")),
+            ("国籍", holder_2.get("nationality")),
+            ("出生日期", holder_2.get("birth_date")),
+            ("身份证号", holder_2.get("id_number") or fields.get("spouse_id_number")),
+        ):
+            if value:
+                lines.append(f"- {label}：{_format_value(value)}")
         validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
         notices = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
         if notices:

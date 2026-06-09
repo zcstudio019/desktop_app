@@ -17,6 +17,7 @@ def evaluate_kyc_completeness(profile: dict[str, Any] | None) -> dict[str, Any]:
     enterprise = _section(profile, "enterprise_identity")
     person = _section(profile, "person_identity")
     bank = _section(profile, "bank_account")
+    marriage = _section(profile, "marriage")
     assets = _section(profile, "assets")
     properties = assets.get("properties") if isinstance(assets.get("properties"), list) else []
     vehicles = assets.get("vehicles") if isinstance(assets.get("vehicles"), list) else []
@@ -60,6 +61,12 @@ def evaluate_kyc_completeness(profile: dict[str, Any] | None) -> dict[str, Any]:
         optional_missing.append("房产证/不动产权证")
     if not vehicles:
         optional_missing.append("行驶证")
+    if marriage.get("marital_status") == "已婚":
+        if not marriage.get("source_document_id"):
+            optional_missing.append("结婚证")
+        if not marriage.get("holder_2_id_number"):
+            optional_missing.append("配偶身份证")
+        suggestions.append("建议补充结婚证或配偶身份证，用于部分银行核验配偶信息")
 
     for item in required_missing:
         suggestions.append(f"请补充上传{item}")
