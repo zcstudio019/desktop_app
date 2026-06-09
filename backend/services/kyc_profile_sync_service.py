@@ -27,9 +27,14 @@ def _empty_profile(customer_id: str) -> dict[str, Any]:
             "name": "",
             "id_number": "",
             "gender": "",
+            "ethnicity": "",
             "birth_date": "",
             "address": "",
+            "issuing_authority": "",
+            "valid_from": "",
+            "valid_to": "",
             "source_document_id": "",
+            "source_file": "",
         },
         "enterprise_identity": {
             "company_name": "",
@@ -69,6 +74,32 @@ def _fields(payload: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _payload_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _extraction_payloads(extraction: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for key in ("extracted_data", "extracted_json", "data", "agent_result"):
+        payload = _payload_dict(extraction.get(key))
+        if payload:
+            payloads.append(payload)
+    return payloads
+
+
+def _effective_fields(extraction: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for payload in _extraction_payloads(extraction):
+        for key, value in _fields(payload).items():
+            if merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+                merged[key] = value
+    direct_fields = _payload_dict(extraction.get("fields"))
+    for key, value in direct_fields.items():
+        if merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+            merged[key] = value
+    return merged
+
+
 def _confirmed_fields(extraction: dict[str, Any]) -> dict[str, Any]:
     confirmed = extraction.get("confirmed_data")
     if not isinstance(confirmed, dict):
@@ -101,13 +132,14 @@ def _mask_id_number(value: Any) -> str:
 
 
 def _is_kyc_extraction(extraction: dict[str, Any]) -> bool:
-    data = extraction.get("extracted_data")
-    return isinstance(data, dict) and data.get("agent_type") == KYC_AGENT_TYPE
+    for data in _extraction_payloads(extraction):
+        if data.get("agent_type") == KYC_AGENT_TYPE:
+            return True
+    return False
 
 
 def _effective_fields_for_score(extraction: dict[str, Any]) -> dict[str, Any]:
-    data = extraction.get("extracted_data")
-    fields = _fields(data) if isinstance(data, dict) else {}
+    fields = _effective_fields(extraction)
     confirmed_fields = _confirmed_fields(extraction)
     if confirmed_fields:
         merged = dict(fields)
@@ -391,10 +423,11 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
 
     id_card_candidates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, int]] = []
     for extraction in kyc_extractions:
-        data = extraction.get("extracted_data") or {}
-        if not isinstance(data, dict):
+        payloads = _extraction_payloads(extraction)
+        data = payloads[0] if payloads else {}
+        if not data:
             continue
-        fields = _fields(data)
+        fields = _effective_fields(extraction)
         confirmed_fields = _confirmed_fields(extraction)
         doc_type = str(data.get("doc_type") or extraction.get("extraction_type") or "")
         source_document_id = _source_doc_id(extraction)
@@ -485,10 +518,20 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
                 "name": "name",
                 "id_number": "id_number",
                 "gender": "gender",
+                "ethnicity": "ethnicity",
                 "birth_date": "birth_date",
                 "address": "address",
+                "issuing_authority": "issuing_authority",
+                "valid_from": "valid_from",
+                "valid_to": "valid_to",
             },
             selected_source_document_id,
+        )
+        profile["person_identity"]["source_file"] = (
+            selected_extraction.get("file_name")
+            or selected_extraction.get("source_file")
+            or selected_extraction.get("filename")
+            or ""
         )
 
     profile["assets"]["properties"].sort(

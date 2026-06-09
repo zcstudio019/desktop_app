@@ -2217,6 +2217,21 @@ async def get_or_create_customer_profile(storage_service: Any, customer_id: str)
             or ('土地使用期限: 2015年10月16日起2076' in markdown)
             or ('土地使用期限：2015年10月16日起2076' in markdown)
         )
+        has_stale_id_card_section = (
+            existing.get('source_mode') != 'manual'
+            and '## 身份证' in markdown
+            and (
+                '姓名：暂无' in markdown
+                or '身份证号码：暂无' in markdown
+                or '未识别到身份证正反面关键信息' in markdown
+            )
+            and await _customer_has_valid_id_card_extraction(storage_service, customer_id)
+        )
+        if has_stale_id_card_section:
+            logger.warning("[KYCDisplay][ID_CARD_RECORDS] stale id_card profile detected customer_id=%s; regenerate", customer_id)
+            generated = await build_auto_profile_payload(storage_service, customer_id)
+            saved = await storage_service.upsert_customer_profile(generated)
+            return saved, True
         if existing.get('source_mode') != 'manual' and has_stale_property_section:
             logger.warning("[PropertyCert][PROFILE] stale property profile detected customer_id=%s; regenerate", customer_id)
             generated = await build_auto_profile_payload(storage_service, customer_id)
@@ -2280,16 +2295,177 @@ async def regenerate_customer_profile(storage_service: Any, customer_id: str) ->
     return await storage_service.upsert_customer_profile(generated)
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _first_non_empty_dict(*values: Any) -> dict[str, Any]:
+    for value in values:
+        data = _as_dict(value)
+        if data:
+            return data
+    return {}
+
+
+def _extract_fields_from_payload(payload: Any) -> dict[str, Any]:
+    data = _as_dict(payload)
+    fields = _as_dict(data.get('fields'))
+    return fields if fields else {}
+
+
+def _extract_confirmed_fields_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    confirmed = _as_dict(record.get('confirmed_data') or record.get('confirmedData'))
+    fields = _as_dict(confirmed.get('confirmed_fields') or confirmed.get('confirmedFields'))
+    return fields if fields else {}
+
+
+def _effective_kyc_fields(record: dict[str, Any]) -> dict[str, Any]:
+    document = _as_dict(record.get('document'))
+    extraction = _as_dict(record.get('extraction'))
+    payloads = [
+        record,
+        record.get('extracted_data'),
+        record.get('extracted_json'),
+        record.get('data'),
+        record.get('agent_result'),
+        document.get('extracted_data'),
+        extraction.get('extracted_data'),
+    ]
+    merged: dict[str, Any] = {}
+    for payload in payloads:
+        fields = _extract_fields_from_payload(payload)
+        for key, value in fields.items():
+            if merged.get(key) in (None, '', [], {}) and value not in (None, '', [], {}):
+                merged[key] = value
+    direct_fields = _as_dict(record.get('fields'))
+    for key, value in direct_fields.items():
+        if merged.get(key) in (None, '', [], {}) and value not in (None, '', [], {}):
+            merged[key] = value
+    confirmed_fields = _extract_confirmed_fields_from_record(record)
+    for key, value in confirmed_fields.items():
+        if value not in (None, '', [], {}):
+            merged[key] = value
+    return merged
+
+
+def _id_card_score(fields: dict[str, Any]) -> int:
+    important = (
+        'name', 'id_number', 'gender', 'ethnicity', 'birth_date',
+        'address', 'issuing_authority', 'valid_from', 'valid_to', 'valid_period',
+    )
+    return sum(1 for key in important if str(fields.get(key) or '').strip())
+
+
+async def _customer_has_valid_id_card_extraction(storage_service: Any, customer_id: str) -> bool:
+    try:
+        extractions = await storage_service.get_extractions_by_customer(customer_id)
+    except Exception as exc:
+        logger.warning("[KYCDisplay][ID_CARD_RECORDS] stale_check_failed customer_id=%s error=%s", customer_id, exc)
+        return False
+    if not isinstance(extractions, list):
+        return False
+    for extraction in extractions:
+        if not isinstance(extraction, dict):
+            continue
+        extraction_type = normalize_document_type_code(extraction.get('extraction_type') or '') or extraction.get('extraction_type') or ''
+        data = _first_non_empty_dict(
+            extraction.get('extracted_data'),
+            extraction.get('extracted_json'),
+            extraction.get('data'),
+            extraction.get('agent_result'),
+        )
+        doc_type = data.get('doc_type') or extraction_type
+        if doc_type != 'id_card':
+            continue
+        fields = _effective_kyc_fields(extraction)
+        if str(fields.get('name') or '').strip() or str(fields.get('id_number') or '').strip():
+            return True
+    return False
+
+
+def _id_card_sort_key(extraction: dict[str, Any]) -> str:
+    return str(
+        extraction.get('updated_at')
+        or extraction.get('created_at')
+        or extraction.get('upload_time')
+        or extraction.get('timestamp')
+        or ''
+    )
+
+
+def _mask_id_card_for_log(value: Any) -> str:
+    return re.sub(r'(?<!\d)(\d{6})\d{8}(\d{3}[\dXx])(?!\d)', r'\1********\2', str(value or ''))
+
+
+def _id_card_effective_valid_period(fields: dict[str, Any]) -> str:
+    valid_period = str(fields.get('valid_period') or fields.get('有效期限') or '').strip()
+    if valid_period:
+        return valid_period
+    valid_from = str(fields.get('valid_from') or fields.get('有效期起') or '').strip()
+    valid_to = str(fields.get('valid_to') or fields.get('有效期止') or '').strip()
+    if valid_from and valid_to:
+        return f'{valid_from} 至 {valid_to}'
+    return valid_from or valid_to
+
+
+def _id_card_side_and_hint(fields: dict[str, Any]) -> tuple[str, str]:
+    has_front = any(str(fields.get(key) or '').strip() for key in ('name', 'gender', 'ethnicity', 'birth_date', 'address', 'id_number'))
+    has_back = any(str(fields.get(key) or '').strip() for key in ('issuing_authority', 'valid_from', 'valid_to', 'valid_period'))
+    if has_front and has_back:
+        return 'both', '身份证正反面信息已识别'
+    if has_front:
+        return 'front', '已识别身份证正面信息，缺少签发机关和有效期限，请补充身份证背面'
+    if has_back:
+        return 'back', '已识别身份证背面信息，缺少姓名、身份证号码等正面信息，请补充身份证正面'
+    return 'unknown', '未从 OCR 文本中识别到身份证字段，请检查图片清晰度或 OCR 原文'
+
+
+def _build_id_card_markdown_lines(fields: dict[str, Any], file_name: str, original_status: str) -> list[str]:
+    side, hint = _id_card_side_and_hint(fields)
+    display_values = {
+        'name': fields.get('name') or fields.get('姓名'),
+        'gender': fields.get('gender') or fields.get('性别'),
+        'ethnicity': fields.get('ethnicity') or fields.get('民族'),
+        'birth_date': fields.get('birth_date') or fields.get('出生日期'),
+        'id_number': fields.get('id_number') or fields.get('身份证号码') or fields.get('身份证号'),
+        'address': fields.get('address') or fields.get('地址') or fields.get('住址'),
+        'issuing_authority': fields.get('issuing_authority') or fields.get('签发机关'),
+        'valid_period': _id_card_effective_valid_period(fields),
+        'side': side,
+        'completeness_hint': hint,
+    }
+    lines = [
+        f"- 资料类型：{get_document_display_name('id_card')}",
+        f"- 来源文件：{file_name or '暂无'}",
+        f"- 原件状态：{original_status}",
+    ]
+    for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address', 'issuing_authority', 'valid_period'):
+        value = display_values.get(key)
+        if str(value or '').strip():
+            lines.append(f"- {_format_field_label(key)}：{_format_value(key, value)}")
+    lines.append(f"- {_format_field_label('side')}：{_format_value('side', side)}")
+    lines.append(f"- {_format_field_label('completeness_hint')}：{hint}")
+    return lines
+
+
 def _normalize_id_card_identity_piece(value: Any) -> str:
     return ''.join(ch for ch in str(value or '').strip().upper() if ch.isalnum())
 
 
 def _resolve_id_card_group_key(extracted_data: dict[str, Any], file_name: str, index: int) -> str:
-    id_number = _normalize_id_card_identity_piece(extracted_data.get('id_number'))
+    id_number = _normalize_id_card_identity_piece(extracted_data.get('id_number') or extracted_data.get('身份证号码') or extracted_data.get('身份证号'))
     if id_number:
         return f"id_number:{id_number}"
-    name = str(extracted_data.get('name') or '').strip()
-    birth_date = _normalize_id_card_identity_piece(extracted_data.get('birth_date'))
+    name = str(extracted_data.get('name') or extracted_data.get('姓名') or '').strip()
+    birth_date = _normalize_id_card_identity_piece(extracted_data.get('birth_date') or extracted_data.get('出生日期'))
     if name and birth_date:
         return f"name_birth:{name}|{birth_date}"
     if name:
@@ -2334,8 +2510,18 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
         try:
             grouped_id_cards: dict[str, dict[str, Any]] = {}
 
+            id_card_extractions.sort(key=_id_card_sort_key, reverse=True)
+            debug_records: list[dict[str, Any]] = []
+            has_valid_id_card = any(_id_card_score(_effective_kyc_fields(item)) > 0 for item in id_card_extractions)
+
             for index, extraction in enumerate(id_card_extractions, start=1):
-                extracted_data = (extraction.get('extracted_data') or {}) if isinstance(extraction.get('extracted_data'), dict) else {}
+                extracted_data = _first_non_empty_dict(
+                    extraction.get('extracted_data'),
+                    extraction.get('extracted_json'),
+                    extraction.get('data'),
+                    extraction.get('agent_result'),
+                )
+                fields = _effective_kyc_fields(extraction)
                 document = None
                 doc_id = extraction.get('doc_id')
                 if doc_id:
@@ -2346,6 +2532,19 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
 
                 file_name = (document or {}).get('file_name') or '暂无'
                 file_path = (document or {}).get('file_path') or ''
+                markdown_preview = str(extracted_data.get('markdown') or extraction.get('markdown') or '')[:200]
+                debug_records.append({
+                    'document_id': doc_id,
+                    'filename': file_name,
+                    'created_at': extraction.get('created_at'),
+                    'updated_at': extraction.get('updated_at'),
+                    'has_extracted_data': bool(extracted_data),
+                    'has_fields': bool(fields),
+                    'fields_keys': sorted(fields.keys()),
+                    'name': bool(str(fields.get('name') or fields.get('姓名') or '').strip()),
+                    'id_number': _mask_id_card_for_log(fields.get('id_number') or fields.get('身份证号码') or fields.get('身份证号')),
+                    'markdown_preview': markdown_preview,
+                })
                 source_documents.append({
                     'source_type': 'id_card',
                     'source_type_name': get_document_display_name('id_card'),
@@ -2356,55 +2555,41 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                     'original_available': bool(file_path),
                 })
 
-                group_key = _resolve_id_card_group_key(extracted_data, file_name, index)
+                group_key = _resolve_id_card_group_key(fields, file_name, index)
                 group = grouped_id_cards.setdefault(
                     group_key,
                     {
-                        'data': {},
+                        'records': [],
                         'file_names': [],
-                        'has_front': False,
-                        'has_back': False,
                         'any_original_available': False,
                     },
                 )
-
-                for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address', 'issuing_authority', 'valid_period'):
-                    if not group['data'].get(key):
-                        group['data'][key] = extracted_data.get(key) or ''
-
-                if any(extracted_data.get(key) for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address')):
-                    group['has_front'] = True
-                if any(extracted_data.get(key) for key in ('issuing_authority', 'valid_period')):
-                    group['has_back'] = True
-
+                group['records'].append({
+                    'fields': fields,
+                    'score': _id_card_score(fields),
+                    'sort_key': _id_card_sort_key(extraction),
+                    'file_name': file_name,
+                    'original_available': bool(file_path),
+                })
                 group['file_names'].append(file_name)
                 group['any_original_available'] = group['any_original_available'] or bool(file_path)
 
-            for group in grouped_id_cards.values():
-                merged_data = group['data']
-                if group['has_front'] and group['has_back']:
-                    merged_data['side'] = 'both'
-                    merged_data['completeness_hint'] = '已识别正反面'
-                elif group['has_front']:
-                    merged_data['side'] = 'front'
-                    merged_data['completeness_hint'] = '已识别正面，缺少反面信息（签发机关、有效期限）'
-                elif group['has_back']:
-                    merged_data['side'] = 'back'
-                    merged_data['completeness_hint'] = '已识别反面，缺少正面信息（姓名、身份证号码、住址）'
-                else:
-                    merged_data['side'] = 'unknown'
-                    merged_data['completeness_hint'] = '未识别到身份证正反面关键信息'
+            logger.info(
+                "[KYCDisplay][ID_CARD_RECORDS] customer_id=%s records=%s",
+                customer_id,
+                json.dumps(debug_records, ensure_ascii=False),
+            )
 
-                merged_file_name_text = '、'.join(dict.fromkeys(group['file_names'])) if group['file_names'] else '暂无'
+            for group in grouped_id_cards.values():
+                records = sorted(group['records'], key=lambda item: (item['score'], item['sort_key']), reverse=True)
+                best_record = records[0] if records else {'fields': {}, 'file_name': '暂无', 'original_available': False}
+                if has_valid_id_card and int(best_record.get('score') or 0) <= 0:
+                    continue
+                merged_data = best_record['fields']
+                merged_file_name_text = best_record.get('file_name') or ('、'.join(dict.fromkeys(group['file_names'])) if group['file_names'] else '暂无')
                 merged_original_status = '可查看' if group['any_original_available'] else '原件文件不存在或已不可用'
-                id_card_lines = [
-                    f"- 资料类型：{get_document_display_name('id_card')}",
-                    f"- 来源文件：{merged_file_name_text}",
-                    f"- 原件状态：{merged_original_status}",
-                ]
-                for key in ('name', 'gender', 'ethnicity', 'birth_date', 'id_number', 'address', 'issuing_authority', 'valid_period', 'side', 'completeness_hint'):
-                    id_card_lines.append(f"- {_format_field_label(key)}：{_format_value(key, merged_data.get(key))}")
-                id_card_name = str(merged_data.get('name') or '').strip()
+                id_card_lines = _build_id_card_markdown_lines(merged_data, merged_file_name_text, merged_original_status)
+                id_card_name = str(merged_data.get('name') or merged_data.get('姓名') or '').strip()
                 id_card_title = f"{get_document_display_name('id_card')}（{id_card_name}）" if id_card_name else get_document_display_name('id_card')
                 sections.append(_markdown_section(id_card_title, id_card_lines))
         except Exception as exc:
