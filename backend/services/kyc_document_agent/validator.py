@@ -132,14 +132,31 @@ def _validate_marriage_certificate_result(result: dict[str, Any], warnings: list
         warnings.append("两位配偶姓名相同，请人工复核")
     fields["marital_status"] = "已婚"
 
+    core_values = [
+        fields.get("certificate_no"),
+        fields.get("certificate_number"),
+        name_1,
+        name_2,
+        id_1,
+        id_2,
+        fields.get("registration_authority"),
+        fields.get("issuing_authority"),
+        fields.get("issue_date"),
+        fields.get("registration_date"),
+    ]
+    if not any(str(value or "").strip() for value in core_values):
+        warning = "未获取到有效 OCR 文本或字段识别失败"
+        if warning not in warnings:
+            warnings.append(warning)
+        result["extraction_status"] = "failed"
+        return
+
     if errors:
         result["extraction_status"] = "partial" if fields else "failed"
-    elif missing:
-        result["extraction_status"] = "partial"
-    elif fields:
+    elif not missing:
         result["extraction_status"] = "success"
     else:
-        result["extraction_status"] = "failed"
+        result["extraction_status"] = "partial"
 
 
 def validate_result(result: dict[str, Any]) -> dict[str, Any]:

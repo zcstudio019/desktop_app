@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 KYC_EXTRACTION_TYPES = {
     "id_card",
     "marriage_cert",
+    "marriage_certificate",
     "divorce_cert",
     "household_register",
     "business_license",
@@ -88,6 +89,19 @@ PROPERTY_CERT_PROCESS_TYPES = {
     "property_cert",
     "real_estate_cert",
 }
+
+MARRIAGE_CERTIFICATE_PROCESS_TYPES = {"marriage_certificate", "marriage_cert"}
+MARRIAGE_CERTIFICATE_OCR_KEYWORDS = (
+    "结婚证",
+    "结婚证字号",
+    "姓名",
+    "性别",
+    "国籍",
+    "出生日期",
+    "身份证件号",
+    "婚姻登记机关",
+    "中华人民共和国民政部监制",
+)
 
 router = APIRouter(prefix="/file", tags=["File Processing"])
 
@@ -440,6 +454,16 @@ def _filename_suggests_id_card(filename: str) -> bool:
     return any(keyword in normalized for keyword in ("身份证", "居民身份证", "法人身份证", "idcard", "id_card"))
 
 
+def _filename_suggests_marriage_certificate(filename: str) -> bool:
+    normalized = str(filename or "").lower()
+    return any(keyword in normalized for keyword in ("结婚证", "marriage_certificate", "marriagecert", "marriage_cert"))
+
+
+def _should_use_marriage_certificate_ocr(explicit_document_type: str | None, filename: str) -> bool:
+    normalized = normalize_document_type_code(explicit_document_type) or str(explicit_document_type or "").strip()
+    return normalized in MARRIAGE_CERTIFICATE_PROCESS_TYPES or _filename_suggests_marriage_certificate(filename)
+
+
 def _should_use_id_card_ocr(explicit_document_type: str | None, filename: str) -> bool:
     normalized = normalize_document_type_code(explicit_document_type) or str(explicit_document_type or "").strip()
     return normalized in {"id_card", "shareholder_id_card"} or _filename_suggests_id_card(filename)
@@ -478,6 +502,58 @@ def _ocr_pdf_pages_with_id_card_variants(file_bytes: bytes, filename: str) -> tu
         except OCRServiceError as exc:
             logger.warning("[IDCardOCR][PAGE_FAILED] filename=%s page=%s error=%s", filename, index, exc)
             raw_pages.append({"page": index, "text": OCR_PAGE_FAILED_PLACEHOLDER, "source": "id_card_ocr_variants"})
+    return _build_raw_text_from_pages(raw_pages), raw_pages
+
+
+def _score_marriage_certificate_ocr_text(text: str) -> int:
+    text_value = str(text or "")
+    score = chinese_keyword_score(text_value, MARRIAGE_CERTIFICATE_OCR_KEYWORDS) * 10
+    score += len(re.findall(r"[\u4e00-\u9fff]", text_value)) // 20
+    score += len(re.findall(r"(?<!\d)\d(?:\s*\d){16}\s*[\dXx](?!\d)", text_value)) * 20
+    score -= len(re.findall(r"[A-Za-z]{5,}", text_value)) // 3
+    return score
+
+
+def _ocr_image_with_marriage_rotation(image_bytes: bytes, *, page: int = 1, filename: str = "") -> tuple[str, dict[str, Any]]:
+    best_text = ""
+    best_angle = 0
+    best_score = -10**9
+    for angle in (0, 90, 180, 270):
+        try:
+            rotated = _rotate_image_bytes(image_bytes, angle)
+            compressed = file_service.compress_image(rotated)
+            page_text = ocr_service.recognize_image(compressed)
+            score = _score_marriage_certificate_ocr_text(page_text)
+            if len(str(page_text or "")) > len(best_text) and score == best_score:
+                best_text = page_text
+                best_angle = angle
+                best_score = score
+            elif score > best_score:
+                best_text = page_text
+                best_angle = angle
+                best_score = score
+        except OCRServiceError as exc:
+            logger.warning("Marriage certificate OCR rotation failed page=%s angle=%s filename=%s error=%s", page, angle, filename, exc)
+        except Exception as exc:  # pragma: no cover - best-effort rotation OCR
+            logger.warning("Marriage certificate OCR rotation failed page=%s angle=%s filename=%s error=%s", page, angle, filename, exc)
+    return best_text, {
+        "page": page,
+        "text": best_text or OCR_PAGE_FAILED_PLACEHOLDER,
+        "source": "marriage_certificate_ocr_rotated",
+        "rotation": best_angle,
+        "keyword_score": best_score,
+    }
+
+
+def _ocr_pdf_pages_with_marriage_rotation(file_bytes: bytes, filename: str) -> tuple[str, list[dict[str, Any]]]:
+    images = file_service.pdf_to_images(file_bytes, dpi=300)
+    if not images:
+        raise HTTPException(status_code=400, detail=PDF_TO_IMAGE_FAILED_MESSAGE)
+
+    raw_pages: list[dict[str, Any]] = []
+    for index, img_bytes in enumerate(images, start=1):
+        _, page_payload = _ocr_image_with_marriage_rotation(img_bytes, page=index, filename=filename)
+        raw_pages.append(page_payload)
     return _build_raw_text_from_pages(raw_pages), raw_pages
 
 
@@ -1025,6 +1101,7 @@ async def _extract_content_from_file(
                     await progress_callback("正在进行身份证专用 OCR 识别")
                 text_content, raw_pages = _ocr_pdf_pages_with_id_card_variants(file_bytes, filename)
                 return text_content, [], raw_pages
+            marriage_hint = _should_use_marriage_certificate_ocr(explicit_document_type, filename)
             if progress_callback:
                 await progress_callback("正在解析文件")
             extracted = file_service.extract_content(file_bytes, file_type, filename=filename)
@@ -1040,6 +1117,8 @@ async def _extract_content_from_file(
                     await progress_callback("正在 OCR 识别")
                 if _filename_suggests_property_cert(filename):
                     text_content, raw_pages = _ocr_pdf_pages_with_property_rotation(file_bytes, filename)
+                elif marriage_hint:
+                    text_content, raw_pages = _ocr_pdf_pages_with_marriage_rotation(file_bytes, filename)
                 else:
                     text_content, raw_pages = _ocr_pdf_pages(file_bytes)
             elif _filename_suggests_property_cert(filename) and is_low_chinese_quality(text_content):
@@ -1047,6 +1126,14 @@ async def _extract_content_from_file(
                 if progress_callback:
                     await progress_callback("正在 OCR 识别")
                 text_content, raw_pages = _ocr_pdf_pages_with_property_rotation(file_bytes, filename)
+            elif marriage_hint and (
+                len(str(text_content or "").strip()) < 20
+                or _score_marriage_certificate_ocr_text(text_content) < 20
+            ):
+                logger.info("PDF text weak for marriage certificate %s, trying rotated OCR", filename)
+                if progress_callback:
+                    await progress_callback("正在进行结婚证专用 OCR 识别")
+                text_content, raw_pages = _ocr_pdf_pages_with_marriage_rotation(file_bytes, filename)
             return text_content, [], raw_pages
         if file_type == "image":
             if progress_callback:
@@ -1064,6 +1151,9 @@ async def _extract_content_from_file(
                         "ocr_quality": ocr_result.get("ocr_quality") or {},
                     }
                 ]
+            if _should_use_marriage_certificate_ocr(explicit_document_type, filename):
+                text_content, page_payload = _ocr_image_with_marriage_rotation(file_bytes, page=1, filename=filename)
+                return text_content, [], [page_payload]
             compressed = file_service.compress_image(file_bytes)
             text_content = ocr_service.recognize_image(compressed)
             return text_content, [], [{"page": 1, "text": text_content}]
@@ -1153,6 +1243,39 @@ def _extract_structured_data(
 
     try:
         raw_pages_for_log = raw_pages
+        normalized_for_debug = normalize_document_type_code(document_type_code) or document_type_code
+        if normalized_for_debug in KYC_EXTRACTION_TYPES:
+            text_value = str(text_content or "")
+            pdf_ocr_status = "yes" if any(
+                isinstance(page, dict) and "ocr" in str(page.get("source") or "").lower()
+                for page in raw_pages_for_log
+            ) else "no"
+            logger.info(
+                "[KYC_DEBUG] filename=%s doc_type=%s declared_doc_type=%s content_document_type_code=%s text_empty=%s text_len=%s text_preview=%s pages=%s pdf_ocr=%s",
+                filename,
+                normalized_for_debug,
+                document_type_code,
+                normalized_for_debug,
+                not bool(text_value.strip()),
+                len(text_value),
+                text_value[:500],
+                len(raw_pages_for_log),
+                pdf_ocr_status,
+            )
+            if not text_value.strip():
+                logger.warning("[KYC_DEBUG] empty text before KycDocumentAgent, filename=%s", filename)
+            for item in raw_pages_for_log:
+                if not isinstance(item, dict):
+                    continue
+                page_text = str(item.get("text") or "")
+                logger.info(
+                    "[KYC_DEBUG] page=%s source=%s has_text=%s text_len=%s preview=%s",
+                    item.get("page"),
+                    item.get("source"),
+                    bool(page_text.strip()),
+                    len(page_text),
+                    page_text[:300],
+                )
         if normalize_document_type_code(document_type_code) == "enterprise_credit_report":
             print("[enterprise_credit] 上传 document_type:", document_type_code)
             logger.info("[enterprise_credit] raw_text_preview=%s", (text_content or "")[:3000])
@@ -1267,6 +1390,27 @@ async def _process_file_bytes(
             if score_id_card_ocr_text(id_text) >= current_score:
                 text_content = id_text
                 raw_pages = id_pages
+    if document_type_code in MARRIAGE_CERTIFICATE_PROCESS_TYPES and not any(
+        isinstance(page, dict) and page.get("source") == "marriage_certificate_ocr_rotated"
+        for page in raw_pages
+    ):
+        current_score = _score_marriage_certificate_ocr_text(text_content)
+        if file_type in {"pdf", "image"} and (len(str(text_content or "").strip()) < 20 or current_score < 20):
+            logger.info(
+                "[MarriageCertOCR][FALLBACK] filename=%s current_score=%s rerun_rotations=true",
+                filename,
+                current_score,
+            )
+            if progress_callback:
+                await progress_callback("正在进行结婚证专用 OCR 识别")
+            if file_type == "pdf":
+                marriage_text, marriage_pages = _ocr_pdf_pages_with_marriage_rotation(file_bytes, filename)
+            else:
+                marriage_text, marriage_page = _ocr_image_with_marriage_rotation(file_bytes, page=1, filename=filename)
+                marriage_pages = [marriage_page]
+            if _score_marriage_certificate_ocr_text(marriage_text) >= current_score:
+                text_content = marriage_text
+                raw_pages = marriage_pages
     if document_type_code == "business_license":
         seal_region_text = _ocr_business_license_seal_region(file_bytes, file_type, filename)
         if seal_region_text:

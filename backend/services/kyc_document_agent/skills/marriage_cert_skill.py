@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
+import logging
 from typing import Any
 
 from backend.services.kyc_document_agent.evidence import build_field_maps, raw_preview
 from backend.services.kyc_document_agent.schema import build_result, normalize_input
 
+logger = logging.getLogger(__name__)
+
+NO_CORE_FIELDS_WARNING = "未获取到有效 OCR 文本或字段识别失败"
 
 STOP_LABELS = (
     "姓名",
@@ -19,6 +23,9 @@ STOP_LABELS = (
     "发证日期",
     "结婚证字号",
     "持证人",
+    "中国",
+    "男",
+    "女",
 )
 
 
@@ -34,6 +41,13 @@ def _compact_label_text(text: str) -> str:
     value = str(text or "").replace("：", ":")
     for old, new in replacements.items():
         value = value.replace(old, new)
+    value = re.sub(r"姓\s*名", "姓名", value)
+    value = re.sub(r"性\s*别", "性别", value)
+    value = re.sub(r"国\s*籍", "国籍", value)
+    value = re.sub(r"出\s*生\s*日\s*期", "出生日期", value)
+    value = re.sub(r"身\s*份\s*证\s*件\s*号", "身份证件号", value)
+    value = re.sub(r"结\s*婚\s*证\s*字\s*号", "结婚证字号", value)
+    value = re.sub(r"婚\s*姻\s*登\s*记\s*机\s*关", "婚姻登记机关", value)
     return re.sub(r"[ \t]+", " ", value)
 
 
@@ -69,13 +83,18 @@ def _id_gender(id_number: str) -> str:
 def _clean_name(value: str) -> str:
     text = re.sub(r"\s+", "", str(value or ""))
     text = re.split("|".join(STOP_LABELS), text)[0]
-    match = re.search(r"[\u4e00-\u9fa5·]{2,8}", text)
-    return match.group(0) if match else ""
+    match = re.search(r"[\u4e00-\u9fa5·]{2,4}", text)
+    if not match:
+        return ""
+    name = match.group(0)
+    if name in {"姓名", "性别", "国籍", "中国", "男", "女"}:
+        return ""
+    return name
 
 
 def _extract_certificate_no(text: str) -> tuple[str, str]:
     patterns = [
-        r"(结婚证字号|证字号|字号)\s*[:：]?\s*([A-Za-z]\d[\w-]{4,}|[\u4e00-\u9fa5]{1,4}字第?\d{3,12}号)",
+        r"(结婚证字号|证字号|字号)\s*[:：]?\s*([A-Z]?\d{6,}[-\d]*|[A-Za-z]\d[\w-]{4,}|[\u4e00-\u9fa5]{1,4}字第?\d{3,12}号)",
         r"(结婚证字号|证字号|字号)\s*[:：]?\s*([^\n\r]+)",
     ]
     for pattern in patterns:
@@ -94,17 +113,28 @@ def _extract_labeled_values(text: str, label: str, value_pattern: str) -> list[t
 
 def _extract_names(text: str) -> list[tuple[str, str]]:
     values: list[tuple[str, str]] = []
-    for match in re.finditer(r"姓名\s*[:：]?\s*([^\n\r]{1,30})", text):
+    for match in re.finditer(r"姓名\s*[:：]?\s*([\u4e00-\u9fa5·]{2,4})(?=\s*(?:性别|国籍|出生日期|身份证件号|身份证号|婚姻登记机关|登记机关|发证日期|结婚证字号|持证人|$))?", text):
         name = _clean_name(match.group(1))
-        if name and name not in {"姓名", "性别", "国籍", "出生日期"}:
+        if name and name not in {item[0] for item in values}:
             values.append((name, match.group(0)))
+    if len(values) < 2:
+        for match in re.finditer(r"姓名\s*[:：]?\s*([^\n\r]{1,30})", text):
+            name = _clean_name(match.group(1))
+            if name and name not in {item[0] for item in values}:
+                values.append((name, match.group(0)))
     return values
 
 
 def _extract_ids(text: str) -> list[tuple[str, str]]:
     values: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for match in re.finditer(r"(?<!\d)(\d(?:\s*\d){16}\s*[\dXx])(?!\d)", text):
-        values.append((_normalize_id(match.group(1)), match.group(0)))
+        normalized = _normalize_id(match.group(1))
+        if normalized not in seen:
+            seen.add(normalized)
+            values.append((normalized, match.group(0)))
+        if len(values) >= 2:
+            break
     return values
 
 
@@ -117,7 +147,7 @@ def _extract_authority(text: str) -> tuple[str, str]:
 
 
 def _extract_issue_date(text: str) -> tuple[str, str]:
-    match = re.search(r"(?:发证日期|登记日期|日期)\s*[:：]?\s*(\d{4}\s*[年./-]\s*\d{1,2}\s*[月./-]\s*\d{1,2}\s*日?)", text)
+    match = re.search(r"(?:发证日期|登记日期|结婚登记日期)\s*[:：]?\s*(\d{4}\s*[年./-]\s*\d{1,2}\s*[月./-]\s*\d{1,2}\s*日?)", text)
     if not match:
         return "", ""
     return _normalize_date(match.group(1)), match.group(0)
@@ -140,6 +170,7 @@ def _pair_holders(text: str, warnings: list[str]) -> tuple[list[dict[str, str]],
     evidence: dict[str, str] = {}
     count = max(len(names), len(ids), len(genders), len(births), 2)
     for index in range(min(count, 2)):
+        spouse_label = "一" if index == 0 else "二"
         holder: dict[str, str] = {
             "name": names[index][0] if index < len(names) else "",
             "gender": genders[index][0] if index < len(genders) else "",
@@ -152,11 +183,11 @@ def _pair_holders(text: str, warnings: list[str]) -> tuple[list[dict[str, str]],
         if not holder["birth_date"] and holder["id_number"]:
             holder["birth_date"] = _id_birth(holder["id_number"])
             if holder["birth_date"]:
-                warnings.append(f"配偶{index + 1}出生日期由身份证号推断")
+                warnings.append(f"配偶{spouse_label}出生日期由身份证号推断")
         if not holder["gender"] and holder["id_number"]:
             holder["gender"] = _id_gender(holder["id_number"])
             if holder["gender"]:
-                warnings.append(f"配偶{index + 1}性别由身份证号推断")
+                warnings.append(f"配偶{spouse_label}性别由身份证号推断")
         holders.append(holder)
         prefix = f"holder_{index + 1}"
         if index < len(names):
@@ -174,6 +205,7 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     data = normalize_input(payload)
     text = _compact_label_text(data["text"])
     warnings: list[str] = []
+    logger.debug("[MarriageCertificateSkill][RAW_TEXT] %s", text[:1000])
 
     certificate_no, cert_evidence = _extract_certificate_no(text)
     authority, authority_evidence = _extract_authority(text)
@@ -181,6 +213,8 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     holders, holder_evidence = _pair_holders(text, warnings)
     holder_1, holder_2 = holders[0], holders[1]
     marriage_date = issue_date
+    if not text.strip():
+        warnings.append(NO_CORE_FIELDS_WARNING)
 
     fields = {
         "certificate_no": certificate_no,
@@ -198,6 +232,28 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
         "issuing_authority": authority,
         "certificate_number": certificate_no,
     }
+    has_core = any(
+        [
+            certificate_no,
+            fields["holder_name"],
+            fields["spouse_name"],
+            fields["holder_id_number"],
+            fields["spouse_id_number"],
+            authority,
+            issue_date,
+        ]
+    )
+    if not has_core and NO_CORE_FIELDS_WARNING not in warnings:
+        warnings.append(NO_CORE_FIELDS_WARNING)
+    logger.debug(
+        "[MarriageCertificateSkill][MATCH] certificate_no=%s holder_name=%s spouse_name=%s holder_id=%s spouse_id=%s",
+        certificate_no,
+        fields["holder_name"],
+        fields["spouse_name"],
+        fields["holder_id_number"][:6] + "********" + fields["holder_id_number"][-4:] if fields["holder_id_number"] else "",
+        fields["spouse_id_number"][:6] + "********" + fields["spouse_id_number"][-4:] if fields["spouse_id_number"] else "",
+    )
+    logger.debug("[MarriageCertificateSkill][FIELDS] %s", fields)
     evidence_payload: dict[str, Any] = {}
     raw_evidence = {
         "certificate_no": cert_evidence,
@@ -207,7 +263,7 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     }
     for field, evidence_text in raw_evidence.items():
         if evidence_text:
-            evidence_payload[field] = {"value": field, "evidence_text": evidence_text, "page": None, "confidence": 0.78}
+            evidence_payload[field] = {"value": fields.get(field) or field, "evidence_text": evidence_text, "page": None, "confidence": 0.78}
 
     flat_for_confidence = {
         "certificate_no": (certificate_no, cert_evidence, 0.82),
@@ -224,4 +280,5 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     result["confidence"]["overall"] = round(sum(confidences.values()) / len(confidences), 4) if confidences else 0.0
     result["raw_text_preview"] = raw_preview(text)
     result["validation"]["warnings"].extend(warnings)
+    logger.debug("[MarriageCertificateSkill][MISSING] %s", result.get("missing_fields") or [])
     return result

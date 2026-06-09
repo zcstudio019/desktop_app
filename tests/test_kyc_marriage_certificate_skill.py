@@ -134,3 +134,41 @@ def test_markdown_contains_marriage_sections():
     assert "## 结婚证" in markdown
     assert "### 配偶一" in markdown
     assert "### 配偶二" in markdown
+
+
+def test_id_numbers_infer_birth_and_gender_when_ocr_missing_labels():
+    text = """
+    结婚证
+    结婚证字号 12345678
+    姓名 林勇
+    身份证件号 110105194912310031
+    姓 名 吕燕
+    身份证件号 11010519491231002X
+    """
+    result = KycDocumentAgent().extract({"text": text, "metadata": {"filename": "林勇结婚证.pdf"}})
+    fields = result["fields"]
+    assert fields["holder_1"]["birth_date"] == "1949-12-31"
+    assert fields["holder_1"]["gender"] == "男"
+    assert fields["holder_2"]["birth_date"] == "1949-12-31"
+    assert fields["holder_2"]["gender"] == "女"
+    warnings = result["validation"]["warnings"]
+    assert "配偶一出生日期由身份证号推断" in warnings
+    assert "配偶一性别由身份证号推断" in warnings
+
+
+def test_empty_marriage_certificate_text_is_not_success():
+    result = KycDocumentAgent().extract({"text": "", "metadata": {"filename": "林勇结婚证.pdf", "declared_doc_type": "marriage_certificate"}})
+    assert result["doc_type"] == "marriage_certificate"
+    assert result["extraction_status"] == "failed"
+    assert "未获取到有效 OCR 文本或字段识别失败" in result["validation"]["warnings"]
+
+
+def test_marriage_markdown_is_chinese_and_not_raw_fields_json():
+    result = KycDocumentAgent().extract({"text": SAMPLE_ONE, "metadata": {"filename": "结婚证.pdf"}})
+    markdown = result["markdown"]
+    assert "## 结婚证" in markdown
+    assert "配偶一" in markdown
+    assert "fields" not in markdown
+    assert "holder_1" not in markdown
+    assert "{'" not in markdown
+    assert '{"' not in markdown

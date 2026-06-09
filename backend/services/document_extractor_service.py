@@ -9186,6 +9186,28 @@ def _build_kyc_structured_extraction(
 ) -> dict[str, Any]:
     raw_pages = raw_pages or []
     safe_metadata = _sanitize_kyc_metadata(metadata, filename=filename, customer_id=customer_id, doc_type=doc_type)
+    text_value = str(text_content or "")
+    logger.info(
+        "[KYC_DEBUG] filename=%s doc_type=%s text_len=%s text_preview=%s pages=%s",
+        filename,
+        doc_type,
+        len(text_value),
+        text_value[:500],
+        len(raw_pages),
+    )
+    if not text_value.strip():
+        logger.warning("[KYC_DEBUG] empty text before KycDocumentAgent, filename=%s", filename)
+    for item in raw_pages:
+        if not isinstance(item, dict):
+            continue
+        page_text = str(item.get("text") or "")
+        logger.info(
+            "[KYC_DEBUG] page=%s source=%s has_text=%s text_len=%s",
+            item.get("page"),
+            item.get("source"),
+            bool(page_text.strip()),
+            len(page_text),
+        )
     payload = {
         "text": str(text_content or ""),
         "pages": raw_pages,
