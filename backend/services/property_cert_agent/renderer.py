@@ -208,6 +208,36 @@ def _attachment_detail_rows(risk_sections: dict[str, Any]) -> list[dict[str, Any
     return rows
 
 
+def _attachment_summary(risk_sections: dict[str, Any]) -> dict[str, str]:
+    summary: dict[str, str] = {}
+    sections = risk_sections.get("附记") if isinstance(risk_sections, dict) else None
+    if not isinstance(sections, list):
+        return summary
+    mapping = {
+        "室号或部位": "室号或部位列表",
+        "建筑面积": "建筑面积列表",
+        "房屋用途": "房屋用途列表",
+        "建筑类型": "建筑类型列表",
+        "总层数": "总层数列表",
+        "竣工日期": "竣工日期列表",
+    }
+    for label, key in mapping.items():
+        values: list[str] = []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            raw = section.get(key)
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                value = str(item or "").replace("\\n", " ").replace("\n", " ").strip()
+                if value and value not in values:
+                    values.append(value)
+        if values:
+            summary[label] = "、".join(values)
+    return summary
+
+
 def _append_attachment_detail_table(lines: list[str], rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
@@ -227,6 +257,15 @@ def _append_attachment_detail_table(lines: list[str], rows: list[dict[str, Any]]
                 value = ""
             values.append(value)
         lines.append("| " + " | ".join(values) + " |")
+
+
+def _append_attachment_summary(lines: list[str], summary: dict[str, str]) -> None:
+    if not summary:
+        return
+    lines.extend(["", "### 附记明细"])
+    for key, value in summary.items():
+        if value:
+            lines.append(f"- {key}: {value}")
 
 
 def render_markdown(result: dict[str, Any]) -> str:
@@ -268,7 +307,10 @@ def render_markdown(result: dict[str, Any]) -> str:
     warnings = list(validation.get("warnings") or [])
     risk_sections = result.get("risk_sections") if isinstance(result.get("risk_sections"), dict) else {}
     attachment_rows = _attachment_detail_rows(risk_sections)
-    _append_attachment_detail_table(lines, attachment_rows)
+    if attachment_rows:
+        _append_attachment_detail_table(lines, attachment_rows)
+    else:
+        _append_attachment_summary(lines, _attachment_summary(risk_sections))
     for title, sections in risk_sections.items():
         if title == "附记" and attachment_rows:
             continue
@@ -286,5 +328,6 @@ def render_markdown(result: dict[str, Any]) -> str:
     logger.info("[PropertyRenderer][FINAL_ADDRESS] markdown_contains=%s", str(bool(address_info["final_value"]) and address_info["final_value"] in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_详见附记=%s", str("详见附记" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_invalid_unit_number=%s", str("不动产单元号: 使用权" in markdown or "不动产单元号：使用权" in markdown).lower())
+    logger.info("[PropertyRenderer] markdown_contains_建筑类型_国有=%s", str("建筑类型: 国有" in markdown or "建筑类型：国有" in markdown).lower())
     logger.info("[PropertyRenderer] markdown_contains_dirty_newline=%s", str("\\n" in markdown).lower())
     return markdown

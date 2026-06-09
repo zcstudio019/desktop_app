@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from .normalizer import is_invalid_property_owner, is_old_version, normalize_fields
-from .skills.attachment_page_skill import is_valid_unit_number, is_valid_unit_number_value
+from .skills.attachment_page_skill import is_valid_building_type, is_valid_unit_number, is_valid_unit_number_value
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +61,16 @@ def _attachment_values(attachment_pages: list[dict[str, Any]], list_key: str) ->
                 if list_key == "不动产单元号列表" and not is_valid_unit_number(value):
                     logger.info("[PropertyMerger][AttachmentFill] skip_invalid_unit_number=%s", value)
                     continue
+                if list_key == "建筑类型列表" and not is_valid_building_type(value):
+                    continue
                 if value and value not in values:
                     values.append(value)
         elif raw:
             value = str(raw).strip()
             if list_key == "不动产单元号列表" and not is_valid_unit_number(value):
                 logger.info("[PropertyMerger][AttachmentFill] skip_invalid_unit_number=%s", value)
+                continue
+            if list_key == "建筑类型列表" and not is_valid_building_type(value):
                 continue
             if value and value not in values:
                 values.append(value)
@@ -77,6 +81,9 @@ def _display_attachment_section(page_fields: dict[str, Any]) -> dict[str, Any]:
     display: dict[str, Any] = {}
     if page_fields.get("附记明细"):
         display["附记明细"] = page_fields["附记明细"]
+    for key in ("室号或部位列表", "建筑面积列表", "房屋用途列表", "建筑类型列表", "总层数列表", "竣工日期列表", "不动产单元号列表"):
+        if page_fields.get(key):
+            display[key] = page_fields[key]
     return display
 
 
@@ -93,13 +100,14 @@ def merge_detail_page_with_attachment_pages(
         values = _attachment_values(attachment_pages, list_key)
         current = fields.get(target_key)
         current_invalid_unit = target_key == "不动产单元号" and bool(current) and not is_valid_unit_number_value(current)
+        current_invalid_building_type = target_key == "建筑类型" and bool(current) and not is_valid_building_type(current)
         if current_invalid_unit:
             logger.info("[PropertyMerger][AttachmentFill] skip_invalid_unit_number=%s", current)
-        if values and (not current or is_attachment_placeholder(current) or current_invalid_unit):
+        if values and (not current or is_attachment_placeholder(current) or current_invalid_unit or current_invalid_building_type):
             new_value = "、".join(values)
             logger.info("[PropertyMerger][AttachmentFill] field=%s old=%s new=%s", target_key, current or "", new_value)
             fields[target_key] = new_value
-        elif is_attachment_placeholder(current) or current_invalid_unit:
+        elif is_attachment_placeholder(current) or current_invalid_unit or current_invalid_building_type:
             fields.pop(target_key, None)
             if target_key == "不动产单元号":
                 warnings.append("不动产单元号在附记页中，系统未能识别到合法编号，请人工确认。")

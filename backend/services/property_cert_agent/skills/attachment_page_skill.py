@@ -16,6 +16,7 @@ LAND_USE_VALUES = ("其它商服用地", "其他商服用地", "城镇住宅用�
 HOUSE_USE_VALUES = ("办公", "居住", "住宅", "商业", "工业", "仓储", "车库", "公寓", "商铺", "非居住")
 BUILDING_TYPE_VALUES = ("办公楼", "商场", "公寓", "厂房", "车库", "仓库", "商铺", "别墅", "非居住")
 RIGHT_NATURE_VALUES = ("出让", "划拨", "租赁", "作价出资", "授权经营")
+INVALID_BUILDING_TYPE_VALUES = ("国有", "出让", "使用权", "商业用地", "土地权利性质", "国有建设用地使用权", "房屋所有权")
 INVALID_UNIT_NUMBER_VALUES = (
     "使用权",
     "使用权面积",
@@ -131,6 +132,52 @@ def _known_values(text: str, candidates: tuple[str, ...]) -> list[str]:
     return [candidate for candidate in candidates if candidate in compact]
 
 
+def is_valid_building_type(value: Any) -> bool:
+    text = _clean(value)
+    return bool(text and text in BUILDING_TYPE_VALUES and text not in INVALID_BUILDING_TYPE_VALUES)
+
+
+def _building_type_values(text: str) -> list[str]:
+    return [value for value in _known_values(text, BUILDING_TYPE_VALUES) if is_valid_building_type(value)]
+
+
+def _house_section_text(lines: list[str]) -> str:
+    text = " ".join(lines)
+    compact = re.sub(r"\s+", "", text)
+    start = compact.find("房屋状况")
+    if start < 0:
+        start = compact.find("附记")
+    if start < 0:
+        return text
+    stop_candidates = [idx for token in ("土地状况", "权利性质", "使用期限", "权利其他状况") if (idx := compact.find(token, start + 1)) > start]
+    # Compact indexes are only approximate after whitespace removal, so use the full text when no safe stop exists.
+    return text if not stop_candidates else compact[start : min(stop_candidates)]
+
+
+def _completion_years(text: str) -> list[str]:
+    years: list[str] = []
+    for match in YEAR_RE.finditer(text):
+        left = text[max(0, match.start() - 16) : match.start()]
+        right = text[match.end() : match.end() + 16]
+        if "使用期限" in left or "使用期限" in right or "起" in right or "止" in right or "月" in right:
+            continue
+        value = match.group(0)
+        if value not in years:
+            years.append(value)
+    return years
+
+
+def _total_floor_values(text: str) -> list[str]:
+    values = [match.group(1) for match in re.finditer(r"总层数[:：]?\s*(\d{1,2})", text)]
+    marker = text.find("总层数")
+    if marker >= 0:
+        tail = text[marker + len("总层数") :]
+        stop_positions = [pos for token in ("竣工日期", "权利性质", "使用期限") if (pos := tail.find(token)) >= 0]
+        segment = tail[: min(stop_positions)] if stop_positions else tail[:80]
+        values.extend(re.findall(r"(?<!\d)(\d{1,2})(?!\d)", segment))
+    return _dedupe(values)
+
+
 def _clean_field_value(value: str, *, keep_labels: tuple[str, ...] = ()) -> str:
     text = _clean(value)
     for label in POLLUTION_LABELS:
@@ -184,9 +231,10 @@ def _extract_attachment_rows(lines: list[str]) -> list[dict[str, str]]:
         row = {"不动产单元号": unit_number}
         house_use = _known_value(row_text, HOUSE_USE_VALUES) or _nearby_value(lines, index, HOUSE_USE_VALUES)
         building_type = _known_value(row_text, BUILDING_TYPE_VALUES) or _nearby_value(lines, index, BUILDING_TYPE_VALUES)
+        building_type = building_type if is_valid_building_type(building_type) else ""
         right_nature = _known_value(row_text, RIGHT_NATURE_VALUES) or _nearby_value(lines, index, RIGHT_NATURE_VALUES)
         use_term = USE_TERM_RE.search(row_text)
-        completion = YEAR_RE.search(row_text)
+        completion_values = _completion_years(row_text)
         areas = [match.group(1) for match in AREA_RE.finditer(row_text)] or [match.group(1) for match in BARE_AREA_RE.finditer(row_text)]
         floors = re.search(r"(?:总层数[:：]?)?(\d{1,2})(?:层|$)", row_text)
         room = re.search(r"(\d+号\d+(?:-\d+)?层|\d+号\d+层|[0-9]+幢\d+(?:-\d+)?层|[0-9]+幢[0-9A-Za-z\-层东间]+)", row_text)
@@ -202,8 +250,8 @@ def _extract_attachment_rows(lines: list[str]) -> list[dict[str, str]]:
             row["建筑面积"] = f"{float(areas[0]):.2f}平方米"
         if floors:
             row["总层数"] = floors.group(1)
-        if completion:
-            row["竣工日期"] = completion.group(0)
+        if completion_values:
+            row["竣工日期"] = completion_values[0]
         if room:
             row["室号或部位"] = _clean_field_value(room.group(1))
         rows.append(row)
@@ -211,18 +259,18 @@ def _extract_attachment_rows(lines: list[str]) -> list[dict[str, str]]:
 
 
 def _extract_column_rows(lines: list[str]) -> list[dict[str, str]]:
-    text = " ".join(lines)
+    text = _house_section_text(lines)
     rooms = _dedupe(
         [
             _clean_field_value(match.group(0))
-            for match in re.finditer(r"\d+号\d+(?:-\d+)?层|[0-9]+幢\d+(?:-\d+)?层|[0-9]+幢[0-9A-Za-z\-层东间]+", text)
+            for match in re.finditer(r"\d+号\d+(?:-\d+)?层|[0-9]+幢\d+(?:-\d+)?层(?:、\d+层东\d+间)?|[0-9]+幢[0-9A-Za-z\-层东间、]+|\d+层东\d+间", text)
         ]
     )
     areas = _dedupe([f"{float(match.group(1)):.2f}平方米" for match in AREA_RE.finditer(text)] or [f"{float(match.group(1)):.2f}平方米" for match in BARE_AREA_RE.finditer(text)])
     house_usages = _dedupe(_known_values(text, HOUSE_USE_VALUES))
-    building_types = _dedupe(_known_values(text, BUILDING_TYPE_VALUES))
-    floors = _dedupe([match.group(1) for match in re.finditer(r"总层数[:：]?\s*(\d{1,2})", text)])
-    years = _dedupe([match.group(0) for match in YEAR_RE.finditer(text)])
+    building_types = _dedupe(_building_type_values(text))
+    floors = _total_floor_values(text)
+    years = _dedupe(_completion_years(text))
     units = _valid_unit_numbers(text)
     row_count = max(len(units), len(rooms), len(areas), 0)
     rows: list[dict[str, str]] = []
@@ -239,9 +287,17 @@ def _extract_column_rows(lines: list[str]) -> list[dict[str, str]]:
         if building_types:
             row["建筑类型"] = building_types[min(index, len(building_types) - 1)]
         if floors:
-            row["总层数"] = floors[min(index, len(floors) - 1)]
+            room_value = row.get("室号或部位", "")
+            if len(floors) >= 2 and ("幢" in room_value or "东" in room_value):
+                row["总层数"] = floors[-1]
+            else:
+                row["总层数"] = floors[0]
         if years:
-            row["竣工日期"] = years[min(index, len(years) - 1)]
+            room_value = row.get("室号或部位", "")
+            if len(years) >= 2 and ("幢" in room_value or "东" in room_value):
+                row["竣工日期"] = years[-1]
+            else:
+                row["竣工日期"] = years[0]
         if row:
             rows.append(row)
     return rows
@@ -257,20 +313,43 @@ def _merge_rows(primary: list[dict[str, str]], fallback: list[dict[str, str]]) -
     return primary
 
 
-def extract(payload: dict[str, Any]) -> dict[str, Any]:
-    text = str(payload.get("text") or "").strip()
+def extract_attachment_house_details(text: str) -> dict[str, Any]:
     lines = _lines(text)
     _log_invalid_unit_tokens(text)
     rows = _merge_rows(_extract_attachment_rows(lines), _extract_column_rows(lines))
-    fields: dict[str, Any] = {"附记": text[:1000]} if text else {}
-
     unit_numbers = _dedupe([row["不动产单元号"] for row in rows if is_valid_unit_number(row.get("不动产单元号"))])
-    house_usages = _dedupe([row["房屋用途"] for row in rows if row.get("房屋用途")] or _extract_label_values(lines, ("房屋用途",), HOUSE_USE_VALUES))
-    building_types = _dedupe([row["建筑类型"] for row in rows if row.get("建筑类型")] or _extract_label_values(lines, ("建筑类型", "类型"), BUILDING_TYPE_VALUES))
+    house_usages = _dedupe([row["房屋用途"] for row in rows if row.get("房屋用途")] or _extract_label_values(lines, ("房屋用途", "用途"), HOUSE_USE_VALUES))
+    building_types = _dedupe([row["建筑类型"] for row in rows if is_valid_building_type(row.get("建筑类型"))] or _building_type_values(_house_section_text(lines)))
     room_numbers = _dedupe([row["室号或部位"] for row in rows if row.get("室号或部位")])
     building_areas = _dedupe([row["建筑面积"] for row in rows if row.get("建筑面积")])
     total_floors = _dedupe([row["总层数"] for row in rows if row.get("总层数")])
     completion_dates = _dedupe([row["竣工日期"] for row in rows if row.get("竣工日期")])
+    return {
+        "附记明细": rows,
+        "不动产单元号列表": unit_numbers,
+        "室号或部位列表": room_numbers,
+        "建筑面积列表": building_areas,
+        "房屋用途列表": house_usages,
+        "建筑类型列表": building_types,
+        "总层数列表": total_floors,
+        "竣工日期列表": completion_dates,
+    }
+
+
+def extract(payload: dict[str, Any]) -> dict[str, Any]:
+    text = str(payload.get("text") or "").strip()
+    lines = _lines(text)
+    details = extract_attachment_house_details(text)
+    rows = details["附记明细"]
+    fields: dict[str, Any] = {"附记": text[:1000]} if text else {}
+
+    unit_numbers = details["不动产单元号列表"]
+    house_usages = details["房屋用途列表"]
+    building_types = details["建筑类型列表"]
+    room_numbers = details["室号或部位列表"]
+    building_areas = details["建筑面积列表"]
+    total_floors = details["总层数列表"]
+    completion_dates = details["竣工日期列表"]
     land_usages = _dedupe([row["土地用途"] for row in rows if row.get("土地用途")] or _extract_label_values(lines, ("土地用途",), LAND_USE_VALUES))
     right_natures = _dedupe([row["权利性质"] for row in rows if row.get("权利性质")] or _extract_label_values(lines, ("权利性质",), RIGHT_NATURE_VALUES))
     use_terms = _dedupe([row["使用期限"] for row in rows if row.get("使用期限")])
@@ -294,8 +373,12 @@ def extract(payload: dict[str, Any]) -> dict[str, Any]:
 
     logger.info("[AttachmentSkill] selected_ocr_variant=%s", payload.get("selected_ocr_variant") or payload.get("metadata", {}).get("selected_ocr_variant") or "")
     logger.info("[AttachmentSkill] valid_unit_numbers=%s", unit_numbers)
+    logger.info("[AttachmentSkill] room_parts=%s", room_numbers)
+    logger.info("[AttachmentSkill] building_areas=%s", building_areas)
     logger.info("[AttachmentSkill] house_usages=%s", house_usages)
     logger.info("[AttachmentSkill] building_types=%s", building_types)
+    logger.info("[AttachmentSkill] total_floors=%s", total_floors)
+    logger.info("[AttachmentSkill] completion_dates=%s", completion_dates)
     logger.info("[AttachmentSkill] rows_count=%s", len(rows))
     warnings = []
     if "不动产单元号" in text and not unit_numbers:

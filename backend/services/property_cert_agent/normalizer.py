@@ -4,7 +4,7 @@ import re
 import logging
 from typing import Any
 
-from .skills.attachment_page_skill import is_valid_unit_number_value
+from .skills.attachment_page_skill import is_valid_building_type, is_valid_unit_number_value
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +354,9 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
     if source.get("不动产单元号") and not is_valid_unit_number_value(source.get("不动产单元号")):
         logger.info("[PropertyNormalizer] invalid_unit_number_removed=%s", source.get("不动产单元号"))
         source.pop("不动产单元号", None)
+    if source.get("建筑类型") and not is_valid_building_type(source.get("建筑类型")):
+        logger.info("[PropertyNormalizer] invalid_building_type_removed=%s", source.get("建筑类型"))
+        source.pop("建筑类型", None)
 
     if new_version:
         address = _first_non_empty(source, NEW_ADDRESS_KEYS)
@@ -479,6 +482,9 @@ def normalize_property_cert_fields(fields: dict[str, Any], raw_text: str = "", p
         if key == "不动产单元号" and not is_valid_unit_number_value(value):
             logger.info("[PropertyNormalizer] invalid_unit_number_removed=%s", value)
             continue
+        if key == "建筑类型" and not is_valid_building_type(value):
+            logger.info("[PropertyNormalizer] invalid_building_type_removed=%s", value)
+            continue
         normalized[key] = value
     logger.info("[PropertyNormalizer] after_fields=%s", normalized)
     return normalized
@@ -528,6 +534,9 @@ def normalize_fields(fields: dict[str, Any], *, old_version: bool = False) -> di
     if cleaned.get("不动产单元号") and not is_valid_unit_number_value(cleaned.get("不动产单元号")):
         logger.info("[PropertyNormalizer] invalid_unit_number_removed=%s", cleaned.get("不动产单元号"))
         cleaned.pop("不动产单元号", None)
+    if cleaned.get("建筑类型") and not is_valid_building_type(cleaned.get("建筑类型")):
+        logger.info("[PropertyNormalizer] invalid_building_type_removed=%s", cleaned.get("建筑类型"))
+        cleaned.pop("建筑类型", None)
     for alias, target in FIELD_ALIASES.items():
         if cleaned.get(alias) and not cleaned.get(target):
             cleaned[target] = cleaned.pop(alias)
