@@ -57,10 +57,27 @@ def normalize_area(value: Any) -> dict[str, Any] | str:
     return {"value": float(match.group(1).replace(",", "")), "unit": "平方米"}
 
 
+def normalize_id_number(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip().upper()
+
+
+def normalize_text_field(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip(" :：,，;；")
+
+
 def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") or {}
     for field, value in list(fields.items()):
-        if field in DATE_FIELDS:
+        if result.get("doc_type") == "id_card" and field == "id_number":
+            fields[field] = normalize_id_number(value)
+        elif result.get("doc_type") == "id_card" and field == "gender":
+            gender = str(value or "").strip()
+            fields[field] = gender if gender in {"男", "女"} else ""
+        elif result.get("doc_type") == "id_card" and field == "ethnicity":
+            fields[field] = normalize_text_field(value).replace("族", "")
+        elif result.get("doc_type") == "id_card" and field in {"address", "issuing_authority"}:
+            fields[field] = normalize_text_field(value)
+        elif field in DATE_FIELDS:
             fields[field] = normalize_date(value)
         elif field in AMOUNT_FIELDS:
             fields[field] = normalize_amount(value)

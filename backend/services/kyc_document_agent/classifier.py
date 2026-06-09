@@ -6,7 +6,6 @@ from .schema import DOC_TYPE_NAMES, OWNER_TYPES
 
 
 CLASSIFICATION_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("id_card", ("居民身份证", "公民身份号码")),
     ("business_license", ("营业执照", "统一社会信用代码")),
     ("account_permit", ("开户许可证", "核准号")),
     ("basic_account_info", ("基本存款账户信息",)),
@@ -26,6 +25,11 @@ CLASSIFICATION_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("account_receipt", ("开户信息回单",)),
     ("taxpayer_qualification", ("一般纳税人资格", "纳税人资格证明")),
 ]
+
+ID_CARD_FRONT_KEYWORDS = ("姓名", "性别", "民族", "出生", "住址", "公民身份号码")
+ID_CARD_BACK_KEYWORDS = ("签发机关", "有效期限")
+ID_CARD_STRONG_KEYWORDS = ("居民身份证", "中华人民共和国居民身份证", "公民身份号码")
+ID_CARD_NEGATIVE_KEYWORDS = ("居民户口簿", "户口簿", "户主页", "常住人口登记卡", "结婚证", "婚姻登记员", "离婚证")
 
 PROPERTY_KEYWORDS = (
     "房地产权证",
@@ -99,6 +103,38 @@ def classify_with_reason(text: str, filename: str = "", declared_doc_type: str |
 
     normalized = text or ""
     compact = re.sub(r"\s+", "", normalized)
+
+    if "居民户口簿" in compact or "户口簿" in compact or "常住人口登记卡" in compact:
+        return {
+            "doc_type": "household_register",
+            "doc_type_name": DOC_TYPE_NAMES["household_register"],
+            "owner_type": OWNER_TYPES["household_register"],
+            "reason": "文本命中户口本关键词，排除身份证误判",
+        }
+    if "结婚证" in compact or "婚姻登记员" in compact:
+        return {
+            "doc_type": "marriage_cert",
+            "doc_type_name": DOC_TYPE_NAMES["marriage_cert"],
+            "owner_type": OWNER_TYPES["marriage_cert"],
+            "reason": "文本命中结婚证关键词，排除身份证号误判",
+        }
+
+    id_front_score = sum(1 for keyword in ID_CARD_FRONT_KEYWORDS if keyword in compact)
+    id_back_score = sum(1 for keyword in ID_CARD_BACK_KEYWORDS if keyword in compact)
+    id_strong = any(keyword in compact for keyword in ID_CARD_STRONG_KEYWORDS)
+    if not any(keyword in compact for keyword in ID_CARD_NEGATIVE_KEYWORDS) and (
+        id_strong or id_front_score >= 4 or id_back_score >= 2
+    ):
+        matched: list[str] = []
+        matched.extend(keyword for keyword in ID_CARD_STRONG_KEYWORDS if keyword in compact)
+        matched.extend(keyword for keyword in ID_CARD_FRONT_KEYWORDS if keyword in compact)
+        matched.extend(keyword for keyword in ID_CARD_BACK_KEYWORDS if keyword in compact)
+        return {
+            "doc_type": "id_card",
+            "doc_type_name": DOC_TYPE_NAMES["id_card"],
+            "owner_type": OWNER_TYPES["id_card"],
+            "reason": f"文本命中身份证关键词：{', '.join(dict.fromkeys(matched))}",
+        }
 
     if (
         "不动产权证书" in compact

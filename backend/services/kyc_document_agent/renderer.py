@@ -118,6 +118,15 @@ FORBIDDEN_DISPLAY_KEYS = {
 }
 
 FIELD_LABELS = {
+    "name": "姓名",
+    "gender": "性别",
+    "ethnicity": "民族",
+    "birth_date": "出生日期",
+    "address": "住址",
+    "id_number": "身份证号码",
+    "issuing_authority": "签发机关",
+    "valid_from": "有效期限起",
+    "valid_to": "有效期限止",
     "owner": "权利人",
     "co_owners": "共有人",
     "certificate_number": "权证编号",
@@ -313,6 +322,34 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_markdown(result: dict[str, Any]) -> str:
+    if result.get("doc_type") == "id_card":
+        fields = result.get("fields") or {}
+        status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))
+        lines = [
+            "## 居民身份证",
+            f"- 资料类型：居民身份证",
+            f"- 提取状态：{status}",
+            "",
+            "### 基础信息",
+        ]
+        for key in ("name", "gender", "ethnicity", "birth_date", "address", "id_number"):
+            if fields.get(key):
+                lines.append(f"- {field_label(key)}：{_format_value(fields.get(key))}")
+        lines.extend(["", "### 签发信息"])
+        for key in ("issuing_authority", "valid_from", "valid_to"):
+            if fields.get(key):
+                lines.append(f"- {field_label(key)}：{_format_value(fields.get(key))}")
+        missing = result.get("missing_fields") or []
+        if missing:
+            lines.extend(["", "### 缺失字段"])
+            lines.extend(f"- {field_label(str(item))}" for item in missing)
+        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+        notices = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
+        if notices:
+            lines.extend(["", "### 校验提醒"])
+            lines.extend(f"- {item}" for item in dict.fromkeys(str(item) for item in notices))
+        return "\n".join(lines)
+
     doc_type_name = result.get("doc_type_name") or "未知资料"
     lines = [
         f"## {doc_type_name}",
