@@ -78,4 +78,40 @@ describe('KycExtractionResult', () => {
       },
     })).toBe(true);
   });
+
+  it('prefers nested business markdown over legacy raw-json markdown', () => {
+    const legacyMarkdown = `## 结婚证
+- doc type：marriage_certificate
+- fields：{"certificate_no":"政字第2002208号"}
+- validation：{"is_valid":true}
+- confidence：{"overall":0.8}
+- evidence：{"certificate_no":{"value":"政字第2002208号"}}`;
+
+    const { container } = render(
+      <KycExtractionResult
+        result={{
+          agent_type: 'kyc_document_agent',
+          doc_type: 'marriage_certificate',
+          doc_type_name: '结婚证',
+          extraction_status: 'success',
+          fields: {},
+          markdown: legacyMarkdown,
+          extracted_data: {
+            agent_type: 'kyc_document_agent',
+            doc_type: 'marriage_certificate',
+            markdown: marriageMarkdown,
+          },
+        } as unknown as KycExtractionResultType}
+      />,
+    );
+    const text = container.textContent || '';
+
+    expect(text).toContain('结婚证字号：政字第2002208号');
+    expect(text).toContain('登记机关：浙江省乐清市民政局');
+    expect(text).not.toContain('fields');
+    expect(text).not.toContain('validation');
+    expect(text).not.toContain('confidence');
+    expect(text).not.toContain('evidence');
+    expect(text).not.toContain('doc type');
+  });
 });

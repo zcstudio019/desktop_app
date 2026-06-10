@@ -225,6 +225,23 @@ const FORBIDDEN_KYC_DISPLAY_KEYS = new Set([
   'profile_context',
 ]);
 
+const RAW_KYC_MARKDOWN_MARKERS = [
+  'doc type',
+  'doc_type',
+  'doc type name',
+  'owner type',
+  'fields',
+  'validation',
+  'confidence',
+  'evidence',
+  'missing fields',
+  'raw text preview',
+  'raw_text_preview',
+  'metadata',
+  'agent type',
+  'classification reason',
+];
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -240,6 +257,24 @@ function parseMaybeRecord(value: unknown): Record<string, unknown> {
     }
   }
   return {};
+}
+
+function looksLikeRawKycMarkdown(value: unknown): boolean {
+  const text = typeof value === 'string' ? value.toLowerCase() : '';
+  return Boolean(text && RAW_KYC_MARKDOWN_MARKERS.some((marker) => text.includes(marker)));
+}
+
+function firstBusinessMarkdown(...values: unknown[]): string {
+  const fallback: string[] = [];
+  for (const value of values) {
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const markdown = value.trim();
+    if (!looksLikeRawKycMarkdown(markdown)) {
+      return markdown;
+    }
+    fallback.push(markdown);
+  }
+  return fallback[0] || '';
 }
 
 function pickFirstRecord(...values: unknown[]): Record<string, unknown> {
@@ -360,7 +395,17 @@ export function normalizeKycExtractionResult(source: unknown): Record<string, un
     confidence: root.confidence || payload.confidence,
     evidence: root.evidence || payload.evidence || {},
     missing_fields: root.missing_fields || payload.missing_fields || [],
-    markdown: root.markdown || payload.markdown || root.markdown_content || payload.markdown_content || root.markdownContent || payload.markdownContent || '',
+    markdown: firstBusinessMarkdown(
+      payload.markdown,
+      payload.markdown_summary,
+      payload.display_markdown,
+      payload.summary_markdown,
+      root.markdown,
+      root.markdown_content,
+      root.markdownContent,
+      payload.markdown_content,
+      payload.markdownContent,
+    ),
   };
 }
 

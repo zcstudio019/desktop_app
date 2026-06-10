@@ -26,7 +26,7 @@ from backend.services.enterprise_bank_statement_agent.flow_rules import get_ente
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
-from backend.services.kyc_document_agent.renderer import get_display_fields
+from backend.services.kyc_document_agent.renderer import get_display_fields, render_markdown as render_kyc_markdown
 from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
 from backend.services.property_cert_agent.normalizer import normalize_property_cert_fields
 from backend.services.property_cert_agent.renderer import ensure_property_address_for_render
@@ -193,6 +193,47 @@ HIDDEN_STRUCTURED_FIELDS = {
     'extraction_status',
     'extraction_error',
 }
+
+KYC_PROFILE_DOC_TYPES = {
+    'id_card',
+    'marriage_cert',
+    'marriage_certificate',
+    'divorce_cert',
+    'household_register',
+    'business_license',
+    'account_permit',
+    'basic_account_info',
+    'vehicle_license',
+    'driving_license',
+    'property_cert',
+    'real_estate_cert',
+    'lease_contract_keypage',
+    'real_estate_query',
+    'shareholder_id_card',
+    'articles_keypage',
+    'special_business_license',
+    'food_business_license',
+    'road_transport_license',
+    'account_receipt',
+    'taxpayer_qualification',
+}
+
+RAW_KYC_MARKDOWN_MARKERS = (
+    'doc type',
+    'doc_type',
+    'doc type name',
+    'owner type',
+    'fields',
+    'validation',
+    'confidence',
+    'evidence',
+    'missing fields',
+    'raw text preview',
+    'raw_text_preview',
+    'metadata',
+    'agent type',
+    'classification reason',
+)
 OPTIONAL_COMPANY_ARTICLES_FIELDS = {
     'executive_director',
     'chairman',
@@ -220,6 +261,52 @@ def _format_customer_type(customer_type: Any) -> str:
 def _markdown_section(title: str, lines: list[str]) -> str:
     body = '\n'.join(line for line in lines if line.strip()) or '- \u6682\u65e0\u6570\u636e'
     return f'## {title}\n{body}'
+
+
+def _is_kyc_profile_payload(extracted_data: dict[str, Any], extraction_type: str) -> bool:
+    if not isinstance(extracted_data, dict):
+        return False
+    doc_type = str(
+        extracted_data.get('doc_type')
+        or extracted_data.get('document_type')
+        or extracted_data.get('document_type_code')
+        or extraction_type
+        or ''
+    )
+    return extracted_data.get('agent_type') == 'kyc_document_agent' or doc_type in KYC_PROFILE_DOC_TYPES
+
+
+def _looks_like_raw_kyc_markdown(markdown: str) -> bool:
+    text = str(markdown or '').lower()
+    if not text:
+        return False
+    return any(marker in text for marker in RAW_KYC_MARKDOWN_MARKERS)
+
+
+def _saved_kyc_business_markdown(extracted_data: dict[str, Any]) -> str:
+    if not isinstance(extracted_data, dict):
+        return ''
+    for key in ('markdown', 'markdown_summary', 'display_markdown', 'summary_markdown'):
+        markdown = str(extracted_data.get(key) or '').strip()
+        if markdown and not _looks_like_raw_kyc_markdown(markdown):
+            return markdown
+    return ''
+
+
+def _render_kyc_business_markdown(extracted_data: dict[str, Any], file_name: str, original_status: str) -> str:
+    saved_markdown = _saved_kyc_business_markdown(extracted_data)
+    if saved_markdown:
+        return saved_markdown
+    payload = dict(extracted_data or {})
+    metadata = _as_dict(payload.get('metadata'))
+    if file_name and file_name != '暂无':
+        metadata.setdefault('filename', file_name)
+        metadata.setdefault('source_file', file_name)
+    payload['metadata'] = metadata
+    markdown = render_kyc_markdown(payload)
+    if original_status != '可查看' and '- 原件状态：可查看' in markdown:
+        markdown = markdown.replace('- 原件状态：可查看', f'- 原件状态：{original_status}')
+    return markdown
 
 
 def _format_amount_for_markdown(value: Any) -> str:
@@ -1784,6 +1871,20 @@ async def _build_single_document_section(
         'original_status': original_status,
         'original_available': bool(store_original and file_path),
     }
+    if isinstance(extracted_data, dict) and _is_kyc_profile_payload(extracted_data, extraction_type):
+        doc_type = str(extracted_data.get('doc_type') or extraction_type or '')
+        source_document['source_type'] = doc_type or extraction_type
+        source_document['source_type_name'] = str(extracted_data.get('doc_type_name') or type_name)
+        markdown = _render_kyc_business_markdown(extracted_data, file_name, original_status)
+        logger.info(
+            "[Profile Sync][KYC] using business markdown customer_id=%s doc_id=%s doc_type=%s markdown_len=%s raw_json_markdown=%s",
+            customer_id,
+            doc_id,
+            doc_type,
+            len(markdown or ""),
+            _looks_like_raw_kyc_markdown(markdown),
+        )
+        return markdown, source_document
     if extraction_type in {'property_report', 'collateral', 'mortgage_info'} and isinstance(extracted_data, dict):
         property_title = '\u623f\u4ea7\u8bc1'
         lines = _build_property_section_lines([file_name], bool(store_original and file_path), extracted_data)
@@ -2227,6 +2328,16 @@ async def get_or_create_customer_profile(storage_service: Any, customer_id: str)
             )
             and await _customer_has_valid_id_card_extraction(storage_service, customer_id)
         )
+        has_stale_kyc_json_section = (
+            existing.get('source_mode') != 'manual'
+            and ('## 结婚证' in markdown or 'marriage_certificate' in markdown)
+            and _looks_like_raw_kyc_markdown(markdown)
+        )
+        if has_stale_kyc_json_section:
+            logger.warning("[Profile Sync][KYC] stale raw-json markdown detected customer_id=%s; regenerate", customer_id)
+            generated = await build_auto_profile_payload(storage_service, customer_id)
+            saved = await storage_service.upsert_customer_profile(generated)
+            return saved, True
         if has_stale_id_card_section:
             logger.warning("[KYCDisplay][ID_CARD_RECORDS] stale id_card profile detected customer_id=%s; regenerate", customer_id)
             generated = await build_auto_profile_payload(storage_service, customer_id)
