@@ -34,6 +34,29 @@ SAMPLE_TWO = """
 """
 
 
+LINYONG_OCR_TEXT = """
+--- 第 1 页 ---
+人民共国 婚姻证件管理专用章 囍 中华人民共和国民政部监制 持证人林勇
+--- 第 2 页 ---
+政 字第 2002208 号
+姓名 林勇
+申请结婚，经审查符合
+性别 男
+《中华人民共和国婚姻法》
+出生日期 1979年3月16日
+关于结婚的规定，准予登记，
+国籍 发给此证。
+身份证件号 330323790316243
+姓名 黄晓回
+性别 女
+出生日期 1979年11月8日
+发证机关:
+国籍
+身份证件号 330323791108192
+发证日期: 2022年3月15日
+"""
+
+
 class FakeStorage:
     def __init__(self, extractions):
         self.extractions = extractions
@@ -172,3 +195,45 @@ def test_marriage_markdown_is_chinese_and_not_raw_fields_json():
     assert "holder_1" not in markdown
     assert "{'" not in markdown
     assert '{"' not in markdown
+
+
+def test_linyong_scanned_marriage_certificate_handles_noisy_ocr():
+    result = KycDocumentAgent().extract({"text": LINYONG_OCR_TEXT, "metadata": {"filename": "林勇结婚证.pdf"}})
+    fields = result["fields"]
+    holder_1 = fields["holder_1"]
+    holder_2 = fields["holder_2"]
+
+    assert result["doc_type"] == "marriage_certificate"
+    assert result["extraction_status"] == "partial"
+    assert fields["certificate_no"] == "政字第2002208号"
+    assert holder_1["name"] == "林勇"
+    assert holder_1["gender"] == "男"
+    assert holder_1["nationality"] == "中国"
+    assert holder_1["birth_date"] == "1979-03-16"
+    assert holder_1["id_number"] == ""
+    assert holder_1["raw_id_number"] == "330323790316243"
+    assert holder_2["name"] == "黄晓回"
+    assert holder_2["gender"] == "女"
+    assert holder_2["nationality"] == "中国"
+    assert holder_2["birth_date"] == "1979-11-08"
+    assert holder_2["id_number"] == ""
+    assert holder_2["raw_id_number"] == "330323791108192"
+    assert fields["registration_authority"] == ""
+    assert fields["issuing_authority"] == ""
+    assert fields["issue_date"] == "2022-03-15"
+    assert fields["marriage_date"] == "2022-03-15"
+    assert fields["registration_date"] == "2022-03-15"
+    assert "配偶一身份证号" in result["missing_fields"]
+    assert "配偶二身份证号" in result["missing_fields"]
+    warnings = result["validation"]["warnings"]
+    assert any("配偶一身份证号疑似 OCR 缺位：330323790316243" in item for item in warnings)
+    assert any("配偶二身份证号疑似 OCR 缺位：330323791108192" in item for item in warnings)
+    assert "登记机关未识别" in warnings
+    assert result["validation"]["errors"] == []
+    assert result["evidence"]["holder_1.name"]["value"] == "林勇"
+    assert result["evidence"]["certificate_no"]["value"] == "政字第2002208号"
+    markdown = result["markdown"]
+    assert "## 结婚证" in markdown
+    assert "疑似身份证号：330323790316243" in markdown
+    assert "fields" not in markdown
+    assert "validation" not in markdown

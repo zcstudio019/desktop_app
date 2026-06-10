@@ -104,8 +104,12 @@ const FIELD_LABELS: Record<string, string> = {
   marriage_date: '登记日期',
   holder_1_name: '配偶一姓名',
   holder_1_id_number: '配偶一身份证号',
+  holder_raw_id_number: '配偶一疑似身份证号',
+  holder_suspected_id_number: '配偶一疑似身份证号',
   holder_2_name: '配偶二姓名',
   holder_2_id_number: '配偶二身份证号',
+  spouse_raw_id_number: '配偶二疑似身份证号',
+  spouse_suspected_id_number: '配偶二疑似身份证号',
   权利人: '权利人',
   共有人: '共有人',
   共有情况: '共有情况',
@@ -469,15 +473,17 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
       ['配偶一性别', holder1.gender],
       ['配偶一国籍', holder1.nationality],
       ['配偶一出生日期', holder1.birth_date],
-      ['配偶一身份证号', holder1.id_number || fields.holder_id_number || fields.holder_1_id_number],
+      ['配偶一身份证号', holder1.id_number || fields.holder_id_number || fields.holder_1_id_number || '未识别'],
+      ['配偶一疑似身份证号', holder1.raw_id_number || holder1.suspected_id_number || fields.holder_raw_id_number || fields.holder_suspected_id_number],
       ['配偶二姓名', holder2.name || fields.spouse_name || fields.holder_2_name],
       ['配偶二性别', holder2.gender],
       ['配偶二国籍', holder2.nationality],
       ['配偶二出生日期', holder2.birth_date],
-      ['配偶二身份证号', holder2.id_number || fields.spouse_id_number || fields.holder_2_id_number],
+      ['配偶二身份证号', holder2.id_number || fields.spouse_id_number || fields.holder_2_id_number || '未识别'],
+      ['配偶二疑似身份证号', holder2.raw_id_number || holder2.suspected_id_number || fields.spouse_raw_id_number || fields.spouse_suspected_id_number],
     ];
     entries.forEach(([label, value]) => {
-      if (isInvalidDisplayValue(value)) return;
+      if (isInvalidDisplayValue(value) && !(String(label).includes('身份证号') && value === '未识别')) return;
       const text = formatKycDisplayValue(value);
       if (text) display.set(label, text);
     });
