@@ -50,40 +50,84 @@ FIELD_STOPS = (
     "总质量",
     "整备质量",
     "检验有效期止",
+    "检验有效期至",
+    "Ower",
+    "Owener",
+    "Addrss",
+    "Addresss",
 )
+
+ALL_LABELS = (
+    "号牌号码",
+    "Plate No.",
+    "Plate No",
+    "车辆类型",
+    "Vehicle Type",
+    "所有人",
+    "Owner",
+    "Ower",
+    "Owener",
+    "住址",
+    "Address",
+    "Addrss",
+    "Addresss",
+    "使用性质",
+    "Use Character",
+    "USECHARACTER",
+    "品牌型号",
+    "Model",
+    "车辆识别代号",
+    "VIN",
+    "发动机号码",
+    "Engine No.",
+    "Engine No",
+    "ENGINENO",
+    "注册日期",
+    "Register Date",
+    "发证日期",
+    "Issue Date",
+    "核定载人数",
+    "总质量",
+    "整备质量",
+    "检验有效期止",
+    "检验有效期至",
+)
+
+VEHICLE_TYPES = ("小型轿车", "小型普通客车", "小型汽车", "轻型货车", "大型汽车", "普通二轮摩托车")
+USE_CHARACTERS = ("非营运", "出租客运", "营运", "货运", "租赁", "教练")
 
 
 def normalize_ocr_text(text: str) -> tuple[str, str, list[str]]:
     normalized = str(text or "").replace("\u3000", " ").replace("：", ":")
-    replacements = {
-        "PlateNo.": "Plate No.",
-        "PlateNo": "Plate No",
-        "VehicleType": "Vehicle Type",
-        "UseCharacter": "Use Character",
-        "EngineNo.": "Engine No.",
-        "EngineNo": "Engine No",
-        "RegisterDate": "Register Date",
-        "IssueDate": "Issue Date",
-        "号 牌 号 码": "号牌号码",
-        "车 辆 类 型": "车辆类型",
-        "所 有 人": "所有人",
-        "住 址": "住址",
-        "使 用 性 质": "使用性质",
-        "品 牌 型 号": "品牌型号",
-        "车 辆 识 别 代 号": "车辆识别代号",
-        "发 动 机 号 码": "发动机号码",
-        "注 册 日 期": "注册日期",
-        "发 证 日 期": "发证日期",
-    }
-    for old, new in replacements.items():
-        normalized = normalized.replace(old, new)
-
-    lines: list[str] = []
-    for raw_line in re.split(r"[\r\n]+", normalized):
-        line = re.sub(r"[ \t]+", " ", raw_line).strip(" :;；,，")
-        if line:
-            lines.append(line)
-    line_text = "\n".join(lines)
+    replacements = (
+        (r"Plate\s*No\.?", "Plate No."),
+        (r"Vehicle\s*Type", "Vehicle Type"),
+        (r"Use\s*Character", "Use Character"),
+        (r"Engine\s*No\.?", "Engine No."),
+        (r"Register\s*Date", "Register Date"),
+        (r"Issue\s*Date", "Issue Date"),
+        (r"\bVin\b", "VIN"),
+        (r"\bVIN\b", "VIN"),
+        (r"\bOwer\b|\bOwener\b", "Owner"),
+        (r"\bAddrss\b|\bAddresss\b", "Address"),
+        (r"号\s*牌\s*号\s*码", "号牌号码"),
+        (r"车\s*辆\s*类\s*型", "车辆类型"),
+        (r"所\s*有\s*人", "所有人"),
+        (r"住\s*址", "住址"),
+        (r"使\s*用\s*性\s*质", "使用性质"),
+        (r"品\s*牌\s*型\s*号", "品牌型号"),
+        (r"车\s*辆\s*识\s*别\s*代\s*号", "车辆识别代号"),
+        (r"发\s*动\s*机\s*号\s*码", "发动机号码"),
+        (r"注\s*册\s*日\s*期", "注册日期"),
+        (r"发\s*证\s*日\s*期", "发证日期"),
+    )
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    for label in sorted(ALL_LABELS, key=len, reverse=True):
+        normalized = re.sub(re.escape(label), f" {label} ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    lines = [line.strip(" :;；,，") for line in re.split(r"[\r\n]+", normalized) if line.strip(" :;；,，")]
+    line_text = normalized
     compact_text = re.sub(r"\s+", "", line_text)
     return line_text, compact_text, lines
 
@@ -94,6 +138,14 @@ def _clean_text(value: Any) -> str:
 
 def _clean_code(value: Any) -> str:
     return re.sub(r"[\s:：]+", "", str(value or "")).strip(" ,，;；").upper()
+
+
+def clean_vehicle_field_value(value: str) -> str:
+    text = str(value or "")
+    for label in sorted(ALL_LABELS, key=len, reverse=True):
+        text = re.sub(re.escape(label), " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" :：,，;；")
+    return text
 
 
 def _date_to_iso(value: Any) -> str:
@@ -117,6 +169,31 @@ def _date_to_iso(value: Any) -> str:
     return ""
 
 
+def extract_between_labels(
+    text: str,
+    labels: tuple[str, ...],
+    stop_labels: tuple[str, ...] = FIELD_STOPS,
+    max_chars: int = 100,
+) -> tuple[str, str]:
+    label_pattern = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+    start_matches = list(re.finditer(label_pattern, text, flags=re.IGNORECASE))
+    if not start_matches:
+        return "", ""
+    start_match = start_matches[0]
+    value_start = start_match.end()
+    value_end = min(len(text), value_start + max_chars)
+    stop_candidates = [label for label in stop_labels if label.lower() not in {item.lower() for item in labels}]
+    if stop_candidates:
+        stop_pattern = "|".join(re.escape(label) for label in sorted(stop_candidates, key=len, reverse=True))
+        stop_match = re.search(stop_pattern, text[value_start:], flags=re.IGNORECASE)
+        if stop_match:
+            value_end = min(value_end, value_start + stop_match.start())
+    evidence_end = min(len(text), value_end + 40)
+    raw_value = text[value_start:value_end]
+    evidence = text[start_match.start() : evidence_end].strip()
+    return clean_vehicle_field_value(raw_value), evidence
+
+
 def _extract_label_value(
     line_text: str,
     compact_text: str,
@@ -124,49 +201,18 @@ def _extract_label_value(
     stop_labels: tuple[str, ...] = FIELD_STOPS,
     max_chars: int = 100,
 ) -> tuple[str, str]:
-    label_pattern = "|".join(re.escape(label) for label in labels)
-    stop_pattern = "|".join(re.escape(label) for label in stop_labels if label not in labels)
-    lines = line_text.splitlines()
-    for index, line in enumerate(lines):
-        match = re.search(label_pattern, line, flags=re.IGNORECASE)
-        if not match:
-            continue
-        value = line[match.end() :]
-        if stop_pattern:
-            value = re.split(stop_pattern, value, maxsplit=1, flags=re.IGNORECASE)[0]
-        if _clean_text(value):
-            return _clean_text(value), line
-        parts: list[str] = []
-        evidence = [line]
-        for next_line in lines[index + 1 : index + 4]:
-            if stop_pattern and re.search(stop_pattern, next_line, flags=re.IGNORECASE):
-                break
-            if _clean_text(next_line):
-                parts.append(next_line)
-                evidence.append(next_line)
-        if parts:
-            return _clean_text("".join(parts)), "\n".join(evidence)
-
-    dense_labels = tuple(re.sub(r"\s+", "", label) for label in labels)
-    dense_stops = tuple(re.sub(r"\s+", "", label) for label in stop_labels if label not in labels)
-    dense_upper = compact_text.upper()
-    for label in dense_labels:
-        start = dense_upper.find(label.upper())
-        if start < 0:
-            continue
-        value_start = start + len(label)
-        value_end = min(len(compact_text), value_start + max_chars)
-        for stop in dense_stops:
-            stop_index = dense_upper.find(stop.upper(), value_start)
-            if stop_index >= 0:
-                value_end = min(value_end, stop_index)
-        return _clean_text(compact_text[value_start:value_end]), compact_text[start:value_end]
+    value, evidence = extract_between_labels(line_text, labels, stop_labels, max_chars=max_chars)
+    if value:
+        return _clean_text(value), evidence
     return "", ""
 
 
 def _extract_plate_number(line_text: str, compact_text: str) -> tuple[str, str]:
-    value, evidence = _extract_label_value(line_text, compact_text, ("号牌号码", "Plate No.", "Plate No"), max_chars=24)
-    match = re.search(r"[\u4e00-\u9fa5][A-Za-z][A-Za-z0-9挂学警港澳]{5,6}", value or compact_text)
+    value, evidence = _extract_label_value(line_text, compact_text, ("号牌号码", "Plate No.", "Plate No"), max_chars=32)
+    candidate = _clean_code(value)
+    match = re.search(r"[\u4e00-\u9fa5][A-Z][A-Z0-9挂学警港澳]{5,6}", candidate)
+    if not match:
+        match = re.search(r"[\u4e00-\u9fa5][A-Z][A-Z0-9挂学警港澳]{5,6}", compact_text.upper())
     return (_clean_code(match.group(0)), evidence or match.group(0)) if match else ("", "")
 
 
@@ -181,7 +227,9 @@ def _extract_date(line_text: str, compact_text: str, labels: tuple[str, ...]) ->
 def _extract_vin(line_text: str, compact_text: str) -> tuple[str, str]:
     value, evidence = _extract_label_value(line_text, compact_text, ("车辆识别代号", "VIN"), max_chars=40)
     candidate = _clean_code(value)
-    match = re.search(r"[A-HJ-NPR-Z0-9]{8,20}", candidate)
+    match = re.search(r"[A-HJ-NPR-Z0-9]{17}", candidate) or re.search(r"[A-HJ-NPR-Z0-9]{8,20}", candidate)
+    if not match:
+        match = re.search(r"[A-HJ-NPR-Z0-9]{17}", compact_text.upper())
     return (match.group(0), evidence) if match else ("", "")
 
 
@@ -190,6 +238,30 @@ def _extract_engine_number(line_text: str, compact_text: str) -> tuple[str, str]
     candidate = _clean_code(value)
     match = re.search(r"[A-Z0-9-]{4,30}", candidate)
     return (match.group(0), evidence) if match else ("", "")
+
+
+def _pick_known_value(value: str, choices: tuple[str, ...]) -> str:
+    text = clean_vehicle_field_value(value)
+    for choice in choices:
+        if choice in text:
+            return choice
+    return _clean_text(text)
+
+
+def _extract_dates_from_text(text: str) -> list[str]:
+    values: list[str] = []
+    patterns = (
+        r"\d{4}年\d{1,2}月\d{1,2}日?",
+        r"\d{4}[./-]\d{1,2}[./-]\d{1,2}",
+        r"\d{4}\s+\d{1,2}\s+\d{1,2}",
+        r"\d{8}",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            value = _date_to_iso(match.group(0))
+            if value and value not in values:
+                values.append(value)
+    return values
 
 
 def _field(value: Any, evidence_text: str, confidence: float) -> tuple[Any, str, float]:
@@ -220,21 +292,55 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     line_text, compact_text, _lines = normalize_ocr_text(raw_text)
 
     plate_number, plate_evidence = _extract_plate_number(line_text, compact_text)
-    vehicle_type, vehicle_type_evidence = _extract_label_value(line_text, compact_text, ("车辆类型", "Vehicle Type"), max_chars=40)
-    owner, owner_evidence = _extract_label_value(line_text, compact_text, ("所有人", "Owner"), ("住址", "Address", *FIELD_STOPS), max_chars=80)
+    vehicle_type_raw, vehicle_type_evidence = _extract_label_value(
+        line_text,
+        compact_text,
+        ("车辆类型", "Vehicle Type"),
+        ("所有人", "Owner", "住址", "Address", "使用性质", "Use Character", "品牌型号", "Model", "车辆识别代号", "VIN", "发动机号码", "Engine No.", "Engine No", "注册日期", "Register Date", "发证日期", "Issue Date"),
+        max_chars=40,
+    )
+    vehicle_type = _pick_known_value(vehicle_type_raw, VEHICLE_TYPES) or next((item for item in VEHICLE_TYPES if item in line_text), "")
+    owner, owner_evidence = _extract_label_value(
+        line_text,
+        compact_text,
+        ("所有人", "Owner", "Ower", "Owener"),
+        ("住址", "Address", "使用性质", "Use Character", "品牌型号", "Model", "车辆识别代号", "VIN", "发动机号码", "Engine No.", "Engine No", "注册日期", "Register Date", "发证日期", "Issue Date"),
+        max_chars=80,
+    )
     address, address_evidence = _extract_label_value(
         line_text,
         compact_text,
-        ("住址", "Address"),
-        ("使用性质", "Use Character", "品牌型号", "Model", "车辆识别代号", "VIN", "发动机号码", "Engine No", "注册日期", "Register Date", "发证日期", "Issue Date"),
+        ("住址", "Address", "Addrss", "Addresss"),
+        ("使用性质", "Use Character", "品牌型号", "Model", "车辆识别代号", "VIN", "发动机号码", "Engine No.", "Engine No", "注册日期", "Register Date", "发证日期", "Issue Date"),
         max_chars=160,
     )
-    use_character, use_evidence = _extract_label_value(line_text, compact_text, ("使用性质", "Use Character"), max_chars=40)
-    brand_model, brand_evidence = _extract_label_value(line_text, compact_text, ("品牌型号", "Model"), ("车辆识别代号", "VIN", "发动机号码", "Engine No", "注册日期", "发证日期"), max_chars=60)
+    use_raw, use_evidence = _extract_label_value(
+        line_text,
+        compact_text,
+        ("使用性质", "Use Character", "USECHARACTER"),
+        ("品牌型号", "Model", "车辆识别代号", "VIN", "发动机号码", "Engine No.", "Engine No", "注册日期", "Register Date", "发证日期", "Issue Date"),
+        max_chars=40,
+    )
+    use_character = _pick_known_value(use_raw, USE_CHARACTERS) or next((item for item in USE_CHARACTERS if item in line_text), "")
+    brand_model, brand_evidence = _extract_label_value(
+        line_text,
+        compact_text,
+        ("品牌型号", "Model"),
+        ("车辆识别代号", "VIN", "发动机号码", "Engine No.", "Engine No", "注册日期", "Register Date", "发证日期", "Issue Date", "使用性质", "Use Character", "USECHARACTER"),
+        max_chars=80,
+    )
+    brand_model = re.sub(r"(?:非营运|营运|货运|出租客运|租赁|教练)$", "", brand_model).strip()
     vin, vin_evidence = _extract_vin(line_text, compact_text)
     engine_number, engine_evidence = _extract_engine_number(line_text, compact_text)
     registration_date, registration_evidence = _extract_date(line_text, compact_text, ("注册日期", "Register Date"))
     issue_date, issue_evidence = _extract_date(line_text, compact_text, ("发证日期", "Issue Date"))
+    all_dates = _extract_dates_from_text(line_text)
+    if not registration_date and all_dates:
+        registration_date = all_dates[0]
+        registration_evidence = all_dates[0]
+    if not issue_date and len(all_dates) >= 2:
+        issue_date = all_dates[1]
+        issue_evidence = all_dates[1]
     approved_passengers, passengers_evidence = _extract_label_value(line_text, compact_text, ("核定载人数",), max_chars=20)
     total_mass, total_mass_evidence = _extract_label_value(line_text, compact_text, ("总质量",), max_chars=24)
     curb_weight, curb_weight_evidence = _extract_label_value(line_text, compact_text, ("整备质量",), max_chars=24)

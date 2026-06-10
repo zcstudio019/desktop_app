@@ -111,6 +111,46 @@ def test_vehicle_license_partial_status() -> None:
     assert "vin" in result["missing_fields"]
 
 
+def test_vehicle_license_extracts_between_chinese_english_labels() -> None:
+    result = extract("""中华人民共和国机动车行驶证
+号牌号码 Plate No. 沪ABC2061 车辆类型 Vehicle Type 小型轿车
+所有人 Owner 上海煜禧贸易有限公司
+住址 Address 上海市宝山区陆翔路111弄3号楼1104-01
+使用性质 Use Character 非营运 品牌型号 Model 蔚来牌HFC7002CSEV1-W
+车辆识别代号 VIN LJ1EFAUU2NG108654
+发动机号码 Engine No. AM2FV11376
+注册日期 Register Date 2022年11月28日 发证日期 Issue Date 2022年11月28日
+""")
+    fields = result["fields"]
+
+    assert fields["plate_number"] == "沪ABC2061"
+    assert fields["vehicle_type"] == "小型轿车"
+    assert fields["owner"] == "上海煜禧贸易有限公司"
+    assert fields["address"] == "上海市宝山区陆翔路111弄3号楼1104-01"
+    assert fields["use_character"] == "非营运"
+    assert fields["brand_model"] == "蔚来牌HFC7002CSEV1-W"
+    assert fields["vin"] == "LJ1EFAUU2NG108654"
+    assert fields["engine_number"] == "AM2FV11376"
+    assert fields["registration_date"] == "2022-11-28"
+    assert fields["issue_date"] == "2022-11-28"
+
+    forbidden = (
+        "VEHICLE",
+        "VehicleType",
+        "Owner",
+        "Address",
+        "USECHARACTER",
+        "ENGINENO",
+        "Plate No",
+        "Engine No",
+        "Register Date",
+        "Issue Date",
+    )
+    values = "\n".join(str(value) for value in fields.values())
+    for item in forbidden:
+        assert item not in values
+
+
 def test_classifier_recognizes_vehicle_license() -> None:
     assert classify(SAMPLE_TEXT) == "vehicle_license"
 

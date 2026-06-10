@@ -432,6 +432,8 @@ def render_markdown(result: dict[str, Any]) -> str:
 
         def value(key: str) -> str:
             item = fields.get(key)
+            if key in {"registration_date", "issue_date", "inspection_valid_until"} and item not in (None, "", [], {}):
+                return str(item)
             return _format_value(item) if item not in (None, "", [], {}) else "未识别"
 
         def vehicle_label(key: str) -> str:
