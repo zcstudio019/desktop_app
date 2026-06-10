@@ -9,6 +9,7 @@ function valueText(value: unknown): string {
     const record = value as Record<string, unknown>;
     if ('amount' in record && 'unit' in record) return formatKycDisplayValue(value);
     if ('value' in record && 'unit' in record) return formatKycDisplayValue(value);
+    return formatKycDisplayValue(value) || '未识别';
   }
   return String(value);
 }
@@ -69,7 +70,18 @@ const KycProfilePanel: React.FC<{
             <h4 className="mb-2 text-sm font-semibold text-slate-800">企业基础信息</h4>
             <FieldGrid
               data={profile?.enterprise_identity}
-              fields={['company_name', 'unified_social_credit_code', 'legal_representative', 'registered_capital', 'registered_address', 'business_scope']}
+              fields={[
+                'unified_social_credit_code',
+                'company_name',
+                'company_type',
+                'legal_representative',
+                'registered_capital',
+                'establishment_date',
+                'registered_address',
+                'business_scope',
+                'registration_authority',
+                'issue_date',
+              ]}
             />
           </div>
           <div>
@@ -152,7 +164,7 @@ const KycProfilePanel: React.FC<{
                 return (
                   <div key={`${docId || index}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-slate-800">{valueText(item.doc_type_name || item.doc_type)}</div>
+                      <div className="truncate text-sm font-medium text-slate-800">{valueText(item.doc_type_name || '未知资料')}</div>
                       <div className="mt-0.5 truncate text-xs text-slate-500">{valueText(item.source_file || docId)}</div>
                     </div>
                     {docId && onReviewDocument ? (

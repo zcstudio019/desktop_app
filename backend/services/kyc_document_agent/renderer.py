@@ -32,6 +32,36 @@ PROPERTY_FIELD_ORDER = [
     "填证单位",
 ]
 
+BUSINESS_LICENSE_FIELD_ORDER = [
+    "unified_social_credit_code",
+    "license_number",
+    "company_name",
+    "company_type",
+    "legal_representative",
+    "registered_capital",
+    "establishment_date",
+    "business_term",
+    "registered_address",
+    "business_scope",
+    "registration_authority",
+    "issue_date",
+]
+
+BUSINESS_LICENSE_FIELD_LABELS = {
+    "unified_social_credit_code": "统一社会信用代码",
+    "license_number": "证照编号",
+    "company_name": "名称",
+    "company_type": "类型",
+    "legal_representative": "法定代表人",
+    "registered_capital": "注册资本",
+    "establishment_date": "成立日期",
+    "business_term": "营业期限",
+    "registered_address": "住所",
+    "business_scope": "经营范围",
+    "registration_authority": "登记机关",
+    "issue_date": "发照日期",
+}
+
 ENGLISH_TO_CHINESE_FIELDS = {
     "owner": "权利人",
     "co_owners": "共有人",
@@ -162,6 +192,16 @@ FIELD_LABELS = {
     "missing_fields": "缺失字段",
     "raw_text_preview": "原文预览",
     "agent_type": "处理 Agent",
+    "unified_social_credit_code": "统一社会信用代码",
+    "license_number": "证照编号",
+    "company_name": "名称",
+    "company_type": "类型",
+    "legal_representative": "法定代表人",
+    "registered_capital": "注册资本",
+    "establishment_date": "成立日期",
+    "business_term": "营业期限",
+    "registered_address": "住所",
+    "business_scope": "经营范围",
 }
 
 
@@ -331,6 +371,54 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_markdown(result: dict[str, Any]) -> str:
+    if result.get("doc_type") == "business_license":
+        fields = result.get("fields") or {}
+        status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))
+
+        def value(key: str) -> str:
+            item = fields.get(key)
+            return _format_value(item) if item not in (None, "", [], {}) else "未识别"
+
+        def business_label(key: str) -> str:
+            return BUSINESS_LICENSE_FIELD_LABELS.get(key, field_label(key))
+
+        lines = [
+            "## 营业执照",
+            "",
+            "- 资料类型：营业执照",
+            f"- 提取状态：{status}",
+            "",
+            "### 企业基础信息",
+        ]
+        for key in (
+            "unified_social_credit_code",
+            "license_number",
+            "company_name",
+            "company_type",
+            "legal_representative",
+            "registered_capital",
+            "establishment_date",
+            "business_term",
+            "registered_address",
+        ):
+            if fields.get(key) or key in {"unified_social_credit_code", "company_name", "legal_representative"}:
+                lines.append(f"- {business_label(key)}：{value(key)}")
+        lines.extend(["", "### 经营信息", f"- 经营范围：{value('business_scope')}", "", "### 登记信息"])
+        for key in ("registration_authority", "issue_date"):
+            lines.append(f"- {business_label(key)}：{value(key)}")
+
+        missing = result.get("missing_fields") or []
+        if missing:
+            lines.extend(["", "### 缺失字段"])
+            lines.extend(f"- {business_label(str(item))}" for item in missing)
+
+        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+        reminders = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
+        if reminders:
+            lines.extend(["", "### 校验提醒"])
+            lines.extend(f"- {item}" for item in reminders)
+        return "\n".join(lines)
+
     if result.get("doc_type") == "id_card":
         fields = result.get("fields") or {}
         status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))

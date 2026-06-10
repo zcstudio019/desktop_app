@@ -32,17 +32,18 @@ const FIELD_LABELS: Record<string, string> = {
   issuing_authority: '签发机关',
   valid_from: '有效期起',
   valid_to: '有效期止',
-  company_name: '企业名称',
+  company_name: '名称',
   unified_social_credit_code: '统一社会信用代码',
+  license_number: '证照编号',
   legal_representative: '法定代表人',
   registered_capital: '注册资本',
-  company_type: '企业类型',
+  company_type: '类型',
   establishment_date: '成立日期',
   business_term: '营业期限',
-  registered_address: '注册地址',
+  registered_address: '住所',
   business_scope: '经营范围',
   registration_authority: '登记机关',
-  issue_date: '发证日期',
+  issue_date: '发照日期',
   bank_account_name: '账户名称',
   bank_account_number: '银行账号',
   account_name: '户名',
@@ -167,6 +168,21 @@ export const PROPERTY_CERT_FIELD_ORDER = [
   '登记机构',
   '登记日',
   '填证单位',
+];
+
+export const BUSINESS_LICENSE_FIELD_ORDER = [
+  'unified_social_credit_code',
+  'license_number',
+  'company_name',
+  'company_type',
+  'legal_representative',
+  'registered_capital',
+  'establishment_date',
+  'business_term',
+  'registered_address',
+  'business_scope',
+  'registration_authority',
+  'issue_date',
 ];
 
 const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
@@ -526,6 +542,7 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
 
   const display = new Map<string, string>();
   const isPropertyCert = docType === 'property_cert' || docType === 'real_estate_cert';
+  const isBusinessLicense = docType === 'business_license';
   const isMarriageCert = docType === 'marriage_certificate' || docType === 'marriage_cert';
   if (isMarriageCert) {
     const holder1 = parseMaybeRecord(fields.holder_1);
@@ -553,6 +570,23 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
       if (isInvalidDisplayValue(value) && !(String(label).includes('身份证号') && value === '未识别')) return;
       const text = formatKycDisplayValue(value);
       if (text) display.set(label, text);
+    });
+    return Object.fromEntries(display.entries());
+  }
+  if (isBusinessLicense) {
+    BUSINESS_LICENSE_FIELD_ORDER.forEach((key) => {
+      const value = fields[key];
+      if (isInvalidDisplayValue(value)) return;
+      const text = formatKycDisplayValue(value);
+      if (!text) return;
+      display.set(key, text);
+    });
+    Object.entries(fields).forEach(([key, value]) => {
+      if (display.has(key) || FORBIDDEN_KYC_DISPLAY_KEYS.has(key)) return;
+      if (isInvalidDisplayValue(value)) return;
+      const text = formatKycDisplayValue(value);
+      if (!text) return;
+      display.set(key, text);
     });
     return Object.fromEntries(display.entries());
   }

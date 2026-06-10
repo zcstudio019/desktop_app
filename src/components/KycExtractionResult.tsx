@@ -60,7 +60,7 @@ export function enrichPropertyFieldsForDisplay(result: KycExtractionResultType):
   const sourceText = [
     typeof rawTextPreview === 'string' ? rawTextPreview : '',
     typeof markdown === 'string' ? markdown : '',
-    result.evidence ? JSON.stringify(result.evidence) : '',
+    result.evidence ? formatKycDisplayValue(result.evidence) : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -115,7 +115,7 @@ const KycExtractionResult: React.FC<Props> = ({ result }) => {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-base font-semibold text-slate-900">{title}</div>
-          <div className="mt-1 text-xs text-slate-500">资料类型编码：{normalizedResult.doc_type || 'unknown'}</div>
+          <div className="mt-1 text-xs text-slate-500">资料类型：{normalizedResult.doc_type_name || 'KYC资料'}</div>
         </div>
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">{statusLabel}</span>

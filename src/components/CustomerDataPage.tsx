@@ -42,7 +42,7 @@ import FinancingKycDiagnosticPanel from './FinancingKycDiagnosticPanel';
 import KycCompletenessPanel from './KycCompletenessPanel';
 import KycExtractionReview from './KycExtractionReview';
 import KycProfilePanel from './KycProfilePanel';
-import { getKycDisplayFields } from '../utils/kycDisplayFields';
+import { getKycDisplayFields, getKycFieldLabel } from '../utils/kycDisplayFields';
 
 interface CustomerDataPageProps {
   onBack?: () => void;
@@ -717,7 +717,18 @@ function stringifyExtractionValue(value: unknown): string {
   if (Array.isArray(value)) {
     return cleanMarkdownFieldValue(value.map(stringifyExtractionValue).filter(Boolean).join('、'));
   }
-  return cleanMarkdownFieldValue(JSON.stringify(value));
+  if (typeof value === 'object') {
+    return cleanMarkdownFieldValue(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, item]) => {
+          const text = stringifyExtractionValue(item);
+          return text ? `${getKycFieldLabel(key)}：${text}` : '';
+        })
+        .filter(Boolean)
+        .join('，'),
+    );
+  }
+  return cleanMarkdownFieldValue(String(value));
 }
 
 function isInvalidCompanyArticlesRoleValue(value: string): boolean {
@@ -4058,12 +4069,17 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
               ) : (
                 <p className="mt-3 text-sm text-slate-500">暂无融资初判摘要，请点击“运行AI融资Agent”。</p>
               )}
-              <details className="mt-3">
-                <summary className="cursor-pointer text-xs font-medium text-indigo-700">查看JSON结果</summary>
-                <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-slate-950 p-3 text-xs leading-5 text-slate-100">
-                  {JSON.stringify(agentReport || agentResult, null, 2)}
-                </pre>
-              </details>
+              <div className="mt-3 grid gap-2 text-xs text-slate-600 md:grid-cols-3">
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2">
+                  风险等级：{agentRiskLevel || '未识别'}
+                </div>
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2">
+                  缺失资料数：{agentMissingCount}
+                </div>
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2">
+                  结论状态：{agentJudgementText ? '已生成' : '未生成'}
+                </div>
+              </div>
             </div>
           </section>
         ) : null}

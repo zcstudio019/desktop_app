@@ -185,6 +185,44 @@ def _validate_marriage_certificate_result(result: dict[str, Any], warnings: list
         result["extraction_status"] = "partial"
 
 
+def _validate_business_license_result(result: dict[str, Any], warnings: list[str], errors: list[str]) -> None:
+    fields = result.get("fields") or {}
+    required = [
+        "company_name",
+        "legal_representative",
+        "registered_address",
+        "business_scope",
+    ]
+    result["missing_fields"] = [field for field in required if not fields.get(field)]
+
+    credit_code = str(fields.get("unified_social_credit_code") or "").strip().upper()
+    if not credit_code:
+        result["missing_fields"].append("unified_social_credit_code")
+    elif len(credit_code) != 18 or not re.fullmatch(r"[0-9A-Z]+", credit_code):
+        warnings.append("统一社会信用代码长度异常，请人工核对")
+
+    for field, label in (("establishment_date", "成立日期"), ("issue_date", "发照日期")):
+        value = str(fields.get(field) or "").strip()
+        if value and not _is_valid_date(value):
+            warnings.append(f"{label}日期格式需人工复核")
+
+    core_fields = (
+        "unified_social_credit_code",
+        "company_name",
+        "legal_representative",
+        "registered_address",
+        "business_scope",
+    )
+    present_count = sum(1 for field in core_fields if fields.get(field))
+    if present_count == len(core_fields):
+        result["extraction_status"] = "success"
+    elif present_count >= 2:
+        result["extraction_status"] = "partial"
+    else:
+        warnings.append("未从 OCR 文本中识别到足够的营业执照核心字段，请检查图片清晰度或 OCR 原文")
+        result["extraction_status"] = "failed"
+
+
 def validate_result(result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") or {}
     doc_type = result.get("doc_type") or "unknown"
@@ -193,6 +231,8 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
 
     if doc_type == "id_card":
         _validate_id_card_result(result, warnings, errors)
+    elif doc_type == "business_license":
+        _validate_business_license_result(result, warnings, errors)
     elif doc_type in {"marriage_certificate", "marriage_cert"}:
         result["doc_type"] = "marriage_certificate"
         _validate_marriage_certificate_result(result, warnings, errors)
@@ -207,7 +247,7 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         warnings.append("持证人身份证号码格式或校验位不合法")
     if fields.get("spouse_id_number") and not validate_id_number(str(fields["spouse_id_number"])):
         warnings.append("配偶身份证号码格式或校验位不合法")
-    if fields.get("unified_social_credit_code") and not validate_credit_code(str(fields["unified_social_credit_code"])):
+    if doc_type != "business_license" and fields.get("unified_social_credit_code") and not validate_credit_code(str(fields["unified_social_credit_code"])):
         errors.append("统一社会信用代码格式不合法")
     if fields.get("plate_number") and not validate_plate_number(str(fields["plate_number"])):
         warnings.append("车牌号格式需人工复核")
@@ -228,7 +268,7 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         "warnings": list(dict.fromkeys(warnings)),
         "errors": list(dict.fromkeys(errors)),
     }
-    if result.get("doc_type") not in {"id_card", "marriage_certificate"}:
+    if result.get("doc_type") not in {"id_card", "business_license", "marriage_certificate"}:
         if errors:
             result["extraction_status"] = "partial" if fields else "failed"
         elif result.get("missing_fields"):

@@ -149,7 +149,7 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         name="营业执照正副本",
         storage_label="营业执照",
         formats=("pdf", "docx", "image"),
-        aliases=("营业执照", "营业执照正副本", "营业执照副本"),
+        aliases=("营业执照", "营业执照正副本", "营业执照副本", "licence", "license", "company_license"),
         store_original=True,
     ),
     DocumentTypeDefinition(

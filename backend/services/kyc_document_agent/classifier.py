@@ -6,7 +6,6 @@ from .schema import DOC_TYPE_NAMES, OWNER_TYPES
 
 
 CLASSIFICATION_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("business_license", ("营业执照", "统一社会信用代码")),
     ("account_permit", ("开户许可证", "核准号")),
     ("basic_account_info", ("基本存款账户信息",)),
     ("vehicle_license", ("机动车行驶证", "车辆识别代号")),
@@ -54,6 +53,10 @@ PROPERTY_KEYWORDS = (
 
 PROPERTY_FILENAME_KEYWORDS = ("房产", "产证", "房产证", "房地产权证", "不动产权证", "房本")
 DECLARED_DOC_TYPE_ALIASES = {
+    "营业执照": "business_license",
+    "licence": "business_license",
+    "license": "business_license",
+    "company_license": "business_license",
     "property_certificate": "property_cert",
     "real_estate_certificate": "real_estate_cert",
     "account_license": "account_permit",
@@ -104,6 +107,46 @@ def classify_with_reason(text: str, filename: str = "", declared_doc_type: str |
 
     normalized = text or ""
     compact = re.sub(r"\s+", "", normalized)
+
+    business_license_negative_keywords = (
+        "开户许可证",
+        "基本存款账户信息",
+        "食品经营许可证",
+        "特许经营许可证",
+        "道路运输经营许可证",
+        "纳税人资格证明",
+    )
+    business_license_keywords = (
+        "营业执照",
+        "统一社会信用代码",
+        "名称",
+        "类型",
+        "法定代表人",
+        "注册资本",
+        "成立日期",
+        "住所",
+        "经营范围",
+        "登记机关",
+        "市场监督管理局",
+        "发照日期",
+        "证照编号",
+    )
+    if "营业执照" in compact and not any(keyword in compact for keyword in business_license_negative_keywords):
+        if "统一社会信用代码" in compact or "法定代表人" in compact:
+            return {
+                "doc_type": "business_license",
+                "doc_type_name": DOC_TYPE_NAMES["business_license"],
+                "owner_type": OWNER_TYPES["business_license"],
+                "reason": "文本命中营业执照及核心关键词",
+            }
+        matched = [keyword for keyword in business_license_keywords if keyword in compact]
+        if len(matched) >= 4:
+            return {
+                "doc_type": "business_license",
+                "doc_type_name": DOC_TYPE_NAMES["business_license"],
+                "owner_type": OWNER_TYPES["business_license"],
+                "reason": f"文本命中营业执照关键词：{', '.join(matched)}",
+            }
 
     if "居民户口簿" in compact or "户口簿" in compact or "常住人口登记卡" in compact:
         return {

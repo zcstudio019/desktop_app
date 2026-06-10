@@ -1191,7 +1191,7 @@ export interface ExtractionItem {
   extraction_id: string;
   doc_id?: string;
   extraction_type: string;
-  extracted_data: Record<string, string>;
+  extracted_data: Record<string, unknown>;
   created_at: string;
   extraction_status?: string;
   has_extraction?: boolean;

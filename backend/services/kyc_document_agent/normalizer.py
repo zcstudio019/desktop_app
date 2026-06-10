@@ -96,6 +96,34 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
         result["doc_type"] = "marriage_certificate"
         result["doc_type_name"] = "结婚证"
     fields = result.get("fields") or {}
+    if result.get("doc_type") == "business_license":
+        for field in (
+            "unified_social_credit_code",
+            "license_number",
+        ):
+            if fields.get(field):
+                fields[field] = re.sub(r"[\s:：]+", "", str(fields.get(field) or "")).upper()
+        for field in (
+            "company_name",
+            "company_type",
+            "legal_representative",
+            "registered_address",
+        ):
+            if fields.get(field):
+                fields[field] = normalize_text_field(fields.get(field))
+        if fields.get("registered_capital"):
+            fields["registered_capital"] = re.sub(r"\s+", "", str(fields.get("registered_capital") or "")).strip(" :：,，;；")
+        if fields.get("business_scope"):
+            fields["business_scope"] = re.sub(r"\s+", "", str(fields.get("business_scope") or "")).strip(" :：,，;；")
+        if fields.get("business_term"):
+            fields["business_term"] = re.sub(r"\s+", "", str(fields.get("business_term") or "")).strip(" :：,，;；")
+        for field in ("establishment_date", "issue_date"):
+            if fields.get(field):
+                fields[field] = normalize_date(fields.get(field))
+        if fields.get("registration_authority"):
+            fields["registration_authority"] = normalize_text_field(fields.get("registration_authority"))
+        result["fields"] = fields
+        return result
     if result.get("doc_type") == "marriage_certificate":
         for holder_key in ("holder_1", "holder_2"):
             holder = fields.get(holder_key)
