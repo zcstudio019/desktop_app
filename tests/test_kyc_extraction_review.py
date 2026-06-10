@@ -28,7 +28,7 @@ def kyc_extraction() -> dict:
             },
             "validation": {"warnings": ["统一社会信用代码缺失"], "errors": []},
             "evidence": {"company_name": {"evidence_text": "名称 自动识别公司"}},
-            "missing_fields": ["unified_social_credit_code"],
+            "missing_fields": ["unified_social_credit_code", "registration_authority"],
         },
         "confirmed_data": {},
         "confirm_status": "unconfirmed",
@@ -53,6 +53,8 @@ def test_get_review_returns_extracted_data() -> None:
 
     assert review["extracted_data"]["fields"]["company_name"] == "自动识别公司"
     assert review["merged_fields"]["company_name"] == "自动识别公司"
+    assert "registration_authority" in review["merged_fields"]
+    assert review["merged_fields"]["registration_authority"] == ""
     assert review["confirm_status"] == "unconfirmed"
 
 
@@ -83,13 +85,17 @@ def test_patch_review_does_not_overwrite_extracted_data() -> None:
 def test_patch_review_saves_confirmed_data() -> None:
     confirmed_data = build_confirmed_data(
         existing={},
-        confirmed_fields={"legal_representative": "王五"},
+        confirmed_fields={
+            "legal_representative": "王五",
+            "registration_authority": "上海市长宁区市场监督管理局",
+        },
         confirm_status="confirmed",
         confirmed_by="admin",
         confirmed_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
     )
 
     assert confirmed_data["confirmed_fields"]["legal_representative"] == "王五"
+    assert confirmed_data["confirmed_fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
     assert confirmed_data["confirm_status"] == "confirmed"
     assert confirmed_data["confirmed_by"] == "admin"
 
@@ -106,6 +112,18 @@ def test_kyc_profile_prefers_confirmed_data() -> None:
     assert profile["enterprise_identity"]["company_name"] == "人工确认公司"
     assert profile["enterprise_identity"]["field_sources"]["company_name"]["source"] == "confirmed_data"
     assert profile["enterprise_identity"]["field_sources"]["company_name"]["confirmed"] is True
+
+
+def test_review_uses_confirmed_registration_authority_and_clears_missing() -> None:
+    extraction = kyc_extraction()
+    extraction["confirmed_data"] = {
+        "confirmed_fields": {"registration_authority": "上海市长宁区市场监督管理局"},
+        "confirm_status": "partial",
+    }
+    review = build_extraction_review("doc-1", extraction)
+
+    assert review["merged_fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+    assert "registration_authority" not in review["missing_fields"]
 
 
 def test_viewer_cannot_patch() -> None:

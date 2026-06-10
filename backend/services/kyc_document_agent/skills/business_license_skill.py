@@ -550,7 +550,7 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     result["confidence"]["overall"] = round(sum(confidences.values()) / len(confidences), 4) if confidences else 0.0
     result["raw_text_preview"] = raw_preview(line_text)
     if not registration_authority and not any(keyword in compact_text for keyword in AUTHORITY_KEYWORDS):
-        result["validation"]["warnings"].append("OCR 未识别到红章登记机关区域，请启用营业执照右下角区域 OCR 兜底")
+        result["validation"]["warnings"].append("OCR 未识别到红章登记机关区域，请在人工审核中补录登记机关")
         logger.warning("[BusinessLicenseSkill] registration_authority empty and raw_text has no authority keyword; seal-region OCR fallback should be checked")
     logger.info("[BusinessLicenseSkill] final fields.registration_authority=%s", fields.get("registration_authority") or "")
     return result

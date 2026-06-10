@@ -47,6 +47,8 @@ def evaluate_kyc_completeness(profile: dict[str, Any] | None) -> dict[str, Any]:
 
     if enterprise.get("source_document_id") and not enterprise.get("unified_social_credit_code"):
         warnings.append("统一社会信用代码缺失")
+    if enterprise.get("source_document_id") and not enterprise.get("registration_authority"):
+        warnings.append("登记机关未识别")
     if person.get("source_document_id") and not person.get("id_number"):
         warnings.append("身份证号缺失")
 

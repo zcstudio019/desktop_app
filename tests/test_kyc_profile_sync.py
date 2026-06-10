@@ -17,8 +17,14 @@ class FakeStorage:
         return []
 
 
-def kyc_extraction(doc_type: str, fields: dict, doc_id: str = "doc-1", created_at: str = "2026-05-28T10:00:00") -> dict:
-    return {
+def kyc_extraction(
+    doc_type: str,
+    fields: dict,
+    doc_id: str = "doc-1",
+    created_at: str = "2026-05-28T10:00:00",
+    confirmed_fields: dict | None = None,
+) -> dict:
+    extraction = {
         "doc_id": doc_id,
         "created_at": created_at,
         "extraction_type": doc_type,
@@ -31,6 +37,13 @@ def kyc_extraction(doc_type: str, fields: dict, doc_id: str = "doc-1", created_a
             "fields": fields,
         },
     }
+    if confirmed_fields is not None:
+        extraction["confirmed_data"] = {
+            "confirmed_fields": confirmed_fields,
+            "confirm_status": "partial",
+        }
+        extraction["confirm_status"] = "partial"
+    return extraction
 
 
 def build_profile(extractions: list[dict]) -> dict:
@@ -65,6 +78,65 @@ def test_business_license_enters_enterprise_identity() -> None:
     assert profile["enterprise_identity"]["company_name"] == "上海示例科技有限公司"
     assert profile["enterprise_identity"]["registered_capital"] == "1000万元"
     assert profile["enterprise_identity"]["source_document_id"] == "doc-business"
+
+
+def test_business_license_registration_authority_prefers_confirmed_data() -> None:
+    profile = build_profile([
+        kyc_extraction(
+            "business_license",
+            {
+                "company_name": "上海示例科技有限公司",
+                "unified_social_credit_code": "91310115MA1K3ABCDE",
+                "legal_representative": "李四",
+                "registered_address": "上海市浦东新区世纪大道100号",
+                "business_scope": "技术开发",
+                "registration_authority": "",
+            },
+            "doc-business",
+            confirmed_fields={"registration_authority": "上海市长宁区市场监督管理局"},
+        )
+    ])
+
+    enterprise = profile["enterprise_identity"]
+    assert enterprise["registration_authority"] == "上海市长宁区市场监督管理局"
+    assert enterprise["field_sources"]["registration_authority"]["source"] == "confirmed_data"
+
+
+def test_business_license_registration_authority_ignores_invalid_extracted_value() -> None:
+    profile = build_profile([
+        kyc_extraction(
+            "business_license",
+            {
+                "company_name": "上海示例科技有限公司",
+                "registration_authority": "未识别",
+            },
+            "doc-business",
+        )
+    ])
+
+    assert profile["enterprise_identity"]["registration_authority"] == ""
+
+
+def test_completeness_does_not_warn_registration_authority_when_confirmed() -> None:
+    profile = build_profile([
+        kyc_extraction(
+            "business_license",
+            {
+                "company_name": "上海示例科技有限公司",
+                "unified_social_credit_code": "91310115MA1K3ABCDE",
+                "legal_representative": "李四",
+                "registered_address": "上海市浦东新区世纪大道100号",
+                "business_scope": "技术开发",
+                "registration_authority": "",
+            },
+            "doc-business",
+            confirmed_fields={"registration_authority": "上海市长宁区市场监督管理局"},
+        )
+    ])
+    completeness = evaluate_kyc_completeness(profile)
+
+    assert not any("登记机关" in item for item in completeness["warnings"])
+    assert "营业执照" not in completeness["required_missing"]
 
 
 def test_id_card_enters_person_identity() -> None:

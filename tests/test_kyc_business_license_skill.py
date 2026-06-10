@@ -267,6 +267,8 @@ def test_registration_authority_does_not_use_date_when_name_missing() -> None:
 
     assert not result["fields"].get("registration_authority")
     assert "registration_authority" in result["missing_fields"]
+    assert result["fields"].get("registration_authority") != "未识别"
+    assert any("人工审核中补录登记机关" in item for item in result["validation"]["warnings"])
 
 
 def test_registration_authority_does_not_use_label_itself() -> None:

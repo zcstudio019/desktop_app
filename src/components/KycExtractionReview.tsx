@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ExtractionReviewResult } from '../services/types';
-import { formatKycDisplayValue, getKycDisplayEntries, getKycFieldLabel } from '../utils/kycDisplayFields';
+import { BUSINESS_LICENSE_FIELD_ORDER, formatKycDisplayValue, getKycDisplayEntries, getKycFieldLabel } from '../utils/kycDisplayFields';
 
 function valueText(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -28,12 +28,23 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
     return fields && typeof fields === 'object' && !Array.isArray(fields) ? fields as Record<string, unknown> : {};
   }, [review.extracted_data]);
   const confirmedFields = review.confirmed_data?.confirmed_fields || {};
+  const mergedFields = useMemo(
+    () => ({ ...extractedFields, ...(review.merged_fields || {}), ...confirmedFields }),
+    [confirmedFields, extractedFields, review.merged_fields],
+  );
   const displayEntries = useMemo(() => {
-    const merged = { ...extractedFields, ...(review.merged_fields || {}), ...confirmedFields };
-    return getKycDisplayEntries(merged, review.doc_type);
-  }, [confirmedFields, extractedFields, review.doc_type, review.merged_fields]);
-  const displayFieldMap = useMemo(() => Object.fromEntries(displayEntries), [displayEntries]);
-  const fieldKeys = useMemo(() => displayEntries.map(([field]) => field), [displayEntries]);
+    return getKycDisplayEntries(mergedFields, review.doc_type);
+  }, [mergedFields, review.doc_type]);
+  const fieldKeys = useMemo(
+    () => (review.doc_type === 'business_license' ? BUSINESS_LICENSE_FIELD_ORDER : displayEntries.map(([field]) => field)),
+    [displayEntries, review.doc_type],
+  );
+  const displayFieldMap = useMemo(() => {
+    if (review.doc_type === 'business_license') {
+      return Object.fromEntries(BUSINESS_LICENSE_FIELD_ORDER.map((field) => [field, valueText(mergedFields[field])]));
+    }
+    return Object.fromEntries(displayEntries);
+  }, [displayEntries, mergedFields, review.doc_type]);
   const [draftFields, setDraftFields] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -88,11 +99,16 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
                 <div className="break-words border-r border-slate-200 px-3 py-2 text-slate-600">{valueText(displayFieldMap[key]) || '未识别'}</div>
                 <div className="px-3 py-2">
                   {canEdit ? (
-                    <input
-                      value={draftFields[key] || ''}
-                      onChange={(event) => setDraftFields((current) => ({ ...current, [key]: event.target.value }))}
-                      className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-blue-300"
-                    />
+                    <>
+                      <input
+                        value={draftFields[key] || ''}
+                        onChange={(event) => setDraftFields((current) => ({ ...current, [key]: event.target.value }))}
+                        className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-blue-300"
+                      />
+                      {key === 'registration_authority' && !valueText(displayFieldMap[key]) ? (
+                        <div className="mt-1 text-xs text-amber-600">OCR 未识别到红章登记机关区域，请根据原件人工补录</div>
+                      ) : null}
+                    </>
                   ) : (
                     <span className="text-slate-800">{draftFields[key] || '未确认'}</span>
                   )}

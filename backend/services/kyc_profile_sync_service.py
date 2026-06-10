@@ -132,6 +132,23 @@ def _string(value: Any) -> str:
     return str(value).strip()
 
 
+def _is_invalid_effective_value(key: str, value: Any) -> bool:
+    text = _string(value)
+    if not text:
+        return True
+    if key != "registration_authority":
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if compact in {"未识别", "登记机关", "发照日期"}:
+        return True
+    if re.fullmatch(r"\d{4}年\d{1,2}月\d{1,2}日", compact):
+        return True
+    if re.fullmatch(r"\d{4}[-./]\d{1,2}[-./]\d{1,2}", compact):
+        return True
+    forbidden = ("经营范围", "住所", "营业执照", "法定代表人", "二维码")
+    return any(item in compact for item in forbidden)
+
+
 def _source_doc_id(extraction: dict[str, Any]) -> str:
     return str(extraction.get("doc_id") or extraction.get("document_id") or extraction.get("source_document_id") or "")
 
@@ -234,7 +251,7 @@ def _effective_field(
     key: str,
     source_document_id: str,
 ) -> tuple[str, dict[str, Any]]:
-    if key in confirmed_fields and confirmed_fields.get(key) not in (None, ""):
+    if key in confirmed_fields and not _is_invalid_effective_value(key, confirmed_fields.get(key)):
         value = _string(confirmed_fields.get(key))
         return value, {
             "value": value,
@@ -242,7 +259,7 @@ def _effective_field(
             "source_document_id": source_document_id,
             "confirmed": True,
         }
-    value = _string(fields.get(key))
+    value = "" if _is_invalid_effective_value(key, fields.get(key)) else _string(fields.get(key))
     return value, {
         "value": value,
         "source": "extracted_data",
@@ -258,7 +275,7 @@ def _effective_any_field(
     source_document_id: str,
 ) -> tuple[str, dict[str, Any]]:
     for key in keys:
-        if key in confirmed_fields and confirmed_fields.get(key) not in (None, ""):
+        if key in confirmed_fields and not _is_invalid_effective_value(key, confirmed_fields.get(key)):
             value = _string(confirmed_fields.get(key))
             return value, {
                 "value": value,
@@ -267,7 +284,7 @@ def _effective_any_field(
                 "confirmed": True,
             }
     for key in keys:
-        value = _string(fields.get(key))
+        value = "" if _is_invalid_effective_value(key, fields.get(key)) else _string(fields.get(key))
         if value:
             return value, {
                 "value": value,
