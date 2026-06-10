@@ -240,6 +240,34 @@ def clean_registration_authority(value: str) -> str:
     return authority
 
 
+def normalize_authority_from_stamp_ocr(text: str) -> str:
+    _, compact_text, lines = normalize_ocr_text(text)
+    candidates: list[str] = []
+    for index, line in enumerate(lines):
+        compact_line = _compact(line)
+        if any(keyword in compact_line for keyword in AUTHORITY_KEYWORDS):
+            candidates.append(line)
+        if not any(keyword in compact_line for keyword in ("市场监督", "监督管理", "管理局", "行政审批局")):
+            continue
+        start = max(0, index - 2)
+        end = min(len(lines), index + 3)
+        for left in range(start, index + 1):
+            for right in range(index + 1, end + 1):
+                merged = "".join(lines[left:right])
+                if any(fragment in _compact(merged) for fragment in ("市场监督管理局", "行政审批局", "工商行政管理局")):
+                    candidates.append(merged)
+
+    if compact_text:
+        candidates.append(compact_text)
+
+    cleaned = [clean_registration_authority(candidate) for candidate in candidates]
+    cleaned = [candidate for candidate in cleaned if candidate]
+    if not cleaned:
+        return ""
+    cleaned.sort(key=lambda value: (("上海" in value) + ("市" in value) + ("区" in value), len(value)), reverse=True)
+    return cleaned[0]
+
+
 def _extract_credit_code(line_text: str, compact_text: str, lines: list[str]) -> tuple[str, str]:
     value, evidence = _extract_label_value(
         line_text,
@@ -349,6 +377,13 @@ def _extract_registration_authority(line_text: str, compact_text: str, lines: li
             logger.info("[BusinessLicenseSkill] authority candidates: %s", candidates)
             return selected
 
+    stamp_merged = normalize_authority_from_stamp_ocr(line_text)
+    if stamp_merged:
+        selected = add_candidate("stamp_ocr_multiline_merge", stamp_merged, stamp_merged)
+        if selected:
+            logger.info("[BusinessLicenseSkill] authority candidates: %s", candidates)
+            return selected
+
     # 优先级 4：红章文字拆行合并，支持 “上海市长宁区/市场监督管理局” 和 “上海市长宁区市场/监督管理局”。
     for index, line in enumerate(lines):
         compact_line = _compact(line)
@@ -425,6 +460,12 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     raw_text = str(data.get("text") or "")
     line_text, compact_text, lines = normalize_ocr_text(raw_text)
     logger.info("[BusinessLicenseSkill] raw_text preview=%s", raw_text[:3000])
+    logger.info(
+        "[business_license] full_text_has_exact_authority=%s full_text_has_authority_keyword=%s full_text_has_label=%s",
+        str("上海市长宁区市场监督管理局" in compact_text).lower(),
+        str(any(keyword in compact_text for keyword in AUTHORITY_KEYWORDS)).lower(),
+        str("登记机关" in compact_text).lower(),
+    )
     for keyword in ("市场监督管理局", "行政审批局", "工商行政管理局", "登记机关"):
         logger.info(
             "[BusinessLicenseSkill] raw_text contains %s: %s",

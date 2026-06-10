@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from starlette.requests import ClientDisconnect
 
 desktop_app_path = Path(__file__).parent.parent.parent
@@ -709,9 +709,15 @@ def _build_seal_ocr_variants(region_bytes: bytes) -> list[tuple[str, bytes]]:
         high_contrast = ImageEnhance.Contrast(grayscale).enhance(2.8)
 
         red_mask = Image.new("L", rgb.size, 255)
+        red_mask_soft = Image.new("L", rgb.size, 255)
+        red_channel_extract = Image.new("L", rgb.size, 255)
+        red_text_on_white = Image.new("L", rgb.size, 255)
         red_removed = rgb.copy()
         source_pixels = rgb.load()
         target_pixels = red_mask.load()
+        soft_pixels = red_mask_soft.load()
+        red_channel_pixels = red_channel_extract.load()
+        red_text_pixels = red_text_on_white.load()
         red_removed_pixels = red_removed.load()
         width, height = rgb.size
         for y in range(height):
@@ -720,25 +726,43 @@ def _build_seal_ocr_variants(region_bytes: bytes) -> list[tuple[str, bytes]]:
                 # Red stamp text is often ignored by normal OCR; convert red-dominant pixels to black.
                 if red >= 120 and red > green * 1.18 and red > blue * 1.18:
                     target_pixels[x, y] = 0
+                red_dominance = red - max(green, blue)
+                if red >= 95 and red_dominance >= 18 and red > green * 1.05 and red > blue * 1.05:
+                    soft_pixels[x, y] = 0
+                if red_dominance > 0:
+                    red_channel_pixels[x, y] = max(0, 255 - min(255, red_dominance * 5))
+                if red >= 100 and red_dominance >= 12:
+                    red_text_pixels[x, y] = 0
                 if red > 120 and red > green * 1.2 and red > blue * 1.2:
                     red_removed_pixels[x, y] = (255, 255, 255)
 
         red_mask = ImageEnhance.Contrast(red_mask).enhance(2.5)
+        red_mask_soft = ImageEnhance.Contrast(red_mask_soft).enhance(3.2)
+        red_channel_extract = ImageEnhance.Contrast(red_channel_extract).enhance(3.0)
+        red_text_on_white = ImageEnhance.Contrast(red_text_on_white).enhance(3.5)
         red_removed_gray = ImageOps.grayscale(red_removed)
         red_removed_gray = ImageEnhance.Contrast(red_removed_gray).enhance(2.8)
         red_removed_binary = red_removed_gray.point(lambda pixel: 255 if pixel > 155 else 0)
         black_text_enhance = grayscale.point(lambda pixel: 0 if pixel < 120 else 255)
         binary = high_contrast.point(lambda pixel: 255 if pixel > 165 else 0)
         resampling = getattr(Image, "Resampling", Image).LANCZOS
+        grayscale_4x = grayscale.resize((max(1, grayscale.width * 4), max(1, grayscale.height * 4)), resampling)
+        upscale_4x_gray = ImageEnhance.Contrast(grayscale_4x).enhance(3.2)
+        sharpen_4x = ImageEnhance.Contrast(grayscale_4x.filter(ImageFilter.SHARPEN)).enhance(3.0)
         binary_2x = binary.resize((max(1, binary.width * 2), max(1, binary.height * 2)), resampling)
         binary_3x = binary.resize((max(1, binary.width * 3), max(1, binary.height * 3)), resampling)
         red_removed_gray_3x = red_removed_gray.resize((max(1, red_removed_gray.width * 3), max(1, red_removed_gray.height * 3)), resampling)
         red_removed_binary_3x = red_removed_binary.resize((max(1, red_removed_binary.width * 3), max(1, red_removed_binary.height * 3)), resampling)
         black_text_enhance_3x = black_text_enhance.resize((max(1, black_text_enhance.width * 3), max(1, black_text_enhance.height * 3)), resampling)
+        red_channel_extract_4x = red_channel_extract.resize((max(1, red_channel_extract.width * 4), max(1, red_channel_extract.height * 4)), resampling)
+        red_mask_soft_4x = red_mask_soft.resize((max(1, red_mask_soft.width * 4), max(1, red_mask_soft.height * 4)), resampling)
+        red_text_on_white_4x = red_text_on_white.resize((max(1, red_text_on_white.width * 4), max(1, red_text_on_white.height * 4)), resampling)
         return [
             ("original", _image_to_jpeg_bytes(rgb)),
             ("gray_high_contrast", _image_to_jpeg_bytes(high_contrast)),
             ("upscale_3x", _image_to_jpeg_bytes(grayscale.resize((max(1, grayscale.width * 3), max(1, grayscale.height * 3)), resampling))),
+            ("upscale_4x_gray", _image_to_jpeg_bytes(upscale_4x_gray)),
+            ("sharpen_4x", _image_to_jpeg_bytes(sharpen_4x)),
             ("binary", _image_to_jpeg_bytes(binary)),
             ("binary_2x", _image_to_jpeg_bytes(binary_2x)),
             ("binary_3x", _image_to_jpeg_bytes(binary_3x)),
@@ -746,6 +770,9 @@ def _build_seal_ocr_variants(region_bytes: bytes) -> list[tuple[str, bytes]]:
             ("remove_red_stamp_then_binary", _image_to_jpeg_bytes(red_removed_binary_3x)),
             ("black_text_enhance", _image_to_jpeg_bytes(black_text_enhance_3x)),
             ("red_stamp_mask", _image_to_jpeg_bytes(red_mask)),
+            ("red_channel_extract", _image_to_jpeg_bytes(red_channel_extract_4x)),
+            ("red_mask_to_black", _image_to_jpeg_bytes(red_mask_soft_4x)),
+            ("remove_background_then_red_text", _image_to_jpeg_bytes(red_text_on_white_4x)),
         ]
 
 
@@ -885,6 +912,10 @@ def _business_license_seal_crop_boxes(image_bytes: bytes) -> list[tuple[str, tup
     with Image.open(BytesIO(image_bytes)) as image:
         width, height = image.size
     return [
+        ("bottom_right_stamp_core", (max(0, int(width * 0.62)), max(0, int(height * 0.60)), min(width, int(width * 0.95)), min(height, int(height * 0.90)))),
+        ("bottom_right_stamp_text_band", (max(0, int(width * 0.55)), max(0, int(height * 0.58)), min(width, int(width * 0.98)), min(height, int(height * 0.82)))),
+        ("registration_authority_left_text", (max(0, int(width * 0.45)), max(0, int(height * 0.70)), min(width, int(width * 0.75)), min(height, int(height * 0.88)))),
+        ("red_stamp_circle_area", (max(0, int(width * 0.63)), max(0, int(height * 0.58)), min(width, int(width * 0.93)), min(height, int(height * 0.83)))),
         ("bottom_full_45", (0, max(0, int(height * 0.55)), width, height)),
         ("bottom_full_35", (0, max(0, int(height * 0.65)), width, height)),
         ("bottom_full_25", (0, max(0, int(height * 0.75)), width, height)),
@@ -917,11 +948,20 @@ def _ocr_business_license_seal_region(file_bytes: bytes, file_type: str, filenam
                 for variant_name, variant_bytes in _build_seal_ocr_variants(seal_region):
                     compressed = file_service.compress_image(variant_bytes)
                     seal_text = ocr_service.recognize_image(compressed).strip()
+                    compact_seal_text = re.sub(r"\s+", "", seal_text)
                     logger.info(
                         "[business_license] seal_region_ocr_text region=%s variant=%s text=%s",
                         region_name,
                         variant_name,
                         seal_text[:1000] or "(empty)",
+                    )
+                    logger.info(
+                        "[business_license] crop_region=%s variant=%s has_full_authority=%s has_authority_keyword=%s has_label=%s",
+                        region_name,
+                        variant_name,
+                        "上海市长宁区市场监督管理局" in compact_seal_text,
+                        "市场监督管理局" in compact_seal_text,
+                        "登记机关" in compact_seal_text,
                     )
                     if seal_text:
                         ocr_parts.append(f"--- Seal Region {region_name} variant={variant_name} box={box} ---\n{seal_text}")

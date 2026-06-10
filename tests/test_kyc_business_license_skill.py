@@ -5,6 +5,7 @@ import asyncio
 from backend.services.kyc_document_agent import KycDocumentAgent
 from backend.services.kyc_document_agent.classifier import classify
 from backend.services.kyc_document_agent.renderer import render_markdown
+from backend.services.kyc_document_agent.skills.business_license_skill import normalize_authority_from_stamp_ocr
 from backend.services.kyc_profile_sync_service import build_customer_kyc_profile
 
 
@@ -246,6 +247,16 @@ def test_registration_authority_from_market_split_line_extracts() -> None:
 """, declared_doc_type="business_license")
 
     assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+
+
+def test_normalize_authority_from_stamp_ocr_merges_partial_lines() -> None:
+    authority = normalize_authority_from_stamp_ocr("""
+长宁区市场监督
+管理局
+2023年09月20日
+""")
+
+    assert authority == "长宁区市场监督管理局"
 
 
 def test_registration_authority_does_not_use_date_when_name_missing() -> None:
