@@ -182,6 +182,16 @@ def test_registration_authority_with_explicit_label_extracts() -> None:
     assert result["fields"]["issue_date"] == "2023-09-20"
 
 
+def test_registration_authority_minimal_same_line_extracts() -> None:
+    result = extract("""
+营业执照
+登记机关 上海市长宁区市场监督管理局
+2023年09月20日
+""", declared_doc_type="business_license")
+
+    assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+
+
 def test_registration_authority_after_label_newline_extracts() -> None:
     result = extract("""
 登记机关
@@ -204,6 +214,16 @@ def test_registration_authority_from_seal_text_without_label_extracts() -> None:
     assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
 
 
+def test_registration_authority_minimal_seal_text_without_label_extracts() -> None:
+    result = extract("""
+营业执照
+上海市长宁区市场监督管理局
+2023年09月20日
+""", declared_doc_type="business_license")
+
+    assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+
+
 def test_registration_authority_from_split_seal_lines_extracts() -> None:
     result = extract("""
 营业执照
@@ -217,6 +237,17 @@ def test_registration_authority_from_split_seal_lines_extracts() -> None:
     assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
 
 
+def test_registration_authority_from_market_split_line_extracts() -> None:
+    result = extract("""
+营业执照
+上海市长宁区市场
+监督管理局
+2023年09月20日
+""", declared_doc_type="business_license")
+
+    assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+
+
 def test_registration_authority_does_not_use_date_when_name_missing() -> None:
     result = extract("""
 登记机关
@@ -225,6 +256,15 @@ def test_registration_authority_does_not_use_date_when_name_missing() -> None:
 
     assert not result["fields"].get("registration_authority")
     assert "registration_authority" in result["missing_fields"]
+
+
+def test_registration_authority_does_not_use_label_itself() -> None:
+    result = extract("""
+营业执照
+登记机关
+""", declared_doc_type="business_license")
+
+    assert not result["fields"].get("registration_authority")
 
 
 def test_business_license_fields_enter_enterprise_identity() -> None:

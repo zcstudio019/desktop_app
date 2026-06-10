@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from typing import Any
@@ -7,6 +8,8 @@ from typing import Any
 from backend.services.kyc_document_agent.evidence import raw_preview
 from backend.services.kyc_document_agent.schema import build_result, normalize_input
 
+
+logger = logging.getLogger(__name__)
 
 BUSINESS_LICENSE_FIELDS = (
     "unified_social_credit_code",
@@ -25,6 +28,14 @@ BUSINESS_LICENSE_FIELDS = (
 
 AUTHORITY_KEYWORDS = (
     "市场监督管理局",
+    "行政审批局",
+    "工商行政管理局",
+    "工商行政管理部门",
+    "市场监督管理部门",
+)
+AUTHORITY_PARTIAL_KEYWORDS = (
+    "监督管理局",
+    "管理局",
     "行政审批局",
     "工商行政管理局",
     "工商行政管理部门",
@@ -201,6 +212,34 @@ def _date_to_iso(value: str) -> str:
     return ""
 
 
+def clean_registration_authority(value: str) -> str:
+    keyword_pattern = "|".join(re.escape(keyword) for keyword in AUTHORITY_KEYWORDS)
+    text = _compact(value)
+    if not text:
+        return ""
+    text = text.replace("登记机关", "").replace("发照日期", "")
+    text = re.sub(r"(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日", "", text)
+    text = re.sub(r"(?:19|20)\d{2}[-./]\d{1,2}[-./]\d{1,2}", "", text)
+    text = re.sub(r"(?:19|20)\d{6}", "", text)
+    text = re.sub(r"年\s*月\s*日", "", text)
+    text = re.split(
+        r"二维码|国家企业信用信息公示系统|扫码|扫描|网址|经营范围|住所|住 所|法定代表人|注册资本|成立日期|营业期限|营业执照",
+        text,
+        maxsplit=1,
+    )[0]
+    text = text.strip(" :：,，.。;；()（）[]【】")
+    match = re.search(rf"([\u4e00-\u9fa5]{{2,50}}(?:{keyword_pattern}))", text)
+    if not match:
+        return ""
+    authority = match.group(1).strip(" :：,，.。;；")
+    forbidden = {"登记机关", "未识别", "发照日期", "经营范围", "住所", "营业执照", "法定代表人"}
+    if authority in forbidden or _is_date_text(authority):
+        return ""
+    if len(re.findall(r"[\u4e00-\u9fff]", authority)) < 8:
+        return ""
+    return authority
+
+
 def _extract_credit_code(line_text: str, compact_text: str, lines: list[str]) -> tuple[str, str]:
     value, evidence = _extract_label_value(
         line_text,
@@ -259,78 +298,79 @@ def _extract_business_scope(line_text: str, compact_text: str, lines: list[str])
 
 
 def _extract_registration_authority(line_text: str, compact_text: str, lines: list[str]) -> tuple[str, str]:
-    keyword_pattern = "|".join(re.escape(keyword) for keyword in AUTHORITY_KEYWORDS)
+    candidates: list[dict[str, str]] = []
 
-    def clean_candidate(value: str) -> str:
-        text = _compact(value)
-        if not text:
-            return ""
-        text = text.replace("登记机关", "").replace("发照日期", "")
-        text = re.sub(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", "", text)
-        text = re.sub(r"(?:19|20)\d{2}[-./]\d{1,2}[-./]\d{1,2}", "", text)
-        text = re.sub(r"(?:19|20)\d{6}", "", text)
-        text = re.split(r"二维码|国家企业信用信息公示系统|经营范围|住所|住 所|法定代表人|注册资本|成立日期|营业期限", text, maxsplit=1)[0]
-        text = text.strip(" :：,，.。;；()（）[]【】")
-        match = re.search(rf"([\u4e00-\u9fa5]{{2,40}}(?:{keyword_pattern}))", text)
-        if not match:
-            return ""
-        authority = match.group(1).strip(" :：,，.。;；")
-        if authority in {"登记机关", "未识别", "发照日期"} or _is_date_text(authority):
-            return ""
-        if len(re.findall(r"[\u4e00-\u9fff]", authority)) < 6:
-            return ""
-        return authority
+    def add_candidate(source: str, value: str, evidence_text: str) -> tuple[str, str] | None:
+        cleaned = clean_registration_authority(value)
+        candidates.append({
+            "source": source,
+            "raw": _clean_inline_value(value),
+            "cleaned": cleaned,
+        })
+        logger.info("[BusinessLicenseSkill] authority candidate source=%s raw=%s cleaned=%s", source, value, cleaned)
+        if cleaned:
+            logger.info("[BusinessLicenseSkill] selected registration_authority: %s source=%s", cleaned, source)
+            return cleaned, evidence_text or value
+        return None
 
-    # 1) 优先读取“登记机关”标签后方或后续相邻行。
+    # 优先级 1：登记机关同行。
+    same_line_pattern = re.compile(
+        r"登记\s*机\s*关\s*[:：]?\s*([^\n\r]*?(?:"
+        + "|".join(re.escape(keyword) for keyword in AUTHORITY_KEYWORDS)
+        + r"))"
+    )
+    for match in same_line_pattern.finditer(line_text):
+        selected = add_candidate("label_same_line", match.group(1), match.group(0))
+        if selected:
+            logger.info("[BusinessLicenseSkill] authority candidates: %s", candidates)
+            return selected
+
+    # 优先级 2：登记机关下一行 1-3 行。
     for index, line in enumerate(lines):
         if "登记机关" not in _compact(line):
             continue
-        evidence_lines = [line]
-        suffix = re.split(r"登记\s*机\s*关\s*:?", line, maxsplit=1)[-1]
-        candidates = [suffix]
-        for next_line in lines[index + 1 : index + 4]:
-            compact_next = _compact(next_line)
-            if not compact_next or _is_bottom_noise(next_line):
-                evidence_lines.append(next_line)
-                break
-            if any(stop in compact_next for stop in ("经营范围", "住所", "住 所", "发照日期", "注册资本", "成立日期")):
-                break
-            evidence_lines.append(next_line)
-            candidates.append(next_line)
-            if any(keyword in compact_next for keyword in AUTHORITY_KEYWORDS):
-                break
-        for candidate in candidates + ["".join(candidates)]:
-            authority = clean_candidate(candidate)
-            if authority:
-                return authority, "\n".join(evidence_lines)
+        for offset, next_line in enumerate(lines[index + 1 : index + 4], start=1):
+            if _is_date_text(next_line):
+                add_candidate(f"label_next_line_{offset}", next_line, "\n".join(lines[index : index + offset + 1]))
+                continue
+            if any(keyword in _compact(next_line) for keyword in AUTHORITY_KEYWORDS):
+                selected = add_candidate(f"label_next_line_{offset}", next_line, "\n".join(lines[index : index + offset + 1]))
+                if selected:
+                    logger.info("[BusinessLicenseSkill] authority candidates: %s", candidates)
+                    return selected
 
-    # 2) 扫描红章 OCR 行；如机构名被拆行，合并上一行地区名称。
+    # 优先级 3：全文扫描完整机关名称行。
     for index in range(len(lines) - 1, -1, -1):
         line = lines[index]
-        compact_line = _compact(line)
-        if not any(keyword in compact_line for keyword in AUTHORITY_KEYWORDS):
+        if not any(keyword in _compact(line) for keyword in AUTHORITY_KEYWORDS):
             continue
-        evidence_lines = [line]
-        candidates = [line]
-        if index > 0:
-            previous = lines[index - 1]
-            compact_previous = _compact(previous)
-            if (
-                compact_previous
-                and not _is_date_text(compact_previous)
-                and not any(label in compact_previous for label in FIELD_STOPS)
-                and re.fullmatch(r"[\u4e00-\u9fa5]{2,20}", compact_previous)
-            ):
-                evidence_lines.insert(0, previous)
-                candidates.insert(0, previous + line)
-        for candidate in candidates:
-            authority = clean_candidate(candidate)
-            if authority:
-                return authority, "\n".join(evidence_lines)
+        selected = add_candidate("full_text_line_scan", line, line)
+        if selected:
+            logger.info("[BusinessLicenseSkill] authority candidates: %s", candidates)
+            return selected
 
-    # 3) 极端 OCR 无换行时，从全文紧凑文本中兜底抓机构名。
-    authority = clean_candidate(compact_text)
-    return (authority, authority) if authority else ("", "")
+    # 优先级 4：红章文字拆行合并，支持 “上海市长宁区/市场监督管理局” 和 “上海市长宁区市场/监督管理局”。
+    for index, line in enumerate(lines):
+        compact_line = _compact(line)
+        if not any(keyword in compact_line for keyword in AUTHORITY_PARTIAL_KEYWORDS):
+            continue
+        neighbor_values: list[tuple[str, str]] = []
+        if index > 0:
+            neighbor_values.append(("previous_current", lines[index - 1] + line))
+        if index + 1 < len(lines):
+            neighbor_values.append(("current_next", line + lines[index + 1]))
+        if index > 0 and index + 1 < len(lines):
+            neighbor_values.append(("previous_current_next", lines[index - 1] + line + lines[index + 1]))
+        for source, value in neighbor_values:
+            selected = add_candidate(f"split_line_{source}", value, value)
+            if selected:
+                logger.info("[BusinessLicenseSkill] authority candidates: %s", candidates)
+                return selected
+
+    # 无换行或混排文本兜底。
+    selected = add_candidate("compact_text_scan", compact_text, compact_text)
+    logger.info("[BusinessLicenseSkill] authority candidates: %s", candidates)
+    return selected if selected else ("", "")
 
 
 def _extract_issue_date(line_text: str, compact_text: str, lines: list[str], establishment_date: str) -> tuple[str, str]:
@@ -384,6 +424,13 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     data = normalize_input(payload)
     raw_text = str(data.get("text") or "")
     line_text, compact_text, lines = normalize_ocr_text(raw_text)
+    logger.info("[BusinessLicenseSkill] raw_text preview=%s", raw_text[:3000])
+    for keyword in ("市场监督管理局", "行政审批局", "工商行政管理局", "登记机关"):
+        logger.info(
+            "[BusinessLicenseSkill] raw_text contains %s: %s",
+            keyword,
+            str(keyword in compact_text).lower(),
+        )
 
     credit_code, code_evidence = _extract_credit_code(line_text, compact_text, lines)
     license_number, license_evidence = _extract_license_number(line_text, compact_text, lines)
@@ -461,4 +508,8 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     result["confidence"]["fields"] = confidences
     result["confidence"]["overall"] = round(sum(confidences.values()) / len(confidences), 4) if confidences else 0.0
     result["raw_text_preview"] = raw_preview(line_text)
+    if not registration_authority and not any(keyword in compact_text for keyword in AUTHORITY_KEYWORDS):
+        result["validation"]["warnings"].append("OCR 未识别到红章登记机关区域，请启用营业执照右下角区域 OCR 兜底")
+        logger.warning("[BusinessLicenseSkill] registration_authority empty and raw_text has no authority keyword; seal-region OCR fallback should be checked")
+    logger.info("[BusinessLicenseSkill] final fields.registration_authority=%s", fields.get("registration_authority") or "")
     return result
