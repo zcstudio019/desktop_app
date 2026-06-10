@@ -131,14 +131,38 @@ def _validate_marriage_certificate_result(result: dict[str, Any], warnings: list
     if name_1 and name_2 and name_1 == name_2:
         warnings.append("两位配偶姓名相同，请人工复核")
     fields["marital_status"] = "已婚"
+    cert_no = str(fields.get("certificate_no") or fields.get("certificate_number") or "").strip()
+    holder_1_birth = str(holder_1.get("birth_date") or "").strip()
+    holder_2_birth = str(holder_2.get("birth_date") or "").strip()
+    issue_or_marriage_date = str(
+        fields.get("marriage_date")
+        or fields.get("issue_date")
+        or fields.get("registration_date")
+        or ""
+    ).strip()
+    raw_id_1 = str(
+        holder_1.get("raw_id_number")
+        or holder_1.get("suspected_id_number")
+        or fields.get("holder_raw_id_number")
+        or fields.get("holder_suspected_id_number")
+        or ""
+    ).strip()
+    raw_id_2 = str(
+        holder_2.get("raw_id_number")
+        or holder_2.get("suspected_id_number")
+        or fields.get("spouse_raw_id_number")
+        or fields.get("spouse_suspected_id_number")
+        or ""
+    ).strip()
 
     core_values = [
-        fields.get("certificate_no"),
-        fields.get("certificate_number"),
+        cert_no,
         name_1,
         name_2,
         id_1,
         id_2,
+        raw_id_1,
+        raw_id_2,
         fields.get("registration_authority"),
         fields.get("issuing_authority"),
         fields.get("issue_date"),
@@ -154,6 +178,8 @@ def _validate_marriage_certificate_result(result: dict[str, Any], warnings: list
     if errors:
         result["extraction_status"] = "partial" if fields else "failed"
     elif not missing:
+        result["extraction_status"] = "success"
+    elif cert_no and name_1 and name_2 and holder_1_birth and holder_2_birth and issue_or_marriage_date and (id_1 or raw_id_1) and (id_2 or raw_id_2):
         result["extraction_status"] = "success"
     else:
         result["extraction_status"] = "partial"

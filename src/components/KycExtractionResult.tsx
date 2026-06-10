@@ -75,6 +75,18 @@ interface Props {
 const KycExtractionResult: React.FC<Props> = ({ result }) => {
   const normalizedResult = normalizeKycExtractionResult(result) as unknown as KycExtractionResultType;
   const fields = getKycDisplayEntries(enrichPropertyFieldsForDisplay(normalizedResult), normalizedResult.doc_type);
+  if (normalizedResult.doc_type === 'marriage_certificate' || normalizedResult.doc_type === 'marriage_cert') {
+    const markdown = typeof normalizedResult.markdown === 'string' && normalizedResult.markdown.trim()
+      ? normalizedResult.markdown
+      : renderKycDisplayMarkdown(fields);
+    return (
+      <div className="text-sm text-slate-800">
+        <pre className="whitespace-pre-wrap rounded-md bg-white p-0 text-sm leading-7 text-slate-800">
+          {markdown}
+        </pre>
+      </div>
+    );
+  }
   if (normalizedResult.doc_type === 'id_card') {
     console.debug('[KycExtractionResult] doc_type=id_card fields=', normalizedResult.fields);
   }

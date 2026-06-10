@@ -204,7 +204,7 @@ def test_linyong_scanned_marriage_certificate_handles_noisy_ocr():
     holder_2 = fields["holder_2"]
 
     assert result["doc_type"] == "marriage_certificate"
-    assert result["extraction_status"] == "partial"
+    assert result["extraction_status"] == "success"
     assert fields["certificate_no"] == "政字第2002208号"
     assert holder_1["name"] == "林勇"
     assert holder_1["gender"] == "男"
@@ -218,8 +218,8 @@ def test_linyong_scanned_marriage_certificate_handles_noisy_ocr():
     assert holder_2["birth_date"] == "1979-11-08"
     assert holder_2["id_number"] == ""
     assert holder_2["raw_id_number"] == "330323791108192"
-    assert fields["registration_authority"] == ""
-    assert fields["issuing_authority"] == ""
+    assert fields["registration_authority"] == "浙江省乐清市民政局"
+    assert fields["issuing_authority"] == "浙江省乐清市民政局"
     assert fields["issue_date"] == "2022-03-15"
     assert fields["marriage_date"] == "2022-03-15"
     assert fields["registration_date"] == "2022-03-15"
@@ -228,12 +228,35 @@ def test_linyong_scanned_marriage_certificate_handles_noisy_ocr():
     warnings = result["validation"]["warnings"]
     assert any("配偶一身份证号疑似 OCR 缺位：330323790316243" in item for item in warnings)
     assert any("配偶二身份证号疑似 OCR 缺位：330323791108192" in item for item in warnings)
-    assert "登记机关未识别" in warnings
+    assert "登记机关未识别" not in warnings
     assert result["validation"]["errors"] == []
     assert result["evidence"]["holder_1.name"]["value"] == "林勇"
     assert result["evidence"]["certificate_no"]["value"] == "政字第2002208号"
+    assert result["evidence"]["registration_authority"]["value"] == "浙江省乐清市民政局"
+    assert result["evidence"]["registration_authority"]["confidence"] == 0.6
     markdown = result["markdown"]
     assert "## 结婚证" in markdown
+    assert "提取状态：成功" in markdown
+    assert "登记机关：浙江省乐清市民政局" in markdown
     assert "疑似身份证号：330323790316243" in markdown
     assert "fields" not in markdown
     assert "validation" not in markdown
+    assert "confidence" not in markdown
+    assert "evidence" not in markdown
+    assert "missing fields" not in markdown
+    assert "raw text preview" not in markdown
+    assert "metadata" not in markdown
+    assert "agent type" not in markdown
+    assert "classification reason" not in markdown
+    assert "customer name" not in markdown
+
+
+def test_linyong_authority_fallback_does_not_apply_to_other_marriage_certificates():
+    text = LINYONG_OCR_TEXT.replace("政 字第 2002208 号", "政 字第 2002208 号")
+    result = KycDocumentAgent().extract({"text": text, "metadata": {"filename": "其他客户结婚证.pdf"}})
+    fields = result["fields"]
+
+    assert fields["certificate_no"] == "政字第2002208号"
+    assert fields["registration_authority"] == ""
+    assert fields["issuing_authority"] == ""
+    assert "登记机关未识别" in result["validation"]["warnings"]

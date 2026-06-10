@@ -352,11 +352,6 @@ def render_markdown(result: dict[str, Any]) -> str:
         if missing:
             lines.extend(["", "### 缺失字段"])
             lines.extend(f"- {field_label(str(item))}" for item in missing)
-        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
-        notices = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
-        if notices:
-            lines.extend(["", "### 校验提醒"])
-            lines.extend(f"- {item}" for item in dict.fromkeys(str(item) for item in notices))
         return "\n".join(lines)
 
     if result.get("doc_type") in {"marriage_certificate", "marriage_cert"}:
@@ -404,11 +399,6 @@ def render_markdown(result: dict[str, Any]) -> str:
         ):
             if value:
                 lines.append(f"- {label}：{format_marriage_value(value)}")
-        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
-        notices = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
-        if notices:
-            lines.extend(["", "### 校验提醒"])
-            lines.extend(f"- {item}" for item in dict.fromkeys(str(item) for item in notices))
         return "\n".join(lines)
 
     doc_type_name = result.get("doc_type_name") or "未知资料"
