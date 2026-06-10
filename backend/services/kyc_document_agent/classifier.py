@@ -57,6 +57,8 @@ DECLARED_DOC_TYPE_ALIASES = {
     "licence": "business_license",
     "license": "business_license",
     "company_license": "business_license",
+    "行驶证": "vehicle_license",
+    "vehicle_license": "vehicle_license",
     "property_certificate": "property_cert",
     "real_estate_certificate": "real_estate_cert",
     "account_license": "account_permit",
@@ -107,6 +109,54 @@ def classify_with_reason(text: str, filename: str = "", declared_doc_type: str |
 
     normalized = text or ""
     compact = re.sub(r"\s+", "", normalized)
+
+    vehicle_license_negative_keywords = (
+        "机动车驾驶证",
+        "准驾车型",
+        "驾驶证",
+        "居民身份证",
+        "营业执照",
+        "不动产权证",
+        "房屋所有权证",
+    )
+    vehicle_license_strong_keywords = (
+        "中华人民共和国机动车行驶证",
+        "机动车行驶证",
+        "VehicleLicense",
+    )
+    vehicle_license_core_keywords = (
+        "号牌号码",
+        "PlateNo",
+        "车辆类型",
+        "VehicleType",
+        "所有人",
+        "Owner",
+        "住址",
+        "Address",
+        "使用性质",
+        "UseCharacter",
+        "品牌型号",
+        "Model",
+        "车辆识别代号",
+        "VIN",
+        "发动机号码",
+        "EngineNo",
+        "注册日期",
+        "RegisterDate",
+        "发证日期",
+        "IssueDate",
+    )
+    vehicle_compact = re.sub(r"[\s.：:]+", "", normalized)
+    if not any(keyword in compact for keyword in vehicle_license_negative_keywords):
+        has_title = any(keyword in vehicle_compact for keyword in vehicle_license_strong_keywords)
+        matched_vehicle = [keyword for keyword in vehicle_license_core_keywords if keyword in vehicle_compact]
+        if (has_title and len(matched_vehicle) >= 1) or len(matched_vehicle) >= 4:
+            return {
+                "doc_type": "vehicle_license",
+                "doc_type_name": DOC_TYPE_NAMES["vehicle_license"],
+                "owner_type": OWNER_TYPES["vehicle_license"],
+                "reason": f"文本命中行驶证关键词：{', '.join(matched_vehicle[:6])}",
+            }
 
     business_license_negative_keywords = (
         "开户许可证",

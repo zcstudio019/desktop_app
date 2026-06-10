@@ -224,6 +224,46 @@ def _validate_business_license_result(result: dict[str, Any], warnings: list[str
         result["extraction_status"] = "failed"
 
 
+def _validate_vehicle_license_result(result: dict[str, Any], warnings: list[str], errors: list[str]) -> None:
+    fields = result.get("fields") or {}
+    required = [
+        "plate_number",
+        "vehicle_type",
+        "owner",
+        "address",
+        "use_character",
+        "brand_model",
+        "vin",
+        "engine_number",
+        "registration_date",
+        "issue_date",
+    ]
+    result["missing_fields"] = [field for field in required if not fields.get(field)]
+
+    if fields.get("plate_number") and not validate_plate_number(str(fields.get("plate_number"))):
+        warnings.append("号牌号码格式需人工复核")
+    vin = str(fields.get("vin") or "").strip().upper()
+    if vin and len(vin) != 17:
+        warnings.append("车辆识别代号长度异常")
+    for field, label in (("registration_date", "注册日期"), ("issue_date", "发证日期")):
+        value = str(fields.get(field) or "").strip()
+        if value and not _is_valid_date(value):
+            warnings.append(f"{label}日期格式需人工复核")
+    registration_date = str(fields.get("registration_date") or "").strip()
+    issue_date = str(fields.get("issue_date") or "").strip()
+    if _is_valid_date(registration_date) and _is_valid_date(issue_date) and issue_date < registration_date:
+        warnings.append("发证日期早于注册日期，请核对")
+
+    present_count = sum(1 for field in required if fields.get(field))
+    if present_count == len(required):
+        result["extraction_status"] = "success"
+    elif present_count >= 2:
+        result["extraction_status"] = "partial"
+    else:
+        warnings.append("未从 OCR 文本中识别到足够的行驶证核心字段，请检查图片清晰度或 OCR 原文")
+        result["extraction_status"] = "failed"
+
+
 def validate_result(result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") or {}
     doc_type = result.get("doc_type") or "unknown"
@@ -234,6 +274,8 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         _validate_id_card_result(result, warnings, errors)
     elif doc_type == "business_license":
         _validate_business_license_result(result, warnings, errors)
+    elif doc_type == "vehicle_license":
+        _validate_vehicle_license_result(result, warnings, errors)
     elif doc_type in {"marriage_certificate", "marriage_cert"}:
         result["doc_type"] = "marriage_certificate"
         _validate_marriage_certificate_result(result, warnings, errors)
@@ -250,7 +292,7 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         warnings.append("配偶身份证号码格式或校验位不合法")
     if doc_type != "business_license" and fields.get("unified_social_credit_code") and not validate_credit_code(str(fields["unified_social_credit_code"])):
         errors.append("统一社会信用代码格式不合法")
-    if fields.get("plate_number") and not validate_plate_number(str(fields["plate_number"])):
+    if doc_type != "vehicle_license" and fields.get("plate_number") and not validate_plate_number(str(fields["plate_number"])):
         warnings.append("车牌号格式需人工复核")
     if fields.get("bank_account_number") and not validate_bank_account(str(fields["bank_account_number"])):
         warnings.append("银行账号格式需人工复核")
@@ -269,7 +311,7 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         "warnings": list(dict.fromkeys(warnings)),
         "errors": list(dict.fromkeys(errors)),
     }
-    if result.get("doc_type") not in {"id_card", "business_license", "marriage_certificate"}:
+    if result.get("doc_type") not in {"id_card", "business_license", "vehicle_license", "marriage_certificate"}:
         if errors:
             result["extraction_status"] = "partial" if fields else "failed"
         elif result.get("missing_fields"):

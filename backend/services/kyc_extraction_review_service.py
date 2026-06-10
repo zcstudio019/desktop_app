@@ -21,6 +21,22 @@ BUSINESS_LICENSE_FIELD_ORDER = (
     "registration_authority",
     "issue_date",
 )
+VEHICLE_LICENSE_FIELD_ORDER = (
+    "plate_number",
+    "vehicle_type",
+    "owner",
+    "address",
+    "use_character",
+    "brand_model",
+    "vin",
+    "engine_number",
+    "registration_date",
+    "issue_date",
+    "approved_passengers",
+    "total_mass",
+    "curb_weight",
+    "inspection_valid_until",
+)
 MISSING_FIELD_ALIASES = {
     "登记机关": "registration_authority",
 }
@@ -52,6 +68,9 @@ def _ensure_review_fields(doc_type: str, fields: dict[str, Any]) -> dict[str, An
     next_fields = dict(fields)
     if doc_type == "business_license":
         for field_name in BUSINESS_LICENSE_FIELD_ORDER:
+            next_fields.setdefault(field_name, "")
+    if doc_type == "vehicle_license":
+        for field_name in VEHICLE_LICENSE_FIELD_ORDER:
             next_fields.setdefault(field_name, "")
     return next_fields
 

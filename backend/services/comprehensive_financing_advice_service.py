@@ -64,6 +64,12 @@ def _has_any_asset(kyc_profile: dict[str, Any] | None) -> bool:
     return bool(_as_list(assets.get("properties")) or _as_list(assets.get("vehicles")))
 
 
+def _has_vehicle_asset(kyc_profile: dict[str, Any] | None) -> bool:
+    profile = _as_dict(kyc_profile)
+    assets = _as_dict(profile.get("assets"))
+    return bool(_as_list(assets.get("vehicles")))
+
+
 def _status(section: dict[str, Any], key: str, default: str = "unknown") -> str:
     return str(section.get(key) or default)
 
@@ -299,6 +305,8 @@ def build_comprehensive_financing_advice(
     )
     if _has_any_asset(kyc_profile):
         key_strengths = _clean_list(key_strengths + ["已识别可用于融资评估的资产资料"])
+    if _has_vehicle_asset(kyc_profile):
+        key_strengths = _clean_list(key_strengths + ["客户已提供车辆资产资料，可作为辅助增信材料"])
     if not key_strengths and overall_status in {"recommendable", "high_quality"}:
         key_strengths = ["核心资料和主要风控模块整体可支持进一步融资评估"]
 

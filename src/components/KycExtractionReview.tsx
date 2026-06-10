@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { ExtractionReviewResult } from '../services/types';
-import { BUSINESS_LICENSE_FIELD_ORDER, formatKycDisplayValue, getKycDisplayEntries, getKycFieldLabel } from '../utils/kycDisplayFields';
+import { BUSINESS_LICENSE_FIELD_ORDER, VEHICLE_LICENSE_FIELD_ORDER, formatKycDisplayValue, getKycDisplayEntries, getKycFieldLabel } from '../utils/kycDisplayFields';
 
 function valueText(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -13,6 +13,23 @@ function valueText(value: unknown): string {
   }
   return String(value);
 }
+
+const VEHICLE_LICENSE_FIELD_LABELS: Record<string, string> = {
+  plate_number: '号牌号码',
+  vehicle_type: '车辆类型',
+  owner: '所有人',
+  address: '住址',
+  use_character: '使用性质',
+  brand_model: '品牌型号',
+  vin: '车辆识别代号',
+  engine_number: '发动机号码',
+  registration_date: '注册日期',
+  issue_date: '发证日期',
+  approved_passengers: '核定载人数',
+  total_mass: '总质量',
+  curb_weight: '整备质量',
+  inspection_valid_until: '检验有效期止',
+};
 
 interface Props {
   review: ExtractionReviewResult;
@@ -36,12 +53,19 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
     return getKycDisplayEntries(mergedFields, review.doc_type);
   }, [mergedFields, review.doc_type]);
   const fieldKeys = useMemo(
-    () => (review.doc_type === 'business_license' ? BUSINESS_LICENSE_FIELD_ORDER : displayEntries.map(([field]) => field)),
+    () => {
+      if (review.doc_type === 'business_license') return BUSINESS_LICENSE_FIELD_ORDER;
+      if (review.doc_type === 'vehicle_license') return VEHICLE_LICENSE_FIELD_ORDER;
+      return displayEntries.map(([field]) => field);
+    },
     [displayEntries, review.doc_type],
   );
   const displayFieldMap = useMemo(() => {
     if (review.doc_type === 'business_license') {
       return Object.fromEntries(BUSINESS_LICENSE_FIELD_ORDER.map((field) => [field, valueText(mergedFields[field])]));
+    }
+    if (review.doc_type === 'vehicle_license') {
+      return Object.fromEntries(VEHICLE_LICENSE_FIELD_ORDER.map((field) => [field, valueText(mergedFields[field])]));
     }
     return Object.fromEntries(displayEntries);
   }, [displayEntries, mergedFields, review.doc_type]);
@@ -95,7 +119,7 @@ const KycExtractionReview: React.FC<Props> = ({ review, canEdit, saving, onCance
             </div>
             {fieldKeys.map((key) => (
               <div key={key} className="grid grid-cols-[160px_1fr_1fr] border-t border-slate-200 text-sm">
-                <div className="border-r border-slate-200 px-3 py-2 font-medium text-slate-700">{getKycFieldLabel(key)}</div>
+                <div className="border-r border-slate-200 px-3 py-2 font-medium text-slate-700">{review.doc_type === 'vehicle_license' ? (VEHICLE_LICENSE_FIELD_LABELS[key] || getKycFieldLabel(key)) : getKycFieldLabel(key)}</div>
                 <div className="break-words border-r border-slate-200 px-3 py-2 text-slate-600">{valueText(displayFieldMap[key]) || '未识别'}</div>
                 <div className="px-3 py-2">
                   {canEdit ? (

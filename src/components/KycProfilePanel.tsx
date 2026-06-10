@@ -18,6 +18,16 @@ function hasAnyValue(record?: Record<string, unknown>): boolean {
   return Boolean(record && Object.values(record).some((value) => value !== null && value !== undefined && value !== ''));
 }
 
+const VEHICLE_LABELS: Record<string, string> = {
+  vehicle_type: '车辆类型',
+  use_character: '使用性质',
+  brand_model: '品牌型号',
+  vin: '车辆识别代号',
+  engine_number: '发动机号码',
+  registration_date: '注册日期',
+  issue_date: '发证日期',
+};
+
 function FieldGrid({ fields, data }: { fields: string[]; data?: Record<string, unknown> }) {
   if (!hasAnyValue(data)) {
     return <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-500">暂无资料</div>;
@@ -135,7 +145,23 @@ const KycProfilePanel: React.FC<{
                 <div className="mb-2 text-sm font-medium text-slate-700">车辆列表</div>
                 {vehicles.length ? vehicles.map((item, index) => (
                   <div key={`${item.source_document_id || index}`} className="mb-2 rounded-lg bg-white px-3 py-2 text-sm text-slate-700 last:mb-0">
-                    {valueText(item.plate_number)} · 所有人：{valueText(item.vehicle_owner)}
+                    <div className="font-medium text-slate-800">{valueText(item.plate_number)} · 所有人：{valueText(item.owner || item.vehicle_owner)}</div>
+                    <div className="mt-2 grid gap-2 md:grid-cols-2">
+                      {[
+                        ['vehicle_type', item.vehicle_type],
+                        ['use_character', item.use_character],
+                        ['brand_model', item.brand_model],
+                        ['vin', item.vin || item.vehicle_identification_number],
+                        ['engine_number', item.engine_number],
+                        ['registration_date', item.registration_date],
+                        ['issue_date', item.issue_date],
+                      ].map(([field, value]) => (
+                        <div key={String(field)} className="rounded-md bg-slate-50 px-2 py-1">
+                          <span className="text-xs text-slate-500">{VEHICLE_LABELS[String(field)] || getKycFieldLabel(String(field))}：</span>
+                          <span className="text-xs font-medium text-slate-700">{valueText(value)}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )) : <div className="text-sm text-slate-500">暂无车辆资料</div>}
               </div>

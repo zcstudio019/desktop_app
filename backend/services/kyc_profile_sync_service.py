@@ -391,21 +391,29 @@ def _property_completeness_score(item: dict[str, Any]) -> int:
 def _vehicle_item(fields: dict[str, Any], source_document_id: str, confirmed_fields: dict[str, Any] | None = None) -> dict[str, Any]:
     confirmed_fields = confirmed_fields or {}
     field_map = {
-        "plate_number": "plate_number",
-        "vehicle_owner": "vehicle_owner",
-        "vehicle_type": "vehicle_type",
-        "brand_model": "brand_model",
-        "vehicle_identification_number": "vehicle_identification_number",
-        "engine_number": "engine_number",
-        "registration_date": "registration_date",
-        "issue_date": "issue_date",
+        "plate_number": ["plate_number"],
+        "vehicle_type": ["vehicle_type"],
+        "owner": ["owner", "vehicle_owner"],
+        "vehicle_owner": ["owner", "vehicle_owner"],
+        "address": ["address"],
+        "use_character": ["use_character"],
+        "brand_model": ["brand_model"],
+        "vin": ["vin", "vehicle_identification_number"],
+        "vehicle_identification_number": ["vin", "vehicle_identification_number"],
+        "engine_number": ["engine_number"],
+        "registration_date": ["registration_date"],
+        "issue_date": ["issue_date"],
+        "approved_passengers": ["approved_passengers"],
+        "total_mass": ["total_mass"],
+        "curb_weight": ["curb_weight"],
+        "inspection_valid_until": ["inspection_valid_until"],
     }
     item = {
         "field_sources": {},
         "source_document_id": source_document_id,
     }
-    for target_key, source_key in field_map.items():
-        value, source = _effective_field(fields, confirmed_fields, source_key, source_document_id)
+    for target_key, source_keys in field_map.items():
+        value, source = _effective_any_field(fields, confirmed_fields, source_keys, source_document_id)
         item[target_key] = value
         item["field_sources"][target_key] = source
     return item

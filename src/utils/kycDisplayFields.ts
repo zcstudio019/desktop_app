@@ -85,7 +85,7 @@ const FIELD_LABELS: Record<string, string> = {
   issuing_unit: '填证单位',
   mortgage_status: '抵押状态',
   seizure_status: '查封状态',
-  plate_number: '车牌号码',
+  plate_number: '号牌号码',
   vehicle_owner: '车辆所有人',
   vehicle_type: '车辆类型',
   use_character: '使用性质',
@@ -185,6 +185,40 @@ export const BUSINESS_LICENSE_FIELD_ORDER = [
   'issue_date',
 ];
 
+export const VEHICLE_LICENSE_FIELD_ORDER = [
+  'plate_number',
+  'vehicle_type',
+  'owner',
+  'address',
+  'use_character',
+  'brand_model',
+  'vin',
+  'engine_number',
+  'registration_date',
+  'issue_date',
+  'approved_passengers',
+  'total_mass',
+  'curb_weight',
+  'inspection_valid_until',
+];
+
+const VEHICLE_LICENSE_FIELD_LABELS: Record<string, string> = {
+  plate_number: '号牌号码',
+  vehicle_type: '车辆类型',
+  owner: '所有人',
+  address: '住址',
+  use_character: '使用性质',
+  brand_model: '品牌型号',
+  vin: '车辆识别代号',
+  engine_number: '发动机号码',
+  registration_date: '注册日期',
+  issue_date: '发证日期',
+  approved_passengers: '核定载人数',
+  total_mass: '总质量',
+  curb_weight: '整备质量',
+  inspection_valid_until: '检验有效期止',
+};
+
 const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
   owner: '权利人',
   co_owners: '共有人',
@@ -221,6 +255,18 @@ const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
   registration_authority: '登记机构',
   issue_date: '登记日',
   issuing_unit: '填证单位',
+  plate_number: '号牌号码',
+  vehicle_type: '车辆类型',
+  vehicle_owner: '所有人',
+  use_character: '使用性质',
+  brand_model: '品牌型号',
+  vin: '车辆识别代号',
+  vehicle_identification_number: '车辆识别代号',
+  engine_number: '发动机号码',
+  approved_passengers: '核定载人数',
+  total_mass: '总质量',
+  curb_weight: '整备质量',
+  inspection_valid_until: '检验有效期止',
 };
 
 const INVALID_DISPLAY_VALUES = new Set(['', '对', '的合法权益，对', '无', '未识别', 'null', 'none']);
@@ -543,6 +589,7 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
   const display = new Map<string, string>();
   const isPropertyCert = docType === 'property_cert' || docType === 'real_estate_cert';
   const isBusinessLicense = docType === 'business_license';
+  const isVehicleLicense = docType === 'vehicle_license';
   const isMarriageCert = docType === 'marriage_certificate' || docType === 'marriage_cert';
   if (isMarriageCert) {
     const holder1 = parseMaybeRecord(fields.holder_1);
@@ -587,6 +634,24 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
       const text = formatKycDisplayValue(value);
       if (!text) return;
       display.set(key, text);
+    });
+    return Object.fromEntries(display.entries());
+  }
+  if (isVehicleLicense) {
+    VEHICLE_LICENSE_FIELD_ORDER.forEach((key) => {
+      const value = fields[key];
+      if (isInvalidDisplayValue(value)) return;
+      const text = formatKycDisplayValue(value);
+      if (!text) return;
+      display.set(VEHICLE_LICENSE_FIELD_LABELS[key] ?? key, text);
+    });
+    Object.entries(fields).forEach(([key, value]) => {
+      const label = VEHICLE_LICENSE_FIELD_LABELS[key] ?? ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
+      if (display.has(label) || FORBIDDEN_KYC_DISPLAY_KEYS.has(key)) return;
+      if (isInvalidDisplayValue(value)) return;
+      const text = formatKycDisplayValue(value);
+      if (!text) return;
+      display.set(label, text);
     });
     return Object.fromEntries(display.entries());
   }

@@ -62,6 +62,40 @@ BUSINESS_LICENSE_FIELD_LABELS = {
     "issue_date": "发照日期",
 }
 
+VEHICLE_LICENSE_FIELD_ORDER = [
+    "plate_number",
+    "vehicle_type",
+    "owner",
+    "address",
+    "use_character",
+    "brand_model",
+    "vin",
+    "engine_number",
+    "registration_date",
+    "issue_date",
+    "approved_passengers",
+    "total_mass",
+    "curb_weight",
+    "inspection_valid_until",
+]
+
+VEHICLE_LICENSE_FIELD_LABELS = {
+    "plate_number": "号牌号码",
+    "vehicle_type": "车辆类型",
+    "owner": "所有人",
+    "address": "住址",
+    "use_character": "使用性质",
+    "brand_model": "品牌型号",
+    "vin": "车辆识别代号",
+    "engine_number": "发动机号码",
+    "registration_date": "注册日期",
+    "issue_date": "发证日期",
+    "approved_passengers": "核定载人数",
+    "total_mass": "总质量",
+    "curb_weight": "整备质量",
+    "inspection_valid_until": "检验有效期止",
+}
+
 ENGLISH_TO_CHINESE_FIELDS = {
     "owner": "权利人",
     "co_owners": "共有人",
@@ -202,6 +236,19 @@ FIELD_LABELS = {
     "business_term": "营业期限",
     "registered_address": "住所",
     "business_scope": "经营范围",
+    "plate_number": "号牌号码",
+    "vehicle_type": "车辆类型",
+    "owner": "所有人",
+    "address": "住址",
+    "use_character": "使用性质",
+    "brand_model": "品牌型号",
+    "vin": "车辆识别代号",
+    "engine_number": "发动机号码",
+    "registration_date": "注册日期",
+    "approved_passengers": "核定载人数",
+    "total_mass": "总质量",
+    "curb_weight": "整备质量",
+    "inspection_valid_until": "检验有效期止",
 }
 
 
@@ -339,6 +386,14 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     display_fields: dict[str, Any] = {}
+    if result.get("doc_type") == "vehicle_license":
+        for key in VEHICLE_LICENSE_FIELD_ORDER:
+            value = fields.get(key)
+            if _is_empty_or_invalid(value):
+                continue
+            display_fields[VEHICLE_LICENSE_FIELD_LABELS.get(key, field_label(key))] = value
+        return display_fields
+
     owner_display = _merge_owner_fields(fields)
     if owner_display:
         display_fields["权利人"] = owner_display
@@ -371,6 +426,51 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_markdown(result: dict[str, Any]) -> str:
+    if result.get("doc_type") == "vehicle_license":
+        fields = result.get("fields") or {}
+        status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))
+
+        def value(key: str) -> str:
+            item = fields.get(key)
+            return _format_value(item) if item not in (None, "", [], {}) else "未识别"
+
+        def vehicle_label(key: str) -> str:
+            return VEHICLE_LICENSE_FIELD_LABELS.get(key, field_label(key))
+
+        lines = [
+            "## 行驶证",
+            "",
+            "- 资料类型：行驶证",
+            f"- 提取状态：{status}",
+            "",
+            "### 车辆基础信息",
+        ]
+        for key in ("plate_number", "vehicle_type", "owner", "address", "use_character"):
+            lines.append(f"- {vehicle_label(key)}：{value(key)}")
+        lines.extend(["", "### 车辆识别信息"])
+        for key in ("brand_model", "vin", "engine_number"):
+            lines.append(f"- {vehicle_label(key)}：{value(key)}")
+        lines.extend(["", "### 登记信息"])
+        for key in ("registration_date", "issue_date"):
+            lines.append(f"- {vehicle_label(key)}：{value(key)}")
+
+        optional_keys = [key for key in ("approved_passengers", "total_mass", "curb_weight", "inspection_valid_until") if fields.get(key)]
+        if optional_keys:
+            lines.extend(["", "### 补充信息"])
+            lines.extend(f"- {vehicle_label(key)}：{value(key)}" for key in optional_keys)
+
+        missing = result.get("missing_fields") or []
+        if missing:
+            lines.extend(["", "### 缺失字段"])
+            lines.extend(f"- {vehicle_label(str(item))}" for item in missing)
+
+        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+        reminders = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
+        if reminders:
+            lines.extend(["", "### 校验提醒"])
+            lines.extend(f"- {item}" for item in reminders)
+        return "\n".join(lines)
+
     if result.get("doc_type") == "business_license":
         fields = result.get("fields") or {}
         status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))

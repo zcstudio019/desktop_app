@@ -39,7 +39,11 @@ def _asset_status(profile: dict[str, Any]) -> str:
         if not all(_has_value(item.get(field)) for field in ("owner", "certificate_number", "property_address")):
             incomplete = True
     for item in vehicles:
-        if not all(_has_value(item.get(field)) for field in ("plate_number", "vehicle_owner", "vehicle_identification_number")):
+        if not (
+            _has_value(item.get("plate_number"))
+            and _has_value(item.get("owner") or item.get("vehicle_owner"))
+            and _has_value(item.get("vin") or item.get("vehicle_identification_number"))
+        ):
             incomplete = True
     return "partial" if incomplete else "complete"
 

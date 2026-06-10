@@ -8,7 +8,7 @@ DOC_TYPE_NAMES = {
     "business_license": "营业执照",
     "account_permit": "开户许可证",
     "basic_account_info": "基本存款账户信息",
-    "vehicle_license": "机动车行驶证",
+    "vehicle_license": "行驶证",
     "driving_license": "机动车驾驶证",
     "property_cert": "房产证/房地产权证",
     "real_estate_cert": "不动产权证",
@@ -59,7 +59,7 @@ REQUIRED_FIELDS = {
     "basic_account_info": ["company_name", "bank_account_number", "opening_bank"],
     "property_cert": ["权利人", "权证编号", "房地坐落"],
     "real_estate_cert": ["owner", "certificate_number", "property_unit_number", "property_address"],
-    "vehicle_license": ["plate_number", "vehicle_owner", "vehicle_identification_number"],
+    "vehicle_license": ["plate_number", "vehicle_type", "owner", "address", "use_character", "brand_model", "vin", "engine_number", "registration_date", "issue_date"],
     "marriage_cert": ["holder_name", "spouse_name", "registration_date"],
     "marriage_certificate": ["certificate_no", "holder_1", "holder_2"],
 }

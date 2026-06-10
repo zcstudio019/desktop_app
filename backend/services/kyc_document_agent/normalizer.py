@@ -141,6 +141,24 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
                 fields["registration_authority"] = authority
         result["fields"] = fields
         return result
+    if result.get("doc_type") == "vehicle_license":
+        for field in ("plate_number", "vin", "engine_number"):
+            if fields.get(field):
+                fields[field] = re.sub(r"[\s:：]+", "", str(fields.get(field) or "")).upper()
+        for field in ("owner", "address", "vehicle_type", "use_character"):
+            if fields.get(field):
+                fields[field] = normalize_text_field(fields.get(field))
+        if fields.get("brand_model"):
+            value = normalize_text_field(fields.get("brand_model"))
+            fields["brand_model"] = re.sub(r"[a-z]+", lambda item: item.group(0).upper(), value)
+        for field in ("registration_date", "issue_date", "inspection_valid_until"):
+            if fields.get(field):
+                fields[field] = normalize_date(fields.get(field))
+        for field in ("approved_passengers", "total_mass", "curb_weight"):
+            if fields.get(field):
+                fields[field] = re.sub(r"\s+", "", str(fields.get(field) or "")).strip(" :：,，;；")
+        result["fields"] = fields
+        return result
     if result.get("doc_type") == "marriage_certificate":
         for holder_key in ("holder_1", "holder_2"):
             holder = fields.get(holder_key)
