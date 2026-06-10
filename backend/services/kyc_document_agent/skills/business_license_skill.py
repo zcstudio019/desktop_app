@@ -23,6 +23,14 @@ BUSINESS_LICENSE_FIELDS = (
     "issue_date",
 )
 
+AUTHORITY_KEYWORDS = (
+    "市场监督管理局",
+    "行政审批局",
+    "工商行政管理局",
+    "工商行政管理部门",
+    "市场监督管理部门",
+)
+
 FIELD_STOPS = (
     "统一社会信用代码",
     "社会信用代码",
@@ -161,6 +169,15 @@ def _is_bottom_noise(line: str) -> bool:
     return bool(re.fullmatch(r"\d{4}年\d{1,2}月\d{1,2}日", compact))
 
 
+def _is_date_text(value: str) -> bool:
+    compact = _compact(value)
+    return bool(
+        re.fullmatch(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", compact)
+        or re.fullmatch(r"(?:19|20)\d{2}[-./]\d{1,2}[-./]\d{1,2}", compact)
+        or re.fullmatch(r"(?:19|20)\d{6}", compact)
+    )
+
+
 def _date_to_iso(value: str) -> str:
     text = str(value or "").strip()
     compact = _compact(text)
@@ -242,23 +259,78 @@ def _extract_business_scope(line_text: str, compact_text: str, lines: list[str])
 
 
 def _extract_registration_authority(line_text: str, compact_text: str, lines: list[str]) -> tuple[str, str]:
-    value, evidence = _extract_label_value(
-        line_text,
-        compact_text,
-        lines,
-        ("登记机关",),
-        ("发照日期", "经营范围", "营业期限"),
-        max_chars=80,
-    )
-    value = re.split(r"\d{4}年\d{1,2}月\d{1,2}日", value, maxsplit=1)[0]
-    if value and ("市场监督管理局" in value or "行政审批局" in value):
-        return _clean_compact_value(value), evidence
-    for line in reversed(lines):
-        match = re.search(r"([\u4e00-\u9fa5]{2,30}(?:市场监督管理局|行政审批局))", _compact(line))
-        if match:
-            return match.group(1), line
-    match = re.search(r"([\u4e00-\u9fa5]{2,30}(?:市场监督管理局|行政审批局))", compact_text)
-    return (match.group(1), match.group(0)) if match else ("", "")
+    keyword_pattern = "|".join(re.escape(keyword) for keyword in AUTHORITY_KEYWORDS)
+
+    def clean_candidate(value: str) -> str:
+        text = _compact(value)
+        if not text:
+            return ""
+        text = text.replace("登记机关", "").replace("发照日期", "")
+        text = re.sub(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", "", text)
+        text = re.sub(r"(?:19|20)\d{2}[-./]\d{1,2}[-./]\d{1,2}", "", text)
+        text = re.sub(r"(?:19|20)\d{6}", "", text)
+        text = re.split(r"二维码|国家企业信用信息公示系统|经营范围|住所|住 所|法定代表人|注册资本|成立日期|营业期限", text, maxsplit=1)[0]
+        text = text.strip(" :：,，.。;；()（）[]【】")
+        match = re.search(rf"([\u4e00-\u9fa5]{{2,40}}(?:{keyword_pattern}))", text)
+        if not match:
+            return ""
+        authority = match.group(1).strip(" :：,，.。;；")
+        if authority in {"登记机关", "未识别", "发照日期"} or _is_date_text(authority):
+            return ""
+        if len(re.findall(r"[\u4e00-\u9fff]", authority)) < 6:
+            return ""
+        return authority
+
+    # 1) 优先读取“登记机关”标签后方或后续相邻行。
+    for index, line in enumerate(lines):
+        if "登记机关" not in _compact(line):
+            continue
+        evidence_lines = [line]
+        suffix = re.split(r"登记\s*机\s*关\s*:?", line, maxsplit=1)[-1]
+        candidates = [suffix]
+        for next_line in lines[index + 1 : index + 4]:
+            compact_next = _compact(next_line)
+            if not compact_next or _is_bottom_noise(next_line):
+                evidence_lines.append(next_line)
+                break
+            if any(stop in compact_next for stop in ("经营范围", "住所", "住 所", "发照日期", "注册资本", "成立日期")):
+                break
+            evidence_lines.append(next_line)
+            candidates.append(next_line)
+            if any(keyword in compact_next for keyword in AUTHORITY_KEYWORDS):
+                break
+        for candidate in candidates + ["".join(candidates)]:
+            authority = clean_candidate(candidate)
+            if authority:
+                return authority, "\n".join(evidence_lines)
+
+    # 2) 扫描红章 OCR 行；如机构名被拆行，合并上一行地区名称。
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        compact_line = _compact(line)
+        if not any(keyword in compact_line for keyword in AUTHORITY_KEYWORDS):
+            continue
+        evidence_lines = [line]
+        candidates = [line]
+        if index > 0:
+            previous = lines[index - 1]
+            compact_previous = _compact(previous)
+            if (
+                compact_previous
+                and not _is_date_text(compact_previous)
+                and not any(label in compact_previous for label in FIELD_STOPS)
+                and re.fullmatch(r"[\u4e00-\u9fa5]{2,20}", compact_previous)
+            ):
+                evidence_lines.insert(0, previous)
+                candidates.insert(0, previous + line)
+        for candidate in candidates:
+            authority = clean_candidate(candidate)
+            if authority:
+                return authority, "\n".join(evidence_lines)
+
+    # 3) 极端 OCR 无换行时，从全文紧凑文本中兜底抓机构名。
+    authority = clean_candidate(compact_text)
+    return (authority, authority) if authority else ("", "")
 
 
 def _extract_issue_date(line_text: str, compact_text: str, lines: list[str], establishment_date: str) -> tuple[str, str]:

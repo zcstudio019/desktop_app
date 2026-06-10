@@ -192,6 +192,7 @@ def _validate_business_license_result(result: dict[str, Any], warnings: list[str
         "legal_representative",
         "registered_address",
         "business_scope",
+        "registration_authority",
     ]
     result["missing_fields"] = [field for field in required if not fields.get(field)]
 

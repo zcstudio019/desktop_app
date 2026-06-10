@@ -159,8 +159,72 @@ def test_renderer_outputs_chinese_markdown_without_raw_json_or_english_keys() ->
     assert "```json" not in markdown
     assert "company_name" not in markdown
     assert "unified_social_credit_code" not in markdown
+    assert "registration_authority" not in markdown
+    assert "fields" not in markdown
+    assert "{" not in markdown
+    assert "}" not in markdown
     assert "### 企业基础信息" in markdown
     assert "- 名称：上海乐美兰电子商务有限公司" in markdown
+    assert "登记机关：上海市长宁区市场监督管理局" in markdown
+
+
+def test_registration_authority_with_explicit_label_extracts() -> None:
+    result = extract("""
+营业执照
+统一社会信用代码 91320105S808481947
+名称 上海乐美兰电子商务有限公司
+法定代表人 沃志方
+登记机关 上海市长宁区市场监督管理局
+2023年09月20日
+""")
+
+    assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+    assert result["fields"]["issue_date"] == "2023-09-20"
+
+
+def test_registration_authority_after_label_newline_extracts() -> None:
+    result = extract("""
+登记机关
+上海市长宁区市场监督管理局
+2023年09月20日
+""", declared_doc_type="business_license")
+
+    assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+
+
+def test_registration_authority_from_seal_text_without_label_extracts() -> None:
+    result = extract("""
+营业执照
+名称 上海乐美兰电子商务有限公司
+法定代表人 沃志方
+上海市长宁区市场监督管理局
+2023年09月20日
+""")
+
+    assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+
+
+def test_registration_authority_from_split_seal_lines_extracts() -> None:
+    result = extract("""
+营业执照
+名称 上海乐美兰电子商务有限公司
+法定代表人 沃志方
+上海市长宁区
+市场监督管理局
+2023年09月20日
+""")
+
+    assert result["fields"]["registration_authority"] == "上海市长宁区市场监督管理局"
+
+
+def test_registration_authority_does_not_use_date_when_name_missing() -> None:
+    result = extract("""
+登记机关
+2023年09月20日
+""", declared_doc_type="business_license")
+
+    assert not result["fields"].get("registration_authority")
+    assert "registration_authority" in result["missing_fields"]
 
 
 def test_business_license_fields_enter_enterprise_identity() -> None:

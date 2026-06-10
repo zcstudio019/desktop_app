@@ -121,7 +121,24 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
             if fields.get(field):
                 fields[field] = normalize_date(fields.get(field))
         if fields.get("registration_authority"):
-            fields["registration_authority"] = normalize_text_field(fields.get("registration_authority"))
+            authority = normalize_text_field(fields.get("registration_authority"))
+            authority_keywords = (
+                "市场监督管理局",
+                "行政审批局",
+                "工商行政管理局",
+                "工商行政管理部门",
+                "市场监督管理部门",
+            )
+            if (
+                authority in {"登记机关", "未识别", "发照日期"}
+                or re.fullmatch(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日", authority)
+                or re.fullmatch(r"(?:19|20)\d{2}[-./]\d{1,2}[-./]\d{1,2}", authority)
+                or not any(keyword in authority for keyword in authority_keywords)
+                or len(re.findall(r"[\u4e00-\u9fff]", authority)) < 6
+            ):
+                fields["registration_authority"] = ""
+            else:
+                fields["registration_authority"] = authority
         result["fields"] = fields
         return result
     if result.get("doc_type") == "marriage_certificate":
