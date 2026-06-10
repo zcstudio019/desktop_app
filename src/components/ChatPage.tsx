@@ -40,6 +40,8 @@ import { useApp } from '../context/AppContext';
 import { BRAND } from '../config/brand';
 import ProcessFeedbackCard, { type ProcessFeedbackTone } from './common/ProcessFeedbackCard';
 import EnterpriseBankStatementView, { isEnterpriseBankStatementType } from './documents/EnterpriseBankStatementView';
+import KycExtractionResult, { isKycExtractionResult } from './KycExtractionResult';
+import type { KycExtractionResult as KycExtractionResultType } from '../services/types';
 import {
   ApplicationGuideCard,
   ApplicationResultCard,
@@ -562,7 +564,9 @@ const ExtractionResultCard: React.FC<ExtractionResultCardProps> = ({ files }) =>
                 </div>
               )}
               
-              {isEnterpriseBankStatementType(file.documentType) ? (
+              {isKycExtractionResult({ ...file.content, documentType: file.documentType, document_type: file.documentType }) ? (
+                <KycExtractionResult result={{ ...file.content, documentType: file.documentType, document_type: file.documentType } as unknown as KycExtractionResultType} />
+              ) : isEnterpriseBankStatementType(file.documentType) ? (
                 <EnterpriseBankStatementView
                   data={(file.content.extracted_json || file.content.data || file.content) as Record<string, unknown>}
                   markdown={String(file.content.markdown_summary || file.content.markdown || file.content.summary || '')}

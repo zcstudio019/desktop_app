@@ -737,6 +737,14 @@ function isPartialExtractionFailure(result: ExtractionResult): boolean {
   return String((result.content || {}).extraction_status || '') === 'partial_failed';
 }
 
+function getKycPreviewContent(result: ExtractionResult): Record<string, unknown> {
+  return {
+    ...(result.content || {}),
+    documentType: result.documentType,
+    document_type: result.documentType,
+  };
+}
+
 // ============================================
 // Main Component
 // ============================================
@@ -1464,7 +1472,7 @@ const UploadPage: React.FC = () => {
   }, []);
 
   const viewResult = useCallback((result: ExtractionResult) => {
-    if (isKycExtractionResult(result.content)) {
+    if (isKycExtractionResult(getKycPreviewContent(result))) {
       setPreviewResult(result);
       return;
     }
@@ -1816,7 +1824,7 @@ const UploadPage: React.FC = () => {
         )}
       </div>
 
-      {previewResult && isKycExtractionResult(previewResult.content) ? (
+      {previewResult && isKycExtractionResult(getKycPreviewContent(previewResult)) ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
           <div className="max-h-[86vh] w-full max-w-4xl overflow-hidden rounded-lg bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
@@ -1833,7 +1841,7 @@ const UploadPage: React.FC = () => {
               </button>
             </div>
             <div className="max-h-[calc(86vh-72px)] overflow-auto p-5">
-              <KycExtractionResult result={previewResult.content as unknown as KycExtractionResultType} />
+              <KycExtractionResult result={getKycPreviewContent(previewResult) as unknown as KycExtractionResultType} />
             </div>
           </div>
         </div>

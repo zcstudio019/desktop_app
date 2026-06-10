@@ -7,6 +7,7 @@ import {
   normalizeKycExtractionResult,
   isKycDocType,
 } from '../utils/kycDisplayFields';
+import MarkdownBlock from './MarkdownBlock';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -14,7 +15,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isKycExtractionResult(value: unknown): value is KycExtractionResultType {
   if (!isRecord(value)) return false;
-  return value.agent_type === 'kyc_document_agent' || isKycDocType(value.doc_type);
+  const normalized = normalizeKycExtractionResult(value);
+  const docType = String(normalized.doc_type || '');
+  const content = isRecord(value.content) ? value.content : {};
+  const extractionResult = isRecord(value.extraction_result) ? value.extraction_result : isRecord(value.extractionResult) ? value.extractionResult : {};
+  const actualAgentType = String(value.agent_type || content.agent_type || extractionResult.agent_type || '');
+  return actualAgentType === 'kyc_document_agent' || isKycDocType(docType);
 }
 
 export function renderKycDisplayMarkdown(fields: Array<[string, string]>): string {
@@ -74,17 +80,17 @@ interface Props {
 
 const KycExtractionResult: React.FC<Props> = ({ result }) => {
   const normalizedResult = normalizeKycExtractionResult(result) as unknown as KycExtractionResultType;
+  const normalizedDocType = String(normalizedResult.doc_type || '');
+  const markdown = typeof normalizedResult.markdown === 'string' ? normalizedResult.markdown.trim() : '';
+  if (markdown) {
+    return <MarkdownBlock content={markdown} />;
+  }
+
   const fields = getKycDisplayEntries(enrichPropertyFieldsForDisplay(normalizedResult), normalizedResult.doc_type);
-  if (normalizedResult.doc_type === 'marriage_certificate' || normalizedResult.doc_type === 'marriage_cert') {
-    const markdown = typeof normalizedResult.markdown === 'string' && normalizedResult.markdown.trim()
-      ? normalizedResult.markdown
-      : renderKycDisplayMarkdown(fields);
+  if (normalizedDocType === 'marriage_certificate' || normalizedDocType === 'marriage_cert') {
+    const fallbackMarkdown = renderKycDisplayMarkdown(fields);
     return (
-      <div className="text-sm text-slate-800">
-        <pre className="whitespace-pre-wrap rounded-md bg-white p-0 text-sm leading-7 text-slate-800">
-          {markdown}
-        </pre>
-      </div>
+      <MarkdownBlock content={fallbackMarkdown} />
     );
   }
   if (normalizedResult.doc_type === 'id_card') {

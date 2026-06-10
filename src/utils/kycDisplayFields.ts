@@ -267,8 +267,15 @@ export function getKycFieldValue(source: unknown, fieldName: string): unknown {
   const root = parseMaybeRecord(source);
   const document = parseMaybeRecord(root.document);
   const extraction = parseMaybeRecord(root.extraction);
+  const extractionResult = parseMaybeRecord(root.extraction_result ?? root.extractionResult);
+  const latestExtraction = parseMaybeRecord(root.latest_extraction ?? root.latestExtraction);
   const candidatePayloads = [
     root,
+    root.content,
+    root.extraction_result,
+    root.extractionResult,
+    root.latest_extraction,
+    root.latestExtraction,
     root.extracted_data,
     root.extractedData,
     root.extracted_json,
@@ -280,6 +287,10 @@ export function getKycFieldValue(source: unknown, fieldName: string): unknown {
     document.extractedData,
     extraction.extracted_data,
     extraction.extractedData,
+    extractionResult.extracted_data,
+    extractionResult.extractedData,
+    latestExtraction.extracted_data,
+    latestExtraction.extractedData,
   ];
   const candidates: Record<string, unknown>[] = [
     ...candidatePayloads.map(getConfirmedFieldsRecord),
@@ -298,7 +309,14 @@ export function normalizeKycExtractionResult(source: unknown): Record<string, un
   const root = parseMaybeRecord(source);
   const document = parseMaybeRecord(root.document);
   const extraction = parseMaybeRecord(root.extraction);
+  const extractionResult = parseMaybeRecord(root.extraction_result ?? root.extractionResult);
+  const latestExtraction = parseMaybeRecord(root.latest_extraction ?? root.latestExtraction);
   const payload = pickFirstRecord(
+    root.content,
+    root.extraction_result,
+    root.extractionResult,
+    root.latest_extraction,
+    root.latestExtraction,
     root.extracted_data,
     root.extractedData,
     root.extracted_json,
@@ -310,6 +328,10 @@ export function normalizeKycExtractionResult(source: unknown): Record<string, un
     document.extractedData,
     extraction.extracted_data,
     extraction.extractedData,
+    extractionResult.extracted_data,
+    extractionResult.extractedData,
+    latestExtraction.extracted_data,
+    latestExtraction.extractedData,
     root,
   );
   const fieldNames = Array.from(new Set([
@@ -329,8 +351,8 @@ export function normalizeKycExtractionResult(source: unknown): Record<string, un
     ...payload,
     ...root,
     agent_type: root.agent_type || payload.agent_type || 'kyc_document_agent',
-    doc_type: root.doc_type || payload.doc_type || root.extraction_type || payload.extraction_type || '',
-    doc_type_name: root.doc_type_name || payload.doc_type_name || '',
+    doc_type: root.doc_type || payload.doc_type || root.docType || payload.docType || root.document_type || payload.document_type || root.documentType || payload.documentType || root.document_type_code || payload.document_type_code || root.documentTypeCode || payload.documentTypeCode || root.extraction_type || payload.extraction_type || '',
+    doc_type_name: root.doc_type_name || payload.doc_type_name || root.docTypeName || payload.docTypeName || root.document_type_name || payload.document_type_name || '',
     owner_type: root.owner_type || payload.owner_type || '',
     extraction_status: root.extraction_status || payload.extraction_status || 'partial',
     fields,
@@ -338,7 +360,7 @@ export function normalizeKycExtractionResult(source: unknown): Record<string, un
     confidence: root.confidence || payload.confidence,
     evidence: root.evidence || payload.evidence || {},
     missing_fields: root.missing_fields || payload.missing_fields || [],
-    markdown: root.markdown || payload.markdown || '',
+    markdown: root.markdown || payload.markdown || root.markdown_content || payload.markdown_content || root.markdownContent || payload.markdownContent || '',
   };
 }
 
