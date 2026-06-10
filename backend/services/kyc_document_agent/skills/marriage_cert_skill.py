@@ -46,6 +46,27 @@ INVALID_LABEL_VALUES = {
 
 VALID_NATIONALITIES = {"中国", "中华人民共和国"}
 
+VALID_AUTHORITY_KEYWORDS = ("民政局", "婚姻登记处", "婚姻登记中心")
+INVALID_AUTHORITY_FRAGMENTS = (
+    "进行结婚登记",
+    "符合本法",
+    "申请结婚",
+    "经审查符合",
+    "准予登记",
+    "发给此证",
+    "国籍",
+    "姓名",
+    "性别",
+    "出生日期",
+    "身份证件号",
+    "身份证号",
+    "发证日期",
+)
+
+MARRIAGE_AUTHORITY_BY_ADMIN_CODE = {
+    "310112": "上海市闵行区民政局",
+}
+
 
 def _compact_label_text(text: str) -> str:
     replacements = {
@@ -200,15 +221,40 @@ def _sanitize_authority(value: str) -> str:
         return ""
     if compact in INVALID_LABEL_VALUES or any(compact.startswith(label) for label in INVALID_LABEL_VALUES):
         return ""
+    if any(fragment in compact for fragment in INVALID_AUTHORITY_FRAGMENTS):
+        return ""
+    if not any(keyword in compact for keyword in VALID_AUTHORITY_KEYWORDS):
+        return ""
     return text
 
 
 def _extract_authority(text: str) -> tuple[str, str]:
+    direct_pattern = re.compile(
+        r"((?:[\u4e00-\u9fa5]{2,12}(?:省|市|自治区|自治州|地区|盟)?){0,3}[\u4e00-\u9fa5]{1,12}(?:民政局(?:婚姻登记处)?|婚姻登记处|婚姻登记中心))"
+    )
+    for match in direct_pattern.finditer(text or ""):
+        value = _sanitize_authority(match.group(1))
+        if value:
+            return value, match.group(0)
+
     match = re.search(r"(?:婚姻登记机关|登记机关|发证机关)\s*[:：]?\s*([^\n\r]+)", text)
     if not match:
         return "", ""
     value = re.split(r"(发证日期|登记日期|结婚证字号|姓名)", match.group(1))[0].strip(" :：,，;；")
     return _sanitize_authority(value), match.group(0)
+
+
+def _authority_from_certificate_no(certificate_no: str) -> tuple[str, str, str]:
+    compact = re.sub(r"\s+", "", str(certificate_no or "")).upper()
+    match = re.search(r"J?(\d{6})[-\d]*", compact)
+    if not match:
+        return "", "", ""
+    admin_code = match.group(1)
+    authority = MARRIAGE_AUTHORITY_BY_ADMIN_CODE.get(admin_code, "")
+    if not authority:
+        return "", "", ""
+    evidence_text = f"根据结婚证字号 {compact} 中行政区划 {admin_code} 兜底识别"
+    return authority, evidence_text, admin_code
 
 
 def _extract_issue_date(text: str) -> tuple[str, str]:
@@ -311,6 +357,12 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     certificate_no, cert_evidence = _extract_certificate_no(text)
     authority, authority_evidence = _extract_authority(text)
     authority_confidence = 0.78
+    if not authority:
+        fallback_authority, fallback_evidence, _fallback_admin_code = _authority_from_certificate_no(certificate_no)
+        if fallback_authority:
+            authority = fallback_authority
+            authority_evidence = fallback_evidence
+            authority_confidence = 0.65
     if not authority and _should_apply_linyong_authority_fallback(filename, certificate_no, text):
         authority = "浙江省乐清市民政局"
         authority_evidence = "根据样本人工规则补全：林勇结婚证 / 政字第2002208号"

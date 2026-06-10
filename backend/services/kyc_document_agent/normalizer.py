@@ -15,6 +15,21 @@ DATE_FIELDS = {
 }
 AMOUNT_FIELDS = {"registered_capital"}
 AREA_FIELDS = {"building_area", "land_area", "total_area"}
+VALID_MARRIAGE_AUTHORITY_KEYWORDS = ("民政局", "婚姻登记处", "婚姻登记中心")
+INVALID_MARRIAGE_AUTHORITY_FRAGMENTS = (
+    "进行结婚登记",
+    "符合本法",
+    "申请结婚",
+    "经审查符合",
+    "准予登记",
+    "发给此证",
+    "国籍",
+    "姓名",
+    "性别",
+    "出生日期",
+    "身份证件号",
+    "发证日期",
+)
 
 
 def normalize_date(value: Any) -> str:
@@ -65,6 +80,17 @@ def normalize_text_field(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip(" :：,，;；")
 
 
+def normalize_marriage_authority(value: Any) -> str:
+    text = normalize_text_field(value)
+    if not text:
+        return ""
+    if any(fragment in text for fragment in INVALID_MARRIAGE_AUTHORITY_FRAGMENTS):
+        return ""
+    if not any(keyword in text for keyword in VALID_MARRIAGE_AUTHORITY_KEYWORDS):
+        return ""
+    return text
+
+
 def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("doc_type") == "marriage_cert":
         result["doc_type"] = "marriage_certificate"
@@ -94,6 +120,9 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
             fields["certificate_no"] = re.sub(r"\s+", "", str(fields.get("certificate_no") or "")).strip()
         if fields.get("certificate_number"):
             fields["certificate_number"] = re.sub(r"\s+", "", str(fields.get("certificate_number") or "")).strip()
+        for field in ("registration_authority", "issuing_authority"):
+            if fields.get(field):
+                fields[field] = normalize_marriage_authority(fields.get(field))
         fields["marital_status"] = "已婚"
     for field, value in list(fields.items()):
         if result.get("doc_type") == "id_card" and field == "id_number":

@@ -260,3 +260,53 @@ def test_linyong_authority_fallback_does_not_apply_to_other_marriage_certificate
     assert fields["registration_authority"] == ""
     assert fields["issuing_authority"] == ""
     assert "登记机关未识别" in result["validation"]["warnings"]
+
+
+def test_marriage_authority_falls_back_from_310112_certificate_no():
+    text = """
+    结婚证
+    结婚证字号 J310112-2018-006527
+    姓名 孙峰 性别 男 国籍 中国
+    出生日期 1978年05月16日
+    身份证件号 310107197805162416
+    姓名 程丽 性别 女 国籍 中国
+    出生日期 1988年03月10日
+    身份证件号 341126198803100449
+    申请结婚，经审查符合《中华人民共和国婚姻法》
+    进行结婚登记。符合本法
+    准予登记，发给此证
+    发证日期 2018年06月15日
+    """
+    result = KycDocumentAgent().extract({"text": text, "metadata": {"filename": "结婚证【磐韧建筑_孙峰】.pdf"}})
+    fields = result["fields"]
+
+    assert fields["certificate_no"] == "J310112-2018-006527"
+    assert fields["registration_authority"] == "上海市闵行区民政局"
+    assert fields["issuing_authority"] == "上海市闵行区民政局"
+    assert fields["registration_authority"] != "进行结婚登记。符合本法"
+    evidence = result["evidence"]["registration_authority"]
+    assert evidence["value"] == "上海市闵行区民政局"
+    assert "行政区划 310112" in evidence["evidence_text"]
+    assert evidence["confidence"] == 0.65
+    assert "登记机关：上海市闵行区民政局" in result["markdown"]
+
+
+def test_invalid_marriage_authority_candidate_is_filtered():
+    text = """
+    结婚证字号 苏吴字第202208号
+    姓名 林勇 性别 男 国籍 中国
+    出生日期 1979年3月16日
+    身份证件号 320523197903162443
+    姓名 吕燕 性别 女 国籍 中国
+    出生日期 1979年11月8日
+    身份证件号 320523197911081922
+    发证机关: 进行结婚登记。符合本法
+    发证日期: 2022年3月15日
+    """
+    result = KycDocumentAgent().extract({"text": text, "metadata": {"filename": "其他结婚证.pdf"}})
+    fields = result["fields"]
+
+    assert fields["registration_authority"] == ""
+    assert fields["issuing_authority"] == ""
+    assert "进行结婚登记。符合本法" not in result["markdown"]
+    assert "登记机关：未识别" in result["markdown"]
