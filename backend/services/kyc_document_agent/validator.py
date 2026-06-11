@@ -315,7 +315,14 @@ def _validate_household_register_result(result: dict[str, Any], warnings: list[s
         warnings.append("户号未识别，请人工核对")
 
     has_head_member = False
-    member_core_fields = ("name", "relationship_to_head", "gender", "ethnicity", "birth_date", "id_number")
+    member_core_fields = ("name", "relationship_to_head", "gender", "birth_date", "id_number")
+    member_field_labels = {
+        "name": "姓名",
+        "relationship_to_head": "与户主关系",
+        "gender": "性别",
+        "birth_date": "出生日期",
+        "id_number": "公民身份号码",
+    }
     for index, member in enumerate(members, start=1):
         if not isinstance(member, dict):
             continue
@@ -334,7 +341,7 @@ def _validate_household_register_result(result: dict[str, Any], warnings: list[s
                     warnings.append(f"成员【{name}】身份证号码中的出生日期与户口本出生日期不一致")
         for field in member_core_fields:
             if not member.get(field):
-                missing.append(f"members[{index}].{field}")
+                missing.append(f"{name}-{member_field_labels.get(field, field)}")
     if members and not has_head_member:
         warnings.append("未识别到户主成员")
     if not members:
@@ -345,7 +352,15 @@ def _validate_household_register_result(result: dict[str, Any], warnings: list[s
 
     household_core_count = sum(1 for field in ("household_head", "household_address", "household_type") if household_info.get(field))
     member_core_count = sum(1 for member in members if isinstance(member, dict) and (member.get("name") or member.get("id_number")))
-    if household_core_count >= 2 and member_core_count >= 1 and not result["missing_fields"]:
+    has_required_member_core = all(
+        isinstance(member, dict)
+        and member.get("name")
+        and member.get("relationship_to_head")
+        and member.get("birth_date")
+        and member.get("id_number")
+        for member in members
+    ) if members else False
+    if household_core_count >= 2 and member_core_count >= 1 and has_head_member and has_required_member_core:
         result["extraction_status"] = "success"
     elif household_core_count >= 1 or member_core_count >= 1:
         result["extraction_status"] = "partial"

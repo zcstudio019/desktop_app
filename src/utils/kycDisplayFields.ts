@@ -832,6 +832,18 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
       display.set(HOUSEHOLD_INFO_FIELD_LABELS[key] ?? key, text);
     });
     const members = Array.isArray(fields.members) ? fields.members.filter(isRecord) : [];
+    const householdRecords = Array.isArray(fields.household_records) ? fields.household_records.filter(isRecord) : [];
+    householdRecords.forEach((record, index) => {
+      const parts = HOUSEHOLD_INFO_FIELD_ORDER
+        .map((key) => {
+          const value = record[key];
+          if (isInvalidDisplayValue(value)) return '';
+          const text = formatKycDisplayValue(value);
+          return text ? `${HOUSEHOLD_INFO_FIELD_LABELS[key] ?? key}：${text}` : '';
+        })
+        .filter(Boolean);
+      if (parts.length > 0) display.set(`户信息 ${index + 1}`, parts.join('；'));
+    });
     members.forEach((member, index) => {
       const name = formatKycDisplayValue(member.name) || `成员${index + 1}`;
       const parts = HOUSEHOLD_MEMBER_FIELD_ORDER

@@ -541,10 +541,13 @@ def render_markdown(result: dict[str, Any]) -> str:
     if result.get("doc_type") == "household_register":
         fields = result.get("fields") or {}
         household_info = fields.get("household_info") if isinstance(fields.get("household_info"), dict) else {}
+        household_records = fields.get("household_records") if isinstance(fields.get("household_records"), list) else []
         members = fields.get("members") if isinstance(fields.get("members"), list) else []
         status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))
 
-        def value(item: Any) -> str:
+        def value(item: Any, key: str = "") -> str:
+            if key.endswith("_date") and item not in (None, "", [], {}):
+                return str(item)
             return _format_value(item) if item not in (None, "", [], {}) else "未识别"
 
         def info_label(key: str) -> str:
@@ -559,10 +562,19 @@ def render_markdown(result: dict[str, Any]) -> str:
             "- 资料类型：户口本",
             f"- 提取状态：{status}",
             "",
-            "### 户信息",
+            "### 当前户信息",
         ]
         for key in HOUSEHOLD_INFO_FIELD_ORDER:
-            lines.append(f"- {info_label(key)}：{value(household_info.get(key))}")
+            lines.append(f"- {info_label(key)}：{value(household_info.get(key), key)}")
+
+        if household_records:
+            lines.extend(["", "### 户信息记录"])
+            for index, record in enumerate(household_records, start=1):
+                if not isinstance(record, dict):
+                    continue
+                lines.extend(["", f"#### 户信息 {index}"])
+                for key in HOUSEHOLD_INFO_FIELD_ORDER:
+                    lines.append(f"- {info_label(key)}：{value(record.get(key), key)}")
 
         lines.extend(["", "### 家庭成员"])
         if members:
@@ -575,14 +587,16 @@ def render_markdown(result: dict[str, Any]) -> str:
                     item = member.get(key)
                     if item in (None, "", [], {}) and key not in {"name", "relationship_to_head", "gender", "ethnicity", "birth_date", "id_number"}:
                         continue
-                    lines.append(f"- {member_label(key)}：{value(item)}")
+                    lines.append(f"- {member_label(key)}：{value(item, key)}")
         else:
             lines.append("- 未识别")
 
         address_records = household_info.get("address_change_records")
+        lines.extend(["", "### 住址变动记录"])
         if isinstance(address_records, list) and address_records:
-            lines.extend(["", "### 住址变动记录"])
             lines.extend(f"- {value(item)}" for item in address_records)
+        else:
+            lines.append("- 未识别有效住址变动记录")
 
         missing = result.get("missing_fields") or []
         if missing:
