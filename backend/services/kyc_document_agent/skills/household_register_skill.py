@@ -47,18 +47,24 @@ MEMBER_FIELDS = (
 )
 
 HOUSEHOLD_TYPE_VALUES = (
+    "非农业家庭户口",
+    "非农业家庭",
     "非农家庭户口",
     "农业家庭户口",
     "居民家庭户口",
+    "居民家庭户",
+    "居民户口",
     "非农业集体户口",
     "农业集体户口",
+    "非农业户口",
+    "农业户口",
     "家庭户",
     "集体户",
 )
 
-RELATION_VALUES = ("户主", "妻", "夫", "子", "女", "父", "母", "长子", "次子", "长女", "次女", "孙子", "孙女", "其他")
-EDUCATION_VALUES = ("研究生", "博士", "硕士", "本科", "大专", "中专", "高中", "初中", "小学", "文盲", "不详")
-MARITAL_VALUES = ("有配偶", "已婚", "未婚", "离异", "离婚", "丧偶")
+RELATION_VALUES = ("户主", "儿媳", "女婿", "外孙女", "外孙", "孙子", "孙女", "长子", "次子", "长女", "次女", "妻", "夫", "子", "女", "父", "母", "兄", "弟", "姐", "妹", "其他")
+EDUCATION_VALUES = ("文盲或半文盲", "半文盲", "研究生", "博士", "硕士", "本科", "大专", "中专", "高中", "初中", "小学", "文盲", "不详")
+MARITAL_VALUES = ("有配偶", "已婚", "未婚", "离异", "离婚", "丧偶", "复婚")
 MILITARY_VALUES = ("未服兵役", "服兵役", "退役", "不详", "无")
 BLOOD_VALUES = ("AB型", "A型", "B型", "O型", "不明")
 RELIGION_VALUES = ("无", "不详", "佛教", "道教", "基督教", "天主教", "伊斯兰教")
@@ -135,20 +141,6 @@ HOME_STOP_LABELS = (
     "常住人口登记卡",
     "住址变动登记",
 )
-
-NAME_CORRECTIONS = {
-    "林晨烺": "林晨恺",
-    "林晨恺关": "林晨恺",
-    "林晨恺关系": "林晨恺",
-    "林晨沐关": "林晨沐",
-}
-
-ID_NAME_FALLBACKS = {
-    "330323197903162430": "林勇",
-    "330323197911081921": "黄晓回",
-    "330382201008311718": "林晨恺",
-    "330382200211010027": "林晨沐",
-}
 
 NOISY_NAME_FRAGMENTS = ("或与", "关系", "户主或", "性别", "民族", "出生", "公民身份号码", "何时由何地")
 
@@ -256,7 +248,9 @@ def _has_member_card(text: str) -> bool:
     return (
         ("常住人口登记卡" in compact and ("姓名" in compact or "公民身份号码" in compact))
         or ("姓名" in compact and "户主或与户主关系" in compact and "公民身份号码" in compact)
+        or ("姓名" in compact and "户主或与户主关系" in compact and "出生日期" in compact)
         or (bool(re.search(r"\d{17}[\dXx]", compact)) and "出生日期" in compact and "性别" in compact and "民族" in compact)
+        or ("出生日期" in compact and "公民身份号码" in compact and ("身高" in compact or "血型" in compact))
     )
 
 
@@ -282,21 +276,17 @@ def _first_choice(value: str, choices: tuple[str, ...]) -> str:
 
 def _clean_person_name(value: Any) -> str:
     text = _compact(value)
-    for bad in ("或与", "关系", "户主", "性别", "民族", "出生", "公民身份号码", "姓名", "曾用名", "何时由何地"):
-        if bad in text and not any(text.startswith(name) for name in NAME_CORRECTIONS):
-            # A glued value like 黄晓闽关系妻 is handled before this function by split logic.
-            if not re.match(r"^[\u4e00-\u9fff]{2,8}关系", text):
-                return ""
-    for wrong, right in NAME_CORRECTIONS.items():
-        if wrong in text:
-            return right
+    for bad in ("或与", "户主", "性别", "民族", "出生", "公民身份号码", "姓名", "曾用名", "何时由何地"):
+        if bad in text:
+            return ""
+    text = re.sub(r"(关系.*|关$)", "", text)
     match = re.search(r"[\u4e00-\u9fff]{2,8}", text)
     if not match:
         return ""
     name = match.group(0)
     if name in {"姓名", "户主", "关系", "或与"} or any(bad in name for bad in ("关系", "或与")):
         return ""
-    return NAME_CORRECTIONS.get(name, name)
+    return name
 
 
 def _is_valid_member_name(value: Any) -> bool:
@@ -310,7 +300,8 @@ def _is_valid_member_name(value: Any) -> bool:
 
 def _split_name_relation(value: str) -> tuple[str, str]:
     compact = _compact(value)
-    match = re.match(r"([\u4e00-\u9fff]{2,8})关系(户主|妻|夫|子|女|父|母|长子|次子|长女|次女|孙子|孙女|其他)", compact)
+    relation_re = "|".join(re.escape(item) for item in RELATION_VALUES)
+    match = re.match(rf"([\u4e00-\u9fff]{{2,8}})(?:关系|关)?({relation_re})$", compact)
     if match:
         return _clean_person_name(match.group(1)), match.group(2)
     return "", ""
@@ -381,10 +372,12 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
         info["household_type"] = household_type
         evidence["household_info.household_type"] = _make_evidence(household_type, ev, page)
 
-    match = re.search(r"户号\s*[:：]?\s*([A-Za-z0-9]{4,20})", _flat(text))
+    match = re.search(r"户\s*号\s*[:：]?\s*([A-Za-z0-9]{4,20})", _flat(text))
     if match:
-        info["household_number"] = match.group(1)
-        evidence["household_info.household_number"] = _make_evidence(match.group(1), match.group(0), page)
+        candidate = match.group(1)
+        if not re.fullmatch(r"\d{17}[\dXx]", candidate):
+            info["household_number"] = candidate
+            evidence["household_info.household_number"] = _make_evidence(candidate, match.group(0), page)
 
     value, ev = _value_between(text, ("户主姓名",), HOME_STOP_LABELS, max_chars=40)
     head = _clean_person_name(value)
@@ -405,7 +398,7 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
     match = re.search(r"(?:No\.?|NO|Nº|N°|编号|户口簿编号)\s*[:：]?\s*([0-9A-Za-z]{6,12})", text, re.I)
     if match:
         candidate = match.group(1)
-        if candidate != info.get("household_number"):
+        if candidate != info.get("household_number") and not re.fullmatch(r"\d{17}[\dXx]", candidate):
             info["booklet_number"] = candidate
             evidence["household_info.booklet_number"] = _make_evidence(candidate, match.group(0), page)
 
@@ -477,7 +470,8 @@ def _extract_relation(segment: str, relation_hint: str = "") -> tuple[str, str]:
     relation = _first_choice(value, RELATION_VALUES)
     if relation:
         return relation, ev
-    match = re.search(r"(?:户主或与户主关系|与户主关系|关系)\s*[:：]?\s*(户主|妻|夫|子|女|父|母|长子|次子|长女|次女|孙子|孙女|其他)", _flat(segment))
+    relation_re = "|".join(re.escape(item) for item in RELATION_VALUES)
+    match = re.search(rf"(?:户主或与户主关系|与户主关系|户主关系|关系)\s*[:：]?\s*({relation_re})", _flat(segment))
     if match:
         return match.group(1), match.group(0)
     return "", ""
@@ -547,7 +541,10 @@ def _extract_height(segment: str) -> tuple[str, str]:
     match = re.search(r"(\d{2,3})", value)
     if not match:
         return "", ""
-    return f"{match.group(1)}cm", ev
+    height = int(match.group(1))
+    if 150 <= height <= 220:
+        return f"{height}cm", ev
+    return "", ""
 
 
 def _extract_text_field(segment: str, labels: tuple[str, ...], *, max_chars: int = 120, reject: tuple[str, ...] = ()) -> tuple[str, str]:
@@ -646,7 +643,7 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
     ):
         value, ev = _extract_text_field(segment, labels, max_chars=80, reject=reject)
         if value:
-            member[field] = _first_choice(value, OCCUPATION_VALUES) or value
+            member[field] = value
             evidence[field] = _make_evidence(member[field], ev, page)
 
     for field, labels in (
@@ -665,7 +662,7 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
 
 
 def _meaningful_member(member: dict[str, Any]) -> bool:
-    return bool(member.get("name") or member.get("id_number") or member.get("relationship_to_head"))
+    return bool(member.get("id_number") or (member.get("name") and member.get("birth_date")) or (member.get("name") and member.get("relationship_to_head")))
 
 
 def _member_score(member: dict[str, Any]) -> int:
@@ -724,7 +721,7 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
         id_number = str(member.get("id_number") or "")
         name = str(member.get("name") or "")
         if not _is_valid_member_name(name):
-            fallback = id_to_name.get(id_number) or ID_NAME_FALLBACKS.get(id_number)
+            fallback = id_to_name.get(id_number)
             if fallback:
                 member["name"] = fallback
 

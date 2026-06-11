@@ -307,6 +307,10 @@ def _validate_household_register_result(result: dict[str, Any], warnings: list[s
     members = fields.get("members") if isinstance(fields.get("members"), list) else []
     missing: list[str] = []
 
+    if not household_info.get("household_type"):
+        missing.append("户别")
+    if not household_info.get("household_number"):
+        missing.append("户号")
     if not household_info.get("household_head"):
         head_member = next(
             (
@@ -323,11 +327,9 @@ def _validate_household_register_result(result: dict[str, Any], warnings: list[s
             fields["household_info"] = household_info
             result["fields"] = fields
         else:
-            missing.append("household_head")
+            missing.append("户主姓名")
     if not household_info.get("household_address"):
-        missing.append("household_address")
-    if not household_info.get("household_number"):
-        warnings.append("户号未识别，请人工核对")
+        missing.append("住址")
 
     has_head_member = False
     member_core_fields = ("name", "relationship_to_head", "gender", "birth_date", "id_number")
@@ -360,7 +362,7 @@ def _validate_household_register_result(result: dict[str, Any], warnings: list[s
     if members and not has_head_member:
         warnings.append("未识别到户主成员")
     if not members:
-        missing.append("members")
+        missing.append("家庭成员")
         warnings.append("未识别到常住人口登记卡成员信息")
 
     result["missing_fields"] = list(dict.fromkeys(missing))

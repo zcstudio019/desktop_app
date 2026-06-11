@@ -26,7 +26,7 @@ PAGE_2_LINYONG_SHANGHAI = """住址变动登记
 """
 
 PAGE_3_LINCHENKAI_SHANGHAI = """常住人口登记卡
-姓名 林晨烺 户主或与户主关系 子 性别 男 民族 汉族
+姓名 林晨恺 户主或与户主关系 子 性别 男 民族 汉族
 出生地 上海市奉贤区 籍贯 浙江省乐清市
 出生日期 2010年08月31日
 公民身份号码 330382201008311718
@@ -110,6 +110,72 @@ SAMPLE_PAGES = [
     PAGE_6_HUANG,
     PAGE_7_LINCHENKAI_ZHEJIANG,
     PAGE_8_LINCHENMU,
+]
+
+OLD_VERSION_HOME = """居民户口簿
+No. 004876156
+户别 非农业家庭 户号 010046 户主姓名 孙惠章
+住址 上海市闸北区共和新路1700弄2号601室
+上海市公安局
+承办人签章 崔华 1999 年 12 月 3 日 签发
+"""
+
+OLD_VERSION_MEMBER_SUN_HEAD = """常住人口登记卡
+姓名 孙惠章 户主或与户主关系 户主 性别 男 民族 汉族
+出生地 江苏省江阴市 籍贯 江苏省江阴市
+出生日期 1927年01月15日
+公民身份号码 31010819270115321X
+身高 170 血型 O型
+服务处所 上海华光金属丝网厂 职业 退休工人
+"""
+
+OLD_VERSION_MEMBER_ZHOU = """常住人口登记卡
+姓名 周梅珍 户主或与户主关系 妻 性别 女 民族 汉
+出生地 上海市 籍贯 上海市
+出生日期 1928年01月10日
+公民身份号码 310108192801103244
+身高 154cm
+服务处所 上海医院设备厂 职业 退休工人
+"""
+
+OLD_VERSION_MEMBER_SUNKUI = """常住人口登记卡
+姓名 孙魁 户主或与户主关系 子 性别 男 民族 汉族
+出生地 上海市 籍贯 江苏江阴市
+出生日期 1957年09月03日
+公民身份号码 310108195709033275
+文化程度 高中 身高 170cm
+服务处所 上海环陆实业有限公司 职业 调度人员
+"""
+
+OLD_VERSION_MEMBER_WANG = """常住人口登记卡
+姓名 王微珍 户主或与户主关系 儿媳 性别 女 民族 汉族
+出生地 浙江省鄞县 籍贯 浙江省鄞县
+出生日期 1950年05月23日
+公民身份号码 310108195005231222
+文化程度 高中 身高 162cm
+服务处所 闸北区建筑材料公司 职业 统计人员
+"""
+
+OLD_VERSION_MEMBER_SUNLM = """常住人口登记卡
+姓名 孙黎明 户主或与户主关系 孙子 性别 男 民族 汉族
+出生地 上海市 籍贯 江苏江阴市
+公民身份号码 310108198710080531
+兵役状况 未服兵役
+"""
+
+OLD_VERSION_BLANK_CARD = """常住人口登记卡
+姓名 户主或与户主关系 性别 民族
+出生日期 公民身份号码
+"""
+
+OLD_VERSION_PAGES = [
+    OLD_VERSION_HOME,
+    OLD_VERSION_MEMBER_SUN_HEAD,
+    OLD_VERSION_MEMBER_ZHOU,
+    OLD_VERSION_MEMBER_SUNKUI,
+    OLD_VERSION_MEMBER_WANG,
+    OLD_VERSION_MEMBER_SUNLM,
+    OLD_VERSION_BLANK_CARD,
 ]
 
 
@@ -217,13 +283,17 @@ def test_member_name_preserves_huang_xiaohui_visible_value() -> None:
     assert "黄晓闽" not in render_markdown(result)
 
 
-def test_member_name_backfilled_from_id_number_fallback() -> None:
-    text = """常住人口登记卡
+def test_member_name_backfilled_from_same_document_duplicate() -> None:
+    pages = ["""常住人口登记卡
+姓名 林勇 户主或与户主关系 户主 性别 男 民族 汉族
+出生日期 1979年03月16日
+公民身份号码 330323197903162430
+""", """常住人口登记卡
 姓名 或与林勇关系 户主或与户主关系 户主 性别 男 民族 汉族
 出生日期 1979年03月16日
 公民身份号码 330323197903162430
-"""
-    result = extract(text)
+"""]
+    result = extract(pages=pages)
     member = result["fields"]["members"][0]
     assert member["name"] == "林勇"
     assert result["fields"]["household_info"]["household_head"] == "林勇"
@@ -328,3 +398,68 @@ def test_household_register_renderer_chinese_markdown_no_json() -> None:
     assert "黄晓闽" not in markdown
     assert "{" not in markdown
     assert "}" not in markdown
+
+
+def test_old_version_household_home_fields_are_extracted_generically() -> None:
+    result = extract(pages=OLD_VERSION_PAGES)
+    info = result["fields"]["household_info"]
+    assert info["household_type"] == "非农业家庭"
+    assert info["household_number"] == "010046"
+    assert info["household_head"] == "孙惠章"
+    assert info["household_address"] == "上海市闸北区共和新路1700弄2号601室"
+    assert info["booklet_number"] == "004876156"
+    assert info["issue_date"] == "1999-12-03"
+    assert info["undertaker"] == "崔华"
+    assert "须立即报告" not in (info.get("issuing_authority") or "")
+    assert "注意事项" not in (info.get("issuing_authority") or "")
+
+
+def test_old_version_members_are_extracted_without_customer_hardcoding() -> None:
+    result = extract(pages=OLD_VERSION_PAGES)
+    by_name = members_by_name(result)
+    assert set(by_name) >= {"孙惠章", "周梅珍", "孙魁", "王微珍", "孙黎明"}
+    assert len(result["fields"]["members"]) == 5
+    assert by_name["孙惠章"]["id_number"] == "31010819270115321X"
+    assert by_name["周梅珍"]["relationship_to_head"] == "妻"
+    assert by_name["孙魁"]["relationship_to_head"] == "子"
+    assert by_name["王微珍"]["relationship_to_head"] == "儿媳"
+    assert by_name["孙黎明"]["relationship_to_head"] == "孙子"
+    assert by_name["孙黎明"]["birth_date"] == "1987-10-08"
+    assert by_name["孙惠章"]["height"] == "170cm"
+    assert by_name["孙惠章"]["blood_type"] == "O型"
+    assert by_name["孙惠章"]["occupation"] == "退休工人"
+    assert by_name["周梅珍"]["height"] == "154cm"
+    assert by_name["周梅珍"]["occupation"] == "退休工人"
+    assert by_name["孙魁"]["education_level"] == "高中"
+    assert by_name["王微珍"]["occupation"] == "统计人员"
+
+
+def test_old_version_blank_member_card_is_ignored_and_fields_do_not_shift() -> None:
+    result = extract(pages=OLD_VERSION_PAGES)
+    assert len(result["fields"]["members"]) == 5
+    for member in result["fields"]["members"]:
+        assert "何时由何地" not in member.get("service_place", "")
+        assert "何时由何地" not in member.get("occupation", "")
+        assert "首次申报" not in member.get("occupation", "")
+        assert member.get("marital_status") != "职业"
+        assert member.get("education_level") not in {"已婚", "未婚", "有配偶"}
+
+
+def test_old_version_missing_fields_only_contains_real_key_missing_items() -> None:
+    result = extract(pages=OLD_VERSION_PAGES)
+    missing_text = " ".join(str(item) for item in result.get("missing_fields") or [])
+    assert "户号" not in missing_text
+    assert "户主姓名" not in missing_text
+    assert "孙惠章-姓名" not in missing_text
+    assert "孙惠章-公民身份号码" not in missing_text
+
+
+def test_old_version_markdown_contains_members_without_raw_json() -> None:
+    result = extract(pages=OLD_VERSION_PAGES)
+    markdown = render_markdown(result)
+    for name in ("孙惠章", "周梅珍", "孙魁", "王微珍", "孙黎明"):
+        assert name in markdown
+    assert "```json" not in markdown
+    assert "household_info:" not in markdown
+    assert "members:" not in markdown
+    assert "id_number" not in markdown
