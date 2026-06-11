@@ -119,6 +119,83 @@ def test_missing_company_name_is_not_fabricated() -> None:
     assert "bank_account_name" in result["missing_fields"]
 
 
+def test_legal_representative_same_line_extracts() -> None:
+    result = extract("开户许可证\n法定代表人：梁云", declared_doc_type="account_permit")
+
+    assert result["fields"]["legal_representative"] == "梁云"
+
+
+def test_unit_responsible_person_same_line_extracts() -> None:
+    result = extract("开户许可证\n单位负责人：梁云", declared_doc_type="account_permit")
+
+    assert result["fields"]["legal_representative"] == "梁云"
+
+
+def test_legal_representative_next_line_extracts() -> None:
+    result = extract("""开户许可证
+法定代表人：
+梁云
+""", declared_doc_type="account_permit")
+
+    assert result["fields"]["legal_representative"] == "梁云"
+
+
+def test_legal_representative_two_label_lines_extracts() -> None:
+    result = extract("""开户许可证
+法定代表人：
+（单位负责人）
+梁云
+""", declared_doc_type="account_permit")
+
+    assert result["fields"]["legal_representative"] == "梁云"
+
+
+def test_legal_representative_layout_sample_extracts() -> None:
+    result = extract("""账号：03005029359
+开户银行：上海银行股份有限公司浦西支行
+法定代表人：
+（单位负责人）
+梁云
+基本存款账户编号：J2900405373694
+2022 年 08 月 10 日
+""", declared_doc_type="account_permit")
+    fields = result["fields"]
+
+    assert fields["bank_account_number"] == "03005029359"
+    assert fields["opening_bank"] == "上海银行股份有限公司浦西支行"
+    assert fields["legal_representative"] == "梁云"
+    assert fields["basic_account_number"] == "J2900405373694"
+    assert fields["issue_date"] == "2022-08-10"
+
+
+def test_legal_representative_does_not_use_bank_name() -> None:
+    result = extract("""开户许可证
+法定代表人：
+（单位负责人）
+开户银行：上海银行股份有限公司浦西支行
+基本存款账户编号：J2900405373694
+""", declared_doc_type="account_permit")
+
+    assert result["fields"].get("legal_representative") in (None, "")
+    assert "legal_representative" in result["missing_fields"]
+
+
+def test_account_renderer_legal_representative_not_missing_when_extracted() -> None:
+    result = extract("""开户许可证
+法定代表人：
+（单位负责人）
+梁云
+账号：03005029359
+开户银行：上海银行股份有限公司浦西支行
+基本存款账户编号：J2900405373694
+""", declared_doc_type="account_permit")
+    markdown = result["markdown"]
+
+    assert "法定代表人/单位负责人：梁云" in markdown
+    missing_section = markdown.split("### 缺失字段", 1)[1] if "### 缺失字段" in markdown else ""
+    assert "法定代表人/单位负责人" not in missing_section
+
+
 def test_classifier_recognizes_account_permit() -> None:
     assert classify("基本账户开户许可证\n开户银行 上海银行\n账号 123456789\n基本存款账户编号 J123456789") == "account_permit"
 

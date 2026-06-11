@@ -52,6 +52,27 @@ ACCOUNT_LABELS = (
     "账户状态",
 )
 
+LEGAL_NAME_FORBIDDEN_KEYWORDS = (
+    "法定代表人",
+    "单位负责人",
+    "负责人",
+    "开户银行",
+    "账号",
+    "账户",
+    "基本存款账户编号",
+    "核准号",
+    "开户许可证",
+    "银行",
+    "支行",
+    "有限公司",
+    "日期",
+    "年",
+    "月",
+    "日",
+    "上海银行",
+    "业务专用章",
+)
+
 
 def normalize_ocr_text(text: str) -> tuple[str, str]:
     normalized = str(text or "").replace("\u3000", " ").replace("：", ":")
@@ -185,16 +206,60 @@ def _extract_opening_bank(line_text: str) -> tuple[str, str]:
 
 
 def _extract_legal_representative(line_text: str) -> tuple[str, str]:
-    value, evidence = _extract_after_label(
-        line_text,
-        ("法定代表人", "单位负责人", "负责人"),
-        ("基本存款账户编号", "核准号", "开户银行", "账号", "日期", "账户状态"),
-        max_chars=60,
+    def clean_candidate(value: str) -> str:
+        text = re.sub(r"[（(][^）)]*负责人[^）)]*[）)]", "", str(value or ""))
+        text = re.sub(r"法定代表人|单位负责人|负责人|[:：\s]", "", text)
+        match = re.search(r"[\u4e00-\u9fff·]{2,6}", text)
+        return match.group(0) if match else ""
+
+    def is_valid_name(value: str) -> bool:
+        if not re.fullmatch(r"[\u4e00-\u9fff·]{2,6}", value or ""):
+            return False
+        if not (2 <= len(value.replace("·", "")) <= 6):
+            return False
+        return not any(keyword in value for keyword in LEGAL_NAME_FORBIDDEN_KEYWORDS)
+
+    direct_patterns = (
+        r"法定代表人[:：\s]*(?:[（(]?\s*单位负责人\s*[）)]?)?\s*([\u4e00-\u9fff·]{2,6})",
+        r"单位负责人[:：\s]*([\u4e00-\u9fff·]{2,6})",
+        r"负责人[:：\s]*([\u4e00-\u9fff·]{2,6})",
+        r"法定代表人[（(]\s*单位负责人\s*[）)]\s*([\u4e00-\u9fff·]{2,6})",
     )
-    value = re.sub(r"[（(][^）)]*负责人[^）)]*[）)]", "", value)
-    value = re.sub(r"单位负责人|法定代表人|负责人", "", value)
-    match = re.search(r"[\u4e00-\u9fff·]{2,20}", value)
-    return (match.group(0), evidence) if match else ("", "")
+    for pattern in direct_patterns:
+        match = re.search(pattern, line_text)
+        if not match:
+            continue
+        candidate = clean_candidate(match.group(1))
+        if is_valid_name(candidate):
+            return candidate, match.group(0)
+
+    lines = line_text.splitlines()
+    for index, line in enumerate(lines):
+        if not re.search(r"法定代表人|单位负责人|负责人", line):
+            continue
+        window_lines = lines[index : index + 6]
+        for offset, candidate_line in enumerate(window_lines):
+            cleaned_line = re.sub(r"[（(][^）)]*负责人[^）)]*[）)]", "", candidate_line)
+            cleaned_line = re.sub(r"法定代表人|单位负责人|负责人|[:：]", " ", cleaned_line)
+            if any(keyword in cleaned_line for keyword in LEGAL_NAME_FORBIDDEN_KEYWORDS):
+                continue
+            for match in re.finditer(r"[\u4e00-\u9fff·]{2,6}", cleaned_line):
+                candidate = clean_candidate(match.group(0))
+                if is_valid_name(candidate):
+                    evidence = " ".join(item.strip() for item in window_lines[: offset + 1] if item.strip())
+                    return candidate, evidence
+
+        compact_window = "".join(window_lines)
+        label_match = re.search(r"(?:法定代表人|单位负责人|负责人)", compact_window)
+        if label_match:
+            after_label = compact_window[label_match.end() : label_match.end() + 120]
+            after_label = re.sub(r"[（(][^）)]*负责人[^）)]*[）)]", "", after_label)
+            for match in re.finditer(r"[\u4e00-\u9fff·]{2,6}", after_label):
+                candidate = clean_candidate(match.group(0))
+                if is_valid_name(candidate):
+                    evidence = " ".join(item.strip() for item in window_lines if item.strip())
+                    return candidate, evidence
+    return "", ""
 
 
 def _extract_basic_account_number(line_text: str) -> tuple[str, str]:
