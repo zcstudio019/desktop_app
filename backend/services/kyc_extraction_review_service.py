@@ -37,6 +37,18 @@ VEHICLE_LICENSE_FIELD_ORDER = (
     "curb_weight",
     "inspection_valid_until",
 )
+ACCOUNT_FIELD_ORDER = (
+    "company_name",
+    "bank_account_name",
+    "bank_account_number",
+    "opening_bank",
+    "account_type",
+    "approval_number",
+    "basic_account_number",
+    "account_status",
+    "legal_representative",
+    "issue_date",
+)
 MISSING_FIELD_ALIASES = {
     "登记机关": "registration_authority",
 }
@@ -71,6 +83,9 @@ def _ensure_review_fields(doc_type: str, fields: dict[str, Any]) -> dict[str, An
             next_fields.setdefault(field_name, "")
     if doc_type == "vehicle_license":
         for field_name in VEHICLE_LICENSE_FIELD_ORDER:
+            next_fields.setdefault(field_name, "")
+    if doc_type in {"account_permit", "basic_account_info"}:
+        for field_name in ACCOUNT_FIELD_ORDER:
             next_fields.setdefault(field_name, "")
     return next_fields
 

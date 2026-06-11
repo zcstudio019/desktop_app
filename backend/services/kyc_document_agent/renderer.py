@@ -96,6 +96,32 @@ VEHICLE_LICENSE_FIELD_LABELS = {
     "inspection_valid_until": "检验有效期止",
 }
 
+ACCOUNT_FIELD_ORDER = [
+    "company_name",
+    "bank_account_name",
+    "bank_account_number",
+    "opening_bank",
+    "account_type",
+    "approval_number",
+    "basic_account_number",
+    "account_status",
+    "legal_representative",
+    "issue_date",
+]
+
+ACCOUNT_FIELD_LABELS = {
+    "company_name": "单位名称",
+    "bank_account_name": "账户名称",
+    "bank_account_number": "账号",
+    "opening_bank": "开户银行",
+    "account_type": "账户类型",
+    "approval_number": "核准号",
+    "basic_account_number": "基本存款账户编号",
+    "legal_representative": "法定代表人/单位负责人",
+    "issue_date": "发证日期",
+    "account_status": "账户状态",
+}
+
 ENGLISH_TO_CHINESE_FIELDS = {
     "owner": "权利人",
     "co_owners": "共有人",
@@ -236,6 +262,12 @@ FIELD_LABELS = {
     "business_term": "营业期限",
     "registered_address": "住所",
     "business_scope": "经营范围",
+    "bank_account_name": "账户名称",
+    "bank_account_number": "账号",
+    "opening_bank": "开户银行",
+    "account_type": "账户类型",
+    "approval_number": "核准号",
+    "basic_account_number": "基本存款账户编号",
     "plate_number": "号牌号码",
     "vehicle_type": "车辆类型",
     "owner": "所有人",
@@ -393,6 +425,13 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
                 continue
             display_fields[VEHICLE_LICENSE_FIELD_LABELS.get(key, field_label(key))] = value
         return display_fields
+    if result.get("doc_type") in {"account_permit", "basic_account_info"}:
+        for key in ACCOUNT_FIELD_ORDER:
+            value = fields.get(key)
+            if _is_empty_or_invalid(value):
+                continue
+            display_fields[ACCOUNT_FIELD_LABELS.get(key, field_label(key))] = value
+        return display_fields
 
     owner_display = _merge_owner_fields(fields)
     if owner_display:
@@ -426,6 +465,44 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_markdown(result: dict[str, Any]) -> str:
+    if result.get("doc_type") in {"account_permit", "basic_account_info"}:
+        fields = result.get("fields") or {}
+        status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))
+        doc_type_name = result.get("doc_type_name") or ("基本存款账户信息" if result.get("doc_type") == "basic_account_info" else "开户许可证")
+
+        def value(key: str) -> str:
+            item = fields.get(key)
+            if key == "issue_date" and item not in (None, "", [], {}):
+                return str(item)
+            return _format_value(item) if item not in (None, "", [], {}) else "未识别"
+
+        def account_label(key: str) -> str:
+            return ACCOUNT_FIELD_LABELS.get(key, field_label(key))
+
+        lines = [
+            "## 开户许可证/基本存款账户信息",
+            "",
+            f"- 资料类型：{doc_type_name}",
+            f"- 提取状态：{status}",
+            "",
+            "### 账户信息",
+        ]
+        for key in ("company_name", "bank_account_name", "bank_account_number", "opening_bank", "account_type", "approval_number", "basic_account_number", "account_status"):
+            lines.append(f"- {account_label(key)}：{value(key)}")
+        lines.extend(["", "### 负责人信息", f"- {account_label('legal_representative')}：{value('legal_representative')}", "", "### 发证信息", f"- {account_label('issue_date')}：{value('issue_date')}"])
+
+        missing = result.get("missing_fields") or []
+        if missing:
+            lines.extend(["", "### 缺失字段"])
+            lines.extend(f"- {account_label(str(item))}" for item in missing)
+
+        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+        reminders = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
+        if reminders:
+            lines.extend(["", "### 校验提醒"])
+            lines.extend(f"- {item}" for item in reminders)
+        return "\n".join(lines)
+
     if result.get("doc_type") == "vehicle_license":
         fields = result.get("fields") or {}
         status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))

@@ -28,7 +28,7 @@ const VEHICLE_LABELS: Record<string, string> = {
   issue_date: '发证日期',
 };
 
-function FieldGrid({ fields, data }: { fields: string[]; data?: Record<string, unknown> }) {
+function FieldGrid({ fields, data, labels }: { fields: string[]; data?: Record<string, unknown>; labels?: Record<string, string> }) {
   if (!hasAnyValue(data)) {
     return <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-500">暂无资料</div>;
   }
@@ -36,7 +36,7 @@ function FieldGrid({ fields, data }: { fields: string[]; data?: Record<string, u
     <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
       {fields.map((field) => (
         <div key={field} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-          <div className="text-xs text-slate-500">{getKycFieldLabel(field)}</div>
+          <div className="text-xs text-slate-500">{labels?.[field] || getKycFieldLabel(field)}</div>
           <div className="mt-1 break-words text-sm font-medium text-slate-800">{valueText(data?.[field])}</div>
         </div>
       ))}
@@ -116,7 +116,25 @@ const KycProfilePanel: React.FC<{
           </div>
           <div>
             <h4 className="mb-2 text-sm font-semibold text-slate-800">银行账户信息</h4>
-            <FieldGrid data={profile?.bank_account} fields={['account_name', 'account_number', 'opening_bank', 'account_type']} />
+            <FieldGrid
+              data={profile?.bank_account}
+              labels={{
+                account_name: '账户名称',
+                account_number: '账号',
+                legal_representative: '法定代表人/单位负责人',
+              }}
+              fields={[
+                'account_name',
+                'account_number',
+                'opening_bank',
+                'account_type',
+                'approval_number',
+                'basic_account_number',
+                'legal_representative',
+                'issue_date',
+                'account_status',
+              ]}
+            />
           </div>
           <div>
             <h4 className="mb-2 text-sm font-semibold text-slate-800">资产信息</h4>

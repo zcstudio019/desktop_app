@@ -264,6 +264,43 @@ def _validate_vehicle_license_result(result: dict[str, Any], warnings: list[str]
         result["extraction_status"] = "failed"
 
 
+def _validate_account_result(result: dict[str, Any], warnings: list[str], errors: list[str]) -> None:
+    fields = result.get("fields") or {}
+    required = ["company_name", "bank_account_name", "bank_account_number", "opening_bank", "legal_representative"]
+    result["missing_fields"] = [field for field in required if not fields.get(field)]
+
+    account_number = str(fields.get("bank_account_number") or "").strip()
+    if account_number and not re.fullmatch(r"[0-9A-Za-z-]{6,40}", account_number):
+        warnings.append("银行账号格式需人工复核")
+
+    basic_account_number = str(fields.get("basic_account_number") or "").strip().upper()
+    raw_text = str(result.get("raw_text_preview") or "")
+    if basic_account_number and not re.fullmatch(r"[A-Z0-9]{8,30}", basic_account_number):
+        warnings.append("基本存款账户编号格式需人工复核")
+    if "基本存款账户编号" in raw_text and not basic_account_number:
+        warnings.append("文本包含基本存款账户编号但未能提取，请人工核对")
+
+    opening_bank = str(fields.get("opening_bank") or "").strip()
+    if opening_bank and len(opening_bank) < 4:
+        warnings.append("开户银行可能识别不完整")
+
+    issue_date = str(fields.get("issue_date") or "").strip()
+    if issue_date and not _is_valid_date(issue_date):
+        warnings.append("日期格式无法识别")
+
+    core_fields = ("opening_bank", "bank_account_number", "legal_representative", "basic_account_number")
+    present_count = sum(1 for field in core_fields if fields.get(field))
+    if present_count >= 3 and fields.get("bank_account_number") and fields.get("opening_bank"):
+        result["extraction_status"] = "success"
+    elif present_count >= 2:
+        result["extraction_status"] = "partial"
+    elif fields:
+        result["extraction_status"] = "partial"
+    else:
+        warnings.append("未从 OCR 文本中识别到账户资料核心字段，请检查图片清晰度或 OCR 原文")
+        result["extraction_status"] = "failed"
+
+
 def validate_result(result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") or {}
     doc_type = result.get("doc_type") or "unknown"
@@ -276,6 +313,8 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         _validate_business_license_result(result, warnings, errors)
     elif doc_type == "vehicle_license":
         _validate_vehicle_license_result(result, warnings, errors)
+    elif doc_type in {"account_permit", "basic_account_info"}:
+        _validate_account_result(result, warnings, errors)
     elif doc_type in {"marriage_certificate", "marriage_cert"}:
         result["doc_type"] = "marriage_certificate"
         _validate_marriage_certificate_result(result, warnings, errors)
@@ -294,7 +333,7 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         errors.append("统一社会信用代码格式不合法")
     if doc_type != "vehicle_license" and fields.get("plate_number") and not validate_plate_number(str(fields["plate_number"])):
         warnings.append("车牌号格式需人工复核")
-    if fields.get("bank_account_number") and not validate_bank_account(str(fields["bank_account_number"])):
+    if doc_type not in {"account_permit", "basic_account_info"} and fields.get("bank_account_number") and not validate_bank_account(str(fields["bank_account_number"])):
         warnings.append("银行账号格式需人工复核")
 
     for field, value in fields.items():
@@ -311,7 +350,7 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         "warnings": list(dict.fromkeys(warnings)),
         "errors": list(dict.fromkeys(errors)),
     }
-    if result.get("doc_type") not in {"id_card", "business_license", "vehicle_license", "marriage_certificate"}:
+    if result.get("doc_type") not in {"id_card", "business_license", "vehicle_license", "account_permit", "basic_account_info", "marriage_certificate"}:
         if errors:
             result["extraction_status"] = "partial" if fields else "failed"
         elif result.get("missing_fields"):

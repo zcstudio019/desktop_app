@@ -45,12 +45,13 @@ const FIELD_LABELS: Record<string, string> = {
   registration_authority: '登记机关',
   issue_date: '发照日期',
   bank_account_name: '账户名称',
-  bank_account_number: '银行账号',
+  bank_account_number: '账号',
   account_name: '户名',
   account_number: '账号',
   opening_bank: '开户银行',
   account_type: '账户类型',
   approval_number: '核准号',
+  basic_account_number: '基本存款账户编号',
   account_status: '账户状态',
   owner: '权利人',
   co_owners: '共有人',
@@ -202,6 +203,32 @@ export const VEHICLE_LICENSE_FIELD_ORDER = [
   'inspection_valid_until',
 ];
 
+export const ACCOUNT_FIELD_ORDER = [
+  'company_name',
+  'bank_account_name',
+  'bank_account_number',
+  'opening_bank',
+  'account_type',
+  'approval_number',
+  'basic_account_number',
+  'account_status',
+  'legal_representative',
+  'issue_date',
+];
+
+const ACCOUNT_FIELD_LABELS: Record<string, string> = {
+  company_name: '单位名称',
+  bank_account_name: '账户名称',
+  bank_account_number: '账号',
+  opening_bank: '开户银行',
+  account_type: '账户类型',
+  approval_number: '核准号',
+  basic_account_number: '基本存款账户编号',
+  legal_representative: '法定代表人/单位负责人',
+  issue_date: '发证日期',
+  account_status: '账户状态',
+};
+
 const VEHICLE_LICENSE_FIELD_LABELS: Record<string, string> = {
   plate_number: '号牌号码',
   vehicle_type: '车辆类型',
@@ -255,6 +282,13 @@ const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
   registration_authority: '登记机构',
   issue_date: '登记日',
   issuing_unit: '填证单位',
+  bank_account_name: '账户名称',
+  bank_account_number: '账号',
+  opening_bank: '开户银行',
+  account_type: '账户类型',
+  approval_number: '核准号',
+  basic_account_number: '基本存款账户编号',
+  account_status: '账户状态',
   plate_number: '号牌号码',
   vehicle_type: '车辆类型',
   vehicle_owner: '所有人',
@@ -590,6 +624,7 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
   const isPropertyCert = docType === 'property_cert' || docType === 'real_estate_cert';
   const isBusinessLicense = docType === 'business_license';
   const isVehicleLicense = docType === 'vehicle_license';
+  const isAccountDoc = docType === 'account_permit' || docType === 'basic_account_info';
   const isMarriageCert = docType === 'marriage_certificate' || docType === 'marriage_cert';
   if (isMarriageCert) {
     const holder1 = parseMaybeRecord(fields.holder_1);
@@ -647,6 +682,24 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
     });
     Object.entries(fields).forEach(([key, value]) => {
       const label = VEHICLE_LICENSE_FIELD_LABELS[key] ?? ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
+      if (display.has(label) || FORBIDDEN_KYC_DISPLAY_KEYS.has(key)) return;
+      if (isInvalidDisplayValue(value)) return;
+      const text = formatKycDisplayValue(value);
+      if (!text) return;
+      display.set(label, text);
+    });
+    return Object.fromEntries(display.entries());
+  }
+  if (isAccountDoc) {
+    ACCOUNT_FIELD_ORDER.forEach((key) => {
+      const value = fields[key];
+      if (isInvalidDisplayValue(value)) return;
+      const text = formatKycDisplayValue(value);
+      if (!text) return;
+      display.set(ACCOUNT_FIELD_LABELS[key] ?? key, text);
+    });
+    Object.entries(fields).forEach(([key, value]) => {
+      const label = ACCOUNT_FIELD_LABELS[key] ?? ENGLISH_TO_CHINESE_FIELDS[key] ?? key;
       if (display.has(label) || FORBIDDEN_KYC_DISPLAY_KEYS.has(key)) return;
       if (isInvalidDisplayValue(value)) return;
       const text = formatKycDisplayValue(value);

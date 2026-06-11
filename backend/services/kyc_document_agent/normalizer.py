@@ -159,6 +159,25 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
                 fields[field] = re.sub(r"\s+", "", str(fields.get(field) or "")).strip(" :：,，;；")
         result["fields"] = fields
         return result
+    if result.get("doc_type") in {"account_permit", "basic_account_info", "account_receipt"}:
+        if fields.get("bank_account_number"):
+            fields["bank_account_number"] = re.sub(r"\s+", "", str(fields.get("bank_account_number") or ""))
+        if fields.get("basic_account_number"):
+            fields["basic_account_number"] = re.sub(r"\s+", "", str(fields.get("basic_account_number") or "")).upper()
+        for field in ("company_name", "bank_account_name", "opening_bank", "approval_number", "account_status"):
+            if fields.get(field):
+                fields[field] = normalize_text_field(fields.get(field))
+        if fields.get("legal_representative"):
+            legal = normalize_text_field(fields.get("legal_representative"))
+            legal = re.sub(r"法定代表人|单位负责人|负责人|[（(]单位负责人[）)]", "", legal)
+            fields["legal_representative"] = legal
+        if fields.get("account_type"):
+            text = normalize_text_field(fields.get("account_type"))
+            fields["account_type"] = "基本存款账户" if "基本" in text else text
+        if fields.get("issue_date"):
+            fields["issue_date"] = normalize_date(fields.get("issue_date"))
+        result["fields"] = fields
+        return result
     if result.get("doc_type") == "marriage_certificate":
         for holder_key in ("holder_1", "holder_2"):
             holder = fields.get(holder_key)

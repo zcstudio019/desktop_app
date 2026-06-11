@@ -54,6 +54,11 @@ def _empty_profile(customer_id: str) -> dict[str, Any]:
             "account_number": "",
             "opening_bank": "",
             "account_type": "",
+            "approval_number": "",
+            "basic_account_number": "",
+            "legal_representative": "",
+            "issue_date": "",
+            "account_status": "",
             "source_document_id": "",
         },
         "marriage": {
@@ -506,6 +511,11 @@ async def build_customer_kyc_profile(storage: Any, customer_id: str) -> dict[str
                     "account_number": "bank_account_number",
                     "opening_bank": "opening_bank",
                     "account_type": "account_type",
+                    "approval_number": "approval_number",
+                    "basic_account_number": "basic_account_number",
+                    "legal_representative": "legal_representative",
+                    "issue_date": "issue_date",
+                    "account_status": "account_status",
                 },
                 source_document_id,
             )

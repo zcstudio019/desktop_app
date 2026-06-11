@@ -110,6 +110,32 @@ def classify_with_reason(text: str, filename: str = "", declared_doc_type: str |
     normalized = text or ""
     compact = re.sub(r"\s+", "", normalized)
 
+    account_negative_keywords = ("营业执照", "银行流水", "交易明细", "对账单")
+    if not any(keyword in compact for keyword in account_negative_keywords):
+        if "基本存款账户信息" in compact:
+            return {
+                "doc_type": "basic_account_info",
+                "doc_type_name": DOC_TYPE_NAMES["basic_account_info"],
+                "owner_type": OWNER_TYPES["basic_account_info"],
+                "reason": "文本命中基本存款账户信息",
+            }
+        if "开户许可证" in compact or "基本账户开户许可证" in compact:
+            return {
+                "doc_type": "account_permit",
+                "doc_type_name": DOC_TYPE_NAMES["account_permit"],
+                "owner_type": OWNER_TYPES["account_permit"],
+                "reason": "文本命中开户许可证",
+            }
+        account_keywords = ("开户银行", "账号", "账户号码", "基本存款账户编号", "核准号", "法定代表人", "单位负责人")
+        matched_account = [keyword for keyword in account_keywords if keyword in compact]
+        if "开户银行" in compact and ("账号" in compact or "账户号码" in compact) and "基本存款账户编号" in compact:
+            return {
+                "doc_type": "account_permit",
+                "doc_type_name": DOC_TYPE_NAMES["account_permit"],
+                "owner_type": OWNER_TYPES["account_permit"],
+                "reason": f"文本命中账户资料组合关键词：{', '.join(matched_account)}",
+            }
+
     vehicle_license_negative_keywords = (
         "机动车驾驶证",
         "准驾车型",
