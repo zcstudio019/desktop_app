@@ -87,6 +87,20 @@ PAGE_8_LINCHENMU = """常住人口登记卡
 登记日期 2022年12月13日
 """
 
+PAGE_8_MIXED_CHANGE_AND_LINCHENMU = """登记事项变更和更正记载
+变更项目 曾用名 变更后 林沐
+常住人口登记卡
+姓名 林晨沐关 户主或与户主关系 女 性别 女 民族 汉族
+曾用名 林沐
+出生地 浙江省乐清市 籍贯 浙江省乐清市
+出生日期 2002年11月01日
+公民身份号码 330382200211010027
+婚姻状况 未婚 血型 不明
+何时由何地迁来本市 2002.12.11 首次申报
+何时由何地迁来本址 从浙江省乐清市北白象镇小港村迁来
+登记日期 2022.12.13
+"""
+
 SAMPLE_PAGES = [
     PAGE_1_SHANGHAI_HOME,
     PAGE_2_LINYONG_SHANGHAI,
@@ -138,6 +152,17 @@ def test_issuing_authority_does_not_use_notice_text() -> None:
     assert len(authority) <= 35
 
 
+def test_issuing_authority_rejects_report_noise() -> None:
+    text = """居民户口簿
+户别 非农家庭户口 户主姓名 林勇
+户号 05001756 住址 上海市奉贤区泽丰路88弄2号1101室
+须立即报告户口登记机关
+2025年02月26日 签发
+"""
+    result = extract(text)
+    assert result["fields"]["household_info"].get("issuing_authority") in {"", None}
+
+
 def test_address_does_not_include_stamp_noise() -> None:
     text = """居民户口簿
 户别 非农家庭户口 户主姓名 林勇
@@ -173,6 +198,31 @@ def test_member_relationships_and_sample_name_corrections() -> None:
     assert by_name["林晨沐"]["relationship_to_head"] == "女"
 
 
+def test_member_name_backfilled_from_id_number_fallback() -> None:
+    text = """常住人口登记卡
+姓名 或与林勇关系 户主或与户主关系 户主 性别 男 民族 汉族
+出生日期 1979年03月16日
+公民身份号码 330323197903162430
+"""
+    result = extract(text)
+    member = result["fields"]["members"][0]
+    assert member["name"] == "林勇"
+    assert result["fields"]["household_info"]["household_head"] == "林勇"
+
+
+def test_mixed_change_record_page_still_extracts_l_chenmu() -> None:
+    result = extract(PAGE_8_MIXED_CHANGE_AND_LINCHENMU)
+    by_name = members_by_name(result)
+    assert "林晨沐" in by_name
+    member = by_name["林晨沐"]
+    assert member["former_name"] == "林沐"
+    assert member["relationship_to_head"] == "女"
+    assert member["id_number"] == "330382200211010027"
+    assert member["migration_to_city"] == "2002-12-11首次申报"
+    assert member["migration_to_address"] == "从浙江省乐清市北白象镇小港村迁来"
+    assert member["registration_date"] == "2022-12-13"
+
+
 def test_member_fields_do_not_shift() -> None:
     result = extract(pages=SAMPLE_PAGES)
     by_name = members_by_name(result)
@@ -185,6 +235,13 @@ def test_member_fields_do_not_shift() -> None:
     assert "迁来" not in lin_yong.get("occupation", "")
     assert lin_yong["height"] == "175cm"
     assert lin_yong["blood_type"] == "不明"
+    for member in result["fields"]["members"]:
+        assert "派出所" not in member.get("service_place", "")
+        assert "何时由何地" not in member.get("occupation", "")
+        assert "首次申报" not in member.get("occupation", "")
+        assert "身份号码" not in member.get("religion", "")
+        assert member.get("marital_status") != "三"
+        assert member.get("education_level") not in {"已婚", "未婚", "有配偶"}
 
 
 def test_multi_page_dedup_merges_source_pages() -> None:
@@ -237,6 +294,8 @@ def test_household_register_renderer_chinese_markdown_no_json() -> None:
     assert "### 当前户信息" in markdown
     assert "- 户号：05001756" in markdown
     assert "### 户信息记录" in markdown
+    assert markdown.count("- 户号：05001756") == 1
+    assert "- 户号：006038967" in markdown
     assert "#### 成员 1：林勇" in markdown
     assert "- 与户主关系：户主" in markdown
     assert "- 公民身份号码：330323197903162430" in markdown
@@ -244,5 +303,6 @@ def test_household_register_renderer_chinese_markdown_no_json() -> None:
     assert "```json" not in markdown
     assert "members:" not in markdown
     assert "household_info:" not in markdown
+    assert "须立即报告户口登记机关" not in markdown
     assert "{" not in markdown
     assert "}" not in markdown

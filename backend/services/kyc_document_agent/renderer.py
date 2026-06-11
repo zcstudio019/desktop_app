@@ -567,11 +567,26 @@ def render_markdown(result: dict[str, Any]) -> str:
         for key in HOUSEHOLD_INFO_FIELD_ORDER:
             lines.append(f"- {info_label(key)}：{value(household_info.get(key), key)}")
 
-        if household_records:
+        other_records = []
+        primary_signature = (
+            household_info.get("household_number"),
+            household_info.get("household_address"),
+            household_info.get("issue_date"),
+        )
+        for record in household_records:
+            if not isinstance(record, dict):
+                continue
+            signature = (
+                record.get("household_number"),
+                record.get("household_address"),
+                record.get("issue_date"),
+            )
+            if signature == primary_signature:
+                continue
+            other_records.append(record)
+        if other_records:
             lines.extend(["", "### 户信息记录"])
-            for index, record in enumerate(household_records, start=1):
-                if not isinstance(record, dict):
-                    continue
+            for index, record in enumerate(other_records, start=1):
                 lines.extend(["", f"#### 户信息 {index}"])
                 for key in HOUSEHOLD_INFO_FIELD_ORDER:
                     lines.append(f"- {info_label(key)}：{value(record.get(key), key)}")

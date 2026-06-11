@@ -308,7 +308,22 @@ def _validate_household_register_result(result: dict[str, Any], warnings: list[s
     missing: list[str] = []
 
     if not household_info.get("household_head"):
-        missing.append("household_head")
+        head_member = next(
+            (
+                member
+                for member in members
+                if isinstance(member, dict)
+                and member.get("relationship_to_head") == "户主"
+                and member.get("name")
+            ),
+            None,
+        )
+        if head_member:
+            household_info["household_head"] = head_member.get("name")
+            fields["household_info"] = household_info
+            result["fields"] = fields
+        else:
+            missing.append("household_head")
     if not household_info.get("household_address"):
         missing.append("household_address")
     if not household_info.get("household_number"):

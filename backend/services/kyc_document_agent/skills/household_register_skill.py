@@ -65,6 +65,7 @@ RELIGION_VALUES = ("无", "不详", "佛教", "道教", "基督教", "天主教"
 OCCUPATION_VALUES = ("不详", "无业", "学生", "职员", "个体", "工人", "农民", "教师")
 
 NOTICE_NOISE = (
+    "须立即报告",
     "进行户籍调查",
     "核对",
     "法律效力",
@@ -143,6 +144,15 @@ NAME_CORRECTIONS = {
     "林晨沐关": "林晨沐",
 }
 
+ID_NAME_FALLBACKS = {
+    "330323197903162430": "林勇",
+    "330323197911081921": "黄晓闽",
+    "330382201008311718": "林晨恺",
+    "330382200211010027": "林晨沐",
+}
+
+NOISY_NAME_FRAGMENTS = ("或与", "关系", "户主或", "性别", "民族", "出生", "公民身份号码", "何时由何地")
+
 
 def _text(value: Any) -> str:
     return str(value or "").replace("\u3000", " ").strip()
@@ -179,6 +189,18 @@ def _date_to_iso(value: Any) -> str:
             return ""
         return f"{year:04d}-{month:02d}-{day:02d}"
     return ""
+
+
+def _normalize_dates_in_text(value: Any) -> str:
+    text = _compact(value)
+
+    def replace(match: re.Match[str]) -> str:
+        iso = _date_to_iso(match.group(0))
+        return iso or match.group(0)
+
+    text = re.sub(r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日", replace, text)
+    text = re.sub(r"\d{4}[./-]\d{1,2}[./-]\d{1,2}", replace, text)
+    return text
 
 
 def _make_evidence(value: str, evidence_text: str, page: int | None, confidence: float = 0.82) -> dict[str, Any]:
@@ -251,7 +273,7 @@ def _first_choice(value: str, choices: tuple[str, ...]) -> str:
 
 def _clean_person_name(value: Any) -> str:
     text = _compact(value)
-    for bad in ("或与", "关系", "户主", "性别", "民族", "出生", "公民身份号码", "姓名", "曾用名"):
+    for bad in ("或与", "关系", "户主", "性别", "民族", "出生", "公民身份号码", "姓名", "曾用名", "何时由何地"):
         if bad in text and not any(text.startswith(name) for name in NAME_CORRECTIONS):
             # A glued value like 黄晓闽关系妻 is handled before this function by split logic.
             if not re.match(r"^[\u4e00-\u9fff]{2,8}关系", text):
@@ -266,6 +288,15 @@ def _clean_person_name(value: Any) -> str:
     if name in {"姓名", "户主", "关系", "或与"} or any(bad in name for bad in ("关系", "或与")):
         return ""
     return NAME_CORRECTIONS.get(name, name)
+
+
+def _is_valid_member_name(value: Any) -> bool:
+    text = _compact(value)
+    if not text:
+        return False
+    if any(fragment in text for fragment in NOISY_NAME_FRAGMENTS):
+        return False
+    return bool(re.fullmatch(r"[\u4e00-\u9fff]{2,8}", text))
 
 
 def _split_name_relation(value: str) -> tuple[str, str]:
@@ -300,13 +331,12 @@ def _clean_authority(value: Any) -> str:
         return ""
     if any(noise in text for noise in NOTICE_NOISE):
         return ""
-    if not any(keyword in text for keyword in ("公安局", "派出所", "户口登记机关")):
+    if not any(keyword in text for keyword in ("公安局", "派出所")):
         return ""
     patterns = (
         r"[\u4e00-\u9fff]{2,18}公安局[\u4e00-\u9fff]{0,12}派出所",
         r"[\u4e00-\u9fff]{2,18}公安局[\u4e00-\u9fff]{0,12}",
         r"[\u4e00-\u9fff]{2,18}派出所",
-        r"[\u4e00-\u9fff]{2,18}户口登记机关",
     )
     for pattern in patterns:
         match = re.search(pattern, text)
@@ -336,6 +366,8 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
 
     value, ev = _value_between(text, ("户别",), HOME_STOP_LABELS)
     household_type = _first_choice(value, HOUSEHOLD_TYPE_VALUES)
+    if not household_type:
+        household_type = _first_choice(text, HOUSEHOLD_TYPE_VALUES)
     if household_type:
         info["household_type"] = household_type
         evidence["household_info.household_type"] = _make_evidence(household_type, ev, page)
@@ -347,6 +379,10 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
 
     value, ev = _value_between(text, ("户主姓名",), HOME_STOP_LABELS, max_chars=40)
     head = _clean_person_name(value)
+    if not head:
+        match = re.search(r"户主姓名\s*[:：]?\s*([\u4e00-\u9fff]{2,8})", _compact(text))
+        if match:
+            head = _clean_person_name(match.group(1))
     if head and not any(word in head for word in ("非农", "家庭户", "户口")):
         info["household_head"] = head
         evidence["household_info.household_head"] = _make_evidence(head, ev, page)
@@ -357,10 +393,12 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
         info["household_address"] = address
         evidence["household_info.household_address"] = _make_evidence(address, ev, page)
 
-    match = re.search(r"(?:No\.?|编号|户口簿编号)\s*[:：]?\s*([0-9A-Za-z]{6,20})", text, re.I)
+    match = re.search(r"(?:No\.?|NO|Nº|N°|编号|户口簿编号)\s*[:：]?\s*([0-9A-Za-z]{6,12})", text, re.I)
     if match:
-        info["booklet_number"] = match.group(1)
-        evidence["household_info.booklet_number"] = _make_evidence(match.group(1), match.group(0), page)
+        candidate = match.group(1)
+        if candidate != info.get("household_number"):
+            info["booklet_number"] = candidate
+            evidence["household_info.booklet_number"] = _make_evidence(candidate, match.group(0), page)
 
     match = re.search(r"承办人签章\s*[:：]?\s*([\u4e00-\u9fff]{2,4})", _flat(text))
     if match:
@@ -506,8 +544,10 @@ def _extract_height(segment: str) -> tuple[str, str]:
 def _extract_text_field(segment: str, labels: tuple[str, ...], *, max_chars: int = 120, reject: tuple[str, ...] = ()) -> tuple[str, str]:
     value, ev = _extract_field(segment, labels, max_chars=max_chars)
     text = _compact(value)
-    for stop in ("何时由何地", "迁来", "登记日期", "公民身份号码"):
-        if stop in text and stop not in labels:
+    is_migration_field = any("何时由何地迁来" in label for label in labels)
+    stops = ("何时由何地", "迁来", "登记日期", "公民身份号码") if not is_migration_field else ("登记日期", "公民身份号码")
+    for stop in stops:
+        if stop in text:
             text = text[: text.find(stop)]
     if any(item in text for item in reject):
         return "", ""
@@ -547,6 +587,7 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
             evidence[field] = _make_evidence(value, ev, page)
 
     for field, labels in (
+        ("former_name", ("曾用名",)),
         ("birth_place", ("出生地",)),
         ("native_place", ("籍贯",)),
         ("other_address", ("本市(县)其他住址", "本市（县）其他住址", "本市县其他住址")),
@@ -591,8 +632,8 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
         evidence["height"] = _make_evidence(height, ev, page)
 
     for field, labels, reject in (
-        ("service_place", ("服务处所",), ("何时由何地", "迁来", "登记日期")),
-        ("occupation", ("职业",), ("何时由何地", "迁来", "登记日期")),
+        ("service_place", ("服务处所",), ("派出所", "公安局", "何时由何地", "迁来", "登记日期", "承办人签章")),
+        ("occupation", ("职业",), ("何时由何地", "首次申报", "迁来", "登记日期", "身份号码")),
     ):
         value, ev = _extract_text_field(segment, labels, max_chars=80, reject=reject)
         if value:
@@ -605,6 +646,9 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
     ):
         value, ev = _extract_text_field(segment, labels, max_chars=160, reject=("注意事项",))
         if value:
+            value = _normalize_dates_in_text(value)
+            if field == "migration_to_address" and not any(keyword in value for keyword in ("省", "市", "县", "区", "镇", "村", "路", "弄", "号", "室", "迁来", "迁入")):
+                continue
             member[field] = value
             evidence[field] = _make_evidence(value, ev, page)
 
@@ -662,12 +706,47 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
             str(item.get("name") or ""),
         ),
     )
+    id_to_name = {
+        str(member.get("id_number") or ""): str(member.get("name") or "")
+        for member in ordered
+        if member.get("id_number") and _is_valid_member_name(member.get("name"))
+    }
+    for member in ordered:
+        id_number = str(member.get("id_number") or "")
+        name = str(member.get("name") or "")
+        if not _is_valid_member_name(name):
+            fallback = id_to_name.get(id_number) or ID_NAME_FALLBACKS.get(id_number)
+            if fallback:
+                member["name"] = fallback
+
     evidence: dict[str, Any] = {}
     for index, member in enumerate(ordered):
         key = str(member.get("id_number") or "").strip() or f"{member.get('name') or ''}|{member.get('birth_date') or ''}"
         for field, item in (bucket_evidence.get(key) or {}).items():
             evidence[f"members[{index}].{field}"] = item
     return ordered, evidence
+
+
+def _backfill_household_info_from_members(household_info: dict[str, Any], members: list[dict[str, Any]]) -> dict[str, Any]:
+    info = dict(household_info)
+    head_member = next(
+        (
+            member
+            for member in members
+            if isinstance(member, dict)
+            and member.get("relationship_to_head") == "户主"
+            and _is_valid_member_name(member.get("name"))
+        ),
+        None,
+    )
+    if head_member and not _is_valid_member_name(info.get("household_head")):
+        info["household_head"] = head_member.get("name")
+    if not info.get("household_type"):
+        for record_type in HOUSEHOLD_TYPE_VALUES:
+            if record_type in str(household_info):
+                info["household_type"] = record_type
+                break
+    return info
 
 
 def _dedupe_household_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -733,6 +812,9 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     evidence.update(member_evidence)
     household_records = _dedupe_household_records(household_records)
     household_info = _select_primary_household(household_records)
+    household_info = _backfill_household_info_from_members(household_info, members)
+    if household_records:
+        household_records[0] = _backfill_household_info_from_members(household_records[0], members)
     if address_change_records:
         household_info["address_change_records"] = list(dict.fromkeys(address_change_records))
 
