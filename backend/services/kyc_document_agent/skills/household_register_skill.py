@@ -137,7 +137,6 @@ HOME_STOP_LABELS = (
 )
 
 NAME_CORRECTIONS = {
-    "黄晓回": "黄晓闽",
     "林晨烺": "林晨恺",
     "林晨恺关": "林晨恺",
     "林晨恺关系": "林晨恺",
@@ -146,7 +145,7 @@ NAME_CORRECTIONS = {
 
 ID_NAME_FALLBACKS = {
     "330323197903162430": "林勇",
-    "330323197911081921": "黄晓闽",
+    "330323197911081921": "黄晓回",
     "330382201008311718": "林晨恺",
     "330382200211010027": "林晨沐",
 }
@@ -200,6 +199,7 @@ def _normalize_dates_in_text(value: Any) -> str:
 
     text = re.sub(r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日", replace, text)
     text = re.sub(r"\d{4}[./-]\d{1,2}[./-]\d{1,2}", replace, text)
+    text = re.sub(r"(\d{4}-\d{2}-\d{2})(?=[\u4e00-\u9fff])", r"\1 ", text)
     return text
 
 
@@ -249,6 +249,15 @@ def _page_type(text: str) -> str:
     if home_score >= 3 or "承办人签章" in compact or re.search(r"No\.?\s*\d{6,}", text, re.I):
         return "household_home_page"
     return "unknown"
+
+
+def _has_member_card(text: str) -> bool:
+    compact = _compact(text)
+    return (
+        ("常住人口登记卡" in compact and ("姓名" in compact or "公民身份号码" in compact))
+        or ("姓名" in compact and "户主或与户主关系" in compact and "公民身份号码" in compact)
+        or (bool(re.search(r"\d{17}[\dXx]", compact)) and "出生日期" in compact and "性别" in compact and "民族" in compact)
+    )
 
 
 def _value_between(text: str, labels: tuple[str, ...], stops: tuple[str, ...], max_chars: int = 120) -> tuple[str, str]:
@@ -558,7 +567,7 @@ def _split_member_segments(text: str) -> list[str]:
     if "常住人口登记卡" in text:
         parts = re.split(r"常住人口登记卡", text)
         return [part for part in parts[1:] if _text(part)]
-    if _page_type(text) == "member_card":
+    if _has_member_card(text):
         return [text]
     return []
 
@@ -801,7 +810,7 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
         elif page_type == "address_change":
             address_change_records.extend(_extract_valid_address_change_records(page_text))
 
-        if page_type == "member_card":
+        if _has_member_card(page_text):
             for segment in _split_member_segments(page_text):
                 member, member_evidence = _extract_member(segment, page)
                 if _meaningful_member(member):

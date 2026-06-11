@@ -193,9 +193,28 @@ def test_member_relationships_and_sample_name_corrections() -> None:
     result = extract(pages=SAMPLE_PAGES)
     by_name = members_by_name(result)
     assert by_name["林勇"]["relationship_to_head"] == "户主"
-    assert by_name["黄晓闽"]["relationship_to_head"] == "妻"
+    assert by_name["黄晓回"]["relationship_to_head"] == "妻"
+    assert "黄晓闽" not in by_name
     assert by_name["林晨恺"]["relationship_to_head"] == "子"
     assert by_name["林晨沐"]["relationship_to_head"] == "女"
+
+
+def test_member_name_preserves_huang_xiaohui_visible_value() -> None:
+    text = """常住人口登记卡
+姓名 黄晓回 户主或与户主关系 妻 性别 女 民族 汉族
+出生地 浙江省乐清市 籍贯 浙江省乐清市
+出生日期 1979年11月08日
+公民身份号码 330323197911081921
+文化程度 高中 婚姻状况 已婚
+身高 163cm 血型 不明 服务处所 不详 职业 不详
+登记日期 2022年12月13日
+"""
+    result = extract(text)
+    member = result["fields"]["members"][0]
+    assert member["name"] == "黄晓回"
+    assert member["relationship_to_head"] == "妻"
+    assert member["id_number"] == "330323197911081921"
+    assert "黄晓闽" not in render_markdown(result)
 
 
 def test_member_name_backfilled_from_id_number_fallback() -> None:
@@ -218,7 +237,7 @@ def test_mixed_change_record_page_still_extracts_l_chenmu() -> None:
     assert member["former_name"] == "林沐"
     assert member["relationship_to_head"] == "女"
     assert member["id_number"] == "330382200211010027"
-    assert member["migration_to_city"] == "2002-12-11首次申报"
+    assert member["migration_to_city"] == "2002-12-11 首次申报"
     assert member["migration_to_address"] == "从浙江省乐清市北白象镇小港村迁来"
     assert member["registration_date"] == "2022-12-13"
 
@@ -284,7 +303,7 @@ def test_full_sample_members_are_four_people() -> None:
     result = extract(pages=SAMPLE_PAGES)
     names = [member.get("name") for member in result["fields"]["members"]]
     assert len(names) == 4
-    assert names == ["林勇", "黄晓闽", "林晨恺", "林晨沐"]
+    assert names == ["林勇", "黄晓回", "林晨恺", "林晨沐"]
 
 
 def test_household_register_renderer_chinese_markdown_no_json() -> None:
@@ -297,6 +316,8 @@ def test_household_register_renderer_chinese_markdown_no_json() -> None:
     assert markdown.count("- 户号：05001756") == 1
     assert "- 户号：006038967" in markdown
     assert "#### 成员 1：林勇" in markdown
+    assert "#### 成员 2：黄晓回" in markdown
+    assert "#### 成员 4：林晨沐" in markdown
     assert "- 与户主关系：户主" in markdown
     assert "- 公民身份号码：330323197903162430" in markdown
     assert "未识别到户主成员" not in markdown
@@ -304,5 +325,6 @@ def test_household_register_renderer_chinese_markdown_no_json() -> None:
     assert "members:" not in markdown
     assert "household_info:" not in markdown
     assert "须立即报告户口登记机关" not in markdown
+    assert "黄晓闽" not in markdown
     assert "{" not in markdown
     assert "}" not in markdown

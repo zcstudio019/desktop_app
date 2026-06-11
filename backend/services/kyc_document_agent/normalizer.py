@@ -149,11 +149,12 @@ def normalize_household_member(member: dict[str, Any]) -> dict[str, Any]:
         "religion",
         "service_place",
         "occupation",
-        "migration_to_city",
-        "migration_to_address",
     ):
         if normalized.get(field):
             normalized[field] = normalize_household_text(normalized.get(field))
+    for field in ("migration_to_city", "migration_to_address"):
+        if normalized.get(field):
+            normalized[field] = re.sub(r"\s+", " ", str(normalized.get(field) or "")).strip(" :：,，;；")
     return normalized
 
 
