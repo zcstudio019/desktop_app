@@ -54,6 +54,8 @@ FIELD_STOPS = (
     "Ower",
     "Owener",
     "Addrss",
+    "Adress",
+    "Addr",
     "Addresss",
 )
 
@@ -70,6 +72,7 @@ ALL_LABELS = (
     "住址",
     "Address",
     "Addrss",
+    "Adress",
     "Addresss",
     "使用性质",
     "Use Character",
@@ -95,6 +98,11 @@ ALL_LABELS = (
 
 VEHICLE_TYPES = ("小型轿车", "小型普通客车", "小型汽车", "轻型货车", "大型汽车", "普通二轮摩托车")
 USE_CHARACTERS = ("非营运", "出租客运", "营运", "货运", "租赁", "教练")
+PLATE_PROVINCES = "京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼使领"
+LABEL_NOISE_PATTERN = re.compile(
+    r"VEHICLE|TYPE|OWNER|ADDRESS|ADDRSS|ADRESS|USECHARACTER|ENGINE|REGISTER|ISSUE|PLATE|NO",
+    re.IGNORECASE,
+)
 
 
 def normalize_ocr_text(text: str) -> tuple[str, str, list[str]]:
@@ -108,8 +116,9 @@ def normalize_ocr_text(text: str) -> tuple[str, str, list[str]]:
         (r"Issue\s*Date", "Issue Date"),
         (r"\bVin\b", "VIN"),
         (r"\bVIN\b", "VIN"),
-        (r"\bOwer\b|\bOwener\b", "Owner"),
-        (r"\bAddrss\b|\bAddresss\b", "Address"),
+        (r"Ower|Owener", "Owner"),
+        (r"Addrss|Adress|Addresss|\bAddr\b", "Address"),
+        (r"Issve\s*Date|lssue\s*Date", "Issue Date"),
         (r"号\s*牌\s*号\s*码", "号牌号码"),
         (r"车\s*辆\s*类\s*型", "车辆类型"),
         (r"所\s*有\s*人", "所有人"),
@@ -146,6 +155,24 @@ def clean_vehicle_field_value(value: str) -> str:
         text = re.sub(re.escape(label), " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip(" :：,，;；")
     return text
+
+
+def contains_label_noise(value: str) -> bool:
+    return bool(LABEL_NOISE_PATTERN.search(str(value or "")))
+
+
+def clean_address_value(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(
+        r"(Address|Addrss|Adress|Addresss|Addr|USECHARACTER|UseCharacter|Model|VIN|EngineNo|Engine\s*No\.?|RegisterDate|Register\s*Date|IssueDate|Issue\s*Date)+$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(Address|Addrss|Adress|Addresss|Addr)", "", text, flags=re.IGNORECASE)
+    text = clean_vehicle_field_value(text)
+    text = re.sub(r"(Address|Addrss|Adress|Addresss|Addr)+$", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", "", text).strip(" :：,，;；")
 
 
 def _date_to_iso(value: Any) -> str:
@@ -209,11 +236,22 @@ def _extract_label_value(
 
 def _extract_plate_number(line_text: str, compact_text: str) -> tuple[str, str]:
     value, evidence = _extract_label_value(line_text, compact_text, ("号牌号码", "Plate No.", "Plate No"), max_chars=32)
-    candidate = _clean_code(value)
-    match = re.search(r"[\u4e00-\u9fa5][A-Z][A-Z0-9挂学警港澳]{5,6}", candidate)
-    if not match:
-        match = re.search(r"[\u4e00-\u9fa5][A-Z][A-Z0-9挂学警港澳]{5,6}", compact_text.upper())
-    return (_clean_code(match.group(0)), evidence or match.group(0)) if match else ("", "")
+    plate_number = extract_plate_number(value)
+    if plate_number:
+        return plate_number, evidence or plate_number
+    plate_number = extract_plate_number(compact_text)
+    return (plate_number, plate_number) if plate_number else ("", "")
+
+
+def extract_plate_number(value: str) -> str:
+    cleaned = clean_vehicle_field_value(value)
+    cleaned = re.sub(r"\s+", "", cleaned).upper()
+    cleaned = re.sub(r"(?:PLATENO|PLATE|NO|VEHICLETYPE|VEHICLE|TYPE|OWNER|ADDRESS|ADDRSS|ADRESS)", "", cleaned)
+    for candidate in re.findall(rf"[{PLATE_PROVINCES}][A-Z][A-Z0-9]{{5,6}}", cleaned):
+        if contains_label_noise(candidate):
+            continue
+        return candidate
+    return ""
 
 
 def _extract_date(line_text: str, compact_text: str, labels: tuple[str, ...]) -> tuple[str, str]:
@@ -259,7 +297,7 @@ def _extract_dates_from_text(text: str) -> list[str]:
     for pattern in patterns:
         for match in re.finditer(pattern, text):
             value = _date_to_iso(match.group(0))
-            if value and value not in values:
+            if value:
                 values.append(value)
     return values
 
@@ -310,10 +348,11 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     address, address_evidence = _extract_label_value(
         line_text,
         compact_text,
-        ("住址", "Address", "Addrss", "Addresss"),
-        ("使用性质", "Use Character", "品牌型号", "Model", "车辆识别代号", "VIN", "发动机号码", "Engine No.", "Engine No", "注册日期", "Register Date", "发证日期", "Issue Date"),
+        ("住址", "Address", "Addrss", "Adress", "Addresss", "Addr"),
+        ("使用性质", "Use Character", "USECHARACTER", "品牌型号", "Model", "车辆识别代号", "VIN", "发动机号码", "Engine No.", "Engine No", "注册日期", "Register Date", "发证日期", "Issue Date", "Address", "Addrss", "Adress", "Addresss", "Addr"),
         max_chars=160,
     )
+    address = clean_address_value(address)
     use_raw, use_evidence = _extract_label_value(
         line_text,
         compact_text,
@@ -341,6 +380,11 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     if not issue_date and len(all_dates) >= 2:
         issue_date = all_dates[1]
         issue_evidence = all_dates[1]
+    issue_date_fallback_warning = ""
+    if not issue_date and registration_date and len(all_dates) == 1:
+        issue_date = registration_date
+        issue_evidence = registration_evidence or registration_date
+        issue_date_fallback_warning = "发证日期未独立识别，已按注册日期兜底，请人工核对"
     approved_passengers, passengers_evidence = _extract_label_value(line_text, compact_text, ("核定载人数",), max_chars=20)
     total_mass, total_mass_evidence = _extract_label_value(line_text, compact_text, ("总质量",), max_chars=24)
     curb_weight, curb_weight_evidence = _extract_label_value(line_text, compact_text, ("整备质量",), max_chars=24)
@@ -366,6 +410,8 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     )
     result = build_result("vehicle_license", fields, evidence)
     result["doc_type_name"] = "行驶证"
+    if issue_date_fallback_warning:
+        result["validation"]["warnings"].append(issue_date_fallback_warning)
     result["confidence"]["fields"] = confidences
     result["confidence"]["overall"] = round(sum(confidences.values()) / len(confidences), 4) if confidences else 0.0
     result["raw_text_preview"] = raw_preview(line_text)

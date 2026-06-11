@@ -151,6 +151,54 @@ def test_vehicle_license_extracts_between_chinese_english_labels() -> None:
         assert item not in values
 
 
+def test_vehicle_license_cleans_remaining_plate_address_and_issue_date_failures() -> None:
+    result = extract("""中华人民共和国机动车行驶证
+号牌号码 Plate No. 沪ABC2061 车辆类型 Vehicle Type 小型轿车
+所有人 Owner 上海煜禧贸易有限公司
+住址 上海市宝山区陆翔路111弄3号楼1104-01Addrss
+使用性质 Use Character 非营运
+品牌型号 Model 蔚来牌HFC7002CSEV1-W
+车辆识别代号 VIN LJ1EFAUU2NG108654
+发动机号码 Engine No. AM2FV11376
+注册日期 Register Date 2022年11月28日 发证日期 Issue Date 2022年11月28日
+""")
+    fields = result["fields"]
+
+    assert fields["plate_number"] == "沪ABC2061"
+    assert fields["vehicle_type"] == "小型轿车"
+    assert fields["owner"] == "上海煜禧贸易有限公司"
+    assert fields["address"] == "上海市宝山区陆翔路111弄3号楼1104-01"
+    assert fields["use_character"] == "非营运"
+    assert fields["brand_model"] == "蔚来牌HFC7002CSEV1-W"
+    assert fields["vin"] == "LJ1EFAUU2NG108654"
+    assert fields["engine_number"] == "AM2FV11376"
+    assert fields["registration_date"] == "2022-11-28"
+    assert fields["issue_date"] == "2022-11-28"
+    assert fields["plate_number"] != "沪VEHICLE"
+    assert "Addrss" not in fields["address"]
+    assert "Address" not in fields["address"]
+    assert fields["issue_date"] not in {"", "未识别"}
+
+    markdown = result["markdown"]
+    assert "号牌号码：沪ABC2061" in markdown
+    assert "住址：上海市宝山区陆翔路111弄3号楼1104-01" in markdown
+    assert "发证日期：2022-11-28" in markdown
+    assert "沪VEHICLE" not in markdown
+    assert "Addrss" not in markdown
+    assert "Address" not in markdown
+    assert "发证日期：未识别" not in markdown
+
+
+def test_vehicle_license_rejects_plate_candidate_containing_vehicle_label() -> None:
+    result = extract("""中华人民共和国机动车行驶证
+号牌号码 Plate No. 沪VEHICLE 车辆类型 Vehicle Type 小型轿车
+所有人 Owner 上海煜禧贸易有限公司
+""")
+
+    assert result["fields"].get("plate_number") in (None, "")
+    assert "plate_number" in result["missing_fields"]
+
+
 def test_classifier_recognizes_vehicle_license() -> None:
     assert classify(SAMPLE_TEXT) == "vehicle_license"
 
