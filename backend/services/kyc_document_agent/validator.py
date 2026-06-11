@@ -301,6 +301,59 @@ def _validate_account_result(result: dict[str, Any], warnings: list[str], errors
         result["extraction_status"] = "failed"
 
 
+def _validate_household_register_result(result: dict[str, Any], warnings: list[str], errors: list[str]) -> None:
+    fields = result.get("fields") or {}
+    household_info = fields.get("household_info") if isinstance(fields.get("household_info"), dict) else {}
+    members = fields.get("members") if isinstance(fields.get("members"), list) else []
+    missing: list[str] = []
+
+    if not household_info.get("household_head"):
+        missing.append("household_head")
+    if not household_info.get("household_address"):
+        missing.append("household_address")
+    if not household_info.get("household_number"):
+        warnings.append("户号未识别，请人工核对")
+
+    has_head_member = False
+    member_core_fields = ("name", "relationship_to_head", "gender", "ethnicity", "birth_date", "id_number")
+    for index, member in enumerate(members, start=1):
+        if not isinstance(member, dict):
+            continue
+        name = str(member.get("name") or f"成员{index}")
+        relation = str(member.get("relationship_to_head") or "")
+        if relation == "户主":
+            has_head_member = True
+        id_number = str(member.get("id_number") or "").strip().upper()
+        birth_date = str(member.get("birth_date") or "").strip()
+        if id_number:
+            if not validate_id_number(id_number):
+                warnings.append(f"成员【{name}】公民身份号码格式或校验位异常，请人工核对")
+            if re.fullmatch(r"\d{17}[\dX]", id_number):
+                id_birth = f"{id_number[6:10]}-{id_number[10:12]}-{id_number[12:14]}"
+                if birth_date and _is_valid_date(id_birth) and birth_date != id_birth:
+                    warnings.append(f"成员【{name}】身份证号码中的出生日期与户口本出生日期不一致")
+        for field in member_core_fields:
+            if not member.get(field):
+                missing.append(f"members[{index}].{field}")
+    if members and not has_head_member:
+        warnings.append("未识别到户主成员")
+    if not members:
+        missing.append("members")
+        warnings.append("未识别到常住人口登记卡成员信息")
+
+    result["missing_fields"] = list(dict.fromkeys(missing))
+
+    household_core_count = sum(1 for field in ("household_head", "household_address", "household_type") if household_info.get(field))
+    member_core_count = sum(1 for member in members if isinstance(member, dict) and (member.get("name") or member.get("id_number")))
+    if household_core_count >= 2 and member_core_count >= 1 and not result["missing_fields"]:
+        result["extraction_status"] = "success"
+    elif household_core_count >= 1 or member_core_count >= 1:
+        result["extraction_status"] = "partial"
+    else:
+        result["extraction_status"] = "failed"
+        warnings.append("未从 OCR 文本中识别到户口本核心字段，请检查 PDF 清晰度或 OCR 原文")
+
+
 def validate_result(result: dict[str, Any]) -> dict[str, Any]:
     fields = result.get("fields") or {}
     doc_type = result.get("doc_type") or "unknown"
@@ -315,6 +368,8 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         _validate_vehicle_license_result(result, warnings, errors)
     elif doc_type in {"account_permit", "basic_account_info"}:
         _validate_account_result(result, warnings, errors)
+    elif doc_type == "household_register":
+        _validate_household_register_result(result, warnings, errors)
     elif doc_type in {"marriage_certificate", "marriage_cert"}:
         result["doc_type"] = "marriage_certificate"
         _validate_marriage_certificate_result(result, warnings, errors)
@@ -350,7 +405,7 @@ def validate_result(result: dict[str, Any]) -> dict[str, Any]:
         "warnings": list(dict.fromkeys(warnings)),
         "errors": list(dict.fromkeys(errors)),
     }
-    if result.get("doc_type") not in {"id_card", "business_license", "vehicle_license", "account_permit", "basic_account_info", "marriage_certificate"}:
+    if result.get("doc_type") not in {"id_card", "business_license", "vehicle_license", "account_permit", "basic_account_info", "marriage_certificate", "household_register"}:
         if errors:
             result["extraction_status"] = "partial" if fields else "failed"
         elif result.get("missing_fields"):

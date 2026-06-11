@@ -80,6 +80,104 @@ def normalize_text_field(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip(" :：,，;；")
 
 
+def normalize_household_ethnicity(value: Any) -> str:
+    text = normalize_text_field(value).replace("民族", "")
+    if not text:
+        return ""
+    match = re.search(r"[\u4e00-\u9fff]{1,6}族?", text)
+    if not match:
+        return text
+    item = match.group(0)
+    return item if item.endswith("族") else f"{item}族"
+
+
+def normalize_household_gender(value: Any) -> str:
+    text = normalize_text_field(value)
+    if "男" in text:
+        return "男"
+    if "女" in text:
+        return "女"
+    return ""
+
+
+def normalize_household_marital_status(value: Any) -> str:
+    text = normalize_text_field(value)
+    if "未婚" in text:
+        return "未婚"
+    if "有配偶" in text or "已婚" in text:
+        return "已婚"
+    return text
+
+
+def normalize_household_height(value: Any) -> str:
+    text = normalize_text_field(value)
+    match = re.search(r"\d{2,3}", text)
+    if not match:
+        return text
+    return f"{match.group(0)}cm"
+
+
+def normalize_household_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip(" :：,，;；")
+
+
+def normalize_household_member(member: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(member)
+    if normalized.get("id_number"):
+        normalized["id_number"] = normalize_id_number(normalized.get("id_number"))
+    for field in ("birth_date", "registration_date"):
+        if normalized.get(field):
+            normalized[field] = normalize_date(normalized.get(field))
+    if normalized.get("gender"):
+        normalized["gender"] = normalize_household_gender(normalized.get("gender"))
+    if normalized.get("ethnicity"):
+        normalized["ethnicity"] = normalize_household_ethnicity(normalized.get("ethnicity"))
+    if normalized.get("marital_status"):
+        normalized["marital_status"] = normalize_household_marital_status(normalized.get("marital_status"))
+    if normalized.get("height"):
+        normalized["height"] = normalize_household_height(normalized.get("height"))
+    for field in (
+        "name",
+        "former_name",
+        "relationship_to_head",
+        "birth_place",
+        "native_place",
+        "other_address",
+        "education_level",
+        "military_status",
+        "blood_type",
+        "religion",
+        "service_place",
+        "occupation",
+        "migration_to_city",
+        "migration_to_address",
+    ):
+        if normalized.get(field):
+            normalized[field] = normalize_household_text(normalized.get(field))
+    return normalized
+
+
+def normalize_household_info(info: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(info)
+    if normalized.get("issue_date"):
+        normalized["issue_date"] = normalize_date(normalized.get("issue_date"))
+    for field in (
+        "household_type",
+        "household_number",
+        "household_head",
+        "household_address",
+        "booklet_number",
+        "issuing_authority",
+        "undertaker",
+    ):
+        if normalized.get(field):
+            normalized[field] = normalize_household_text(normalized.get(field))
+    records = normalized.get("address_change_records")
+    if isinstance(records, list):
+        normalized["address_change_records"] = [normalize_household_text(item) for item in records if normalize_household_text(item)]
+    return normalized
+
+
 def normalize_marriage_authority(value: Any) -> str:
     text = normalize_text_field(value)
     if not text:
@@ -96,6 +194,23 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
         result["doc_type"] = "marriage_certificate"
         result["doc_type_name"] = "结婚证"
     fields = result.get("fields") or {}
+    if result.get("doc_type") == "household_register":
+        household_info = fields.get("household_info") if isinstance(fields.get("household_info"), dict) else {}
+        fields["household_info"] = normalize_household_info(household_info)
+        records = fields.get("household_records") if isinstance(fields.get("household_records"), list) else []
+        fields["household_records"] = [
+            normalize_household_info(record)
+            for record in records
+            if isinstance(record, dict)
+        ]
+        members = fields.get("members") if isinstance(fields.get("members"), list) else []
+        fields["members"] = [
+            normalize_household_member(member)
+            for member in members
+            if isinstance(member, dict)
+        ]
+        result["fields"] = fields
+        return result
     if result.get("doc_type") == "business_license":
         for field in (
             "unified_social_credit_code",

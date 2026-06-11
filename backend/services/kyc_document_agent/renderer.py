@@ -122,6 +122,76 @@ ACCOUNT_FIELD_LABELS = {
     "account_status": "账户状态",
 }
 
+HOUSEHOLD_INFO_FIELD_LABELS = {
+    "household_type": "户别",
+    "household_number": "户号",
+    "household_head": "户主姓名",
+    "household_address": "住址",
+    "booklet_number": "户口簿编号",
+    "issuing_authority": "签发机关",
+    "issue_date": "签发日期",
+    "undertaker": "承办人签章",
+    "address_change_records": "住址变动记录",
+}
+
+HOUSEHOLD_MEMBER_FIELD_LABELS = {
+    "name": "姓名",
+    "former_name": "曾用名",
+    "relationship_to_head": "与户主关系",
+    "gender": "性别",
+    "ethnicity": "民族",
+    "birth_place": "出生地",
+    "native_place": "籍贯",
+    "birth_date": "出生日期",
+    "other_address": "本市县其他住址",
+    "id_number": "公民身份号码",
+    "education_level": "文化程度",
+    "marital_status": "婚姻状况",
+    "military_status": "兵役状况",
+    "height": "身高",
+    "blood_type": "血型",
+    "religion": "宗教信仰",
+    "service_place": "服务处所",
+    "occupation": "职业",
+    "migration_to_city": "何时由何地迁来本市（县）",
+    "migration_to_address": "何时由何地迁来本址",
+    "registration_date": "登记日期",
+    "page_index": "来源页码",
+}
+
+HOUSEHOLD_INFO_FIELD_ORDER = [
+    "household_type",
+    "household_number",
+    "household_head",
+    "household_address",
+    "issuing_authority",
+    "issue_date",
+    "booklet_number",
+    "undertaker",
+]
+
+HOUSEHOLD_MEMBER_FIELD_ORDER = [
+    "name",
+    "relationship_to_head",
+    "gender",
+    "ethnicity",
+    "birth_place",
+    "native_place",
+    "birth_date",
+    "id_number",
+    "education_level",
+    "marital_status",
+    "military_status",
+    "height",
+    "blood_type",
+    "religion",
+    "service_place",
+    "occupation",
+    "migration_to_city",
+    "migration_to_address",
+    "registration_date",
+]
+
 ENGLISH_TO_CHINESE_FIELDS = {
     "owner": "权利人",
     "co_owners": "共有人",
@@ -285,7 +355,10 @@ FIELD_LABELS = {
 
 
 def field_label(field: str) -> str:
-    return FIELD_LABELS.get(field, ENGLISH_TO_CHINESE_FIELDS.get(field, field))
+    if field.startswith("members["):
+        item = field.split(".", 1)[-1]
+        return f"家庭成员-{HOUSEHOLD_MEMBER_FIELD_LABELS.get(item, item)}"
+    return HOUSEHOLD_INFO_FIELD_LABELS.get(field, HOUSEHOLD_MEMBER_FIELD_LABELS.get(field, FIELD_LABELS.get(field, ENGLISH_TO_CHINESE_FIELDS.get(field, field))))
 
 
 def _is_empty_or_invalid(value: Any) -> bool:
@@ -465,6 +538,64 @@ def get_display_fields(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_markdown(result: dict[str, Any]) -> str:
+    if result.get("doc_type") == "household_register":
+        fields = result.get("fields") or {}
+        household_info = fields.get("household_info") if isinstance(fields.get("household_info"), dict) else {}
+        members = fields.get("members") if isinstance(fields.get("members"), list) else []
+        status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))
+
+        def value(item: Any) -> str:
+            return _format_value(item) if item not in (None, "", [], {}) else "未识别"
+
+        def info_label(key: str) -> str:
+            return HOUSEHOLD_INFO_FIELD_LABELS.get(key, field_label(key))
+
+        def member_label(key: str) -> str:
+            return HOUSEHOLD_MEMBER_FIELD_LABELS.get(key, field_label(key))
+
+        lines = [
+            "## 户口本",
+            "",
+            "- 资料类型：户口本",
+            f"- 提取状态：{status}",
+            "",
+            "### 户信息",
+        ]
+        for key in HOUSEHOLD_INFO_FIELD_ORDER:
+            lines.append(f"- {info_label(key)}：{value(household_info.get(key))}")
+
+        lines.extend(["", "### 家庭成员"])
+        if members:
+            for index, member in enumerate(members, start=1):
+                if not isinstance(member, dict):
+                    continue
+                name = str(member.get("name") or "").strip()
+                lines.extend(["", f"#### 成员 {index}：{name or '未识别'}"])
+                for key in HOUSEHOLD_MEMBER_FIELD_ORDER:
+                    item = member.get(key)
+                    if item in (None, "", [], {}) and key not in {"name", "relationship_to_head", "gender", "ethnicity", "birth_date", "id_number"}:
+                        continue
+                    lines.append(f"- {member_label(key)}：{value(item)}")
+        else:
+            lines.append("- 未识别")
+
+        address_records = household_info.get("address_change_records")
+        if isinstance(address_records, list) and address_records:
+            lines.extend(["", "### 住址变动记录"])
+            lines.extend(f"- {value(item)}" for item in address_records)
+
+        missing = result.get("missing_fields") or []
+        if missing:
+            lines.extend(["", "### 缺失字段"])
+            lines.extend(f"- {field_label(str(item))}" for item in missing)
+
+        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+        reminders = list(validation.get("warnings") or []) + list(validation.get("errors") or [])
+        if reminders:
+            lines.extend(["", "### 校验提醒"])
+            lines.extend(f"- {item}" for item in reminders)
+        return "\n".join(lines)
+
     if result.get("doc_type") in {"account_permit", "basic_account_info"}:
         fields = result.get("fields") or {}
         status = STATUS_LABELS.get(str(result.get("extraction_status") or ""), str(result.get("extraction_status") or ""))

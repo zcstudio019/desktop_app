@@ -224,7 +224,18 @@ def classify_with_reason(text: str, filename: str = "", declared_doc_type: str |
                 "reason": f"文本命中营业执照关键词：{', '.join(matched)}",
             }
 
-    if "居民户口簿" in compact or "户口簿" in compact or "常住人口登记卡" in compact:
+    household_strong_keywords = (
+        "居民户口簿",
+        "常住人口登记卡",
+        "户主或与户主关系",
+        "住址变动登记",
+        "登记事项变更和更正记载",
+        "何时由何地迁来本市（县）",
+        "何时由何地迁来本市(县)",
+        "何时由何地迁来本址",
+    )
+    household_header_match = "户别" in compact and "户号" in compact and "户主姓名" in compact
+    if any(keyword in compact for keyword in household_strong_keywords) or household_header_match:
         return {
             "doc_type": "household_register",
             "doc_type_name": DOC_TYPE_NAMES["household_register"],

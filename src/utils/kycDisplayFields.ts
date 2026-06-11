@@ -97,6 +97,31 @@ const FIELD_LABELS: Record<string, string> = {
   total_mass: '总质量',
   curb_weight: '整备质量',
   inspection_valid_until: '检验有效期至',
+  household_info: '户信息',
+  household_records: '户信息记录',
+  members: '家庭成员',
+  household_type: '户别',
+  household_number: '户号',
+  household_head: '户主姓名',
+  household_address: '住址',
+  booklet_number: '户口簿编号',
+  undertaker: '承办人签章',
+  address_change_records: '住址变动记录',
+  former_name: '曾用名',
+  relationship_to_head: '与户主关系',
+  birth_place: '出生地',
+  native_place: '籍贯',
+  other_address: '本市县其他住址',
+  education_level: '文化程度',
+  military_status: '兵役状况',
+  height: '身高',
+  blood_type: '血型',
+  religion: '宗教信仰',
+  service_place: '服务处所',
+  occupation: '职业',
+  migration_to_city: '何时由何地迁来本市（县）',
+  migration_to_address: '何时由何地迁来本址',
+  page_index: '来源页码',
   holder_name: '持证人',
   spouse_name: '配偶姓名',
   holder_id_number: '持证人身份证号码',
@@ -216,6 +241,32 @@ export const ACCOUNT_FIELD_ORDER = [
   'issue_date',
 ];
 
+export const HOUSEHOLD_INFO_FIELD_ORDER = [
+  'household_type',
+  'household_number',
+  'household_head',
+  'household_address',
+  'issuing_authority',
+  'issue_date',
+  'booklet_number',
+  'undertaker',
+];
+
+export const HOUSEHOLD_MEMBER_FIELD_ORDER = [
+  'name',
+  'relationship_to_head',
+  'gender',
+  'ethnicity',
+  'birth_place',
+  'native_place',
+  'birth_date',
+  'id_number',
+  'education_level',
+  'marital_status',
+  'service_place',
+  'occupation',
+];
+
 const ACCOUNT_FIELD_LABELS: Record<string, string> = {
   company_name: '单位名称',
   bank_account_name: '账户名称',
@@ -227,6 +278,43 @@ const ACCOUNT_FIELD_LABELS: Record<string, string> = {
   legal_representative: '法定代表人/单位负责人',
   issue_date: '发证日期',
   account_status: '账户状态',
+};
+
+const HOUSEHOLD_INFO_FIELD_LABELS: Record<string, string> = {
+  household_type: '户别',
+  household_number: '户号',
+  household_head: '户主姓名',
+  household_address: '住址',
+  booklet_number: '户口簿编号',
+  issuing_authority: '签发机关',
+  issue_date: '签发日期',
+  undertaker: '承办人签章',
+  address_change_records: '住址变动记录',
+};
+
+const HOUSEHOLD_MEMBER_FIELD_LABELS: Record<string, string> = {
+  name: '姓名',
+  former_name: '曾用名',
+  relationship_to_head: '与户主关系',
+  gender: '性别',
+  ethnicity: '民族',
+  birth_place: '出生地',
+  native_place: '籍贯',
+  birth_date: '出生日期',
+  other_address: '本市县其他住址',
+  id_number: '公民身份号码',
+  education_level: '文化程度',
+  marital_status: '婚姻状况',
+  military_status: '兵役状况',
+  height: '身高',
+  blood_type: '血型',
+  religion: '宗教信仰',
+  service_place: '服务处所',
+  occupation: '职业',
+  migration_to_city: '何时由何地迁来本市（县）',
+  migration_to_address: '何时由何地迁来本址',
+  registration_date: '登记日期',
+  page_index: '来源页码',
 };
 
 const VEHICLE_LICENSE_FIELD_LABELS: Record<string, string> = {
@@ -244,6 +332,31 @@ const VEHICLE_LICENSE_FIELD_LABELS: Record<string, string> = {
   total_mass: '总质量',
   curb_weight: '整备质量',
   inspection_valid_until: '检验有效期止',
+  household_info: '户信息',
+  household_records: '户信息记录',
+  members: '家庭成员',
+  household_type: '户别',
+  household_number: '户号',
+  household_head: '户主姓名',
+  household_address: '住址',
+  booklet_number: '户口簿编号',
+  undertaker: '承办人签章',
+  address_change_records: '住址变动记录',
+  former_name: '曾用名',
+  relationship_to_head: '与户主关系',
+  birth_place: '出生地',
+  native_place: '籍贯',
+  other_address: '本市县其他住址',
+  education_level: '文化程度',
+  military_status: '兵役状况',
+  height: '身高',
+  blood_type: '血型',
+  religion: '宗教信仰',
+  service_place: '服务处所',
+  occupation: '职业',
+  migration_to_city: '何时由何地迁来本市（县）',
+  migration_to_address: '何时由何地迁来本址',
+  page_index: '来源页码',
 };
 
 const ENGLISH_TO_CHINESE_FIELDS: Record<string, string> = {
@@ -626,6 +739,7 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
   const isVehicleLicense = docType === 'vehicle_license';
   const isAccountDoc = docType === 'account_permit' || docType === 'basic_account_info';
   const isMarriageCert = docType === 'marriage_certificate' || docType === 'marriage_cert';
+  const isHouseholdRegister = docType === 'household_register';
   if (isMarriageCert) {
     const holder1 = parseMaybeRecord(fields.holder_1);
     const holder2 = parseMaybeRecord(fields.holder_2);
@@ -705,6 +819,31 @@ export function getKycDisplayFields(fields: Record<string, unknown> | undefined 
       const text = formatKycDisplayValue(value);
       if (!text) return;
       display.set(label, text);
+    });
+    return Object.fromEntries(display.entries());
+  }
+  if (isHouseholdRegister) {
+    const householdInfo = parseMaybeRecord(fields.household_info);
+    HOUSEHOLD_INFO_FIELD_ORDER.forEach((key) => {
+      const value = householdInfo[key] ?? fields[key];
+      if (isInvalidDisplayValue(value)) return;
+      const text = formatKycDisplayValue(value);
+      if (!text) return;
+      display.set(HOUSEHOLD_INFO_FIELD_LABELS[key] ?? key, text);
+    });
+    const members = Array.isArray(fields.members) ? fields.members.filter(isRecord) : [];
+    members.forEach((member, index) => {
+      const name = formatKycDisplayValue(member.name) || `成员${index + 1}`;
+      const parts = HOUSEHOLD_MEMBER_FIELD_ORDER
+        .filter((key) => key !== 'name')
+        .map((key) => {
+          const value = member[key];
+          if (isInvalidDisplayValue(value)) return '';
+          const text = formatKycDisplayValue(value);
+          return text ? `${HOUSEHOLD_MEMBER_FIELD_LABELS[key] ?? key}：${text}` : '';
+        })
+        .filter(Boolean);
+      display.set(`成员 ${index + 1}：${name}`, parts.join('；'));
     });
     return Object.fromEntries(display.entries());
   }
