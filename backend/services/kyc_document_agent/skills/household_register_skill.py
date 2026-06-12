@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from typing import Any
 
 from backend.services.kyc_document_agent.evidence import raw_preview
 from backend.services.kyc_document_agent.schema import build_result, normalize_input
+
+
+logger = logging.getLogger(__name__)
+ID_NUMBER_PATTERN = re.compile(r"\d{17}[\dXx]")
 
 
 HOUSEHOLD_INFO_FIELDS = (
@@ -215,6 +220,10 @@ def _date_to_iso(value: Any) -> str:
     return ""
 
 
+def _id_numbers(text: str) -> list[str]:
+    return list(dict.fromkeys(match.group(0).upper() for match in ID_NUMBER_PATTERN.finditer(text or "")))
+
+
 def _normalize_dates_in_text(value: Any) -> str:
     text = _compact(value)
 
@@ -294,7 +303,7 @@ def _has_address_change_area(text: str) -> bool:
 
 def _has_member_card(text: str) -> bool:
     compact = _compact(text)
-    has_id_number = bool(re.search(r"\d{17}[\dXx]", compact))
+    has_id_number = bool(ID_NUMBER_PATTERN.search(compact))
     return (
         ("常住人口登记卡" in compact and ("姓名" in compact or "公民身份号码" in compact))
         or ("姓名" in compact and "户主或与户主关系" in compact and "公民身份号码" in compact)
@@ -596,9 +605,9 @@ def _extract_date_field(segment: str, labels: tuple[str, ...]) -> tuple[str, str
 
 def _extract_id_number(segment: str) -> tuple[str, str]:
     value, ev = _extract_field(segment, ("公民身份号码", "身份证件编号", "身份证号码", "居民身份证号码"), max_chars=80)
-    match = re.search(r"\d{17}[\dXx]", value)
+    match = ID_NUMBER_PATTERN.search(value)
     if not match:
-        match = re.search(r"\d{17}[\dXx]", segment)
+        match = ID_NUMBER_PATTERN.search(segment)
         ev = match.group(0) if match else ""
     if match:
         return match.group(0).upper(), ev
@@ -671,6 +680,36 @@ def _split_member_segments(text: str) -> list[str]:
     if _has_member_card(text):
         return [text]
     return []
+
+
+def _member_block_around_id(text: str, id_number: str) -> str:
+    positions = [match.start() for match in re.finditer(re.escape(id_number), text or "", re.I)]
+    if not positions:
+        return ""
+    marker = "常住人口登记卡"
+    best: tuple[int, int] | None = None
+    for pos in positions:
+        start = text.rfind(marker, 0, pos + 1)
+        score = start if start >= 0 else -1
+        if best is None or score > best[0]:
+            best = (score, pos)
+    marker_start, pos = best or (-1, positions[0])
+    if marker_start >= 0:
+        next_member = text.find(marker, marker_start + len(marker))
+        end = next_member if next_member >= 0 else len(text)
+        return text[marker_start:end]
+
+    lines = re.split(r"[\r\n]+", text or "")
+    current = 0
+    id_line_index = 0
+    for index, line in enumerate(lines):
+        current += len(line) + 1
+        if current >= pos:
+            id_line_index = index
+            break
+    start_line = max(0, id_line_index - 8)
+    end_line = min(len(lines), id_line_index + 10)
+    return "\n".join(lines[start_line:end_line])
 
 
 def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -808,9 +847,13 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
         if not key.strip("|"):
             continue
         if key not in buckets:
+            if member.get("id_number"):
+                logger.info("[HUKOU_MEMBER_MERGE] id_number=%s action=keep_new", member.get("id_number"))
             buckets[key] = dict(member)
             bucket_evidence[key] = dict(member_evidence)
             continue
+        if member.get("id_number"):
+            logger.info("[HUKOU_MEMBER_MERGE] id_number=%s action=merge_existing", member.get("id_number"))
         if _member_score(member) > _member_score(buckets[key]):
             buckets[key], member = dict(member), buckets[key]
             bucket_evidence[key], member_evidence = dict(member_evidence), bucket_evidence[key]
@@ -845,6 +888,21 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
         for field, item in (bucket_evidence.get(key) or {}).items():
             evidence[f"members[{index}].{field}"] = item
     return ordered, evidence
+
+
+def _extract_member_candidates_from_ids(page_text: str, page: int | None) -> list[tuple[dict[str, Any], dict[str, Any], str]]:
+    candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    for id_number in _id_numbers(page_text):
+        block = _member_block_around_id(page_text, id_number)
+        if not block:
+            continue
+        member, member_evidence = _extract_member(block, page)
+        if not member.get("id_number"):
+            member["id_number"] = id_number
+            member["birth_date"] = f"{id_number[6:10]}-{id_number[10:12]}-{id_number[12:14]}"
+            member_evidence["id_number"] = _make_evidence(id_number, id_number, page, 0.75)
+        candidates.append((member, member_evidence, "valid_id_number"))
+    return candidates
 
 
 def _backfill_household_info_from_members(household_info: dict[str, Any], members: list[dict[str, Any]]) -> dict[str, Any]:
@@ -917,6 +975,18 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     evidence: dict[str, Any] = {}
 
     for page, page_text in page_texts:
+        page_ids = _id_numbers(page_text)
+        logger.info(
+            "[HUKOU_DEBUG] page=%s text_len=%s has_member_card=%s has_change_record=%s id_numbers=%s",
+            page,
+            len(page_text or ""),
+            _has_member_card(page_text),
+            "登记事项变更和更正记载" in _compact(page_text),
+            page_ids,
+        )
+        if page_ids:
+            logger.info("[HUKOU_DEBUG] page=%s id_numbers=%s", page, page_ids)
+
         if _has_home_page(page_text):
             info, info_evidence = _extract_household_info_from_page(page_text, page)
             if any(value for key, value in info.items() if key != "address_change_records"):
@@ -929,11 +999,67 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
             for segment in _split_member_segments(page_text):
                 member, member_evidence = _extract_member(segment, page)
                 if _meaningful_member(member):
+                    logger.info(
+                        "[HUKOU_MEMBER_CANDIDATE] page=%s name=%s id_number=%s relation=%s keep=true reason=member_card",
+                        page,
+                        member.get("name") or "",
+                        member.get("id_number") or "",
+                        member.get("relationship_to_head") or "",
+                    )
                     members.append(member)
                     member_evidences.append(member_evidence)
+                else:
+                    logger.info(
+                        "[HUKOU_MEMBER_DROPPED] page=%s id_number=%s reason=not_meaningful_member_card",
+                        page,
+                        member.get("id_number") or "",
+                    )
+        for member, member_evidence, reason in _extract_member_candidates_from_ids(page_text, page):
+            if _meaningful_member(member):
+                logger.info(
+                    "[HUKOU_MEMBER_CANDIDATE] page=%s name=%s id_number=%s relation=%s keep=true reason=%s",
+                    page,
+                    member.get("name") or "",
+                    member.get("id_number") or "",
+                    member.get("relationship_to_head") or "",
+                    reason,
+                )
+                members.append(member)
+                member_evidences.append(member_evidence)
+            else:
+                logger.info(
+                    "[HUKOU_MEMBER_DROPPED] page=%s id_number=%s reason=not_meaningful_%s",
+                    page,
+                    member.get("id_number") or "",
+                    reason,
+                )
 
     members, member_evidence = _dedupe_members(members, member_evidences)
+    seen_member_ids = {str(member.get("id_number") or "") for member in members if isinstance(member, dict) and member.get("id_number")}
+    all_ocr_ids = list(dict.fromkeys(id_number for _, page_text in page_texts for id_number in _id_numbers(page_text)))
+    missing_ocr_ids = [id_number for id_number in all_ocr_ids if id_number not in seen_member_ids]
+    if missing_ocr_ids:
+        for missing_id in missing_ocr_ids:
+            for page, page_text in page_texts:
+                if missing_id not in _id_numbers(page_text):
+                    continue
+                logger.info("[HUKOU_MEMBER_BACKFILL] id_number=%s reason=id_seen_in_ocr_but_missing_from_members", missing_id)
+                block = _member_block_around_id(page_text, missing_id)
+                member, member_evidence_item = _extract_member(block, page)
+                member["id_number"] = missing_id
+                if not member.get("birth_date"):
+                    member["birth_date"] = f"{missing_id[6:10]}-{missing_id[10:12]}-{missing_id[12:14]}"
+                members.append(member)
+                member_index = len(members) - 1
+                for field, item in member_evidence_item.items():
+                    member_evidence[f"members[{member_index}].{field}"] = item
+                break
     evidence.update(member_evidence)
+    logger.info(
+        "[HUKOU_MEMBERS_FINAL] count=%s ids=%s",
+        len(members),
+        [member.get("id_number") for member in members if isinstance(member, dict) and member.get("id_number")],
+    )
     household_records = _dedupe_household_records(household_records)
     household_info = _select_primary_household(household_records)
     household_info = _backfill_household_info_from_members(household_info, members)

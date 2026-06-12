@@ -611,6 +611,22 @@ def test_change_record_with_id_before_member_card_does_not_skip_wang_weizhen() -
     assert member["occupation"] == "统计人员"
 
 
+def test_each_id_number_seen_in_ocr_generates_a_member_candidate() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {
+            "text": """常住人口登记卡
+公民身份号码 310108195709033275
+常住人口登记卡
+公民身份号码 310108195005231222
+"""
+        }
+    )
+    ids = {member.get("id_number") for member in result["fields"]["members"]}
+    assert {"310108195709033275", "310108195005231222"} <= ids
+
+
 def test_members_with_different_id_numbers_are_not_merged_by_noisy_marital_name() -> None:
     result = extract(
         text="""常住人口登记卡
