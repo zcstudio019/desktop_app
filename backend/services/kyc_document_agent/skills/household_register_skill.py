@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 from backend.services.kyc_document_agent.evidence import raw_preview
 from backend.services.kyc_document_agent.schema import build_result, normalize_input
@@ -186,6 +186,7 @@ HOME_STOP_LABELS = (
 )
 
 NOISY_NAME_FRAGMENTS = ("或与", "关系", "户主或", "性别", "民族", "出生", "公民身份号码", "何时由何地")
+NAME_FORBIDDEN_VALUES = set(RELATION_VALUES) | {"男", "女", "男性", "女性", "汉", "汉族", "姓名", "曾用名"}
 
 
 def _text(value: Any) -> str:
@@ -453,7 +454,7 @@ def _first_choice(value: str, choices: tuple[str, ...]) -> str:
 
 def _clean_person_name(value: Any) -> str:
     text = _compact(value)
-    for bad in ("或与", "性别", "民族", "出生", "公民身份号码", "姓名", "曾用名", "何时由何地"):
+    for bad in ("或与", "性别", "民族", "出生", "籍贯", "公民身份号码", "文化程度", "婚姻状况", "兵役状况", "服务处所", "职业", "姓名", "曾用名", "何时由何地", "登记日期", "常住人口", "登记卡", "登记事项"):
         if bad in text:
             return ""
     text = re.sub(r"^(?:户主或与户主关系|户主关系|与户主关系)", "", text)
@@ -464,6 +465,8 @@ def _clean_person_name(value: Any) -> str:
     name = match.group(0)
     if name in {"姓名", "户主", "关系", "或与"} or any(bad in name for bad in ("关系", "或与")):
         return ""
+    if name in NAME_FORBIDDEN_VALUES:
+        return ""
     return name
 
 
@@ -472,6 +475,8 @@ def _is_valid_member_name(value: Any) -> bool:
     if not text:
         return False
     if any(fragment in text for fragment in NOISY_NAME_FRAGMENTS):
+        return False
+    if text in NAME_FORBIDDEN_VALUES:
         return False
     return bool(re.fullmatch(r"[\u4e00-\u9fff]{2,8}", text))
 
@@ -588,9 +593,11 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
         info["household_address"] = address
         evidence["household_info.household_address"] = _make_evidence(address, ev, page)
 
-    match = re.search(r"(?:No\.?|NO|Nº|N°|户口簿编号|(?<!身份)编号)\s*[:：]?\s*([0-9A-Za-z]{6,12})", text, re.I)
+    match = re.search(r"(?:No\.?|NO|Nº|N°|户口簿编号|(?<!身份)编号|N)\s*[:：]?\s*([0-9A-Za-z]{6,12})", text, re.I)
     if match:
         candidate = match.group(1)
+        if candidate.upper().startswith("N") and len(candidate) > 1:
+            candidate = candidate[1:]
         if candidate != info.get("household_number") and not re.fullmatch(r"\d{17}[\dXx]", candidate):
             info["booklet_number"] = candidate
             evidence["household_info.booklet_number"] = _make_evidence(candidate, match.group(0), page)
@@ -608,6 +615,23 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
             evidence_text = line
             if issue_date:
                 break
+    if not issue_date:
+        flat_text = _flat(text)
+        match = re.search(r"((?:19|20)\d{2})\s*年\s*月\s*日\s*签发\s*(\d{4})", flat_text)
+        if not match:
+            match = re.search(r"((?:19|20)\d{2}).{0,20}?签发.{0,20}?(\d{4})", flat_text)
+        if match:
+            month_day = match.group(2)
+            try:
+                issue_date = f"{int(match.group(1)):04d}-{int(month_day[:2]):02d}-{int(month_day[2:]):02d}"
+                evidence_text = match.group(0)
+            except ValueError:
+                issue_date = ""
+    if not issue_date:
+        match = re.search(r"((?:19|20)\d{6})", text)
+        if match:
+            issue_date = _date_to_iso(match.group(1))
+            evidence_text = match.group(0)
     if issue_date:
         info["issue_date"] = issue_date
         evidence["household_info.issue_date"] = _make_evidence(issue_date, evidence_text, page)
@@ -640,6 +664,83 @@ def _extract_field(segment: str, labels: tuple[str, ...], max_chars: int = 120) 
     return _value_between(segment, labels, MEMBER_STOP_LABELS, max_chars=max_chars)
 
 
+def _is_label_line(line: str) -> bool:
+    compact = _compact(line)
+    if not compact:
+        return True
+    if compact in {"户主或与", "户主关系"}:
+        return True
+    return any(compact == _compact(label) for label in MEMBER_STOP_LABELS)
+
+
+def extract_value_after_label(
+    lines: list[str],
+    label: str,
+    stop_labels: tuple[str, ...],
+    *,
+    max_lookahead: int = 5,
+    validator: Callable[[Any], bool] | None = None,
+) -> tuple[str, str, list[str]]:
+    candidates: list[str] = []
+    compact_label = _compact(label)
+    compact_stops = {_compact(item) for item in stop_labels}
+    for index, line in enumerate(lines):
+        compact_line = _compact(line)
+        if compact_label not in compact_line:
+            continue
+        inline_value = compact_line.split(compact_label, 1)[1]
+        inline_value = inline_value.strip(" :：,，;；")
+        if inline_value:
+            candidate = _clean_person_name(inline_value) if validator is _is_valid_member_name else inline_value
+            if candidate:
+                candidates.append(candidate)
+                if validator is None or validator(candidate):
+                    return candidate, line, candidates
+        for offset in range(1, max_lookahead + 1):
+            if index + offset >= len(lines):
+                break
+            next_line = _compact(lines[index + offset])
+            if not next_line:
+                continue
+            if next_line in compact_stops and next_line != compact_label:
+                break
+            if _is_label_line(next_line):
+                continue
+            candidate = _clean_person_name(next_line) if validator is _is_valid_member_name else next_line
+            if candidate:
+                candidates.append(candidate)
+                if validator is None or validator(candidate):
+                    return candidate, lines[index + offset], candidates
+    return "", "", candidates
+
+
+def _name_candidates_from_block(segment: str) -> list[str]:
+    lines = _lines(segment)
+    candidates: list[str] = []
+    value, _ = _extract_field(segment, ("姓名", "姓 名"), max_chars=60)
+    for raw in (value,):
+        split_name, _ = _split_name_relation(raw)
+        name = split_name or _clean_person_name(raw)
+        if name:
+            candidates.append(name)
+    name, _, line_candidates = extract_value_after_label(lines, "姓名", MEMBER_STOP_LABELS, max_lookahead=5, validator=_is_valid_member_name)
+    candidates.extend(line_candidates)
+    if name:
+        candidates.append(name)
+    id_line_index = None
+    for index, line in enumerate(lines):
+        if ID_NUMBER_PATTERN.search(line):
+            id_line_index = index
+            break
+    search_lines = lines if id_line_index is None else lines[max(0, id_line_index - 8): id_line_index]
+    for line in search_lines:
+        for match in re.finditer(r"[\u4e00-\u9fff]{2,8}", line):
+            name = _clean_person_name(match.group(0))
+            if name:
+                candidates.append(name)
+    return list(dict.fromkeys(candidates))
+
+
 def _extract_name(segment: str) -> tuple[str, str, str]:
     value, ev = _extract_field(segment, ("姓名", "姓 名"), max_chars=60)
     relation_from_name = ""
@@ -657,6 +758,13 @@ def _extract_name(segment: str) -> tuple[str, str, str]:
             name = _clean_person_name(match.group(1))
             if name:
                 return name, "", line
+    lines = _lines(segment)
+    name, ev, candidates = extract_value_after_label(lines, "姓名", MEMBER_STOP_LABELS, max_lookahead=5, validator=_is_valid_member_name)
+    if name:
+        return name, "", ev
+    candidates = _name_candidates_from_block(segment)
+    if candidates:
+        return candidates[0], "", candidates[0]
     return "", "", ""
 
 
@@ -892,7 +1000,18 @@ def _member_block_around_id(text: str, id_number: str, page_index: int | None = 
             if index >= 0
         ]
         end = min(next_boundaries) if next_boundaries else len(text)
-        return text[marker_start:end]
+        block = text[marker_start:end]
+        if "姓名" not in block:
+            block = text[max(0, pos - 1600): min(len(text), pos + 1600)]
+        logger.info(
+            "[HUKOU_BLOCK_BY_ID] id_number=%s page=%s block_start=%s block_end=%s block_preview=%s",
+            id_number,
+            page_index,
+            marker_start,
+            end,
+            raw_preview(block),
+        )
+        return block
 
     lines = re.split(r"[\r\n]+", text or "")
     current = 0
@@ -977,6 +1096,9 @@ def parse_member_from_block(block_text: str, page_index: int | None = None) -> t
     member: dict[str, Any] = {"page_index": page, "source_pages": [page] if page is not None else []}
     evidence: dict[str, Any] = {}
     segment = block_text
+    initial_id, _ = _extract_id_number(segment)
+    if initial_id:
+        logger.info("[HUKOU_MEMBER_BLOCK] page=%s id_number=%s block_preview=%s", page, initial_id, raw_preview(segment))
 
     name, relation_hint, ev = _extract_name(segment)
     if name:
@@ -1024,6 +1146,17 @@ def parse_member_from_block(block_text: str, page_index: int | None = None) -> t
         evidence["id_number"] = _make_evidence(id_number, ev, page, 0.86)
         if not member.get("birth_date"):
             member["birth_date"] = _id_birth_date(id_number)
+        candidates = _name_candidates_from_block(segment)
+        logger.info("[HUKOU_NAME_CANDIDATES] page=%s id_number=%s candidates=%s", page, id_number, candidates)
+        if member.get("name"):
+            logger.info("[HUKOU_NAME_SELECTED] page=%s id_number=%s name=%s source=member_block", page, id_number, member.get("name"))
+        else:
+            logger.info(
+                "[HUKOU_NAME_EMPTY] page=%s id_number=%s reason=no_valid_name_candidate block_preview=%s",
+                page,
+                id_number,
+                raw_preview(segment),
+            )
 
     education, ev = _extract_education_level(segment)
     if education:

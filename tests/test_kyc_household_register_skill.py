@@ -1231,6 +1231,127 @@ def test_hukou_markdown_lists_all_member_fields_with_unrecognized_placeholder() 
     assert "- 登记日期：未识别" in markdown
 
 
+def test_split_line_name_label_is_extracted() -> None:
+    result = extract(
+        text="""常住人口登记卡
+户主或与
+姓名
+张三
+户主关系
+女
+性别
+女
+民族
+汉
+公民身份号码
+310113197708313929
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["name"] == "张三"
+    assert member["relationship_to_head"] == "女"
+    assert member["gender"] == "女"
+    assert member["ethnicity"] == "汉族"
+
+
+def test_misaligned_name_label_order_is_extracted() -> None:
+    result = extract(
+        text="""常住人口登记卡
+户主或与
+姓名
+李四
+户主关系
+女婿
+性别
+男
+民族
+汉
+公民身份号码
+310113197612283411
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["name"] == "李四"
+    assert member["relationship_to_head"] == "女婿"
+    assert member["gender"] == "男"
+
+
+def test_missing_name_member_is_backfilled_from_id_number_block() -> None:
+    result = extract(
+        pages=[
+            """常住人口登记卡
+户主或与
+姓名
+张三
+户主关系
+女
+性别 女
+民族 汉
+公民身份号码
+310113197708313929
+"""
+        ]
+    )
+    member = result["fields"]["members"][0]
+    assert member["id_number"] == "310113197708313929"
+    assert member["name"] == "张三"
+
+
+def test_relation_value_is_not_used_as_member_name() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名
+女
+户主关系
+女
+性别
+女
+民族
+汉
+公民身份号码
+310113197708313929
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member.get("name") in {"", None}
+    assert member["relationship_to_head"] == "女"
+
+
+def test_home_issue_date_can_be_combined_from_split_ocr_lines() -> None:
+    result = extract(
+        text="""居民户口簿
+户别 非农业家庭 户号 010046 户主姓名 吴志明
+住址 上海市宝山区某路1号
+N093774077
+承办人签章 张三
+2017
+年月
+日签发
+0425
+"""
+    )
+    info = result["fields"]["household_info"]
+    assert info["issue_date"] == "2017-04-25"
+    assert info["booklet_number"] == "093774077"
+
+
+def test_member_without_name_has_validation_warning() -> None:
+    from backend.services.kyc_document_agent.validator import validate_result
+
+    result = validate_result(
+        {
+            "doc_type": "household_register",
+            "fields": {
+                "household_info": {"household_type": "家庭户", "household_address": "上海市宝山区某路1号"},
+                "members": [{"id_number": "310113197708313929", "relationship_to_head": "女", "gender": "女", "birth_date": "1977-08-31"}],
+            },
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    warnings = result["validation"]["warnings"]
+    assert any("310113197708313929" in item and "未识别到姓名" in item for item in warnings)
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡

@@ -359,6 +359,8 @@ def _validate_household_register_result(result: dict[str, Any], warnings: list[s
         for field in member_core_fields:
             if not member.get(field):
                 missing.append(f"{name}-{member_field_labels.get(field, field)}")
+        if id_number and not member.get("name"):
+            warnings.append(f"成员身份证号 {id_number} 所在成员卡未识别到姓名，请人工核对原件")
     if members and not has_head_member:
         warnings.append("未识别到户主成员")
     if not members:
