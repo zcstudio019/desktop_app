@@ -989,16 +989,27 @@ def _extract_migration_pair(segment: str) -> tuple[dict[str, str], dict[str, str
         marker_index = flat.find(marker)
         first_chunk = flat[marker_index + len(marker): city_label.start()]
         first_chunk = first_chunk.strip(" :：,，;；")
+        second_end = address_label if address_label > city_label.end() else len(flat)
+        second_chunk = flat[city_label.end():second_end].strip(" :：,，;；")
+        if not first_chunk and second_chunk:
+            if "何时由何地迁来本址" in flat and address_label > city_label.end():
+                city_value = second_chunk
+                city_ev = second_chunk
+                city_source = "migration_parser"
+                second_chunk = ""
+            else:
+                city_value = second_chunk
+                city_ev = second_chunk
+                city_source = "migration_parser"
+                second_chunk = ""
         if first_chunk and not city_value:
             city_value = first_chunk
             city_ev = first_chunk
-            city_source = "split_label"
-        second_end = address_label if address_label > city_label.end() else len(flat)
-        second_chunk = flat[city_label.end():second_end].strip(" :：,，;；")
+            city_source = "migration_parser"
         if second_chunk and not address_value:
             address_value = second_chunk
             address_ev = second_chunk
-            address_source = "split_label"
+            address_source = "migration_parser"
     elif marker in flat and not city_value:
         marker_index = flat.find(marker)
         tail = flat[marker_index + len(marker):]
@@ -1018,6 +1029,8 @@ def _extract_migration_pair(segment: str) -> tuple[dict[str, str], dict[str, str
     ):
         if raw:
             cleaned = clean_hukou_field_value(field, _normalize_dates_in_text(raw))
+            if re.fullmatch(r"(?:19|20)\d{2}", cleaned or ""):
+                continue
             if cleaned:
                 values[field] = cleaned
                 evidences[field] = ev

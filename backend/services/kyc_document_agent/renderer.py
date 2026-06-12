@@ -585,6 +585,13 @@ def render_markdown(result: dict[str, Any]) -> str:
                     same_count += 1
             return same_count >= 3
 
+        core_member_keys = {"name", "relationship_to_head", "gender", "ethnicity", "birth_place", "native_place", "birth_date", "id_number"}
+
+        def empty_member_extension(item: Any) -> bool:
+            if item in (None, "", [], {}):
+                return True
+            return _format_value(item).strip() in {"", "未识别", "无数据", "N/A", "None", "null"}
+
         lines = [
             "## 户口本",
             "",
@@ -634,7 +641,7 @@ def render_markdown(result: dict[str, Any]) -> str:
                 lines.extend(["", f"#### 成员 {index}：{name or '未识别'}"])
                 for key in HOUSEHOLD_MEMBER_FIELD_ORDER:
                     item = member.get(key)
-                    if key == "marital_note" and item in (None, "", [], {}):
+                    if key not in core_member_keys and empty_member_extension(item):
                         continue
                     lines.append(f"- {member_label(key)}：{value(item, key)}")
         else:

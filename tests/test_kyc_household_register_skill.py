@@ -1184,7 +1184,7 @@ def test_hukou_markdown_does_not_show_migration_or_service_stamp_noise() -> None
     assert "文化程度：职校" in markdown
 
 
-def test_hukou_markdown_lists_all_member_fields_with_unrecognized_placeholder() -> None:
+def test_hukou_markdown_lists_core_member_fields_with_unrecognized_placeholder() -> None:
     markdown = render_markdown(
         {
             "doc_type": "household_register",
@@ -1217,18 +1217,12 @@ def test_hukou_markdown_lists_all_member_fields_with_unrecognized_placeholder() 
         "籍贯",
         "出生日期",
         "公民身份号码",
-        "文化程度",
-        "兵役状况",
-        "身高",
-        "宗教信仰",
-        "服务处所",
-        "职业",
-        "何时由何地迁来本址",
-        "登记日期",
     ):
         assert f"- {label}：" in markdown
-    assert "- 文化程度：未识别" in markdown
-    assert "- 登记日期：未识别" in markdown
+    assert "- 出生地：未识别" in markdown
+    assert "- 籍贯：未识别" in markdown
+    assert "- 文化程度：未识别" not in markdown
+    assert "- 登记日期：未识别" not in markdown
 
 
 def test_split_line_name_label_is_extracted() -> None:
@@ -1455,6 +1449,127 @@ def test_service_place_and_occupation_boundaries_do_not_consume_migration() -> N
     assert "上海机械刀片" in member.get("service_place", "")
     assert member.get("occupation") in {"", None}
     assert member["migration_to_city"] == "1979-10-07 报出生"
+
+
+def test_wu_zhiming_migration_city_uses_value_after_split_city_label() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 吴志明
+户主关系 户主
+性别 男
+民族 汉
+公民身份号码 310223194706161612
+何时由何地
+迁来本市（县）
+1975年03月31日顾村镇陈家行村清水婚入
+何时由何地迁来本址
+2017
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["migration_to_city"] == "1975-03-31 顾村镇陈家行村清水婚入"
+    assert member.get("migration_to_address") in {"", None}
+
+
+def test_member_extended_empty_fields_are_hidden_in_markdown() -> None:
+    markdown = render_markdown(
+        {
+            "doc_type": "household_register",
+            "doc_type_name": "户口本",
+            "extraction_status": "partial",
+            "fields": {
+                "household_info": {},
+                "household_records": [],
+                "members": [
+                    {
+                        "name": "吴晓红",
+                        "relationship_to_head": "女",
+                        "gender": "女",
+                        "ethnicity": "汉族",
+                        "birth_place": "上海市宝山区",
+                        "native_place": "上海市宝山区",
+                        "birth_date": "1977-08-31",
+                        "id_number": "310113197708313929",
+                        "blood_type": "未识别",
+                        "military_status": "未识别",
+                        "religion": "未识别",
+                        "registration_date": "未识别",
+                    }
+                ],
+            },
+            "missing_fields": [],
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    assert "- 姓名：吴晓红" in markdown
+    assert "- 出生地：上海市宝山区" in markdown
+    assert "- 血型：未识别" not in markdown
+    assert "- 兵役状况：未识别" not in markdown
+    assert "- 宗教信仰：未识别" not in markdown
+    assert "- 登记日期：未识别" not in markdown
+
+
+def test_member_extended_present_fields_are_shown_in_markdown() -> None:
+    markdown = render_markdown(
+        {
+            "doc_type": "household_register",
+            "doc_type_name": "户口本",
+            "extraction_status": "partial",
+            "fields": {
+                "household_info": {},
+                "household_records": [],
+                "members": [
+                    {
+                        "name": "王敏利",
+                        "relationship_to_head": "女婿",
+                        "gender": "男",
+                        "ethnicity": "汉族",
+                        "birth_date": "1976-12-28",
+                        "id_number": "310113197612283411",
+                        "blood_type": "A型",
+                        "military_status": "退出现役",
+                        "religion": "无",
+                    }
+                ],
+            },
+            "missing_fields": [],
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    assert "- 血型：A型" in markdown
+    assert "- 兵役状况：退出现役" in markdown
+    assert "- 宗教信仰：无" in markdown
+
+
+def test_missing_fields_ignore_non_critical_household_member_fields() -> None:
+    from backend.services.kyc_document_agent.validator import validate_result
+
+    result = validate_result(
+        {
+            "doc_type": "household_register",
+            "fields": {
+                "household_info": {
+                    "household_type": "家庭户",
+                    "household_number": "010046",
+                    "household_head": "吴志明",
+                    "household_address": "上海市宝山区某路1号",
+                },
+                "members": [
+                    {
+                        "name": "吴晓红",
+                        "relationship_to_head": "女",
+                        "gender": "女",
+                        "birth_date": "1977-08-31",
+                        "id_number": "310113197708313929",
+                    }
+                ],
+            },
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    missing = " ".join(result.get("missing_fields") or [])
+    for label in ("婚姻状况", "兵役状况", "血型", "宗教信仰", "服务处所", "职业", "迁来", "登记日期", "身高", "文化程度"):
+        assert label not in missing
 
 
 def test_long_education_level_is_preserved() -> None:
