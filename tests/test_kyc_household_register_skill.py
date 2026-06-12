@@ -950,6 +950,113 @@ def test_merge_skips_different_id_numbers() -> None:
     assert merged["name"] == ""
 
 
+def test_low_quality_household_record_from_member_area_is_filtered() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import (
+        _dedupe_household_records,
+        is_valid_household_record,
+    )
+
+    record = {
+        "household_type": "非农业家庭户口",
+        "household_number": "",
+        "household_head": "",
+        "household_address": "",
+        "issuing_authority": "以宁路派出所",
+        "issue_date": "",
+        "booklet_number": "310108192701",
+        "undertaker": "",
+        "_source_area": "member_card_area",
+    }
+
+    assert not is_valid_household_record(record, "member_card_area", {"31010819270115321X"})
+    assert _dedupe_household_records([record], {"31010819270115321X"}) == []
+
+
+def test_id_prefix_is_not_used_as_booklet_number() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import _dedupe_household_records
+
+    record = {
+        "household_type": "非农业家庭",
+        "household_number": "010046",
+        "household_head": "孙惠章",
+        "household_address": "上海市闸北区共和新路1700弄2号601室",
+        "issue_date": "1999-12-03",
+        "booklet_number": "310108192701",
+        "_source_area": "household_home_area",
+    }
+
+    records = _dedupe_household_records([record], {"31010819270115321X"})
+    assert records[0].get("booklet_number") == ""
+
+
+def test_renderer_hides_empty_household_records_section() -> None:
+    markdown = render_markdown(
+        {
+            "doc_type": "household_register",
+            "doc_type_name": "户口本",
+            "extraction_status": "partial",
+            "fields": {
+                "household_info": {
+                    "household_type": "非农业家庭",
+                    "household_number": "010046",
+                    "household_head": "孙惠章",
+                    "household_address": "上海市闸北区共和新路1700弄2号601室",
+                },
+                "household_records": [],
+                "members": [],
+            },
+            "missing_fields": [],
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    assert "### 户信息记录" not in markdown
+
+
+def test_renderer_filters_duplicate_and_low_quality_household_records() -> None:
+    markdown = render_markdown(
+        {
+            "doc_type": "household_register",
+            "doc_type_name": "户口本",
+            "extraction_status": "partial",
+            "fields": {
+                "household_info": {
+                    "household_type": "非农业家庭",
+                    "household_number": "010046",
+                    "household_head": "孙惠章",
+                    "household_address": "上海市闸北区共和新路1700弄2号601室",
+                    "booklet_number": "004876156",
+                    "issue_date": "1999-12-03",
+                },
+                "household_records": [
+                    {
+                        "household_type": "非农业家庭",
+                        "household_number": "010046",
+                        "household_head": "孙惠章",
+                        "household_address": "上海市闸北区共和新路1700弄2号601室",
+                        "booklet_number": "004876156",
+                        "issue_date": "1999-12-03",
+                    },
+                    {
+                        "household_type": "非农业家庭户口",
+                        "issuing_authority": "以宁路派出所",
+                        "booklet_number": "310108192701",
+                        "undertaker": "公民身份",
+                    },
+                ],
+                "members": [],
+            },
+            "missing_fields": [],
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    assert "### 户信息记录" not in markdown
+    assert "户口簿编号：310108192701" not in markdown
+    assert "承办人签章：公民身份" not in markdown
+    assert "- 户号：未识别" not in markdown
+    assert "- 户主姓名：未识别" not in markdown
+    assert "- 住址：未识别" not in markdown
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡

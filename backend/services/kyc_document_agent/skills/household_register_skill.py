@@ -346,6 +346,67 @@ def _has_home_page(text: str) -> bool:
     )
 
 
+def _home_feature_count(text: str) -> int:
+    compact = _compact(text)
+    features = [
+        "户别" in compact,
+        "户号" in compact,
+        "户主姓名" in compact,
+        "住址" in compact,
+        bool(re.search(r"(?:No\.?|NO\.?|Nº|N°|户口簿编号)\s*[:：]?\s*[0-9A-Za-z]{6,12}", text or "", re.I)),
+        "承办人签章" in compact,
+        "签发" in compact,
+    ]
+    return sum(1 for item in features if item)
+
+
+def _looks_like_id_prefix(value: Any, member_id_numbers: set[str] | None = None) -> bool:
+    text = _compact(value)
+    if not text:
+        return False
+    if re.fullmatch(r"\d{17}[\dXx]", text):
+        return True
+    if re.fullmatch(r"\d{12,17}", text) and re.match(r"\d{6}(?:19|20)\d{2}", text):
+        return True
+    for id_number in member_id_numbers or set():
+        if len(text) >= 6 and str(id_number).startswith(text):
+            return True
+    return False
+
+
+def _clean_household_record(record: dict[str, Any], member_id_numbers: set[str] | None = None) -> dict[str, Any]:
+    cleaned = dict(record)
+    if _looks_like_id_prefix(cleaned.get("booklet_number"), member_id_numbers):
+        logger.info("[HUKOU_HOUSEHOLD_RECORD_DROPPED] reason=invalid_booklet_number value=%s", cleaned.get("booklet_number"))
+        cleaned["booklet_number"] = ""
+    if cleaned.get("undertaker") in {"公民身份", "身份号码", "户口登记机关", "户口专用章"}:
+        logger.info("[HUKOU_HOUSEHOLD_RECORD_DROPPED] reason=invalid_undertaker value=%s", cleaned.get("undertaker"))
+        cleaned["undertaker"] = ""
+    if any(noise in str(cleaned.get("undertaker") or "") for noise in ("派出所", "公安局")):
+        cleaned["undertaker"] = ""
+    return cleaned
+
+
+def is_valid_household_record(
+    record: dict[str, Any],
+    source_area: str = "household_home_area",
+    member_id_numbers: set[str] | None = None,
+) -> bool:
+    if source_area != "household_home_area":
+        logger.info("[HUKOU_HOUSEHOLD_RECORD_DROPPED] reason=not_from_home_page")
+        return False
+    cleaned = _clean_household_record(record, member_id_numbers)
+    core_fields = ("household_number", "household_head", "household_address", "issue_date", "booklet_number")
+    core_count = sum(1 for field in core_fields if cleaned.get(field))
+    if not any(cleaned.get(field) for field in ("household_number", "household_head", "household_address")):
+        logger.info("[HUKOU_HOUSEHOLD_RECORD_DROPPED] reason=missing_number_head_address")
+        return False
+    if core_count < 2:
+        logger.info("[HUKOU_HOUSEHOLD_RECORD_DROPPED] reason=low_quality_record")
+        return False
+    return True
+
+
 def _has_address_change_area(text: str) -> bool:
     compact = _compact(text)
     return "住址变动登记" in compact and ("变动后的住址" in compact or "变动日期" in compact)
@@ -1135,9 +1196,14 @@ def _backfill_household_info_from_members(household_info: dict[str, Any], member
     return info
 
 
-def _dedupe_household_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dedupe_household_records(records: list[dict[str, Any]], member_id_numbers: set[str] | None = None) -> list[dict[str, Any]]:
     deduped: dict[str, dict[str, Any]] = {}
     for record in records:
+        source_area = str(record.get("_source_area") or "household_home_area")
+        record = _clean_household_record(record, member_id_numbers)
+        if not is_valid_household_record(record, source_area, member_id_numbers):
+            continue
+        record = {key: value for key, value in record.items() if not str(key).startswith("_")}
         if not any(value for key, value in record.items() if key != "address_change_records"):
             continue
         key = "|".join(str(record.get(field) or "") for field in ("household_number", "household_address", "issue_date"))
@@ -1190,9 +1256,10 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
         if page_ids:
             logger.info("[HUKOU_DEBUG] page=%s id_numbers=%s", page, page_ids)
 
-        if _has_home_page(page_text):
+        if _has_home_page(page_text) and _home_feature_count(page_text) >= 3:
             info, info_evidence = _extract_household_info_from_page(page_text, page)
             if any(value for key, value in info.items() if key != "address_change_records"):
+                info["_source_area"] = "household_home_area"
                 household_records.append(info)
                 evidence.update(info_evidence)
         if _has_address_change_area(page_text):
@@ -1284,7 +1351,8 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
         len(members),
         [member.get("id_number") for member in members if isinstance(member, dict) and member.get("id_number")],
     )
-    household_records = _dedupe_household_records(household_records)
+    member_id_numbers = {str(member.get("id_number") or "") for member in members if isinstance(member, dict) and member.get("id_number")}
+    household_records = _dedupe_household_records(household_records, member_id_numbers)
     household_info = _select_primary_household(household_records)
     household_info = _backfill_household_info_from_members(household_info, members)
     if household_records:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -556,6 +557,32 @@ def render_markdown(result: dict[str, Any]) -> str:
         def member_label(key: str) -> str:
             return HOUSEHOLD_MEMBER_FIELD_LABELS.get(key, field_label(key))
 
+        def clean_record_for_display(record: dict[str, Any]) -> dict[str, Any]:
+            cleaned = dict(record)
+            booklet = str(cleaned.get("booklet_number") or "")
+            if re.fullmatch(r"\d{12,17}", booklet) and re.match(r"\d{6}(?:19|20)\d{2}", booklet):
+                cleaned["booklet_number"] = ""
+            if cleaned.get("undertaker") in {"公民身份", "身份号码", "户口登记机关", "户口专用章"}:
+                cleaned["undertaker"] = ""
+            return cleaned
+
+        def displayable_record(record: dict[str, Any]) -> bool:
+            if not any(record.get(key) for key in ("household_number", "household_head", "household_address")):
+                return False
+            core_count = sum(
+                1
+                for key in ("household_number", "household_head", "household_address", "issue_date", "booklet_number")
+                if record.get(key)
+            )
+            return core_count >= 2
+
+        def duplicate_of_current(record: dict[str, Any]) -> bool:
+            same_count = 0
+            for key in ("household_type", "household_number", "household_head", "household_address", "booklet_number", "issue_date"):
+                if record.get(key) and household_info.get(key) and record.get(key) == household_info.get(key):
+                    same_count += 1
+            return same_count >= 3
+
         lines = [
             "## 户口本",
             "",
@@ -575,6 +602,11 @@ def render_markdown(result: dict[str, Any]) -> str:
         )
         for record in household_records:
             if not isinstance(record, dict):
+                continue
+            record = clean_record_for_display(record)
+            if not displayable_record(record):
+                continue
+            if duplicate_of_current(record):
                 continue
             signature = (
                 record.get("household_number"),
