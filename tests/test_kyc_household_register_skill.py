@@ -785,6 +785,91 @@ def test_member_merge_fills_empty_fields_from_fallback_candidate() -> None:
     assert merged["education_level"] == "高中"
 
 
+def test_low_confidence_change_record_id_does_not_generate_member() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {"text": """登记事项变更和更正记载
+公民身份号码 210108105301702541
+"""}
+    )
+    assert result["fields"]["members"] == []
+
+
+def test_duplicate_same_name_birth_keeps_trusted_id_number() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {"text": """常住人口登记卡
+姓名 周梅珍 户主或与户主关系 妻 性别 女 民族 汉族
+出生日期 1928年01月10日
+公民身份号码 310108192801103244
+常住人口登记卡
+姓名 周梅珍 户主或与户主关系 妻 性别 女 民族 汉族
+出生日期 1928年01月10日
+公民身份号码 210108105301702541
+"""}
+    )
+    members = result["fields"]["members"]
+    assert len(members) == 1
+    assert members[0]["name"] == "周梅珍"
+    assert members[0]["id_number"] == "310108192801103244"
+
+
+def test_duplicate_sun_biao_keeps_only_trusted_id_number() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {"text": """常住人口登记卡
+姓名 孙彪 户主或与户主关系 子 性别 男 民族 汉族
+出生日期 1957年09月03日
+公民身份号码 310108195709033275
+常住人口登记卡
+姓名 孙彪 户主或与户主关系 子 性别 男 民族 汉族
+出生日期 1957年09月03日
+公民身份号码 310108135801103541
+常住人口登记卡
+姓名 孙彪 户主或与户主关系 子 性别 男 民族 汉族
+出生日期 1957年09月03日
+公民身份号码 210108162800030812
+"""}
+    )
+    members = result["fields"]["members"]
+    assert len(members) == 1
+    assert members[0]["name"] == "孙彪"
+    assert members[0]["id_number"] == "310108195709033275"
+
+
+def test_household_record_not_created_from_member_id_number_text() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 孙惠章 户主或与户主关系 户主 性别 男 民族 汉族
+公民身份号码 31010819270115321X
+承办人签章 公民身份
+"""
+    )
+    records = result["fields"].get("household_records") or []
+    assert records == []
+    markdown = render_markdown(result)
+    assert "户口簿编号：310108192701" not in markdown
+    assert "承办人签章：公民身份" not in markdown
+
+
+def test_address_change_table_header_is_not_record() -> None:
+    result = extract(
+        text="""住址变动登记
+变动后的住址
+变动日期
+承办人签章
+"""
+    )
+    records = result["fields"]["household_info"].get("address_change_records") or []
+    assert records == []
+    markdown = render_markdown(result)
+    assert "- 变动后的住址" not in markdown
+    assert "- 变动日期" not in markdown
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡

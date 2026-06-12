@@ -244,6 +244,36 @@ def _id_numbers(text: str) -> list[str]:
     return list(dict.fromkeys(match.group(0).upper() for match in ID_NUMBER_PATTERN.finditer(text or "")))
 
 
+def is_valid_chinese_id_number(id_number: str) -> bool:
+    value = str(id_number or "").upper()
+    if not re.fullmatch(r"\d{17}[\dX]", value):
+        return False
+    birth = value[6:14]
+    try:
+        birth_date = date(int(birth[:4]), int(birth[4:6]), int(birth[6:8]))
+    except ValueError:
+        return False
+    if not (1900 <= birth_date.year <= date.today().year):
+        return False
+    factors = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
+    checks = "10X98765432"
+    total = sum(int(value[index]) * factors[index] for index in range(17))
+    return checks[total % 11] == value[-1]
+
+
+def _id_birth_date(id_number: str) -> str:
+    value = str(id_number or "").upper()
+    if not re.fullmatch(r"\d{17}[\dX]", value):
+        return ""
+    try:
+        birth_date = date(int(value[6:10]), int(value[10:12]), int(value[12:14]))
+    except ValueError:
+        return ""
+    if not (1900 <= birth_date.year <= date.today().year):
+        return ""
+    return f"{birth_date.year:04d}-{birth_date.month:02d}-{birth_date.day:02d}"
+
+
 def _normalize_dates_in_text(value: Any) -> str:
     text = _compact(value)
 
@@ -312,7 +342,7 @@ def _has_home_page(text: str) -> bool:
         home_score >= 2
         or ("居民户口簿" in compact and "住址" in compact)
         or ("承办人签章" in compact and ("签发" in compact or "户别" in compact or "住址" in compact))
-        or bool(re.search(r"(?:No\.?|NO\.?|Nº|N°|编号|户口簿编号)\s*[:：]?\s*[0-9A-Za-z]{6,12}", text, re.I))
+        or bool(re.search(r"(?:No\.?|NO\.?|Nº|N°|户口簿编号)\s*[:：]?\s*[0-9A-Za-z]{6,12}", text, re.I))
     )
 
 
@@ -492,7 +522,7 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
         info["household_address"] = address
         evidence["household_info.household_address"] = _make_evidence(address, ev, page)
 
-    match = re.search(r"(?:No\.?|NO|Nº|N°|编号|户口簿编号)\s*[:：]?\s*([0-9A-Za-z]{6,12})", text, re.I)
+    match = re.search(r"(?:No\.?|NO|Nº|N°|户口簿编号|(?<!身份)编号)\s*[:：]?\s*([0-9A-Za-z]{6,12})", text, re.I)
     if match:
         candidate = match.group(1)
         if candidate != info.get("household_number") and not re.fullmatch(r"\d{17}[\dXx]", candidate):
@@ -500,7 +530,7 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
             evidence["household_info.booklet_number"] = _make_evidence(candidate, match.group(0), page)
 
     match = re.search(r"承办人签章\s*[:：]?\s*([\u4e00-\u9fff]{2,4})", _flat(text))
-    if match:
+    if match and match.group(1) not in {"公民身份", "身份号码"}:
         info["undertaker"] = match.group(1)
         evidence["household_info.undertaker"] = _make_evidence(match.group(1), match.group(0), page)
 
@@ -530,6 +560,10 @@ def _extract_valid_address_change_records(text: str) -> list[str]:
     records: list[str] = []
     for line in _lines(text):
         if any(noise in line for noise in NOTICE_NOISE):
+            continue
+        compact_line = _compact(line)
+        if compact_line in {"变动后的住址", "变动日期", "变动后的住址变动日期", "变动后的住址变动日期承办人签章"}:
+            logger.info("[HUKOU_ADDRESS_RECORD_DROPPED] reason=table_header_only")
             continue
         if ("变动后的住址" in line or "变动日期" in line) and len(line) <= 120:
             records.append(line)
@@ -739,6 +773,44 @@ def _member_block_around_id(text: str, id_number: str) -> str:
     return "\n".join(lines[start_line:end_line])
 
 
+def score_id_number_candidate(id_number: str, member_block: str, page_index: int | None = None) -> int:
+    score = 0
+    block = member_block or ""
+    compact = _compact(block)
+    if "常住人口登记卡" in compact:
+        score += 60
+    if re.search(r"(?:公民身份号码|身份证件编号|身份证号码|居民身份证号码)\s*[:：]?\s*" + re.escape(id_number), _canonical_member_labels(_flat(block)), re.I):
+        score += 40
+    elif "公民身份号码" in compact or "身份证件编号" in compact:
+        score += 25
+    block_birth = _date_to_iso(_value_between(block, ("出生日期", "出生年月"), MEMBER_STOP_LABELS, max_chars=80)[0])
+    id_birth = _id_birth_date(id_number)
+    if block_birth and id_birth:
+        if block_birth == id_birth:
+            score += 30
+        else:
+            score -= 100
+    parsed_member, _ = parse_member_from_block(block, page_index)
+    if parsed_member.get("name"):
+        score += 20
+    if parsed_member.get("gender") or parsed_member.get("ethnicity"):
+        score += 20
+    if "登记事项变更和更正记载" in compact and "常住人口登记卡" not in compact:
+        score -= 80
+    if not is_valid_chinese_id_number(id_number):
+        score -= 100
+    if str(id_number).startswith("210108") and any(candidate.startswith("310108") for candidate in _id_numbers(block) if candidate != id_number):
+        score -= 100
+    logger.info(
+        "[HUKOU_ID_CANDIDATE] id_number=%s page=%s area=%s score=%s",
+        id_number,
+        page_index,
+        "member_card" if "常住人口登记卡" in compact else ("change_record" if "登记事项变更和更正记载" in compact else "unknown"),
+        score,
+    )
+    return score
+
+
 def parse_member_from_block(block_text: str, page_index: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     page = page_index
     member: dict[str, Any] = {"page_index": page, "source_pages": [page] if page is not None else []}
@@ -790,7 +862,7 @@ def parse_member_from_block(block_text: str, page_index: int | None = None) -> t
         member["id_number"] = id_number
         evidence["id_number"] = _make_evidence(id_number, ev, page, 0.86)
         if not member.get("birth_date"):
-            member["birth_date"] = f"{id_number[6:10]}-{id_number[10:12]}-{id_number[12:14]}"
+            member["birth_date"] = _id_birth_date(id_number)
 
     education, ev = _extract_education_level(segment)
     if education:
@@ -925,6 +997,30 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
             if fallback:
                 member["name"] = fallback
 
+    by_name_birth: dict[str, dict[str, Any]] = {}
+    for member in ordered:
+        name = str(member.get("name") or "")
+        birth_date = str(member.get("birth_date") or "")
+        key = f"{name}|{birth_date}" if name and birth_date else f"unique:{len(by_name_birth)}"
+        existing = by_name_birth.get(key)
+        if not existing:
+            by_name_birth[key] = member
+            continue
+        existing_score = int(existing.get("_id_score") or 0)
+        member_score = int(member.get("_id_score") or 0)
+        keep, drop = (member, existing) if member_score > existing_score else (existing, member)
+        merged = _merge_member(dict(keep), drop)
+        logger.info(
+            "[HUKOU_MEMBER_DEDUPE] action=merge_by_name_birth name=%s keep_id=%s drop_id=%s",
+            name,
+            keep.get("id_number") or "",
+            drop.get("id_number") or "",
+        )
+        by_name_birth[key] = merged
+    ordered = list(by_name_birth.values())
+    for member in ordered:
+        member.pop("_id_score", None)
+
     evidence: dict[str, Any] = {}
     for index, member in enumerate(ordered):
         key = str(member.get("id_number") or "").strip() or f"{member.get('name') or ''}|{member.get('birth_date') or ''}"
@@ -939,11 +1035,16 @@ def _extract_member_candidates_from_ids(page_text: str, page: int | None) -> lis
         block = _member_block_around_id(page_text, id_number)
         if not block:
             continue
+        score = score_id_number_candidate(id_number, block, page)
+        if score < 50:
+            logger.info("[HUKOU_ID_REJECTED] id_number=%s score=%s reason=low_confidence_or_invalid", id_number, score)
+            continue
         member, member_evidence = _extract_member(block, page)
         if not member.get("id_number"):
             member["id_number"] = id_number
-            member["birth_date"] = f"{id_number[6:10]}-{id_number[10:12]}-{id_number[12:14]}"
+            member["birth_date"] = _id_birth_date(id_number)
             member_evidence["id_number"] = _make_evidence(id_number, id_number, page, 0.75)
+        member["_id_score"] = score
         candidates.append((member, member_evidence, "valid_id_number"))
     return candidates
 
@@ -1041,6 +1142,8 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
         if _has_member_card(page_text):
             for segment in _split_member_segments(page_text):
                 member, member_evidence = _extract_member(segment, page)
+                if member.get("id_number"):
+                    member["_id_score"] = score_id_number_candidate(str(member.get("id_number")), segment, page)
                 if _meaningful_member(member):
                     logger.info(
                         "[HUKOU_MEMBER_CANDIDATE] page=%s name=%s id_number=%s relation=%s keep=true reason=member_card",
@@ -1088,6 +1191,10 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
                     continue
                 logger.info("[HUKOU_MEMBER_BACKFILL] id_number=%s reason=id_seen_in_ocr_but_missing_from_members", missing_id)
                 block = _member_block_around_id(page_text, missing_id)
+                score = score_id_number_candidate(missing_id, block, page)
+                if score < 50:
+                    logger.info("[HUKOU_ID_REJECTED] id_number=%s score=%s reason=low_confidence_or_invalid", missing_id, score)
+                    break
                 logger.info(
                     "[HUKOU_BACKFILL_BLOCK] id_number=%s page=%s block_preview=%s",
                     missing_id,
@@ -1105,7 +1212,8 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
                 )
                 member["id_number"] = missing_id
                 if not member.get("birth_date"):
-                    member["birth_date"] = f"{missing_id[6:10]}-{missing_id[10:12]}-{missing_id[12:14]}"
+                    member["birth_date"] = _id_birth_date(missing_id)
+                member["_id_score"] = score
                 members.append(member)
                 member_index = len(members) - 1
                 for field, item in member_evidence_item.items():
