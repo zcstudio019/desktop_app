@@ -1057,6 +1057,133 @@ def test_renderer_filters_duplicate_and_low_quality_household_records() -> None:
     assert "- 住址：未识别" not in markdown
 
 
+def test_migration_to_address_strips_stamp_tail() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 王微珍
+户主或与户主关系 儿媳
+性别 女
+民族 汉
+出生日期 1950年05月23日
+公民身份号码 310108195005231222
+何时由何地迁来本址 1999.12.03 海宁路1027号 承办人签章
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["migration_to_address"] == "1999-12-03 海宁路1027号"
+
+
+def test_migration_to_address_strips_hukou_stamp_tail() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 王微珍
+户主或与户主关系 儿媳
+性别 女
+民族 汉
+出生日期 1950年05月23日
+公民身份号码 310108195005231222
+何时由何地迁来本址 1999-12-03 海宁路1027号户口受理章(1
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["migration_to_address"] == "1999-12-03 海宁路1027号"
+
+
+def test_sun_liming_vocational_school_education_is_extracted() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 孙黎明
+户主或与户主关系 孙子
+性别 男
+民族 汉
+公民身份号码 310108198710080531
+文化程度 职校
+兵役状况 未服兵役
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["education_level"] == "职校"
+
+
+def test_yifu_vocational_school_is_normalized_to_education_level() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 孙黎明
+户主或与户主关系 孙子
+性别 男
+民族 汉
+公民身份号码 310108198710080531
+文化程度 逸夫职校
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["education_level"] == "职校"
+
+
+def test_service_place_vocational_school_stamp_noise_is_removed() -> None:
+    from backend.services.kyc_document_agent.normalizer import normalize_result
+
+    result = normalize_result(
+        {
+            "doc_type": "household_register",
+            "doc_type_name": "户口本",
+            "fields": {
+                "household_info": {},
+                "household_records": [],
+                "members": [
+                    {
+                        "name": "孙黎明",
+                        "id_number": "310108198710080531",
+                        "education_level": "逸夫职校",
+                        "service_place": "逸夫职校:户口受理章(1",
+                        "migration_to_address": "1999-12-03 海宁路1027号承办人签章",
+                    }
+                ],
+            },
+            "missing_fields": [],
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    member = result["fields"]["members"][0]
+    assert member["education_level"] == "职校"
+    assert member.get("service_place") == ""
+    assert member["migration_to_address"] == "1999-12-03 海宁路1027号"
+
+
+def test_hukou_markdown_does_not_show_migration_or_service_stamp_noise() -> None:
+    from backend.services.kyc_document_agent.normalizer import normalize_result
+
+    result = normalize_result(
+        {
+            "doc_type": "household_register",
+            "doc_type_name": "户口本",
+            "extraction_status": "partial",
+            "fields": {
+                "household_info": {},
+                "household_records": [],
+                "members": [
+                    {
+                        "name": "孙黎明",
+                        "id_number": "310108198710080531",
+                        "education_level": "逸夫职校",
+                        "service_place": "逸夫职校:户口受理章(1",
+                        "migration_to_address": "1999.12.03 海宁路1027号 承办人签章",
+                    }
+                ],
+            },
+            "missing_fields": [],
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    markdown = render_markdown(result)
+    assert "海宁路1027号 承办人签章" not in markdown
+    assert "海宁路1027号承办人签章" not in markdown
+    assert "户口受理章(1" not in markdown
+    assert "服务处所：逸夫职校:户口受理章(1" not in markdown
+    assert "何时由何地迁来本址：1999-12-03 海宁路1027号" in markdown
+    assert "文化程度：职校" in markdown
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡

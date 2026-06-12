@@ -139,6 +139,71 @@ def normalize_household_place(value: Any) -> str:
     return text
 
 
+def normalize_household_education_level(value: Any) -> str:
+    text = normalize_household_text(value)
+    if not text:
+        return ""
+    for stop in ("婚姻状况", "兵役状况", "服务处所", "职业", "身高", "血型", "何时由何地", "登记日期", "承办人签章", "户口受理章"):
+        index = text.find(stop)
+        if index >= 0:
+            text = text[:index]
+    if "逸夫职校" in text or "职业学校" in text:
+        return "职校"
+    if "职业高中" in text:
+        return "职高"
+    if "中等专业学校或中等技术学校" in text or "中等专业学校" in text or "中等技术学校" in text:
+        return "中专"
+    for item in ("文盲或半文盲", "半文盲", "文盲", "小学", "初中", "高中", "职高", "职校", "技校", "中专", "大专", "大学专科", "本科", "大学本科", "研究生", "不详"):
+        if item in text:
+            return item
+    return ""
+
+
+def normalize_household_migration_text(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" :：,，;；")
+    if not text:
+        return ""
+    text = re.sub(r"(\d{4})[年./-]\s*(\d{1,2})[月./-]\s*(\d{1,2})日?", lambda m: f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", text)
+    for noise in (
+        "承办人签章",
+        "登记日期",
+        "常住人口登记卡",
+        "登记事项变更",
+        "户口受理章",
+        "户口专用章",
+        "专用章",
+        "派出所",
+        "公安局",
+        "公民身份号码",
+        "姓名",
+        "性别",
+        "民族",
+        "出生日期",
+        "文化程度",
+        "服务处所",
+        "职业",
+    ):
+        index = text.find(noise)
+        if index >= 0:
+            text = text[:index]
+    return text.strip(" :：,，;；")
+
+
+def normalize_household_service_or_occupation(field: str, value: Any) -> str:
+    text = normalize_household_text(value)
+    if not text:
+        return ""
+    if field == "service_place" and normalize_household_education_level(text) and any(token in text for token in ("职校", "技校", "学校", "文化程度", "户口受理章")):
+        return ""
+    for noise in ("承办人签章", "户口受理章", "户口专用章", "专用章", "派出所", "公安局", "文化程度"):
+        index = text.find(noise)
+        if index >= 0:
+            text = text[:index]
+    if any(noise in text for noise in ("何时由何地", "迁来", "登记日期", "公民身份号码", "户口", "章")):
+        return ""
+    return text.strip(" :：,，;；")
+
+
 def normalize_household_member(member: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(member)
     if normalized.get("id_number"):
@@ -159,21 +224,23 @@ def normalize_household_member(member: dict[str, Any]) -> dict[str, Any]:
         "former_name",
         "relationship_to_head",
         "other_address",
-        "education_level",
         "military_status",
         "blood_type",
         "religion",
-        "service_place",
-        "occupation",
     ):
         if normalized.get(field):
             normalized[field] = normalize_household_text(normalized.get(field))
+    if normalized.get("education_level"):
+        normalized["education_level"] = normalize_household_education_level(normalized.get("education_level"))
+    for field in ("service_place", "occupation"):
+        if normalized.get(field):
+            normalized[field] = normalize_household_service_or_occupation(field, normalized.get(field))
     for field in ("birth_place", "native_place"):
         if normalized.get(field):
             normalized[field] = normalize_household_place(normalized.get(field))
     for field in ("migration_to_city", "migration_to_address"):
         if normalized.get(field):
-            normalized[field] = re.sub(r"\s+", " ", str(normalized.get(field) or "")).strip(" :：,，;；")
+            normalized[field] = normalize_household_migration_text(normalized.get(field))
     return normalized
 
 

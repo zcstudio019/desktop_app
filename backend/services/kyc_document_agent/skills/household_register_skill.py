@@ -73,6 +73,8 @@ EDUCATION_VALUES = (
     "文盲或半文盲",
     "中等专业学校",
     "中等技术学校",
+    "职业高中",
+    "职业学校",
     "大学专科",
     "大学本科",
     "半文盲",
@@ -81,6 +83,9 @@ EDUCATION_VALUES = (
     "硕士",
     "本科",
     "大专",
+    "职高",
+    "职校",
+    "技校",
     "中专",
     "高中",
     "初中",
@@ -747,11 +752,9 @@ def _extract_education_level(segment: str) -> tuple[str, str]:
     for invalid in ("已婚", "未婚", "有配偶", "孙魁", "退休工人", "统计人员", "未服兵役", "服务处所", "职业"):
         if text == invalid:
             return "", ""
-    education = _first_choice(text, EDUCATION_VALUES)
+    education = _normalize_education_level(text)
     if education:
         return education, ev
-    if "中等专业" in text and "中等技术" in text:
-        return "中等专业学校或中等技术学校", ev
     return "", ""
 
 
@@ -781,10 +784,80 @@ def _extract_text_field(segment: str, labels: tuple[str, ...], *, max_chars: int
 
 def _clean_migration_address(value: str) -> str:
     text = _normalize_dates_in_text(value)
-    for noise in ("户口受", "户口", "受莲章", "章门口", "门口如", "公民身份号码", "登记日期", "派出所", "公安局"):
+    for noise in (
+        "承办人签章",
+        "登记日期",
+        "常住人口登记卡",
+        "登记事项变更",
+        "户口受理章",
+        "户口受",
+        "户口专用章",
+        "户口",
+        "受莲章",
+        "章门口",
+        "门口如",
+        "专用章",
+        "公民身份号码",
+        "姓名",
+        "性别",
+        "民族",
+        "出生日期",
+        "文化程度",
+        "服务处所",
+        "职业",
+        "派出所",
+        "公安局",
+    ):
         index = text.find(noise)
         if index >= 0:
             text = text[:index]
+    return text.strip(" :：,，;；")
+
+
+def _normalize_education_level(value: Any) -> str:
+    text = _compact(value)
+    if not text:
+        return ""
+    for stop in ("婚姻状况", "兵役状况", "服务处所", "职业", "身高", "血型", "何时由何地", "登记日期", "承办人签章", "户口受理章"):
+        index = text.find(stop)
+        if index >= 0:
+            text = text[:index]
+    if "逸夫职校" in text or "职业学校" in text:
+        return "职校"
+    if "职业高中" in text:
+        return "职高"
+    if "中等专业学校或中等技术学校" in text:
+        return "中专"
+    if "中等专业学校" in text or "中等技术学校" in text:
+        return "中专"
+    education = _first_choice(text, EDUCATION_VALUES)
+    if education in {"职业学校"}:
+        return "职校"
+    if education == "职业高中":
+        return "职高"
+    if education in {"中等专业学校", "中等技术学校", "中等专业学校或中等技术学校"}:
+        return "中专"
+    return education
+
+
+def clean_hukou_field_value(field_name: str, value: Any) -> str:
+    text = _compact(value)
+    if not text:
+        return ""
+    if field_name in {"migration_to_city", "migration_to_address"}:
+        return _clean_migration_address(text)
+    if field_name == "education_level":
+        return _normalize_education_level(text)
+    if field_name == "service_place":
+        education = _normalize_education_level(text)
+        if education and any(token in text for token in ("职校", "技校", "学校", "文化程度", "户口受理章", "承办人签章")):
+            return ""
+    for noise in ("承办人签章", "户口受理章", "户口专用章", "专用章", "派出所", "公安局", "文化程度"):
+        index = text.find(noise)
+        if index >= 0:
+            text = text[:index]
+    if field_name in {"service_place", "occupation"} and any(noise in text for noise in ("何时由何地", "迁来", "登记日期", "公民身份号码", "户口", "章")):
+        return ""
     return text.strip(" :：,，;；")
 
 
@@ -979,8 +1052,15 @@ def parse_member_from_block(block_text: str, page_index: int | None = None) -> t
     ):
         value, ev = _extract_text_field(segment, labels, max_chars=80, reject=reject)
         if value:
-            member[field] = value
-            evidence[field] = _make_evidence(member[field], ev, page)
+            if field == "service_place" and not member.get("education_level"):
+                education = _normalize_education_level(value)
+                if education and any(token in value for token in ("职校", "技校", "学校")):
+                    member["education_level"] = education
+                    evidence["education_level"] = _make_evidence(education, ev, page)
+            cleaned = clean_hukou_field_value(field, value)
+            if cleaned:
+                member[field] = cleaned
+                evidence[field] = _make_evidence(member[field], ev, page)
 
     for field, labels in (
         ("migration_to_city", ("何时由何地迁来本市（县）", "何时由何地迁来本市(县)", "何时由何地迁来本市")),
@@ -989,12 +1069,19 @@ def parse_member_from_block(block_text: str, page_index: int | None = None) -> t
         value, ev = _extract_text_field(segment, labels, max_chars=160, reject=("注意事项",))
         if value:
             value = _normalize_dates_in_text(value)
-            if field == "migration_to_address":
-                value = _clean_migration_address(value)
+            value = clean_hukou_field_value(field, value)
             if field == "migration_to_address" and not any(keyword in value for keyword in ("省", "市", "县", "区", "镇", "村", "路", "弄", "号", "室", "迁来", "迁入")):
                 continue
             member[field] = value
             evidence[field] = _make_evidence(value, ev, page)
+
+    for field in ("migration_to_city", "migration_to_address", "service_place", "occupation", "education_level"):
+        if member.get(field):
+            cleaned = clean_hukou_field_value(field, member.get(field))
+            if cleaned:
+                member[field] = cleaned
+            else:
+                member.pop(field, None)
 
     return member, evidence
 
