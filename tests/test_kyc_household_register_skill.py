@@ -577,6 +577,77 @@ def test_wang_weizhen_member_with_invalid_marital_status_is_kept() -> None:
     assert member["migration_to_address"] == "1999-12-03 海宁路1027号"
 
 
+def test_change_record_with_id_before_member_card_does_not_skip_wang_weizhen() -> None:
+    result = extract(
+        text="""登记事项变更和更正记载
+项目 变更 更正后 变动日期 承办人签章
+公民身份号码 310108195005231222
+常住人口登记卡
+姓名 王微珍
+户主或与户主关系 儿媳
+性别 女性
+民族 汉
+出生地 浙江省鄞县
+籍贯 浙江省鄞县
+出生日期 1950年05月23日
+公民身份号码 310108195005231222
+文化程度 高中
+婚姻状况 孙魁
+兵役状况 未服兵役
+身高 162
+服务处所 闸北区建筑材料公司
+职业 统计人员
+何时由何地迁来本址 1999.12.03 海宁路1027号
+"""
+    )
+    by_name = members_by_name(result)
+    assert "王微珍" in by_name
+    member = by_name["王微珍"]
+    assert member["id_number"] == "310108195005231222"
+    assert member["relationship_to_head"] == "儿媳"
+    assert member["education_level"] == "高中"
+    assert member.get("marital_status") in {None, ""}
+    assert member["service_place"] == "闸北区建筑材料公司"
+    assert member["occupation"] == "统计人员"
+
+
+def test_members_with_different_id_numbers_are_not_merged_by_noisy_marital_name() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 孙魁 户主或与户主关系 子 性别 男 民族 汉族
+出生日期 1957年09月03日
+公民身份号码 310108195709033275
+文化程度 高中
+常住人口登记卡
+姓名 王微珍 户主或与户主关系 儿媳 性别 女 民族 汉族
+出生日期 1950年05月23日
+公民身份号码 310108195005231222
+文化程度 高中 婚姻状况 孙魁
+"""
+    )
+    by_name = members_by_name(result)
+    assert set(by_name) >= {"孙魁", "王微珍"}
+    assert by_name["孙魁"]["id_number"] == "310108195709033275"
+    assert by_name["王微珍"]["id_number"] == "310108195005231222"
+    assert len(result["fields"]["members"]) == 2
+
+
+def test_member_with_name_id_and_gender_is_kept() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {"text": """姓名 王微珍
+公民身份号码 310108195005231222
+性别 女
+"""}
+    )
+    members = result["fields"]["members"]
+    assert len(members) == 1
+    assert members[0]["name"] == "王微珍"
+    assert members[0]["id_number"] == "310108195005231222"
+    assert members[0]["gender"] == "女"
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡

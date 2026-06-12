@@ -294,11 +294,14 @@ def _has_address_change_area(text: str) -> bool:
 
 def _has_member_card(text: str) -> bool:
     compact = _compact(text)
+    has_id_number = bool(re.search(r"\d{17}[\dXx]", compact))
     return (
         ("常住人口登记卡" in compact and ("姓名" in compact or "公民身份号码" in compact))
         or ("姓名" in compact and "户主或与户主关系" in compact and "公民身份号码" in compact)
         or ("姓名" in compact and "户主或与户主关系" in compact and "出生日期" in compact)
-        or (bool(re.search(r"\d{17}[\dXx]", compact)) and "出生日期" in compact and "性别" in compact and "民族" in compact)
+        or (has_id_number and "出生日期" in compact and "性别" in compact and "民族" in compact)
+        or (has_id_number and "姓名" in compact and "文化程度" in compact)
+        or (has_id_number and "姓名" in compact and "性别" in compact)
         or ("出生日期" in compact and "公民身份号码" in compact and ("身高" in compact or "血型" in compact))
     )
 
@@ -769,7 +772,11 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
 
 
 def _meaningful_member(member: dict[str, Any]) -> bool:
-    return bool(member.get("id_number") or (member.get("name") and member.get("birth_date")) or (member.get("name") and member.get("relationship_to_head")))
+    return bool(
+        member.get("id_number")
+        or (member.get("name") and member.get("birth_date"))
+        or (member.get("name") and member.get("relationship_to_head") and member.get("gender"))
+    )
 
 
 def _member_score(member: dict[str, Any]) -> int:
