@@ -736,7 +736,7 @@ def _split_member_segments(text: str) -> list[str]:
     return []
 
 
-def _member_block_around_id(text: str, id_number: str) -> str:
+def _member_block_around_id(text: str, id_number: str, page_index: int | None = None) -> str:
     positions = [match.start() for match in re.finditer(re.escape(id_number), text or "", re.I)]
     if not positions:
         return ""
@@ -769,7 +769,31 @@ def _member_block_around_id(text: str, id_number: str) -> str:
             id_line_index = index
             break
     start_line = max(0, id_line_index - 30)
+    for index in range(id_line_index, max(-1, id_line_index - 31), -1):
+        compact_line = _compact(lines[index])
+        if "常住人口登记卡" in compact_line or compact_line in {"姓名", "姓名栏"} or compact_line.startswith("姓名"):
+            start_line = index
+            break
     end_line = min(len(lines), id_line_index + 31)
+    for index in range(id_line_index + 1, min(len(lines), id_line_index + 31)):
+        compact_line = _compact(lines[index])
+        if "常住人口登记卡" in compact_line or "登记事项变更和更正记载" in compact_line:
+            end_line = index
+            break
+        if compact_line.startswith("姓名") and index > id_line_index + 1:
+            end_line = index
+            break
+        if ID_NUMBER_PATTERN.search(compact_line) and index > id_line_index + 1:
+            end_line = index
+            break
+    logger.info(
+        "[HUKOU_BLOCK_BY_ID] id_number=%s page=%s block_start=%s block_end=%s block_preview=%s",
+        id_number,
+        page_index,
+        start_line,
+        end_line,
+        raw_preview("\n".join(lines[start_line:end_line])),
+    )
     return "\n".join(lines[start_line:end_line])
 
 
@@ -791,6 +815,9 @@ def score_id_number_candidate(id_number: str, member_block: str, page_index: int
         else:
             score -= 100
     parsed_member, _ = parse_member_from_block(block, page_index)
+    parsed_id = str(parsed_member.get("id_number") or "")
+    if parsed_id and parsed_id != str(id_number).upper():
+        score -= 100
     if parsed_member.get("name"):
         score += 20
     if parsed_member.get("gender") or parsed_member.get("ethnicity"):
@@ -928,6 +955,11 @@ def _member_score(member: dict[str, Any]) -> int:
 
 
 def _merge_member(current: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    current_id = str(current.get("id_number") or "")
+    candidate_id = str(candidate.get("id_number") or "")
+    if current_id and candidate_id and current_id != candidate_id:
+        logger.info("[HUKOU_MERGE_SKIP] from_id=%s to_id=%s reason=different_id_number", candidate_id, current_id)
+        return current
     merged = dict(current)
     current_pages = set(merged.get("source_pages") or ([] if merged.get("page_index") is None else [merged.get("page_index")]))
     candidate_pages = set(candidate.get("source_pages") or ([] if candidate.get("page_index") is None else [candidate.get("page_index")]))
@@ -951,6 +983,32 @@ def _merge_member(current: dict[str, Any], candidate: dict[str, Any]) -> dict[st
                 )
             merged[field] = value
     return merged
+
+
+def validate_member_identity_consistency(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for member in members:
+        name = str(member.get("name") or "")
+        if name:
+            by_name.setdefault(name, []).append(member)
+
+    for name, items in by_name.items():
+        birth_values = {str(item.get("birth_date") or _id_birth_date(str(item.get("id_number") or ""))) for item in items}
+        birth_values.discard("")
+        if len(birth_values) <= 1:
+            continue
+        best = max(items, key=lambda item: int(item.get("_id_score") or 0))
+        for item in items:
+            if item is best:
+                continue
+            logger.info(
+                "[HUKOU_IDENTITY_CONFLICT] id_number=%s wrong_name=%s reason=name_birth_conflict",
+                item.get("id_number") or "",
+                name,
+            )
+            for field in ("name", "relationship_to_head", "gender", "ethnicity", "birth_place", "native_place"):
+                item.pop(field, None)
+    return members
 
 
 def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -997,6 +1055,7 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
             if fallback:
                 member["name"] = fallback
 
+    ordered = validate_member_identity_consistency(ordered)
     by_name_birth: dict[str, dict[str, Any]] = {}
     for member in ordered:
         name = str(member.get("name") or "")
@@ -1032,7 +1091,7 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
 def _extract_member_candidates_from_ids(page_text: str, page: int | None) -> list[tuple[dict[str, Any], dict[str, Any], str]]:
     candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
     for id_number in _id_numbers(page_text):
-        block = _member_block_around_id(page_text, id_number)
+        block = _member_block_around_id(page_text, id_number, page)
         if not block:
             continue
         score = score_id_number_candidate(id_number, block, page)
@@ -1190,7 +1249,7 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
                 if missing_id not in _id_numbers(page_text):
                     continue
                 logger.info("[HUKOU_MEMBER_BACKFILL] id_number=%s reason=id_seen_in_ocr_but_missing_from_members", missing_id)
-                block = _member_block_around_id(page_text, missing_id)
+                block = _member_block_around_id(page_text, missing_id, page)
                 score = score_id_number_candidate(missing_id, block, page)
                 if score < 50:
                     logger.info("[HUKOU_ID_REJECTED] id_number=%s score=%s reason=low_confidence_or_invalid", missing_id, score)

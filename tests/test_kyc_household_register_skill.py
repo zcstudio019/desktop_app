@@ -870,6 +870,86 @@ def test_address_change_table_header_is_not_record() -> None:
     assert "- 变动日期" not in markdown
 
 
+def test_member_fields_do_not_cross_bind_between_wang_weizhen_and_sun_liming() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {"text": """常住人口登记卡
+姓名 王微珍
+户主或与户主关系 儿媳
+性别 女性
+民族 汉
+出生地 浙江省鄞县
+籍贯 浙江省鄞县
+出生日期 1950年05月23日
+公民身份号码 310108195005231222
+文化程度 高中
+身高 162
+服务处所 闸北区建筑材料公司
+职业 统计人员
+常住人口登记卡
+姓名 孙黎明
+户主或与户主关系 孙子
+性别 男性
+民族 汉
+出生地 上海市
+籍贯 江苏江阴市
+出生日期 1987年10月08日
+公民身份号码 310108198710080531
+"""}
+    )
+    by_name = members_by_name(result)
+    assert by_name["王微珍"]["id_number"] == "310108195005231222"
+    assert by_name["王微珍"]["relationship_to_head"] == "儿媳"
+    assert by_name["王微珍"]["gender"] == "女"
+    assert by_name["孙黎明"]["id_number"] == "310108198710080531"
+    assert by_name["孙黎明"]["relationship_to_head"] == "孙子"
+    assert by_name["孙黎明"]["gender"] == "男"
+    assert not any(
+        member.get("name") == "孙黎明" and member.get("id_number") == "310108195005231222"
+        for member in result["fields"]["members"]
+    )
+
+
+def test_identity_conflict_clears_wrong_name_from_mismatched_id_member() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import validate_member_identity_consistency
+
+    members = validate_member_identity_consistency(
+        [
+            {
+                "name": "孙黎明",
+                "birth_date": "1950-05-23",
+                "id_number": "310108195005231222",
+                "relationship_to_head": "孙子",
+                "gender": "男",
+                "_id_score": 40,
+            },
+            {
+                "name": "孙黎明",
+                "birth_date": "1987-10-08",
+                "id_number": "310108198710080531",
+                "relationship_to_head": "孙子",
+                "gender": "男",
+                "_id_score": 100,
+            },
+        ]
+    )
+    wrong = next(member for member in members if member["id_number"] == "310108195005231222")
+    assert "name" not in wrong
+    assert "relationship_to_head" not in wrong
+
+
+def test_merge_skips_different_id_numbers() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import _merge_member
+
+    merged = _merge_member(
+        {"id_number": "310108195005231222", "name": ""},
+        {"id_number": "310108198710080531", "name": "孙黎明"},
+    )
+    assert merged["id_number"] == "310108195005231222"
+    assert merged["name"] == ""
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡
