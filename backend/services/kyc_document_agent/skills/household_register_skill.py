@@ -715,8 +715,15 @@ def _member_block_around_id(text: str, id_number: str) -> str:
             best = (score, pos)
     marker_start, pos = best or (-1, positions[0])
     if marker_start >= 0:
-        next_member = text.find(marker, marker_start + len(marker))
-        end = next_member if next_member >= 0 else len(text)
+        next_boundaries = [
+            index
+            for index in (
+                text.find(marker, marker_start + len(marker)),
+                text.find("登记事项变更和更正记载", marker_start + len(marker)),
+            )
+            if index >= 0
+        ]
+        end = min(next_boundaries) if next_boundaries else len(text)
         return text[marker_start:end]
 
     lines = re.split(r"[\r\n]+", text or "")
@@ -727,14 +734,16 @@ def _member_block_around_id(text: str, id_number: str) -> str:
         if current >= pos:
             id_line_index = index
             break
-    start_line = max(0, id_line_index - 8)
-    end_line = min(len(lines), id_line_index + 10)
+    start_line = max(0, id_line_index - 30)
+    end_line = min(len(lines), id_line_index + 31)
     return "\n".join(lines[start_line:end_line])
 
 
-def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dict[str, Any]]:
+def parse_member_from_block(block_text: str, page_index: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    page = page_index
     member: dict[str, Any] = {"page_index": page, "source_pages": [page] if page is not None else []}
     evidence: dict[str, Any] = {}
+    segment = block_text
 
     name, relation_hint, ev = _extract_name(segment)
     if name:
@@ -830,6 +839,10 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
     return member, evidence
 
 
+def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    return parse_member_from_block(segment, page)
+
+
 def _meaningful_member(member: dict[str, Any]) -> bool:
     return bool(
         member.get("id_number")
@@ -872,8 +885,9 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
     buckets: dict[str, dict[str, Any]] = {}
     bucket_evidence: dict[str, dict[str, Any]] = {}
     for member, member_evidence in zip(members, evidences):
-        key = str(member.get("id_number") or "").strip() or f"{member.get('name') or ''}|{member.get('birth_date') or ''}"
-        if not key.strip("|"):
+        id_number = str(member.get("id_number") or "").strip()
+        key = id_number if id_number else f"no_id:{len(buckets)}"
+        if not id_number and not _meaningful_member(member):
             continue
         if key not in buckets:
             if member.get("id_number"):
