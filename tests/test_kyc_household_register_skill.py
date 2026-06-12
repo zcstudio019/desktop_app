@@ -125,6 +125,7 @@ OLD_VERSION_MEMBER_SUN_HEAD = """常住人口登记卡
 出生地 江苏省江阴市 籍贯 江苏省江阴市
 出生日期 1927年01月15日
 公民身份号码 31010819270115321X
+文化程度 中等专业学校或中等技术学校
 身高 170 血型 O型
 服务处所 上海华光金属丝网厂 职业 退休工人
 """
@@ -152,8 +153,9 @@ OLD_VERSION_MEMBER_WANG = """常住人口登记卡
 出生地 浙江省鄞县 籍贯 浙江省鄞县
 出生日期 1950年05月23日
 公民身份号码 310108195005231222
-文化程度 高中 身高 162cm
+文化程度 高中 婚姻状况 孙魁 兵役状况 未服兵役 身高 162cm
 服务处所 闸北区建筑材料公司 职业 统计人员
+何时由何地迁来本址 1999.12.03 海宁路1027号
 """
 
 OLD_VERSION_MEMBER_SUNLM = """常住人口登记卡
@@ -485,11 +487,14 @@ def test_old_version_members_are_extracted_without_customer_hardcoding() -> None
     assert by_name["孙黎明"]["birth_date"] == "1987-10-08"
     assert by_name["孙惠章"]["height"] == "170cm"
     assert by_name["孙惠章"]["blood_type"] == "O型"
+    assert by_name["孙惠章"]["education_level"] in {"中等专业学校或中等技术学校", "中专"}
     assert by_name["孙惠章"]["occupation"] == "退休工人"
     assert by_name["周梅珍"]["height"] == "154cm"
     assert by_name["周梅珍"]["occupation"] == "退休工人"
     assert by_name["孙魁"]["education_level"] == "高中"
     assert by_name["王微珍"]["occupation"] == "统计人员"
+    assert by_name["王微珍"]["education_level"] == "高中"
+    assert by_name["王微珍"].get("marital_status") in {None, ""}
 
 
 def test_old_version_blank_member_card_is_ignored_and_fields_do_not_shift() -> None:
@@ -537,6 +542,67 @@ def test_change_record_page_with_member_card_still_extracts_wang_weizhen() -> No
     assert member["migration_to_address"] == "1999-12-03 海宁路1027号"
 
 
+def test_wang_weizhen_member_with_invalid_marital_status_is_kept() -> None:
+    result = extract(
+        text="""登记事项变更和更正记载
+常住人口登记卡
+姓名 王微珍
+户主或与户主关系 儿媳
+性别 女性
+民族 汉
+出生地 浙江省鄞县
+籍贯 浙江省鄞县
+出生日期 1950年05月23日
+公民身份号码 310108195005231222
+文化程度 高中
+婚姻状况 孙魁
+兵役状况 未服兵役
+身高 162
+服务处所 闸北区建筑材料公司
+职业 统计人员
+何时由何地迁来本址 1999.12.03 海宁路1027号
+"""
+    )
+    by_name = members_by_name(result)
+    assert "王微珍" in by_name
+    member = by_name["王微珍"]
+    assert member["relationship_to_head"] == "儿媳"
+    assert member["id_number"] == "310108195005231222"
+    assert member["education_level"] == "高中"
+    assert member.get("marital_status") in {None, ""}
+    assert member["military_status"] == "未服兵役"
+    assert member["height"] == "162cm"
+    assert member["service_place"] == "闸北区建筑材料公司"
+    assert member["occupation"] == "统计人员"
+    assert member["migration_to_address"] == "1999-12-03 海宁路1027号"
+
+
+def test_long_education_level_is_preserved() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 孙惠章 户主或与户主关系 户主 性别 男 民族 汉族
+公民身份号码 31010819270115321X
+文化程度 中等专业学校或中等技术学校 婚姻状况 已婚
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["education_level"] in {"中等专业学校或中等技术学校", "中专"}
+
+
+def test_education_level_is_not_overwritten_by_marital_or_military_fields() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 王微珍 户主或与户主关系 儿媳 性别 女 民族 汉族
+公民身份号码 310108195005231222
+文化程度 高中 婚姻状况 孙魁 兵役状况 未服兵役
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["education_level"] == "高中"
+    assert member.get("marital_status") in {None, ""}
+    assert member["military_status"] == "未服兵役"
+
+
 def test_old_version_missing_fields_only_contains_real_key_missing_items() -> None:
     result = extract(pages=OLD_VERSION_PAGES)
     missing_text = " ".join(str(item) for item in result.get("missing_fields") or [])
@@ -551,6 +617,8 @@ def test_old_version_markdown_contains_members_without_raw_json() -> None:
     markdown = render_markdown(result)
     for name in ("孙惠章", "周梅珍", "孙魁", "王微珍", "孙黎明"):
         assert name in markdown
+    assert "文化程度：高中" in markdown
+    assert ("文化程度：中等专业学校或中等技术学校" in markdown) or ("文化程度：中专" in markdown)
     assert "```json" not in markdown
     assert "household_info:" not in markdown
     assert "members:" not in markdown

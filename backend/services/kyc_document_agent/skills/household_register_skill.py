@@ -63,7 +63,26 @@ HOUSEHOLD_TYPE_VALUES = (
 )
 
 RELATION_VALUES = ("户主", "儿媳", "女婿", "外孙女", "外孙", "孙子", "孙女", "长子", "次子", "长女", "次女", "妻", "夫", "子", "女", "父", "母", "兄", "弟", "姐", "妹", "其他")
-EDUCATION_VALUES = ("文盲或半文盲", "半文盲", "研究生", "博士", "硕士", "本科", "大专", "中专", "高中", "初中", "小学", "文盲", "不详")
+EDUCATION_VALUES = (
+    "中等专业学校或中等技术学校",
+    "文盲或半文盲",
+    "中等专业学校",
+    "中等技术学校",
+    "大学专科",
+    "大学本科",
+    "半文盲",
+    "研究生",
+    "博士",
+    "硕士",
+    "本科",
+    "大专",
+    "中专",
+    "高中",
+    "初中",
+    "小学",
+    "文盲",
+    "不详",
+)
 MARITAL_VALUES = ("有配偶", "已婚", "未婚", "离异", "离婚", "丧偶", "复婚")
 MILITARY_VALUES = ("未服兵役", "服兵役", "退役", "不详", "无")
 BLOOD_VALUES = ("AB型", "A型", "B型", "O型", "不明")
@@ -595,6 +614,20 @@ def _extract_choice_field(segment: str, labels: tuple[str, ...], choices: tuple[
     return choice, ev
 
 
+def _extract_education_level(segment: str) -> tuple[str, str]:
+    value, ev = _extract_field(segment, ("文化程度",), max_chars=100)
+    text = _compact(value)
+    for invalid in ("已婚", "未婚", "有配偶", "孙魁", "退休工人", "统计人员", "未服兵役", "服务处所", "职业"):
+        if text == invalid:
+            return "", ""
+    education = _first_choice(text, EDUCATION_VALUES)
+    if education:
+        return education, ev
+    if "中等专业" in text and "中等技术" in text:
+        return "中等专业学校或中等技术学校", ev
+    return "", ""
+
+
 def _extract_height(segment: str) -> tuple[str, str]:
     value, ev = _extract_field(segment, ("身高",), max_chars=40)
     match = re.search(r"(\d{2,3})", value)
@@ -688,8 +721,12 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
         if not member.get("birth_date"):
             member["birth_date"] = f"{id_number[6:10]}-{id_number[10:12]}-{id_number[12:14]}"
 
+    education, ev = _extract_education_level(segment)
+    if education:
+        member["education_level"] = education
+        evidence["education_level"] = _make_evidence(education, ev, page)
+
     for field, labels, choices, marital in (
-        ("education_level", ("文化程度",), EDUCATION_VALUES, False),
         ("marital_status", ("婚姻状况",), MARITAL_VALUES, True),
         ("military_status", ("兵役状况",), MILITARY_VALUES, False),
         ("blood_type", ("血型",), BLOOD_VALUES, False),
