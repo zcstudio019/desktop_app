@@ -191,6 +191,26 @@ def _flat(text: str) -> str:
     return re.sub(r"\s+", " ", _text(text)).strip()
 
 
+def _canonical_member_labels(text: str) -> str:
+    value = text
+    replacements = (
+        (r"户主或与\s*户主关系", "户主或与户主关系"),
+        (r"公民\s*身份\s*号码", "公民身份号码"),
+        (r"姓\s+名", "姓名"),
+        (r"曾\s+用\s+名", "曾用名"),
+        (r"文\s*化\s*程度", "文化程度"),
+        (r"婚姻\s*状况", "婚姻状况"),
+        (r"兵役\s*状况", "兵役状况"),
+        (r"宗教\s*信仰", "宗教信仰"),
+        (r"服务\s*处所", "服务处所"),
+        (r"出生\s*日期", "出生日期"),
+        (r"出生\s*地", "出生地"),
+    )
+    for pattern, replacement in replacements:
+        value = re.sub(pattern, replacement, value)
+    return value
+
+
 def _compact(text: Any) -> str:
     return re.sub(r"\s+", "", str(text or "")).strip(" :：,，;；")
 
@@ -316,7 +336,7 @@ def _has_member_card(text: str) -> bool:
 
 
 def _value_between(text: str, labels: tuple[str, ...], stops: tuple[str, ...], max_chars: int = 120) -> tuple[str, str]:
-    flat = _flat(text)
+    flat = _canonical_member_labels(_flat(text))
     label_re = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
     stop_re = "|".join(re.escape(stop) for stop in sorted(stops, key=len, reverse=True) if stop not in labels)
     pattern = re.compile(rf"(?:{label_re})\s*[:：]?\s*(.{{0,{max_chars}}}?)(?=\s*(?:{stop_re})|$)")
@@ -834,7 +854,16 @@ def _merge_member(current: dict[str, Any], candidate: dict[str, Any]) -> dict[st
             continue
         if not value:
             continue
-        if not merged.get(field):
+        old_value = merged.get(field)
+        if old_value in (None, "", "未识别"):
+            if old_value != value and merged.get("id_number"):
+                logger.info(
+                    "[HUKOU_MEMBER_FIELD_MERGE] id_number=%s field=%s old=%s new=%s",
+                    merged.get("id_number"),
+                    field,
+                    old_value or "未识别",
+                    value,
+                )
             merged[field] = value
     return merged
 
@@ -1045,7 +1074,21 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
                     continue
                 logger.info("[HUKOU_MEMBER_BACKFILL] id_number=%s reason=id_seen_in_ocr_but_missing_from_members", missing_id)
                 block = _member_block_around_id(page_text, missing_id)
+                logger.info(
+                    "[HUKOU_BACKFILL_BLOCK] id_number=%s page=%s block_preview=%s",
+                    missing_id,
+                    page,
+                    raw_preview(block),
+                )
                 member, member_evidence_item = _extract_member(block, page)
+                logger.info(
+                    "[HUKOU_BACKFILL_MEMBER] id_number=%s name=%s relation=%s gender=%s ethnicity=%s",
+                    missing_id,
+                    member.get("name") or "",
+                    member.get("relationship_to_head") or "",
+                    member.get("gender") or "",
+                    member.get("ethnicity") or "",
+                )
                 member["id_number"] = missing_id
                 if not member.get("birth_date"):
                     member["birth_date"] = f"{missing_id[6:10]}-{missing_id[10:12]}-{missing_id[12:14]}"

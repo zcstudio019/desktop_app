@@ -664,6 +664,127 @@ def test_member_with_name_id_and_gender_is_kept() -> None:
     assert members[0]["gender"] == "女"
 
 
+def test_split_label_values_are_parsed_for_fallback_member_block() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {
+            "pages": [
+                """常住人口登记卡
+姓名
+王微珍
+户主或与
+户主关系
+儿媳
+性别
+女性
+民族
+汉
+出生地
+浙江省鄞县
+籍贯
+浙江省鄞县
+出生日期
+1950年05月23日
+公民身份号码
+310108195005231222
+文化程度
+高中
+兵役状况
+未服兵役
+身高
+162
+宗教信仰
+无
+服务处所
+闸北区建筑材料公司
+职业
+统计人员
+何时由何地迁来本址
+1999.12.03 海宁路1027号
+"""
+            ]
+        }
+    )
+    member = result["fields"]["members"][0]
+    assert member["name"] == "王微珍"
+    assert member["relationship_to_head"] == "儿媳"
+    assert member["gender"] == "女"
+    assert member["ethnicity"] == "汉族"
+    assert member["birth_place"] == "浙江省鄞县"
+    assert member["native_place"] == "浙江省鄞县"
+    assert member["birth_date"] == "1950-05-23"
+    assert member["education_level"] == "高中"
+    assert member["military_status"] == "未服兵役"
+    assert member["height"] == "162cm"
+    assert member["religion"] == "无"
+    assert member["service_place"] == "闸北区建筑材料公司"
+    assert member["occupation"] == "统计人员"
+    assert member["migration_to_address"] == "1999-12-03 海宁路1027号"
+
+
+def test_split_name_gender_ethnicity_lines_are_parsed() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {"text": """姓名
+王微珍
+性别
+女性
+民族
+汉
+公民身份号码
+310108195005231222
+"""}
+    )
+    member = result["fields"]["members"][0]
+    assert member["name"] == "王微珍"
+    assert member["gender"] == "女"
+    assert member["ethnicity"] == "汉族"
+
+
+def test_split_relationship_label_is_parsed() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import extract as skill_extract
+
+    result = skill_extract(
+        {"text": """姓名 王微珍
+户主或与
+户主关系
+儿媳
+公民身份号码 310108195005231222
+"""}
+    )
+    assert result["fields"]["members"][0]["relationship_to_head"] == "儿媳"
+
+
+def test_member_merge_fills_empty_fields_from_fallback_candidate() -> None:
+    from backend.services.kyc_document_agent.skills.household_register_skill import _merge_member
+
+    merged = _merge_member(
+        {
+            "id_number": "310108195005231222",
+            "name": "",
+            "relationship_to_head": "",
+            "gender": "",
+            "ethnicity": "",
+            "birth_date": "1950-05-23",
+            "education_level": "高中",
+        },
+        {
+            "id_number": "310108195005231222",
+            "name": "王微珍",
+            "relationship_to_head": "儿媳",
+            "gender": "女",
+            "ethnicity": "汉族",
+        },
+    )
+    assert merged["name"] == "王微珍"
+    assert merged["relationship_to_head"] == "儿媳"
+    assert merged["gender"] == "女"
+    assert merged["ethnicity"] == "汉族"
+    assert merged["education_level"] == "高中"
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡
