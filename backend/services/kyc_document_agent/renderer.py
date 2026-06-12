@@ -632,8 +632,6 @@ def render_markdown(result: dict[str, Any]) -> str:
                 lines.extend(["", f"#### 成员 {index}：{name or '未识别'}"])
                 for key in HOUSEHOLD_MEMBER_FIELD_ORDER:
                     item = member.get(key)
-                    if item in (None, "", [], {}) and key not in {"name", "relationship_to_head", "gender", "ethnicity", "birth_date", "id_number"}:
-                        continue
                     lines.append(f"- {member_label(key)}：{value(item, key)}")
         else:
             lines.append("- 未识别")

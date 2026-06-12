@@ -1184,6 +1184,53 @@ def test_hukou_markdown_does_not_show_migration_or_service_stamp_noise() -> None
     assert "文化程度：职校" in markdown
 
 
+def test_hukou_markdown_lists_all_member_fields_with_unrecognized_placeholder() -> None:
+    markdown = render_markdown(
+        {
+            "doc_type": "household_register",
+            "doc_type_name": "户口本",
+            "extraction_status": "partial",
+            "fields": {
+                "household_info": {},
+                "household_records": [],
+                "members": [
+                    {
+                        "name": "孙黎明",
+                        "relationship_to_head": "孙子",
+                        "gender": "男",
+                        "ethnicity": "汉族",
+                        "birth_date": "1987-10-08",
+                        "id_number": "310108198710080531",
+                    }
+                ],
+            },
+            "missing_fields": [],
+            "validation": {"warnings": [], "errors": []},
+        }
+    )
+    for label in (
+        "姓名",
+        "与户主关系",
+        "性别",
+        "民族",
+        "出生地",
+        "籍贯",
+        "出生日期",
+        "公民身份号码",
+        "文化程度",
+        "兵役状况",
+        "身高",
+        "宗教信仰",
+        "服务处所",
+        "职业",
+        "何时由何地迁来本址",
+        "登记日期",
+    ):
+        assert f"- {label}：" in markdown
+    assert "- 文化程度：未识别" in markdown
+    assert "- 登记日期：未识别" in markdown
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡
