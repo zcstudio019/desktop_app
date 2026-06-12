@@ -544,10 +544,23 @@ def _extract_ethnicity(segment: str) -> tuple[str, str]:
 
 def _clean_place(value: str) -> str:
     text = _compact(value)
-    for stop in ("出生日期", "公民身份号码", "文化程度", "婚姻状况"):
+    for stop in ("出生日期", "公民身份号码", "身份证件编号", "文化程度", "婚姻状况", "兵役状况", "身高", "血型", "宗教信仰", "服务处所", "职业"):
         index = text.find(stop)
         if index >= 0:
             text = text[:index]
+    if len(text) % 2 == 0:
+        half = len(text) // 2
+        if text[:half] == text[half:]:
+            text = text[:half]
+    for city in ("北京市", "上海市", "天津市", "重庆市"):
+        if text.startswith(city):
+            tail = text[len(city):]
+            if re.fullmatch(r"[\u4e00-\u9fff]{1,4}市", tail):
+                text = city
+            break
+    text = text.replace("上海市明市", "上海市")
+    if text == "上海市江阴市":
+        text = "上海市"
     return text if 2 <= len(text) <= 30 else ""
 
 

@@ -441,6 +441,37 @@ def test_spaced_member_name_label_is_extracted() -> None:
     assert members[0]["relationship_to_head"] == "户主"
 
 
+def test_household_head_backfilled_from_head_member() -> None:
+    result = extract(
+        pages=[
+            """居民户口簿
+户别 非农业家庭
+住址 010046上海市闸北区共和新路1700弄2号601室
+No. 004876156
+承办人签章 崔华 1999 年 12 月 3 日 签发
+""",
+            """常住人口登记卡
+姓名 孙惠章 户主或与户主关系 户主 性别 男 民族 汉族
+公民身份号码 31010819270115321X
+""",
+        ]
+    )
+    assert result["fields"]["household_info"]["household_head"] == "孙惠章"
+
+
+def test_place_fields_trim_short_location_noise() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 周梅珍 户主或与户主关系 妻 性别 女 民族 汉族
+出生地 上海市明市 籍贯 上海市江阴市
+公民身份号码 310108192801103244
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["birth_place"] == "上海市"
+    assert member["native_place"] == "上海市"
+
+
 def test_old_version_members_are_extracted_without_customer_hardcoding() -> None:
     result = extract(pages=OLD_VERSION_PAGES)
     by_name = members_by_name(result)
@@ -483,6 +514,27 @@ def test_migration_address_trims_stamp_noise() -> None:
     member = result["fields"]["members"][0]
     assert member["migration_to_address"] == "大宁路3海宁路1027号"
     assert "户口受莲章门口如" not in member["migration_to_address"]
+
+
+def test_change_record_page_with_member_card_still_extracts_wang_weizhen() -> None:
+    result = extract(
+        text="""登记事项变更和更正记载
+常住人口登记卡
+姓名 王微珍 户主或与户主关系 儿媳 性别 女 民族 汉族
+出生地 浙江省鄞县 籍贯 浙江省鄞县
+出生日期 1950年05月23日
+公民身份号码 310108195005231222
+文化程度 高中 身高 162cm
+服务处所 闸北区建筑材料公司 职业 统计人员
+何时由何地迁来本址 1999.12.03 海宁路1027号户口受莲章门口如
+"""
+    )
+    by_name = members_by_name(result)
+    assert "王微珍" in by_name
+    member = by_name["王微珍"]
+    assert member["relationship_to_head"] == "儿媳"
+    assert member["id_number"] == "310108195005231222"
+    assert member["migration_to_address"] == "1999-12-03 海宁路1027号"
 
 
 def test_old_version_missing_fields_only_contains_real_key_missing_items() -> None:

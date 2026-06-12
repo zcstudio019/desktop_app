@@ -121,6 +121,24 @@ def normalize_household_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip(" :：,，;；")
 
 
+def normalize_household_place(value: Any) -> str:
+    text = normalize_household_text(value)
+    if len(text) % 2 == 0:
+        half = len(text) // 2
+        if text[:half] == text[half:]:
+            text = text[:half]
+    for city in ("北京市", "上海市", "天津市", "重庆市"):
+        if text.startswith(city):
+            tail = text[len(city):]
+            if re.fullmatch(r"[\u4e00-\u9fff]{1,4}市", tail):
+                text = city
+            break
+    text = text.replace("上海市明市", "上海市")
+    if text == "上海市江阴市":
+        text = "上海市"
+    return text
+
+
 def normalize_household_member(member: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(member)
     if normalized.get("id_number"):
@@ -140,8 +158,6 @@ def normalize_household_member(member: dict[str, Any]) -> dict[str, Any]:
         "name",
         "former_name",
         "relationship_to_head",
-        "birth_place",
-        "native_place",
         "other_address",
         "education_level",
         "military_status",
@@ -152,6 +168,9 @@ def normalize_household_member(member: dict[str, Any]) -> dict[str, Any]:
     ):
         if normalized.get(field):
             normalized[field] = normalize_household_text(normalized.get(field))
+    for field in ("birth_place", "native_place"):
+        if normalized.get(field):
+            normalized[field] = normalize_household_place(normalized.get(field))
     for field in ("migration_to_city", "migration_to_address"):
         if normalized.get(field):
             normalized[field] = re.sub(r"\s+", " ", str(normalized.get(field) or "")).strip(" :：,，;；")
