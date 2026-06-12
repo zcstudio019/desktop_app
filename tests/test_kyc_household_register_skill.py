@@ -414,6 +414,33 @@ def test_old_version_household_home_fields_are_extracted_generically() -> None:
     assert "注意事项" not in (info.get("issuing_authority") or "")
 
 
+def test_household_number_is_split_from_address_prefix() -> None:
+    result = extract(
+        text="""居民户口簿
+户别 非农业家庭
+住址 010046上海市闸北区共和新路1700弄2号601室
+户主姓名 孙惠章
+No. 004876156
+承办人签章 崔华 1999 年 12 月 3 日 签发
+"""
+    )
+    info = result["fields"]["household_info"]
+    assert info["household_number"] == "010046"
+    assert info["household_address"] == "上海市闸北区共和新路1700弄2号601室"
+
+
+def test_spaced_member_name_label_is_extracted() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓 名 孙惠章 户主或与户主关系 户主 性别 男 民族 汉族
+公民身份号码 31010819270115321X
+"""
+    )
+    members = result["fields"]["members"]
+    assert members[0]["name"] == "孙惠章"
+    assert members[0]["relationship_to_head"] == "户主"
+
+
 def test_old_version_members_are_extracted_without_customer_hardcoding() -> None:
     result = extract(pages=OLD_VERSION_PAGES)
     by_name = members_by_name(result)
@@ -443,6 +470,19 @@ def test_old_version_blank_member_card_is_ignored_and_fields_do_not_shift() -> N
         assert "首次申报" not in member.get("occupation", "")
         assert member.get("marital_status") != "职业"
         assert member.get("education_level") not in {"已婚", "未婚", "有配偶"}
+
+
+def test_migration_address_trims_stamp_noise() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 孙黎明 户主或与户主关系 孙子 性别 男 民族 汉族
+公民身份号码 310108198710080531
+何时由何地迁来本址 大宁路3海宁路1027号户口受莲章门口如
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["migration_to_address"] == "大宁路3海宁路1027号"
+    assert "户口受莲章门口如" not in member["migration_to_address"]
 
 
 def test_old_version_missing_fields_only_contains_real_key_missing_items() -> None:

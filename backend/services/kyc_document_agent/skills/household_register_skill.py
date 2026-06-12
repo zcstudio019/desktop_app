@@ -92,12 +92,20 @@ ADDRESS_NOISE = (
     "承办人签章",
     "签发",
     "注意事项",
+    "户主姓名",
+    "户号",
+    "No.",
+    "NO.",
+    "编号",
 )
 
 MEMBER_STOP_LABELS = (
     "姓名",
+    "姓 名",
     "曾用名",
+    "曾 用 名",
     "户主或与户主关系",
+    "户主关系",
     "与户主关系",
     "性别",
     "民族",
@@ -106,6 +114,7 @@ MEMBER_STOP_LABELS = (
     "出生日期",
     "本市",
     "公民身份号码",
+    "身份证件编号",
     "身份证号码",
     "居民身份证号码",
     "文化程度",
@@ -117,6 +126,7 @@ MEMBER_STOP_LABELS = (
     "服务处所",
     "职业",
     "何时由何地迁来本市",
+    "何时由何地迁来本县",
     "何时由何地迁来本址",
     "登记日期",
     "承办人签章",
@@ -125,9 +135,13 @@ MEMBER_STOP_LABELS = (
 
 HOME_STOP_LABELS = (
     "户别",
+    "户 别",
     "户号",
+    "户 号",
     "户主姓名",
+    "户 主 姓 名",
     "住址",
+    "住 址",
     "承办人签章",
     "签发",
     "户口专用章",
@@ -238,9 +252,25 @@ def _page_type(text: str) -> str:
     if "登记事项变更和更正记载" in compact:
         return "change_record"
     home_score = sum(1 for label in ("户别", "户号", "户主姓名", "住址") if label in compact)
-    if home_score >= 3 or "承办人签章" in compact or re.search(r"No\.?\s*\d{6,}", text, re.I):
+    if home_score >= 3 or ("居民户口簿" in compact and "住址" in compact) or "承办人签章" in compact or re.search(r"No\.?\s*\d{6,}", text, re.I):
         return "household_home_page"
     return "unknown"
+
+
+def _has_home_page(text: str) -> bool:
+    compact = _compact(text)
+    home_score = sum(1 for label in ("户别", "户号", "户主姓名", "住址") if label in compact)
+    return (
+        home_score >= 2
+        or ("居民户口簿" in compact and "住址" in compact)
+        or ("承办人签章" in compact and ("签发" in compact or "户别" in compact or "住址" in compact))
+        or bool(re.search(r"(?:No\.?|NO\.?|Nº|N°|编号|户口簿编号)\s*[:：]?\s*[0-9A-Za-z]{6,12}", text, re.I))
+    )
+
+
+def _has_address_change_area(text: str) -> bool:
+    compact = _compact(text)
+    return "住址变动登记" in compact and ("变动后的住址" in compact or "变动日期" in compact)
 
 
 def _has_member_card(text: str) -> bool:
@@ -276,9 +306,10 @@ def _first_choice(value: str, choices: tuple[str, ...]) -> str:
 
 def _clean_person_name(value: Any) -> str:
     text = _compact(value)
-    for bad in ("或与", "户主", "性别", "民族", "出生", "公民身份号码", "姓名", "曾用名", "何时由何地"):
+    for bad in ("或与", "性别", "民族", "出生", "公民身份号码", "姓名", "曾用名", "何时由何地"):
         if bad in text:
             return ""
+    text = re.sub(r"^(?:户主或与户主关系|户主关系|与户主关系)", "", text)
     text = re.sub(r"(关系.*|关$)", "", text)
     match = re.search(r"[\u4e00-\u9fff]{2,8}", text)
     if not match:
@@ -315,14 +346,24 @@ def _clean_address(value: Any) -> str:
             text = text[:index]
     text = re.sub(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日.*$", "", text)
     text = re.sub(r"(?:19|20)\d{2}[-./]\d{1,2}[-./]\d{1,2}.*$", "", text)
-    terminal_indexes = [text.rfind(char) for char in ("室", "村", "号") if text.rfind(char) >= 0]
+    terminal_indexes = [text.rfind(char) for char in ("室", "村", "号", "楼", "幢", "单元") if text.rfind(char) >= 0]
     if terminal_indexes:
         text = text[: max(terminal_indexes) + 1]
     if not (6 <= len(text) <= 80):
         return ""
-    if not any(keyword in text for keyword in ("省", "市", "县", "区", "镇", "村", "路", "弄", "号", "室")):
+    if not any(keyword in text for keyword in ("省", "市", "县", "区", "镇", "乡", "村", "路", "街", "弄", "号", "室", "幢", "单元", "楼")):
         return ""
     return text
+
+
+def _split_leading_household_number_from_address(address: str) -> tuple[str, str]:
+    match = re.match(r"^([A-Za-z0-9]{4,12})(?=[\u4e00-\u9fff]*(?:省|市|区|县|镇|乡|村|路|街|弄|号|室|幢|单元|楼))(.+)$", address or "")
+    if not match:
+        return "", address
+    number = match.group(1)
+    if re.fullmatch(r"\d{17}[\dXx]", number):
+        return "", address
+    return number, match.group(2)
 
 
 def _clean_authority(value: Any) -> str:
@@ -361,10 +402,10 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
     info["address_change_records"] = []
     evidence: dict[str, Any] = {}
 
-    if _page_type(text) != "household_home_page":
+    if not _has_home_page(text):
         return info, evidence
 
-    value, ev = _value_between(text, ("户别",), HOME_STOP_LABELS)
+    value, ev = _value_between(text, ("户别", "户 别"), HOME_STOP_LABELS)
     household_type = _first_choice(value, HOUSEHOLD_TYPE_VALUES)
     if not household_type:
         household_type = _first_choice(text, HOUSEHOLD_TYPE_VALUES)
@@ -379,19 +420,24 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
             info["household_number"] = candidate
             evidence["household_info.household_number"] = _make_evidence(candidate, match.group(0), page)
 
-    value, ev = _value_between(text, ("户主姓名",), HOME_STOP_LABELS, max_chars=40)
+    value, ev = _value_between(text, ("户主姓名", "户 主 姓 名"), HOME_STOP_LABELS, max_chars=40)
     head = _clean_person_name(value)
     if not head:
-        match = re.search(r"户主姓名\s*[:：]?\s*([\u4e00-\u9fff]{2,8})", _compact(text))
+        match = re.search(r"户\s*主\s*姓\s*名\s*[:：]?\s*([\u4e00-\u9fff]{2,8})", _flat(text))
         if match:
             head = _clean_person_name(match.group(1))
     if head and not any(word in head for word in ("非农", "家庭户", "户口")):
         info["household_head"] = head
         evidence["household_info.household_head"] = _make_evidence(head, ev, page)
 
-    value, ev = _value_between(text, ("住址",), HOME_STOP_LABELS, max_chars=160)
+    value, ev = _value_between(text, ("住址", "住 址"), HOME_STOP_LABELS, max_chars=160)
     address = _clean_address(value)
     if address:
+        number_from_address, clean_address = _split_leading_household_number_from_address(address)
+        if number_from_address and not info.get("household_number"):
+            info["household_number"] = number_from_address
+            evidence["household_info.household_number"] = _make_evidence(number_from_address, ev, page)
+        address = clean_address
         info["household_address"] = address
         evidence["household_info.household_address"] = _make_evidence(address, ev, page)
 
@@ -428,7 +474,7 @@ def _extract_household_info_from_page(text: str, page: int | None) -> tuple[dict
 
 
 def _extract_valid_address_change_records(text: str) -> list[str]:
-    if _page_type(text) != "address_change":
+    if not _has_address_change_area(text):
         return []
     records: list[str] = []
     for line in _lines(text):
@@ -444,7 +490,7 @@ def _extract_field(segment: str, labels: tuple[str, ...], max_chars: int = 120) 
 
 
 def _extract_name(segment: str) -> tuple[str, str, str]:
-    value, ev = _extract_field(segment, ("姓名",), max_chars=60)
+    value, ev = _extract_field(segment, ("姓名", "姓 名"), max_chars=60)
     relation_from_name = ""
     split_name, split_relation = _split_name_relation(value)
     if split_name:
@@ -453,9 +499,9 @@ def _extract_name(segment: str) -> tuple[str, str, str]:
     if name:
         return name, relation_from_name, ev
     for line in _lines(segment):
-        if "姓名" not in line:
+        if "姓名" not in line and not re.search(r"姓\s*名", line):
             continue
-        match = re.search(r"姓名\s*[:：]?\s*([\u4e00-\u9fff]{2,8})", line)
+        match = re.search(r"姓\s*名\s*[:：]?\s*([\u4e00-\u9fff]{2,8})", line)
         if match:
             name = _clean_person_name(match.group(1))
             if name:
@@ -466,7 +512,7 @@ def _extract_name(segment: str) -> tuple[str, str, str]:
 def _extract_relation(segment: str, relation_hint: str = "") -> tuple[str, str]:
     if relation_hint in RELATION_VALUES:
         return relation_hint, relation_hint
-    value, ev = _extract_field(segment, ("户主或与户主关系", "与户主关系"), max_chars=50)
+    value, ev = _extract_field(segment, ("户主或与户主关系", "户主关系", "与户主关系"), max_chars=50)
     relation = _first_choice(value, RELATION_VALUES)
     if relation:
         return relation, ev
@@ -514,7 +560,7 @@ def _extract_date_field(segment: str, labels: tuple[str, ...]) -> tuple[str, str
 
 
 def _extract_id_number(segment: str) -> tuple[str, str]:
-    value, ev = _extract_field(segment, ("公民身份号码", "身份证号码", "居民身份证号码"), max_chars=80)
+    value, ev = _extract_field(segment, ("公民身份号码", "身份证件编号", "身份证号码", "居民身份证号码"), max_chars=80)
     match = re.search(r"\d{17}[\dXx]", value)
     if not match:
         match = re.search(r"\d{17}[\dXx]", segment)
@@ -560,6 +606,15 @@ def _extract_text_field(segment: str, labels: tuple[str, ...], *, max_chars: int
     return (text, ev) if text else ("", "")
 
 
+def _clean_migration_address(value: str) -> str:
+    text = _normalize_dates_in_text(value)
+    for noise in ("户口受", "户口", "受莲章", "章门口", "门口如", "公民身份号码", "登记日期", "派出所", "公安局"):
+        index = text.find(noise)
+        if index >= 0:
+            text = text[:index]
+    return text.strip(" :：,，;；")
+
+
 def _split_member_segments(text: str) -> list[str]:
     if "常住人口登记卡" in text:
         parts = re.split(r"常住人口登记卡", text)
@@ -593,7 +648,7 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
             evidence[field] = _make_evidence(value, ev, page)
 
     for field, labels in (
-        ("former_name", ("曾用名",)),
+        ("former_name", ("曾用名", "曾 用 名")),
         ("birth_place", ("出生地",)),
         ("native_place", ("籍贯",)),
         ("other_address", ("本市(县)其他住址", "本市（县）其他住址", "本市县其他住址")),
@@ -653,6 +708,8 @@ def _extract_member(segment: str, page: int | None) -> tuple[dict[str, Any], dic
         value, ev = _extract_text_field(segment, labels, max_chars=160, reject=("注意事项",))
         if value:
             value = _normalize_dates_in_text(value)
+            if field == "migration_to_address":
+                value = _clean_migration_address(value)
             if field == "migration_to_address" and not any(keyword in value for keyword in ("省", "市", "县", "区", "镇", "村", "路", "弄", "号", "室", "迁来", "迁入")):
                 continue
             member[field] = value
@@ -735,6 +792,11 @@ def _dedupe_members(members: list[dict[str, Any]], evidences: list[dict[str, Any
 
 def _backfill_household_info_from_members(household_info: dict[str, Any], members: list[dict[str, Any]]) -> dict[str, Any]:
     info = dict(household_info)
+    number_from_address, clean_address = _split_leading_household_number_from_address(str(info.get("household_address") or ""))
+    if number_from_address:
+        if not info.get("household_number"):
+            info["household_number"] = number_from_address
+        info["household_address"] = clean_address
     head_member = next(
         (
             member
@@ -798,13 +860,12 @@ def extract(payload: dict[str, Any] | str) -> dict[str, Any]:
     evidence: dict[str, Any] = {}
 
     for page, page_text in page_texts:
-        page_type = _page_type(page_text)
-        if page_type == "household_home_page":
+        if _has_home_page(page_text):
             info, info_evidence = _extract_household_info_from_page(page_text, page)
             if any(value for key, value in info.items() if key != "address_change_records"):
                 household_records.append(info)
                 evidence.update(info_evidence)
-        elif page_type == "address_change":
+        if _has_address_change_area(page_text):
             address_change_records.extend(_extract_valid_address_change_records(page_text))
 
         if _has_member_card(page_text):
