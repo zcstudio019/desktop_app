@@ -38,6 +38,7 @@ MEMBER_FIELDS = (
     "id_number",
     "education_level",
     "marital_status",
+    "marital_note",
     "military_status",
     "height",
     "blood_type",
@@ -70,9 +71,12 @@ HOUSEHOLD_TYPE_VALUES = (
 RELATION_VALUES = ("户主", "儿媳", "女婿", "外孙女", "外孙", "孙子", "孙女", "长子", "次子", "长女", "次女", "妻", "夫", "子", "女", "父", "母", "兄", "弟", "姐", "妹", "其他")
 EDUCATION_VALUES = (
     "中等专业学校或中等技术学校",
+    "相当中专或中技",
     "文盲或半文盲",
     "中等专业学校",
     "中等技术学校",
+    "相当中专",
+    "相当中技",
     "职业高中",
     "职业学校",
     "大学专科",
@@ -95,6 +99,7 @@ EDUCATION_VALUES = (
 )
 MARITAL_VALUES = ("有配偶", "已婚", "未婚", "离异", "离婚", "丧偶", "复婚")
 MILITARY_VALUES = ("未服兵役", "服兵役", "退役", "不详", "无")
+MILITARY_NORMALIZED_VALUES = ("未服兵役", "服现役", "退出现役", "预备役", "免服兵役", "不适合服兵役")
 BLOOD_VALUES = ("AB型", "A型", "B型", "O型", "不明")
 RELIGION_VALUES = ("无", "不详", "佛教", "道教", "基督教", "天主教", "伊斯兰教")
 OCCUPATION_VALUES = ("不详", "无业", "学生", "职员", "个体", "工人", "农民", "教师")
@@ -714,6 +719,38 @@ def extract_value_after_label(
     return "", "", candidates
 
 
+def extract_hukou_field_value(
+    block_text: str,
+    field_name: str,
+    aliases: tuple[str, ...],
+    stop_labels: tuple[str, ...],
+    *,
+    allow_value_before_label: bool = False,
+    max_chars: int = 120,
+) -> tuple[str, str, str]:
+    value, ev = _value_between(block_text, aliases, stop_labels, max_chars=max_chars)
+    if value:
+        return value, ev, "after_label"
+    lines = _lines(block_text)
+    for alias in aliases:
+        line_value, line_ev, _ = extract_value_after_label(lines, alias, stop_labels, max_lookahead=5)
+        if line_value:
+            return line_value, line_ev, "split_label"
+    if allow_value_before_label:
+        flat = _canonical_member_labels(_flat(block_text))
+        alias_re = "|".join(re.escape(alias) for alias in sorted(aliases, key=len, reverse=True))
+        match = re.search(rf"([\u4e00-\u9fff0-9年月日./\-\s、，,（）()]+?)\s*(?:{alias_re})(?=\s|$|[\u4e00-\u9fff])", flat)
+        if match:
+            raw = match.group(1).strip(" :：,，;；")
+            for stop in stop_labels:
+                index = raw.rfind(stop)
+                if index >= 0:
+                    raw = raw[index + len(stop):]
+            if raw:
+                return raw[-max_chars:], match.group(0), "value_before_label"
+    return "", "", ""
+
+
 def _name_candidates_from_block(segment: str) -> list[str]:
     lines = _lines(segment)
     candidates: list[str] = []
@@ -855,15 +892,137 @@ def _extract_choice_field(segment: str, labels: tuple[str, ...], choices: tuple[
 
 
 def _extract_education_level(segment: str) -> tuple[str, str]:
-    value, ev = _extract_field(segment, ("文化程度",), max_chars=100)
+    value, ev, source = extract_hukou_field_value(
+        segment,
+        "education_level",
+        ("文化程度",),
+        MEMBER_STOP_LABELS,
+        allow_value_before_label=True,
+        max_chars=100,
+    )
     text = _compact(value)
     for invalid in ("已婚", "未婚", "有配偶", "孙魁", "退休工人", "统计人员", "未服兵役", "服务处所", "职业"):
         if text == invalid:
             return "", ""
     education = _normalize_education_level(text)
     if education:
+        logger.info("[HUKOU_FIELD_EXTRACT] id_number=%s field=education_level value=%s source=%s", _extract_id_number(segment)[0], education, source)
         return education, ev
+    flat = _canonical_member_labels(_flat(segment))
+    match = re.search(r"([\u4e00-\u9fff]{2,20})\s*文化程度\s*(?:毕业)?", flat)
+    if match:
+        before_text = match.group(1)
+        for stop in MEMBER_STOP_LABELS:
+            index = before_text.rfind(stop)
+            if index >= 0:
+                before_text = before_text[index + len(stop):]
+        education = _normalize_education_level(before_text)
+        if education:
+            logger.info("[HUKOU_FIELD_EXTRACT] id_number=%s field=education_level value=%s source=value_before_label", _extract_id_number(segment)[0], education)
+            return education, match.group(0)
     return "", ""
+
+
+def _extract_military_status(segment: str) -> tuple[str, str]:
+    value, ev, source = extract_hukou_field_value(segment, "military_status", ("兵役状况",), MEMBER_STOP_LABELS, max_chars=80)
+    text = _compact(value)
+    mapping = (
+        ("不适合服兵役", "不适合服兵役"),
+        ("未服兵役", "未服兵役"),
+        ("免服兵役", "免服兵役"),
+        ("退出现役", "退出现役"),
+        ("预备役", "预备役"),
+        ("服现役", "服现役"),
+        ("服兵役", "服现役"),
+        ("现役", "服现役"),
+        ("退役", "退出现役"),
+    )
+    for key, normalized in mapping:
+        if key in text:
+            logger.info("[HUKOU_FIELD_EXTRACT] id_number=%s field=military_status value=%s source=%s", _extract_id_number(segment)[0], normalized, source)
+            return normalized, ev
+    if text:
+        logger.info("[HUKOU_FIELD_REJECTED] id_number=%s field=military_status value=%s reason=invalid_military_status", _extract_id_number(segment)[0], text)
+    return "", ""
+
+
+def _extract_marital_status_and_note(segment: str) -> tuple[str, str, str, str]:
+    value, ev, source = extract_hukou_field_value(segment, "marital_status", ("婚姻状况",), MEMBER_STOP_LABELS, max_chars=80)
+    text = _compact(value)
+    status = _first_choice(text, MARITAL_VALUES)
+    if status:
+        if status == "有配偶":
+            status = "已婚"
+        if status == "离婚":
+            status = "离异"
+        return status, "", ev, source
+    note = _clean_person_name(text)
+    if note:
+        logger.info("[HUKOU_FIELD_NOTE] id_number=%s field=marital_note value=%s reason=person_name_in_marital_status", _extract_id_number(segment)[0], note)
+        return "", note, ev, source
+    return "", "", "", ""
+
+
+def _extract_migration_pair(segment: str) -> tuple[dict[str, str], dict[str, str]]:
+    values: dict[str, str] = {}
+    evidences: dict[str, str] = {}
+    city_value, city_ev, city_source = extract_hukou_field_value(
+        segment,
+        "migration_to_city",
+        ("何时由何地迁来本市（县）", "何时由何地迁来本市(县)", "何时由何地迁来本市"),
+        MEMBER_STOP_LABELS,
+        max_chars=180,
+    )
+    address_value, address_ev, address_source = extract_hukou_field_value(
+        segment,
+        "migration_to_address",
+        ("何时由何地迁来本址",),
+        MEMBER_STOP_LABELS,
+        max_chars=180,
+    )
+
+    flat = _canonical_member_labels(_flat(segment))
+    marker = "何时由何地"
+    city_label = re.search(r"迁来本市[（(]县[）)]|迁来本市", flat)
+    address_label = flat.find("何时由何地迁来本址")
+    if marker in flat and city_label:
+        marker_index = flat.find(marker)
+        first_chunk = flat[marker_index + len(marker): city_label.start()]
+        first_chunk = first_chunk.strip(" :：,，;；")
+        if first_chunk and not city_value:
+            city_value = first_chunk
+            city_ev = first_chunk
+            city_source = "split_label"
+        second_end = address_label if address_label > city_label.end() else len(flat)
+        second_chunk = flat[city_label.end():second_end].strip(" :：,，;；")
+        if second_chunk and not address_value:
+            address_value = second_chunk
+            address_ev = second_chunk
+            address_source = "split_label"
+    elif marker in flat and not city_value:
+        marker_index = flat.find(marker)
+        tail = flat[marker_index + len(marker):]
+        for stop in ("迁来本址", "登记日期", "承办人签章", "常住人口登记卡", "公民身份号码", "姓名", "性别", "民族"):
+            index = tail.find(stop)
+            if index >= 0:
+                tail = tail[:index]
+        tail = tail.strip(" :：,，;；")
+        if tail:
+            city_value = tail
+            city_ev = tail
+            city_source = "split_label"
+
+    for field, raw, ev, source in (
+        ("migration_to_city", city_value, city_ev, city_source),
+        ("migration_to_address", address_value, address_ev, address_source),
+    ):
+        if raw:
+            cleaned = clean_hukou_field_value(field, _normalize_dates_in_text(raw))
+            if cleaned:
+                values[field] = cleaned
+                evidences[field] = ev
+                logger.info("[HUKOU_FIELD_EXTRACT] id_number=%s field=%s value=%s source=%s", _extract_id_number(segment)[0], field, cleaned, source)
+    return values, evidences
 
 
 def _extract_height(segment: str) -> tuple[str, str]:
@@ -1163,9 +1322,20 @@ def parse_member_from_block(block_text: str, page_index: int | None = None) -> t
         member["education_level"] = education
         evidence["education_level"] = _make_evidence(education, ev, page)
 
+    marital_status, marital_note, ev, _source = _extract_marital_status_and_note(segment)
+    if marital_status:
+        member["marital_status"] = marital_status
+        evidence["marital_status"] = _make_evidence(marital_status, ev, page)
+    if marital_note:
+        member["marital_note"] = marital_note
+        evidence["marital_note"] = _make_evidence(marital_note, ev, page)
+
+    military_status, ev = _extract_military_status(segment)
+    if military_status:
+        member["military_status"] = military_status
+        evidence["military_status"] = _make_evidence(military_status, ev, page)
+
     for field, labels, choices, marital in (
-        ("marital_status", ("婚姻状况",), MARITAL_VALUES, True),
-        ("military_status", ("兵役状况",), MILITARY_VALUES, False),
         ("blood_type", ("血型",), BLOOD_VALUES, False),
         ("religion", ("宗教信仰",), RELIGION_VALUES, False),
     ):
@@ -1195,18 +1365,12 @@ def parse_member_from_block(block_text: str, page_index: int | None = None) -> t
                 member[field] = cleaned
                 evidence[field] = _make_evidence(member[field], ev, page)
 
-    for field, labels in (
-        ("migration_to_city", ("何时由何地迁来本市（县）", "何时由何地迁来本市(县)", "何时由何地迁来本市")),
-        ("migration_to_address", ("何时由何地迁来本址",)),
-    ):
-        value, ev = _extract_text_field(segment, labels, max_chars=160, reject=("注意事项",))
-        if value:
-            value = _normalize_dates_in_text(value)
-            value = clean_hukou_field_value(field, value)
-            if field == "migration_to_address" and not any(keyword in value for keyword in ("省", "市", "县", "区", "镇", "村", "路", "弄", "号", "室", "迁来", "迁入")):
-                continue
-            member[field] = value
-            evidence[field] = _make_evidence(value, ev, page)
+    migration_values, migration_evidence = _extract_migration_pair(segment)
+    for field, value in migration_values.items():
+        if field == "migration_to_address" and not any(keyword in value for keyword in ("省", "市", "县", "区", "镇", "村", "路", "弄", "号", "室", "迁来", "迁入")):
+            continue
+        member[field] = value
+        evidence[field] = _make_evidence(value, migration_evidence.get(field, value), page)
 
     for field in ("migration_to_city", "migration_to_address", "service_place", "occupation", "education_level"):
         if member.get(field):

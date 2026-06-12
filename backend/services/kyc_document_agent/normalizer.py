@@ -151,9 +151,11 @@ def normalize_household_education_level(value: Any) -> str:
         return "职校"
     if "职业高中" in text:
         return "职高"
-    if "中等专业学校或中等技术学校" in text or "中等专业学校" in text or "中等技术学校" in text:
+    if "相当中专或中技" in text or "相当中专" in text or "中等专业学校或中等技术学校" in text or "中等专业学校" in text:
         return "中专"
-    for item in ("文盲或半文盲", "半文盲", "文盲", "小学", "初中", "高中", "职高", "职校", "技校", "中专", "大专", "大学专科", "本科", "大学本科", "研究生", "不详"):
+    if "相当中技" in text or "中等技术学校" in text:
+        return "中技"
+    for item in ("文盲或半文盲", "半文盲", "文盲", "小学", "初中", "高中", "职高", "职校", "技校", "中专", "中技", "大专", "大学专科", "本科", "大学本科", "研究生", "不详"):
         if item in text:
             return item
     return ""
@@ -224,6 +226,7 @@ def normalize_household_member(member: dict[str, Any]) -> dict[str, Any]:
         "former_name",
         "relationship_to_head",
         "other_address",
+        "marital_note",
         "military_status",
         "blood_type",
         "religion",

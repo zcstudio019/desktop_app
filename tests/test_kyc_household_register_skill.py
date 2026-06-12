@@ -1352,6 +1352,111 @@ def test_member_without_name_has_validation_warning() -> None:
     assert any("310113197708313929" in item and "未识别到姓名" in item for item in warnings)
 
 
+def test_education_value_before_label_is_extracted() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 王敏利
+户主关系 女婿
+性别 男
+民族 汉
+公民身份号码 310113197612283411
+相当中专或中技 文化程度 毕业
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["education_level"] in {"中专", "相当中专或中技"}
+
+
+def test_split_migration_fields_are_combined() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 吴晓红
+户主关系 女
+性别 女
+民族 汉
+公民身份号码 310113197708313929
+何时由何地
+1979年10月07日报出生
+迁来本市（县）
+2007年05月16日顾北东路500弄82号601室
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["migration_to_city"] == "1979-10-07 报出生"
+    assert member["migration_to_address"] == "2007-05-16 顾北东路500弄82号601室"
+
+
+def test_wang_minli_migration_and_education_fields_are_extracted() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 王敏利
+户主关系 女婿
+性别 男
+民族 汉
+公民身份号码 310113197612283411
+相当中专或中技 文化程度 毕业
+兵役状况 退出现役
+何时由何地
+1998年04月23日福建省福州市城门三角城
+迁来本市（县）
+2007年05月16日顾北东路500弄82号601室
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member["education_level"] in {"中专", "相当中专或中技"}
+    assert member["military_status"] == "退出现役"
+    assert member["migration_to_city"] == "1998-04-23 福建省福州市城门三角城"
+    assert member["migration_to_address"].startswith("2007-05-16")
+
+
+def test_invalid_military_status_is_rejected() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 吴志明
+户主关系 户主
+性别 男
+民族 汉
+公民身份号码 310223194706161612
+兵役状况 县、团级以下企事
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member.get("military_status") in {"", None}
+
+
+def test_marital_person_name_is_saved_as_note_not_status() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 吴志明
+户主关系 户主
+性别 男
+民族 汉
+公民身份号码 310223194706161612
+婚姻状况 吴晓红
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert member.get("marital_status") != "吴晓红"
+    assert member.get("marital_note") == "吴晓红"
+
+
+def test_service_place_and_occupation_boundaries_do_not_consume_migration() -> None:
+    result = extract(
+        text="""常住人口登记卡
+姓名 吴晓红
+户主关系 女
+性别 女
+民族 汉
+公民身份号码 310113197708313929
+服务处所 上海机械刀片 机械工程技术人 职业 何时由何地 1979年10月07日报出生
+"""
+    )
+    member = result["fields"]["members"][0]
+    assert "上海机械刀片" in member.get("service_place", "")
+    assert member.get("occupation") in {"", None}
+    assert member["migration_to_city"] == "1979-10-07 报出生"
+
+
 def test_long_education_level_is_preserved() -> None:
     result = extract(
         text="""常住人口登记卡

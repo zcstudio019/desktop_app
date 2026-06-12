@@ -148,6 +148,7 @@ HOUSEHOLD_MEMBER_FIELD_LABELS = {
     "id_number": "公民身份号码",
     "education_level": "文化程度",
     "marital_status": "婚姻状况",
+    "marital_note": "婚姻备注",
     "military_status": "兵役状况",
     "height": "身高",
     "blood_type": "血型",
@@ -182,6 +183,7 @@ HOUSEHOLD_MEMBER_FIELD_ORDER = [
     "id_number",
     "education_level",
     "marital_status",
+    "marital_note",
     "military_status",
     "height",
     "blood_type",
@@ -632,6 +634,8 @@ def render_markdown(result: dict[str, Any]) -> str:
                 lines.extend(["", f"#### 成员 {index}：{name or '未识别'}"])
                 for key in HOUSEHOLD_MEMBER_FIELD_ORDER:
                     item = member.get(key)
+                    if key == "marital_note" and item in (None, "", [], {}):
+                        continue
                     lines.append(f"- {member_label(key)}：{value(item, key)}")
         else:
             lines.append("- 未识别")
