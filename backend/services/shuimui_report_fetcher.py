@@ -18,6 +18,34 @@ HTTP_TIMEOUT_SECONDS = 15.0
 PLAYWRIGHT_TIMEOUT_MS = 30_000
 MIN_REPORT_TEXT_LENGTH = 80
 
+REPORT_SUCCESS_KEYWORDS = (
+    "水母报告",
+    "企业名称",
+    "统一信用代码",
+    "当前法人姓名",
+    "报告创建时间",
+    "基本信息",
+    "纳税信息",
+    "发票信息",
+    "供应商信息",
+    "股东明细",
+    "社保人数",
+    "法人/股东变更",
+)
+
+AUTH_BLOCK_KEYWORDS = (
+    "请登录",
+    "登录后查看",
+    "未登录",
+    "无权访问",
+    "暂无权限",
+    "请完成企业授权",
+    "授权后查看",
+    "需要企业授权",
+    "验证码",
+    "认证后查看",
+)
+
 ERROR_MESSAGES = {
     "INVALID_DOMAIN": "当前仅支持 shuimui.szsmjr.com 的水母报告链接。",
     "INVALID_SCHEME": "当前仅支持 https 的水母报告链接。",
@@ -88,16 +116,24 @@ def _log_fetch_event(
     raw_text_length: int = 0,
     error_code: str = "",
     error_message: str = "",
+    page_title: str = "",
+    matched_success_keywords: list[str] | None = None,
+    matched_auth_block_keywords: list[str] | None = None,
+    final_status: str = "",
 ) -> None:
     """Log fetch diagnostics without report body."""
     logger.info(
-        "[ShuimuiFetch] source_url=%s parsed_sn=%s fetch_method=%s http_status_code=%s html_length=%s raw_text_length=%s error_code=%s error_message=%s",
+        "[ShuimuiFetch] source_url=%s parsed_sn=%s fetch_method=%s http_status_code=%s html_length=%s raw_text_length=%s page_title=%s matched_success_keywords=%s matched_auth_block_keywords=%s final_status=%s error_code=%s error_message=%s",
         source_url,
         parsed_sn,
         fetch_method,
         http_status_code,
         html_length,
         raw_text_length,
+        page_title,
+        ",".join(matched_success_keywords or []),
+        ",".join(matched_auth_block_keywords or []),
+        final_status,
         error_code,
         (error_message or "")[:200],
     )
@@ -148,8 +184,12 @@ def _compact_text(text: str) -> str:
 
 
 def _looks_like_auth_required(text: str) -> bool:
+    return bool(_matched_auth_block_keywords(text))
+
+
+def _matched_auth_block_keywords(text: str) -> list[str]:
     compact = _compact_text(text)
-    return any(token in compact for token in ("登录", "授权", "验证码", "无权限", "未授权", "请先登录", "访问受限"))
+    return [token for token in AUTH_BLOCK_KEYWORDS if token in compact]
 
 
 def _looks_like_expired(text: str) -> bool:
@@ -158,11 +198,22 @@ def _looks_like_expired(text: str) -> bool:
 
 
 def _looks_like_report_text(text: str, sn: str) -> bool:
+    return bool(_matched_success_keywords(text, sn))
+
+
+def _matched_success_keywords(text: str, sn: str) -> list[str]:
     compact = _compact_text(text)
-    if len(compact) < MIN_REPORT_TEXT_LENGTH:
-        return False
-    useful_tokens = ("水母", "报告", "企业", "发票", "税务", "司法", "风险", sn)
-    return sum(1 for token in useful_tokens if token and token in compact) >= 2
+    matched = [token for token in REPORT_SUCCESS_KEYWORDS if token in compact]
+    if sn and sn in compact:
+        matched.append(sn)
+    if len(matched) >= 2:
+        return matched
+    if len(compact) >= MIN_REPORT_TEXT_LENGTH:
+        useful_tokens = ("水母", "报告", "企业", "发票", "税务", "司法", "风险", sn)
+        fallback = [token for token in useful_tokens if token and token in compact]
+        if len(fallback) >= 2:
+            return fallback
+    return []
 
 
 async def _fetch_http_text(source_url: str) -> tuple[str, int, int]:
@@ -180,12 +231,12 @@ async def _fetch_http_text(source_url: str) -> tuple[str, int, int]:
         return _html_to_text(html_text), response.status_code, len(html_text)
 
 
-async def _fetch_playwright_text(source_url: str) -> tuple[str, str]:
+async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
     try:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
         from playwright.async_api import async_playwright
     except Exception as exc:  # pragma: no cover - exercised by tests through monkeypatch
-        return "", f"playwright_unavailable:{exc}"
+        return "", f"playwright_unavailable:{exc}", ""
 
     browser = None
     try:
@@ -208,12 +259,12 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str]:
             table_text = await page.locator("table, [role=table], .table, .card, .list, ul, ol").evaluate_all(
                 "(nodes) => nodes.map((node) => node.innerText || '').join('\\n')"
             )
-            return "\n".join(part for part in (title, body_text, table_text) if part).strip(), ""
+            return "\n".join(part for part in (title, body_text, table_text) if part).strip(), "", title
     except Exception as exc:
         message = str(exc)
         if "Executable doesn't exist" in message or "playwright install" in message or "Chromium" in message:
-            return "", f"playwright_unavailable:{exc}"
-        return "", f"playwright_error:{exc}"
+            return "", f"playwright_unavailable:{exc}", ""
+        return "", f"playwright_error:{exc}", ""
     finally:
         if browser is not None:
             try:
@@ -261,26 +312,41 @@ async def fetch_shuimui_report(source_url: str) -> ShuimuiFetchResult:
         http_status_code=status_code,
         html_length=html_length,
         raw_text_length=len(http_text or ""),
+        matched_success_keywords=_matched_success_keywords(http_text, sn),
+        matched_auth_block_keywords=_matched_auth_block_keywords(http_text),
     )
+
+    http_success_keywords = _matched_success_keywords(http_text, sn)
+    if http_success_keywords:
+        _log_fetch_event(
+            source_url=safe_url,
+            parsed_sn=sn,
+            fetch_method="http",
+            http_status_code=status_code,
+            html_length=html_length,
+            raw_text_length=len(http_text),
+            matched_success_keywords=http_success_keywords,
+            matched_auth_block_keywords=_matched_auth_block_keywords(http_text),
+            final_status="success",
+        )
+        return ShuimuiFetchResult(True, sn, safe_url, raw_text=http_text)
 
     if http_text == "__AUTH_REQUIRED__" or (http_text and _looks_like_auth_required(http_text)):
         result = _failure(safe_url, sn, "NEED_AUTH")
-        _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="http", http_status_code=status_code, html_length=html_length, raw_text_length=0 if http_text == "__AUTH_REQUIRED__" else len(http_text), error_code=result.error_code, error_message=result.error_message)
+        _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="http", http_status_code=status_code, html_length=html_length, raw_text_length=0 if http_text == "__AUTH_REQUIRED__" else len(http_text), matched_auth_block_keywords=_matched_auth_block_keywords(http_text), final_status="failed", error_code=result.error_code, error_message=result.error_message)
         return result
     if http_text and _looks_like_expired(http_text):
         result = _failure(safe_url, sn, "EXPIRED")
         _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="http", http_status_code=status_code, html_length=html_length, raw_text_length=len(http_text), error_code=result.error_code, error_message=result.error_message)
         return result
-    if _looks_like_report_text(http_text, sn):
-        _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="http", http_status_code=status_code, html_length=html_length, raw_text_length=len(http_text))
-        return ShuimuiFetchResult(True, sn, safe_url, raw_text=http_text)
-
     if status_code >= 400:
         result = _failure(safe_url, sn, "NETWORK_ERROR")
         _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="http", http_status_code=status_code, html_length=html_length, raw_text_length=len(http_text or ""), error_code=result.error_code, error_message=result.error_message)
         return result
 
-    playwright_text, playwright_error = await _fetch_playwright_text(safe_url)
+    playwright_text, playwright_error, page_title = await _fetch_playwright_text(safe_url)
+    playwright_success_keywords = _matched_success_keywords(playwright_text, sn)
+    playwright_auth_keywords = _matched_auth_block_keywords(playwright_text)
     _log_fetch_event(
         source_url=safe_url,
         parsed_sn=sn,
@@ -288,17 +354,42 @@ async def fetch_shuimui_report(source_url: str) -> ShuimuiFetchResult:
         http_status_code=status_code,
         html_length=html_length,
         raw_text_length=len(playwright_text or ""),
+        page_title=page_title,
+        matched_success_keywords=playwright_success_keywords,
+        matched_auth_block_keywords=playwright_auth_keywords,
         error_code="PLAYWRIGHT_ERROR" if playwright_error else "",
         error_message=playwright_error or http_error_message,
     )
-    if playwright_text and _looks_like_auth_required(playwright_text):
-        return _failure(safe_url, sn, "NEED_AUTH")
-    if playwright_text and _looks_like_expired(playwright_text):
-        return _failure(safe_url, sn, "EXPIRED")
-    if _looks_like_report_text(playwright_text, sn):
+    if playwright_success_keywords:
+        _log_fetch_event(
+            source_url=safe_url,
+            parsed_sn=sn,
+            fetch_method="playwright",
+            http_status_code=status_code,
+            html_length=html_length,
+            raw_text_length=len(playwright_text or ""),
+            page_title=page_title,
+            matched_success_keywords=playwright_success_keywords,
+            matched_auth_block_keywords=playwright_auth_keywords,
+            final_status="success",
+        )
         return ShuimuiFetchResult(True, sn, safe_url, raw_text=playwright_text)
+    if playwright_text and _looks_like_auth_required(playwright_text):
+        result = _failure(safe_url, sn, "NEED_AUTH")
+        _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="playwright", http_status_code=status_code, html_length=html_length, raw_text_length=len(playwright_text or ""), page_title=page_title, matched_success_keywords=playwright_success_keywords, matched_auth_block_keywords=playwright_auth_keywords, final_status="failed", error_code=result.error_code, error_message=result.error_message)
+        return result
+    if playwright_text and _looks_like_expired(playwright_text):
+        result = _failure(safe_url, sn, "EXPIRED")
+        _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="playwright", http_status_code=status_code, html_length=html_length, raw_text_length=len(playwright_text or ""), page_title=page_title, matched_success_keywords=playwright_success_keywords, matched_auth_block_keywords=playwright_auth_keywords, final_status="failed", error_code=result.error_code, error_message=result.error_message)
+        return result
     if playwright_error.startswith("playwright_unavailable"):
-        return _failure(safe_url, sn, "PLAYWRIGHT_UNAVAILABLE")
+        result = _failure(safe_url, sn, "PLAYWRIGHT_UNAVAILABLE")
+        _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="playwright", http_status_code=status_code, html_length=html_length, raw_text_length=len(playwright_text or ""), page_title=page_title, matched_success_keywords=playwright_success_keywords, matched_auth_block_keywords=playwright_auth_keywords, final_status="failed", error_code=result.error_code, error_message=result.error_message)
+        return result
     if playwright_error:
-        return _failure(safe_url, sn, "NETWORK_ERROR")
-    return _failure(safe_url, sn, "EMPTY_CONTENT")
+        result = _failure(safe_url, sn, "NETWORK_ERROR")
+        _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="playwright", http_status_code=status_code, html_length=html_length, raw_text_length=len(playwright_text or ""), page_title=page_title, matched_success_keywords=playwright_success_keywords, matched_auth_block_keywords=playwright_auth_keywords, final_status="failed", error_code=result.error_code, error_message=result.error_message)
+        return result
+    result = _failure(safe_url, sn, "EMPTY_CONTENT")
+    _log_fetch_event(source_url=safe_url, parsed_sn=sn, fetch_method="playwright", http_status_code=status_code, html_length=html_length, raw_text_length=len(playwright_text or ""), page_title=page_title, matched_success_keywords=playwright_success_keywords, matched_auth_block_keywords=playwright_auth_keywords, final_status="failed", error_code=result.error_code, error_message=result.error_message)
+    return result

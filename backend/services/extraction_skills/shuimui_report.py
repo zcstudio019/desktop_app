@@ -16,8 +16,12 @@ DOC_TYPE_NAME = "水母报告"
 UNKNOWN = "未识别"
 
 SECTION_FIELDS: list[tuple[str, list[str]]] = [
-    ("企业基本信息", ["企业名称", "统一社会信用代码", "法定代表人", "成立日期", "注册资本", "企业状态", "注册地址", "经营范围"]),
-    ("报告基础信息", ["报告编号", "查询时间", "报告生成时间", "数据更新时间", "授权状态"]),
+    ("企业基本信息", ["企业名称", "统一社会信用代码", "法定代表人", "法人占股比例", "成立日期", "注册资本", "注册类型", "注册地址", "行业分类"]),
+    ("报告基础信息", ["报告编号", "报告创建时间", "查询时间", "报告生成时间", "数据更新时间", "授权状态"]),
+    ("社保信息", ["最近一次社保缴费记录", "社保人数", "应缴费额"]),
+    ("股东信息", ["股东名称", "参股比例"]),
+    ("法人/股东变更", ["变更类型", "变更时间", "变更前", "变更后"]),
+    ("银税互动授权记录", ["授权记录"]),
     ("税务/发票信息", ["纳税人识别号", "纳税信用等级", "近期开票情况", "销项发票金额", "进项发票金额", "发票稳定性", "发票异常提示"]),
     ("经营与流水概况", ["经营稳定性", "近期开票趋势", "主要收入来源", "主要支出方向", "上下游集中度", "经营异常提示"]),
     ("上下游交易", ["主要上游客户", "主要下游客户", "关联交易提示", "内部转账/疑似异常交易"]),
@@ -29,14 +33,16 @@ ALL_FIELDS = [field for _, fields in SECTION_FIELDS for field in fields]
 
 LABEL_ALIASES: dict[str, tuple[str, ...]] = {
     "企业名称": ("企业名称", "公司名称", "主体名称", "被查询企业"),
-    "统一社会信用代码": ("统一社会信用代码", "社会信用代码", "信用代码"),
-    "法定代表人": ("法定代表人", "法人代表", "法人"),
+    "统一社会信用代码": ("统一社会信用代码", "统一信用代码", "社会信用代码", "信用代码"),
+    "法定代表人": ("法定代表人", "法人代表", "当前法人姓名", "法人"),
+    "法人占股比例": ("法人占股比例",),
     "成立日期": ("成立日期", "成立时间"),
     "注册资本": ("注册资本", "注册资金"),
-    "企业状态": ("企业状态", "登记状态", "经营状态"),
-    "注册地址": ("注册地址", "住所", "企业地址"),
-    "经营范围": ("经营范围",),
+    "注册类型": ("注册类型",),
+    "注册地址": ("注册地址", "注册区域", "住所", "企业地址"),
+    "行业分类": ("行业分类",),
     "报告编号": ("报告编号", "报告号", "水母报告编号", "sn"),
+    "报告创建时间": ("报告创建时间",),
     "查询时间": ("查询时间",),
     "报告生成时间": ("报告生成时间", "生成时间"),
     "数据更新时间": ("数据更新时间", "更新时间"),
@@ -48,14 +54,45 @@ LABEL_ALIASES: dict[str, tuple[str, ...]] = {
     "进项发票金额": ("进项发票金额", "进项金额"),
     "发票稳定性": ("发票稳定性",),
     "发票异常提示": ("发票异常提示", "发票异常"),
+    "最近一次社保缴费记录": ("最近一次社保缴费记录",),
+    "社保人数": ("社保人数",),
+    "应缴费额": ("应缴费额",),
+    "股东名称": ("股东名称", "股东姓名", "股东"),
+    "参股比例": ("参股比例", "持股比例"),
+    "变更类型": ("变更类型",),
+    "变更时间": ("变更时间",),
+    "变更前": ("变更前",),
+    "变更后": ("变更后",),
+    "授权记录": ("银税互动授权记录", "授权记录"),
 }
 
 
 def _clean(value: Any, max_len: int = 500) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip(" ：:\t\r\n")
+    text = re.sub(r"\s*复制\s*$", "", text).strip()
+    if text in {"--", "-", "无数据", "暂无"}:
+        return ""
     if not text:
         return ""
     return text[:max_len].strip()
+
+
+def _extract_next_line_value(text: str, label: str, max_len: int = 220) -> str:
+    lines = [line.strip() for line in (text or "").splitlines()]
+    known_labels = set(ALL_FIELDS)
+    for aliases in LABEL_ALIASES.values():
+        known_labels.update(aliases)
+    for index, line in enumerate(lines):
+        if line != label:
+            continue
+        for candidate in lines[index + 1 : index + 5]:
+            if not candidate:
+                continue
+            if candidate in known_labels:
+                return ""
+            cleaned = _clean(candidate, max_len)
+            return cleaned if cleaned != label else ""
+    return ""
 
 
 def _extract_after_label(text: str, aliases: tuple[str, ...], max_len: int = 220) -> str:
@@ -64,6 +101,9 @@ def _extract_after_label(text: str, aliases: tuple[str, ...], max_len: int = 220
         match = pattern.search(text or "")
         if match:
             return _clean(match.group(1), max_len)
+        next_line = _extract_next_line_value(text, label, max_len)
+        if next_line:
+            return next_line
         loose = re.compile(rf"{re.escape(label)}\s+([^\n\r：:]+)")
         match = loose.search(text or "")
         if match:
@@ -78,6 +118,9 @@ def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
         if value:
             data[field] = value
 
+    if data.get("报告创建时间") and not data.get("查询时间"):
+        data["查询时间"] = data["报告创建时间"]
+
     code_match = re.search(r"\b([0-9A-Z]{18})\b", raw_text or "")
     if code_match:
         data.setdefault("统一社会信用代码", code_match.group(1))
@@ -88,8 +131,42 @@ def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
         data.setdefault("查询时间", date_match.group(1))
 
     data.setdefault("报告编号", sn)
+    if "银税互动授权记录" in raw_text and not data.get("授权记录"):
+        data["授权记录"] = _extract_after_label(raw_text, ("银税互动授权记录",), max_len=80) or "未识别"
+    if "最近一次社保缴费记录" in raw_text and not data.get("最近一次社保缴费记录"):
+        data["最近一次社保缴费记录"] = _extract_after_label(raw_text, ("最近一次社保缴费记录",), max_len=80)
+    if not data.get("社保人数"):
+        match = re.search(r"社保人数\s*(?:[:：]|\n+)\s*(\d+)", raw_text or "")
+        if match:
+            data["社保人数"] = match.group(1)
+    if not data.get("应缴费额"):
+        match = re.search(r"应缴费额\s*(?:[:：]|\n+)\s*([0-9,.]+\s*元?)", raw_text or "")
+        if match:
+            data["应缴费额"] = _clean(match.group(1), 80)
+    if not data.get("股东名称"):
+        match = re.search(r"股东(?:名称|姓名)?\s*(?:[:：]|\n+)\s*([\u4e00-\u9fa5·]{2,20})", raw_text or "")
+        if match:
+            data["股东名称"] = _clean(match.group(1), 80)
+    if not data.get("参股比例"):
+        match = re.search(r"(?:参股比例|持股比例)\s*(?:[:：]|\n+)\s*([0-9.]+%)", raw_text or "")
+        if match:
+            data["参股比例"] = _clean(match.group(1), 80)
+    if "法定代表人变更" in raw_text:
+        data.setdefault("变更类型", "法定代表人变更")
+    if not data.get("变更时间"):
+        match = re.search(r"(20\d{2}-\d{1,2}-\d{1,2}|19\d{2}-\d{1,2}-\d{1,2})", raw_text or "")
+        if match and "法人/股东变更" in raw_text:
+            data["变更时间"] = match.group(1)
+    if not data.get("变更前"):
+        match = re.search(r"变更前\s*(?:[:：]|\n+)\s*([\u4e00-\u9fa5·]{2,20})", raw_text or "")
+        if match:
+            data["变更前"] = _clean(match.group(1), 80)
+    if not data.get("变更后"):
+        match = re.search(r"变更后\s*(?:[:：]|\n+)\s*([\u4e00-\u9fa5·]{2,20})", raw_text or "")
+        if match:
+            data["变更后"] = _clean(match.group(1), 80)
     if "授权" in raw_text:
-        data.setdefault("授权状态", "页面可访问，未识别到额外授权限制")
+        data.setdefault("授权状态", "页面可访问，未识别到访问拦截")
     return data
 
 
