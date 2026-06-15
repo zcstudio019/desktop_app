@@ -51,4 +51,21 @@ describe('resolveDocumentContent', () => {
     expect(result.content).toContain('银行授信核心指标表');
     expect(result.content).not.toContain('财务数据总览');
   });
+  it('uses only final markdown for shuimui reports', () => {
+    const result = resolveDocumentContent({
+      document_type: 'shuimui_report',
+      latest_extraction: {
+        extracted_data: {
+          doc_type: 'shuimui_report',
+          report_markdown: '## 水母报告\n\n* 资料类型：水母报告\n* 提取状态：成功',
+          structured_json: { 企业名称: '上海测试有限公司' },
+          data: { 企业名称: '上海测试有限公司' },
+        },
+      },
+    });
+
+    expect(result.content).toContain('## 水母报告');
+    expect(result.content).not.toContain('structured_json');
+    expect(result.content).not.toContain('doc_type');
+  });
 });

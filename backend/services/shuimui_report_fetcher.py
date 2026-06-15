@@ -256,8 +256,30 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
                 await page.wait_for_timeout(800)
             title = await page.title()
             body_text = await page.locator("body").inner_text(timeout=5_000)
-            table_text = await page.locator("table, [role=table], .table, .card, .list, ul, ol").evaluate_all(
-                "(nodes) => nodes.map((node) => node.innerText || '').join('\\n')"
+            table_text = await page.evaluate(
+                """() => {
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const blocks = [];
+                    document.querySelectorAll('table, [role="table"]').forEach((table) => {
+                        const rows = Array.from(table.querySelectorAll('tr, [role="row"]'))
+                            .map((row) => Array.from(row.querySelectorAll('th, td, [role="cell"], [role="columnheader"]'))
+                                .map((cell) => normalize(cell.innerText || cell.textContent))
+                                .filter(Boolean)
+                                .join('\\t'))
+                            .filter(Boolean);
+                        if (rows.length) blocks.push(rows.join('\\n'));
+                    });
+                    document.querySelectorAll('[class*="table"], [class*="row"], [class*="list"], [class*="card"]').forEach((node) => {
+                        const children = Array.from(node.children || [])
+                            .map((child) => normalize(child.innerText || child.textContent))
+                            .filter(Boolean);
+                        if (children.length >= 2 && children.length <= 8) {
+                            const row = children.join('\\t');
+                            if (row.length <= 300 && !blocks.includes(row)) blocks.push(row);
+                        }
+                    });
+                    return blocks.join('\\n');
+                }"""
             )
             return "\n".join(part for part in (title, body_text, table_text) if part).strip(), "", title
     except Exception as exc:

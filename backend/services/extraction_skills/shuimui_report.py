@@ -14,6 +14,19 @@ logger = logging.getLogger(__name__)
 DOC_TYPE = "shuimui_report"
 DOC_TYPE_NAME = "水母报告"
 UNKNOWN = "未识别"
+EMPTY_VALUES = {"", "--", "-", "无数据", "暂无", UNKNOWN}
+HEADER_VALUES = {
+    "社保人数",
+    "应缴费额",
+    "应缴费额(元)",
+    "股东名称",
+    "参股比例",
+    "变更类型",
+    "变更时间",
+    "变更前",
+    "变更后",
+    "变更时间 变更前 变更后",
+}
 
 SECTION_FIELDS: list[tuple[str, list[str]]] = [
     ("企业基本信息", ["企业名称", "统一社会信用代码", "法定代表人", "法人占股比例", "成立日期", "注册资本", "注册类型", "注册地址", "行业分类"]),
@@ -70,7 +83,7 @@ LABEL_ALIASES: dict[str, tuple[str, ...]] = {
 def _clean(value: Any, max_len: int = 500) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip(" ：:\t\r\n")
     text = re.sub(r"\s*复制\s*$", "", text).strip()
-    if text in {"--", "-", "无数据", "暂无"}:
+    if text in EMPTY_VALUES or text in HEADER_VALUES:
         return ""
     if not text:
         return ""
@@ -80,6 +93,7 @@ def _clean(value: Any, max_len: int = 500) -> str:
 def _extract_next_line_value(text: str, label: str, max_len: int = 220) -> str:
     lines = [line.strip() for line in (text or "").splitlines()]
     known_labels = set(ALL_FIELDS)
+    known_labels.update(HEADER_VALUES)
     for aliases in LABEL_ALIASES.values():
         known_labels.update(aliases)
     for index, line in enumerate(lines):
@@ -111,28 +125,64 @@ def _extract_after_label(text: str, aliases: tuple[str, ...], max_len: int = 220
     return ""
 
 
-def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
+def _extract_row_tables(raw_text: str) -> dict[str, str]:
     data: dict[str, str] = {}
+    text = raw_text or ""
+
+    social_security = re.search(
+        r"社保人数\s+应缴费额(?:\(元\))?\s*\n\s*(\d+)\s+([0-9,.]+)",
+        text,
+    )
+    if social_security:
+        data["社保人数"] = social_security.group(1)
+        data["应缴费额"] = f"{social_security.group(2)} 元"
+
+    shareholder = re.search(
+        r"股东名称\s+参股比例\s*\n\s*([^\s\n]+)\s+([0-9.]+%)",
+        text,
+    )
+    if shareholder:
+        data["股东名称"] = _clean(shareholder.group(1), 80)
+        data["参股比例"] = _clean(shareholder.group(2), 80)
+
+    change = re.search(
+        r"变更类型\s+变更时间\s+变更前\s+变更后\s*\n\s*([^\n\t]+?)\s+(20\d{2}-\d{1,2}-\d{1,2}|19\d{2}-\d{1,2}-\d{1,2})\s+([^\n\t]+?)\s+([^\n\t]+)",
+        text,
+    )
+    if not change:
+        change = re.search(
+            r"变更类型\s+变更时间\s+变更前\s+变更后\s*\n\s*([^\n]+?)\s+(20\d{2}-\d{1,2}-\d{1,2}|19\d{2}-\d{1,2}-\d{1,2})\s*\n\s*([^\n]+)\s*\n\s*([^\n]+)",
+            text,
+        )
+    if change:
+        data["变更类型"] = _clean(change.group(1), 80)
+        data["变更时间"] = _clean(change.group(2), 80)
+        data["变更前"] = _clean(change.group(3), 80)
+        data["变更后"] = _clean(change.group(4), 80)
+
+    return {key: value for key, value in data.items() if value}
+
+
+def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
+    data: dict[str, str] = _extract_row_tables(raw_text)
     for field, aliases in LABEL_ALIASES.items():
+        if data.get(field):
+            continue
         value = _extract_after_label(raw_text, aliases)
         if value:
             data[field] = value
 
-    if data.get("报告创建时间") and not data.get("查询时间"):
-        data["查询时间"] = data["报告创建时间"]
-
     code_match = re.search(r"\b([0-9A-Z]{18})\b", raw_text or "")
     if code_match:
         data.setdefault("统一社会信用代码", code_match.group(1))
-        data.setdefault("纳税人识别号", code_match.group(1))
 
-    date_match = re.search(r"((?:19|20)\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)", raw_text or "")
+    date_match = re.search(r"报告创建时间\s*(?:[:：]|\n+)\s*((?:19|20)\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)", raw_text or "")
     if date_match:
-        data.setdefault("查询时间", date_match.group(1))
+        data.setdefault("报告创建时间", date_match.group(1))
 
     data.setdefault("报告编号", sn)
     if "银税互动授权记录" in raw_text and not data.get("授权记录"):
-        data["授权记录"] = _extract_after_label(raw_text, ("银税互动授权记录",), max_len=80) or "未识别"
+        data["授权记录"] = _extract_after_label(raw_text, ("银税互动授权记录",), max_len=80) or "无"
     if "最近一次社保缴费记录" in raw_text and not data.get("最近一次社保缴费记录"):
         data["最近一次社保缴费记录"] = _extract_after_label(raw_text, ("最近一次社保缴费记录",), max_len=80)
     if not data.get("社保人数"):
@@ -165,8 +215,6 @@ def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
         match = re.search(r"变更后\s*(?:[:：]|\n+)\s*([\u4e00-\u9fa5·]{2,20})", raw_text or "")
         if match:
             data["变更后"] = _clean(match.group(1), 80)
-    if "授权" in raw_text:
-        data.setdefault("授权状态", "页面可访问，未识别到访问拦截")
     return data
 
 
@@ -224,23 +272,36 @@ def render_shuimui_report_markdown(
     original_status: str = "可查看",
 ) -> str:
     def value(field: str) -> str:
-        return _clean(fields.get(field)) or UNKNOWN
+        return _clean(fields.get(field))
 
     lines = [
         "## 水母报告",
         "",
         "* 资料类型：水母报告",
-        f"* 来源链接：{source_url or UNKNOWN}",
-        f"* 提取状态：{extraction_status or UNKNOWN}",
+        f"* 来源链接：{source_url or ''}",
+        f"* 提取状态：{extraction_status or ''}",
         f"* 报告编号：{sn or value('报告编号')}",
-        f"* 原件状态：{original_status or UNKNOWN}",
+        f"* 原件状态：{original_status or ''}",
         "",
     ]
     for section, section_fields in SECTION_FIELDS:
+        rows: list[tuple[str, str]] = []
+        for field in section_fields:
+            if field == "报告编号":
+                continue
+            field_value = value(field)
+            if field_value:
+                rows.append((field, field_value))
+        if section == "社保信息" and rows:
+            existing_labels = {field for field, _ in rows}
+            if {"社保人数", "应缴费额"} & existing_labels:
+                rows.append(("说明", "社保人数和应缴费额取自职工基本养老保险单位缴纳人数及金额"))
+        if not rows:
+            continue
         lines.append(f"### {section}")
         lines.append("")
-        for field in section_fields:
-            lines.append(f"* {field}：{value(field)}")
+        for field, field_value in rows:
+            lines.append(f"* {field}：{field_value}")
         lines.append("")
     return "\n".join(lines).strip() + "\n"
 
@@ -255,8 +316,6 @@ def extract_shuimui_report(
     rule_fields = _rule_extract(raw_text, sn)
     llm_fields = _llm_extract(raw_text, ai_service)
     fields = {**llm_fields, **rule_fields}
-    for field in ALL_FIELDS:
-        fields.setdefault(field, UNKNOWN)
     fields["报告编号"] = _clean(fields.get("报告编号")) or sn
 
     markdown = render_shuimui_report_markdown(

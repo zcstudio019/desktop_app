@@ -94,6 +94,14 @@ class RagService:
                 or (structured_json or {}).get("source_file")
                 or ""
             )
+            text = self._serialize_data(extracted_data)
+            if document_type == "shuimui_report" and isinstance(extracted_data, dict):
+                text = str(
+                    extracted_data.get("report_markdown")
+                    or extracted_data.get("markdown_summary")
+                    or extracted_data.get("summary")
+                    or ""
+                ).strip()
             documents.append(
                 {
                     "source_type": document_type,
@@ -102,7 +110,7 @@ class RagService:
                     "document_id": extraction.get("doc_id") or extraction.get("document_id") or "",
                     "source_file": source_file,
                     "section_title": f"{document_type}结构化提取",
-                    "text": self._serialize_data(extracted_data),
+                    "text": text,
                 }
             )
 

@@ -36,6 +36,20 @@ function nonEmpty(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
+function isShuimuiReportType(value: unknown): boolean {
+  return String(value || '').trim() === 'shuimui_report';
+}
+
+function dedupeShuimuiMarkdown(markdown: string): string {
+  const text = markdown.trim();
+  const marker = '## 水母报告';
+  const first = text.indexOf(marker);
+  if (first < 0) return text;
+  const second = text.indexOf(marker, first + marker.length);
+  if (second < 0) return text;
+  return text.slice(0, second).trim();
+}
+
 function monetaryField(section: JsonRecord, key: string): JsonRecord {
   return asRecord(section[key]);
 }
@@ -176,21 +190,34 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
     ?? extractedData.structured_json
     ?? extractedJson.structured_json,
   );
-  const documentType = String(detail.document_type ?? detail.file_type ?? structuredJson.document_type ?? '');
+  const documentType = String(
+    detail.document_type
+    ?? detail.file_type
+    ?? latestExtraction.extraction_type
+    ?? latestExtractedData.document_type
+    ?? latestExtractedData.doc_type
+    ?? extractedData.document_type
+    ?? extractedData.doc_type
+    ?? structuredJson.document_type
+    ?? ''
+  );
 
   const candidates: Array<[DocumentContentSource, string]> = [
     ['selectedDocument.report_markdown', nonEmpty(detail.report_markdown)],
     ['selectedDocument.reportMarkdown', nonEmpty(detail.reportMarkdown)],
-    ['selectedDocument.latest_extraction.report_markdown', nonEmpty(latestExtraction.report_markdown ?? latestExtractedData.report_markdown ?? latestExtractedData.markdown_report)],
+    ['selectedDocument.latest_extraction.report_markdown', nonEmpty(latestExtraction.report_markdown ?? latestExtractedData.report_markdown ?? latestExtractedData.markdown_report ?? latestExtractedData.markdown_summary)],
     ['selectedDocument.latestExtraction.reportMarkdown', nonEmpty(latestExtraction.reportMarkdown)],
-    ['selectedDocument.extraction.report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.report_markdown ?? extractedData.markdown_report)],
+    ['selectedDocument.extraction.report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.report_markdown ?? extractedData.markdown_report ?? extractedData.markdown_summary)],
     ['selectedDocument.extracted_json.report_markdown', nonEmpty(extractedJson.report_markdown)],
     ['selectedDocument.extracted_json.markdown_report', nonEmpty(extractedJson.markdown_report)],
     ['selectedDocument.structured_json.report_markdown', nonEmpty(structuredJson.report_markdown)],
     ['selectedDocument.structured_json.markdown_report', nonEmpty(structuredJson.markdown_report)],
   ];
   for (const [source, content] of candidates) {
-    if (content) return { content, source };
+    if (content) return { content: isShuimuiReportType(documentType) ? dedupeShuimuiMarkdown(content) : content, source };
+  }
+  if (isShuimuiReportType(documentType)) {
+    return { content: '暂无水母报告解析结果', source: 'empty' };
   }
   if (documentType === 'financial_report' && Object.keys(structuredJson).length > 0) {
     return {

@@ -197,7 +197,7 @@ def test_sample_shuimui_text_extracts_expected_fields():
     assert "统一社会信用代码：91310114060938092E" in markdown
     assert "法定代表人：刘聪" in markdown
     assert "法人占股比例：100%" in markdown
-    assert "注册资本：未识别" in markdown
+    assert "注册资本：未识别" not in markdown
     assert "注册类型：私营有限责任公司" in markdown
     assert "注册地址：上海市宝山区水产路1439号12幢117室" in markdown
     assert "行业分类：厨具卫具及日用杂品批发" in markdown
@@ -211,3 +211,47 @@ def test_sample_shuimui_text_extracts_expected_fields():
     assert "变更前：马艳" in markdown
     assert "变更后：刘聪" in markdown
     assert "授权记录：无" in markdown
+    assert "未识别" not in markdown
+    assert "document type" not in markdown.lower()
+    assert "structured json" not in markdown.lower()
+
+
+def test_sample_shuimui_table_rows_do_not_use_headers_as_values():
+    raw_text = """水母报告
+企业名称
+上海煜禧贸易有限公司
+统一信用代码
+91310114060938092E
+最近一次社保缴费记录
+社保人数        应缴费额(元)
+6       9624
+股东明细
+股东名称        参股比例
+刘聪    100.00%
+法人/股东变更
+变更类型        变更时间        变更前  变更后
+法定代表人变更  2018-12-04
+马艳
+刘聪
+银税互动授权记录
+无
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+
+    assert "社保人数：6" in markdown
+    assert "应缴费额：9624 元" in markdown
+    assert "股东名称：刘聪" in markdown
+    assert "参股比例：100.00%" in markdown
+    assert "变更类型：法定代表人变更" in markdown
+    assert "变更时间：2018-12-04" in markdown
+    assert "变更前：马艳" in markdown
+    assert "变更后：刘聪" in markdown
+    assert "社保人数：应缴费额" not in markdown
+    assert "股东名称：参股比例" not in markdown
+    assert "变更类型：变更时间" not in markdown

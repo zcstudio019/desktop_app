@@ -1885,6 +1885,18 @@ async def _build_single_document_section(
             _looks_like_raw_kyc_markdown(markdown),
         )
         return markdown, source_document
+    if extraction_type == 'shuimui_report' and isinstance(extracted_data, dict):
+        source_document['source_type'] = 'shuimui_report'
+        source_document['source_type_name'] = '水母报告'
+        markdown = str(
+            extracted_data.get('report_markdown')
+            or extracted_data.get('markdown_summary')
+            or extracted_data.get('markdown')
+            or ''
+        ).strip()
+        if markdown:
+            return markdown, source_document
+        return '## 水母报告\n\n- 水母报告已读取，但结构化摘要暂不可用。', source_document
     if extraction_type in {'property_report', 'collateral', 'mortgage_info'} and isinstance(extracted_data, dict):
         property_title = '\u623f\u4ea7\u8bc1'
         lines = _build_property_section_lines([file_name], bool(store_original and file_path), extracted_data)

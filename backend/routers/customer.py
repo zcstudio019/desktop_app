@@ -77,7 +77,6 @@ from backend.services.shuimui_report_fetcher import (
 )
 from backend.services.extraction_skills.shuimui_report import (
     DOC_TYPE as SHUIMUI_DOC_TYPE,
-    build_failed_shuimui_report_content,
     extract_shuimui_report,
 )
 from backend.services.activity_service import add_activity
@@ -239,6 +238,57 @@ async def _update_url_extract_progress(job_id: str, message: str) -> None:
     await _update_url_extract_job(job_id, status="running", progress_message=message)
 
 
+def _extract_shuimui_report_sn(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    direct = str(payload.get("report_sn") or payload.get("报告编号") or "").strip()
+    if direct:
+        return direct
+    for key in ("structured_json", "extracted_json", "data"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            nested = str(value.get("报告编号") or value.get("report_sn") or "").strip()
+            if nested:
+                return nested
+    return ""
+
+
+async def _delete_existing_shuimui_documents_for_sn(customer_id: str, report_sn: str) -> int:
+    if not customer_id or not report_sn:
+        return 0
+    deleted_count = 0
+    for document in await storage_service.list_documents(customer_id):
+        if normalize_document_type_code(document.get("file_type") or "") != SHUIMUI_DOC_TYPE:
+            continue
+        doc_id = str(document.get("doc_id") or "").strip()
+        if not doc_id:
+            continue
+        matched = False
+        try:
+            extractions = await storage_service.get_extractions_by_doc(doc_id)
+        except Exception as exc:
+            logger.warning("[ShuimuiSave] load old extraction failed customer_id=%s doc_id=%s error=%s", customer_id, doc_id, exc)
+            extractions = []
+        for extraction in extractions:
+            extracted_data = extraction.get("extracted_data") or {}
+            if _extract_shuimui_report_sn(extracted_data) == report_sn:
+                matched = True
+                break
+        if not matched and report_sn in str(document.get("file_name") or ""):
+            matched = True
+        if not matched:
+            continue
+        try:
+            if await storage_service.delete_document(doc_id):
+                deleted_count += 1
+        except Exception as exc:
+            logger.warning("[ShuimuiSave] delete old document failed customer_id=%s report_sn=%s doc_id=%s error=%s", customer_id, report_sn, doc_id, exc)
+            raise
+    if deleted_count:
+        logger.info("[ShuimuiSave] deleted old documents customer_id=%s report_sn=%s count=%s", customer_id, report_sn, deleted_count)
+    return deleted_count
+
+
 def _normalize_url_extract_job_status(job: dict[str, Any]) -> str:
     raw_status = str(job.get("status") or "").strip().lower() or "pending"
     if raw_status == "submitted":
@@ -284,29 +334,14 @@ async def _run_url_extract_job(job_id: str, execution_payload: dict[str, Any]) -
         sn = fetch_result.sn or sn
         if not fetch_result.success:
             error_message = fetch_result.error_message or SHUIMUI_ERROR_MESSAGES.get(fetch_result.error_code, "水母报告链接读取失败。")
-            content = build_failed_shuimui_report_content(
-                source_url=source_url,
-                sn=sn,
-                error_message=error_message,
-                original_status=(
-                    "需要授权" if fetch_result.error_code == "NEED_AUTH"
-                    else "已过期" if fetch_result.error_code == "EXPIRED"
-                    else "页面内容为空" if fetch_result.error_code == "EMPTY_CONTENT"
-                    else "动态页面读取组件未安装" if fetch_result.error_code == "PLAYWRIGHT_UNAVAILABLE"
-                    else "链接不可访问"
-                ),
+            logger.info(
+                "[UrlExtractJob][Shuimui] fetch failed, skip document save job_id=%s customer_id=%s sn=%s error_code=%s error=%s",
+                job_id,
+                customer_id,
+                sn,
+                fetch_result.error_code,
+                error_message,
             )
-            save_result = await _save_to_local_storage(
-                f"水母报告-{sn or '未识别'}.url",
-                SHUIMUI_DOC_TYPE,
-                content,
-                customer_name,
-                current_user_payload,
-                storage_service,
-                target_customer_id=customer_id,
-                file_bytes=None,
-            )
-            document_id = save_result[5] if len(save_result) > 5 else ""
             raise ValueError(error_message)
 
         await _update_url_extract_progress(job_id, "正在提取报告")
@@ -318,6 +353,7 @@ async def _run_url_extract_job(job_id: str, execution_payload: dict[str, Any]) -
         )
 
         await _update_url_extract_progress(job_id, "正在保存客户资料")
+        await _delete_existing_shuimui_documents_for_sn(customer_id, sn)
         save_result = await _save_to_local_storage(
             f"水母报告-{sn}.url",
             SHUIMUI_DOC_TYPE,
