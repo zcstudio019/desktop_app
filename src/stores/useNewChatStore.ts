@@ -33,9 +33,9 @@ const now = new Date().toISOString();
 
 const initialSessions: NewChatSession[] = [
   { id: 'new-chat-1', title: '新对话', createdAt: now },
-  { id: 'new-chat-2', title: '新对话', createdAt: now },
   { id: 'customer-consulting', title: '客户咨询', createdAt: now },
   { id: 'financing-analysis', title: '融资分析', createdAt: now },
+  { id: 'new-chat-2', title: '新对话', createdAt: now },
 ];
 
 let state: NewChatState = {
