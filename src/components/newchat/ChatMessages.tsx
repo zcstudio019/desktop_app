@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { useNewChatStore } from '../../stores/useNewChatStore';
+import { useNewChatStore, type ChatMessage } from '../../stores/useNewChatStore';
 
 const ChatMessages: React.FC = () => {
   const { currentSessionId, messages } = useNewChatStore();
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const currentMessages = useMemo(
-    () => messages[currentSessionId] || [],
+  const currentMessages = useMemo<ChatMessage[]>(
+    () => (currentSessionId ? messages[currentSessionId] || [] : []),
     [currentSessionId, messages]
   );
 

@@ -36,6 +36,7 @@ const Layout: React.FC<LayoutProps> = ({
   onLogout,
 }) => {
   const pageTitle = PAGE_TITLES[currentPage];
+  const isNewChatPage = currentPage === 'new-chat';
 
   return (
     <div className="flex h-screen" data-testid="layout">
@@ -48,19 +49,21 @@ const Layout: React.FC<LayoutProps> = ({
       />
 
       <div className="flex-1 flex flex-col overflow-hidden" data-testid="main-content">
-        <Header
-          pageTitle={pageTitle}
-          userName={userName}
-          userRole={userRole}
-          notificationCount={notificationCount}
-          onNavigate={onNavigate}
-          onLogout={onLogout}
-        />
+        {!isNewChatPage ? (
+          <Header
+            pageTitle={pageTitle}
+            userName={userName}
+            userRole={userRole}
+            notificationCount={notificationCount}
+            onNavigate={onNavigate}
+            onLogout={onLogout}
+          />
+        ) : null}
 
 
         <main
           className="relative z-0 flex-1 overflow-hidden bg-slate-50"
-          style={{ backgroundColor: '#F8FAFC' }}
+          style={{ backgroundColor: isNewChatPage ? '#FFFFFF' : '#F8FAFC' }}
           data-testid="content-area"
         >
           {children}

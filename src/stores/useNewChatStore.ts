@@ -1,50 +1,54 @@
 import { useCallback, useSyncExternalStore } from 'react';
+import { sendChat } from '../services/api';
 
+export type NewChatTab = 'partner' | 'chat';
 export type NewChatRole = 'user' | 'assistant';
 
-export type NewChatMessage = {
+export type ChatSession = {
+  id: string;
+  title: string;
+};
+
+export type ChatMessage = {
   id: string;
   role: NewChatRole;
   content: string;
   createdAt: string;
 };
 
-export type NewChatSession = {
-  id: string;
-  title: string;
-  createdAt: string;
-};
-
 type NewChatState = {
-  sessions: NewChatSession[];
-  currentSessionId: string;
-  messages: Record<string, NewChatMessage[]>;
+  activeTab: NewChatTab;
+  sessions: ChatSession[];
+  currentSessionId: string | null;
+  messages: Record<string, ChatMessage[]>;
+  sending: boolean;
+  error: string | null;
 };
 
 type NewChatActions = {
-  createSession: () => string;
-  switchSession: (sessionId: string) => void;
-  appendMessage: (sessionId: string, message: NewChatMessage) => void;
-  clearCurrentMessages: () => void;
-  updateSessionTitle: (sessionId: string, title: string) => void;
+  createSession: () => void;
+  switchSession: (id: string) => void;
+  sendMessage: (content: string) => Promise<void>;
+  setActiveTab: (tab: NewChatTab) => void;
 };
 
-const now = new Date().toISOString();
-
-const initialSessions: NewChatSession[] = [
-  { id: 'new-chat-1', title: '新对话', createdAt: now },
-  { id: 'customer-consulting', title: '客户咨询', createdAt: now },
-  { id: 'financing-analysis', title: '融资分析', createdAt: now },
-  { id: 'new-chat-2', title: '新对话', createdAt: now },
+const initialSessions: ChatSession[] = [
+  { id: 'new-chat-1', title: '新对话' },
+  { id: 'customer-consulting', title: '客户咨询' },
+  { id: 'financing-analysis', title: '融资分析' },
+  { id: 'new-chat-2', title: '新对话' },
 ];
 
 let state: NewChatState = {
+  activeTab: 'chat',
   sessions: initialSessions,
-  currentSessionId: initialSessions[0]?.id || '',
-  messages: initialSessions.reduce<Record<string, NewChatMessage[]>>((accumulator, session) => {
+  currentSessionId: initialSessions[0]?.id || null,
+  messages: initialSessions.reduce<Record<string, ChatMessage[]>>((accumulator, session) => {
     accumulator[session.id] = [];
     return accumulator;
   }, {}),
+  sending: false,
+  error: null,
 };
 
 const listeners = new Set<() => void>();
@@ -63,68 +67,134 @@ function getSnapshot(): NewChatState {
   return state;
 }
 
-function createMessageId(prefix: string): string {
+function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function createNewChatMessage(role: NewChatRole, content: string): NewChatMessage {
+function createMessage(role: NewChatRole, content: string): ChatMessage {
   return {
-    id: createMessageId(role),
+    id: createId(role),
     role,
     content,
     createdAt: new Date().toISOString(),
   };
 }
 
+function ensureSession(): string {
+  if (state.currentSessionId) return state.currentSessionId;
+
+  const sessionId = createId('session');
+  const session: ChatSession = {
+    id: sessionId,
+    title: '新对话',
+  };
+
+  emit({
+    ...state,
+    sessions: [session, ...state.sessions],
+    currentSessionId: sessionId,
+    messages: {
+      ...state.messages,
+      [sessionId]: [],
+    },
+  });
+
+  return sessionId;
+}
+
 const actions: NewChatActions = {
   createSession() {
-    const sessionId = createMessageId('session');
-    const session: NewChatSession = {
+    const sessionId = createId('session');
+    const session: ChatSession = {
       id: sessionId,
       title: '新对话',
-      createdAt: new Date().toISOString(),
     };
 
     emit({
+      ...state,
+      activeTab: 'chat',
       sessions: [session, ...state.sessions],
       currentSessionId: sessionId,
       messages: {
         ...state.messages,
         [sessionId]: [],
       },
+      error: null,
+    });
+  },
+  switchSession(id) {
+    if (!state.sessions.some((session) => session.id === id)) return;
+    emit({
+      ...state,
+      activeTab: 'chat',
+      currentSessionId: id,
+      error: null,
+    });
+  },
+  async sendMessage(content) {
+    const trimmed = content.trim();
+    if (!trimmed || state.sending) return;
+
+    const sessionId = ensureSession();
+    const currentMessages = state.messages[sessionId] || [];
+    const userMessage = createMessage('user', trimmed);
+    const nextMessages = [...currentMessages, userMessage];
+    const shouldRename = currentMessages.length === 0;
+
+    emit({
+      ...state,
+      activeTab: 'chat',
+      sending: true,
+      error: null,
+      sessions: shouldRename
+        ? state.sessions.map((session) =>
+            session.id === sessionId ? { ...session, title: trimmed.slice(0, 18) || '新对话' } : session
+          )
+        : state.sessions,
+      messages: {
+        ...state.messages,
+        [sessionId]: nextMessages,
+      },
     });
 
-    return sessionId;
+    try {
+      const response = await sendChat({
+        messages: nextMessages.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+      });
+      emit({
+        ...state,
+        sending: false,
+        messages: {
+          ...state.messages,
+          [sessionId]: [
+            ...(state.messages[sessionId] || []),
+            createMessage('assistant', response.message || ''),
+          ],
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? `发送失败：${error.message}` : '发送失败，请稍后重试。';
+      emit({
+        ...state,
+        sending: false,
+        error: message,
+        messages: {
+          ...state.messages,
+          [sessionId]: [
+            ...(state.messages[sessionId] || []),
+            createMessage('assistant', message),
+          ],
+        },
+      });
+    }
   },
-  switchSession(sessionId) {
-    if (!state.sessions.some((session) => session.id === sessionId)) return;
-    emit({ ...state, currentSessionId: sessionId });
-  },
-  appendMessage(sessionId, message) {
+  setActiveTab(tab) {
     emit({
       ...state,
-      messages: {
-        ...state.messages,
-        [sessionId]: [...(state.messages[sessionId] || []), message],
-      },
-    });
-  },
-  clearCurrentMessages() {
-    if (!state.currentSessionId) return;
-    emit({
-      ...state,
-      messages: {
-        ...state.messages,
-        [state.currentSessionId]: [],
-      },
-    });
-  },
-  updateSessionTitle(sessionId, title) {
-    emit({
-      ...state,
-      sessions: state.sessions.map((session) =>
-        session.id === sessionId ? { ...session, title } : session
-      ),
+      activeTab: tab,
     });
   },
 };
@@ -136,8 +206,7 @@ export function useNewChatStore(): NewChatState & NewChatActions {
     ...snapshot,
     createSession: useCallback(actions.createSession, []),
     switchSession: useCallback(actions.switchSession, []),
-    appendMessage: useCallback(actions.appendMessage, []),
-    clearCurrentMessages: useCallback(actions.clearCurrentMessages, []),
-    updateSessionTitle: useCallback(actions.updateSessionTitle, []),
+    sendMessage: useCallback(actions.sendMessage, []),
+    setActiveTab: useCallback(actions.setActiveTab, []),
   };
 }

@@ -1,26 +1,15 @@
 import React from 'react';
-import NewChatSidebar from '../components/newchat/NewChatSidebar';
-import ChatMessages from '../components/newchat/ChatMessages';
-import ChatInput from '../components/newchat/ChatInput';
+import NewChatSecondarySidebar from '../components/newchat/NewChatSecondarySidebar';
+import NewChatMain from '../components/newchat/NewChatMain';
 
 const NewChatPage: React.FC = () => (
-  <div className="flex h-full w-full" data-testid="new-chat-page">
-    <div className="w-[280px] border-r bg-gray-50">
-      <NewChatSidebar />
+  <div className="flex h-full w-full overflow-hidden" data-testid="new-chat-page">
+    <div className="w-[320px] flex-shrink-0 border-r border-slate-200 bg-[#f5f7fb]">
+      <NewChatSecondarySidebar />
     </div>
 
-    <div className="flex-1 flex flex-col">
-      <div className="h-12 border-b flex items-center px-4">
-        新对话
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-4">
-        <ChatMessages />
-      </div>
-
-      <div className="border-t p-3">
-        <ChatInput />
-      </div>
+    <div className="flex-1 flex flex-col bg-white">
+      <NewChatMain />
     </div>
   </div>
 );
