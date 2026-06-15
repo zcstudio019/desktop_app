@@ -37,6 +37,7 @@ const CUSTOMER_CONTEXT_PAGES = new Set<PageType>(['upload', 'application', 'sche
 
 function buildDashboardPagePath(page: PageType, customerId?: string | null, customerName?: string | null): string {
   const pathnameMap: Record<PageType, string> = {
+    workspace: '/workspace',
     dashboard: '/',
     customers: '/customers',
     upload: '/upload',

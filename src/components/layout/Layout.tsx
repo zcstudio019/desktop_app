@@ -4,6 +4,7 @@ import Sidebar, { PageType } from './Sidebar';
 import Header from './Header';
 
 export const PAGE_TITLES: Record<PageType, string> = {
+  workspace: '工作台',
   dashboard: '工作台',
   customers: '客户列表',
   data: '资料汇总',
@@ -57,7 +58,7 @@ const Layout: React.FC<LayoutProps> = ({
 
 
         <main
-          className="relative z-0 flex-1 overflow-auto bg-slate-50"
+          className="relative z-0 flex-1 overflow-hidden bg-slate-50"
           style={{ backgroundColor: '#F8FAFC' }}
           data-testid="content-area"
         >

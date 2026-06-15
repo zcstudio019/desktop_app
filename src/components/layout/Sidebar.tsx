@@ -16,6 +16,7 @@ import {
 import { BRAND } from '../../config/brand';
 
 export type PageType =
+  | 'workspace'
   | 'dashboard'
   | 'customers'
   | 'upload'
@@ -49,7 +50,7 @@ export interface SidebarProps {
 }
 
 const BASE_NAV_ITEMS: NavItemConfig[] = [
-  { id: 'dashboard', icon: LayoutDashboard, label: '工作台', description: '查看系统动态与业务概览' },
+  { id: 'workspace', icon: LayoutDashboard, label: '工作台', description: '查看系统动态与业务概览' },
   { id: 'customers', icon: Users, label: '客户管理', description: '查看并维护客户主体' },
   { id: 'upload', icon: Upload, label: '上传资料', description: '上传征信、流水和财务资料' },
   { id: 'data', icon: Sheet, label: '资料汇总', description: '维护客户核心资料汇总' },

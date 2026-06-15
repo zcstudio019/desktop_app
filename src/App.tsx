@@ -1,7 +1,6 @@
 import React, { Component, ErrorInfo, ReactNode, useCallback, useEffect, useState } from 'react';
 import { AppProvider } from './context/AppContext';
 import { Layout, PageType } from './components/layout';
-import DashboardPage from './components/DashboardPage';
 import UploadPage from './components/UploadPage';
 import ApplicationPage from './components/ApplicationPage';
 import SchemeMatchPage from './components/SchemeMatch';
@@ -10,6 +9,7 @@ import LoginPage from './components/LoginPage';
 import CustomerListPage from './components/CustomerListPage';
 import CustomerDataPage from './components/CustomerDataPage';
 import AdminUsersPage from './components/AdminUsersPage';
+import WorkspacePage from './pages/Workspace';
 import { getCurrentUser } from './services/api';
 
 const CUSTOMER_CONTEXT_STORAGE_KEYS = [
@@ -23,7 +23,8 @@ const CUSTOMER_CONTEXT_STORAGE_KEYS = [
 ];
 
 const PAGE_PATH_MAP: Record<PageType, string> = {
-  dashboard: '/',
+  workspace: '/workspace',
+  dashboard: '/workspace',
   customers: '/customers',
   upload: '/upload',
   application: '/application',
@@ -34,6 +35,27 @@ const PAGE_PATH_MAP: Record<PageType, string> = {
 };
 
 const CUSTOMER_CONTEXT_PAGES = new Set<PageType>(['upload', 'application', 'scheme', 'data']);
+
+function getInitialPageFromLocation(): PageType {
+  if (typeof window === 'undefined') return 'workspace';
+
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  const pathPageMap: Record<string, PageType> = {
+    '/': 'workspace',
+    '/dashboard': 'workspace',
+    '/workspace': 'workspace',
+    '/customers': 'customers',
+    '/upload': 'upload',
+    '/application': 'application',
+    '/scheme': 'scheme',
+    '/matching': 'scheme',
+    '/chat': 'chat',
+    '/data': 'data',
+    '/admin': 'admin',
+  };
+
+  return pathPageMap[pathname] || 'workspace';
+}
 
 function readPersistedCustomerContext(): { customerId: string; customerName: string } {
   let customerId =
@@ -168,7 +190,7 @@ const App: React.FC = () => {
   const [username, setUsername] = useState('');
   const [role, setRole] = useState('');
   const [authChecking, setAuthChecking] = useState(true);
-  const [currentPage, setCurrentPage] = useState<PageType>('dashboard');
+  const [currentPage, setCurrentPage] = useState<PageType>(() => getInitialPageFromLocation());
 
   useEffect(() => {
     const checkAuth = async (): Promise<void> => {
@@ -213,7 +235,7 @@ const App: React.FC = () => {
     setIsLoggedIn(true);
     setUsername(loginUsername);
     setRole(loginRole);
-    setCurrentPage('dashboard');
+    setCurrentPage('workspace');
   }, []);
 
   const handleLogout = useCallback((): void => {
@@ -224,18 +246,18 @@ const App: React.FC = () => {
     setIsLoggedIn(false);
     setUsername('');
     setRole('');
-    setCurrentPage('dashboard');
+    setCurrentPage('workspace');
   }, []);
 
   const handleNavigate = useCallback(
     (page: string): void => {
-      const normalizedPage = page === 'matching' ? 'scheme' : page;
-      const validPages: PageType[] = ['dashboard', 'customers', 'upload', 'application', 'scheme', 'chat', 'data', 'admin'];
+      const normalizedPage = page === 'matching' ? 'scheme' : page === 'dashboard' ? 'workspace' : page;
+      const validPages: PageType[] = ['workspace', 'dashboard', 'customers', 'upload', 'application', 'scheme', 'chat', 'data', 'admin'];
       if (!validPages.includes(normalizedPage as PageType)) {
         return;
       }
       if (normalizedPage === 'admin' && role !== 'admin') {
-        setCurrentPage('dashboard');
+        setCurrentPage('workspace');
         return;
       }
       syncNavigationUrl(normalizedPage as PageType);
@@ -246,8 +268,9 @@ const App: React.FC = () => {
 
   const renderPage = (): ReactNode => {
     switch (currentPage) {
+      case 'workspace':
       case 'dashboard':
-        return <DashboardPage onNavigate={handleNavigate} />;
+        return <WorkspacePage onNavigate={handleNavigate} />;
       case 'customers':
         return <CustomerListPage userRole={role} username={username} />;
       case 'data':
@@ -261,9 +284,9 @@ const App: React.FC = () => {
       case 'chat':
         return <ChatPage onNavigate={handleNavigate} />;
       case 'admin':
-        return role === 'admin' ? <AdminUsersPage currentUsername={username} /> : <DashboardPage onNavigate={handleNavigate} />;
+        return role === 'admin' ? <AdminUsersPage currentUsername={username} /> : <WorkspacePage onNavigate={handleNavigate} />;
       default:
-        return <DashboardPage onNavigate={handleNavigate} />;
+        return <WorkspacePage onNavigate={handleNavigate} />;
     }
   };
 
