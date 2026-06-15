@@ -12,7 +12,6 @@ export const PAGE_TITLES: Record<PageType, string> = {
   application: '申请表生成',
   scheme: '方案匹配',
   chat: 'AI 对话',
-  'new-chat': '智能对话（新）',
   admin: '账号管理',
 };
 
@@ -36,7 +35,6 @@ const Layout: React.FC<LayoutProps> = ({
   onLogout,
 }) => {
   const pageTitle = PAGE_TITLES[currentPage];
-  const isNewChatPage = currentPage === 'new-chat';
 
   return (
     <div className="flex h-screen" data-testid="layout">
@@ -49,21 +47,19 @@ const Layout: React.FC<LayoutProps> = ({
       />
 
       <div className="flex-1 flex flex-col overflow-hidden" data-testid="main-content">
-        {!isNewChatPage ? (
-          <Header
-            pageTitle={pageTitle}
-            userName={userName}
-            userRole={userRole}
-            notificationCount={notificationCount}
-            onNavigate={onNavigate}
-            onLogout={onLogout}
-          />
-        ) : null}
+        <Header
+          pageTitle={pageTitle}
+          userName={userName}
+          userRole={userRole}
+          notificationCount={notificationCount}
+          onNavigate={onNavigate}
+          onLogout={onLogout}
+        />
 
 
         <main
           className="relative z-0 flex-1 overflow-hidden bg-slate-50"
-          style={{ backgroundColor: isNewChatPage ? '#FFFFFF' : '#F8FAFC' }}
+          style={{ backgroundColor: '#F8FAFC' }}
           data-testid="content-area"
         >
           {children}
