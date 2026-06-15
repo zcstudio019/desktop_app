@@ -24,7 +24,7 @@ def test_missing_sn_has_clear_error():
 @pytest.mark.asyncio
 async def test_http_empty_shell_falls_back_to_playwright(monkeypatch):
     async def fake_http(_url: str):
-        return "root app", 200
+        return "root app", 200, 1024
 
     async def fake_playwright(_url: str):
         return (
@@ -45,7 +45,7 @@ async def test_http_empty_shell_falls_back_to_playwright(monkeypatch):
 @pytest.mark.asyncio
 async def test_playwright_unavailable_returns_clear_error(monkeypatch):
     async def fake_http(_url: str):
-        return "root app", 200
+        return "root app", 200, 1024
 
     async def fake_playwright(_url: str):
         return "", "playwright_unavailable:No module named playwright"
@@ -56,8 +56,8 @@ async def test_playwright_unavailable_returns_clear_error(monkeypatch):
     result = await fetch_shuimui_report(SAMPLE_URL)
 
     assert result.success is False
-    assert result.error_code == "playwright_unavailable"
-    assert "服务器未安装 Playwright" in result.error_message
+    assert result.error_code == "PLAYWRIGHT_UNAVAILABLE"
+    assert "服务器未安装 Playwright/Chromium" in result.error_message
 
 
 def test_shuimui_markdown_is_chinese_structured_not_json():

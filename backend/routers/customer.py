@@ -288,7 +288,13 @@ async def _run_url_extract_job(job_id: str, execution_payload: dict[str, Any]) -
                 source_url=source_url,
                 sn=sn,
                 error_message=error_message,
-                original_status="需要授权" if fetch_result.error_code == "auth_required" else "链接不可访问",
+                original_status=(
+                    "需要授权" if fetch_result.error_code == "NEED_AUTH"
+                    else "已过期" if fetch_result.error_code == "EXPIRED"
+                    else "页面内容为空" if fetch_result.error_code == "EMPTY_CONTENT"
+                    else "动态页面读取组件未安装" if fetch_result.error_code == "PLAYWRIGHT_UNAVAILABLE"
+                    else "链接不可访问"
+                ),
             )
             save_result = await _save_to_local_storage(
                 f"水母报告-{sn or '未识别'}.url",
