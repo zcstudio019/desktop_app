@@ -4,6 +4,21 @@ from typing import Any
 
 
 JOB_DISPLAY_CONFIG: dict[str, dict[str, Any]] = {
+    "url_extract": {
+        "jobType": "url_extract",
+        "jobTypeLabel": "水母报告链接提取",
+        "targetPage": "upload",
+        "defaultStatusText": {
+            "pending": "正在读取链接",
+            "running": "正在提取报告",
+            "retrying": "链接提取暂时受阻，系统正在自动重试",
+            "success": "提取成功",
+            "failed": "提取失败",
+        },
+        "supportsContinueView": True,
+        "supportsViewResult": True,
+        "supportsDirectNavigate": False,
+    },
     "file_process": {
         "jobType": "file_process",
         "jobTypeLabel": "上传资料",

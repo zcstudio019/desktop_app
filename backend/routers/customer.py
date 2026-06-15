@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # Add desktop_app to path for imports
@@ -64,7 +65,21 @@ from backend.services.document_extractor_service import (
     extract_company_articles_management_roles,
     extract_company_articles_role_evidence_lines,
 )
-from backend.routers.file import _load_historical_financial_reports, _process_file_bytes
+from backend.routers.file import _load_historical_financial_reports, _process_file_bytes, ai_service
+from backend.routers.chat_storage import _save_to_local_storage
+from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
+from backend.services.index_rebuild_service import IndexRebuildService
+from backend.services.job_display_config import build_job_result_summary, get_job_target_page, get_job_type_label
+from backend.services.shuimui_report_fetcher import (
+    ERROR_MESSAGES as SHUIMUI_ERROR_MESSAGES,
+    fetch_shuimui_report,
+    validate_shuimui_url,
+)
+from backend.services.extraction_skills.shuimui_report import (
+    DOC_TYPE as SHUIMUI_DOC_TYPE,
+    build_failed_shuimui_report_content,
+    extract_shuimui_report,
+)
 from backend.services.activity_service import add_activity
 from backend.services.profile_sync_service import ProfileSyncService
 from backend.services.rag_service import RagService
@@ -100,6 +115,7 @@ from services.ocr_service import OCRService, OCRServiceError
 from ..middleware.auth import get_current_user
 from ..models.schemas import (
     ChatJobCreateResponse,
+    ChatJobStatusResponse,
     CustomerDocumentListItem,
     CustomerRiskReportResponse,
     CustomerRiskReportHistoryItem,
@@ -148,6 +164,11 @@ class ExtractionReviewUpdatePayload(BaseModel):
     confirm_status: str = "partial"
 
 
+class UrlDocumentExtractPayload(BaseModel):
+    url: str
+    doc_type: str = SHUIMUI_DOC_TYPE
+
+
 def _model_payload(model: BaseModel) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
@@ -162,6 +183,18 @@ documents_router = APIRouter(prefix="/documents", tags=["Documents"])
 feishu_service = FeishuService()
 storage_service = get_storage_service()  # 根据配置返回本地存储或飞书服务
 HAS_DB_STORAGE = supports_structured_storage(storage_service)
+url_job_storage_service = storage_service if all(
+    hasattr(storage_service, method_name)
+    for method_name in ("create_async_job", "get_async_job", "update_async_job", "get_async_job_execution_payload", "mark_async_job_dispatched")
+) else SQLAlchemyStorageService()
+HAS_URL_ASYNC_JOB_STORAGE = all(
+    hasattr(url_job_storage_service, method_name)
+    for method_name in ("create_async_job", "get_async_job", "update_async_job", "get_async_job_execution_payload", "mark_async_job_dispatched")
+)
+URL_EXTRACT_JOB_TYPE = "url_extract"
+URL_EXTRACT_ENQUEUE_TIMEOUT_SECONDS = 3.0
+_ACTIVE_URL_EXTRACT_JOB_TASKS: set[asyncio.Task[None]] = set()
+url_index_rebuild_service = IndexRebuildService()
 
 
 def _mask_sensitive_id_number(value: str) -> str:
@@ -185,6 +218,209 @@ DOCUMENT_NOT_RETAINED_MESSAGE = "该资料未保存原件，仅保留提取结�
 DOCUMENT_FILE_MISSING_MESSAGE = "原件文件不存在或已不可用"
 file_service = FileService()
 ocr_service = OCRService()
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _update_url_extract_job(job_id: str, **updates: Any) -> None:
+    await url_job_storage_service.update_async_job(job_id, updates)
+    if "status" in updates:
+        logger.info(
+            "[UrlExtractJob] status updated job_id=%s status=%s progress=%s",
+            job_id,
+            updates.get("status") or "",
+            updates.get("progress_message") or "",
+        )
+
+
+async def _update_url_extract_progress(job_id: str, message: str) -> None:
+    await _update_url_extract_job(job_id, status="running", progress_message=message)
+
+
+def _normalize_url_extract_job_status(job: dict[str, Any]) -> str:
+    raw_status = str(job.get("status") or "").strip().lower() or "pending"
+    if raw_status == "submitted":
+        return "running"
+    if job.get("finished_at"):
+        return "failed" if job.get("error_message") else "success"
+    return raw_status if raw_status in {"pending", "running", "retrying", "success", "failed", "timeout", "interrupted"} else "pending"
+
+
+async def _run_url_extract_job(job_id: str, execution_payload: dict[str, Any]) -> None:
+    customer_id = str(execution_payload.get("customer_id") or "").strip()
+    source_url = str(execution_payload.get("url") or "").strip()
+    username = str(execution_payload.get("username") or "anonymous")
+    role = str(execution_payload.get("role") or "")
+    current_user_payload = {"username": username, "role": role}
+    sn = ""
+    document_id = ""
+
+    await _update_url_extract_job(
+        job_id,
+        status="running",
+        progress_message="正在读取链接",
+        started_at=_utc_now_iso(),
+        error_message="",
+    )
+
+    try:
+        if not customer_id:
+            raise ValueError("请选择客户后再提取水母报告链接。")
+        customer = await storage_service.get_customer(customer_id)
+        if not customer:
+            raise ValueError("未找到该客户记录。")
+        await _ensure_local_customer_access(customer, current_user_payload)
+        customer_name = str(customer.get("name") or customer_id)
+
+        try:
+            source_url, sn = validate_shuimui_url(source_url)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+        await _update_url_extract_progress(job_id, "正在读取链接")
+        fetch_result = await fetch_shuimui_report(source_url)
+        sn = fetch_result.sn or sn
+        if not fetch_result.success:
+            error_message = fetch_result.error_message or SHUIMUI_ERROR_MESSAGES.get(fetch_result.error_code, "水母报告链接读取失败。")
+            content = build_failed_shuimui_report_content(
+                source_url=source_url,
+                sn=sn,
+                error_message=error_message,
+                original_status="需要授权" if fetch_result.error_code == "auth_required" else "链接不可访问",
+            )
+            save_result = await _save_to_local_storage(
+                f"水母报告-{sn or '未识别'}.url",
+                SHUIMUI_DOC_TYPE,
+                content,
+                customer_name,
+                current_user_payload,
+                storage_service,
+                target_customer_id=customer_id,
+                file_bytes=None,
+            )
+            document_id = save_result[5] if len(save_result) > 5 else ""
+            raise ValueError(error_message)
+
+        await _update_url_extract_progress(job_id, "正在提取报告")
+        content = extract_shuimui_report(
+            fetch_result.raw_text,
+            source_url=source_url,
+            sn=sn,
+            ai_service=ai_service,
+        )
+
+        await _update_url_extract_progress(job_id, "正在保存客户资料")
+        save_result = await _save_to_local_storage(
+            f"水母报告-{sn}.url",
+            SHUIMUI_DOC_TYPE,
+            content,
+            customer_name,
+            current_user_payload,
+            storage_service,
+            target_customer_id=customer_id,
+            file_bytes=None,
+        )
+        success = bool(save_result[0]) if len(save_result) > 0 else False
+        error_msg = save_result[2] if len(save_result) > 2 else None
+        document_id = save_result[5] if len(save_result) > 5 else ""
+        if not success:
+            raise RuntimeError(error_msg or "水母报告保存失败")
+
+        await _update_url_extract_progress(job_id, "正在刷新资料汇总")
+        await regenerate_customer_profile(storage_service, customer_id)
+        await _update_url_extract_progress(job_id, "正在重建检索索引")
+        await url_index_rebuild_service.rebuild_customer_index(storage_service, customer_id, "document_saved")
+        await profile_sync_service.mark_customer_applications_stale(storage_service, customer_id)
+
+        result_payload = {
+            "documentType": SHUIMUI_DOC_TYPE,
+            "content": content,
+            "customerName": customer_name,
+            "customer_name": customer_name,
+            "resolvedCustomerId": customer_id,
+            "resolved_customer_id": customer_id,
+            "resolvedCustomerName": customer_name,
+            "resolved_customer_name": customer_name,
+            "savedToFeishu": True,
+            "recordId": "",
+            "customerId": customer_id,
+            "customer_id": customer_id,
+            "documentId": document_id,
+            "document_id": document_id,
+            "originalAvailable": False,
+            "original_available": False,
+            "source": "url",
+            "report_sn": sn,
+        }
+        await _update_url_extract_job(
+            job_id,
+            status="success",
+            customer_id=customer_id,
+            progress_message="提取成功",
+            result_json=result_payload,
+            error_message="",
+            finished_at=_utc_now_iso(),
+        )
+        logger.info("[UrlExtractJob] completed job_id=%s customer_id=%s sn=%s document_id=%s", job_id, customer_id, sn, document_id)
+    except Exception as exc:
+        logger.error(
+            "[UrlExtractJob] failed job_id=%s customer_id=%s sn=%s document_id=%s error=%s",
+            job_id,
+            customer_id,
+            sn,
+            document_id,
+            str(exc)[:200],
+            exc_info=True,
+        )
+        await _update_url_extract_job(
+            job_id,
+            status="failed",
+            progress_message="提取失败",
+            error_message=str(exc) or "已读取链接，但报告结构化提取失败，请查看后台日志。",
+            finished_at=_utc_now_iso(),
+        )
+        raise
+
+
+async def execute_url_extract_job_from_job(job_id: str) -> None:
+    execution_payload = await url_job_storage_service.get_async_job_execution_payload(job_id)
+    if not execution_payload:
+        error_message = f"async job {job_id} execution payload not found"
+        await _update_url_extract_job(job_id, status="failed", progress_message="提取失败", error_message=error_message, finished_at=_utc_now_iso())
+        raise ValueError(error_message)
+    await _run_url_extract_job(job_id, execution_payload)
+
+
+def _launch_url_extract_job(job_id: str) -> None:
+    task = asyncio.create_task(execute_url_extract_job_from_job(job_id))
+    _ACTIVE_URL_EXTRACT_JOB_TASKS.add(task)
+
+    def _cleanup(done_task: asyncio.Task[None]) -> None:
+        _ACTIVE_URL_EXTRACT_JOB_TASKS.discard(done_task)
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("[UrlExtractJob] background task crashed job_id=%s", job_id)
+
+    task.add_done_callback(_cleanup)
+
+
+async def _dispatch_url_extract_job(job_id: str, current_user_payload: dict[str, Any], customer_id: str) -> tuple[bool, str, str]:
+    if TASK_QUEUE_ENABLED:
+        from backend.celery_app import HEAVY_QUEUE_NAME, URL_EXTRACT_TASK_NAME, celery_app
+
+        def _send_task() -> Any:
+            return celery_app.send_task(URL_EXTRACT_TASK_NAME, args=[job_id], queue=HEAVY_QUEUE_NAME, retry=False)
+
+        async_result = await asyncio.wait_for(asyncio.to_thread(_send_task), timeout=URL_EXTRACT_ENQUEUE_TIMEOUT_SECONDS)
+        await url_job_storage_service.mark_async_job_dispatched(job_id, async_result.id, worker_name="celery")
+        return True, "", str(async_result.id)
+
+    _launch_url_extract_job(job_id)
+    return True, "", "in_process"
+
 
 _COMPANY_ARTICLES_INVALID_ROLE_FRAGMENTS = {
     "姓名或者名称", "姓名或名称", "姓名名称", "姓名", "名称", "股东",
@@ -1938,6 +2174,125 @@ async def get_customer_risk_report_history(
     return CustomerRiskReportHistoryResponse(
         items=[CustomerRiskReportHistoryItem(**item) for item in items]
     )
+
+
+@router.post("/{customer_id}/documents/extract-url", response_model=ChatJobCreateResponse)
+async def create_customer_url_extract_job(
+    customer_id: str,
+    payload: UrlDocumentExtractPayload,
+    current_user: dict = Depends(get_current_user),
+) -> JSONResponse:
+    if not HAS_DB_STORAGE or not HAS_URL_ASYNC_JOB_STORAGE:
+        raise HTTPException(status_code=503, detail="当前环境不支持异步 URL 提取任务，请切换到本地数据库存储。")
+
+    normalized_doc_type = normalize_document_type_code(payload.doc_type) or ""
+    if normalized_doc_type != SHUIMUI_DOC_TYPE:
+        raise HTTPException(status_code=400, detail="当前 URL 提取接口仅支持水母报告。")
+
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户记录。")
+    await _ensure_local_customer_access(customer, current_user)
+
+    try:
+        source_url, sn = validate_shuimui_url(payload.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    job_id = uuid.uuid4().hex
+    username = current_user.get("username") or "anonymous"
+    role = current_user.get("role") or ""
+    request_payload = {
+        "url": source_url,
+        "doc_type": SHUIMUI_DOC_TYPE,
+        "source": "url",
+        "sn": sn,
+        "customer_id": customer_id,
+        "username": username,
+    }
+    execution_payload = {
+        "job_id": job_id,
+        "url": source_url,
+        "doc_type": SHUIMUI_DOC_TYPE,
+        "sn": sn,
+        "customer_id": customer_id,
+        "username": username,
+        "role": role,
+    }
+    await url_job_storage_service.create_async_job(
+        {
+            "job_id": job_id,
+            "job_type": URL_EXTRACT_JOB_TYPE,
+            "customer_id": customer_id[:64],
+            "customer_name": customer.get("name") or "",
+            "username": username,
+            "status": "pending",
+            "progress_message": "正在读取链接",
+            "request_json": request_payload,
+            "execution_payload_json": execution_payload,
+        }
+    )
+
+    try:
+        enqueue_success, enqueue_error, celery_task_id = await _dispatch_url_extract_job(job_id, {"username": username, "role": role}, customer_id)
+    except Exception as exc:
+        enqueue_success = False
+        enqueue_error = str(exc) or "URL 提取任务派发失败"
+        celery_task_id = ""
+        await url_job_storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "任务派发失败",
+                "error_message": enqueue_error,
+                "finished_at": _utc_now_iso(),
+            },
+        )
+
+    if not enqueue_success:
+        return JSONResponse(
+            status_code=500,
+            content={"job_id": job_id, "jobId": job_id, "status": "failed", "error_message": enqueue_error or "URL 提取任务派发失败"},
+        )
+
+    logger.info("[UrlExtractJob] created job_id=%s customer_id=%s sn=%s celery_task_id=%s", job_id, customer_id, sn, celery_task_id)
+    return JSONResponse(content={"job_id": job_id, "jobId": job_id, "status": "pending", "message": "正在读取链接"})
+
+
+@router.get("/{customer_id}/documents/extract-url/jobs/{job_id}", response_model=ChatJobStatusResponse)
+async def get_customer_url_extract_job(
+    customer_id: str,
+    job_id: str,
+    current_user: dict = Depends(get_current_user),
+) -> ChatJobStatusResponse:
+    job = await url_job_storage_service.get_async_job(job_id)
+    if not job or (job.get("job_type") or "") != URL_EXTRACT_JOB_TYPE:
+        raise HTTPException(status_code=404, detail="未找到该 URL 提取任务")
+    if (job.get("customer_id") or "") != customer_id:
+        raise HTTPException(status_code=404, detail="未找到该 URL 提取任务")
+    username = current_user.get("username") or "anonymous"
+    if job.get("username") and job.get("username") != username:
+        raise HTTPException(status_code=403, detail="无权查看该 URL 提取任务")
+
+    result_payload = job.get("result_json") if isinstance(job.get("result_json"), dict) else None
+    normalized_status = _normalize_url_extract_job_status(job)
+    return ChatJobStatusResponse(
+        jobId=job.get("job_id") or job_id,
+        jobType=job.get("job_type") or URL_EXTRACT_JOB_TYPE,
+        jobTypeLabel=get_job_type_label(job.get("job_type") or URL_EXTRACT_JOB_TYPE),
+        customerId=job.get("customer_id") or "",
+        customerName=job.get("customer_name") or "",
+        status=normalized_status,
+        progressMessage=job.get("progress_message") or ("提取成功" if normalized_status == "success" else "提取失败" if normalized_status == "failed" else "正在读取链接"),
+        result=result_payload,
+        errorMessage=job.get("error_message") or None,
+        createdAt=job.get("created_at") or "",
+        startedAt=job.get("started_at") or "",
+        finishedAt=job.get("finished_at") or "",
+        targetPage=get_job_target_page(job.get("job_type") or URL_EXTRACT_JOB_TYPE),
+        resultSummary=build_job_result_summary(job.get("job_type") or URL_EXTRACT_JOB_TYPE, result_payload, job.get("customer_name") or ""),
+    )
+
 
 class ExtractionItem(BaseModel):
     """单条 extraction 记录"""

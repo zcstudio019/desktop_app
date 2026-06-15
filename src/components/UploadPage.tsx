@@ -16,9 +16,17 @@
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { 
   FileText, Upload, Check, X, Loader2, AlertCircle,
-  Building2, User, Landmark, Wallet, BarChart3, Home, FileSearch, Receipt
+  Building2, User, Landmark, Wallet, BarChart3, Home, FileSearch, Receipt, Link
 } from 'lucide-react';
-import { createFileProcessJob, downloadDocumentOriginal, getFileProcessJob, listCustomers, previewDocumentOriginal } from '../services/api';
+import {
+  createFileProcessJob,
+  createShuimuiReportUrlExtractJob,
+  downloadDocumentOriginal,
+  getFileProcessJob,
+  getShuimuiReportUrlExtractJob,
+  listCustomers,
+  previewDocumentOriginal,
+} from '../services/api';
 import { useLoading } from '../hooks/useLoading';
 import { useAbortController } from '../hooks/useAbortController';
 import { useApp, type ExtractionResult, type UploadQueueItem } from '../context/AppContext';
@@ -759,6 +767,9 @@ const UploadPage: React.FC = () => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedDocumentType, setSelectedDocumentType] = useState<string>('enterprise_credit');
   const [customerName, setCustomerName] = useState<string>('');
+  const [shuimuiUrl, setShuimuiUrl] = useState<string>('');
+  const [shuimuiStatus, setShuimuiStatus] = useState<'idle' | 'reading' | 'extracting' | 'success' | 'failed'>('idle');
+  const [shuimuiMessage, setShuimuiMessage] = useState<string>('');
   const [customerSelectionOverride, setCustomerSelectionOverride] = useState<string | null>(null);
   const [customerOptions, setCustomerOptions] = useState<CustomerListItem[]>([]);
   const [customersLoading, setCustomersLoading] = useState(false);
@@ -1471,6 +1482,97 @@ const UploadPage: React.FC = () => {
     setUploadedFiles((prev) => prev.filter((file) => file.id !== id));
   }, []);
 
+  const handleShuimuiUrlExtract = useCallback(async () => {
+    const activeCustomerId = getEffectiveCustomerId();
+    const url = shuimuiUrl.trim();
+    if (!activeCustomerId) {
+      setShuimuiStatus('failed');
+      setShuimuiMessage('请先选择客户后再提取水母报告链接。');
+      customerSelectRef.current?.focus();
+      return;
+    }
+    if (!url) {
+      setShuimuiStatus('failed');
+      setShuimuiMessage('请输入水母报告链接。');
+      return;
+    }
+
+    setShuimuiStatus('reading');
+    setShuimuiMessage('正在读取链接');
+    const signal = getSignal();
+    try {
+      const createdJob = await createShuimuiReportUrlExtractJob(activeCustomerId, url, signal);
+      let finalStatus: ChatJobStatusResponse | null = null;
+      for (;;) {
+        const jobStatus = await getShuimuiReportUrlExtractJob(activeCustomerId, createdJob.jobId, signal);
+        finalStatus = jobStatus;
+        const message = jobStatus.progressMessage || '';
+        setShuimuiMessage(message || (jobStatus.status === 'running' ? '正在提取报告' : '正在读取链接'));
+        if (message.includes('提取') || jobStatus.status === 'running') {
+          setShuimuiStatus('extracting');
+        }
+        if (jobStatus.status === 'success' || jobStatus.status === 'failed') {
+          break;
+        }
+        await waitForPolling(2000);
+      }
+      if (!finalStatus || finalStatus.status !== 'success') {
+        throw new Error(finalStatus?.errorMessage || '提取失败');
+      }
+
+      const extractionResult = toExtractionResultFromJob(finalStatus);
+      const finalCustomerName = extractionResult.resolvedCustomerName || extractionResult.customerName || resolvedCustomerName || customerName;
+      const savedCustomerId = extractionResult.resolvedCustomerId || extractionResult.customerId || activeCustomerId;
+      addCustomerData(finalCustomerName, extractionResult);
+      setCurrentCustomer(finalCustomerName || null, savedCustomerId);
+      setShuimuiStatus('success');
+      setShuimuiMessage('提取成功');
+      const reportSn = String(finalStatus.result?.report_sn || extractionResult.content?.report_sn || '');
+      setUploadedFiles((prev) => [{
+        id: `shuimui-${createdJob.jobId}`,
+        name: reportSn ? `水母报告-${reportSn}` : '水母报告',
+        size: '链接',
+        time: formatRelativeTime(new Date()),
+        type: '链接',
+        color: 'text-indigo-600',
+        documentType: 'shuimui_report',
+        result: extractionResult,
+        documentId: extractionResult.documentId ?? null,
+        originalAvailable: false,
+        originalStatus: '仅保留提取结果',
+      }, ...prev]);
+      recordSystemActivity({
+        type: 'upload',
+        title: '水母报告提取完成',
+        description: `${reportSn ? `水母报告-${reportSn}` : '水母报告'} 已保存，并已自动更新资料汇总与问答索引。`,
+        customerName: finalCustomerName,
+        customerId: savedCustomerId,
+        status: 'success',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '提取失败';
+      setShuimuiStatus('failed');
+      setShuimuiMessage(message);
+      recordSystemActivity({
+        type: 'upload',
+        title: '水母报告提取失败',
+        description: message,
+        customerName: resolvedCustomerName || customerName,
+        customerId: activeCustomerId,
+        status: 'warning',
+      });
+    }
+  }, [
+    addCustomerData,
+    customerName,
+    getEffectiveCustomerId,
+    getSignal,
+    recordSystemActivity,
+    resolvedCustomerName,
+    setCurrentCustomer,
+    shuimuiUrl,
+  ]);
+
   const viewResult = useCallback((result: ExtractionResult) => {
     if (isKycExtractionResult(getKycPreviewContent(result))) {
       setPreviewResult(result);
@@ -1625,6 +1727,51 @@ const UploadPage: React.FC = () => {
         nextStep={uploadSummary.nextStep}
         className="mb-6"
       />
+
+      <div className="mb-6 rounded-xl border border-indigo-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-800">
+          <Link className="h-4 w-4 text-indigo-600" />
+          粘贴水母报告链接
+        </div>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <input
+            type="url"
+            value={shuimuiUrl}
+            onChange={(event) => {
+              setShuimuiUrl(event.target.value);
+              if (shuimuiStatus !== 'idle') {
+                setShuimuiStatus('idle');
+                setShuimuiMessage('');
+              }
+            }}
+            placeholder="请输入水母报告链接，例如 https://shuimui.szsmjr.com/index.html#/query/result?sn=..."
+            className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            disabled={shuimuiStatus === 'reading' || shuimuiStatus === 'extracting'}
+          />
+          <button
+            type="button"
+            onClick={() => void handleShuimuiUrlExtract()}
+            disabled={shuimuiStatus === 'reading' || shuimuiStatus === 'extracting'}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {shuimuiStatus === 'reading' || shuimuiStatus === 'extracting' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSearch className="h-4 w-4" />}
+            开始提取
+          </button>
+        </div>
+        {shuimuiMessage ? (
+          <div
+            className={`mt-3 rounded-lg border px-3 py-2 text-sm ${
+              shuimuiStatus === 'failed'
+                ? 'border-rose-200 bg-rose-50 text-rose-700'
+                : shuimuiStatus === 'success'
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border-indigo-200 bg-indigo-50 text-indigo-700'
+            }`}
+          >
+            {shuimuiMessage}
+          </div>
+        ) : null}
+      </div>
 
       {autoRedirectMessage ? (
         <div className="mb-6 rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700 shadow-sm">

@@ -277,7 +277,7 @@ const DOCUMENT_GROUPS = {
   },
   financial: {
     title: '财务资料',
-    types: ['financial_report', 'financial_data'],
+    types: ['financial_report', 'financial_data', 'shuimui_report'],
   },
 } as const;
 
@@ -549,6 +549,7 @@ function getDocumentTypeDisplayNameByCode(fileType: string): string {
     vehicle_license: '行驶证',
     financial_report: '财务报表',
     financial_data: '财务报表',
+    shuimui_report: '水母报告',
   };
   return DISPLAY_NAMES[fileType] || fileType;
 }

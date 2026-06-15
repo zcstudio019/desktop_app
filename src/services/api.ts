@@ -282,6 +282,41 @@ export async function getFileProcessJob(
   return handleResponse<ChatJobStatusResponse>(response);
 }
 
+export async function createShuimuiReportUrlExtractJob(
+  customerId: string,
+  url: string,
+  signal?: AbortSignal
+): Promise<ChatJobCreateResponse> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/documents/extract-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ url, doc_type: 'shuimui_report' }),
+    signal,
+  });
+  const payload = await handleResponse<ChatJobCreateResponse & { job_id?: string; message?: string }>(response);
+  const jobId = normalizeJobId(payload);
+  if (!jobId) {
+    throw new Error('水母报告链接提取任务创建失败，后端返回格式异常');
+  }
+  return { ...payload, jobId };
+}
+
+export async function getShuimuiReportUrlExtractJob(
+  customerId: string,
+  jobId: string,
+  signal?: AbortSignal
+): Promise<ChatJobStatusResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/customers/${encodeURIComponent(customerId)}/documents/extract-url/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+      headers: { ...getAuthHeaders() },
+      signal,
+    },
+  );
+  return handleResponse<ChatJobStatusResponse>(response);
+}
+
 export async function saveToStorage(
   request: StorageSaveRequest,
   signal?: AbortSignal
