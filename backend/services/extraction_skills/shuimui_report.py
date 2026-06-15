@@ -65,6 +65,30 @@ HEADER_VALUES = {
     "变更时间 变更前 变更后",
 }
 
+TAX_FIELDS = [
+    "纳税信用等级",
+    "纳税人种类",
+    "近12月欠税记录次数",
+    "当前欠税余额（元）",
+    "近3个月滞纳金金额(元)",
+    "近12个月滞纳金金额(元)",
+    "近12月滞纳金次数",
+    "近12月增税销售额（元）",
+    "近24月增税销售额（元）",
+    "近12月完税总额(元)",
+    "近24月完税总额(元)",
+    "近12月增税应纳额(元)",
+    "近12月0申报月数(月)",
+    "近12月最长连续0纳税申报月数",
+]
+
+FINANCIAL_FIELDS = [
+    "资产金额（去年年报）",
+    "营业利润额（去年年报）",
+    "负债率（去年年报）",
+    "营业净利率（去年年报）",
+]
+
 SECTION_FIELDS: list[tuple[str, list[str]]] = [
     ("企业基本信息", ["企业名称", "统一社会信用代码", "法定代表人", "法人占股比例", "成立日期", "注册资本", "注册类型", "注册地址", "行业分类"]),
     ("报告基础信息", ["报告编号", "报告创建时间", "查询时间", "报告生成时间", "数据更新时间", "授权状态"]),
@@ -73,6 +97,7 @@ SECTION_FIELDS: list[tuple[str, list[str]]] = [
     ("法人/股东变更", ["变更类型", "变更时间", "变更前", "变更后"]),
     ("银税互动授权记录", ["授权记录"]),
     ("纳税信息", ["纳税信用等级", "纳税状态", "纳税金额", "税种", "税款所属期", "申报状态", "欠税信息", "税务异常"]),
+    ("财报信息", []),
     ("发票信息", ["开票总金额", "开票月份", "销项发票金额", "进项发票金额", "发票张数", "作废发票", "红冲发票", "主要开票品类", "发票异常提示"]),
     ("前十供应商", []),
     ("前十销售客户", []),
@@ -83,6 +108,8 @@ SECTION_FIELDS: list[tuple[str, list[str]]] = [
 ]
 
 ALL_FIELDS = [field for _, fields in SECTION_FIELDS for field in fields]
+ALL_FIELDS.extend(TAX_FIELDS)
+ALL_FIELDS.extend(FINANCIAL_FIELDS)
 
 LABEL_ALIASES: dict[str, tuple[str, ...]] = {
     "企业名称": ("企业名称", "公司名称", "主体名称", "被查询企业"),
@@ -202,6 +229,54 @@ def _parse_number(value: Any) -> float | None:
         return float(match.group(0))
     except ValueError:
         return None
+
+
+def _normalize_label(value: Any) -> str:
+    text = re.sub(r"\s+", "", str(value or ""))
+    return text.replace("（", "(").replace("）", ")").replace("：", ":").strip(":")
+
+
+def _format_integer_amount(value: Any) -> str:
+    text = str(value or "").strip()
+    if text == "无":
+        return "无"
+    number = _parse_number(text)
+    if number is None:
+        return _clean(text, 80)
+    return f"{number:,.0f}"
+
+
+def _format_decimal_amount(value: Any) -> str:
+    text = str(value or "").strip()
+    if text == "无":
+        return "无"
+    number = _parse_number(text)
+    if number is None:
+        return _clean(text, 80)
+    return f"{number:,.2f}"
+
+
+def _format_tax_indicator_value(field: str, value: Any) -> str:
+    clean_value = _clean(value, 80)
+    if not clean_value:
+        return ""
+    if clean_value == "无":
+        return "无"
+    if "销售额" in field or "完税总额" in field or "应纳额" in field or "余额" in field or "金额" in field:
+        return _format_integer_amount(clean_value)
+    if "次数" in field or "月数" in field:
+        number = _parse_number(clean_value)
+        return str(int(number)) if number is not None else clean_value
+    return clean_value
+
+
+def _format_financial_value(field: str, value: Any) -> str:
+    clean_value = _clean(value, 80)
+    if not clean_value:
+        return ""
+    if "率" in field:
+        return _format_percent(clean_value)
+    return _format_decimal_amount(clean_value)
 
 
 def _format_money(value: Any, *, allow_small: bool = False) -> str:
@@ -393,22 +468,100 @@ def _extract_dynamic_section_fields(section_text: str, target_fields: list[str])
     return rows
 
 
+def _is_noise_value(value: str) -> bool:
+    text = _clean(value, 120)
+    if not text:
+        return True
+    if text in HEADER_VALUES:
+        return True
+    if text in {"展开", "收起", "详情", "查看", "年度汇总"}:
+        return True
+    if re.fullmatch(r"20\d{2}", text):
+        return True
+    if re.fullmatch(r"\d{1,2}月", text):
+        return True
+    return False
+
+
+def _extract_whitelisted_label_values(section_text: str, fields: list[str], formatter: Any) -> list[tuple[str, str]]:
+    lines = [_clean(line, 120) for line in (section_text or "").splitlines()]
+    lines = [line for line in lines if line]
+    normalized_to_field = {_normalize_label(field): field for field in fields}
+    normalized_labels = set(normalized_to_field)
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for line in lines:
+        if "：" in line or ":" in line:
+            label, raw_value = re.split(r"[：:]", line, maxsplit=1)
+            field = normalized_to_field.get(_normalize_label(label))
+            value = formatter(field, raw_value) if field else ""
+            if field and value and field not in seen:
+                rows.append((field, value))
+                seen.add(field)
+
+    for index, line in enumerate(lines):
+        field = normalized_to_field.get(_normalize_label(line))
+        if not field or field in seen:
+            continue
+        for candidate in lines[index + 1 : index + 6]:
+            if _normalize_label(candidate) in normalized_labels:
+                break
+            if _is_noise_value(candidate):
+                continue
+            value = formatter(field, candidate)
+            if value:
+                rows.append((field, value))
+                seen.add(field)
+                break
+    return rows
+
+
+def _extract_tax_indicator_rows(section_text: str) -> list[tuple[str, str]]:
+    return _extract_whitelisted_label_values(section_text, TAX_FIELDS, _format_tax_indicator_value)
+
+
+def _extract_financial_rows(section_text: str) -> list[tuple[str, str]]:
+    return _extract_whitelisted_label_values(section_text, FINANCIAL_FIELDS, _format_financial_value)
+
+
+def _is_penalty_status(value: str) -> bool:
+    text = _clean(value, 80)
+    return bool(text and re.search(r"(已缴清|未缴清|已处理|未处理|已缴|未缴)", text))
+
+
 def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
-    rows = _extract_dynamic_section_fields(section_text, ["纳税信用等级", "纳税状态", "欠税信息", "税务异常"])
+    rows = _extract_tax_indicator_rows(section_text)
     late_fee_records: list[str] = []
+    seen_records: set[tuple[str, str, str]] = set()
+    skipped_non_penalty_rows = 0
     for record in _extract_table_records(section_text):
-        date = _first_record_value(record, ("滞纳金时间", "登记日期", "日期", "时间"))
+        date = _first_record_value(record, ("滞纳金时间", "日期", "时间"))
+        if not re.fullmatch(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}", date or ""):
+            skipped_non_penalty_rows += 1
+            continue
         amount = _format_money(_first_record_value(record, ("滞纳金金额", "金额")), allow_small=True)
         status = _first_record_value(record, ("状态",))
-        if date and amount:
-            parts = [date, f"滞纳金金额：{amount}"]
-            if status:
-                parts.append(f"状态：{status}")
-            late_fee_records.append("，".join(parts))
+        if not amount or not _is_penalty_status(status):
+            skipped_non_penalty_rows += 1
+            continue
+        key = (date, amount, status)
+        if key in seen_records:
+            continue
+        seen_records.add(key)
+        late_fee_records.append("，".join([date, f"滞纳金金额：{amount}", f"状态：{status}"]))
     if late_fee_records:
         rows.append(("__SUBSECTION__", "滞纳金记录"))
         for index, record_text in enumerate(late_fee_records[:20], 1):
             rows.append((f"记录 {index}", record_text))
+    logger.info(
+        "[ShuimuiExtract] tax_tab_text_length=%s matched_tax_fields=%s overdue_penalty_records_count=%s skipped_non_penalty_rows_count=%s final_tax_markdown_lines_count=%s",
+        len(section_text or ""),
+        ",".join(field for field, _ in rows if field != "__SUBSECTION__" and not field.startswith("记录 ")),
+        len(late_fee_records),
+        skipped_non_penalty_rows,
+        len(rows),
+    )
     return rows
 
 
@@ -549,8 +702,16 @@ def _extract_dynamic_sections(raw_text: str, capture_payload: dict[str, Any]) ->
     tax_text = "\n".join(part for part in (api_text.get("纳税信息"), _extract_tab_text(raw_text, "纳税信息", capture_payload)) if part)
     invoice_text = "\n".join(part for part in (api_text.get("发票信息"), _extract_tab_text(raw_text, "发票信息", capture_payload)) if part)
     supplier_text = "\n".join(part for part in (api_text.get("供应商信息"), _extract_tab_text(raw_text, "供应商信息", capture_payload)) if part)
+    financial_rows = _extract_financial_rows(tax_text)
+    if financial_rows:
+        logger.info(
+            "[ShuimuiExtract] tax_tab_text_length=%s matched_financial_fields=%s",
+            len(tax_text or ""),
+            ",".join(field for field, _ in financial_rows),
+        )
     dynamic = {
         "纳税信息": _tax_display_rows(tax_text),
+        "财报信息": financial_rows,
         "发票信息": _invoice_display_rows(invoice_text),
         "前十供应商": _supplier_display_rows(supplier_text),
         "前十销售客户": _customer_display_rows(supplier_text),

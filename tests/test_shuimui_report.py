@@ -264,8 +264,8 @@ def test_shuimui_extracts_tax_invoice_supplier_tabs():
 ### 页签：纳税信息
 纳税信用等级
 A
-纳税状态
-正常
+纳税人种类
+一般纳税人
 税款所属期        税种        纳税金额        申报状态
 2026-02        增值税        12000 元        已申报
 
@@ -290,8 +290,9 @@ A
 
     assert "### 纳税信息" in markdown
     assert "纳税信用等级：A" in markdown
-    assert "纳税状态：正常" in markdown
-    assert "纳税金额：12000 元" in markdown
+    assert "纳税人种类：一般纳税人" in markdown
+    assert "纳税状态：正常" not in markdown
+    assert "纳税金额：12000 元" not in markdown
     assert "### 发票信息" in markdown
     assert "覆盖年份：2026" in markdown
     assert "发票总张数：42" in markdown
@@ -307,7 +308,7 @@ A
 def test_shuimui_extracts_internal_capture_json_without_displaying_json():
     raw_text = """水母报告
 __SHUIMUI_REPORT_CAPTURE_JSON__
-{"sections":{"tax_info":{"label":"纳税信息","text":"纳税信用等级\\nB\\n欠税信息\\n无","tables_text":""},"invoice_info":{"label":"发票信息","text":"开票总金额\\n880000 元","tables_text":""},"supplier_info":{"label":"供应商信息","text":"供应商名称        交易金额        占比\\n上海接口供应商        100000 元        20%","tables_text":""}},"api_json":[{"url":"https://shuimui.szsmjr.com/api/report","status":200,"field_summary":["纳税信用等级"],"payload":{"纳税信息":{"纳税状态":"正常"},"发票信息":{"发票张数":12}}}]}
+{"sections":{"tax_info":{"label":"纳税信息","text":"纳税信用等级\\nB\\n当前欠税余额（元）\\n无","tables_text":""},"invoice_info":{"label":"发票信息","text":"开票总金额\\n880000 元","tables_text":""},"supplier_info":{"label":"供应商信息","text":"供应商名称        交易金额        占比\\n上海接口供应商        100000 元        20%","tables_text":""}},"api_json":[{"url":"https://shuimui.szsmjr.com/api/report","status":200,"field_summary":["纳税信用等级"],"payload":{"纳税信息":{"纳税人种类":"一般纳税人"},"发票信息":{"发票张数":12}}}]}
 __END_SHUIMUI_REPORT_CAPTURE_JSON__
 ### 页签：基本信息
 企业名称
@@ -325,8 +326,8 @@ __END_SHUIMUI_REPORT_CAPTURE_JSON__
 
     assert "### 纳税信息" in markdown
     assert "纳税信用等级：B" in markdown
-    assert "欠税信息：无" in markdown
-    assert "纳税状态：正常" in markdown
+    assert "当前欠税余额（元）：无" in markdown
+    assert "纳税人种类：一般纳税人" in markdown
     assert "### 发票信息" in markdown
     assert "发票总张数：12" in markdown
     assert "### 前十供应商" in markdown
@@ -412,10 +413,47 @@ def test_shuimui_tax_late_fee_records_and_invoice_summary_are_clean():
 ### 页签：纳税信息
 纳税信用等级
 A
+纳税人种类
+一般纳税人
+近12月欠税记录次数
+0
+当前欠税余额（元）
+无
+近3个月滞纳金金额(元)
+无
+近12个月滞纳金金额(元)
+无
+近12月滞纳金次数
+无
+近12月增税销售额（元）
+5653114
+近24月增税销售额（元）
+14002123
+近12月完税总额(元)
+27370
+近24月完税总额(元)
+461946
+近12月增税应纳额(元)
+20663
+近12月0申报月数(月)
+0
+近12月最长连续0纳税申报月数
+0
+资产金额（去年年报）
+18509049.74
+营业利润额（去年年报）
+-1014150.98
+负债率（去年年报）
+105.53%
+营业净利率（去年年报）
+-16.64%
 滞纳金时间        滞纳金金额        状态
 2023-10-23        8.47        已缴清
 2023-04-26        0.71        已缴清
 2023-04-18        6.96        已缴清
+4月        2024.00        2025
+1月        18775.00        10105
+年度汇总        443603.00        32853
 
 ### 页签：发票信息
 覆盖年份
@@ -435,10 +473,30 @@ A
 
     assert "### 纳税信息" in markdown
     assert "纳税信用等级：A" in markdown
+    assert "纳税人种类：一般纳税人" in markdown
+    assert "近12月欠税记录次数：0" in markdown
+    assert "当前欠税余额（元）：无" in markdown
+    assert "近3个月滞纳金金额(元)：无" in markdown
+    assert "近12个月滞纳金金额(元)：无" in markdown
+    assert "近12月滞纳金次数：无" in markdown
+    assert "近12月增税销售额（元）：5,653,114" in markdown
+    assert "近24月增税销售额（元）：14,002,123" in markdown
+    assert "近12月完税总额(元)：27,370" in markdown
+    assert "近24月完税总额(元)：461,946" in markdown
+    assert "近12月增税应纳额(元)：20,663" in markdown
+    assert "近12月0申报月数(月)：0" in markdown
+    assert "近12月最长连续0纳税申报月数：0" in markdown
     assert "#### 滞纳金记录" in markdown
     assert "记录 1：2023-10-23，滞纳金金额：8.47 元，状态：已缴清" in markdown
     assert "记录 2：2023-04-26，滞纳金金额：0.71 元，状态：已缴清" in markdown
     assert "记录 3：2023-04-18，滞纳金金额：6.96 元，状态：已缴清" in markdown
+    assert "4月，滞纳金金额：2,024.00 元，状态：2025" not in markdown
+    assert "年度汇总，滞纳金金额：443,603.00 元，状态：32853" not in markdown
+    assert "### 财报信息" in markdown
+    assert "资产金额（去年年报）：18,509,049.74" in markdown
+    assert "营业利润额（去年年报）：-1,014,150.98" in markdown
+    assert "负债率（去年年报）：105.53%" in markdown
+    assert "营业净利率（去年年报）：-16.64%" in markdown
     assert "### 发票信息" in markdown
     assert "覆盖年份：2024、2025、2026" in markdown
     assert "发票总张数：268" in markdown
