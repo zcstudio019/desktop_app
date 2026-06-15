@@ -255,3 +255,82 @@ def test_sample_shuimui_table_rows_do_not_use_headers_as_values():
     assert "社保人数：应缴费额" not in markdown
     assert "股东名称：参股比例" not in markdown
     assert "变更类型：变更时间" not in markdown
+    assert "最近一次社保缴费记录：社保人数" not in markdown
+
+
+def test_shuimui_extracts_tax_invoice_supplier_tabs():
+    raw_text = f"""{SAMPLE_BODY_TEXT}
+
+### 页签：纳税信息
+纳税信用等级
+A
+纳税状态
+正常
+税款所属期        税种        纳税金额        申报状态
+2026-02        增值税        12000 元        已申报
+
+### 页签：发票信息
+开票月份        销项发票金额        进项发票金额        发票张数
+2026-02        560000 元        320000 元        42
+主要开票品类
+厨具卫具
+
+### 页签：供应商信息
+供应商名称        交易金额        交易次数        占比        最近交易时间
+上海某某供应链有限公司        180000 元        8        35%        2026-03-01
+苏州某某商贸有限公司        90000 元        3        17%        2026-02-18
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+
+    assert "### 纳税信息" in markdown
+    assert "纳税信用等级：A" in markdown
+    assert "纳税状态：正常" in markdown
+    assert "纳税金额：12000 元" in markdown
+    assert "### 发票信息" in markdown
+    assert "销项发票金额：560000 元" in markdown
+    assert "进项发票金额：320000 元" in markdown
+    assert "发票张数：42" in markdown
+    assert "主要开票品类：厨具卫具" in markdown
+    assert "### 供应商信息" in markdown
+    assert "供应商 1：上海某某供应链有限公司，交易金额 180000 元，交易次数 8，占比 35%，最近交易时间 2026-03-01" in markdown
+    assert "供应商 2：苏州某某商贸有限公司，交易金额 90000 元，交易次数 3，占比 17%，最近交易时间 2026-02-18" in markdown
+    assert "未识别" not in markdown
+    assert "structured json" not in markdown.lower()
+
+
+def test_shuimui_extracts_internal_capture_json_without_displaying_json():
+    raw_text = """水母报告
+__SHUIMUI_REPORT_CAPTURE_JSON__
+{"sections":{"tax_info":{"label":"纳税信息","text":"纳税信用等级\\nB\\n欠税信息\\n无","tables_text":""},"invoice_info":{"label":"发票信息","text":"开票总金额\\n880000 元","tables_text":""},"supplier_info":{"label":"供应商信息","text":"供应商名称        交易金额        占比\\n上海接口供应商        100000 元        20%","tables_text":""}},"api_json":[{"url":"https://shuimui.szsmjr.com/api/report","status":200,"field_summary":["纳税信用等级"],"payload":{"纳税信息":{"纳税状态":"正常"},"发票信息":{"发票张数":12}}}]}
+__END_SHUIMUI_REPORT_CAPTURE_JSON__
+### 页签：基本信息
+企业名称
+上海测试有限公司
+统一信用代码
+91310000MA1TEST123
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+
+    assert "### 纳税信息" in markdown
+    assert "纳税信用等级：B" in markdown
+    assert "欠税信息：无" in markdown
+    assert "纳税状态：正常" in markdown
+    assert "### 发票信息" in markdown
+    assert "开票总金额：880000 元" in markdown
+    assert "发票张数：12" in markdown
+    assert "### 供应商信息" in markdown
+    assert "供应商 1：上海接口供应商，交易金额 100000 元，占比 20%" in markdown
+    assert "__SHUIMUI_REPORT_CAPTURE_JSON__" not in markdown
+    assert "api_json" not in markdown

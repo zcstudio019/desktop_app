@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import html
+import json
 import logging
 import re
 from urllib.parse import parse_qs, urlparse
@@ -17,6 +19,14 @@ SN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 HTTP_TIMEOUT_SECONDS = 15.0
 PLAYWRIGHT_TIMEOUT_MS = 30_000
 MIN_REPORT_TEXT_LENGTH = 80
+TAB_DEFINITIONS: tuple[tuple[str, str], ...] = (
+    ("basic_info", "基本信息"),
+    ("tax_info", "纳税信息"),
+    ("invoice_info", "发票信息"),
+    ("supplier_info", "供应商信息"),
+)
+CAPTURE_JSON_START = "__SHUIMUI_REPORT_CAPTURE_JSON__"
+CAPTURE_JSON_END = "__END_SHUIMUI_REPORT_CAPTURE_JSON__"
 
 REPORT_SUCCESS_KEYWORDS = (
     "水母报告",
@@ -139,6 +149,31 @@ def _log_fetch_event(
     )
 
 
+def _log_tab_capture_event(
+    *,
+    parsed_sn: str,
+    opened_url: str,
+    page_title: str,
+    clicked_tabs: list[str],
+    tab_text_lengths: dict[str, int],
+    captured_api_count: int,
+    captured_json_api_urls: list[str],
+) -> None:
+    logger.info(
+        "[ShuimuiFetchTabs] parsed_sn=%s opened_url=%s page_title=%s clicked_tabs=%s basic_info_text_length=%s tax_info_text_length=%s invoice_info_text_length=%s supplier_info_text_length=%s captured_api_count=%s captured_json_api_urls=%s",
+        parsed_sn,
+        opened_url,
+        page_title,
+        ",".join(clicked_tabs),
+        tab_text_lengths.get("basic_info", 0),
+        tab_text_lengths.get("tax_info", 0),
+        tab_text_lengths.get("invoice_info", 0),
+        tab_text_lengths.get("supplier_info", 0),
+        captured_api_count,
+        ",".join(captured_json_api_urls[:20]),
+    )
+
+
 def parse_shuimui_sn(source_url: str) -> str:
     """Parse sn from normal query string or hash-route query string."""
     parsed = urlparse(str(source_url or "").strip())
@@ -231,6 +266,78 @@ async def _fetch_http_text(source_url: str) -> tuple[str, int, int]:
         return _html_to_text(html_text), response.status_code, len(html_text)
 
 
+async def _extract_dom_text_and_tables(page: object) -> tuple[str, str]:
+    await page.evaluate("() => window.scrollTo(0, document.body ? document.body.scrollHeight : 0)")
+    await page.wait_for_timeout(600)
+    body_text = await page.locator("body").inner_text(timeout=5_000)
+    table_text = await page.evaluate(
+        """() => {
+            const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+            const blocks = [];
+            document.querySelectorAll('table, [role="table"]').forEach((table) => {
+                const rows = Array.from(table.querySelectorAll('tr, [role="row"]'))
+                    .map((row) => Array.from(row.querySelectorAll('th, td, [role="cell"], [role="columnheader"]'))
+                        .map((cell) => normalize(cell.innerText || cell.textContent))
+                        .filter(Boolean)
+                        .join('\\t'))
+                    .filter(Boolean);
+                if (rows.length) blocks.push(rows.join('\\n'));
+            });
+            document.querySelectorAll('[class*="table"], [class*="row"], [class*="list"], [class*="card"]').forEach((node) => {
+                const children = Array.from(node.children || [])
+                    .map((child) => normalize(child.innerText || child.textContent))
+                    .filter(Boolean);
+                if (children.length >= 2 && children.length <= 8) {
+                    const row = children.join('\\t');
+                    if (row.length <= 300 && !blocks.includes(row)) blocks.push(row);
+                }
+            });
+            return blocks.join('\\n');
+        }"""
+    )
+    return str(body_text or ""), str(table_text or "")
+
+
+def _json_field_summary(value: object, max_items: int = 20) -> list[str]:
+    keys: list[str] = []
+
+    def visit(item: object) -> None:
+        if len(keys) >= max_items:
+            return
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                text = str(key)
+                if text not in keys:
+                    keys.append(text)
+                visit(nested)
+                if len(keys) >= max_items:
+                    return
+        elif isinstance(item, list):
+            for nested in item[:3]:
+                visit(nested)
+                if len(keys) >= max_items:
+                    return
+
+    visit(value)
+    return keys
+
+
+async def _click_report_tab(page: object, tab_label: str) -> bool:
+    candidates = [
+        lambda: page.get_by_text(tab_label, exact=True).first,
+        lambda: page.locator(f"text={tab_label}").first,
+        lambda: page.locator(f"button:has-text('{tab_label}'), [role=tab]:has-text('{tab_label}'), div:has-text('{tab_label}')").first,
+    ]
+    for make_locator in candidates:
+        try:
+            locator = make_locator()
+            await locator.click(timeout=5_000)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
     try:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -243,6 +350,29 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
+            captured_json_apis: list[dict[str, object]] = []
+
+            async def capture_response(response: object) -> None:
+                try:
+                    parsed = urlparse(response.url)
+                    if (parsed.hostname or "").lower() != ALLOWED_HOST:
+                        return
+                    content_type = str(response.headers.get("content-type") or "").lower()
+                    if "json" not in content_type:
+                        return
+                    payload = await response.json()
+                    captured_json_apis.append(
+                        {
+                            "url": response.url,
+                            "status": response.status,
+                            "field_summary": _json_field_summary(payload),
+                            "payload": payload,
+                        }
+                    )
+                except Exception as exc:
+                    logger.info("[ShuimuiFetchAPI] capture failed url=%s error=%s", getattr(response, "url", ""), str(exc)[:160])
+
+            page.on("response", lambda response: asyncio.create_task(capture_response(response)))
             try:
                 await page.goto(source_url, wait_until="networkidle", timeout=PLAYWRIGHT_TIMEOUT_MS)
             except PlaywrightTimeoutError:
@@ -255,33 +385,71 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
             except PlaywrightTimeoutError:
                 await page.wait_for_timeout(800)
             title = await page.title()
-            body_text = await page.locator("body").inner_text(timeout=5_000)
-            table_text = await page.evaluate(
-                """() => {
-                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
-                    const blocks = [];
-                    document.querySelectorAll('table, [role="table"]').forEach((table) => {
-                        const rows = Array.from(table.querySelectorAll('tr, [role="row"]'))
-                            .map((row) => Array.from(row.querySelectorAll('th, td, [role="cell"], [role="columnheader"]'))
-                                .map((cell) => normalize(cell.innerText || cell.textContent))
-                                .filter(Boolean)
-                                .join('\\t'))
-                            .filter(Boolean);
-                        if (rows.length) blocks.push(rows.join('\\n'));
-                    });
-                    document.querySelectorAll('[class*="table"], [class*="row"], [class*="list"], [class*="card"]').forEach((node) => {
-                        const children = Array.from(node.children || [])
-                            .map((child) => normalize(child.innerText || child.textContent))
-                            .filter(Boolean);
-                        if (children.length >= 2 && children.length <= 8) {
-                            const row = children.join('\\t');
-                            if (row.length <= 300 && !blocks.includes(row)) blocks.push(row);
-                        }
-                    });
-                    return blocks.join('\\n');
-                }"""
+            sections: dict[str, dict[str, str]] = {}
+            clicked_tabs: list[str] = []
+
+            for tab_key, tab_label in TAB_DEFINITIONS:
+                before_text = ""
+                if tab_key != "basic_info":
+                    try:
+                        before_text = await page.locator("body").inner_text(timeout=3_000)
+                    except Exception:
+                        before_text = ""
+                    clicked = await _click_report_tab(page, tab_label)
+                    if clicked:
+                        clicked_tabs.append(tab_label)
+                    else:
+                        logger.warning("[ShuimuiFetchTabs] tab click failed label=%s url=%s", tab_label, source_url)
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=8_000)
+                    except PlaywrightTimeoutError:
+                        pass
+                    if before_text:
+                        try:
+                            await page.wait_for_function(
+                                "(previous) => document.body && document.body.innerText && document.body.innerText !== previous",
+                                arg=before_text,
+                                timeout=8_000,
+                            )
+                        except PlaywrightTimeoutError:
+                            logger.warning("[ShuimuiFetchTabs] tab content unchanged label=%s url=%s", tab_label, source_url)
+                    await page.wait_for_timeout(1_200)
+
+                body_text, table_text = await _extract_dom_text_and_tables(page)
+                sections[tab_key] = {
+                    "label": tab_label,
+                    "text": body_text,
+                    "tables_text": table_text,
+                }
+
+            captured_urls = [str(item.get("url") or "") for item in captured_json_apis]
+            _log_tab_capture_event(
+                parsed_sn=parse_shuimui_sn(source_url),
+                opened_url=source_url,
+                page_title=title,
+                clicked_tabs=clicked_tabs,
+                tab_text_lengths={key: len(value.get("text") or "") for key, value in sections.items()},
+                captured_api_count=len(captured_json_apis),
+                captured_json_api_urls=captured_urls,
             )
-            return "\n".join(part for part in (title, body_text, table_text) if part).strip(), "", title
+            capture_payload = {
+                "sections": sections,
+                "api_json": captured_json_apis,
+                "clicked_tabs": clicked_tabs,
+                "page_title": title,
+            }
+            parts = [
+                title,
+                CAPTURE_JSON_START,
+                json.dumps(capture_payload, ensure_ascii=False, default=str),
+                CAPTURE_JSON_END,
+            ]
+            for tab_key, tab_label in TAB_DEFINITIONS:
+                section = sections.get(tab_key) or {}
+                text = "\n".join(part for part in (section.get("text"), section.get("tables_text")) if part).strip()
+                if text:
+                    parts.extend([f"### 页签：{tab_label}", text])
+            return "\n\n".join(part for part in parts if part).strip(), "", title
     except Exception as exc:
         message = str(exc)
         if "Executable doesn't exist" in message or "playwright install" in message or "Chromium" in message:

@@ -14,9 +14,12 @@ logger = logging.getLogger(__name__)
 DOC_TYPE = "shuimui_report"
 DOC_TYPE_NAME = "水母报告"
 UNKNOWN = "未识别"
+CAPTURE_JSON_START = "__SHUIMUI_REPORT_CAPTURE_JSON__"
+CAPTURE_JSON_END = "__END_SHUIMUI_REPORT_CAPTURE_JSON__"
 EMPTY_VALUES = {"", "--", "-", "无数据", "暂无", UNKNOWN}
 HEADER_VALUES = {
     "社保人数",
+    "最近一次社保缴费记录",
     "应缴费额",
     "应缴费额(元)",
     "股东名称",
@@ -31,11 +34,13 @@ HEADER_VALUES = {
 SECTION_FIELDS: list[tuple[str, list[str]]] = [
     ("企业基本信息", ["企业名称", "统一社会信用代码", "法定代表人", "法人占股比例", "成立日期", "注册资本", "注册类型", "注册地址", "行业分类"]),
     ("报告基础信息", ["报告编号", "报告创建时间", "查询时间", "报告生成时间", "数据更新时间", "授权状态"]),
-    ("社保信息", ["最近一次社保缴费记录", "社保人数", "应缴费额"]),
+    ("社保信息", ["社保人数", "应缴费额"]),
     ("股东信息", ["股东名称", "参股比例"]),
     ("法人/股东变更", ["变更类型", "变更时间", "变更前", "变更后"]),
     ("银税互动授权记录", ["授权记录"]),
-    ("税务/发票信息", ["纳税人识别号", "纳税信用等级", "近期开票情况", "销项发票金额", "进项发票金额", "发票稳定性", "发票异常提示"]),
+    ("纳税信息", ["纳税信用等级", "纳税状态", "纳税金额", "税种", "税款所属期", "申报状态", "欠税信息", "税务异常"]),
+    ("发票信息", ["开票总金额", "开票月份", "销项发票金额", "进项发票金额", "发票张数", "作废发票", "红冲发票", "主要开票品类", "发票异常提示"]),
+    ("供应商信息", ["供应商名称", "交易金额", "交易次数", "占比", "最近交易时间", "集中度提示"]),
     ("经营与流水概况", ["经营稳定性", "近期开票趋势", "主要收入来源", "主要支出方向", "上下游集中度", "经营异常提示"]),
     ("上下游交易", ["主要上游客户", "主要下游客户", "关联交易提示", "内部转账/疑似异常交易"]),
     ("司法与风险信息", ["被执行信息", "失信信息", "裁判文书", "行政处罚", "经营异常", "股权冻结", "其他风险"]),
@@ -77,6 +82,36 @@ LABEL_ALIASES: dict[str, tuple[str, ...]] = {
     "变更前": ("变更前",),
     "变更后": ("变更后",),
     "授权记录": ("银税互动授权记录", "授权记录"),
+    "纳税信用等级": ("纳税信用等级", "纳税等级", "信用等级"),
+    "纳税状态": ("纳税状态", "税务状态"),
+    "纳税金额": ("纳税金额", "缴税金额", "实缴税额", "税额"),
+    "税种": ("税种",),
+    "税款所属期": ("税款所属期", "所属期"),
+    "申报状态": ("申报状态",),
+    "欠税信息": ("欠税信息", "欠税"),
+    "税务异常": ("税务异常", "纳税异常"),
+    "开票总金额": ("开票总金额", "开票金额", "发票总金额"),
+    "开票月份": ("开票月份", "月份"),
+    "销项发票金额": ("销项发票金额", "销项金额"),
+    "进项发票金额": ("进项发票金额", "进项金额"),
+    "发票张数": ("发票张数", "张数"),
+    "作废发票": ("作废发票", "作废张数"),
+    "红冲发票": ("红冲发票", "红冲张数"),
+    "主要开票品类": ("主要开票品类", "开票品类", "商品品类"),
+    "发票异常提示": ("发票异常提示", "发票异常"),
+    "供应商名称": ("供应商名称", "供应商", "客户名称"),
+    "交易金额": ("交易金额", "金额"),
+    "交易次数": ("交易次数", "次数", "笔数"),
+    "占比": ("占比", "比例"),
+    "最近交易时间": ("最近交易时间", "最近交易日期", "交易时间"),
+    "集中度提示": ("集中度提示", "集中度"),
+}
+
+TAB_SECTION_TITLES = {
+    "basic_info": "基本信息",
+    "tax_info": "纳税信息",
+    "invoice_info": "发票信息",
+    "supplier_info": "供应商信息",
 }
 
 
@@ -125,6 +160,181 @@ def _extract_after_label(text: str, aliases: tuple[str, ...], max_len: int = 220
     return ""
 
 
+def _extract_capture_payload(raw_text: str) -> dict[str, Any]:
+    if CAPTURE_JSON_START not in (raw_text or ""):
+        return {}
+    try:
+        payload_text = raw_text.split(CAPTURE_JSON_START, 1)[1].split(CAPTURE_JSON_END, 1)[0].strip()
+        payload = json.loads(payload_text)
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        logger.info("[ShuimuiExtract] capture json parse failed error=%s", str(exc)[:160])
+        return {}
+
+
+def _extract_tab_text(raw_text: str, tab_title: str, capture_payload: dict[str, Any] | None = None) -> str:
+    capture_payload = capture_payload or {}
+    sections = capture_payload.get("sections")
+    if isinstance(sections, dict):
+        for section in sections.values():
+            if not isinstance(section, dict) or section.get("label") != tab_title:
+                continue
+            parts = [str(section.get("text") or ""), str(section.get("tables_text") or "")]
+            return "\n".join(part for part in parts if part).strip()
+
+    marker = f"### 页签：{tab_title}"
+    text = raw_text or ""
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    while start < len(text) and text[start] in "\r\n\t ":
+        start += 1
+    next_marker = text.find("\n### 页签：", start)
+    end = next_marker if next_marker >= 0 else len(text)
+    return text[start:end].strip()
+
+
+def _split_row(line: str) -> list[str]:
+    if "\t" in line:
+        return [item.strip() for item in line.split("\t") if item.strip()]
+    return [item.strip() for item in re.split(r"\s{2,}", line.strip()) if item.strip()]
+
+
+def _extract_table_records(section_text: str) -> list[dict[str, str]]:
+    rows = [_split_row(line) for line in (section_text or "").splitlines()]
+    rows = [row for row in rows if len(row) >= 2]
+    records: list[dict[str, str]] = []
+    for index, row in enumerate(rows[:-1]):
+        if len(row) < 2:
+            continue
+        header_score = sum(1 for item in row if item in ALL_FIELDS or item in HEADER_VALUES or any(token in item for token in ("金额", "名称", "月份", "状态", "税种", "所属期", "占比", "次数", "张数", "时间")))
+        if header_score < 1:
+            continue
+        for next_row in rows[index + 1 : index + 21]:
+            next_header_score = sum(1 for item in next_row if item in ALL_FIELDS or item in HEADER_VALUES or any(token in item for token in ("金额", "名称", "月份", "状态", "税种", "所属期", "占比", "次数", "张数", "时间")))
+            if next_header_score >= header_score and next_row != row:
+                break
+            if len(next_row) < min(len(row), 2):
+                continue
+            record = {
+                header: _clean(next_row[pos], 160)
+                for pos, header in enumerate(row)
+                if pos < len(next_row) and _clean(header, 80) and _clean(next_row[pos], 160)
+            }
+            if record:
+                records.append(record)
+    return records
+
+
+def _add_dynamic_field(rows: list[tuple[str, str]], label: str, value: Any) -> None:
+    clean_label = _clean(label, 80)
+    clean_value = _clean(value, 220)
+    if not clean_label or not clean_value or clean_label == clean_value:
+        return
+    if not clean_label.startswith("供应商 "):
+        header_hits = sum(1 for field in ALL_FIELDS if field != clean_label and field in clean_value)
+        if header_hits >= 1 and not re.search(r"\d", clean_value):
+            return
+        if header_hits >= 2:
+            return
+    if clean_value in HEADER_VALUES or clean_label in {"基本信息", "纳税信息", "发票信息", "供应商信息"}:
+        return
+    if (clean_label, clean_value) not in rows:
+        rows.append((clean_label, clean_value))
+
+
+def _extract_dynamic_section_fields(section_text: str, target_fields: list[str]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for field in target_fields:
+        value = _extract_after_label(section_text, LABEL_ALIASES.get(field, (field,)), max_len=220)
+        if value:
+            _add_dynamic_field(rows, field, value)
+
+    table_records = _extract_table_records(section_text)
+    if table_records:
+        first = table_records[0]
+        for key, value in first.items():
+            if any(token in key for token in ("名称", "金额", "月份", "状态", "税种", "所属期", "占比", "次数", "张数", "时间", "异常", "品类")):
+                _add_dynamic_field(rows, key, value)
+    return rows
+
+
+def _supplier_display_rows(section_text: str) -> list[tuple[str, str]]:
+    records = _extract_table_records(section_text)
+    supplier_records: list[dict[str, str]] = []
+    for record in records:
+        name_key = next((key for key in record if any(token in key for token in ("供应商", "客户名称", "企业名称", "名称"))), "")
+        if name_key and _clean(record.get(name_key)):
+            supplier_records.append(record)
+
+    if supplier_records:
+        rows: list[tuple[str, str]] = []
+        for index, record in enumerate(supplier_records[:20], 1):
+            name_key = next((key for key in record if any(token in key for token in ("供应商", "客户名称", "企业名称", "名称"))), "")
+            amount_key = next((key for key in record if "金额" in key), "")
+            count_key = next((key for key in record if any(token in key for token in ("次数", "笔数"))), "")
+            ratio_key = next((key for key in record if any(token in key for token in ("占比", "比例"))), "")
+            time_key = next((key for key in record if "时间" in key or "日期" in key), "")
+            parts = [_clean(record.get(name_key), 120)]
+            if amount_key and _clean(record.get(amount_key)):
+                parts.append(f"交易金额 {_clean(record.get(amount_key), 80)}")
+            if count_key and _clean(record.get(count_key)):
+                parts.append(f"交易次数 {_clean(record.get(count_key), 80)}")
+            if ratio_key and _clean(record.get(ratio_key)):
+                parts.append(f"占比 {_clean(record.get(ratio_key), 80)}")
+            if time_key and _clean(record.get(time_key)):
+                parts.append(f"最近交易时间 {_clean(record.get(time_key), 80)}")
+            _add_dynamic_field(rows, f"供应商 {index}", "，".join(part for part in parts if part))
+        return rows
+    return _extract_dynamic_section_fields(section_text, ["供应商名称", "交易金额", "交易次数", "占比", "最近交易时间", "集中度提示"])
+
+
+def _flatten_api_payload_for_sections(capture_payload: dict[str, Any]) -> dict[str, str]:
+    result = {"纳税信息": "", "发票信息": "", "供应商信息": ""}
+    api_items = capture_payload.get("api_json")
+    if not isinstance(api_items, list):
+        return result
+
+    def stringify_relevant(value: Any, keywords: tuple[str, ...]) -> list[str]:
+        lines: list[str] = []
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                key_text = str(key)
+                if any(token.lower() in key_text.lower() for token in keywords):
+                    if isinstance(nested, (str, int, float)):
+                        lines.append(f"{key_text}：{nested}")
+                    elif isinstance(nested, (dict, list)):
+                        lines.append(json.dumps(nested, ensure_ascii=False, default=str)[:3000])
+                lines.extend(stringify_relevant(nested, keywords))
+        elif isinstance(value, list):
+            for item in value[:20]:
+                lines.extend(stringify_relevant(item, keywords))
+        return lines
+
+    for item in api_items:
+        if not isinstance(item, dict):
+            continue
+        payload = item.get("payload")
+        result["纳税信息"] += "\n".join(stringify_relevant(payload, ("tax", "纳税", "税务", "税款", "申报", "欠税"))) + "\n"
+        result["发票信息"] += "\n".join(stringify_relevant(payload, ("invoice", "发票", "开票", "销项", "进项", "红冲", "作废"))) + "\n"
+        result["供应商信息"] += "\n".join(stringify_relevant(payload, ("supplier", "vendor", "供应商", "上游", "客户", "交易"))) + "\n"
+    return {key: value.strip() for key, value in result.items()}
+
+
+def _extract_dynamic_sections(raw_text: str, capture_payload: dict[str, Any]) -> dict[str, list[tuple[str, str]]]:
+    api_text = _flatten_api_payload_for_sections(capture_payload)
+    tax_text = "\n".join(part for part in (api_text.get("纳税信息"), _extract_tab_text(raw_text, "纳税信息", capture_payload)) if part)
+    invoice_text = "\n".join(part for part in (api_text.get("发票信息"), _extract_tab_text(raw_text, "发票信息", capture_payload)) if part)
+    supplier_text = "\n".join(part for part in (api_text.get("供应商信息"), _extract_tab_text(raw_text, "供应商信息", capture_payload)) if part)
+    dynamic = {
+        "纳税信息": _extract_dynamic_section_fields(tax_text, ["纳税信用等级", "纳税状态", "纳税金额", "税种", "税款所属期", "申报状态", "欠税信息", "税务异常"]),
+        "发票信息": _extract_dynamic_section_fields(invoice_text, ["开票总金额", "开票月份", "销项发票金额", "进项发票金额", "发票张数", "作废发票", "红冲发票", "主要开票品类", "发票异常提示"]),
+        "供应商信息": _supplier_display_rows(supplier_text),
+    }
+    return {section: rows for section, rows in dynamic.items() if rows}
+
+
 def _extract_row_tables(raw_text: str) -> dict[str, str]:
     data: dict[str, str] = {}
     text = raw_text or ""
@@ -166,6 +376,8 @@ def _extract_row_tables(raw_text: str) -> dict[str, str]:
 def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
     data: dict[str, str] = _extract_row_tables(raw_text)
     for field, aliases in LABEL_ALIASES.items():
+        if field in {"供应商名称", "交易金额", "交易次数", "占比", "最近交易时间", "集中度提示"}:
+            continue
         if data.get(field):
             continue
         value = _extract_after_label(raw_text, aliases)
@@ -183,8 +395,6 @@ def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
     data.setdefault("报告编号", sn)
     if "银税互动授权记录" in raw_text and not data.get("授权记录"):
         data["授权记录"] = _extract_after_label(raw_text, ("银税互动授权记录",), max_len=80) or "无"
-    if "最近一次社保缴费记录" in raw_text and not data.get("最近一次社保缴费记录"):
-        data["最近一次社保缴费记录"] = _extract_after_label(raw_text, ("最近一次社保缴费记录",), max_len=80)
     if not data.get("社保人数"):
         match = re.search(r"社保人数\s*(?:[:：]|\n+)\s*(\d+)", raw_text or "")
         if match:
@@ -286,6 +496,23 @@ def render_shuimui_report_markdown(
     ]
     for section, section_fields in SECTION_FIELDS:
         rows: list[tuple[str, str]] = []
+        dynamic_sections = fields.get("_dynamic_sections") if isinstance(fields.get("_dynamic_sections"), dict) else {}
+        if section in dynamic_sections:
+            dynamic_rows = dynamic_sections.get(section)
+            if isinstance(dynamic_rows, list):
+                rows = [
+                    (str(item[0]), str(item[1]))
+                    for item in dynamic_rows
+                    if isinstance(item, (list, tuple)) and len(item) >= 2 and _clean(item[0], 80) and _clean(item[1], 220)
+                ]
+                if not rows:
+                    continue
+                lines.append(f"### {section}")
+                lines.append("")
+                for field, field_value in rows:
+                    lines.append(f"* {field}：{field_value}")
+                lines.append("")
+                continue
         for field in section_fields:
             if field == "报告编号":
                 continue
@@ -313,9 +540,13 @@ def extract_shuimui_report(
     sn: str,
     ai_service: Any | None = None,
 ) -> dict[str, Any]:
+    capture_payload = _extract_capture_payload(raw_text)
     rule_fields = _rule_extract(raw_text, sn)
     llm_fields = _llm_extract(raw_text, ai_service)
     fields = {**llm_fields, **rule_fields}
+    dynamic_sections = _extract_dynamic_sections(raw_text, capture_payload)
+    if dynamic_sections:
+        fields["_dynamic_sections"] = dynamic_sections
     fields["报告编号"] = _clean(fields.get("报告编号")) or sn
 
     markdown = render_shuimui_report_markdown(
@@ -325,6 +556,8 @@ def extract_shuimui_report(
         extraction_status="成功",
         original_status="可查看",
     )
+    final_sections = re.findall(r"^###\s+(.+)$", markdown, flags=re.MULTILINE)
+    logger.info("[ShuimuiExtract] parsed_sn=%s final_markdown_sections=%s", sn, ",".join(final_sections))
     summary_text = re.sub(r"\n{3,}", "\n\n", markdown)
     return {
         "document_type": DOC_TYPE,
