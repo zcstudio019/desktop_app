@@ -293,13 +293,13 @@ A
     assert "纳税状态：正常" in markdown
     assert "纳税金额：12000 元" in markdown
     assert "### 发票信息" in markdown
-    assert "销项发票金额：560000 元" in markdown
-    assert "进项发票金额：320000 元" in markdown
-    assert "发票张数：42" in markdown
-    assert "主要开票品类：厨具卫具" in markdown
-    assert "### 供应商信息" in markdown
-    assert "供应商 1：上海某某供应链有限公司，交易金额 180000 元，交易次数 8，占比 35%，最近交易时间 2026-03-01" in markdown
-    assert "供应商 2：苏州某某商贸有限公司，交易金额 90000 元，交易次数 3，占比 17%，最近交易时间 2026-02-18" in markdown
+    assert "覆盖年份：2026" in markdown
+    assert "发票总张数：42" in markdown
+    assert "2026-02，发票张数：42，开票金额：560,000.00 元" in markdown
+    assert "### 前十供应商" in markdown
+    assert "供应商 1：上海某某供应链有限公司，交易金额：180,000.00 元，占比：35.00%" in markdown
+    assert "供应商 2：苏州某某商贸有限公司，交易金额：90,000.00 元，占比：17.00%" in markdown
+    assert "### 供应商信息" not in markdown
     assert "未识别" not in markdown
     assert "structured json" not in markdown.lower()
 
@@ -328,9 +328,120 @@ __END_SHUIMUI_REPORT_CAPTURE_JSON__
     assert "欠税信息：无" in markdown
     assert "纳税状态：正常" in markdown
     assert "### 发票信息" in markdown
-    assert "开票总金额：880000 元" in markdown
-    assert "发票张数：12" in markdown
-    assert "### 供应商信息" in markdown
-    assert "供应商 1：上海接口供应商，交易金额 100000 元，占比 20%" in markdown
+    assert "发票总张数：12" in markdown
+    assert "### 前十供应商" in markdown
+    assert "供应商 1：上海接口供应商，交易金额：100,000.00 元，占比：20.00%" in markdown
     assert "__SHUIMUI_REPORT_CAPTURE_JSON__" not in markdown
     assert "api_json" not in markdown
+
+
+def test_shuimui_authorization_record_does_not_leak_tables_text():
+    raw_text = """水母报告
+企业名称
+上海测试有限公司
+统一信用代码
+91310000MA1TEST123
+银税互动授权记录
+无", "tables_text": "社保人数\t应缴费额(元)\n6\t9624"
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+
+    assert "授权记录：无" in markdown
+    assert "tables_text" not in markdown
+    assert "raw_text" not in markdown
+    assert "structured json" not in markdown.lower()
+    assert "None" not in markdown
+    assert "null" not in markdown
+    assert "[{" not in markdown
+
+
+def test_shuimui_splits_suppliers_and_sales_customers():
+    supplier_rows = "\n".join(
+        f"供应商{i}        {1000000 + i * 1000}        {20 - i / 10:.2f}"
+        for i in range(1, 11)
+    )
+    customer_rows = "\n".join(
+        f"客户{i}        {2000000 + i * 1000}        {40 - i / 10:.2f}        否"
+        for i in range(1, 4)
+    )
+    raw_text = f"""水母报告
+企业名称
+上海测试有限公司
+统一信用代码
+91310000MA1TEST123
+
+### 页签：供应商信息
+供应商名称        交易金额        占比
+{supplier_rows}
+客户名称        交易金额        占比        是否关联方
+{customer_rows}
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+    supplier_section = markdown.split("### 前十供应商", 1)[1].split("### 前十销售客户", 1)[0]
+    customer_section = markdown.split("### 前十销售客户", 1)[1]
+
+    assert "### 前十供应商" in markdown
+    assert "### 前十销售客户" in markdown
+    assert "供应商 1：供应商1，交易金额：1,001,000.00 元，占比：19.90%" in supplier_section
+    assert "客户1" not in supplier_section
+    assert "客户 1：客户1，交易金额：2,001,000.00 元，占比：39.90%，是否关联方：否" in customer_section
+    assert "[{" not in markdown
+    assert "主要上游客户" not in markdown
+    assert "上下游交易" not in markdown
+
+
+def test_shuimui_tax_late_fee_records_and_invoice_summary_are_clean():
+    raw_text = """水母报告
+企业名称
+上海测试有限公司
+统一信用代码
+91310000MA1TEST123
+
+### 页签：纳税信息
+纳税信用等级
+A
+滞纳金时间        滞纳金金额        状态
+2023-10-23        8.47        已缴清
+2023-04-26        0.71        已缴清
+2023-04-18        6.96        已缴清
+
+### 页签：发票信息
+覆盖年份
+2024 2025 2026
+发票总张数
+268
+月份
+1月
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+
+    assert "### 纳税信息" in markdown
+    assert "纳税信用等级：A" in markdown
+    assert "#### 滞纳金记录" in markdown
+    assert "记录 1：2023-10-23，滞纳金金额：8.47 元，状态：已缴清" in markdown
+    assert "记录 2：2023-04-26，滞纳金金额：0.71 元，状态：已缴清" in markdown
+    assert "记录 3：2023-04-18，滞纳金金额：6.96 元，状态：已缴清" in markdown
+    assert "### 发票信息" in markdown
+    assert "覆盖年份：2024、2025、2026" in markdown
+    assert "发票总张数：268" in markdown
+    assert "月份：1月" not in markdown
+    assert "未明确" not in markdown
+    assert "未识别" not in markdown
