@@ -107,7 +107,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentPage, onNavigate, username, us
   const navItems = userRole === 'admin' ? [...BASE_NAV_ITEMS, ADMIN_NAV_ITEM] : BASE_NAV_ITEMS;
 
   return (
-    <aside className="flex h-screen w-64 flex-col bg-sidebar-bg" style={{ backgroundColor: '#1E293B' }} data-testid="sidebar">
+    <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col overflow-y-auto bg-sidebar-bg" style={{ backgroundColor: '#1E293B' }} data-testid="sidebar">
       <Logo />
 
       <nav className="flex-1 px-3 py-4" role="navigation" aria-label="主导航">

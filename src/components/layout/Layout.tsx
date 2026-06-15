@@ -37,7 +37,7 @@ const Layout: React.FC<LayoutProps> = ({
   const pageTitle = PAGE_TITLES[currentPage];
 
   return (
-    <div className="flex h-screen" data-testid="layout">
+    <div className="flex h-screen overflow-hidden bg-slate-50" data-testid="layout">
       <Sidebar
         currentPage={currentPage}
         onNavigate={onNavigate}
@@ -46,7 +46,7 @@ const Layout: React.FC<LayoutProps> = ({
         onLogout={onLogout}
       />
 
-      <div className="flex-1 flex flex-col overflow-hidden" data-testid="main-content">
+      <div className="flex min-w-0 flex-1 flex-col" data-testid="main-content">
         <Header
           pageTitle={pageTitle}
           userName={userName}
@@ -58,7 +58,7 @@ const Layout: React.FC<LayoutProps> = ({
 
 
         <main
-          className="relative z-0 flex-1 overflow-hidden bg-slate-50"
+          className="relative z-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-slate-50"
           style={{ backgroundColor: '#F8FAFC' }}
           data-testid="content-area"
         >
