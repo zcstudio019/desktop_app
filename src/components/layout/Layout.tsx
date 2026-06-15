@@ -12,6 +12,7 @@ export const PAGE_TITLES: Record<PageType, string> = {
   application: '申请表生成',
   scheme: '方案匹配',
   chat: 'AI 对话',
+  'new-chat': '智能对话（新）',
   admin: '账号管理',
 };
 

@@ -23,6 +23,7 @@ export type PageType =
   | 'application'
   | 'scheme'
   | 'chat'
+  | 'new-chat'
   | 'data'
   | 'admin';
 
@@ -57,6 +58,7 @@ const BASE_NAV_ITEMS: NavItemConfig[] = [
   { id: 'application', icon: FileText, label: '申请表', description: '生成并编辑贷款申请表' },
   { id: 'scheme', icon: Target, label: '方案匹配', description: '匹配融资产品与建议方案' },
   { id: 'chat', icon: MessageSquare, label: 'AI 对话', description: '资料问答与风险评估报告' },
+  { id: 'new-chat', icon: MessageSquare, label: '智能对话（新）', description: '通用 AI 对话页面' },
 ];
 
 const ADMIN_NAV_ITEM: NavItemConfig = {

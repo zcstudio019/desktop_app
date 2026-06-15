@@ -10,6 +10,7 @@ import CustomerListPage from './components/CustomerListPage';
 import CustomerDataPage from './components/CustomerDataPage';
 import AdminUsersPage from './components/AdminUsersPage';
 import WorkspacePage from './pages/Workspace';
+import NewChatPage from './pages/NewChatPage';
 import { getCurrentUser } from './services/api';
 
 const CUSTOMER_CONTEXT_STORAGE_KEYS = [
@@ -30,6 +31,7 @@ const PAGE_PATH_MAP: Record<PageType, string> = {
   application: '/application',
   scheme: '/scheme',
   chat: '/chat',
+  'new-chat': '/new-chat',
   data: '/data',
   admin: '/admin',
 };
@@ -50,6 +52,7 @@ function getInitialPageFromLocation(): PageType {
     '/scheme': 'scheme',
     '/matching': 'scheme',
     '/chat': 'chat',
+    '/new-chat': 'new-chat',
     '/data': 'data',
     '/admin': 'admin',
   };
@@ -252,7 +255,7 @@ const App: React.FC = () => {
   const handleNavigate = useCallback(
     (page: string): void => {
       const normalizedPage = page === 'matching' ? 'scheme' : page === 'dashboard' ? 'workspace' : page;
-      const validPages: PageType[] = ['workspace', 'dashboard', 'customers', 'upload', 'application', 'scheme', 'chat', 'data', 'admin'];
+      const validPages: PageType[] = ['workspace', 'dashboard', 'customers', 'upload', 'application', 'scheme', 'chat', 'new-chat', 'data', 'admin'];
       if (!validPages.includes(normalizedPage as PageType)) {
         return;
       }
@@ -283,6 +286,8 @@ const App: React.FC = () => {
         return <SchemeMatchPage />;
       case 'chat':
         return <ChatPage onNavigate={handleNavigate} />;
+      case 'new-chat':
+        return <NewChatPage />;
       case 'admin':
         return role === 'admin' ? <AdminUsersPage currentUsername={username} /> : <WorkspacePage onNavigate={handleNavigate} />;
       default:

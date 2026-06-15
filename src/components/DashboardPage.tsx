@@ -44,6 +44,7 @@ function buildDashboardPagePath(page: PageType, customerId?: string | null, cust
     application: '/application',
     scheme: '/scheme',
     chat: '/chat',
+    'new-chat': '/new-chat',
     data: '/data',
     admin: '/admin',
   };
