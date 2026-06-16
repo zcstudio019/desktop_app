@@ -337,6 +337,42 @@ def test_shuimui_basic_info_extracts_score_social_security_multi_shareholders_an
     assert "变更类型：变更时间" not in markdown
 
 
+def test_shuimui_legal_person_only_from_basic_label_and_change_rows_keep_same_day_records():
+    raw_text = """水母报告
+企业名称
+上海鑫虾玛贸易有限公司
+统一信用代码
+91310114MACUY66E0H
+当前法人姓名
+李海星
+成立日期
+2023-08-30
+法人/股东变更
+变更类型        变更时间        变更前        变更后
+法定代表人        2025-10-09        徐壮壮        李海星
+股东及出资信息变更        2025-10-09        上海禄濠贸易有限公司 货币300.000000万人民币;        李海星 货币300.000000万人民币;
+股东及出资信息变更        2025-10-09        上海禄濠贸易有限公司;        李海星;
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+
+    assert "法定代表人：李海星" in markdown
+    assert "法定代表人：2025-10-09" not in markdown
+    assert markdown.count("* 记录 ") == 3
+    assert "变更类型：法定代表人" in markdown
+    assert "变更前：徐壮壮" in markdown
+    assert "变更后：李海星" in markdown
+    assert "变更前：上海禄濠贸易有限公司 货币300.000000万人民币;" in markdown
+    assert "变更后：李海星 货币300.000000万人民币;" in markdown
+    assert "变更前：上海禄濠贸易有限公司;" in markdown
+    assert "变更后：李海星;" in markdown
+
+
 def test_shuimui_extracts_tax_invoice_supplier_tabs():
     raw_text = f"""{SAMPLE_BODY_TEXT}
 
@@ -730,3 +766,41 @@ A
     assert "443,603" not in invoice_table_section
     assert "未明确" not in markdown
     assert "未识别" not in markdown
+
+
+def test_shuimui_tax_risk_sections_show_none_when_empty():
+    raw_text = """水母报告
+### 页签：基本信息
+企业名称
+上海测试贸易有限公司
+当前法人姓名
+张三
+统一信用代码
+91310114060938092E
+### 页签：纳税信息
+纳税信用等级
+A
+纳税人种类
+一般纳税人
+滞纳金情况
+无
+税务处罚
+无
+### 页签：发票信息
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+
+    assert "#### 滞纳金情况" in markdown
+    late_fee_section = markdown.split("#### 滞纳金情况", 1)[1].split("#### 税务处罚", 1)[0]
+    assert "* 无" in late_fee_section
+    assert "#### 税务处罚" in markdown
+    tax_penalty_section = markdown.split("#### 税务处罚", 1)[1]
+    assert "* 无" in tax_penalty_section
+    assert "未识别" not in markdown
+    assert "未明确" not in markdown

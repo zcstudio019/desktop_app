@@ -184,7 +184,7 @@ ALL_FIELDS.extend(INVOICE_SUMMARY_FIELDS)
 LABEL_ALIASES: dict[str, tuple[str, ...]] = {
     "企业名称": ("企业名称", "公司名称", "主体名称", "被查询企业"),
     "统一社会信用代码": ("统一社会信用代码", "统一信用代码", "社会信用代码", "信用代码"),
-    "法定代表人": ("法定代表人", "法人代表", "当前法人姓名", "法人"),
+    "法定代表人": ("当前法人姓名", "法定代表人", "法人姓名"),
     "法人占股比例": ("法人占股比例",),
     "成立日期": ("成立日期", "成立时间"),
     "注册资本": ("注册资本", "注册资金"),
@@ -294,6 +294,25 @@ def _clean_auth_record(value: Any) -> str:
     if text.startswith("有"):
         return "有"
     return _clean(text, 120)
+
+
+def _validate_legal_person(value: Any) -> tuple[str, str]:
+    text = _clean(value, 80)
+    if not text:
+        return "", "empty"
+    if re.fullmatch(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}", text):
+        return "", "date"
+    if re.fullmatch(r"[0-9.]+%", text):
+        return "", "percent"
+    if re.fullmatch(r"[0-9A-Z]{18}", text):
+        return "", "credit_code"
+    if re.search(r"\d+(?:\.\d+)?\s*万?人民币|元", text):
+        return "", "amount"
+    if any(token in text for token in ("有限公司", "公司", "贸易", "科技", "企业", "集团", "合伙")):
+        return "", "company"
+    if not re.fullmatch(r"[\u4e00-\u9fa5·]{2,12}", text):
+        return "", "not_person_name"
+    return text, ""
 
 
 def _parse_number(value: Any) -> float | None:
@@ -894,6 +913,22 @@ def _business_score_rows(basic_text: str) -> list[tuple[str, str]]:
     return rows
 
 
+def _extract_basic_legal_person(basic_text: str) -> str:
+    for label in ("当前法人姓名", "法定代表人", "法人姓名"):
+        raw_value = _extract_after_label(basic_text, (label,), max_len=80)
+        value, reason = _validate_legal_person(raw_value)
+        logger.info(
+            "[ShuimuiExtract] basic_legal_person_source_label=%s basic_legal_person_raw_value=%s basic_legal_person_validated=%s basic_legal_person_rejected_reason=%s",
+            label,
+            raw_value,
+            bool(value),
+            reason,
+        )
+        if value:
+            return value
+    return ""
+
+
 def _basic_table_records_by_header(basic_text: str, required_headers: tuple[str, ...]) -> list[dict[str, str]]:
     rows = [_split_row(line) for line in (basic_text or "").splitlines()]
     rows = [row for row in rows if row]
@@ -986,7 +1021,8 @@ def _change_rows(basic_text: str) -> list[tuple[str, str]]:
                     pos += 2
             pos += 1
         break
-    clean_records_by_key: dict[tuple[str, str], dict[str, str]] = {}
+    clean_records_by_key: dict[tuple[str, str, str, str], dict[str, str]] = {}
+    complete_count = 0
     for record in records:
         change_type = _first_record_value(record, ("变更类型",))
         date = _first_record_value(record, ("变更时间", "日期", "时间"))
@@ -996,7 +1032,8 @@ def _change_rows(basic_text: str) -> list[tuple[str, str]]:
             continue
         if not change_type or not before or not after:
             continue
-        key = (change_type, date)
+        complete_count += 1
+        key = (change_type, date, before, after)
         clean_records_by_key.setdefault(key, {"变更类型": change_type, "变更时间": date, "变更前": before, "变更后": after})
     clean_records = list(clean_records_by_key.values())
     rows: list[tuple[str, str]] = []
@@ -1008,8 +1045,11 @@ def _change_rows(basic_text: str) -> list[tuple[str, str]]:
                 lines.append(f"  * {field}：{value}")
         rows.append(("__RAW__", "\n".join(lines)))
     logger.info(
-        "[ShuimuiExtract] change_rows_count=%s change_rows_after_dedupe=%s",
+        "[ShuimuiExtract] change_rows_raw_count=%s change_rows_complete_count=%s change_rows_after_dedupe=%s change_dedupe_key_mode=%s change_rows_rendered_count=%s",
         len(records),
+        complete_count,
+        len(clean_records),
+        "type_date_before_after",
         len(clean_records),
     )
     return rows
@@ -1238,12 +1278,10 @@ def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
     late_fee_rows, late_fee_count, skipped_non_penalty_rows = _late_fee_rows(section_text, classified_tables)
     tax_penalty_rows, tax_penalty_before_count, tax_penalty_count = _tax_penalty_rows(classified_tables)
     three_year_rows, three_year_count = _three_year_payment_table_rows_from_blocks(classified_table_blocks)
-    if late_fee_rows:
-        rows.append(("__SUBSECTION__", "滞纳金情况"))
-        rows.extend(late_fee_rows[:80])
-    if tax_penalty_rows:
-        rows.append(("__SUBSECTION__", "税务处罚"))
-        rows.extend(tax_penalty_rows[:50])
+    rows.append(("__SUBSECTION__", "滞纳金情况"))
+    rows.extend(late_fee_rows[:80] if late_fee_rows else [("", "无")])
+    rows.append(("__SUBSECTION__", "税务处罚"))
+    rows.extend(tax_penalty_rows[:50] if tax_penalty_rows else [("", "无")])
     if three_year_rows:
         rows.extend(three_year_rows)
     logger.info(
@@ -1443,10 +1481,10 @@ def _extract_row_tables(raw_text: str) -> dict[str, str]:
     return {key: value for key, value in data.items() if value}
 
 
-def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
+def _rule_extract(raw_text: str, sn: str, basic_text: str = "") -> dict[str, str]:
     data: dict[str, str] = _extract_row_tables(raw_text)
     for field, aliases in LABEL_ALIASES.items():
-        if field in {"供应商名称", "交易金额", "交易次数", "占比", "最近交易时间", "集中度提示"}:
+        if field in {"法定代表人", "供应商名称", "交易金额", "交易次数", "占比", "最近交易时间", "集中度提示"}:
             continue
         if data.get(field):
             continue
@@ -1461,6 +1499,12 @@ def _rule_extract(raw_text: str, sn: str) -> dict[str, str]:
     date_match = re.search(r"报告创建时间\s*(?:[:：]|\n+)\s*((?:19|20)\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)", raw_text or "")
     if date_match:
         data.setdefault("报告创建时间", date_match.group(1))
+
+    legal_person = _extract_basic_legal_person(basic_text or raw_text)
+    if legal_person:
+        data["法定代表人"] = legal_person
+    else:
+        data.pop("法定代表人", None)
 
     data.setdefault("报告编号", sn)
     if "银税互动授权记录" in raw_text and not data.get("授权记录"):
@@ -1653,7 +1697,8 @@ def extract_shuimui_report(
     ai_service: Any | None = None,
 ) -> dict[str, Any]:
     capture_payload = _extract_capture_payload(raw_text)
-    rule_fields = _rule_extract(raw_text, sn)
+    basic_text = _extract_tab_text(raw_text, "基本信息", capture_payload) or raw_text
+    rule_fields = _rule_extract(raw_text, sn, basic_text)
     llm_fields = _llm_extract(raw_text, ai_service)
     fields = {**llm_fields, **rule_fields}
     _drop_unverified_page_fields(fields, rule_fields, raw_text)
