@@ -103,6 +103,14 @@ INVOICE_GROWTH_FIELDS = [
     "近12月开票环比增长率",
 ]
 
+INVOICE_FIELD_ALIASES = {
+    "近6开票环比增长率": "近6月开票环比增长率",
+    "近6月开票环比增长率": "近6月开票环比增长率",
+    "近6个月开票环比增长率": "近6月开票环比增长率",
+    "近6月开票环比增长率(不含本月)": "近6月开票环比增长率",
+    "近6个月开票环比增长率(不含本月)": "近6月开票环比增长率",
+}
+
 INVOICE_ACTIVITY_FIELDS = [
     "近45日是否有开票记录",
     "近3个月下游客户统计",
@@ -934,13 +942,19 @@ def _extract_invoice_summary_rows(section_text: str, fields: list[str]) -> list[
     lines = [re.sub(r"\s+", " ", str(line or "")).strip(" ：:\t\r\n") for line in (section_text or "").splitlines()]
     lines = [line for line in lines if line]
     normalized_to_field = {_normalize_label(field): field for field in fields}
+    for alias, field in INVOICE_FIELD_ALIASES.items():
+        if field in fields:
+            normalized_to_field[_normalize_label(alias)] = field
     normalized_labels = set(normalized_to_field)
     rows: list[tuple[str, str]] = []
     seen: set[str] = set()
+    growth_labels_seen: list[str] = []
 
     for line in lines:
         if "：" in line or ":" in line:
             label, raw_value = re.split(r"[：:]", line, maxsplit=1)
+            if "开票环比增长率" in label and label not in growth_labels_seen:
+                growth_labels_seen.append(label)
             field = normalized_to_field.get(_normalize_label(label))
             value = _format_invoice_summary_value(field, raw_value) if field else ""
             if field and value and field not in seen:
@@ -948,6 +962,8 @@ def _extract_invoice_summary_rows(section_text: str, fields: list[str]) -> list[
                 seen.add(field)
 
     for index, line in enumerate(lines):
+        if "开票环比增长率" in line and line not in growth_labels_seen:
+            growth_labels_seen.append(line)
         field = normalized_to_field.get(_normalize_label(line))
         if not field or field in seen:
             continue
@@ -961,6 +977,13 @@ def _extract_invoice_summary_rows(section_text: str, fields: list[str]) -> list[
                 rows.append((field, value))
                 seen.add(field)
                 break
+    if any(field in INVOICE_GROWTH_FIELDS for field in fields):
+        logger.info(
+            "[ShuimuiExtract] invoice_growth_labels_seen=%s matched_invoice_growth_fields=%s invoice_growth_6m_value=%s",
+            ",".join(growth_labels_seen),
+            ",".join(field for field, _ in rows if field in INVOICE_GROWTH_FIELDS),
+            next((value for field, value in rows if field == "近6月开票环比增长率"), ""),
+        )
     return rows
 
 
