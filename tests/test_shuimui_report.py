@@ -468,6 +468,9 @@ A
 1月        18775        10105        10711
 2月        6853        6494        406
 年度汇总        443603        32853        11117
+1月        896241        522681        413127
+2月        1290200        689459        357033
+年度汇总        9323309        6095093        1137794
 完税表
 税款所属期        税种        应纳税额（元）        实缴税额（元）        入库日期        状态
 2024-04        增值税        2024.00        2024.00        2024-05-15        已缴清
@@ -514,11 +517,16 @@ A
     assert "记录 2：登记日期：2024-08-16" not in markdown
     assert "详细信息：查看" not in markdown
     assert "#### 近三年纳税信息完税表(元)" in markdown
+    tax_table_section = markdown.split("#### 近三年纳税信息完税表(元)", 1)[1].split("### 财报信息", 1)[0]
     assert "| 月份 | 2024 | 2025 | 2026 |" in markdown
     assert "| 1月 | 18,775 | 10,105 | 10,711 |" in markdown
     assert "| 2月 | 6,853 | 6,494 | 406 |" in markdown
     assert "| 年度汇总 | 443,603 | 32,853 | 11,117 |" in markdown
-    tax_table_section = markdown.split("#### 近三年纳税信息完税表(元)", 1)[1].split("### 财报信息", 1)[0]
+    assert "896,241" not in tax_table_section
+    assert "1,290,200" not in tax_table_section
+    assert "9,323,309" not in tax_table_section
+    assert tax_table_section.count("| 1月 |") == 1
+    assert tax_table_section.count("| 年度汇总 |") == 1
     assert "滞纳金时间" not in tax_table_section
     assert "登记日期" not in tax_table_section
     assert "供应商名称" not in tax_table_section

@@ -598,15 +598,33 @@ def _canonical_header_map(header: list[str], table_type: str) -> dict[int, str]:
 
 
 def _extract_classified_tables(section_text: str) -> dict[str, list[dict[str, str]]]:
-    rows = [_split_row(line) for line in (section_text or "").splitlines()]
-    rows = [row for row in rows if len(row) >= 2]
+    blocks = _extract_classified_table_blocks(section_text)
     tables: dict[str, list[dict[str, str]]] = {}
+    for block in blocks:
+        table_type = str(block.get("type") or "")
+        records = block.get("records")
+        if table_type and isinstance(records, list):
+            tables.setdefault(table_type, []).extend(record for record in records if isinstance(record, dict))
+    return tables
+
+
+def _extract_classified_table_blocks(section_text: str) -> list[dict[str, Any]]:
+    rows = [_split_row(line) for line in (section_text or "").splitlines()]
     skipped_union_table_count = 0
     classifier_results: list[str] = []
+    blocks: list[dict[str, Any]] = []
+    current_section_title = ""
 
     index = 0
     while index < len(rows):
+        if len(rows[index]) == 1 and rows[index][0] in TAX_SECTION_TITLES:
+            current_section_title = rows[index][0]
+            index += 1
+            continue
         header = rows[index]
+        if len(header) < 2:
+            index += 1
+            continue
         table_type = _classify_table_header(header)
         if not table_type:
             index += 1
@@ -621,9 +639,9 @@ def _extract_classified_tables(section_text: str) -> dict[str, list[dict[str, st
         index += 1
         while index < len(rows):
             row = rows[index]
-            if _classify_table_header(row):
+            if len(row) == 1 and row[0] in TAX_SECTION_TITLES:
                 break
-            if any(cell in TAX_SECTION_TITLES for cell in row):
+            if _classify_table_header(row):
                 break
             record: dict[str, str] = {}
             for pos, canonical in mapping.items():
@@ -635,15 +653,22 @@ def _extract_classified_tables(section_text: str) -> dict[str, list[dict[str, st
                 records.append(record)
             index += 1
         if records:
-            tables.setdefault(table_type, []).extend(records)
+            blocks.append(
+                {
+                    "section_title": current_section_title,
+                    "type": table_type,
+                    "headers": TABLE_CLASSIFIER_COLUMNS.get(table_type, []),
+                    "records": records,
+                }
+            )
 
     logger.info(
         "[ShuimuiExtract] tax_tables_detected_count=%s table_classifier_result=%s skipped_union_table_count=%s",
-        sum(len(value) for value in tables.values()),
+        len(blocks),
         ",".join(classifier_results),
         skipped_union_table_count,
     )
-    return tables
+    return blocks
 
 
 def _format_year_amount_cell(value: Any) -> str:
@@ -653,13 +678,22 @@ def _format_year_amount_cell(value: Any) -> str:
     return f"{number:,.0f}"
 
 
-def _three_year_payment_table_rows(records: list[dict[str, str]]) -> tuple[list[tuple[str, str]], int]:
+def _trim_three_year_payment_records(records: list[dict[str, str]]) -> tuple[list[dict[str, str]], int, bool]:
     clean_records: list[dict[str, str]] = []
     seen: set[tuple[str, str, str, str]] = set()
+    duplicate_month_block_removed = False
+    annual_summary_seen = False
+    months_seen: set[str] = set()
     for record in records:
         month = _clean(record.get("月份"), 40)
         if not month or not (re.fullmatch(r"\d{1,2}月", month) or month == "年度汇总"):
             continue
+        if month == "1月" and (annual_summary_seen or month in months_seen):
+            duplicate_month_block_removed = True
+            break
+        if month == "年度汇总" and annual_summary_seen:
+            duplicate_month_block_removed = True
+            break
         row = {
             "月份": month,
             "2024": _format_year_amount_cell(record.get("2024")),
@@ -671,9 +705,38 @@ def _three_year_payment_table_rows(records: list[dict[str, str]]) -> tuple[list[
             continue
         seen.add(key)
         clean_records.append(row)
+        if month == "年度汇总":
+            annual_summary_seen = True
+        else:
+            months_seen.add(month)
+        if len(clean_records) >= 13:
+            duplicate_month_block_removed = len(records) > len(clean_records)
+            break
+    return clean_records, len(records), duplicate_month_block_removed
+
+
+def _three_year_payment_table_rows_from_blocks(blocks: list[dict[str, Any]]) -> tuple[list[tuple[str, str]], int]:
+    candidates = [block for block in blocks if block.get("type") == "three_year_tax_payment_table"]
+    preferred = [block for block in candidates if block.get("section_title") == "近三年纳税信息完税表(元)"]
+    selected = (preferred or candidates or [None])[0]
+    if not isinstance(selected, dict):
+        return [], 0
+    records = selected.get("records")
+    if not isinstance(records, list):
+        return [], 0
+    clean_records, before_trim_count, duplicate_removed = _trim_three_year_payment_records([record for record in records if isinstance(record, dict)])
     table_markdown = _records_to_markdown_table(clean_records) if clean_records else ""
     if not table_markdown:
         return [], 0
+    logger.info(
+        "[ShuimuiExtract] three_year_tax_table_candidates_count=%s selected_three_year_tax_table_section_title=%s selected_three_year_tax_table_rows_before_trim=%s selected_three_year_tax_table_rows_after_trim=%s duplicate_month_block_removed=%s skipped_same_header_tables_count=%s",
+        len(candidates),
+        selected.get("section_title") or "",
+        before_trim_count,
+        len(clean_records),
+        duplicate_removed,
+        max(len(candidates) - 1, 0),
+    )
     return [("__SUBSECTION__", "近三年纳税信息完税表(元)"), ("__TABLE__", table_markdown)], len(clean_records)
 
 
@@ -843,10 +906,16 @@ def _section_table_rows(section_text: str, titles: tuple[str, ...]) -> tuple[lis
 
 def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
     rows = _extract_tax_indicator_rows(section_text)
-    classified_tables = _extract_classified_tables(section_text)
+    classified_table_blocks = _extract_classified_table_blocks(section_text)
+    classified_tables: dict[str, list[dict[str, str]]] = {}
+    for block in classified_table_blocks:
+        table_type = str(block.get("type") or "")
+        records = block.get("records")
+        if table_type and isinstance(records, list):
+            classified_tables.setdefault(table_type, []).extend(record for record in records if isinstance(record, dict))
     late_fee_rows, late_fee_count, skipped_non_penalty_rows = _late_fee_rows(section_text, classified_tables)
     tax_penalty_rows, tax_penalty_before_count, tax_penalty_count = _tax_penalty_rows(classified_tables)
-    three_year_rows, three_year_count = _three_year_payment_table_rows(classified_tables.get("three_year_tax_payment_table", []))
+    three_year_rows, three_year_count = _three_year_payment_table_rows_from_blocks(classified_table_blocks)
     if late_fee_rows:
         rows.append(("__SUBSECTION__", "滞纳金情况"))
         rows.extend(late_fee_rows[:80])
