@@ -318,15 +318,21 @@ def test_shuimui_basic_info_extracts_score_social_security_multi_shareholders_an
 
     assert "### 水母经营分" in markdown
     assert "经营分：67.5" in markdown
-    assert "经营评价：经营良好" in markdown
+    assert "经营评价" not in markdown
+    assert "经营良好" not in markdown
     assert "社保人数：8" in markdown
     assert "应缴费额：12,355.20 元" in markdown
     assert "股东 1：龚海成，参股比例：80.00%" in markdown
     assert "股东 2：龚海涛，参股比例：20.00%" in markdown
     assert "* 记录 1：" in markdown
     assert "变更时间：2025-01-02" in markdown
+    assert "变更前：龚海成" in markdown
+    assert "变更后：龚海涛" in markdown
     assert "* 记录 2：" in markdown
     assert "变更时间：2023-09-04" in markdown
+    assert "变更前：张丹" in markdown
+    assert "变更后：龚海成" in markdown
+    assert "* 记录 3：" not in markdown
     assert "股东名称：股东名称" not in markdown
     assert "变更类型：变更时间" not in markdown
 

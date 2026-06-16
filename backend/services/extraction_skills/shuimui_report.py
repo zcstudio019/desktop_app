@@ -891,9 +891,6 @@ def _business_score_rows(basic_text: str) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     if score:
         rows.append(("经营分", score))
-    level_match = re.search(r"(经营一般|经营良好|经营卓越)", basic_text or "")
-    if level_match:
-        rows.append(("经营评价", level_match.group(1)))
     return rows
 
 
@@ -989,8 +986,7 @@ def _change_rows(basic_text: str) -> list[tuple[str, str]]:
                     pos += 2
             pos += 1
         break
-    clean_records: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    clean_records_by_key: dict[tuple[str, str], dict[str, str]] = {}
     for record in records:
         change_type = _first_record_value(record, ("变更类型",))
         date = _first_record_value(record, ("变更时间", "日期", "时间"))
@@ -998,11 +994,11 @@ def _change_rows(basic_text: str) -> list[tuple[str, str]]:
         after = _first_record_value(record, ("变更后",))
         if not re.fullmatch(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}", date or ""):
             continue
-        key = (change_type, date, before, after)
-        if not change_type or key in seen:
+        if not change_type or not before or not after:
             continue
-        seen.add(key)
-        clean_records.append({"变更类型": change_type, "变更时间": date, "变更前": before, "变更后": after})
+        key = (change_type, date)
+        clean_records_by_key.setdefault(key, {"变更类型": change_type, "变更时间": date, "变更前": before, "变更后": after})
+    clean_records = list(clean_records_by_key.values())
     rows: list[tuple[str, str]] = []
     for index, record in enumerate(clean_records, 1):
         lines = [f"* 记录 {index}：", ""]
