@@ -216,6 +216,35 @@ def test_sample_shuimui_text_extracts_expected_fields():
     assert "structured json" not in markdown.lower()
 
 
+def test_shuimui_registration_capital_from_llm_is_not_used_when_page_is_empty():
+    class FakeAiService:
+        def extract(self, *_args, **_kwargs):
+            return '{"注册资本":"1000000"}'
+
+    raw_text = """水母报告
+企业名称
+上海煜禧贸易有限公司
+统一信用代码
+91310114060938092E
+注册资金
+--
+注册类型
+私营有限责任公司
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=FakeAiService(),
+    )
+    markdown = content["report_markdown"]
+
+    assert "注册资本：1000000" not in markdown
+    assert "注册资本：" not in markdown
+    assert "注册资金：" not in markdown
+    assert "注册类型：私营有限责任公司" in markdown
+
+
 def test_sample_shuimui_table_rows_do_not_use_headers_as_values():
     raw_text = """水母报告
 企业名称
@@ -270,10 +299,47 @@ A
 2026-02        增值税        12000 元        已申报
 
 ### 页签：发票信息
-开票月份        销项发票金额        进项发票金额        发票张数
-2026-02        560000 元        320000 元        42
-主要开票品类
-厨具卫具
+近1个月开票金额(元)
+357033
+近3个月开票金额(元)
+1416707
+近6月开票金额(元)
+3029176
+近12个月开票金额(元)
+5653114
+近24个月开票金额(元)
+14002123
+近3月开票环比增长率
+-12.14%
+近6月开票环比增长率
+15.44%
+近12月开票环比增长率
+-32.29%
+近45日是否有开票记录
+有
+近3个月下游客户统计
+20
+近12月下游客户数量(家)
+31.0
+近12个月下游开票张数
+268
+近12个月作废发票数量占比
+--%
+近12个月最大连续未开票间隔天数（销项）
+21
+近12月断票月数(不含2月)
+--
+近12月最长连续断票月数
+--
+近12个月红冲金额占比
+2.2%
+近12月红冲发票张数占比
+4.1%
+近三年开票信息报表（元）
+月份        2024        2025        2026
+1月        896241        522681        413127
+2月        1290200        689459        357033
+年度汇总        9323309        6095093        1137794
 
 ### 页签：供应商信息
 供应商名称        交易金额        交易次数        占比        最近交易时间
@@ -294,9 +360,17 @@ A
     assert "纳税状态：正常" not in markdown
     assert "纳税金额：12000 元" not in markdown
     assert "### 发票信息" in markdown
-    assert "覆盖年份：2026" in markdown
-    assert "发票总张数：42" in markdown
-    assert "2026-02，发票张数：42，开票金额：560,000.00 元" in markdown
+    assert "#### 开票金额汇总（不含本月）" in markdown
+    assert "近1个月开票金额(元)：357,033" in markdown
+    assert "近24个月开票金额(元)：14,002,123" in markdown
+    assert "#### 开票金额环比增长率（不含本月）" in markdown
+    assert "近12月开票环比增长率：-32.29%" in markdown
+    assert "#### 开票活跃度与客户情况" in markdown
+    assert "近12个月作废发票数量占比：--%" in markdown
+    assert "近12月断票月数(不含2月)：--" in markdown
+    assert "#### 近三年开票信息报表（元）" in markdown
+    assert "| 1月 | 896,241 | 522,681 | 413,127 |" in markdown
+    assert "| 年度汇总 | 9,323,309 | 6,095,093 | 1,137,794 |" in markdown
     assert "### 前十供应商" in markdown
     assert "供应商 1：上海某某供应链有限公司，交易金额：180,000.00 元，占比：35.00%" in markdown
     assert "供应商 2：苏州某某商贸有限公司，交易金额：90,000.00 元，占比：17.00%" in markdown
@@ -308,7 +382,7 @@ A
 def test_shuimui_extracts_internal_capture_json_without_displaying_json():
     raw_text = """水母报告
 __SHUIMUI_REPORT_CAPTURE_JSON__
-{"sections":{"tax_info":{"label":"纳税信息","text":"纳税信用等级\\nB\\n当前欠税余额（元）\\n无","tables_text":""},"invoice_info":{"label":"发票信息","text":"开票总金额\\n880000 元","tables_text":""},"supplier_info":{"label":"供应商信息","text":"供应商名称        交易金额        占比\\n上海接口供应商        100000 元        20%","tables_text":""}},"api_json":[{"url":"https://shuimui.szsmjr.com/api/report","status":200,"field_summary":["纳税信用等级"],"payload":{"纳税信息":{"纳税人种类":"一般纳税人"},"发票信息":{"发票张数":12}}}]}
+{"sections":{"tax_info":{"label":"纳税信息","text":"纳税信用等级\\nB\\n当前欠税余额（元）\\n无","tables_text":""},"invoice_info":{"label":"发票信息","text":"近1个月开票金额(元)\\n880000","tables_text":""},"supplier_info":{"label":"供应商信息","text":"供应商名称        交易金额        占比\\n上海接口供应商        100000 元        20%","tables_text":""}},"api_json":[{"url":"https://shuimui.szsmjr.com/api/report","status":200,"field_summary":["纳税信用等级"],"payload":{"纳税信息":{"纳税人种类":"一般纳税人"},"发票信息":{"近3个月开票金额(元)":1200000}}}]}
 __END_SHUIMUI_REPORT_CAPTURE_JSON__
 ### 页签：基本信息
 企业名称
@@ -329,7 +403,8 @@ __END_SHUIMUI_REPORT_CAPTURE_JSON__
     assert "当前欠税余额（元）：无" in markdown
     assert "纳税人种类：一般纳税人" in markdown
     assert "### 发票信息" in markdown
-    assert "发票总张数：12" in markdown
+    assert "近1个月开票金额(元)：880,000" in markdown
+    assert "近3个月开票金额(元)：1,200,000" in markdown
     assert "### 前十供应商" in markdown
     assert "供应商 1：上海接口供应商，交易金额：100,000.00 元，占比：20.00%" in markdown
     assert "__SHUIMUI_REPORT_CAPTURE_JSON__" not in markdown
@@ -476,12 +551,47 @@ A
 2024-04        增值税        2024.00        2024.00        2024-05-15        已缴清
 
 ### 页签：发票信息
-覆盖年份
-2024 2025 2026
-发票总张数
+近1个月开票金额(元)
+357033
+近3个月开票金额(元)
+1416707
+近6月开票金额(元)
+3029176
+近12个月开票金额(元)
+5653114
+近24个月开票金额(元)
+14002123
+近3月开票环比增长率
+-12.14%
+近6月开票环比增长率
+15.44%
+近12月开票环比增长率
+-32.29%
+近45日是否有开票记录
+有
+近3个月下游客户统计
+20
+近12月下游客户数量(家)
+31.0
+近12个月下游开票张数
 268
-月份
-1月
+近12个月作废发票数量占比
+--%
+近12个月最大连续未开票间隔天数（销项）
+21
+近12月断票月数(不含2月)
+--
+近12月最长连续断票月数
+--
+近12个月红冲金额占比
+2.2%
+近12月红冲发票张数占比
+4.1%
+近三年开票信息报表（元）
+月份        2024        2025        2026
+1月        896241        522681        413127
+2月        1290200        689459        357033
+年度汇总        9323309        6095093        1137794
 """
     content = extract_shuimui_report(
         raw_text,
@@ -538,8 +648,34 @@ A
     assert "负债率（去年年报）：105.53%" in markdown
     assert "营业净利率（去年年报）：-16.64%" in markdown
     assert "### 发票信息" in markdown
-    assert "覆盖年份：2024、2025、2026" in markdown
-    assert "发票总张数：268" in markdown
-    assert "月份：1月" not in markdown
+    assert "#### 开票金额汇总（不含本月）" in markdown
+    assert "近1个月开票金额(元)：357,033" in markdown
+    assert "近3个月开票金额(元)：1,416,707" in markdown
+    assert "近6月开票金额(元)：3,029,176" in markdown
+    assert "近12个月开票金额(元)：5,653,114" in markdown
+    assert "近24个月开票金额(元)：14,002,123" in markdown
+    assert "#### 开票金额环比增长率（不含本月）" in markdown
+    assert "近3月开票环比增长率：-12.14%" in markdown
+    assert "近6月开票环比增长率：15.44%" in markdown
+    assert "近12月开票环比增长率：-32.29%" in markdown
+    assert "#### 开票活跃度与客户情况" in markdown
+    assert "近45日是否有开票记录：有" in markdown
+    assert "近3个月下游客户统计：20" in markdown
+    assert "近12月下游客户数量(家)：31.0" in markdown
+    assert "近12个月下游开票张数：268" in markdown
+    assert "近12个月作废发票数量占比：--%" in markdown
+    assert "近12个月最大连续未开票间隔天数（销项）：21" in markdown
+    assert "近12月断票月数(不含2月)：--" in markdown
+    assert "近12月最长连续断票月数：--" in markdown
+    assert "近12个月红冲金额占比：2.2%" in markdown
+    assert "近12月红冲发票张数占比：4.1%" in markdown
+    assert "#### 近三年开票信息报表（元）" in markdown
+    invoice_table_section = markdown.split("#### 近三年开票信息报表（元）", 1)[1]
+    assert "| 月份 | 2024 | 2025 | 2026 |" in invoice_table_section
+    assert "| 1月 | 896,241 | 522,681 | 413,127 |" in invoice_table_section
+    assert "| 2月 | 1,290,200 | 689,459 | 357,033 |" in invoice_table_section
+    assert "| 年度汇总 | 9,323,309 | 6,095,093 | 1,137,794 |" in invoice_table_section
+    assert "18,775" not in invoice_table_section
+    assert "443,603" not in invoice_table_section
     assert "未明确" not in markdown
     assert "未识别" not in markdown

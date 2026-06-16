@@ -89,6 +89,35 @@ FINANCIAL_FIELDS = [
     "营业净利率（去年年报）",
 ]
 
+INVOICE_AMOUNT_FIELDS = [
+    "近1个月开票金额(元)",
+    "近3个月开票金额(元)",
+    "近6月开票金额(元)",
+    "近12个月开票金额(元)",
+    "近24个月开票金额(元)",
+]
+
+INVOICE_GROWTH_FIELDS = [
+    "近3月开票环比增长率",
+    "近6月开票环比增长率",
+    "近12月开票环比增长率",
+]
+
+INVOICE_ACTIVITY_FIELDS = [
+    "近45日是否有开票记录",
+    "近3个月下游客户统计",
+    "近12月下游客户数量(家)",
+    "近12个月下游开票张数",
+    "近12个月作废发票数量占比",
+    "近12个月最大连续未开票间隔天数（销项）",
+    "近12月断票月数(不含2月)",
+    "近12月最长连续断票月数",
+    "近12个月红冲金额占比",
+    "近12月红冲发票张数占比",
+]
+
+INVOICE_SUMMARY_FIELDS = INVOICE_AMOUNT_FIELDS + INVOICE_GROWTH_FIELDS + INVOICE_ACTIVITY_FIELDS
+
 TAX_SECTION_TITLES = (
     "滞纳金情况",
     "税务处罚",
@@ -102,8 +131,18 @@ TAX_SECTION_TITLES = (
     "纳税明细",
 )
 
+INVOICE_SECTION_TITLES = (
+    "开票金额汇总（不含本月）",
+    "开票金额环比增长率（不含本月）",
+    "开票活跃度与客户情况",
+    "近三年开票信息报表（元）",
+)
+
+REPORT_TABLE_SECTION_TITLES = TAX_SECTION_TITLES + INVOICE_SECTION_TITLES
+
 TABLE_CLASSIFIER_COLUMNS = {
     "three_year_tax_payment_table": ["月份", "2024", "2025", "2026"],
+    "three_year_invoice_table": ["月份", "2024", "2025", "2026"],
     "late_fee_table": ["滞纳金时间", "滞纳金金额(元)", "状态"],
     "tax_penalty_table": ["登记日期", "违法违章信息", "违法违章状态"],
     "top_suppliers_table": ["排名", "供应商名称", "采购额(元)", "金额占比(%)", "是否关联方"],
@@ -131,6 +170,7 @@ SECTION_FIELDS: list[tuple[str, list[str]]] = [
 ALL_FIELDS = [field for _, fields in SECTION_FIELDS for field in fields]
 ALL_FIELDS.extend(TAX_FIELDS)
 ALL_FIELDS.extend(FINANCIAL_FIELDS)
+ALL_FIELDS.extend(INVOICE_SUMMARY_FIELDS)
 
 LABEL_ALIASES: dict[str, tuple[str, ...]] = {
     "企业名称": ("企业名称", "公司名称", "主体名称", "被查询企业"),
@@ -213,6 +253,12 @@ def _clean(value: Any, max_len: int = 500) -> str:
     if not text:
         return ""
     return text[:max_len].strip()
+
+
+def is_valid_report_value(value: Any) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    text = re.sub(r"复制$", "", text).strip()
+    return text not in {"", "--", "-", "无", "暂无", "无数据", "null", "undefined", "None", "none", UNKNOWN}
 
 
 def _clean_label(value: Any, max_len: int = 80) -> str:
@@ -298,6 +344,32 @@ def _format_financial_value(field: str, value: Any) -> str:
     if "率" in field:
         return _format_percent(clean_value)
     return _format_decimal_amount(clean_value)
+
+
+def _clean_invoice_value(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" ：:\t\r\n")
+    text = re.sub(r"\s*复制\s*$", "", text).strip()
+    lower_text = text.lower()
+    if not text or text in {"None", "none", "null", "undefined", "未明确", UNKNOWN}:
+        return ""
+    if any(marker in lower_text for marker in INTERNAL_MARKERS):
+        return ""
+    if re.search(r"^\s*[\[{].*[\]}]\s*$", text):
+        return ""
+    return text[:120].strip()
+
+
+def _format_invoice_summary_value(field: str, value: Any) -> str:
+    clean_value = _clean_invoice_value(value)
+    if not clean_value:
+        return ""
+    if clean_value in {"--", "--%"}:
+        return clean_value
+    if "占比" in field or "增长率" in field:
+        return clean_value if clean_value.endswith("%") else _format_percent(clean_value)
+    if "金额" in field:
+        return _format_integer_amount(clean_value)
+    return clean_value
 
 
 def _format_money(value: Any, *, allow_small: bool = False) -> str:
@@ -456,7 +528,7 @@ def _extract_table_records(section_text: str) -> list[dict[str, str]]:
     return records
 
 
-def _extract_named_block(section_text: str, titles: tuple[str, ...], stop_titles: tuple[str, ...] = TAX_SECTION_TITLES) -> str:
+def _extract_named_block(section_text: str, titles: tuple[str, ...], stop_titles: tuple[str, ...] = REPORT_TABLE_SECTION_TITLES) -> str:
     text = section_text or ""
     compact_candidates: list[tuple[int, str]] = []
     for title in titles:
@@ -527,7 +599,7 @@ def _extract_block_from_header(section_text: str, required_tokens: tuple[str, ..
             clean_line = _clean(next_line, 220)
             if not clean_line:
                 continue
-            if clean_line in TAX_SECTION_TITLES:
+            if clean_line in REPORT_TABLE_SECTION_TITLES:
                 break
             collected.append(next_line)
         return "\n".join(collected).strip()
@@ -542,7 +614,7 @@ def _extract_records_after_header_tokens(section_text: str, required_tokens: tup
             continue
         records: list[dict[str, str]] = []
         for row in rows[index + 1 : index + 80]:
-            if any(cell in TAX_SECTION_TITLES for cell in row):
+            if any(cell in REPORT_TABLE_SECTION_TITLES for cell in row):
                 break
             if len(row) < min(2, len(header)):
                 continue
@@ -617,7 +689,7 @@ def _extract_classified_table_blocks(section_text: str) -> list[dict[str, Any]]:
 
     index = 0
     while index < len(rows):
-        if len(rows[index]) == 1 and rows[index][0] in TAX_SECTION_TITLES:
+        if len(rows[index]) == 1 and rows[index][0] in REPORT_TABLE_SECTION_TITLES:
             current_section_title = rows[index][0]
             index += 1
             continue
@@ -629,6 +701,8 @@ def _extract_classified_table_blocks(section_text: str) -> list[dict[str, Any]]:
         if not table_type:
             index += 1
             continue
+        if table_type == "three_year_tax_payment_table" and current_section_title == "近三年开票信息报表（元）":
+            table_type = "three_year_invoice_table"
         classifier_results.append(table_type)
         mapping = _canonical_header_map(header, table_type)
         if len(mapping) != len(TABLE_CLASSIFIER_COLUMNS.get(table_type, [])):
@@ -639,7 +713,7 @@ def _extract_classified_table_blocks(section_text: str) -> list[dict[str, Any]]:
         index += 1
         while index < len(rows):
             row = rows[index]
-            if len(row) == 1 and row[0] in TAX_SECTION_TITLES:
+            if len(row) == 1 and row[0] in REPORT_TABLE_SECTION_TITLES:
                 break
             if _classify_table_header(row):
                 break
@@ -740,6 +814,32 @@ def _three_year_payment_table_rows_from_blocks(blocks: list[dict[str, Any]]) -> 
     return [("__SUBSECTION__", "近三年纳税信息完税表(元)"), ("__TABLE__", table_markdown)], len(clean_records)
 
 
+def _three_year_invoice_table_rows_from_blocks(blocks: list[dict[str, Any]]) -> tuple[list[tuple[str, str]], int]:
+    candidates = [block for block in blocks if block.get("type") == "three_year_invoice_table"]
+    preferred = [block for block in candidates if block.get("section_title") == "近三年开票信息报表（元）"]
+    selected = (preferred or candidates or [None])[0]
+    if not isinstance(selected, dict):
+        return [], 0
+    records = selected.get("records")
+    if not isinstance(records, list):
+        return [], 0
+    clean_records, before_trim_count, duplicate_removed = _trim_three_year_payment_records([record for record in records if isinstance(record, dict)])
+    table_markdown = _records_to_markdown_table(clean_records) if clean_records else ""
+    if not table_markdown:
+        return [], 0
+    logger.info(
+        "[ShuimuiExtract] invoice_table_candidates_count=%s selected_invoice_table_section_title=%s selected_invoice_table_rows_before_trim=%s selected_invoice_table_rows_after_trim=%s tax_table_and_invoice_table_separated=%s skipped_same_header_cross_tab_tables_count=%s duplicate_month_block_removed=%s",
+        len(candidates),
+        selected.get("section_title") or "",
+        before_trim_count,
+        len(clean_records),
+        True,
+        max(len(candidates) - 1, 0),
+        duplicate_removed,
+    )
+    return [("__SUBSECTION__", "近三年开票信息报表（元）"), ("__TABLE__", table_markdown)], len(clean_records)
+
+
 def _add_dynamic_field(rows: list[tuple[str, str]], label: str, value: Any) -> None:
     clean_label = _clean(label, 80)
     clean_value = _clean(value, 220)
@@ -828,6 +928,40 @@ def _extract_tax_indicator_rows(section_text: str) -> list[tuple[str, str]]:
 
 def _extract_financial_rows(section_text: str) -> list[tuple[str, str]]:
     return _extract_whitelisted_label_values(section_text, FINANCIAL_FIELDS, _format_financial_value)
+
+
+def _extract_invoice_summary_rows(section_text: str, fields: list[str]) -> list[tuple[str, str]]:
+    lines = [re.sub(r"\s+", " ", str(line or "")).strip(" ：:\t\r\n") for line in (section_text or "").splitlines()]
+    lines = [line for line in lines if line]
+    normalized_to_field = {_normalize_label(field): field for field in fields}
+    normalized_labels = set(normalized_to_field)
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for line in lines:
+        if "：" in line or ":" in line:
+            label, raw_value = re.split(r"[：:]", line, maxsplit=1)
+            field = normalized_to_field.get(_normalize_label(label))
+            value = _format_invoice_summary_value(field, raw_value) if field else ""
+            if field and value and field not in seen:
+                rows.append((field, value))
+                seen.add(field)
+
+    for index, line in enumerate(lines):
+        field = normalized_to_field.get(_normalize_label(line))
+        if not field or field in seen:
+            continue
+        for candidate in lines[index + 1 : index + 6]:
+            if _normalize_label(candidate) in normalized_labels:
+                break
+            if candidate in {"展开", "收起", "详情", "查看", "查看详细路径"}:
+                continue
+            value = _format_invoice_summary_value(field, candidate)
+            if value:
+                rows.append((field, value))
+                seen.add(field)
+                break
+    return rows
 
 
 def _is_penalty_status(value: str) -> bool:
@@ -940,43 +1074,28 @@ def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
 
 
 def _invoice_display_rows(section_text: str) -> list[tuple[str, str]]:
-    years = sorted(set(re.findall(r"\b(20\d{2})\b", section_text or "")))
     rows: list[tuple[str, str]] = []
-    if years:
-        rows.append(("覆盖年份", "、".join(years)))
-
-    total_count = ""
-    for record in _extract_table_records(section_text):
-        for key, value in record.items():
-            if "张数" in key or "发票总张数" in key:
-                number = _parse_number(value)
-                if number is not None:
-                    total_count = str(int(number))
-    if not total_count:
-        count_matches = re.findall(r"(?:发票总张数|发票张数|张数)\s*[：:]?\s*(\d+)", section_text or "")
-        if count_matches:
-            total_count = count_matches[-1]
-    if total_count:
-        rows.append(("发票总张数", total_count))
-
-    monthly_rows: list[str] = []
-    for record in _extract_table_records(section_text):
-        year = _first_record_value(record, ("年份", "年"))
-        month = _first_record_value(record, ("月份", "月"))
-        amount = _format_money(_first_record_value(record, ("开票金额", "销项发票金额", "金额"), exclude=("进项",)))
-        count = _first_record_value(record, ("发票张数", "张数"))
-        if month and (amount or count):
-            prefix = f"{year}年{month}" if year and "年" not in month else month
-            parts = [prefix]
-            if count:
-                parts.append(f"发票张数：{count}")
-            if amount:
-                parts.append(f"开票金额：{amount}")
-            monthly_rows.append("，".join(parts))
-    if monthly_rows:
-        rows.append(("__SUBSECTION__", "月度开票记录"))
-        for row in monthly_rows[:24]:
-            rows.append(("", row))
+    amount_rows = _extract_invoice_summary_rows(section_text, INVOICE_AMOUNT_FIELDS)
+    growth_rows = _extract_invoice_summary_rows(section_text, INVOICE_GROWTH_FIELDS)
+    activity_rows = _extract_invoice_summary_rows(section_text, INVOICE_ACTIVITY_FIELDS)
+    classified_blocks = _extract_classified_table_blocks(section_text)
+    invoice_table_rows, invoice_table_count = _three_year_invoice_table_rows_from_blocks(classified_blocks)
+    if amount_rows:
+        rows.append(("__SUBSECTION__", "开票金额汇总（不含本月）"))
+        rows.extend(amount_rows)
+    if growth_rows:
+        rows.append(("__SUBSECTION__", "开票金额环比增长率（不含本月）"))
+        rows.extend(growth_rows)
+    if activity_rows:
+        rows.append(("__SUBSECTION__", "开票活跃度与客户情况"))
+        rows.extend(activity_rows)
+    rows.extend(invoice_table_rows)
+    logger.info(
+        "[ShuimuiExtract] invoice_tab_opened=%s invoice_summary_fields_matched=%s invoice_table_rows=%s",
+        bool(section_text),
+        ",".join(field for field, _ in amount_rows + growth_rows + activity_rows),
+        invoice_table_count,
+    )
     return rows
 
 
@@ -1231,6 +1350,12 @@ def _llm_extract(raw_text: str, ai_service: Any | None) -> dict[str, str]:
     return merged
 
 
+def _drop_unverified_page_fields(fields: dict[str, Any], rule_fields: dict[str, str], raw_text: str) -> None:
+    if "注册资本" in fields and "注册资本" not in rule_fields:
+        fields.pop("注册资本", None)
+        logger.info("[ShuimuiExtract] dropped_unverified_field=注册资本 reason=not_present_as_valid_page_value")
+
+
 def render_shuimui_report_markdown(
     fields: dict[str, Any],
     *,
@@ -1272,7 +1397,8 @@ def render_shuimui_report_markdown(
                         field_value = str(item[1] or "").strip()
                     else:
                         field = _clean_label(item[0], 80)
-                        field_value = _clean(item[1], 240)
+                        raw_field_value = str(item[1] or "").strip()
+                        field_value = raw_field_value if raw_field_value in {"--", "--%"} else _clean(item[1], 240)
                     if field_value and (field or marker in {"", "__SUBSECTION__", "__TABLE__"}):
                         rows.append((field, field_value))
                 if not rows:
@@ -1335,6 +1461,7 @@ def extract_shuimui_report(
     rule_fields = _rule_extract(raw_text, sn)
     llm_fields = _llm_extract(raw_text, ai_service)
     fields = {**llm_fields, **rule_fields}
+    _drop_unverified_page_fields(fields, rule_fields, raw_text)
     dynamic_sections = _extract_dynamic_sections(raw_text, capture_payload)
     if dynamic_sections:
         fields["_dynamic_sections"] = dynamic_sections
