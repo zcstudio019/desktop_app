@@ -392,7 +392,7 @@ def _format_percent(value: Any) -> str:
 
 
 def _record_money_value(record: dict[str, str]) -> str:
-    candidate = _format_money(_first_record_value(record, ("交易金额", "金额"), exclude=("占比", "比例")))
+    candidate = _format_money(_first_record_value(record, ("交易金额", "采购额", "销售额", "金额"), exclude=("占比", "比例")))
     if candidate:
         return candidate
     for key, value in record.items():
@@ -1129,11 +1129,14 @@ def _supplier_display_rows(section_text: str) -> list[tuple[str, str]]:
             name = _first_record_value(record, ("供应商", "企业名称", "名称"), exclude=("金额", "占比", "比例", "次数", "时间", "日期"))
             amount = _record_money_value(record)
             ratio = _record_percent_value(record)
+            related = _first_record_value(record, ("是否关联方", "关联方"))
             parts = [name]
             if amount:
                 parts.append(f"交易金额：{amount}")
             if ratio:
                 parts.append(f"占比：{ratio}")
+            if related:
+                parts.append(f"是否关联方：{related}")
             _add_dynamic_field(rows, f"供应商 {index}", "，".join(part for part in parts if part))
         return rows
     return _extract_dynamic_section_fields(section_text, ["供应商名称", "交易金额", "交易次数", "占比", "最近交易时间", "集中度提示"])

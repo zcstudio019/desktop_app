@@ -342,9 +342,9 @@ A
 年度汇总        9323309        6095093        1137794
 
 ### 页签：供应商信息
-供应商名称        交易金额        交易次数        占比        最近交易时间
-上海某某供应链有限公司        180000 元        8        35%        2026-03-01
-苏州某某商贸有限公司        90000 元        3        17%        2026-02-18
+排名        供应商名称        采购额(元)        金额占比(%)        是否关联方
+1        上海某某供应链有限公司        180000        35        否
+2        苏州某某商贸有限公司        90000        17        否
 """
     content = extract_shuimui_report(
         raw_text,
@@ -364,6 +364,7 @@ A
     assert "近1个月开票金额(元)：357,033" in markdown
     assert "近24个月开票金额(元)：14,002,123" in markdown
     assert "#### 开票金额环比增长率（不含本月）" in markdown
+    assert "近6月开票环比增长率：15.44%" in markdown
     assert "近12月开票环比增长率：-32.29%" in markdown
     assert "#### 开票活跃度与客户情况" in markdown
     assert "近12个月作废发票数量占比：--%" in markdown
@@ -372,8 +373,8 @@ A
     assert "| 1月 | 896,241 | 522,681 | 413,127 |" in markdown
     assert "| 年度汇总 | 9,323,309 | 6,095,093 | 1,137,794 |" in markdown
     assert "### 前十供应商" in markdown
-    assert "供应商 1：上海某某供应链有限公司，交易金额：180,000.00 元，占比：35.00%" in markdown
-    assert "供应商 2：苏州某某商贸有限公司，交易金额：90,000.00 元，占比：17.00%" in markdown
+    assert "供应商 1：上海某某供应链有限公司，交易金额：180,000.00 元，占比：35.00%，是否关联方：否" in markdown
+    assert "供应商 2：苏州某某商贸有限公司，交易金额：90,000.00 元，占比：17.00%，是否关联方：否" in markdown
     assert "### 供应商信息" not in markdown
     assert "未识别" not in markdown
     assert "structured json" not in markdown.lower()
