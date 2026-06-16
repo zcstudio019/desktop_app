@@ -298,6 +298,88 @@ async def _extract_dom_text_and_tables(page: object) -> tuple[str, str]:
     return str(body_text or ""), str(table_text or "")
 
 
+async def _count_table_like_rows(page: object) -> int:
+    try:
+        return int(
+            await page.evaluate(
+                """() => {
+                    let count = 0;
+                    document.querySelectorAll('table, [role="table"]').forEach((table) => {
+                        count += table.querySelectorAll('tr, [role="row"]').length;
+                    });
+                    document.querySelectorAll('[class*="table"], [class*="row"]').forEach((node) => {
+                        if ((node.innerText || '').trim()) count += 1;
+                    });
+                    return count;
+                }"""
+            )
+        )
+    except Exception:
+        return 0
+
+
+async def _expand_current_tax_tab(page: object, source_url: str) -> dict[str, int | bool]:
+    stats: dict[str, int | bool] = {
+        "tax_tab_opened": True,
+        "expand_buttons_found": 0,
+        "expand_buttons_clicked": 0,
+        "tax_tables_count_before_expand": await _count_table_like_rows(page),
+        "tax_tables_count_after_expand": 0,
+    }
+    try:
+        await page.evaluate("() => window.scrollTo(0, 0)")
+        await page.wait_for_timeout(500)
+    except Exception:
+        pass
+
+    for _ in range(3):
+        try:
+            locator = page.get_by_text("展开", exact=True)
+            count = await locator.count()
+            stats["expand_buttons_found"] = int(stats["expand_buttons_found"]) + count
+        except Exception:
+            count = 0
+        clicked_this_round = 0
+        for index in range(count):
+            try:
+                button = locator.nth(index)
+                if not await button.is_visible(timeout=1_000):
+                    continue
+                before_rows = await _count_table_like_rows(page)
+                await button.scroll_into_view_if_needed(timeout=2_000)
+                await button.click(timeout=2_000)
+                await page.wait_for_timeout(900)
+                try:
+                    await page.wait_for_function(
+                        "(before) => document.querySelectorAll('tr, [role=\"row\"]').length !== before",
+                        arg=before_rows,
+                        timeout=1_500,
+                    )
+                except Exception:
+                    pass
+                stats["expand_buttons_clicked"] = int(stats["expand_buttons_clicked"]) + 1
+                clicked_this_round += 1
+            except Exception as exc:
+                logger.warning("[ShuimuiFetchTax] expand click failed url=%s error=%s", source_url, str(exc)[:160])
+        if clicked_this_round == 0:
+            break
+    try:
+        await page.evaluate("() => window.scrollTo(0, document.body ? document.body.scrollHeight : 0)")
+        await page.wait_for_timeout(800)
+    except Exception:
+        pass
+    stats["tax_tables_count_after_expand"] = await _count_table_like_rows(page)
+    logger.info(
+        "[ShuimuiFetchTax] tax_tab_opened=%s expand_buttons_found=%s expand_buttons_clicked=%s tax_tables_count_before_expand=%s tax_tables_count_after_expand=%s",
+        stats["tax_tab_opened"],
+        stats["expand_buttons_found"],
+        stats["expand_buttons_clicked"],
+        stats["tax_tables_count_before_expand"],
+        stats["tax_tables_count_after_expand"],
+    )
+    return stats
+
+
 def _json_field_summary(value: object, max_items: int = 20) -> list[str]:
     keys: list[str] = []
 
@@ -387,6 +469,7 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
             title = await page.title()
             sections: dict[str, dict[str, str]] = {}
             clicked_tabs: list[str] = []
+            tax_expand_stats: dict[str, int | bool] = {}
 
             for tab_key, tab_label in TAB_DEFINITIONS:
                 before_text = ""
@@ -415,11 +498,15 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
                             logger.warning("[ShuimuiFetchTabs] tab content unchanged label=%s url=%s", tab_label, source_url)
                     await page.wait_for_timeout(1_200)
 
+                if tab_key == "tax_info":
+                    tax_expand_stats = await _expand_current_tax_tab(page, source_url)
+
                 body_text, table_text = await _extract_dom_text_and_tables(page)
                 sections[tab_key] = {
                     "label": tab_label,
                     "text": body_text,
                     "tables_text": table_text,
+                    "expand_stats": tax_expand_stats if tab_key == "tax_info" else {},
                 }
 
             captured_urls = [str(item.get("url") or "") for item in captured_json_apis]
@@ -437,6 +524,7 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
                 "api_json": captured_json_apis,
                 "clicked_tabs": clicked_tabs,
                 "page_title": title,
+                "tax_expand_stats": tax_expand_stats,
             }
             parts = [
                 title,

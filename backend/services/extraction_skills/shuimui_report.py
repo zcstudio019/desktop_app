@@ -89,6 +89,18 @@ FINANCIAL_FIELDS = [
     "营业净利率（去年年报）",
 ]
 
+TAX_SECTION_TITLES = (
+    "滞纳金情况",
+    "税务处罚",
+    "近三年纳税信息",
+    "近三年完税信息",
+    "近三年完税表",
+    "完税表",
+    "完税信息",
+    "完税情况",
+    "纳税明细",
+)
+
 SECTION_FIELDS: list[tuple[str, list[str]]] = [
     ("企业基本信息", ["企业名称", "统一社会信用代码", "法定代表人", "法人占股比例", "成立日期", "注册资本", "注册类型", "注册地址", "行业分类"]),
     ("报告基础信息", ["报告编号", "报告创建时间", "查询时间", "报告生成时间", "数据更新时间", "授权状态"]),
@@ -435,6 +447,109 @@ def _extract_table_records(section_text: str) -> list[dict[str, str]]:
     return records
 
 
+def _extract_named_block(section_text: str, titles: tuple[str, ...], stop_titles: tuple[str, ...] = TAX_SECTION_TITLES) -> str:
+    text = section_text or ""
+    compact_candidates: list[tuple[int, str]] = []
+    for title in titles:
+        match = re.search(rf"(?m)^\s*{re.escape(title)}\s*$", text)
+        if match:
+            compact_candidates.append((match.start(), title))
+        else:
+            index = text.find(title)
+            if index >= 0:
+                compact_candidates.append((index, title))
+    if not compact_candidates:
+        return ""
+    start, matched_title = min(compact_candidates, key=lambda item: item[0])
+    content_start = start + len(matched_title)
+    end = len(text)
+    for title in stop_titles:
+        if title == matched_title:
+            continue
+        match = re.search(rf"(?m)^\s*{re.escape(title)}\s*$", text[content_start:])
+        if match:
+            end = min(end, content_start + match.start())
+    return text[content_start:end].strip()
+
+
+def _filter_table_record(record: dict[str, str]) -> dict[str, str]:
+    filtered: dict[str, str] = {}
+    for key, value in record.items():
+        clean_key = _clean_label(key, 80)
+        clean_value = _clean(value, 180)
+        if not clean_key or not clean_value:
+            continue
+        if clean_value in {"展开", "查看", "查看详细路径", "详情", "收起"}:
+            continue
+        if clean_key in {"详细信息"} and clean_value in {"查看", "详情"}:
+            continue
+        filtered[clean_key] = clean_value
+    return filtered
+
+
+def _records_to_markdown_table(records: list[dict[str, str]], max_rows: int = 30) -> str:
+    filtered_records = [_filter_table_record(record) for record in records]
+    filtered_records = [record for record in filtered_records if record]
+    if not filtered_records:
+        return ""
+    headers: list[str] = []
+    for record in filtered_records:
+        for key in record:
+            if key not in headers:
+                headers.append(key)
+    if not headers:
+        return ""
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for record in filtered_records[:max_rows]:
+        lines.append("| " + " | ".join(record.get(header, "") for header in headers) + " |")
+    return "\n".join(lines)
+
+
+def _extract_block_from_header(section_text: str, required_tokens: tuple[str, ...]) -> str:
+    lines = (section_text or "").splitlines()
+    for index, line in enumerate(lines):
+        if not all(token in line for token in required_tokens):
+            continue
+        collected = [line]
+        for next_line in lines[index + 1 : index + 80]:
+            clean_line = _clean(next_line, 220)
+            if not clean_line:
+                continue
+            if clean_line in TAX_SECTION_TITLES:
+                break
+            collected.append(next_line)
+        return "\n".join(collected).strip()
+    return ""
+
+
+def _extract_records_after_header_tokens(section_text: str, required_tokens: tuple[str, ...]) -> list[dict[str, str]]:
+    rows = [_split_row(line) for line in (section_text or "").splitlines()]
+    rows = [row for row in rows if len(row) >= 2]
+    for index, header in enumerate(rows[:-1]):
+        if not all(any(token in cell for cell in header) for token in required_tokens):
+            continue
+        records: list[dict[str, str]] = []
+        for row in rows[index + 1 : index + 80]:
+            if any(cell in TAX_SECTION_TITLES for cell in row):
+                break
+            if len(row) < min(2, len(header)):
+                continue
+            if all(any(token in cell for cell in row) for token in required_tokens):
+                break
+            record = {
+                key: _clean(row[pos], 180)
+                for pos, key in enumerate(header)
+                if pos < len(row) and _clean_label(key, 80) and _clean(row[pos], 180)
+            }
+            if record:
+                records.append(record)
+        return records
+    return []
+
+
 def _add_dynamic_field(rows: list[tuple[str, str]], label: str, value: Any) -> None:
     clean_label = _clean(label, 80)
     clean_value = _clean(value, 220)
@@ -530,35 +645,98 @@ def _is_penalty_status(value: str) -> bool:
     return bool(text and re.search(r"(已缴清|未缴清|已处理|未处理|已缴|未缴)", text))
 
 
-def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
-    rows = _extract_tax_indicator_rows(section_text)
-    late_fee_records: list[str] = []
+def _late_fee_rows(section_text: str) -> tuple[list[tuple[str, str]], int, int]:
+    late_fee_block = _extract_named_block(section_text, ("滞纳金情况",)) or section_text
+    rows: list[tuple[str, str]] = []
     seen_records: set[tuple[str, str, str]] = set()
-    skipped_non_penalty_rows = 0
-    for record in _extract_table_records(section_text):
+    skipped_rows = 0
+    for record in _extract_table_records(late_fee_block):
         date = _first_record_value(record, ("滞纳金时间", "日期", "时间"))
         if not re.fullmatch(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}", date or ""):
-            skipped_non_penalty_rows += 1
+            skipped_rows += 1
             continue
         amount = _format_money(_first_record_value(record, ("滞纳金金额", "金额")), allow_small=True)
         status = _first_record_value(record, ("状态",))
         if not amount or not _is_penalty_status(status):
-            skipped_non_penalty_rows += 1
+            skipped_rows += 1
             continue
         key = (date, amount, status)
         if key in seen_records:
             continue
         seen_records.add(key)
-        late_fee_records.append("，".join([date, f"滞纳金金额：{amount}", f"状态：{status}"]))
-    if late_fee_records:
-        rows.append(("__SUBSECTION__", "滞纳金记录"))
-        for index, record_text in enumerate(late_fee_records[:20], 1):
-            rows.append((f"记录 {index}", record_text))
+        rows.append((f"记录 {len(rows) + 1}", "，".join([date, f"滞纳金金额：{amount}", f"状态：{status}"])))
+    return rows, len(rows), skipped_rows
+
+
+def _tax_penalty_rows(section_text: str) -> tuple[list[tuple[str, str]], int]:
+    block = _extract_named_block(section_text, ("税务处罚",))
+    rows: list[tuple[str, str]] = []
+    if not block:
+        return rows, 0
+    for record in _extract_table_records(block):
+        date = _first_record_value(record, ("登记日期", "日期"))
+        info = _first_record_value(record, ("违法违章信息", "违章信息", "违法信息"))
+        status = _first_record_value(record, ("违法违章状态", "违章状态", "状态"))
+        if not date or not (info or status):
+            continue
+        parts = [f"登记日期：{date}"]
+        if info:
+            parts.append(f"违法违章信息：{info}")
+        if status:
+            parts.append(f"违法违章状态：{status}")
+        rows.append((f"记录 {len(rows) + 1}", "，".join(parts)))
+    return rows, len(rows)
+
+
+def _section_table_rows(section_text: str, titles: tuple[str, ...]) -> tuple[list[tuple[str, str]], int]:
+    block = _extract_named_block(section_text, titles)
+    if not block and "近三年纳税信息" in titles:
+        block = _extract_block_from_header(section_text, ("年份/期间", "增值税销售额"))
+    if not block and any(title in titles for title in ("完税表", "完税信息", "近三年完税表")):
+        block = _extract_block_from_header(section_text, ("税款所属期", "税种"))
+    if not block:
+        return [], 0
+    table_markdown = _records_to_markdown_table(_extract_table_records(block))
+    if not table_markdown and "近三年纳税信息" in titles:
+        table_markdown = _records_to_markdown_table(_extract_table_records(_extract_block_from_header(section_text, ("年份/期间", "增值税销售额"))))
+    if not table_markdown and "近三年纳税信息" in titles:
+        table_markdown = _records_to_markdown_table(_extract_records_after_header_tokens(section_text, ("年份/期间", "增值税销售额")))
+    if not table_markdown and any(title in titles for title in ("完税表", "完税信息", "近三年完税表")):
+        table_markdown = _records_to_markdown_table(_extract_table_records(_extract_block_from_header(section_text, ("税款所属期", "税种"))))
+    if not table_markdown and any(title in titles for title in ("完税表", "完税信息", "近三年完税表")):
+        table_markdown = _records_to_markdown_table(_extract_records_after_header_tokens(section_text, ("税款所属期", "税种")))
+    if not table_markdown:
+        return [], 0
+    row_count = max(len(table_markdown.splitlines()) - 2, 0)
+    return [("__TABLE__", table_markdown)], row_count
+
+
+def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
+    rows = _extract_tax_indicator_rows(section_text)
+    late_fee_rows, late_fee_count, skipped_non_penalty_rows = _late_fee_rows(section_text)
+    tax_penalty_rows, tax_penalty_count = _tax_penalty_rows(section_text)
+    three_year_rows, three_year_count = _section_table_rows(section_text, ("近三年纳税信息",))
+    payment_rows, payment_count = _section_table_rows(section_text, ("近三年完税信息", "近三年完税表", "完税表", "完税信息", "完税情况", "纳税明细"))
+    if late_fee_rows:
+        rows.append(("__SUBSECTION__", "滞纳金情况"))
+        rows.extend(late_fee_rows[:80])
+    if tax_penalty_rows:
+        rows.append(("__SUBSECTION__", "税务处罚"))
+        rows.extend(tax_penalty_rows[:50])
+    if three_year_rows:
+        rows.append(("__SUBSECTION__", "近三年纳税信息"))
+        rows.extend(three_year_rows)
+    if payment_rows:
+        rows.append(("__SUBSECTION__", "完税表"))
+        rows.extend(payment_rows)
     logger.info(
-        "[ShuimuiExtract] tax_tab_text_length=%s matched_tax_fields=%s overdue_penalty_records_count=%s skipped_non_penalty_rows_count=%s final_tax_markdown_lines_count=%s",
+        "[ShuimuiExtract] tax_tab_text_length=%s matched_tax_fields=%s late_fee_records_count=%s tax_penalty_records_count=%s three_year_tax_table_rows_count=%s tax_payment_table_rows_count=%s skipped_rows_count=%s final_tax_markdown_lines_count=%s",
         len(section_text or ""),
         ",".join(field for field, _ in rows if field != "__SUBSECTION__" and not field.startswith("记录 ")),
-        len(late_fee_records),
+        late_fee_count,
+        tax_penalty_count,
+        three_year_count,
+        payment_count,
         skipped_non_penalty_rows,
         len(rows),
     )
@@ -888,11 +1066,19 @@ def render_shuimui_report_markdown(
         if section in dynamic_sections:
             dynamic_rows = dynamic_sections.get(section)
             if isinstance(dynamic_rows, list):
-                rows = [
-                    (_clean_label(item[0], 80) if str(item[0]) != "__SUBSECTION__" else "__SUBSECTION__", _clean(item[1], 240))
-                    for item in dynamic_rows
-                    if isinstance(item, (list, tuple)) and len(item) >= 2 and (str(item[0]) == "__SUBSECTION__" or _clean_label(item[0], 80) or _clean(item[1], 240)) and _clean(item[1], 240)
-                ]
+                rows = []
+                for item in dynamic_rows:
+                    if not isinstance(item, (list, tuple)) or len(item) < 2:
+                        continue
+                    marker = str(item[0])
+                    if marker in {"__SUBSECTION__", "__TABLE__"}:
+                        field = marker
+                        field_value = str(item[1] or "").strip()
+                    else:
+                        field = _clean_label(item[0], 80)
+                        field_value = _clean(item[1], 240)
+                    if field_value and (field or marker in {"", "__SUBSECTION__", "__TABLE__"}):
+                        rows.append((field, field_value))
                 if not rows:
                     continue
                 lines.append(f"### {section}")
@@ -900,6 +1086,8 @@ def render_shuimui_report_markdown(
                 for field, field_value in rows:
                     if field == "__SUBSECTION__":
                         lines.extend(["", f"#### {field_value}", ""])
+                    elif field == "__TABLE__":
+                        lines.extend([field_value, ""])
                     elif field:
                         lines.append(f"* {field}：{field_value}")
                     else:
