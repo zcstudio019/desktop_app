@@ -458,10 +458,16 @@ A
 税务处罚
 登记日期        违法违章信息        违法违章状态        详细信息
 2024-08-16        逾期未缴纳税款        责令限期缴纳税款        查看
-近三年纳税信息
+2024-08-16        逾期未缴纳税款        责令限期缴纳税款        查看
+近三年纳税信息完税表(元)
 年份/期间        增值税销售额（元）        完税总额（元）        增值税应纳额（元）        0申报月数
 2024        5653114        27370        20663        0
 2025        14002123        461946        32853        0
+近三年纳税信息完税表(元)
+月份        2024        2025        2026
+1月        18775        10105        10711
+2月        6853        6494        406
+年度汇总        443603        32853        11117
 完税表
 税款所属期        税种        应纳税额（元）        实缴税额（元）        入库日期        状态
 2024-04        增值税        2024.00        2024.00        2024-05-15        已缴清
@@ -505,13 +511,19 @@ A
     assert "年度汇总，滞纳金金额：443,603.00 元，状态：32853" not in markdown
     assert "#### 税务处罚" in markdown
     assert "记录 1：登记日期：2024-08-16，违法违章信息：逾期未缴纳税款，违法违章状态：责令限期缴纳税款" in markdown
+    assert "记录 2：登记日期：2024-08-16" not in markdown
     assert "详细信息：查看" not in markdown
-    assert "#### 近三年纳税信息" in markdown
-    assert "| 年份/期间 | 增值税销售额（元） | 完税总额（元） | 增值税应纳额（元） | 0申报月数 |" in markdown
-    assert "| 2024 | 5653114 | 27370 | 20663 | 0 |" in markdown
-    assert "#### 完税表" in markdown
-    assert "| 税款所属期 | 税种 | 应纳税额（元） | 实缴税额（元） | 入库日期 | 状态 |" in markdown
-    assert "| 2024-04 | 增值税 | 2024.00 | 2024.00 | 2024-05-15 | 已缴清 |" in markdown
+    assert "#### 近三年纳税信息完税表(元)" in markdown
+    assert "| 月份 | 2024 | 2025 | 2026 |" in markdown
+    assert "| 1月 | 18,775 | 10,105 | 10,711 |" in markdown
+    assert "| 2月 | 6,853 | 6,494 | 406 |" in markdown
+    assert "| 年度汇总 | 443,603 | 32,853 | 11,117 |" in markdown
+    tax_table_section = markdown.split("#### 近三年纳税信息完税表(元)", 1)[1].split("### 财报信息", 1)[0]
+    assert "滞纳金时间" not in tax_table_section
+    assert "登记日期" not in tax_table_section
+    assert "供应商名称" not in tax_table_section
+    assert "客户名称" not in tax_table_section
+    assert "#### 完税表" not in markdown
     assert "### 财报信息" in markdown
     assert "资产金额（去年年报）：18,509,049.74" in markdown
     assert "营业利润额（去年年报）：-1,014,150.98" in markdown

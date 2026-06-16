@@ -92,6 +92,7 @@ FINANCIAL_FIELDS = [
 TAX_SECTION_TITLES = (
     "滞纳金情况",
     "税务处罚",
+    "近三年纳税信息完税表(元)",
     "近三年纳税信息",
     "近三年完税信息",
     "近三年完税表",
@@ -100,6 +101,14 @@ TAX_SECTION_TITLES = (
     "完税情况",
     "纳税明细",
 )
+
+TABLE_CLASSIFIER_COLUMNS = {
+    "three_year_tax_payment_table": ["月份", "2024", "2025", "2026"],
+    "late_fee_table": ["滞纳金时间", "滞纳金金额(元)", "状态"],
+    "tax_penalty_table": ["登记日期", "违法违章信息", "违法违章状态"],
+    "top_suppliers_table": ["排名", "供应商名称", "采购额(元)", "金额占比(%)", "是否关联方"],
+    "top_customers_table": ["排名", "客户名称", "销售额(元)", "金额占比(%)", "是否关联方"],
+}
 
 SECTION_FIELDS: list[tuple[str, list[str]]] = [
     ("企业基本信息", ["企业名称", "统一社会信用代码", "法定代表人", "法人占股比例", "成立日期", "注册资本", "注册类型", "注册地址", "行业分类"]),
@@ -550,6 +559,124 @@ def _extract_records_after_header_tokens(section_text: str, required_tokens: tup
     return []
 
 
+def _normalize_table_cell(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).replace("（", "(").replace("）", ")")
+
+
+def _classify_table_header(header: list[str]) -> str:
+    normalized = {_normalize_table_cell(cell) for cell in header}
+    if {"月份", "2024", "2025", "2026"} <= normalized:
+        return "three_year_tax_payment_table"
+    if "滞纳金时间" in normalized and ("滞纳金金额(元)" in normalized or "滞纳金金额" in normalized) and "状态" in normalized:
+        return "late_fee_table"
+    if {"登记日期", "违法违章信息", "违法违章状态"} <= normalized:
+        return "tax_penalty_table"
+    if {"排名", "供应商名称", "采购额(元)"} <= normalized:
+        return "top_suppliers_table"
+    if {"排名", "客户名称", "销售额(元)"} <= normalized:
+        return "top_customers_table"
+    return ""
+
+
+def _canonical_header_map(header: list[str], table_type: str) -> dict[int, str]:
+    allowed = TABLE_CLASSIFIER_COLUMNS.get(table_type, [])
+    normalized_allowed = {_normalize_table_cell(item): item for item in allowed}
+    normalized_allowed.update(
+        {
+            "滞纳金金额": "滞纳金金额(元)",
+            "采购额": "采购额(元)",
+            "销售额": "销售额(元)",
+            "金额占比": "金额占比(%)",
+        }
+    )
+    mapping: dict[int, str] = {}
+    for index, cell in enumerate(header):
+        canonical = normalized_allowed.get(_normalize_table_cell(cell))
+        if canonical:
+            mapping[index] = canonical
+    return mapping
+
+
+def _extract_classified_tables(section_text: str) -> dict[str, list[dict[str, str]]]:
+    rows = [_split_row(line) for line in (section_text or "").splitlines()]
+    rows = [row for row in rows if len(row) >= 2]
+    tables: dict[str, list[dict[str, str]]] = {}
+    skipped_union_table_count = 0
+    classifier_results: list[str] = []
+
+    index = 0
+    while index < len(rows):
+        header = rows[index]
+        table_type = _classify_table_header(header)
+        if not table_type:
+            index += 1
+            continue
+        classifier_results.append(table_type)
+        mapping = _canonical_header_map(header, table_type)
+        if len(mapping) != len(TABLE_CLASSIFIER_COLUMNS.get(table_type, [])):
+            skipped_union_table_count += 1
+            index += 1
+            continue
+        records: list[dict[str, str]] = []
+        index += 1
+        while index < len(rows):
+            row = rows[index]
+            if _classify_table_header(row):
+                break
+            if any(cell in TAX_SECTION_TITLES for cell in row):
+                break
+            record: dict[str, str] = {}
+            for pos, canonical in mapping.items():
+                if pos < len(row):
+                    value = _clean(row[pos], 180)
+                    if value:
+                        record[canonical] = value
+            if record and len(record) >= 2:
+                records.append(record)
+            index += 1
+        if records:
+            tables.setdefault(table_type, []).extend(records)
+
+    logger.info(
+        "[ShuimuiExtract] tax_tables_detected_count=%s table_classifier_result=%s skipped_union_table_count=%s",
+        sum(len(value) for value in tables.values()),
+        ",".join(classifier_results),
+        skipped_union_table_count,
+    )
+    return tables
+
+
+def _format_year_amount_cell(value: Any) -> str:
+    number = _parse_number(value)
+    if number is None:
+        return _clean(value, 80)
+    return f"{number:,.0f}"
+
+
+def _three_year_payment_table_rows(records: list[dict[str, str]]) -> tuple[list[tuple[str, str]], int]:
+    clean_records: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for record in records:
+        month = _clean(record.get("月份"), 40)
+        if not month or not (re.fullmatch(r"\d{1,2}月", month) or month == "年度汇总"):
+            continue
+        row = {
+            "月份": month,
+            "2024": _format_year_amount_cell(record.get("2024")),
+            "2025": _format_year_amount_cell(record.get("2025")),
+            "2026": _format_year_amount_cell(record.get("2026")),
+        }
+        key = (row["月份"], row["2024"], row["2025"], row["2026"])
+        if key in seen:
+            continue
+        seen.add(key)
+        clean_records.append(row)
+    table_markdown = _records_to_markdown_table(clean_records) if clean_records else ""
+    if not table_markdown:
+        return [], 0
+    return [("__SUBSECTION__", "近三年纳税信息完税表(元)"), ("__TABLE__", table_markdown)], len(clean_records)
+
+
 def _add_dynamic_field(rows: list[tuple[str, str]], label: str, value: Any) -> None:
     clean_label = _clean(label, 80)
     clean_value = _clean(value, 220)
@@ -645,18 +772,17 @@ def _is_penalty_status(value: str) -> bool:
     return bool(text and re.search(r"(已缴清|未缴清|已处理|未处理|已缴|未缴)", text))
 
 
-def _late_fee_rows(section_text: str) -> tuple[list[tuple[str, str]], int, int]:
-    late_fee_block = _extract_named_block(section_text, ("滞纳金情况",)) or section_text
+def _late_fee_rows(section_text: str, classified_tables: dict[str, list[dict[str, str]]]) -> tuple[list[tuple[str, str]], int, int]:
     rows: list[tuple[str, str]] = []
     seen_records: set[tuple[str, str, str]] = set()
     skipped_rows = 0
-    for record in _extract_table_records(late_fee_block):
-        date = _first_record_value(record, ("滞纳金时间", "日期", "时间"))
+    for record in classified_tables.get("late_fee_table", []):
+        date = _clean(record.get("滞纳金时间"), 80)
         if not re.fullmatch(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}", date or ""):
             skipped_rows += 1
             continue
-        amount = _format_money(_first_record_value(record, ("滞纳金金额", "金额")), allow_small=True)
-        status = _first_record_value(record, ("状态",))
+        amount = _format_money(record.get("滞纳金金额(元)"), allow_small=True)
+        status = _clean(record.get("状态"), 80)
         if not amount or not _is_penalty_status(status):
             skipped_rows += 1
             continue
@@ -668,24 +794,28 @@ def _late_fee_rows(section_text: str) -> tuple[list[tuple[str, str]], int, int]:
     return rows, len(rows), skipped_rows
 
 
-def _tax_penalty_rows(section_text: str) -> tuple[list[tuple[str, str]], int]:
-    block = _extract_named_block(section_text, ("税务处罚",))
+def _tax_penalty_rows(classified_tables: dict[str, list[dict[str, str]]]) -> tuple[list[tuple[str, str]], int, int]:
     rows: list[tuple[str, str]] = []
-    if not block:
-        return rows, 0
-    for record in _extract_table_records(block):
-        date = _first_record_value(record, ("登记日期", "日期"))
-        info = _first_record_value(record, ("违法违章信息", "违章信息", "违法信息"))
-        status = _first_record_value(record, ("违法违章状态", "违章状态", "状态"))
+    seen: set[tuple[str, str, str]] = set()
+    before_count = 0
+    for record in classified_tables.get("tax_penalty_table", []):
+        before_count += 1
+        date = _clean(record.get("登记日期"), 80)
+        info = _clean(record.get("违法违章信息"), 180)
+        status = _clean(record.get("违法违章状态"), 120)
         if not date or not (info or status):
             continue
+        key = (date, info, status)
+        if key in seen:
+            continue
+        seen.add(key)
         parts = [f"登记日期：{date}"]
         if info:
             parts.append(f"违法违章信息：{info}")
         if status:
             parts.append(f"违法违章状态：{status}")
         rows.append((f"记录 {len(rows) + 1}", "，".join(parts)))
-    return rows, len(rows)
+    return rows, before_count, len(rows)
 
 
 def _section_table_rows(section_text: str, titles: tuple[str, ...]) -> tuple[list[tuple[str, str]], int]:
@@ -713,10 +843,10 @@ def _section_table_rows(section_text: str, titles: tuple[str, ...]) -> tuple[lis
 
 def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
     rows = _extract_tax_indicator_rows(section_text)
-    late_fee_rows, late_fee_count, skipped_non_penalty_rows = _late_fee_rows(section_text)
-    tax_penalty_rows, tax_penalty_count = _tax_penalty_rows(section_text)
-    three_year_rows, three_year_count = _section_table_rows(section_text, ("近三年纳税信息",))
-    payment_rows, payment_count = _section_table_rows(section_text, ("近三年完税信息", "近三年完税表", "完税表", "完税信息", "完税情况", "纳税明细"))
+    classified_tables = _extract_classified_tables(section_text)
+    late_fee_rows, late_fee_count, skipped_non_penalty_rows = _late_fee_rows(section_text, classified_tables)
+    tax_penalty_rows, tax_penalty_before_count, tax_penalty_count = _tax_penalty_rows(classified_tables)
+    three_year_rows, three_year_count = _three_year_payment_table_rows(classified_tables.get("three_year_tax_payment_table", []))
     if late_fee_rows:
         rows.append(("__SUBSECTION__", "滞纳金情况"))
         rows.extend(late_fee_rows[:80])
@@ -724,19 +854,16 @@ def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
         rows.append(("__SUBSECTION__", "税务处罚"))
         rows.extend(tax_penalty_rows[:50])
     if three_year_rows:
-        rows.append(("__SUBSECTION__", "近三年纳税信息"))
         rows.extend(three_year_rows)
-    if payment_rows:
-        rows.append(("__SUBSECTION__", "完税表"))
-        rows.extend(payment_rows)
     logger.info(
-        "[ShuimuiExtract] tax_tab_text_length=%s matched_tax_fields=%s late_fee_records_count=%s tax_penalty_records_count=%s three_year_tax_table_rows_count=%s tax_payment_table_rows_count=%s skipped_rows_count=%s final_tax_markdown_lines_count=%s",
+        "[ShuimuiExtract] tax_tab_text_length=%s matched_tax_fields=%s three_year_tax_payment_table_columns=%s three_year_tax_payment_table_rows=%s late_fee_table_rows=%s tax_penalty_rows_before_dedupe=%s tax_penalty_rows_after_dedupe=%s skipped_rows_count=%s final_tax_markdown_lines_count=%s",
         len(section_text or ""),
         ",".join(field for field, _ in rows if field != "__SUBSECTION__" and not field.startswith("记录 ")),
-        late_fee_count,
-        tax_penalty_count,
+        ",".join(TABLE_CLASSIFIER_COLUMNS["three_year_tax_payment_table"] if three_year_count else []),
         three_year_count,
-        payment_count,
+        late_fee_count,
+        tax_penalty_before_count,
+        tax_penalty_count,
         skipped_non_penalty_rows,
         len(rows),
     )
