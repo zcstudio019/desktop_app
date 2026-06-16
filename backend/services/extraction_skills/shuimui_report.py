@@ -1346,15 +1346,79 @@ def _split_supplier_customer_records(section_text: str) -> tuple[list[dict[str, 
     return supplier_records, customer_records
 
 
+def _counterparty_name(record: dict[str, str], party: str) -> str:
+    name_keywords = ("客户名称", "客户", "购买方", "企业名称", "名称") if party == "customer" else ("供应商名称", "供应商", "企业名称", "名称")
+    return _first_record_value(record, name_keywords, exclude=("金额", "占比", "比例", "次数", "时间", "日期"))
+
+
+def _counterparty_amount(record: dict[str, str], party: str) -> str:
+    amount_keywords = ("销售额", "交易金额", "金额") if party == "customer" else ("采购额", "交易金额", "金额")
+    raw_value = _first_record_value(record, amount_keywords, exclude=("占比", "比例"))
+    return _format_money(raw_value, allow_small=True)
+
+
+def _counterparty_ratio(record: dict[str, str]) -> str:
+    raw_value = _first_record_value(record, ("金额占比", "占比", "比例"))
+    return _format_percent(raw_value)
+
+
+def _counterparty_related_party(record: dict[str, str]) -> str:
+    value = _first_record_value(record, ("是否关联方", "关联方"))
+    return value if value in {"是", "否"} else ""
+
+
+def _is_valid_counterparty_name(name: str, self_company: str = "") -> tuple[bool, str]:
+    text = _clean(name, 160)
+    if not text:
+        return False, "empty"
+    compact = re.sub(r"\s+", "", text)
+    self_compact = re.sub(r"\s+", "", _clean(self_company, 160))
+    if self_compact and compact == self_compact:
+        return False, "self_company"
+    address_tokens = ("路", "街", "镇", "区", "号", "幢", "室", "A区", "B区", "上海市", "北京市", "浙江省", "江苏省")
+    address_hits = sum(1 for token in address_tokens if token in text)
+    if address_hits >= 2 or re.search(r"(?:省|市|区|县).*(?:路|街|镇).*\d+.*(?:号|幢|室|区)", text):
+        return False, "address_like_name"
+    return True, ""
+
+
+def _validate_party_rows(rows: list[dict[str, str]], party: str, self_company: str = "") -> tuple[list[dict[str, str]], dict[str, int]]:
+    stats = {
+        "missing_amount": 0,
+        "missing_ratio": 0,
+        "missing_related_party": 0,
+        "address_like_name": 0,
+        "self_company": 0,
+    }
+    valid_rows: list[dict[str, str]] = []
+    for record in rows:
+        name = _counterparty_name(record, party)
+        name_valid, reason = _is_valid_counterparty_name(name, self_company)
+        if not name_valid:
+            if reason in stats:
+                stats[reason] += 1
+            continue
+        if not _counterparty_amount(record, party):
+            stats["missing_amount"] += 1
+            continue
+        if not _counterparty_ratio(record):
+            stats["missing_ratio"] += 1
+            continue
+        if not _counterparty_related_party(record):
+            stats["missing_related_party"] += 1
+            continue
+        valid_rows.append(record)
+    return valid_rows, stats
+
+
 def _dedupe_party_rows(rows: list[dict[str, str]], party: str) -> list[dict[str, str]]:
     seen: set[tuple[str, str, str, str]] = set()
     clean_rows: list[dict[str, str]] = []
-    name_keywords = ("客户", "购买方", "企业名称", "名称") if party == "customer" else ("供应商", "企业名称", "名称")
     for record in rows:
-        name = _first_record_value(record, name_keywords, exclude=("金额", "占比", "比例", "次数", "时间", "日期"))
-        amount = _record_money_value(record)
-        ratio = _record_percent_value(record)
-        related = _first_record_value(record, ("是否关联方", "关联方"))
+        name = _counterparty_name(record, party)
+        amount = _counterparty_amount(record, party)
+        ratio = _counterparty_ratio(record)
+        related = _counterparty_related_party(record)
         if not name:
             continue
         key = (name, amount, ratio, related)
@@ -1365,26 +1429,33 @@ def _dedupe_party_rows(rows: list[dict[str, str]], party: str) -> list[dict[str,
     return clean_rows
 
 
-def _supplier_display_rows(section_text: str) -> list[tuple[str, str]]:
+def _supplier_display_rows(section_text: str, self_company: str = "") -> list[tuple[str, str]]:
     supplier_records, _ = _split_supplier_customer_records(section_text)
     raw_count = len(supplier_records)
+    supplier_records, validation_stats = _validate_party_rows(supplier_records, "supplier", self_company)
     supplier_records = _dedupe_party_rows(supplier_records, "supplier")
     rendered_records = supplier_records[:10]
     logger.info(
-        "[ShuimuiExtract] supplier_rows_raw_count=%s supplier_rows_after_dedupe=%s supplier_rows_rendered_count=%s duplicate_supplier_rows_removed=%s",
+        "[ShuimuiExtract] supplier_rows_raw_count=%s supplier_rows_invalid_missing_amount=%s supplier_rows_invalid_missing_ratio=%s supplier_rows_invalid_missing_related_party=%s supplier_rows_invalid_address_like_name=%s supplier_rows_invalid_self_company=%s supplier_rows_after_validation=%s supplier_rows_after_dedupe=%s supplier_rows_rendered_count=%s duplicate_supplier_rows_removed=%s",
         raw_count,
+        validation_stats["missing_amount"],
+        validation_stats["missing_ratio"],
+        validation_stats["missing_related_party"],
+        validation_stats["address_like_name"],
+        validation_stats["self_company"],
+        raw_count - sum(validation_stats.values()),
         len(supplier_records),
         len(rendered_records),
-        max(raw_count - len(supplier_records), 0),
+        max(raw_count - sum(validation_stats.values()) - len(supplier_records), 0),
     )
 
     if rendered_records:
         rows: list[tuple[str, str]] = []
         for index, record in enumerate(rendered_records, 1):
-            name = _first_record_value(record, ("供应商", "企业名称", "名称"), exclude=("金额", "占比", "比例", "次数", "时间", "日期"))
-            amount = _record_money_value(record)
-            ratio = _record_percent_value(record)
-            related = _first_record_value(record, ("是否关联方", "关联方"))
+            name = _counterparty_name(record, "supplier")
+            amount = _counterparty_amount(record, "supplier")
+            ratio = _counterparty_ratio(record)
+            related = _counterparty_related_party(record)
             parts = [name]
             if amount:
                 parts.append(f"交易金额：{amount}")
@@ -1394,27 +1465,34 @@ def _supplier_display_rows(section_text: str) -> list[tuple[str, str]]:
                 parts.append(f"是否关联方：{related}")
             _add_dynamic_field(rows, f"供应商 {index}", "，".join(part for part in parts if part))
         return rows
-    return _extract_dynamic_section_fields(section_text, ["供应商名称", "交易金额", "交易次数", "占比", "最近交易时间", "集中度提示"])
+    return []
 
 
-def _customer_display_rows(section_text: str) -> list[tuple[str, str]]:
+def _customer_display_rows(section_text: str, self_company: str = "") -> list[tuple[str, str]]:
     _, customer_records = _split_supplier_customer_records(section_text)
     raw_count = len(customer_records)
+    customer_records, validation_stats = _validate_party_rows(customer_records, "customer", self_company)
     customer_records = _dedupe_party_rows(customer_records, "customer")
     rendered_records = customer_records[:10]
     logger.info(
-        "[ShuimuiExtract] customer_rows_raw_count=%s customer_rows_after_dedupe=%s customer_rows_rendered_count=%s duplicate_customer_rows_removed=%s",
+        "[ShuimuiExtract] customer_rows_raw_count=%s customer_rows_invalid_missing_amount=%s customer_rows_invalid_missing_ratio=%s customer_rows_invalid_missing_related_party=%s customer_rows_invalid_address_like_name=%s customer_rows_invalid_self_company=%s customer_rows_after_validation=%s customer_rows_after_dedupe=%s customer_rows_rendered_count=%s duplicate_customer_rows_removed=%s",
         raw_count,
+        validation_stats["missing_amount"],
+        validation_stats["missing_ratio"],
+        validation_stats["missing_related_party"],
+        validation_stats["address_like_name"],
+        validation_stats["self_company"],
+        raw_count - sum(validation_stats.values()),
         len(customer_records),
         len(rendered_records),
-        max(raw_count - len(customer_records), 0),
+        max(raw_count - sum(validation_stats.values()) - len(customer_records), 0),
     )
     rows: list[tuple[str, str]] = []
     for index, record in enumerate(rendered_records, 1):
-        name = _first_record_value(record, ("客户", "购买方", "企业名称", "名称"), exclude=("金额", "占比", "比例", "次数", "时间", "日期"))
-        amount = _record_money_value(record)
-        ratio = _record_percent_value(record)
-        related = _first_record_value(record, ("是否关联方", "关联方"))
+        name = _counterparty_name(record, "customer")
+        amount = _counterparty_amount(record, "customer")
+        ratio = _counterparty_ratio(record)
+        related = _counterparty_related_party(record)
         parts = [name]
         if amount:
             parts.append(f"交易金额：{amount}")
@@ -1464,6 +1542,7 @@ def _extract_dynamic_sections(raw_text: str, capture_payload: dict[str, Any]) ->
     tax_text = "\n".join(part for part in (api_text.get("纳税信息"), _extract_tab_text(raw_text, "纳税信息", capture_payload)) if part)
     invoice_text = "\n".join(part for part in (api_text.get("发票信息"), _extract_tab_text(raw_text, "发票信息", capture_payload)) if part)
     supplier_text = "\n".join(part for part in (api_text.get("供应商信息"), _extract_tab_text(raw_text, "供应商信息", capture_payload)) if part)
+    self_company = _extract_after_label(basic_text, ("企业名称", "公司名称", "主体名称", "被查询企业"), max_len=120)
     financial_rows = _extract_financial_rows(tax_text)
     if financial_rows:
         logger.info(
@@ -1476,8 +1555,8 @@ def _extract_dynamic_sections(raw_text: str, capture_payload: dict[str, Any]) ->
         "纳税信息": _tax_display_rows(tax_text),
         "财报信息": financial_rows,
         "发票信息": _invoice_display_rows(invoice_text),
-        "前十供应商": _supplier_display_rows(supplier_text),
-        "前十销售客户": _customer_display_rows(supplier_text),
+        "前十供应商": _supplier_display_rows(supplier_text, self_company),
+        "前十销售客户": _customer_display_rows(supplier_text, self_company),
     }
     return {section: rows for section, rows in dynamic.items() if rows}
 

@@ -469,7 +469,7 @@ A
 def test_shuimui_extracts_internal_capture_json_without_displaying_json():
     raw_text = """水母报告
 __SHUIMUI_REPORT_CAPTURE_JSON__
-{"sections":{"tax_info":{"label":"纳税信息","text":"纳税信用等级\\nB\\n当前欠税余额（元）\\n无","tables_text":""},"invoice_info":{"label":"发票信息","text":"近1个月开票金额(元)\\n880000","tables_text":""},"supplier_info":{"label":"供应商信息","text":"供应商名称        交易金额        占比\\n上海接口供应商        100000 元        20%","tables_text":""}},"api_json":[{"url":"https://shuimui.szsmjr.com/api/report","status":200,"field_summary":["纳税信用等级"],"payload":{"纳税信息":{"纳税人种类":"一般纳税人"},"发票信息":{"近3个月开票金额(元)":1200000}}}]}
+{"sections":{"tax_info":{"label":"纳税信息","text":"纳税信用等级\\nB\\n当前欠税余额（元）\\n无","tables_text":""},"invoice_info":{"label":"发票信息","text":"近1个月开票金额(元)\\n880000","tables_text":""},"supplier_info":{"label":"供应商信息","text":"供应商名称        交易金额        占比        是否关联方\\n上海接口供应商        100000 元        20%        否","tables_text":""}},"api_json":[{"url":"https://shuimui.szsmjr.com/api/report","status":200,"field_summary":["纳税信用等级"],"payload":{"纳税信息":{"纳税人种类":"一般纳税人"},"发票信息":{"近3个月开票金额(元)":1200000}}}]}
 __END_SHUIMUI_REPORT_CAPTURE_JSON__
 ### 页签：基本信息
 企业名称
@@ -493,7 +493,7 @@ __END_SHUIMUI_REPORT_CAPTURE_JSON__
     assert "近1个月开票金额(元)：880,000" in markdown
     assert "近3个月开票金额(元)：1,200,000" in markdown
     assert "### 前十供应商" in markdown
-    assert "供应商 1：上海接口供应商，交易金额：100,000.00 元，占比：20.00%" in markdown
+    assert "供应商 1：上海接口供应商，交易金额：100,000.00 元，占比：20.00%，是否关联方：否" in markdown
     assert "__SHUIMUI_REPORT_CAPTURE_JSON__" not in markdown
     assert "api_json" not in markdown
 
@@ -526,7 +526,7 @@ def test_shuimui_authorization_record_does_not_leak_tables_text():
 
 def test_shuimui_splits_suppliers_and_sales_customers():
     supplier_rows = "\n".join(
-        f"供应商{i}        {1000000 + i * 1000}        {20 - i / 10:.2f}"
+        f"供应商{i}        {1000000 + i * 1000}        {20 - i / 10:.2f}        否"
         for i in range(1, 11)
     )
     customer_rows = "\n".join(
@@ -540,7 +540,7 @@ def test_shuimui_splits_suppliers_and_sales_customers():
 91310000MA1TEST123
 
 ### 页签：供应商信息
-供应商名称        交易金额        占比
+供应商名称        交易金额        占比        是否关联方
 {supplier_rows}
 客户名称        交易金额        占比        是否关联方
 {customer_rows}
@@ -557,7 +557,7 @@ def test_shuimui_splits_suppliers_and_sales_customers():
 
     assert "### 前十供应商" in markdown
     assert "### 前十销售客户" in markdown
-    assert "供应商 1：供应商1，交易金额：1,001,000.00 元，占比：19.90%" in supplier_section
+    assert "供应商 1：供应商1，交易金额：1,001,000.00 元，占比：19.90%，是否关联方：否" in supplier_section
     assert "客户1" not in supplier_section
     assert "客户 1：客户1，交易金额：2,001,000.00 元，占比：39.90%，是否关联方：否" in customer_section
     assert "[{" not in markdown
@@ -618,6 +618,45 @@ def test_shuimui_dedupes_supplier_and_customer_rows_without_padding_to_ten():
     assert customer_section.count("常州崇戈农业科技有限公司") == 1
     assert customer_section.count("河南立华农牧科技有限公司") == 1
     assert "[{" not in markdown
+
+
+def test_shuimui_filters_invalid_counterparty_rows_from_basic_info_leakage():
+    raw_text = """水母报告
+### 页签：基本信息
+企业名称
+上海鑫旺凸贸易有限公司
+统一信用代码
+91310114MACUY66E0H
+注册区域
+上海市松江区洞泾镇周家浜路255号1幢一层A区
+
+### 页签：供应商信息
+排名        客户名称        销售额(元)        金额占比(%)        是否关联方
+1        常州崇戈农业科技有限公司        2763664.22        32.68        否
+2        河南立华农牧科技有限公司        2731541.31        32.30        否
+3        成都虫虫微科技有限公司        2238600.00        26.47        否
+4        上海暨冉实业有限公司        334238.53        3.95        否
+5        上海德万乾科技有限公司        202431.19        2.39        否
+6        广州梦瞳科技有限公司        187380.53        2.22        否
+7        上海鑫旺凸贸易有限公司        1000        0.01        否
+客户名称        交易金额
+上海市松江区洞泾镇周家浜路255号1幢一层A区        255
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+    customer_section = markdown.split("### 前十销售客户", 1)[1]
+
+    assert "客户 1：常州崇戈农业科技有限公司，交易金额：2,763,664.22 元，占比：32.68%，是否关联方：否" in customer_section
+    assert "客户 6：广州梦瞳科技有限公司，交易金额：187,380.53 元，占比：2.22%，是否关联方：否" in customer_section
+    assert "客户 7：" not in customer_section
+    assert "上海鑫旺凸贸易有限公司" not in customer_section
+    assert "上海市松江区洞泾镇周家浜路255号1幢一层A区" not in customer_section
+    assert "255.00 元" not in customer_section
 
 
 def test_shuimui_tax_late_fee_records_and_invoice_summary_are_clean():
