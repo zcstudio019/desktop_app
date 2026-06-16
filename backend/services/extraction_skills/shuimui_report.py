@@ -970,14 +970,55 @@ def _social_security_rows(basic_text: str) -> list[tuple[str, str]]:
     return rows
 
 
+def _validate_shareholder_name(name: str) -> tuple[bool, str]:
+    text = _clean(name, 120)
+    if not text:
+        return False, "empty"
+    if text in {"股东名称", "参股比例", "社保人数", "应缴费额", "变更类型", "变更时间", "变更前", "变更后"}:
+        return False, "other_section"
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return False, "numeric_name"
+    if re.fullmatch(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}", text):
+        return False, "other_section"
+    if re.search(r"\d+(?:\.\d+)?\s*(?:万?人民币|元)", text):
+        return False, "numeric_name"
+    address_tokens = ("路", "街", "镇", "区", "号", "幢", "室", "A区", "B区", "上海市", "北京市", "浙江省", "江苏省")
+    if sum(1 for token in address_tokens if token in text) >= 2:
+        return False, "other_section"
+    return True, ""
+
+
+def _normalize_shareholder_ratio(value: str) -> str:
+    text = _clean(value, 80)
+    if not text:
+        return ""
+    if re.search(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}|万?人民币|元", text):
+        return ""
+    number = _parse_number(text)
+    if number is None or number < 0 or number > 100:
+        return ""
+    return f"{number:.2f}%"
+
+
 def _shareholder_rows(basic_text: str) -> list[tuple[str, str]]:
     records = _basic_table_records_by_header(basic_text, ("股东名称", "参股比例"))
     clean_records: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
+    invalid_numeric_name = 0
+    invalid_ratio = 0
+    invalid_from_other_section = 0
     for record in records:
         name = _first_record_value(record, ("股东名称", "股东姓名", "股东"))
-        ratio = _first_record_value(record, ("参股比例", "持股比例"))
-        if not name or not ratio:
+        name_valid, name_reason = _validate_shareholder_name(name)
+        if not name_valid:
+            if name_reason == "numeric_name":
+                invalid_numeric_name += 1
+            else:
+                invalid_from_other_section += 1
+            continue
+        ratio = _normalize_shareholder_ratio(_first_record_value(record, ("参股比例", "持股比例")))
+        if not ratio:
+            invalid_ratio += 1
             continue
         key = (name, ratio)
         if key in seen:
@@ -991,8 +1032,13 @@ def _shareholder_rows(basic_text: str) -> list[tuple[str, str]]:
         for index, (name, ratio) in enumerate(clean_records, 1):
             rows.append((f"股东 {index}", f"{name}，参股比例：{ratio}"))
     logger.info(
-        "[ShuimuiExtract] shareholder_rows_count=%s shareholder_rows_after_dedupe=%s",
+        "[ShuimuiExtract] shareholder_rows_raw_count=%s shareholder_rows_invalid_numeric_name=%s shareholder_rows_invalid_ratio=%s shareholder_rows_invalid_from_other_section=%s shareholder_rows_after_validation=%s shareholder_rows_after_dedupe=%s shareholder_rows_rendered_count=%s",
         len(records),
+        invalid_numeric_name,
+        invalid_ratio,
+        invalid_from_other_section,
+        len(clean_records),
+        len(clean_records),
         len(clean_records),
     )
     return rows
@@ -1219,27 +1265,91 @@ def _late_fee_rows(section_text: str, classified_tables: dict[str, list[dict[str
     return rows, len(rows), skipped_rows
 
 
-def _tax_penalty_rows(classified_tables: dict[str, list[dict[str, str]]]) -> tuple[list[tuple[str, str]], int, int]:
+TAX_PENALTY_DETAIL_FIELDS: tuple[str, ...] = ("登记日期", "违法违章信息", "违法违章状态名称", "违法违章状态", "限改状态", "主要违法事实")
+
+
+def _extract_tax_penalty_detail_field(block: str, label: str) -> str:
+    labels = "|".join(re.escape(item) for item in TAX_PENALTY_DETAIL_FIELDS)
+    match = re.search(rf"{re.escape(label)}\s*[：:]?\s*(.*?)(?=\s*(?:{labels})\s*[：:]|$)", block or "", re.S)
+    if not match:
+        return ""
+    value = re.sub(r"\s+", " ", str(match.group(1) or "")).strip(" ：:\t\r\n")[:240].strip()
+    if value in {"查看", "查看详细路径", "详情信息", "详细信息", "税务处罚详情"}:
+        return ""
+    if value in {"", "--", "无", "暂无", "null", "undefined", "None"}:
+        return ""
+    if any(marker in value.lower() for marker in INTERNAL_MARKERS):
+        return ""
+    return value
+
+
+def _extract_tax_penalty_detail_records(section_text: str) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    parts = re.split(r"(?:^|\n)\s*税务处罚详情\s*(?:\n|$)", section_text or "")
+    for block in parts[1:]:
+        block = re.sub(r"^\s*(?:详情信息|详细信息|税务处罚详情)\s*", "", block or "")
+        record = {
+            "登记日期": _extract_tax_penalty_detail_field(block, "登记日期"),
+            "违法违章信息": _extract_tax_penalty_detail_field(block, "违法违章信息"),
+            "违法违章状态": _extract_tax_penalty_detail_field(block, "违法违章状态名称") or _extract_tax_penalty_detail_field(block, "违法违章状态"),
+            "限改状态": _extract_tax_penalty_detail_field(block, "限改状态"),
+            "主要违法事实": _extract_tax_penalty_detail_field(block, "主要违法事实"),
+            "detail_source": "modal",
+        }
+        if record["登记日期"] and (record["违法违章信息"] or record["违法违章状态"] or record["主要违法事实"]):
+            records.append(record)
+    return records
+
+
+def _tax_penalty_rows(classified_tables: dict[str, list[dict[str, str]]], section_text: str = "") -> tuple[list[tuple[str, str]], int, int]:
     rows: list[tuple[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
+    detail_date_status: set[tuple[str, str]] = set()
     before_count = 0
-    for record in classified_tables.get("tax_penalty_table", []):
+    detail_records = _extract_tax_penalty_detail_records(section_text)
+    table_records = classified_tables.get("tax_penalty_table", [])
+    for record in detail_records + table_records:
         before_count += 1
         date = _clean(record.get("登记日期"), 80)
-        info = _clean(record.get("违法违章信息"), 180)
-        status = _clean(record.get("违法违章状态"), 120)
+        info = _clean(record.get("违法违章信息"), 240)
+        status = _clean(record.get("违法违章状态") or record.get("违法违章状态名称"), 120)
+        is_detail = record.get("detail_source") == "modal"
+        correction_status = _extract_tax_penalty_detail_field(f"限改状态：{record.get('限改状态', '')}", "限改状态") if is_detail else _clean(record.get("限改状态"), 120)
+        fact = _clean(record.get("主要违法事实"), 180)
         if not date or not (info or status):
             continue
-        key = (date, info, status)
+        if not is_detail and (date, status) in detail_date_status:
+            continue
+        key = (date, info, status, fact)
         if key in seen:
             continue
         seen.add(key)
-        parts = [f"登记日期：{date}"]
-        if info:
-            parts.append(f"违法违章信息：{info}")
-        if status:
-            parts.append(f"违法违章状态：{status}")
-        rows.append((f"记录 {len(rows) + 1}", "，".join(parts)))
+        if is_detail:
+            detail_date_status.add((date, status))
+        if correction_status or fact:
+            lines = [f"* 记录 {len(rows) + 1}：", ""]
+            lines.append(f"  * 登记日期：{date}")
+            if info:
+                lines.append(f"  * 违法违章信息：{info}")
+            if status:
+                lines.append(f"  * 违法违章状态：{status}")
+            if correction_status:
+                lines.append(f"  * 限改状态：{correction_status}")
+            if fact:
+                lines.append(f"  * 主要违法事实：{fact}")
+            rows.append(("__RAW__", "\n".join(lines)))
+        else:
+            parts = [f"登记日期：{date}"]
+            if info:
+                parts.append(f"违法违章信息：{info}")
+            if status:
+                parts.append(f"违法违章状态：{status}")
+            rows.append((f"记录 {len(rows) + 1}", "，".join(parts)))
+    logger.info(
+        "[ShuimuiExtract] tax_penalty_detail_fields_matched=%s tax_penalty_records_after_dedupe=%s",
+        ",".join(sorted({key for record in detail_records for key, value in record.items() if key != "detail_source" and value})),
+        len(rows),
+    )
     return rows, before_count, len(rows)
 
 
@@ -1276,7 +1386,7 @@ def _tax_display_rows(section_text: str) -> list[tuple[str, str]]:
         if table_type and isinstance(records, list):
             classified_tables.setdefault(table_type, []).extend(record for record in records if isinstance(record, dict))
     late_fee_rows, late_fee_count, skipped_non_penalty_rows = _late_fee_rows(section_text, classified_tables)
-    tax_penalty_rows, tax_penalty_before_count, tax_penalty_count = _tax_penalty_rows(classified_tables)
+    tax_penalty_rows, tax_penalty_before_count, tax_penalty_count = _tax_penalty_rows(classified_tables, section_text)
     three_year_rows, three_year_count = _three_year_payment_table_rows_from_blocks(classified_table_blocks)
     rows.append(("__SUBSECTION__", "滞纳金情况"))
     rows.extend(late_fee_rows[:80] if late_fee_rows else [("", "无")])

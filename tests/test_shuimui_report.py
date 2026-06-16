@@ -337,6 +337,43 @@ def test_shuimui_basic_info_extracts_score_social_security_multi_shareholders_an
     assert "变更类型：变更时间" not in markdown
 
 
+def test_shuimui_shareholders_filter_dirty_rows_from_other_tables():
+    raw_text = """水母报告
+### 页签：基本信息
+企业名称
+上海测试贸易有限公司
+统一信用代码
+91310114060938092E
+股东明细
+股东名称        参股比例
+房继超        40.00%
+裴新沪        30.00%
+房德辉        30.00%
+5        7078.4
+社保人数        应缴费额
+5        7078.4
+法人/股东变更
+变更类型        变更时间        变更前        变更后
+法定代表人        2025-10-09        徐壮壮        李海星
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+    shareholder_section = markdown.split("### 股东信息", 1)[1].split("### 法人/股东变更", 1)[0]
+
+    assert "股东 1：房继超，参股比例：40.00%" in shareholder_section
+    assert "股东 2：裴新沪，参股比例：30.00%" in shareholder_section
+    assert "股东 3：房德辉，参股比例：30.00%" in shareholder_section
+    assert "股东 4" not in shareholder_section
+    assert "股东 4：5，参股比例：7078.4" not in shareholder_section
+    assert "社保人数" not in shareholder_section
+    assert "变更类型" not in shareholder_section
+
+
 def test_shuimui_legal_person_only_from_basic_label_and_change_rows_keep_same_day_records():
     raw_text = """水母报告
 企业名称
@@ -898,3 +935,44 @@ A
     assert "* 无" in tax_penalty_section
     assert "未识别" not in markdown
     assert "未明确" not in markdown
+
+
+def test_shuimui_tax_penalty_prefers_modal_detail_over_table_summary():
+    raw_text = """水母报告
+### 页签：基本信息
+企业名称
+上海测试有限公司
+统一信用代码
+91310000MA1TEST123
+### 页签：纳税信息
+纳税信用等级
+A
+税务处罚
+登记日期        违法违章信息        违法违章状态        详细信息
+2026-03-03        未按照规定...        登记待处理        查看
+税务处罚详情
+详情信息
+登记日期：2026-03-03
+违法违章信息：未按照规定将其全部银行账号报告税务机关
+违法违章状态名称：登记待处理
+限改状态：-
+主要违法事实：违反税收管理
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+    tax_penalty_section = markdown.split("#### 税务处罚", 1)[1]
+
+    assert "* 记录 1：" in tax_penalty_section
+    assert "登记日期：2026-03-03" in tax_penalty_section
+    assert "违法违章信息：未按照规定将其全部银行账号报告税务机关" in tax_penalty_section
+    assert "违法违章状态：登记待处理" in tax_penalty_section
+    assert "限改状态：-" in tax_penalty_section
+    assert "主要违法事实：违反税收管理" in tax_penalty_section
+    assert "未按照规定..." not in tax_penalty_section
+    assert "详细信息：查看" not in tax_penalty_section
+    assert "记录 2" not in tax_penalty_section

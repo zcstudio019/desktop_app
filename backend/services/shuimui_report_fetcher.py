@@ -380,6 +380,129 @@ async def _expand_current_tax_tab(page: object, source_url: str) -> dict[str, in
     return stats
 
 
+async def _visible_modal_text(page: object) -> str:
+    try:
+        text = await page.evaluate(
+            """() => {
+                const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                const selectors = [
+                    '[role="dialog"]',
+                    '.el-dialog',
+                    '.ant-modal',
+                    '[class*="dialog"]',
+                    '[class*="modal"]'
+                ];
+                const nodes = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+                for (let i = nodes.length - 1; i >= 0; i -= 1) {
+                    const node = nodes[i];
+                    const style = window.getComputedStyle(node);
+                    const rect = node.getBoundingClientRect();
+                    const visible = style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                    const text = normalize(node.innerText || node.textContent);
+                    if (visible && /详情信息|详细信息|税务处罚详情|违法违章/.test(text)) return text;
+                }
+                return '';
+            }"""
+        )
+        return str(text or "").strip()
+    except Exception:
+        return ""
+
+
+async def _close_visible_modal(page: object) -> None:
+    for label in ("关闭", "确定", "取消"):
+        try:
+            locator = page.get_by_text(label, exact=True)
+            count = await locator.count()
+            for index in range(count):
+                button = locator.nth(index)
+                if await button.is_visible(timeout=500):
+                    await button.click(timeout=1_500)
+                    await page.wait_for_timeout(400)
+                    return
+        except Exception:
+            continue
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(400)
+    except Exception:
+        pass
+
+
+async def _capture_tax_penalty_details(page: object, source_url: str) -> tuple[list[str], dict[str, int]]:
+    details: list[str] = []
+    stats = {
+        "tax_penalty_rows_count": 0,
+        "tax_penalty_detail_buttons_found": 0,
+        "tax_penalty_detail_buttons_clicked": 0,
+        "tax_penalty_modals_opened": 0,
+        "tax_penalty_detail_click_failed_count": 0,
+    }
+    try:
+        candidates = page.get_by_text("查看", exact=True)
+        count = await candidates.count()
+    except Exception:
+        count = 0
+    stats["tax_penalty_detail_buttons_found"] = count
+
+    for index in range(count):
+        try:
+            button = candidates.nth(index)
+            if not await button.is_visible(timeout=700):
+                continue
+            context = await button.evaluate(
+                """(el) => {
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    let node = el;
+                    for (let i = 0; node && i < 6; i += 1, node = node.parentElement) {
+                        const text = normalize(node.innerText || node.textContent);
+                        if (text.length > 8) return text;
+                    }
+                    return normalize(el.innerText || el.textContent);
+                }"""
+            )
+            context_text = str(context or "")
+            if "查看详细路径" in context_text:
+                continue
+            if not any(token in context_text for token in ("违法违章", "登记待处理", "责令限期", "详细信息")):
+                continue
+            stats["tax_penalty_rows_count"] += 1
+            await button.scroll_into_view_if_needed(timeout=2_000)
+            await button.click(timeout=2_000)
+            stats["tax_penalty_detail_buttons_clicked"] += 1
+            await page.wait_for_timeout(800)
+            try:
+                await page.wait_for_function(
+                    "() => document.body && /详情信息|详细信息|税务处罚详情/.test(document.body.innerText || '')",
+                    timeout=3_000,
+                )
+            except Exception:
+                pass
+            modal_text = await _visible_modal_text(page)
+            if modal_text:
+                stats["tax_penalty_modals_opened"] += 1
+                details.append(modal_text)
+            else:
+                stats["tax_penalty_detail_click_failed_count"] += 1
+            await _close_visible_modal(page)
+        except Exception as exc:
+            stats["tax_penalty_detail_click_failed_count"] += 1
+            logger.warning("[ShuimuiFetchTaxPenalty] detail click failed url=%s error=%s", source_url, str(exc)[:160])
+            try:
+                await _close_visible_modal(page)
+            except Exception:
+                pass
+    logger.info(
+        "[ShuimuiFetchTaxPenalty] tax_penalty_rows_count=%s tax_penalty_detail_buttons_found=%s tax_penalty_detail_buttons_clicked=%s tax_penalty_modals_opened=%s tax_penalty_detail_click_failed_count=%s",
+        stats["tax_penalty_rows_count"],
+        stats["tax_penalty_detail_buttons_found"],
+        stats["tax_penalty_detail_buttons_clicked"],
+        stats["tax_penalty_modals_opened"],
+        stats["tax_penalty_detail_click_failed_count"],
+    )
+    return details, stats
+
+
 def _json_field_summary(value: object, max_items: int = 20) -> list[str]:
     keys: list[str] = []
 
@@ -470,6 +593,7 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
             sections: dict[str, dict[str, str]] = {}
             clicked_tabs: list[str] = []
             tax_expand_stats: dict[str, int | bool] = {}
+            tax_penalty_detail_stats: dict[str, int] = {}
 
             for tab_key, tab_label in TAB_DEFINITIONS:
                 before_text = ""
@@ -500,13 +624,20 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
 
                 if tab_key == "tax_info":
                     tax_expand_stats = await _expand_current_tax_tab(page, source_url)
+                    tax_penalty_details, tax_penalty_detail_stats = await _capture_tax_penalty_details(page, source_url)
+                else:
+                    tax_penalty_details = []
 
                 body_text, table_text = await _extract_dom_text_and_tables(page)
+                if tab_key == "tax_info" and tax_penalty_details:
+                    detail_text = "\n\n".join(f"税务处罚详情\n{item}" for item in tax_penalty_details if item)
+                    body_text = "\n\n".join(part for part in (body_text, detail_text) if part)
                 sections[tab_key] = {
                     "label": tab_label,
                     "text": body_text,
                     "tables_text": table_text,
                     "expand_stats": tax_expand_stats if tab_key == "tax_info" else {},
+                    "tax_penalty_detail_stats": tax_penalty_detail_stats if tab_key == "tax_info" else {},
                 }
 
             captured_urls = [str(item.get("url") or "") for item in captured_json_apis]
@@ -525,6 +656,7 @@ async def _fetch_playwright_text(source_url: str) -> tuple[str, str, str]:
                 "clicked_tabs": clicked_tabs,
                 "page_title": title,
                 "tax_expand_stats": tax_expand_stats,
+                "tax_penalty_detail_stats": tax_penalty_detail_stats,
             }
             parts = [
                 title,
