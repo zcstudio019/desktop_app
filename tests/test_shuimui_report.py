@@ -565,6 +565,61 @@ def test_shuimui_splits_suppliers_and_sales_customers():
     assert "上下游交易" not in markdown
 
 
+def test_shuimui_dedupes_supplier_and_customer_rows_without_padding_to_ten():
+    supplier_rows = "\n".join(
+        [
+            "1        供应商甲        100000        60.00        否",
+            "2        供应商乙        50000        40.00        否",
+            "1        供应商甲        100000        60.00        否",
+        ]
+    )
+    customer_rows = "\n".join(
+        [
+            "1        常州崇戈农业科技有限公司        2763664.22        32.68        否",
+            "2        河南立华农牧科技有限公司        2731541.31        32.30        否",
+            "3        成都虫虫微科技有限公司        2238600.00        26.47        否",
+            "4        上海暨冉实业有限公司        334238.53        3.95        否",
+            "5        上海德万乾科技有限公司        202431.19        2.39        否",
+            "6        广州梦瞳科技有限公司        187380.53        2.22        否",
+            "1        常州崇戈农业科技有限公司        2763664.22        32.68        否",
+            "2        河南立华农牧科技有限公司        2731541.31        32.30        否",
+            "3        成都虫虫微科技有限公司        2238600.00        26.47        否",
+            "4        上海暨冉实业有限公司        334238.53        3.95        否",
+        ]
+    )
+    raw_text = f"""水母报告
+企业名称
+上海测试有限公司
+统一信用代码
+91310000MA1TEST123
+
+### 页签：供应商信息
+排名        供应商名称        采购额(元)        金额占比(%)        是否关联方
+{supplier_rows}
+排名        客户名称        销售额(元)        金额占比(%)        是否关联方
+{customer_rows}
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+    supplier_section = markdown.split("### 前十供应商", 1)[1].split("### 前十销售客户", 1)[0]
+    customer_section = markdown.split("### 前十销售客户", 1)[1]
+
+    assert "供应商 1：供应商甲，交易金额：100,000.00 元，占比：60.00%，是否关联方：否" in supplier_section
+    assert "供应商 2：供应商乙，交易金额：50,000.00 元，占比：40.00%，是否关联方：否" in supplier_section
+    assert "供应商 3：" not in supplier_section
+    assert "客户 1：常州崇戈农业科技有限公司，交易金额：2,763,664.22 元，占比：32.68%，是否关联方：否" in customer_section
+    assert "客户 6：广州梦瞳科技有限公司，交易金额：187,380.53 元，占比：2.22%，是否关联方：否" in customer_section
+    assert "客户 7：" not in customer_section
+    assert customer_section.count("常州崇戈农业科技有限公司") == 1
+    assert customer_section.count("河南立华农牧科技有限公司") == 1
+    assert "[{" not in markdown
+
+
 def test_shuimui_tax_late_fee_records_and_invoice_summary_are_clean():
     raw_text = """水母报告
 企业名称

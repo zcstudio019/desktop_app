@@ -1343,15 +1343,44 @@ def _split_supplier_customer_records(section_text: str) -> tuple[list[dict[str, 
     if not customer_records and len(supplier_records) > 10:
         customer_records = supplier_records[10:20]
         supplier_records = supplier_records[:10]
-    return supplier_records[:10], customer_records[:10]
+    return supplier_records, customer_records
+
+
+def _dedupe_party_rows(rows: list[dict[str, str]], party: str) -> list[dict[str, str]]:
+    seen: set[tuple[str, str, str, str]] = set()
+    clean_rows: list[dict[str, str]] = []
+    name_keywords = ("客户", "购买方", "企业名称", "名称") if party == "customer" else ("供应商", "企业名称", "名称")
+    for record in rows:
+        name = _first_record_value(record, name_keywords, exclude=("金额", "占比", "比例", "次数", "时间", "日期"))
+        amount = _record_money_value(record)
+        ratio = _record_percent_value(record)
+        related = _first_record_value(record, ("是否关联方", "关联方"))
+        if not name:
+            continue
+        key = (name, amount, ratio, related)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean_rows.append(record)
+    return clean_rows
 
 
 def _supplier_display_rows(section_text: str) -> list[tuple[str, str]]:
     supplier_records, _ = _split_supplier_customer_records(section_text)
+    raw_count = len(supplier_records)
+    supplier_records = _dedupe_party_rows(supplier_records, "supplier")
+    rendered_records = supplier_records[:10]
+    logger.info(
+        "[ShuimuiExtract] supplier_rows_raw_count=%s supplier_rows_after_dedupe=%s supplier_rows_rendered_count=%s duplicate_supplier_rows_removed=%s",
+        raw_count,
+        len(supplier_records),
+        len(rendered_records),
+        max(raw_count - len(supplier_records), 0),
+    )
 
-    if supplier_records:
+    if rendered_records:
         rows: list[tuple[str, str]] = []
-        for index, record in enumerate(supplier_records, 1):
+        for index, record in enumerate(rendered_records, 1):
             name = _first_record_value(record, ("供应商", "企业名称", "名称"), exclude=("金额", "占比", "比例", "次数", "时间", "日期"))
             amount = _record_money_value(record)
             ratio = _record_percent_value(record)
@@ -1370,8 +1399,18 @@ def _supplier_display_rows(section_text: str) -> list[tuple[str, str]]:
 
 def _customer_display_rows(section_text: str) -> list[tuple[str, str]]:
     _, customer_records = _split_supplier_customer_records(section_text)
+    raw_count = len(customer_records)
+    customer_records = _dedupe_party_rows(customer_records, "customer")
+    rendered_records = customer_records[:10]
+    logger.info(
+        "[ShuimuiExtract] customer_rows_raw_count=%s customer_rows_after_dedupe=%s customer_rows_rendered_count=%s duplicate_customer_rows_removed=%s",
+        raw_count,
+        len(customer_records),
+        len(rendered_records),
+        max(raw_count - len(customer_records), 0),
+    )
     rows: list[tuple[str, str]] = []
-    for index, record in enumerate(customer_records, 1):
+    for index, record in enumerate(rendered_records, 1):
         name = _first_record_value(record, ("客户", "购买方", "企业名称", "名称"), exclude=("金额", "占比", "比例", "次数", "时间", "日期"))
         amount = _record_money_value(record)
         ratio = _record_percent_value(record)
