@@ -1266,19 +1266,60 @@ def _late_fee_rows(section_text: str, classified_tables: dict[str, list[dict[str
 
 
 TAX_PENALTY_DETAIL_FIELDS: tuple[str, ...] = ("登记日期", "违法违章信息", "违法违章状态名称", "违法违章状态", "限改状态", "主要违法事实")
+TAX_PENALTY_FIELD_STOP_KEYWORDS: tuple[str, ...] = (
+    "关闭",
+    "查看",
+    "查看详细路径",
+    "社保人数",
+    "应缴费额",
+    "股东名称",
+    "参股比例",
+    "滞纳金时间",
+    "滞纳金金额",
+    "纳税信息",
+    "发票信息",
+    "供应商信息",
+    "客户名称",
+    "销售额",
+    "采购额",
+    "变更类型",
+    "变更时间",
+)
+
+
+def _clean_tax_penalty_detail_value(label: str, value: str) -> tuple[str, str]:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" ：:\t\r\n")
+    truncated_reason = ""
+    for keyword in TAX_PENALTY_FIELD_STOP_KEYWORDS:
+        index = text.find(keyword)
+        if index >= 0:
+            text = text[:index].strip(" ：:\t\r\n")
+            truncated_reason = "close" if keyword in {"关闭", "查看", "查看详细路径"} else "section_keyword"
+            break
+    text = re.sub(r"\s*复制\s*$", "", text).strip()
+    if label == "主要违法事实" and len(text) > 100:
+        for keyword in TAX_PENALTY_FIELD_STOP_KEYWORDS:
+            index = text.find(keyword)
+            if index >= 0:
+                text = text[:index].strip(" ：:\t\r\n")
+                truncated_reason = truncated_reason or "section_keyword"
+                break
+    text = text[:240].strip()
+    if text in {"", "--", "无", "暂无", "null", "undefined", "None"}:
+        return "", truncated_reason
+    if any(marker in text.lower() for marker in INTERNAL_MARKERS):
+        return "", truncated_reason
+    return text, truncated_reason
 
 
 def _extract_tax_penalty_detail_field(block: str, label: str) -> str:
     labels = "|".join(re.escape(item) for item in TAX_PENALTY_DETAIL_FIELDS)
-    match = re.search(rf"{re.escape(label)}\s*[：:]?\s*(.*?)(?=\s*(?:{labels})\s*[：:]|$)", block or "", re.S)
+    end_markers = "|".join(re.escape(item) for item in TAX_PENALTY_FIELD_STOP_KEYWORDS)
+    match = re.search(rf"{re.escape(label)}\s*[：:]?\s*(.*?)(?=\s*(?:{labels})\s*[：:]|\s*(?:{end_markers})\b|$)", block or "", re.S)
     if not match:
         return ""
-    value = re.sub(r"\s+", " ", str(match.group(1) or "")).strip(" ：:\t\r\n")[:240].strip()
+    value, _ = _clean_tax_penalty_detail_value(label, str(match.group(1) or ""))
     if value in {"查看", "查看详细路径", "详情信息", "详细信息", "税务处罚详情"}:
-        return ""
-    if value in {"", "--", "无", "暂无", "null", "undefined", "None"}:
-        return ""
-    if any(marker in value.lower() for marker in INTERNAL_MARKERS):
         return ""
     return value
 
@@ -1308,6 +1349,9 @@ def _tax_penalty_rows(classified_tables: dict[str, list[dict[str, str]]], sectio
     before_count = 0
     detail_records = _extract_tax_penalty_detail_records(section_text)
     table_records = classified_tables.get("tax_penalty_table", [])
+    truncated_by_close = 0
+    truncated_by_section_keyword = 0
+    main_fact_cleaned_length = 0
     for record in detail_records + table_records:
         before_count += 1
         date = _clean(record.get("登记日期"), 80)
@@ -1315,7 +1359,16 @@ def _tax_penalty_rows(classified_tables: dict[str, list[dict[str, str]]], sectio
         status = _clean(record.get("违法违章状态") or record.get("违法违章状态名称"), 120)
         is_detail = record.get("detail_source") == "modal"
         correction_status = _extract_tax_penalty_detail_field(f"限改状态：{record.get('限改状态', '')}", "限改状态") if is_detail else _clean(record.get("限改状态"), 120)
-        fact = _clean(record.get("主要违法事实"), 180)
+        if is_detail:
+            fact, fact_truncated_reason = _clean_tax_penalty_detail_value("主要违法事实", str(record.get("主要违法事实") or ""))
+            if fact_truncated_reason == "close":
+                truncated_by_close += 1
+            elif fact_truncated_reason == "section_keyword":
+                truncated_by_section_keyword += 1
+        else:
+            fact = _clean(record.get("主要违法事实"), 180)
+        if fact:
+            main_fact_cleaned_length = max(main_fact_cleaned_length, len(fact))
         if not date or not (info or status):
             continue
         if not is_detail and (date, status) in detail_date_status:
@@ -1346,8 +1399,11 @@ def _tax_penalty_rows(classified_tables: dict[str, list[dict[str, str]]], sectio
                 parts.append(f"违法违章状态：{status}")
             rows.append((f"记录 {len(rows) + 1}", "，".join(parts)))
     logger.info(
-        "[ShuimuiExtract] tax_penalty_detail_fields_matched=%s tax_penalty_records_after_dedupe=%s",
+        "[ShuimuiExtract] tax_penalty_detail_fields_matched=%s tax_penalty_field_truncated_by_close=%s tax_penalty_field_truncated_by_section_keyword=%s tax_penalty_main_fact_cleaned_length=%s tax_penalty_records_after_dedupe=%s",
         ",".join(sorted({key for record in detail_records for key, value in record.items() if key != "detail_source" and value})),
+        truncated_by_close,
+        truncated_by_section_keyword,
+        main_fact_cleaned_length,
         len(rows),
     )
     return rows, before_count, len(rows)

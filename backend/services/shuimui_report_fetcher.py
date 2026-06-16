@@ -382,13 +382,14 @@ async def _expand_current_tax_tab(page: object, source_url: str) -> dict[str, in
 
 async def _visible_modal_text(page: object) -> str:
     try:
-        text = await page.evaluate(
+        result = await page.evaluate(
             """() => {
                 const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
                 const selectors = [
                     '[role="dialog"]',
                     '.el-dialog',
                     '.ant-modal',
+                    '[class*="popup"]',
                     '[class*="dialog"]',
                     '[class*="modal"]'
                 ];
@@ -399,12 +400,31 @@ async def _visible_modal_text(page: object) -> str:
                     const rect = node.getBoundingClientRect();
                     const visible = style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
                     const text = normalize(node.innerText || node.textContent);
-                    if (visible && /详情信息|详细信息|税务处罚详情|违法违章/.test(text)) return text;
+                    if (visible && /详情信息|详细信息|税务处罚详情|违法违章/.test(text)) return { text, source: 'dialog' };
                 }
-                return '';
+                const bodyText = normalize(document.body ? document.body.innerText : '');
+                const start = bodyText.search(/详情信息|详细信息|税务处罚详情/);
+                if (start >= 0) {
+                    const tail = bodyText.slice(start);
+                    const closeIndex = tail.indexOf('关闭');
+                    return { text: closeIndex >= 0 ? tail.slice(0, closeIndex) : tail.slice(0, 800), source: 'body_slice' };
+                }
+                return { text: '', source: '' };
             }"""
         )
-        return str(text or "").strip()
+        if isinstance(result, dict):
+            text = str(result.get("text") or "").strip()
+            source = str(result.get("source") or "")
+        else:
+            text = str(result or "").strip()
+            source = ""
+        logger.info(
+            "[ShuimuiFetchTaxPenalty] tax_penalty_modal_scope_found=%s tax_penalty_modal_text_length=%s tax_penalty_modal_text_source=%s",
+            bool(text),
+            len(text),
+            source,
+        )
+        return text
     except Exception:
         return ""
 

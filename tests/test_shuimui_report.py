@@ -976,3 +976,41 @@ A
     assert "未按照规定..." not in tax_penalty_section
     assert "详细信息：查看" not in tax_penalty_section
     assert "记录 2" not in tax_penalty_section
+
+
+def test_shuimui_tax_penalty_modal_detail_truncates_page_content_after_main_fact():
+    raw_text = """水母报告
+### 页签：基本信息
+企业名称
+上海测试有限公司
+统一信用代码
+91310000MA1TEST123
+### 页签：纳税信息
+纳税信用等级
+A
+税务处罚
+登记日期        违法违章信息        违法违章状态        详细信息
+2026-03-03        未按照规定...        登记待处理        查看
+税务处罚详情
+详情信息
+登记日期：2026-03-03
+违法违章信息：未按照规定将其全部银行账号报告税务机关
+违法违章状态名称：登记待处理
+限改状态：-
+主要违法事实：违反税收管理 关闭 社保人数 应缴费额(元) 5 7078.4 股东名称 参股比例 房继超 40.00%
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+    tax_penalty_section = markdown.split("#### 税务处罚", 1)[1]
+
+    assert "主要违法事实：违反税收管理" in tax_penalty_section
+    assert "主要违法事实：违反税收管理 关闭" not in tax_penalty_section
+    assert "关闭" not in tax_penalty_section
+    assert "社保人数" not in tax_penalty_section
+    assert "股东名称" not in tax_penalty_section
+    assert "应缴费额" not in tax_penalty_section
