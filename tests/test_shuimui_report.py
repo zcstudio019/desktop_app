@@ -274,7 +274,7 @@ def test_sample_shuimui_table_rows_do_not_use_headers_as_values():
     markdown = content["report_markdown"]
 
     assert "社保人数：6" in markdown
-    assert "应缴费额：9624 元" in markdown
+    assert "应缴费额：9,624.00 元" in markdown
     assert "股东名称：刘聪" in markdown
     assert "参股比例：100.00%" in markdown
     assert "变更类型：法定代表人变更" in markdown
@@ -285,6 +285,50 @@ def test_sample_shuimui_table_rows_do_not_use_headers_as_values():
     assert "股东名称：参股比例" not in markdown
     assert "变更类型：变更时间" not in markdown
     assert "最近一次社保缴费记录：社保人数" not in markdown
+
+
+def test_shuimui_basic_info_extracts_score_social_security_multi_shareholders_and_changes():
+    raw_text = """水母报告
+企业名称
+上海测试有限公司
+统一信用代码
+91310000MA1TEST123
+水母经营分
+67.5
+经营良好
+最近一次社保缴费记录
+社保人数        应缴费额(元)
+8       12355.2
+股东明细
+股东名称        参股比例
+龚海成    80.00%
+龚海涛    20.00%
+法人/股东变更
+变更类型        变更时间        变更前        变更后
+法定代表人变更  2025-01-02  龚海成  龚海涛
+法定代表人变更  2023-09-04  张丹  龚海成
+"""
+    content = extract_shuimui_report(
+        raw_text,
+        source_url=SAMPLE_URL,
+        sn="S_207001c4662c4d9ab17881b3051f62ab",
+        ai_service=None,
+    )
+    markdown = content["report_markdown"]
+
+    assert "### 水母经营分" in markdown
+    assert "经营分：67.5" in markdown
+    assert "经营评价：经营良好" in markdown
+    assert "社保人数：8" in markdown
+    assert "应缴费额：12,355.20 元" in markdown
+    assert "股东 1：龚海成，参股比例：80.00%" in markdown
+    assert "股东 2：龚海涛，参股比例：20.00%" in markdown
+    assert "* 记录 1：" in markdown
+    assert "变更时间：2025-01-02" in markdown
+    assert "* 记录 2：" in markdown
+    assert "变更时间：2023-09-04" in markdown
+    assert "股东名称：股东名称" not in markdown
+    assert "变更类型：变更时间" not in markdown
 
 
 def test_shuimui_extracts_tax_invoice_supplier_tabs():

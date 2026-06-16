@@ -160,6 +160,7 @@ TABLE_CLASSIFIER_COLUMNS = {
 SECTION_FIELDS: list[tuple[str, list[str]]] = [
     ("企业基本信息", ["企业名称", "统一社会信用代码", "法定代表人", "法人占股比例", "成立日期", "注册资本", "注册类型", "注册地址", "行业分类"]),
     ("报告基础信息", ["报告编号", "报告创建时间", "查询时间", "报告生成时间", "数据更新时间", "授权状态"]),
+    ("水母经营分", []),
     ("社保信息", ["社保人数", "应缴费额"]),
     ("股东信息", ["股东名称", "参股比例"]),
     ("法人/股东变更", ["变更类型", "变更时间", "变更前", "变更后"]),
@@ -881,6 +882,174 @@ def _extract_dynamic_section_fields(section_text: str, target_fields: list[str])
     return rows
 
 
+def _business_score_rows(basic_text: str) -> list[tuple[str, str]]:
+    score = _extract_after_label(basic_text, ("水母经营分", "经营分"), max_len=40)
+    if not score:
+        match = re.search(r"水母经营分\s*(?:[:：]|\n+)\s*([0-9]+(?:\.[0-9]+)?)", basic_text or "")
+        if match:
+            score = _clean(match.group(1), 40)
+    rows: list[tuple[str, str]] = []
+    if score:
+        rows.append(("经营分", score))
+    level_match = re.search(r"(经营一般|经营良好|经营卓越)", basic_text or "")
+    if level_match:
+        rows.append(("经营评价", level_match.group(1)))
+    return rows
+
+
+def _basic_table_records_by_header(basic_text: str, required_headers: tuple[str, ...]) -> list[dict[str, str]]:
+    rows = [_split_row(line) for line in (basic_text or "").splitlines()]
+    rows = [row for row in rows if row]
+    records: list[dict[str, str]] = []
+    for index, header in enumerate(rows[:-1]):
+        normalized_header = [_normalize_table_cell(cell) for cell in header]
+        if not all(any(_normalize_table_cell(required) in cell for cell in normalized_header) for required in required_headers):
+            continue
+        for row in rows[index + 1 : index + 20]:
+            if len(row) == 1 and row[0] in {"股东明细", "法人/股东变更", "最近一次社保缴费记录", "银税互动授权记录"}:
+                break
+            if len(row) < min(len(header), 2):
+                continue
+            if all(any(_normalize_table_cell(required) in _normalize_table_cell(cell) for cell in row) for required in required_headers):
+                break
+            record = {
+                header[pos]: _clean(row[pos], 180)
+                for pos in range(min(len(header), len(row)))
+                if _clean_label(header[pos], 80) and _clean(row[pos], 180)
+            }
+            if record:
+                records.append(record)
+        break
+    return records
+
+
+def _social_security_rows(basic_text: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    records = _basic_table_records_by_header(basic_text, ("社保人数", "应缴费额"))
+    if records:
+        record = records[0]
+        count = _first_record_value(record, ("社保人数",))
+        amount = _format_money(_first_record_value(record, ("应缴费额", "金额")), allow_small=True)
+        if count:
+            rows.append(("社保人数", count))
+        if amount:
+            rows.append(("应缴费额", amount))
+    logger.info("[ShuimuiExtract] social_security_rows_count=%s", len(records))
+    return rows
+
+
+def _shareholder_rows(basic_text: str) -> list[tuple[str, str]]:
+    records = _basic_table_records_by_header(basic_text, ("股东名称", "参股比例"))
+    clean_records: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        name = _first_record_value(record, ("股东名称", "股东姓名", "股东"))
+        ratio = _first_record_value(record, ("参股比例", "持股比例"))
+        if not name or not ratio:
+            continue
+        key = (name, ratio)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean_records.append(key)
+    rows: list[tuple[str, str]] = []
+    if len(clean_records) == 1:
+        rows.extend([("股东名称", clean_records[0][0]), ("参股比例", clean_records[0][1])])
+    else:
+        for index, (name, ratio) in enumerate(clean_records, 1):
+            rows.append((f"股东 {index}", f"{name}，参股比例：{ratio}"))
+    logger.info(
+        "[ShuimuiExtract] shareholder_rows_count=%s shareholder_rows_after_dedupe=%s",
+        len(records),
+        len(clean_records),
+    )
+    return rows
+
+
+def _change_rows(basic_text: str) -> list[tuple[str, str]]:
+    records = _basic_table_records_by_header(basic_text, ("变更类型", "变更时间", "变更前", "变更后"))
+    rows_by_line = [_split_row(line) for line in (basic_text or "").splitlines()]
+    rows_by_line = [row for row in rows_by_line if row]
+    for index, header in enumerate(rows_by_line[:-1]):
+        normalized = [_normalize_table_cell(cell) for cell in header]
+        if not all(token in normalized for token in ("变更类型", "变更时间", "变更前", "变更后")):
+            continue
+        pos = index + 1
+        while pos < len(rows_by_line):
+            row = rows_by_line[pos]
+            if len(row) == 1 and row[0] in {"银税互动授权记录", "股东明细", "最近一次社保缴费记录"}:
+                break
+            if len(row) >= 4:
+                records.append({"变更类型": row[0], "变更时间": row[1], "变更前": row[2], "变更后": row[3]})
+            elif len(row) >= 2 and re.fullmatch(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}", row[1] or ""):
+                before = rows_by_line[pos + 1][0] if pos + 1 < len(rows_by_line) and len(rows_by_line[pos + 1]) == 1 else ""
+                after = rows_by_line[pos + 2][0] if pos + 2 < len(rows_by_line) and len(rows_by_line[pos + 2]) == 1 else ""
+                records.append({"变更类型": row[0], "变更时间": row[1], "变更前": before, "变更后": after})
+                if before or after:
+                    pos += 2
+            pos += 1
+        break
+    clean_records: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for record in records:
+        change_type = _first_record_value(record, ("变更类型",))
+        date = _first_record_value(record, ("变更时间", "日期", "时间"))
+        before = _first_record_value(record, ("变更前",))
+        after = _first_record_value(record, ("变更后",))
+        if not re.fullmatch(r"(?:19|20)\d{2}-\d{1,2}-\d{1,2}", date or ""):
+            continue
+        key = (change_type, date, before, after)
+        if not change_type or key in seen:
+            continue
+        seen.add(key)
+        clean_records.append({"变更类型": change_type, "变更时间": date, "变更前": before, "变更后": after})
+    rows: list[tuple[str, str]] = []
+    for index, record in enumerate(clean_records, 1):
+        lines = [f"* 记录 {index}：", ""]
+        for field in ("变更类型", "变更时间", "变更前", "变更后"):
+            value = record.get(field)
+            if value:
+                lines.append(f"  * {field}：{value}")
+        rows.append(("__RAW__", "\n".join(lines)))
+    logger.info(
+        "[ShuimuiExtract] change_rows_count=%s change_rows_after_dedupe=%s",
+        len(records),
+        len(clean_records),
+    )
+    return rows
+
+
+def _basic_dynamic_sections(basic_text: str) -> dict[str, list[tuple[str, str]]]:
+    business_rows = _business_score_rows(basic_text)
+    social_rows = _social_security_rows(basic_text)
+    shareholder_rows = _shareholder_rows(basic_text)
+    change_rows = _change_rows(basic_text)
+    detected = []
+    if social_rows:
+        detected.append("social_security_table")
+    if shareholder_rows:
+        detected.append("shareholder_table")
+    if change_rows:
+        detected.append("change_table")
+    logger.info(
+        "[ShuimuiExtract] business_score_found=%s business_score_value=%s basic_info_tables_detected=%s basic_info_table_classifier_result=%s",
+        bool(business_rows),
+        next((value for field, value in business_rows if field == "经营分"), ""),
+        len(detected),
+        ",".join(detected),
+    )
+    dynamic: dict[str, list[tuple[str, str]]] = {}
+    if business_rows:
+        dynamic["水母经营分"] = business_rows
+    if social_rows:
+        dynamic["社保信息"] = social_rows
+    if shareholder_rows:
+        dynamic["股东信息"] = shareholder_rows
+    if change_rows:
+        dynamic["法人/股东变更"] = change_rows
+    return dynamic
+
+
 def _is_noise_value(value: str) -> bool:
     text = _clean(value, 120)
     if not text:
@@ -1218,6 +1387,7 @@ def _flatten_api_payload_for_sections(capture_payload: dict[str, Any]) -> dict[s
 
 def _extract_dynamic_sections(raw_text: str, capture_payload: dict[str, Any]) -> dict[str, list[tuple[str, str]]]:
     api_text = _flatten_api_payload_for_sections(capture_payload)
+    basic_text = _extract_tab_text(raw_text, "基本信息", capture_payload) or raw_text
     tax_text = "\n".join(part for part in (api_text.get("纳税信息"), _extract_tab_text(raw_text, "纳税信息", capture_payload)) if part)
     invoice_text = "\n".join(part for part in (api_text.get("发票信息"), _extract_tab_text(raw_text, "发票信息", capture_payload)) if part)
     supplier_text = "\n".join(part for part in (api_text.get("供应商信息"), _extract_tab_text(raw_text, "供应商信息", capture_payload)) if part)
@@ -1229,6 +1399,7 @@ def _extract_dynamic_sections(raw_text: str, capture_payload: dict[str, Any]) ->
             ",".join(field for field, _ in financial_rows),
         )
     dynamic = {
+        **_basic_dynamic_sections(basic_text),
         "纳税信息": _tax_display_rows(tax_text),
         "财报信息": financial_rows,
         "发票信息": _invoice_display_rows(invoice_text),
@@ -1418,14 +1589,14 @@ def render_shuimui_report_markdown(
                     if not isinstance(item, (list, tuple)) or len(item) < 2:
                         continue
                     marker = str(item[0])
-                    if marker in {"__SUBSECTION__", "__TABLE__"}:
+                    if marker in {"__SUBSECTION__", "__TABLE__", "__RAW__"}:
                         field = marker
                         field_value = str(item[1] or "").strip()
                     else:
                         field = _clean_label(item[0], 80)
                         raw_field_value = str(item[1] or "").strip()
                         field_value = raw_field_value if raw_field_value in {"--", "--%"} else _clean(item[1], 240)
-                    if field_value and (field or marker in {"", "__SUBSECTION__", "__TABLE__"}):
+                    if field_value and (field or marker in {"", "__SUBSECTION__", "__TABLE__", "__RAW__"}):
                         rows.append((field, field_value))
                 if not rows:
                     continue
@@ -1435,6 +1606,8 @@ def render_shuimui_report_markdown(
                     if field == "__SUBSECTION__":
                         lines.extend(["", f"#### {field_value}", ""])
                     elif field == "__TABLE__":
+                        lines.extend([field_value, ""])
+                    elif field == "__RAW__":
                         lines.extend([field_value, ""])
                     elif field:
                         lines.append(f"* {field}：{field_value}")
