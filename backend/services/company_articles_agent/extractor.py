@@ -12,7 +12,7 @@ def compact_text(text: str) -> str:
 
 def clean_value(value: Any) -> str:
     text = str(value or "").strip()
-    text = re.sub(r"[ \t\r\f\v\u3000_—]+", " ", text)
+    text = re.sub(r"[ \t\r\f\v\u3000_—–]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip(" ：:，,。；;")
 
@@ -48,12 +48,12 @@ def extract_title(text: str) -> tuple[str, str]:
     title = first_match(
         head,
         [
-            r"([\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,80}有限公司章程)",
-            r"([\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,80}公司章程)",
+            r"([\u4e00-\u9fffA-Za-z0-9（）()·路\-]{2,80}有限公司章程)",
+            r"([\u4e00-\u9fffA-Za-z0-9（）()·路\-]{2,80}公司章程)",
         ],
     )
     if not title:
-        title = first_match(text, [r"([\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,80}有限公司章程)"])
+        title = first_match(text, [r"([\u4e00-\u9fffA-Za-z0-9（）()·路\-]{2,80}有限公司章程)"])
     company_name = title[:-2] if title.endswith("章程") else ""
     return title, company_name
 
@@ -94,7 +94,7 @@ def extract_business_scope(text: str) -> str:
 
 
 def normalize_for_amount_match(text: str) -> str:
-    return re.sub(r"[\s\u3000_—]+", "", str(text or ""))
+    return re.sub(r"[\s\u3000_—–]+", "", str(text or ""))
 
 
 def extract_registered_capital(text: str) -> tuple[str, float | None, str]:
@@ -112,8 +112,8 @@ def extract_registered_capital(text: str) -> tuple[str, float | None, str]:
     value = first_match(
         text,
         [
-            r"公司注册资本[：:\s]*((?:人民币|RMB)?\s*[_—]?\s*\d+(?:\.\d+)?\s*万\s*元)",
-            r"注册资本[：:\s]*((?:人民币|RMB)?\s*[_—]?\s*\d+(?:\.\d+)?\s*万\s*元)",
+            r"公司注册资本[：:\s]*((?:人民币|RMB)?\s*[_—–]?\s*\d+(?:\.\d+)?\s*万\s*元)",
+            r"注册资本[：:\s]*((?:人民币|RMB)?\s*[_—–]?\s*\d+(?:\.\d+)?\s*万\s*元)",
         ],
     )
     value = clean_clause(value).replace("万 元", "万元")
@@ -122,41 +122,221 @@ def extract_registered_capital(text: str) -> tuple[str, float | None, str]:
     return value, parse_amount_number(value), "人民币" if value else ""
 
 
-def extract_shareholders(text: str, registered_capital_amount: float | None = None) -> list[Shareholder]:
-    shareholders: list[Shareholder] = []
-    seen: set[tuple[str, str]] = set()
-    normalized = re.sub(r"[ \t]+", " ", text or "")
-    date_pattern = r"(?:19|20)\d{2}[.\-/年](?:1[0-2]|0?[1-9])[.\-/月](?:3[01]|[12]\d|0?[1-9])日?"
-    patterns = [
-        rf"([\u4e00-\u9fff·]{{2,20}})\s+(\d+(?:\.\d+)?)\s*万元?\s+(货币|现金|实物|知识产权|土地使用权)\s+({date_pattern})",
-        rf"([\u4e00-\u9fff·]{{2,20}})\s*[,，]?\s*(\d+(?:\.\d+)?)\s*万元?\s*[,，]?\s*(货币|现金|实物|知识产权|土地使用权)\s*[,，]?\s*({date_pattern})",
+def normalize_shareholder_text(text: str) -> str:
+    fullwidth = str.maketrans("０１２３４５６７８９．／－：，｜（）", "0123456789./-:,|()")
+    source = str(text or "").translate(fullwidth)
+    source = source.replace("│", "|").replace("┃", "|").replace("｜", "|")
+    source = re.sub(r"[-—–_]{2,}", " ", source)
+    source = re.sub(r"[|]+", " | ", source)
+    source = re.sub(r"[ \t\u3000]+", " ", source)
+    source = re.sub(r"\n\s*\|?\s*(?:-+\s*\|?\s*){2,}\n", "\n", source)
+    return source
+
+
+def extract_shareholder_block(text: str) -> str:
+    source = normalize_shareholder_text(text)
+    markers = [
+        "股东的姓名或者名称",
+        "股东姓名",
+        "出资方式、出资额和出资",
+        "出资额 出资方式 出资",
+        "出资日期",
+        "出资时间",
     ]
-    for pattern in patterns:
-        for match in re.finditer(pattern, normalized):
-            name = clean_clause(match.group(1))
-            amount_number = parse_amount_number(match.group(2))
-            if not name or name in {"股东", "姓名或者名称", "出资额"} or amount_number is None:
+    starts = [source.find(marker) for marker in markers if source.find(marker) >= 0]
+    if not starts:
+        return source
+    start = min(starts)
+    tail = source[start:]
+    boundaries = [
+        r"\n\s*第六条",
+        r"\n\s*第五章",
+        r"\n\s*公司成立后",
+        r"\n\s*公司机构",
+        r"\n\s*股东会",
+        r"\n\s*第[一二三四五六七八九十]+章",
+        r"\n\s*第[五六七八九十]+条",
+    ]
+    end = len(tail)
+    for pattern in boundaries:
+        match = re.search(pattern, tail)
+        if match and match.start() > 20:
+            end = min(end, match.start())
+    return tail[:end]
+
+
+def normalize_contribution_date(value: str) -> str:
+    text = clean_clause(value)
+    text = re.sub(r"\s+", "", text)
+    match = re.search(r"((?:19|20)\d{2})年(1[0-2]|0?[1-9])月(3[01]|[12]\d|0?[1-9])日", text)
+    if match:
+        return f"{int(match.group(1)):04d}.{int(match.group(2)):02d}.{int(match.group(3)):02d}"
+    match = re.search(r"((?:19|20)\d{2})[./-](1[0-2]|0?[1-9])[./-](3[01]|[12]\d|0?[1-9])", text)
+    if match:
+        return f"{int(match.group(1)):04d}.{int(match.group(2)):02d}.{int(match.group(3)):02d}"
+    return re.sub(r"[/-]", ".", text)
+
+
+def is_valid_shareholder_name(name: str) -> bool:
+    text = clean_clause(name)
+    if not re.fullmatch(r"[\u4e00-\u9fff·路]{2,20}", text):
+        return False
+    forbidden = (
+        "股东", "姓名", "名称", "出资", "方式", "时间", "日期", "注册资本", "公司",
+        "成立后", "证明书", "货币", "万元", "人民币", "章", "条",
+    )
+    return not any(item in text for item in forbidden)
+
+
+def make_shareholder(
+    name: str,
+    amount: str,
+    method: str,
+    date: str,
+    registered_capital_amount: float | None = None,
+) -> Shareholder | None:
+    clean_name = clean_clause(name)
+    amount_number = parse_amount_number(amount)
+    if not is_valid_shareholder_name(clean_name) or amount_number is None:
+        return None
+    ratio = ""
+    if registered_capital_amount:
+        ratio = f"{amount_number / registered_capital_amount * 100:.2f}%"
+    return Shareholder(
+        name=clean_name,
+        subscribed_amount=f"{amount_number:g}万元",
+        subscribed_amount_number=amount_number,
+        contribution_method=clean_clause(method),
+        contribution_deadline=normalize_contribution_date(date),
+        contribution_ratio=ratio,
+    )
+
+
+def dedupe_shareholders(items: list[Shareholder]) -> list[Shareholder]:
+    deduped: list[Shareholder] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        key = (item.name, f"{float(item.subscribed_amount_number or 0):g}", item.contribution_deadline)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def parse_shareholders_by_regex(block: str, registered_capital_amount: float | None) -> list[Shareholder]:
+    normalized = normalize_shareholder_text(block)
+    date = r"(?:19|20)\d{2}\s*(?:年|[./-])\s*(?:1[0-2]|0?[1-9])\s*(?:月|[./-])\s*(?:3[01]|[12]\d|0?[1-9])\s*日?"
+    amount = r"\d+(?:\.\d+)?\s*万\s*元"
+    method = r"货币|现金|实物|知识产权|土地使用权|股权|债权|其他"
+    separators = r"(?:\s+|\s*\|\s*|\s*[,，、]\s*)"
+    pattern = re.compile(
+        rf"(?P<name>[\u4e00-\u9fff·路]{{2,20}}){separators}"
+        rf"(?P<amount>{amount}){separators}"
+        rf"(?P<method>{method}){separators}"
+        rf"(?P<date>{date})"
+    )
+    items: list[Shareholder] = []
+    for match in pattern.finditer(normalized):
+        shareholder = make_shareholder(
+            match.group("name"),
+            match.group("amount"),
+            match.group("method"),
+            match.group("date"),
+            registered_capital_amount,
+        )
+        if shareholder:
+            items.append(shareholder)
+    return dedupe_shareholders(items)
+
+
+def parse_shareholders_by_tokens(block: str, registered_capital_amount: float | None) -> list[Shareholder]:
+    source = normalize_shareholder_text(block)
+    token_pattern = re.compile(
+        r"[\u4e00-\u9fff·路]{2,20}|\d+(?:\.\d+)?\s*万\s*元?|(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}"
+    )
+    raw_tokens = [clean_clause(item.group(0)) for item in token_pattern.finditer(source)]
+    methods = {"货币", "现金", "实物", "知识产权", "土地使用权", "股权", "债权", "其他"}
+    items: list[Shareholder] = []
+    index = 0
+    while index < len(raw_tokens):
+        name = raw_tokens[index]
+        if not is_valid_shareholder_name(name):
+            index += 1
+            continue
+        amount_index = method_index = date_index = -1
+        for offset in range(index + 1, min(len(raw_tokens), index + 8)):
+            token = raw_tokens[offset]
+            if amount_index < 0 and re.fullmatch(r"\d+(?:\.\d+)?万元?", token):
+                amount_index = offset
                 continue
-            key = (name, str(amount_number))
-            if key in seen:
+            if amount_index > 0 and method_index < 0 and token in methods:
+                method_index = offset
                 continue
-            seen.add(key)
-            deadline = clean_clause(match.group(4)).replace("年", ".").replace("月", ".").replace("日", "")
-            deadline = re.sub(r"[/-]", ".", deadline)
-            ratio = ""
-            if registered_capital_amount:
-                ratio = f"{amount_number / registered_capital_amount * 100:.2f}%"
-            shareholders.append(
-                Shareholder(
-                    name=name,
-                    subscribed_amount=f"{amount_number:g}万元",
-                    subscribed_amount_number=amount_number,
-                    contribution_method=clean_clause(match.group(3)),
-                    contribution_deadline=deadline,
-                    contribution_ratio=ratio,
-                )
+            if method_index > 0 and re.search(r"(?:19|20)\d{2}", token):
+                date_index = offset
+                break
+        if amount_index > 0 and method_index > 0 and date_index > 0:
+            shareholder = make_shareholder(
+                name,
+                raw_tokens[amount_index],
+                raw_tokens[method_index],
+                raw_tokens[date_index],
+                registered_capital_amount,
             )
-    return shareholders
+            if shareholder:
+                items.append(shareholder)
+                index = date_index + 1
+                continue
+        index += 1
+    return dedupe_shareholders(items)
+
+
+def recover_missing_shareholders(
+    block: str,
+    current: list[Shareholder],
+    registered_capital_amount: float | None,
+) -> list[Shareholder]:
+    if not registered_capital_amount:
+        return current
+    total = sum(float(item.subscribed_amount_number or 0) for item in current)
+    diff = round(float(registered_capital_amount) - total, 2)
+    if diff <= 0.01:
+        return current
+    source = normalize_shareholder_text(block)
+    diff_pattern = rf"{diff:g}\s*万\s*元?"
+    date = r"(?:19|20)\d{2}\s*(?:年|[./-])\s*(?:1[0-2]|0?[1-9])\s*(?:月|[./-])\s*(?:3[01]|[12]\d|0?[1-9])\s*日?"
+    method = r"货币|现金|实物|知识产权|土地使用权|股权|债权|其他"
+    for match in re.finditer(diff_pattern, source):
+        window = source[max(0, match.start() - 80): min(len(source), match.end() + 120)]
+        row_match = re.search(
+            rf"(?P<name>[\u4e00-\u9fff·路]{{2,20}})[\s|,，、]+(?P<amount>{diff_pattern})[\s|,，、]+(?P<method>{method})[\s|,，、]+(?P<date>{date})",
+            window,
+        )
+        if not row_match:
+            tokens = parse_shareholders_by_tokens(window, registered_capital_amount)
+            recovered = [item for item in tokens if abs(float(item.subscribed_amount_number or 0) - diff) < 0.01]
+        else:
+            item = make_shareholder(
+                row_match.group("name"),
+                row_match.group("amount"),
+                row_match.group("method"),
+                row_match.group("date"),
+                registered_capital_amount,
+            )
+            recovered = [item] if item else []
+        if recovered:
+            return dedupe_shareholders([*current, *recovered])
+    return current
+
+
+def extract_shareholders(text: str, registered_capital_amount: float | None = None) -> list[Shareholder]:
+    block = extract_shareholder_block(text)
+    shareholders = parse_shareholders_by_regex(block, registered_capital_amount)
+    if len(shareholders) < 2:
+        shareholders = dedupe_shareholders([*shareholders, *parse_shareholders_by_tokens(block, registered_capital_amount)])
+    shareholders = recover_missing_shareholders(block, shareholders, registered_capital_amount)
+    return dedupe_shareholders(shareholders)
 
 
 def short_sentence(text: str, keyword: str, max_chars: int = 80) -> str:
@@ -166,7 +346,7 @@ def short_sentence(text: str, keyword: str, max_chars: int = 80) -> str:
         return ""
     end_candidates = [pos for pos in (source.find("。", index), source.find("；", index), source.find(";", index)) if pos >= 0]
     end = min(end_candidates) + 1 if end_candidates else min(len(source), index + max_chars)
-    return source[index:end][:max_chars].strip("。；;，,")
+    return source[index:end][:max_chars].strip("。；;")
 
 
 def extract_first_shareholders_meeting(text: str) -> str:
@@ -227,8 +407,9 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
         registered_capital = f"人民币{shareholder_total:g}万元"
         currency = "人民币"
     if registered_amount:
+        shareholders = recover_missing_shareholders(extract_shareholder_block(text), shareholders, registered_amount)
         for shareholder in shareholders:
-            if shareholder.subscribed_amount_number is not None and not shareholder.contribution_ratio:
+            if shareholder.subscribed_amount_number is not None:
                 shareholder.contribution_ratio = f"{shareholder.subscribed_amount_number / registered_amount * 100:.2f}%"
 
     compact = compact_text(text)

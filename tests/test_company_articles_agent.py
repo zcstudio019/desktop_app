@@ -220,3 +220,60 @@ def test_company_articles_skill_supports_multi_page_ocr_merge() -> None:
     assert extracted["company_name"] == "上海乐芙兰电子商务有限公司"
     assert len(extracted["shareholders"]) == 2
     assert extracted["signature_info"]["signature_page"] == "第6页"
+
+
+def test_company_articles_extracts_all_shareholder_rows_and_rechecks_capital() -> None:
+    text = """
+上海测试贸易有限公司章程
+第一章 公司的名称和住所
+第一条 公司名称：上海测试贸易有限公司
+第二条 公司住所：上海市浦东新区测试路1号
+第二章 公司经营范围
+第三条 公司经营范围：一般项目：日用百货销售。
+第三章 公司注册资本
+第四条 公司注册资本：人民币2000万元
+
+第四章 股东的姓名或者名称、出资方式、出资额和出资日期
+股东的姓名或者名称 出资额 出资方式 出资日期
+钟璟 1400万元 货币 2029年12月15日
+黎云 600万元 货币 2029年12月15日
+
+第六条 公司成立后，应向股东签发出资证明书。
+第五章 公司机构
+股东会会议由股东按照出资比例行使表决权。
+公司不设董事会，设执行董事一名，任期三年，由股东会选举产生。
+公司的法定代表人由执行董事担任。
+本章程自全体股东盖章、签字之日起生效。
+"""
+    result = CompanyArticlesAgent().run(
+        {
+            "text": text,
+            "raw_pages": [{"page": 1, "text": text}],
+            "filename": "钟璟黎云公司章程.pdf",
+        }
+    )
+    data = result.to_dict()
+    structured = data["structured_data"]
+    shareholders = structured["shareholders"]
+    markdown = data["display_markdown"]
+
+    assert len(shareholders) == 2
+    assert shareholders[0]["name"] == "钟璟"
+    assert shareholders[0]["subscribed_amount"] == "1400万元"
+    assert shareholders[0]["subscribed_amount_number"] == 1400
+    assert shareholders[0]["contribution_method"] == "货币"
+    assert shareholders[0]["contribution_deadline"] == "2029.12.15"
+    assert shareholders[0]["contribution_ratio"] == "70.00%"
+    assert shareholders[1]["name"] == "黎云"
+    assert shareholders[1]["subscribed_amount"] == "600万元"
+    assert shareholders[1]["subscribed_amount_number"] == 600
+    assert shareholders[1]["contribution_method"] == "货币"
+    assert shareholders[1]["contribution_deadline"] == "2029.12.15"
+    assert shareholders[1]["contribution_ratio"] == "30.00%"
+    assert structured["registered_capital_amount"] == 2000
+    assert structured["capital_check"]["shareholder_total_amount"] == 2000
+    assert structured["capital_check"]["is_consistent"] is True
+    assert structured["capital_check"]["message"] == "出资额合计与注册资本一致"
+    assert "| 钟璟 | 1400万元 | 货币 | 2029.12.15 | 70.00% |" in markdown
+    assert "| 黎云 | 600万元 | 货币 | 2029.12.15 | 30.00% |" in markdown
+    assert "股东出资额合计与注册资本不一致，请人工复核" not in markdown
