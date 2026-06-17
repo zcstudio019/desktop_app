@@ -26,6 +26,9 @@ from backend.services.enterprise_bank_statement_agent.flow_rules import get_ente
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
+from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
+from backend.services.company_articles_agent.normalizer import normalize_company_articles
+from backend.services.company_articles_agent.validator import validate_company_articles
 from backend.services.kyc_document_agent.renderer import get_display_fields, render_markdown as render_kyc_markdown
 from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
 from backend.services.property_cert_agent.normalizer import normalize_property_cert_fields
@@ -306,6 +309,21 @@ def _render_kyc_business_markdown(extracted_data: dict[str, Any], file_name: str
     if original_status != '可查看' and '- 原件状态：可查看' in markdown:
         markdown = markdown.replace('- 原件状态：可查看', f'- 原件状态：{original_status}')
     return markdown
+
+
+def _render_company_articles_profile_markdown(extracted_data: dict[str, Any], file_name: str) -> str:
+    structured_data = extracted_data.get('structured_data') if isinstance(extracted_data.get('structured_data'), dict) else {}
+    if structured_data:
+        result = normalize_company_articles(structured_data, filename=file_name)
+        result = validate_company_articles(result)
+        result.markdown = render_company_articles_markdown(result, filename=file_name)
+        result.display_markdown = result.markdown
+        return result.markdown
+    for key in ('display_markdown', 'report_markdown', 'markdown', 'markdown_summary', 'summary_markdown'):
+        markdown = str(extracted_data.get(key) or '').strip()
+        if markdown:
+            return markdown
+    return '## 公司章程\n- 资料类型：公司章程\n- 提示：公司章程解析结果暂不可用，请重新上传或重新提取。'
 
 
 def _format_amount_for_markdown(value: Any) -> str:
@@ -1884,6 +1902,10 @@ async def _build_single_document_section(
             _looks_like_raw_kyc_markdown(markdown),
         )
         return markdown, source_document
+    if extraction_type == 'company_articles' and isinstance(extracted_data, dict):
+        source_document['source_type'] = 'company_articles'
+        source_document['source_type_name'] = '公司章程'
+        return _render_company_articles_profile_markdown(extracted_data, file_name), source_document
     if extraction_type == 'shuimui_report' and isinstance(extracted_data, dict):
         source_document['source_type'] = 'shuimui_report'
         source_document['source_type_name'] = '水母报告'

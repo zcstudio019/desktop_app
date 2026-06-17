@@ -39,6 +39,9 @@ function nonEmpty(value: unknown): string {
 }
 
 function firstMarkdownFromRecord(...records: JsonRecord[]): string {
+  const version = records
+    .map((record) => nonEmpty(record.extraction_version ?? record.extractionVersion ?? record.schema_version ?? record.schemaVersion))
+    .find(Boolean);
   const priorities = [
     'display_markdown',
     'displayMarkdown',
@@ -50,13 +53,20 @@ function firstMarkdownFromRecord(...records: JsonRecord[]): string {
     'summary_markdown',
     'summaryMarkdown',
   ];
+  const candidates: string[] = [];
   for (const key of priorities) {
     for (const record of records) {
       const markdown = nonEmpty(record[key]);
-      if (markdown) return markdown;
+      if (markdown) candidates.push(markdown);
     }
   }
-  return '';
+  if (version === 'company_articles_v3_canonical_markdown_only') return candidates[0] || '';
+  return (
+    candidates.find((item) => item.includes('## 公司章程') && item.includes('经营范围') && item.includes('法定代表人：由执行董事担任')) ||
+    candidates.find((item) => item.includes('## 公司章程') && !item.includes('法定代表人：暂无')) ||
+    candidates[0] ||
+    ''
+  );
 }
 
 function isShuimuiReportType(value: unknown): boolean {

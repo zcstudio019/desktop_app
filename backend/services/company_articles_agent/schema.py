@@ -6,7 +6,7 @@ from typing import Any
 
 DOC_TYPE = "company_articles"
 DOC_TYPE_NAME = "公司章程"
-SCHEMA_VERSION = "company_articles_v2_display_only"
+SCHEMA_VERSION = "company_articles_v3_canonical_markdown_only"
 
 
 STRUCTURED_DATA_KEYS = (
@@ -99,8 +99,5 @@ class CompanyArticlesResult:
             "markdown": markdown,
             "report_markdown": markdown,
             "markdown_summary": markdown,
-            # Keep the common business fields at top level for legacy readers, but
-            # keep display/debug artifacts out of structured_data.
-            **structured_data,
         }
         return data

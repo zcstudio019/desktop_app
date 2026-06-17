@@ -85,6 +85,10 @@ from backend.services.rag_service import RagService
 from backend.services.risk_assessment_service import RiskAssessmentService
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
+from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
+from backend.services.company_articles_agent.normalizer import normalize_company_articles
+from backend.services.company_articles_agent.schema import SCHEMA_VERSION as COMPANY_ARTICLES_SCHEMA_VERSION
+from backend.services.company_articles_agent.validator import validate_company_articles
 from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
 from backend.services.financing_kyc_diagnostic_service import build_financing_kyc_diagnostic
 from backend.services.customer_financing_diagnostic_report_service import build_customer_financing_diagnostic_report
@@ -1766,6 +1770,25 @@ async def _get_customer_detail_local(
             # 如果 extracted_data 是字典，直接添加到 all_fields
             # 使用提取类型作为分组名称，避免字段名冲突
             if isinstance(extracted_data, dict):
+                extraction_type = normalize_document_type_code(extraction.get("extraction_type") or "") or str(extraction.get("extraction_type") or "")
+                doc_type = str(
+                    extracted_data.get("doc_type")
+                    or extracted_data.get("document_type_code")
+                    or extracted_data.get("document_type")
+                    or extraction_type
+                    or ""
+                )
+                if doc_type == "company_articles":
+                    markdown = _company_articles_display_markdown_from_payload(extracted_data)
+                    all_fields["公司章程"] = {
+                        "doc_type": "company_articles",
+                        "doc_type_name": "公司章程",
+                        "extraction_version": COMPANY_ARTICLES_SCHEMA_VERSION,
+                        "display_markdown": markdown,
+                        "markdown": markdown,
+                        "report_markdown": markdown,
+                    }
+                    continue
                 # 如果 extracted_data 已经是嵌套字典，直接使用
                 # 例如：{"报告基础信息": {"报告编号": "xxx", "报告时间": "xxx"}}
                 for key, value in extracted_data.items():
@@ -1878,6 +1901,23 @@ def _build_profile_response(
         risk_report_schema=profile.get("risk_report_schema") or get_risk_report_schema_template(),
         credit_debug=profile.get("credit_debug") or (profile.get("source_snapshot") or {}).get("credit_debug") or {},
     )
+
+
+def _company_articles_display_markdown_from_payload(payload: dict[str, Any]) -> str:
+    structured_data = payload.get("structured_data") if isinstance(payload.get("structured_data"), dict) else {}
+    if structured_data:
+        normalized = normalize_company_articles(
+            structured_data,
+            filename=str(payload.get("source_file") or payload.get("filename") or ""),
+        )
+        normalized = validate_company_articles(normalized)
+        normalized.markdown = render_company_articles_markdown(normalized, filename=str(payload.get("source_file") or payload.get("filename") or ""))
+        return normalized.markdown
+    for key in ("display_markdown", "report_markdown", "markdown", "markdown_summary", "summary_markdown"):
+        markdown = str(payload.get(key) or "").strip()
+        if markdown:
+            return markdown
+    return "## 公司章程\n- 资料类型：公司章程\n- 提示：公司章程解析结果暂不可用，请重新上传或重新提取。"
 
 
 @router.get("/{customer_id}/profile-markdown", response_model=CustomerProfileMarkdownResponse)

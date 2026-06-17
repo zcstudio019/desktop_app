@@ -146,7 +146,35 @@ export function getDisplayMarkdown(payload: unknown): string {
 function getCompanyArticlesMarkdown(content: Record<string, unknown> | undefined, documentType?: string): string {
   if (!content) return '';
   if (getPayloadDocType(content, documentType) !== 'company_articles') return '';
-  return getDisplayMarkdown(content);
+  const records = getNestedRecords(content);
+  const version = records
+    .map((record) => String(record.extraction_version || record.extractionVersion || record.schema_version || record.schemaVersion || '').trim())
+    .find(Boolean);
+  if (version === 'company_articles_v3_canonical_markdown_only') {
+    return getDisplayMarkdown(content);
+  }
+  const candidates: string[] = [];
+  [
+    'display_markdown',
+    'displayMarkdown',
+    'report_markdown',
+    'reportMarkdown',
+    'markdown',
+    'markdown_summary',
+    'markdownSummary',
+    'summary_markdown',
+    'summaryMarkdown',
+  ].forEach((key) => {
+    records.forEach((record) => {
+      const markdown = String(record[key] || '').trim();
+      if (markdown && markdown.includes('## 公司章程')) candidates.push(markdown);
+    });
+  });
+  return (
+    candidates.find((item) => item.includes('经营范围') && item.includes('法定代表人：由执行董事担任')) ||
+    candidates.find((item) => !item.includes('法定代表人：暂无')) ||
+    getDisplayMarkdown(content)
+  );
 }
 
 /**

@@ -104,25 +104,26 @@ def test_registry_dispatches_company_articles_agent() -> None:
 def test_company_articles_agent_extracts_sample_fields_and_markdown() -> None:
     result = CompanyArticlesAgent().run({"text": "", "raw_pages": SAMPLE_PAGES, "filename": FILENAME})
     data = result.to_dict()
+    structured = data["structured_data"]
     markdown = data["markdown"]
-    assert data["title"] == "上海乐芙兰电子商务有限公司章程"
-    assert data["company_name"] == "上海乐芙兰电子商务有限公司"
-    assert data["company_address"] == "上海市长宁区广顺路33号3幢6层672室"
-    assert "第二章" not in data["company_address"]
-    assert data["registered_capital"] == "人民币500万元"
-    assert data["registered_capital_amount"] == 500
-    assert len(data["shareholders"]) == 2
-    assert data["shareholders"][0]["name"] == "沃志方"
-    assert data["shareholders"][0]["contribution_ratio"] == "99.00%"
-    assert data["shareholders"][1]["name"] == "李倩"
-    assert data["shareholders"][1]["contribution_ratio"] == "1.00%"
-    assert data["capital_check"]["is_consistent"] is True
-    assert data["capital_check"]["message"] == "出资额合计与注册资本一致"
-    assert data["governance"]["legal_representative"] == "由执行董事担任"
-    assert data["governance"]["first_shareholders_meeting"] == "首次股东会会议由出资最多的股东召集和主持，依照公司法规定行使职权"
-    assert data["major_resolution_rules"]["amendment_rule"] != "未识别"
-    assert data["major_resolution_rules"]["capital_change_rule"] != "未识别"
-    assert data["major_resolution_rules"]["merger_split_dissolution_rule"] != "未识别"
+    assert structured["title"] == "上海乐芙兰电子商务有限公司章程"
+    assert structured["company_name"] == "上海乐芙兰电子商务有限公司"
+    assert structured["company_address"] == "上海市长宁区广顺路33号3幢6层672室"
+    assert "第二章" not in structured["company_address"]
+    assert structured["registered_capital"] == "人民币500万元"
+    assert structured["registered_capital_amount"] == 500
+    assert len(structured["shareholders"]) == 2
+    assert structured["shareholders"][0]["name"] == "沃志方"
+    assert structured["shareholders"][0]["contribution_ratio"] == "99.00%"
+    assert structured["shareholders"][1]["name"] == "李倩"
+    assert structured["shareholders"][1]["contribution_ratio"] == "1.00%"
+    assert structured["capital_check"]["is_consistent"] is True
+    assert structured["capital_check"]["message"] == "出资额合计与注册资本一致"
+    assert structured["governance"]["legal_representative"] == "由执行董事担任"
+    assert structured["governance"]["first_shareholders_meeting"] == "首次股东会会议由出资最多的股东召集和主持，依照公司法规定行使职权"
+    assert structured["major_resolution_rules"]["amendment_rule"] != "未识别"
+    assert structured["major_resolution_rules"]["capital_change_rule"] != "未识别"
+    assert structured["major_resolution_rules"]["merger_split_dissolution_rule"] != "未识别"
     assert "法定代表人：由执行董事担任" in markdown
     assert "沃志方 | 495万元 | 货币 | 2030.12.31 | 99.00%" in markdown
     assert "李倩 | 5万元 | 货币 | 2030.12.31 | 1.00%" in markdown
@@ -186,8 +187,15 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v2_display_only"
+    assert content["extraction_version"] == "company_articles_v3_canonical_markdown_only"
+    assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
+    assert "title" not in content
+    assert "company_address" not in content
+    assert "registered_capital_amount" not in content
+    assert "capital_check" not in content
+    assert "governance" not in content
+    assert "major_resolution_rules" not in content
     assert "raw_text_preview" not in content
     assert "evidence" not in content
     assert "metadata" not in content

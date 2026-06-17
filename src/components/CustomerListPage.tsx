@@ -11,6 +11,8 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Search, Users, Clock, User, Filter, Download, RefreshCw, X, AlertCircle } from 'lucide-react';
 import { listCustomers, getCustomerDetail } from '../services/api';
 import { ApiError } from '../services/types';
@@ -53,6 +55,158 @@ function formatCustomerDisplayId(recordId: string): string {
 
 function inferCustomerType(recordId: string): string {
   return recordId.startsWith('personal_') ? '个人' : '企业';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function parseMaybeRecord(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return isRecord(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function collectNestedRecords(payload: unknown): Record<string, unknown>[] {
+  const root = parseMaybeRecord(payload);
+  if (!Object.keys(root).length) return [];
+  return [
+    root,
+    parseMaybeRecord(root.result),
+    parseMaybeRecord(root.content),
+    parseMaybeRecord(root.extracted_json),
+    parseMaybeRecord(root.extractedJson),
+    parseMaybeRecord(root.extracted_data),
+    parseMaybeRecord(root.extractedData),
+    parseMaybeRecord(root.data),
+    parseMaybeRecord(root.structured_data),
+    parseMaybeRecord(root.structuredData),
+  ].filter((item) => Object.keys(item).length > 0);
+}
+
+function isCompanyArticlesPayload(sectionName: string, payload: unknown): boolean {
+  if (sectionName === '公司章程' || sectionName === 'company_articles') return true;
+  return collectNestedRecords(payload).some((record) => {
+    const docType = String(
+      record.doc_type ||
+      record.docType ||
+      record.document_type_code ||
+      record.documentTypeCode ||
+      record.document_type ||
+      record.documentType ||
+      record.extraction_type ||
+      record.type ||
+      '',
+    ).trim();
+    return docType === 'company_articles' || docType === '公司章程';
+  });
+}
+
+function pickCompanyArticlesMarkdown(payload: unknown): string {
+  if (typeof payload === 'string' && payload.trim().startsWith('## 公司章程')) {
+    return payload.trim();
+  }
+  const records = collectNestedRecords(payload);
+  const priorities = [
+    'display_markdown',
+    'displayMarkdown',
+    'report_markdown',
+    'reportMarkdown',
+    'markdown',
+    'markdown_summary',
+    'markdownSummary',
+    'summary_markdown',
+    'summaryMarkdown',
+  ];
+  const candidates: string[] = [];
+  priorities.forEach((key) => {
+    records.forEach((record) => {
+      const markdown = String(record[key] || '').trim();
+      if (markdown && markdown.includes('## 公司章程')) candidates.push(markdown);
+    });
+  });
+  return (
+    candidates.find((item) => item.includes('经营范围') && item.includes('法定代表人：由执行董事担任')) ||
+    candidates.find((item) => !item.includes('法定代表人：暂无')) ||
+    candidates[0] ||
+    ''
+  );
+}
+
+export function CustomerDetailFieldRenderer({
+  sectionName,
+  sectionValue,
+}: {
+  sectionName: string;
+  sectionValue: unknown;
+}) {
+  let parsedValue: unknown = sectionValue;
+  if (typeof sectionValue === 'string' && (sectionValue.startsWith('{') || sectionValue.startsWith('['))) {
+    try {
+      parsedValue = JSON.parse(sectionValue);
+    } catch {
+      parsedValue = sectionValue;
+    }
+  }
+
+  if (isCompanyArticlesPayload(sectionName, parsedValue)) {
+    const markdown = pickCompanyArticlesMarkdown(parsedValue);
+    return (
+      <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {markdown || '暂无公司章程解析结果'}
+        </ReactMarkdown>
+      </article>
+    );
+  }
+
+  if (typeof parsedValue === 'object' && parsedValue !== null && !Array.isArray(parsedValue)) {
+    const parsedRecord = parsedValue as Record<string, unknown>;
+    const extractedJson = (parsedRecord.extracted_json || parsedRecord.extractedJson || parsedRecord.data || parsedRecord) as Record<string, unknown>;
+    if (looksLikeEnterpriseBankStatementData(extractedJson)) {
+      return (
+        <EnterpriseBankStatementView
+          data={extractedJson}
+          markdown={String(parsedRecord.markdown_summary || parsedRecord.markdown || parsedRecord.summary || '')}
+        />
+      );
+    }
+    return (
+      <DataSectionCard
+        title={sectionName}
+        data={parsedRecord}
+      />
+    );
+  }
+
+  if (isArrayOfObjects(parsedValue)) {
+    return (
+      <ArrayDataCard
+        title={sectionName}
+        data={parsedValue as Array<Record<string, unknown>>}
+      />
+    );
+  }
+
+  return (
+    <div className="border border-gray-100 rounded-lg p-3">
+      <div className="text-xs font-medium text-gray-400 mb-1">{sectionName}</div>
+      <div className="text-sm text-gray-700 whitespace-pre-wrap break-words">
+        {typeof parsedValue === 'string' ? (
+          parsedValue || <span className="text-gray-300 italic">（空）</span>
+        ) : (
+          String(parsedValue)
+        )}
+      </div>
+    </div>
+  );
 }
 
 function getRiskLevelLabel(level?: string): string {
@@ -515,57 +669,12 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
                   {Object.keys(selectedDetail.fields).length > 0 ? (
                     <div className="space-y-4">
                       {Object.entries(selectedDetail.fields).map(([sectionName, sectionValue]) => {
-                        let parsedValue: unknown = sectionValue;
-                        if (typeof sectionValue === 'string' && (sectionValue.startsWith('{') || sectionValue.startsWith('['))) {
-                          try {
-                            parsedValue = JSON.parse(sectionValue);
-                          } catch {
-                            parsedValue = sectionValue;
-                          }
-                        }
-
-                        if (typeof parsedValue === 'object' && parsedValue !== null && !Array.isArray(parsedValue)) {
-                          const parsedRecord = parsedValue as Record<string, unknown>;
-                          const extractedJson = (parsedRecord.extracted_json || parsedRecord.extractedJson || parsedRecord.data || parsedRecord) as Record<string, unknown>;
-                          if (looksLikeEnterpriseBankStatementData(extractedJson)) {
-                            return (
-                              <EnterpriseBankStatementView
-                                key={sectionName}
-                                data={extractedJson}
-                                markdown={String(parsedRecord.markdown_summary || parsedRecord.markdown || parsedRecord.summary || '')}
-                              />
-                            );
-                          }
-                          return (
-                            <DataSectionCard
-                              key={sectionName}
-                              title={sectionName}
-                              data={parsedRecord}
-                            />
-                          );
-                        }
-
-                        if (isArrayOfObjects(parsedValue)) {
-                          return (
-                            <ArrayDataCard
-                              key={sectionName}
-                              title={sectionName}
-                              data={parsedValue as Array<Record<string, unknown>>}
-                            />
-                          );
-                        }
-
                         return (
-                          <div key={sectionName} className="border border-gray-100 rounded-lg p-3">
-                            <div className="text-xs font-medium text-gray-400 mb-1">{sectionName}</div>
-                            <div className="text-sm text-gray-700 whitespace-pre-wrap break-words">
-                              {typeof parsedValue === 'string' ? (
-                                parsedValue || <span className="text-gray-300 italic">（空）</span>
-                              ) : (
-                                String(parsedValue)
-                              )}
-                            </div>
-                          </div>
+                          <CustomerDetailFieldRenderer
+                            key={sectionName}
+                            sectionName={sectionName}
+                            sectionValue={sectionValue}
+                          />
                         );
                       })}
                     </div>
