@@ -236,6 +236,7 @@ def test_company_articles_extracts_all_shareholder_rows_and_rechecks_capital() -
 第四条 公司注册资本：人民币2000万元
 
 第四章 股东的姓名或者名称、出资方式、出资额和出资日期
+第五条 股东的姓名或者名称、出资方式、出资额和出资日期如下：
 股东的姓名或者名称 出资额 出资方式 出资日期
 钟璟 1400万元 货币 2029年12月15日
 黎云 600万元 货币 2029年12月15日
@@ -279,6 +280,7 @@ def test_company_articles_extracts_all_shareholder_rows_and_rechecks_capital() -
     assert "| 钟璟 | 1400万元 | 货币 | 2029.12.15 | 70.00% |" in markdown
     assert "| 黎云 | 600万元 | 货币 | 2029.12.15 | 30.00% |" in markdown
     assert "股东出资额合计与注册资本不一致，请人工复核" not in markdown
+    assert "股东信息：未识别" not in markdown
 
 
 def test_company_articles_shareholder_parser_supports_no_space_ocr_rows() -> None:
@@ -318,6 +320,54 @@ def test_company_articles_shareholder_parser_supports_no_space_ocr_rows() -> Non
     assert "| 未识别 | 未识别 | 未识别 | 未识别 | 未识别 |" not in markdown
     assert "| 钟璟 | 1400万元 | 货币 | 2029.12.15 | 70.00% |" in markdown
     assert "| 黎云 | 600万元 | 货币 | 2029.12.15 | 30.00% |" in markdown
+
+
+def test_company_articles_shareholder_parser_supports_misaligned_newline_ocr_rows() -> None:
+    text = """
+第三章 公司注册资本
+第四条 公司注册资本：人民币2000万元
+股东的姓名或者名称
+出资额
+出资方式
+出资日期
+钟璟
+1400万元
+货币
+2029年12月15日
+黎云
+600万元
+货币
+2029年12月15日
+第六条 公司成立后
+"""
+    result = CompanyArticlesAgent().run(
+        {
+            "text": text,
+            "raw_pages": [{"page": 1, "text": text}],
+            "filename": "换行错位股东表章程.pdf",
+        }
+    ).to_dict()
+    structured = result["structured_data"]
+    shareholders = structured["shareholders"]
+    markdown = result["display_markdown"]
+
+    assert len(shareholders) == 2
+    assert shareholders[0]["name"] == "钟璟"
+    assert shareholders[0]["subscribed_amount"] == "1400万元"
+    assert shareholders[0]["contribution_method"] == "货币"
+    assert shareholders[0]["contribution_deadline"] == "2029.12.15"
+    assert shareholders[0]["contribution_ratio"] == "70.00%"
+    assert shareholders[1]["name"] == "黎云"
+    assert shareholders[1]["subscribed_amount"] == "600万元"
+    assert shareholders[1]["contribution_method"] == "货币"
+    assert shareholders[1]["contribution_deadline"] == "2029.12.15"
+    assert shareholders[1]["contribution_ratio"] == "30.00%"
+    assert structured["capital_check"]["shareholder_total_amount"] == 2000
+    assert structured["capital_check"]["message"] == "出资额合计与注册资本一致"
+    assert "| 钟璟 | 1400万元 | 货币 | 2029.12.15 | 70.00% |" in markdown
+    assert "| 黎云 | 600万元 | 货币 | 2029.12.15 | 30.00% |" in markdown
+    assert "股东信息：未识别" not in markdown
+    assert "股东出资额合计与注册资本不一致，请人工复核" not in markdown
 
 
 def test_company_articles_markdown_does_not_create_fake_unknown_shareholder_row() -> None:

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import re
+import logging
 from typing import Any
 
 from .schema import Shareholder
+
+logger = logging.getLogger(__name__)
+SHAREHOLDER_LOG_PREFIX = "[CompanyArticles][ShareholderExtract]"
 
 
 def compact_text(text: str) -> str:
@@ -167,13 +171,13 @@ def extract_shareholder_block(text: str) -> str:
     start = min(starts)
     tail = source[start:]
     boundaries = [
-        r"\n\s*第六条",
-        r"\n\s*第五章",
-        r"\n\s*公司成立后",
-        r"\n\s*公司机构",
-        r"\n\s*股东会",
-        r"\n\s*第[一二三四五六七八九十]+章",
-        r"\n\s*第[五六七八九十]+条",
+        r"(?:\n|\s)第六条",
+        r"(?:\n|\s)第五章",
+        r"(?:\n|\s)公司成立后",
+        r"(?:\n|\s)公司机构",
+        r"(?:\n|\s)股东会",
+        r"(?:\n|\s)第[一二三四五六七八九十]+章",
+        r"(?:\n|\s)第[六七八九十]+条",
     ]
     end = len(tail)
     for pattern in boundaries:
@@ -181,6 +185,11 @@ def extract_shareholder_block(text: str) -> str:
         if match and match.start() > 20:
             end = min(end, match.start())
     return tail[:end]
+
+
+def compact_shareholder_text(text: str) -> str:
+    source = strip_shareholder_headers(normalize_shareholder_text(text))
+    return re.sub(r"[\s|,，、]+", "", source)
 
 
 def normalize_contribution_date(value: str) -> str:
@@ -206,6 +215,15 @@ def is_valid_shareholder_name(name: str) -> bool:
     return not any(item in text for item in forbidden)
 
 
+def clean_shareholder_name_candidate(name: str) -> str:
+    text = clean_clause(name)
+    # Compact OCR parsing may leave table-header glue before the real name, for example
+    # "出资额和沃志方495万元..." -> candidate name "和沃志方".
+    text = re.sub(r"^(?:和|及|与|、|如下|为|是)+", "", text)
+    text = re.sub(r"^(?:姓名或者名称|姓名|名称)+", "", text)
+    return text
+
+
 def make_shareholder(
     name: str,
     amount: str,
@@ -213,7 +231,7 @@ def make_shareholder(
     date: str,
     registered_capital_amount: float | None = None,
 ) -> Shareholder | None:
-    clean_name = clean_clause(name)
+    clean_name = clean_shareholder_name_candidate(name)
     amount_number = parse_amount_number(amount)
     if not is_valid_shareholder_name(clean_name) or amount_number is None:
         return None
@@ -232,12 +250,23 @@ def make_shareholder(
 
 def dedupe_shareholders(items: list[Shareholder]) -> list[Shareholder]:
     deduped: list[Shareholder] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: dict[tuple[str, str], int] = {}
     for item in items:
-        key = (item.name, f"{float(item.subscribed_amount_number or 0):g}", item.contribution_deadline)
-        if key in seen:
+        key = (f"{float(item.subscribed_amount_number or 0):g}", item.contribution_deadline)
+        existing_index = seen.get(key)
+        if existing_index is not None:
+            existing = deduped[existing_index]
+            if existing.name == item.name:
+                continue
+            if existing.name.endswith(item.name):
+                deduped[existing_index] = item
+                continue
+            if item.name.endswith(existing.name):
+                continue
+        exact_key = (item.name, f"{float(item.subscribed_amount_number or 0):g}", item.contribution_deadline)
+        if any((row.name, f"{float(row.subscribed_amount_number or 0):g}", row.contribution_deadline) == exact_key for row in deduped):
             continue
-        seen.add(key)
+        seen[key] = len(deduped)
         deduped.append(item)
     return deduped
 
@@ -274,6 +303,29 @@ def parse_shareholders_by_regex(block: str, registered_capital_amount: float | N
             )
             if shareholder:
                 items.append(shareholder)
+    return dedupe_shareholders(items)
+
+
+def parse_shareholders_by_compact(block: str, registered_capital_amount: float | None) -> list[Shareholder]:
+    source = compact_shareholder_text(block)
+    date = r"(?:19|20)\d{2}(?:年|[./-])(?:1[0-2]|0?[1-9])(?:月|[./-])(?:3[01]|[12]\d|0?[1-9])日?"
+    pattern = re.compile(
+        rf"(?P<name>[\u4e00-\u9fff·路]{{2,10}})"
+        rf"(?P<amount>\d+(?:\.\d+)?万元)"
+        rf"(?P<method>货币|现金|实物|知识产权|土地使用权|股权|债权|其他)"
+        rf"(?P<date>{date})"
+    )
+    items: list[Shareholder] = []
+    for match in pattern.finditer(source):
+        shareholder = make_shareholder(
+            match.group("name"),
+            match.group("amount"),
+            match.group("method"),
+            match.group("date"),
+            registered_capital_amount,
+        )
+        if shareholder:
+            items.append(shareholder)
     return dedupe_shareholders(items)
 
 
@@ -319,6 +371,18 @@ def parse_shareholders_by_tokens(block: str, registered_capital_amount: float | 
     return dedupe_shareholders(items)
 
 
+def shareholder_debug_dict(items: list[Shareholder]) -> list[dict[str, Any]]:
+    return [item.to_dict() for item in items]
+
+
+def shareholder_tokens_for_debug(block: str) -> list[str]:
+    source = strip_shareholder_headers(normalize_shareholder_text(block))
+    token_pattern = re.compile(
+        r"[\u4e00-\u9fff·路]{2,20}|\d+(?:\.\d+)?\s*万\s*元?|(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}"
+    )
+    return [clean_clause(item.group(0)) for item in token_pattern.finditer(source)]
+
+
 def recover_missing_shareholders(
     block: str,
     current: list[Shareholder],
@@ -360,11 +424,47 @@ def recover_missing_shareholders(
 
 def extract_shareholders(text: str, registered_capital_amount: float | None = None) -> list[Shareholder]:
     block = extract_shareholder_block(text)
-    shareholders = parse_shareholders_by_regex(block, registered_capital_amount)
+    normalized_block = normalize_shareholder_text(block)
+    if not block.strip():
+        logger.debug("%s shareholder_block_empty=true", SHAREHOLDER_LOG_PREFIX)
+    logger.debug("%s full_ocr_text_head=%s", SHAREHOLDER_LOG_PREFIX, str(text or "")[:2000])
+    logger.debug("%s full_ocr_text_tail=%s", SHAREHOLDER_LOG_PREFIX, str(text or "")[-2000:])
+    logger.debug("%s shareholder_block=%s", SHAREHOLDER_LOG_PREFIX, block)
+    logger.debug("%s normalized_shareholder_block=%s", SHAREHOLDER_LOG_PREFIX, normalized_block)
+
+    row_matches = parse_shareholders_by_regex(block, registered_capital_amount)
+    logger.debug("%s row_regex_matches=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(row_matches))
+    if not row_matches:
+        logger.debug("%s regex_match_count=0", SHAREHOLDER_LOG_PREFIX)
+
+    compact_matches = parse_shareholders_by_compact(block, registered_capital_amount)
+    logger.debug("%s compact_regex_matches=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(compact_matches))
+
+    shareholders = dedupe_shareholders([*row_matches, *compact_matches])
     if len(shareholders) < 2:
-        shareholders = dedupe_shareholders([*shareholders, *parse_shareholders_by_tokens(block, registered_capital_amount)])
-    shareholders = recover_missing_shareholders(block, shareholders, registered_capital_amount)
-    return dedupe_shareholders(shareholders)
+        token_rows = parse_shareholders_by_tokens(block, registered_capital_amount)
+        logger.debug("%s token_fallback_tokens=%s", SHAREHOLDER_LOG_PREFIX, shareholder_tokens_for_debug(block))
+        logger.debug("%s token_fallback_rows=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(token_rows))
+        shareholders = dedupe_shareholders([*shareholders, *token_rows])
+
+    if not shareholders or (
+        registered_capital_amount
+        and abs(sum(float(item.subscribed_amount_number or 0) for item in shareholders) - registered_capital_amount) >= 0.01
+    ):
+        full_text_matches = dedupe_shareholders([
+            *parse_shareholders_by_regex(text, registered_capital_amount),
+            *parse_shareholders_by_compact(text, registered_capital_amount),
+            *parse_shareholders_by_tokens(text, registered_capital_amount),
+        ])
+        shareholders = dedupe_shareholders([*shareholders, *full_text_matches])
+
+    recovered = recover_missing_shareholders(f"{block}\n{text}", shareholders, registered_capital_amount)
+    logger.debug("%s recovered_rows=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(recovered))
+    shareholders = dedupe_shareholders(recovered)
+    if not shareholders:
+        logger.debug("%s shareholders_empty_after_all_strategies=true", SHAREHOLDER_LOG_PREFIX)
+    logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
+    return shareholders
 
 
 def short_sentence(text: str, keyword: str, max_chars: int = 80) -> str:
