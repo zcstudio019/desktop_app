@@ -1022,6 +1022,10 @@ function hasPersonalFlowShape(item: Record<string, unknown> | null | undefined):
 function getMarkdownSummaryFromRecord(item: Record<string, unknown> | null | undefined): string {
   if (!item) return '';
   return String(
+    item.display_markdown ??
+    item.displayMarkdown ??
+    item.report_markdown ??
+    item.reportMarkdown ??
     item.markdown_summary ??
     item.markdownSummary ??
     item.summary_markdown ??
@@ -1330,7 +1334,7 @@ function buildCompanyArticlesInsight(
   const extractedData = (latestItem.extracted_data || {}) as Record<string, unknown>;
   const document = getDocumentsByType(documents, 'company_articles')[0];
   const summaryText = stringifyExtractionValue(extractedData.summary);
-  const rawLegalPerson = stringifyExtractionValue(extractedData.legal_person);
+  const rawLegalPerson = extractValueFromExtractionData(extractedData, ['legal_representative', '法定代表人']);
   const fallbackLegalPerson = getFirstValidFieldValueByTypes(
     extractionGroups,
     ['business_license', 'account_license'],
@@ -1339,10 +1343,10 @@ function buildCompanyArticlesInsight(
   const legalPerson = !isInvalidCompanyArticlesRoleValue(rawLegalPerson)
     ? rawLegalPerson
     : (!isInvalidCompanyArticlesRoleValue(fallbackLegalPerson) ? fallbackLegalPerson : '');
-  const executiveDirector = stringifyExtractionValue(extractedData.executive_director);
+  const executiveDirector = extractValueFromExtractionData(extractedData, ['executive_director', '执行董事']);
   const chairman = stringifyExtractionValue(extractedData.chairman);
-  const manager = stringifyExtractionValue(extractedData.manager);
-  const supervisor = stringifyExtractionValue(extractedData.supervisor);
+  const manager = extractValueFromExtractionData(extractedData, ['manager', '经理']);
+  const supervisor = extractValueFromExtractionData(extractedData, ['supervisor', '监事']);
   const sanitizedExecutiveDirector = isInvalidCompanyArticlesRoleValue(executiveDirector) ? '' : executiveDirector;
   const sanitizedChairman = isInvalidCompanyArticlesRoleValue(chairman) ? '' : chairman;
   const sanitizedManager = isInvalidCompanyArticlesRoleValue(manager) ? '' : manager;
@@ -1370,13 +1374,13 @@ function buildCompanyArticlesInsight(
     ['business_license'],
     ['address', '住所', '地址'],
   );
-  const companyName = stringifyExtractionValue(extractedData.company_name)
+  const companyName = extractValueFromExtractionData(extractedData, ['company_name', '公司名称'])
     || fallbackCompanyName
     || extractCompanyNameFromLooseText(summaryText);
-  const businessScope = stringifyExtractionValue(extractedData.business_scope)
+  const businessScope = extractValueFromExtractionData(extractedData, ['business_scope', '经营范围'])
     || extractFieldValueFromLooseText(summaryText, ['经营范围', '经营项目'])
     || fallbackBusinessScope;
-  const address = stringifyExtractionValue(extractedData.address)
+  const address = extractValueFromExtractionData(extractedData, ['company_address', '公司住所', 'address', '地址'])
     || extractFieldValueFromLooseText(summaryText, ['地址', '住所'])
     || fallbackAddress;
   const managementStructure = stringifyExtractionValue(extractedData.management_structure)
@@ -1385,7 +1389,7 @@ function buildCompanyArticlesInsight(
 
     return {
       companyName,
-      registeredCapital: stringifyExtractionValue(extractedData.registered_capital),
+      registeredCapital: extractValueFromExtractionData(extractedData, ['registered_capital', '注册资本']),
       businessScope,
       address,
       managementStructure,
@@ -4278,22 +4282,6 @@ const CustomerDataPage: React.FC<CustomerDataPageProps> = ({ onBack }) => {
                         <div className="mt-1 text-sm leading-6 text-slate-700">{companyArticlesInsight.summary}</div>
                       </div>
                     ) : null}
-                    <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-3">
-                      <div className="text-xs font-medium text-amber-700">任职原文线索（调试）</div>
-                      {companyArticlesInsight.managementRoleEvidenceLines.length > 0 ? (
-                        <div className="mt-2 space-y-1 text-xs leading-5 text-slate-700">
-                          {companyArticlesInsight.managementRoleEvidenceLines.map((line, index) => (
-                            <div key={`${line}-${index}`} className="rounded-lg bg-white/80 px-2 py-1">
-                              {line}
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="mt-2 text-xs leading-5 text-slate-600">
-                          当前未拿到包含法定代表人 / 执行董事 / 经理 / 监事的明确 OCR 原文线索。
-                        </div>
-                      )}
-                    </div>
                     <div>
                       <div className="text-xs font-medium text-slate-500">股权结构摘要</div>
                       <div className="mt-1 text-slate-700">

@@ -68,4 +68,29 @@ describe('resolveDocumentContent', () => {
     expect(result.content).not.toContain('structured_json');
     expect(result.content).not.toContain('doc_type');
   });
+
+  it('uses only final markdown for company articles', () => {
+    const result = resolveDocumentContent({
+      document_type: 'company_articles',
+      latest_extraction: {
+        extracted_data: {
+          doc_type: 'company_articles',
+          display_markdown: '## 公司章程\n- 资料类型：公司章程\n- 公司住所：上海市长宁区广顺路33号3幢6层672室',
+          governance: { legal_representative: '由执行董事担任' },
+          capital_check: { message: '出资额合计与注册资本一致' },
+          metadata: { filename: '乐芙兰章程(新 沃志方).pdf' },
+          raw_text_preview: 'raw',
+        },
+      },
+    });
+
+    expect(result.content).toContain('## 公司章程');
+    expect(result.content).toContain('公司住所：上海市长宁区广顺路33号3幢6层672室');
+    expect(result.content).not.toContain('doc_type');
+    expect(result.content).not.toContain('governance');
+    expect(result.content).not.toContain('capital_check');
+    expect(result.content).not.toContain('metadata');
+    expect(result.content).not.toContain('{');
+    expect(result.content).not.toContain('}');
+  });
 });

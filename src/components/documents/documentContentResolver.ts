@@ -6,6 +6,7 @@ export type DocumentContentSource =
   | 'selectedDocument.latest_extraction.report_markdown'
   | 'selectedDocument.latestExtraction.reportMarkdown'
   | 'selectedDocument.extraction.report_markdown'
+  | 'selectedDocument.extracted_json.display_markdown'
   | 'selectedDocument.extracted_json.report_markdown'
   | 'selectedDocument.extracted_json.markdown'
   | 'selectedDocument.extracted_json.markdown_report'
@@ -39,6 +40,10 @@ function nonEmpty(value: unknown): string {
 
 function isShuimuiReportType(value: unknown): boolean {
   return String(value || '').trim() === 'shuimui_report';
+}
+
+function isCompanyArticlesType(value: unknown): boolean {
+  return String(value || '').trim() === 'company_articles';
 }
 
 function dedupeShuimuiMarkdown(markdown: string): string {
@@ -206,9 +211,10 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
   const candidates: Array<[DocumentContentSource, string]> = [
     ['selectedDocument.report_markdown', nonEmpty(detail.report_markdown)],
     ['selectedDocument.reportMarkdown', nonEmpty(detail.reportMarkdown)],
-    ['selectedDocument.latest_extraction.report_markdown', nonEmpty(latestExtraction.report_markdown ?? latestExtractedData.report_markdown ?? latestExtractedData.markdown_report ?? latestExtractedData.markdown_summary)],
+    ['selectedDocument.latest_extraction.report_markdown', nonEmpty(latestExtraction.report_markdown ?? latestExtractedData.display_markdown ?? latestExtractedData.report_markdown ?? latestExtractedData.markdown ?? latestExtractedData.markdown_report ?? latestExtractedData.markdown_summary)],
     ['selectedDocument.latestExtraction.reportMarkdown', nonEmpty(latestExtraction.reportMarkdown)],
-    ['selectedDocument.extraction.report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.report_markdown ?? extractedData.markdown_report ?? extractedData.markdown_summary)],
+    ['selectedDocument.extraction.report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.display_markdown ?? extractedData.report_markdown ?? extractedData.markdown ?? extractedData.markdown_report ?? extractedData.markdown_summary)],
+    ['selectedDocument.extracted_json.display_markdown', nonEmpty(extractedJson.display_markdown)],
     ['selectedDocument.extracted_json.report_markdown', nonEmpty(extractedJson.report_markdown)],
     ['selectedDocument.extracted_json.markdown', nonEmpty(extractedJson.markdown)],
     ['selectedDocument.extracted_json.markdown_report', nonEmpty(extractedJson.markdown_report)],
@@ -216,7 +222,13 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
     ['selectedDocument.structured_json.markdown_report', nonEmpty(structuredJson.markdown_report)],
   ];
   for (const [source, content] of candidates) {
-    if (content) return { content: isShuimuiReportType(documentType) ? dedupeShuimuiMarkdown(content) : content, source };
+    if (content) {
+      const finalContent = isShuimuiReportType(documentType) ? dedupeShuimuiMarkdown(content) : content;
+      return { content: finalContent, source };
+    }
+  }
+  if (isCompanyArticlesType(documentType)) {
+    return { content: '暂无公司章程解析结果', source: 'empty' };
   }
   if (isShuimuiReportType(documentType)) {
     return { content: '暂无水母报告解析结果', source: 'empty' };

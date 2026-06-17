@@ -66,6 +66,26 @@ import type {
 // Utility Functions
 // ============================================
 
+function getCompanyArticlesMarkdown(content: Record<string, unknown> | undefined, documentType?: string): string {
+  if (!content) return '';
+  const docType = String(
+    documentType ||
+    content.document_type_code ||
+    content.document_type ||
+    content.doc_type ||
+    content.type ||
+    ''
+  );
+  if (docType !== 'company_articles') return '';
+  return String(
+    content.display_markdown ||
+    content.report_markdown ||
+    content.markdown ||
+    content.markdown_summary ||
+    ''
+  ).trim();
+}
+
 /**
  * Convert a File to base64 encoded string
  * Feature: frontend-backend-integration, Property 11: File Base64 Encoding
@@ -564,7 +584,13 @@ const ExtractionResultCard: React.FC<ExtractionResultCardProps> = ({ files }) =>
                 </div>
               )}
               
-              {isKycExtractionResult({ ...file.content, documentType: file.documentType, document_type: file.documentType }) ? (
+              {getCompanyArticlesMarkdown(file.content as Record<string, unknown>, file.documentType) ? (
+                <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {getCompanyArticlesMarkdown(file.content as Record<string, unknown>, file.documentType)}
+                  </ReactMarkdown>
+                </article>
+              ) : isKycExtractionResult({ ...file.content, documentType: file.documentType, document_type: file.documentType }) ? (
                 <KycExtractionResult result={{ ...file.content, documentType: file.documentType, document_type: file.documentType } as unknown as KycExtractionResultType} />
               ) : isEnterpriseBankStatementType(file.documentType) ? (
                 <EnterpriseBankStatementView

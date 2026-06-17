@@ -12,16 +12,28 @@ def _value(value: Any) -> str:
     return text
 
 
+def _capital_text(result: CompanyArticlesResult) -> str:
+    if result.registered_capital and result.registered_capital != "未识别":
+        return result.registered_capital
+    if result.registered_capital_amount:
+        return f"人民币{float(result.registered_capital_amount):g}万元"
+    return "未识别"
+
+
 def render_company_articles_markdown(result: CompanyArticlesResult, *, filename: str = "") -> str:
     signature = result.signature_info or {}
     capital_check = result.capital_check or {}
     governance = result.governance or {}
     rules = result.major_resolution_rules or {}
+    registered_capital = _capital_text(result)
     rows = []
     for item in result.shareholders:
+        ratio = item.contribution_ratio
+        if not ratio and result.registered_capital_amount and item.subscribed_amount_number is not None:
+            ratio = f"{item.subscribed_amount_number / result.registered_capital_amount * 100:.2f}%"
         rows.append(
             f"| {_value(item.name)} | {_value(item.subscribed_amount)} | {_value(item.contribution_method)} | "
-            f"{_value(item.contribution_deadline)} | {_value(item.contribution_ratio)} |"
+            f"{_value(item.contribution_deadline)} | {_value(ratio)} |"
         )
     if not rows:
         rows.append("| 未识别 | 未识别 | 未识别 | 未识别 | 未识别 |")
@@ -30,7 +42,7 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
     return "\n".join(
         [
             "## 公司章程",
-            f"- 资料类型：公司章程",
+            "- 资料类型：公司章程",
             f"- 来源文件：{_value(filename or result.metadata.get('filename'))}",
             "- 原件状态：可查看",
             "",
@@ -38,7 +50,7 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             f"- 章程标题：{_value(result.title)}",
             f"- 公司名称：{_value(result.company_name)}",
             f"- 公司住所：{_value(result.company_address)}",
-            f"- 注册资本：{_value(result.registered_capital)}",
+            f"- 注册资本：{registered_capital}",
             f"- 经营范围：{_value(result.business_scope)}",
             f"- 章程生效规则：{_value(result.articles_effective_rule)}",
             f"- 签署日期：{_value(signature.get('signing_date'))}",
@@ -48,7 +60,7 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             "|---|---:|---|---|---:|",
             *rows,
             "",
-            f"- 注册资本合计：{_value(result.registered_capital)}",
+            f"- 注册资本合计：{registered_capital}",
             f"- 股东出资额合计：{_value(capital_check.get('shareholder_total_amount_text'))}",
             f"- 出资校验：{_value(capital_check.get('message'))}",
             "",

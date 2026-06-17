@@ -42,6 +42,7 @@ class CompanyArticlesAgent:
         )
         validated = validate_company_articles(normalized)
         validated.markdown = render_company_articles_markdown(validated, filename=filename)
+        validated.display_markdown = validated.markdown
         validated.evidence = {
             "source_pages": [page.get("page") or page.get("page_index") for page in pages if isinstance(page, dict)],
             "text_length": len(full_text),

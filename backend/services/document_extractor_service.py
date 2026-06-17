@@ -9343,6 +9343,8 @@ def build_structured_extraction(
         content.setdefault("document_type_name", "公司章程")
         content.setdefault("storage_label", "公司章程")
         content.setdefault("markdown", agent_result.markdown_summary)
+        content.setdefault("display_markdown", agent_result.markdown_summary)
+        content.setdefault("report_markdown", agent_result.markdown_summary)
         return content
     kyc_doc_type = _resolve_kyc_doc_type(text_content, normalized_code, filename)
     if kyc_doc_type:

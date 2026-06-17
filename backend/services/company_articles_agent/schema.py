@@ -49,6 +49,7 @@ class CompanyArticlesResult:
     page_count: int = 0
     warnings: list[str] = field(default_factory=list)
     markdown: str = ""
+    display_markdown: str = ""
     raw_text_preview: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -61,4 +62,5 @@ class CompanyArticlesResult:
         data["storage_label"] = self.doc_type_name
         data["report_markdown"] = self.markdown
         data["markdown_summary"] = self.markdown
+        data["display_markdown"] = self.display_markdown or self.markdown
         return data
