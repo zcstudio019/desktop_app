@@ -181,12 +181,22 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
         raw_pages=SAMPLE_PAGES,
         filename=FILENAME,
     )
-    assert content["agent_type"] == "company_articles_agent"
     assert content["document_type_code"] == "company_articles"
     assert content["doc_type_name"] == "公司章程"
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
+    assert content["extraction_version"] == "company_articles_v2_display_only"
+    assert "agent_type" not in content
+    assert "raw_text_preview" not in content
+    assert "evidence" not in content
+    assert "metadata" not in content
+    assert "raw_text_preview" not in content["structured_data"]
+    assert "evidence" not in content["structured_data"]
+    assert "metadata" not in content["structured_data"]
+    assert "markdown" not in content["structured_data"]
+    assert "display_markdown" not in content["structured_data"]
+    assert "report_markdown" not in content["structured_data"]
 
 
 def test_company_articles_is_excluded_from_lightweight_kyc() -> None:

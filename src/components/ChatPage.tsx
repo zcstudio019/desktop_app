@@ -66,24 +66,87 @@ import type {
 // Utility Functions
 // ============================================
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function parseMaybeRecord(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return isRecord(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function getNestedRecords(payload: Record<string, unknown>): Record<string, unknown>[] {
+  return [
+    payload,
+    parseMaybeRecord(payload.content),
+    parseMaybeRecord(payload.extracted_json),
+    parseMaybeRecord(payload.extractedJson),
+    parseMaybeRecord(payload.extracted_data),
+    parseMaybeRecord(payload.extractedData),
+    parseMaybeRecord(payload.data),
+    parseMaybeRecord(payload.result),
+    parseMaybeRecord(payload.structured_data),
+    parseMaybeRecord(payload.structuredData),
+  ].filter((item) => Object.keys(item).length > 0);
+}
+
+function getPayloadDocType(payload: Record<string, unknown>, documentType?: string): string {
+  const records = getNestedRecords(payload);
+  const value = [
+    documentType,
+    ...records.flatMap((record) => [
+      record.document_type_code,
+      record.documentTypeCode,
+      record.document_type,
+      record.documentType,
+      record.doc_type,
+      record.docType,
+      record.type,
+      record.extraction_type,
+    ]),
+  ].find((item) => String(item || '').trim());
+  const normalized = String(value || '').trim();
+  return normalized === '公司章程' ? 'company_articles' : normalized;
+}
+
+export function getDisplayMarkdown(payload: unknown): string {
+  if (!payload) return '';
+  if (typeof payload === 'string') return payload.trim();
+  if (!isRecord(payload)) return '';
+
+  const records = getNestedRecords(payload);
+  const priorities = [
+    'display_markdown',
+    'displayMarkdown',
+    'report_markdown',
+    'reportMarkdown',
+    'markdown',
+    'markdown_summary',
+    'markdownSummary',
+    'summary_markdown',
+    'summaryMarkdown',
+  ];
+  for (const key of priorities) {
+    for (const record of records) {
+      const markdown = String(record[key] || '').trim();
+      if (markdown) return markdown;
+    }
+  }
+  return '';
+}
+
 function getCompanyArticlesMarkdown(content: Record<string, unknown> | undefined, documentType?: string): string {
   if (!content) return '';
-  const docType = String(
-    documentType ||
-    content.document_type_code ||
-    content.document_type ||
-    content.doc_type ||
-    content.type ||
-    ''
-  );
-  if (docType !== 'company_articles') return '';
-  return String(
-    content.display_markdown ||
-    content.report_markdown ||
-    content.markdown ||
-    content.markdown_summary ||
-    ''
-  ).trim();
+  if (getPayloadDocType(content, documentType) !== 'company_articles') return '';
+  return getDisplayMarkdown(content);
 }
 
 /**

@@ -93,4 +93,57 @@ describe('resolveDocumentContent', () => {
     expect(result.content).not.toContain('{');
     expect(result.content).not.toContain('}');
   });
+
+  it('short-circuits nested cached company articles payloads to display markdown', () => {
+    const result = resolveDocumentContent({
+      latest_extraction: {
+        extracted_data: {
+          markdown: '## 公司章程\n- 法定代表人：暂无',
+          extracted_json: {
+            doc_type: 'company_articles',
+            display_markdown: [
+              '## 公司章程',
+              '- 章程标题：上海乐芙兰电子商务有限公司章程',
+              '- 公司住所：上海市长宁区广顺路33号3幢6层672室',
+              '- 注册资本：人民币500万元',
+              '- 法定代表人：由执行董事担任',
+              '- 需人工复核：无',
+            ].join('\n'),
+            structured_data: {
+              registered_capital_amount: 500,
+              governance: { legal_representative: '由执行董事担任' },
+              metadata: { source: 'old-cache' },
+            },
+            evidence: { source_pages: [1, 2, 3, 4, 5, 6] },
+            raw_text_preview: 'raw text preview',
+          },
+        },
+      },
+    });
+
+    expect(result.content).toContain('## 公司章程');
+    expect(result.content).toContain('法定代表人：由执行董事担任');
+    [
+      'doc type',
+      'agent type',
+      'company address',
+      'registered capital amount',
+      'capital check',
+      'governance',
+      'major resolution rules',
+      'signature info',
+      'page count',
+      'markdown：',
+      'display markdown',
+      'report markdown',
+      'raw text preview',
+      'evidence',
+      'metadata',
+      'registered_capital_amount',
+      'legal_representative',
+      '{',
+      '}',
+      '法定代表人：暂无',
+    ].forEach((item) => expect(result.content.toLowerCase()).not.toContain(item.toLowerCase()));
+  });
 });

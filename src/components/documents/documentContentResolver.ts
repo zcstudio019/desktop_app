@@ -38,6 +38,27 @@ function nonEmpty(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
+function firstMarkdownFromRecord(...records: JsonRecord[]): string {
+  const priorities = [
+    'display_markdown',
+    'displayMarkdown',
+    'report_markdown',
+    'reportMarkdown',
+    'markdown',
+    'markdown_summary',
+    'markdownSummary',
+    'summary_markdown',
+    'summaryMarkdown',
+  ];
+  for (const key of priorities) {
+    for (const record of records) {
+      const markdown = nonEmpty(record[key]);
+      if (markdown) return markdown;
+    }
+  }
+  return '';
+}
+
 function isShuimuiReportType(value: unknown): boolean {
   return String(value || '').trim() === 'shuimui_report';
 }
@@ -200,13 +221,35 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
     detail.document_type
     ?? detail.file_type
     ?? latestExtraction.extraction_type
+    ?? latestExtraction.document_type
+    ?? latestExtraction.document_type_code
     ?? latestExtractedData.document_type
+    ?? latestExtractedData.document_type_code
     ?? latestExtractedData.doc_type
     ?? extractedData.document_type
+    ?? extractedData.document_type_code
     ?? extractedData.doc_type
+    ?? extractedJson.document_type
+    ?? extractedJson.document_type_code
+    ?? extractedJson.doc_type
     ?? structuredJson.document_type
+    ?? structuredJson.document_type_code
+    ?? structuredJson.doc_type
     ?? ''
   );
+
+  if (isCompanyArticlesType(documentType)) {
+    const markdown = firstMarkdownFromRecord(
+      detail,
+      latestExtraction,
+      latestExtractedData,
+      extraction,
+      extractedData,
+      extractedJson,
+      structuredJson,
+    );
+    return { content: markdown || '暂无公司章程解析结果', source: markdown ? 'selectedDocument.extracted_json.display_markdown' : 'empty' };
+  }
 
   const candidates: Array<[DocumentContentSource, string]> = [
     ['selectedDocument.report_markdown', nonEmpty(detail.report_markdown)],

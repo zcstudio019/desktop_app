@@ -6,7 +6,30 @@ from typing import Any
 
 DOC_TYPE = "company_articles"
 DOC_TYPE_NAME = "公司章程"
-SCHEMA_VERSION = "company_articles.agent.v1"
+SCHEMA_VERSION = "company_articles_v2_display_only"
+
+
+STRUCTURED_DATA_KEYS = (
+    "title",
+    "company_name",
+    "company_address",
+    "business_scope",
+    "registered_capital",
+    "registered_capital_amount",
+    "currency",
+    "shareholders",
+    "capital_check",
+    "governance",
+    "major_resolution_rules",
+    "equity_transfer_summary",
+    "finance_and_profit_summary",
+    "dissolution_and_liquidation_summary",
+    "senior_management_obligations_summary",
+    "articles_effective_rule",
+    "signature_info",
+    "page_count",
+    "warnings",
+)
 
 
 @dataclass(slots=True)
@@ -54,13 +77,30 @@ class CompanyArticlesResult:
     evidence: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def structured_data_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["shareholders"] = [item.to_dict() if isinstance(item, Shareholder) else item for item in self.shareholders]
-        data["document_type_code"] = self.doc_type
-        data["document_type_name"] = self.doc_type_name
-        data["storage_label"] = self.doc_type_name
-        data["report_markdown"] = self.markdown
-        data["markdown_summary"] = self.markdown
-        data["display_markdown"] = self.display_markdown or self.markdown
+        return {key: data.get(key) for key in STRUCTURED_DATA_KEYS}
+
+    def to_dict(self) -> dict[str, Any]:
+        markdown = self.display_markdown or self.markdown
+        structured_data = self.structured_data_dict()
+        data = {
+            "doc_type": self.doc_type,
+            "doc_type_name": self.doc_type_name,
+            "document_type_code": self.doc_type,
+            "document_type_name": self.doc_type_name,
+            "storage_label": self.doc_type_name,
+            "schema_version": self.schema_version,
+            "extraction_version": SCHEMA_VERSION,
+            "extraction_status": self.extraction_status,
+            "structured_data": structured_data,
+            "display_markdown": markdown,
+            "markdown": markdown,
+            "report_markdown": markdown,
+            "markdown_summary": markdown,
+            # Keep the common business fields at top level for legacy readers, but
+            # keep display/debug artifacts out of structured_data.
+            **structured_data,
+        }
         return data

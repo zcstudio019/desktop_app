@@ -98,6 +98,72 @@ export function getSectionIcon(sectionName: string): React.ReactNode {
 // Value Formatting
 // ============================================
 
+const HIDDEN_DISPLAY_KEYS = new Set([
+  'doc_type',
+  'doctype',
+  'doc_type_name',
+  'doctypename',
+  'agent_type',
+  'agenttype',
+  'structured_data',
+  'structureddata',
+  'raw_fields',
+  'rawfields',
+  'fields',
+  'capital_check',
+  'capitalcheck',
+  'governance',
+  'major_resolution_rules',
+  'majorresolutionrules',
+  'signature_info',
+  'signatureinfo',
+  'registered_capital_amount',
+  'registeredcapitalamount',
+  'shareholder_total_amount',
+  'shareholdertotalamount',
+  'legal_representative',
+  'legalrepresentative',
+  'source_pages',
+  'sourcepages',
+  'text_length',
+  'textlength',
+  'customer_id',
+  'customerid',
+  'currency',
+  'metadata',
+  'evidence',
+  'raw_text',
+  'rawtext',
+  'raw_text_preview',
+  'rawtextpreview',
+  'markdown',
+  'display_markdown',
+  'displaymarkdown',
+  'report_markdown',
+  'reportmarkdown',
+  'markdown_summary',
+  'markdownsummary',
+  'summary_markdown',
+  'summarymarkdown',
+  'page_count',
+  'pagecount',
+  'document_type_code',
+  'documenttypecode',
+  'document_type_name',
+  'documenttypename',
+  'storage_label',
+  'storagelabel',
+  'schema_version',
+  'schemaversion',
+  'extraction_version',
+  'extractionversion',
+]);
+
+export function isHiddenDisplayKey(key: string): boolean {
+  const normalized = String(key || '').replace(/[\s_-]+/g, '').toLowerCase();
+  return HIDDEN_DISPLAY_KEYS.has(key) || HIDDEN_DISPLAY_KEYS.has(normalized);
+}
+
 function formatScientificNotationString(value: string): string {
   const trimmed = value.trim();
   const match = trimmed.match(/^(-?\d+(?:\.\d+)?e[+-]?\d+)(.*)$/i);
@@ -156,7 +222,7 @@ interface DataTableProps {
 }
 
 export const DataTable: React.FC<DataTableProps> = ({ data, level = 0 }) => {
-  const entries = Object.entries(data);
+  const entries = Object.entries(data).filter(([key]) => !isHiddenDisplayKey(key));
 
   const simpleEntries = entries.filter(([, value]) => !isNestedObject(value) && !isArrayOfObjects(value));
   const nestedEntries = entries.filter(([, value]) => isNestedObject(value));
@@ -206,6 +272,9 @@ interface DataSectionCardProps {
 }
 
 export const DataSectionCard: React.FC<DataSectionCardProps> = ({ title, data, level = 0 }) => {
+  if (isHiddenDisplayKey(title)) return null;
+  const visibleData = Object.fromEntries(Object.entries(data).filter(([key]) => !isHiddenDisplayKey(key)));
+  if (Object.keys(visibleData).length === 0) return null;
   const bgGradient = level === 0
     ? 'bg-gradient-to-r from-slate-50 to-gray-50'
     : 'bg-gray-50';
@@ -222,7 +291,7 @@ export const DataSectionCard: React.FC<DataSectionCardProps> = ({ title, data, l
         </div>
       </div>
       <div className="p-3">
-        <DataTable data={data} level={level} />
+        <DataTable data={visibleData} level={level} />
       </div>
     </div>
   );
@@ -234,9 +303,11 @@ interface ArrayDataCardProps {
 }
 
 export const ArrayDataCard: React.FC<ArrayDataCardProps> = ({ title, data }) => {
+  if (isHiddenDisplayKey(title)) return null;
   if (data.length === 0) return null;
 
-  const columns = Array.from(new Set(data.flatMap(item => Object.keys(item))));
+  const columns = Array.from(new Set(data.flatMap(item => Object.keys(item).filter((key) => !isHiddenDisplayKey(key)))));
+  if (columns.length === 0) return null;
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
