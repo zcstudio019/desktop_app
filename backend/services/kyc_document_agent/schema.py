@@ -15,7 +15,6 @@ DOC_TYPE_NAMES = {
     "lease_contract_keypage": "租赁合同关键页",
     "real_estate_query": "产调",
     "shareholder_id_card": "股东身份证",
-    "articles_keypage": "公司章程关键页",
     "special_business_license": "特许经营许可证",
     "food_business_license": "食品经营许可证",
     "road_transport_license": "道路运输许可证",
@@ -49,7 +48,6 @@ OWNER_TYPES = {
     "vehicle_license": "asset",
     "driving_license": "person",
     "lease_contract_keypage": "asset",
-    "articles_keypage": "enterprise",
 }
 
 REQUIRED_FIELDS = {

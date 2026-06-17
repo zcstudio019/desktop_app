@@ -19,6 +19,7 @@ from backend.document_types import (
 from backend.extraction_skills.enterprise_credit import build_enterprise_credit_content
 from backend.services.document_agents import run_document_extraction_agent
 from backend.services.extraction_utils import normalize_amount, normalize_text, only_digits
+from backend.services.company_articles_agent import detect_company_articles
 from backend.services.kyc_document_agent import KycDocumentAgent
 from backend.services.kyc_document_agent.classifier import classify as classify_kyc_document, normalize_declared_doc_type
 from backend.services.kyc_document_agent.schema import DOC_TYPE_NAMES
@@ -35,6 +36,7 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
     "enterprise_flow",
     "enterprise_bank_statement",
     "financial_report",
+    "company_articles",
     "property_cert",
     "real_estate_cert",
 }
@@ -53,7 +55,6 @@ KYC_DOC_TYPES = {
     "lease_contract_keypage",
     "real_estate_query",
     "shareholder_id_card",
-    "articles_keypage",
     "special_business_license",
     "food_business_license",
     "road_transport_license",
@@ -65,7 +66,6 @@ KYC_LEGACY_DOC_TYPE_ALIASES = {
     "account_license": "account_permit",
     "hukou": "household_register",
     "property_report": "real_estate_query",
-    "company_articles": "articles_keypage",
     "special_license": "special_business_license",
     "marriage_cert": "marriage_certificate",
 }
@@ -138,6 +138,7 @@ def detect_document_type_code(
     explicit_type: str | None = None,
     *,
     rows: list[dict[str, Any]] | None = None,
+    filename: str = "",
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
@@ -152,6 +153,9 @@ def detect_document_type_code(
 
     if _looks_like_personal_credit_report(text_content):
         return "personal_credit_report"
+
+    if detect_company_articles(text_content or ""):
+        return "company_articles"
 
     kyc_doc_type = classify_kyc_document(text_content or "")
     if kyc_doc_type in KYC_DOC_TYPES:
@@ -3035,6 +3039,7 @@ def detect_document_type_code(
     explicit_type: str | None = None,
     *,
     rows: list[dict[str, Any]] | None = None,
+    filename: str = "",
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
@@ -3049,6 +3054,9 @@ def detect_document_type_code(
 
     if _looks_like_personal_credit_report(text_content):
         return "personal_credit_report"
+
+    if detect_company_articles(text_content or "", filename=filename):
+        return "company_articles"
 
     kyc_doc_type = classify_kyc_document(text_content or "")
     if kyc_doc_type in KYC_DOC_TYPES:
@@ -9317,6 +9325,25 @@ def build_structured_extraction(
                 "document_type": normalized_code or "property_cert",
             },
         )
+    if normalized_code == "company_articles":
+        agent_result = run_document_extraction_agent(
+            document_type="company_articles",
+            raw_text=str(text_content or ""),
+            filename=filename,
+            customer_id=customer_id,
+            metadata={
+                "customer_name": customer_name,
+                "raw_pages": raw_pages,
+                "file_path": file_path,
+                "document_type": "company_articles",
+            },
+        )
+        content = dict(agent_result.raw_agent_result or agent_result.extracted_json or {})
+        content["document_type_code"] = "company_articles"
+        content.setdefault("document_type_name", "公司章程")
+        content.setdefault("storage_label", "公司章程")
+        content.setdefault("markdown", agent_result.markdown_summary)
+        return content
     kyc_doc_type = _resolve_kyc_doc_type(text_content, normalized_code, filename)
     if kyc_doc_type:
         content = _build_kyc_structured_extraction(

@@ -74,7 +74,6 @@ KYC_EXTRACTION_TYPES = {
     "lease_contract_keypage",
     "real_estate_query",
     "shareholder_id_card",
-    "articles_keypage",
     "special_business_license",
     "food_business_license",
     "road_transport_license",
@@ -1235,12 +1234,12 @@ async def _extract_content_from_file(
         raise HTTPException(status_code=500, detail=FILE_PROCESS_FAILED_MESSAGE) from exc
 
 
-def _resolve_document_type_code(text_content: str, explicit_type: str | None, rows: list[dict]) -> str:
+def _resolve_document_type_code(text_content: str, explicit_type: str | None, rows: list[dict], filename: str = "") -> str:
     normalized = normalize_document_type_code(explicit_type)
     if normalized:
         return normalized
     try:
-        return detect_document_type_code(text_content, explicit_type, rows=rows, ai_service=ai_service)
+        return detect_document_type_code(text_content, explicit_type, rows=rows, filename=filename, ai_service=ai_service)
     except AIServiceError as exc:
         logger.error("AI classification error: %s", exc)
         raise HTTPException(status_code=500, detail=AI_CLASSIFICATION_FAILED_MESSAGE) from exc
@@ -1392,7 +1391,7 @@ async def _process_file_bytes(
     ) and not rows and explicit_normalized not in {"enterprise_flow", "enterprise_bank_statement", *PROPERTY_CERT_PROCESS_TYPES}:
         raise HTTPException(status_code=400, detail=NO_TEXT_EXTRACTED_MESSAGE)
 
-    document_type_code = _resolve_document_type_code(text_content, explicit_document_type, rows)
+    document_type_code = _resolve_document_type_code(text_content, explicit_document_type, rows, filename)
     logger.info(
         "Resolved document type for %s: %s (%s)",
         filename,

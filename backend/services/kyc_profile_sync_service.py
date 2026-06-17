@@ -16,7 +16,6 @@ LICENSE_DOC_TYPES = {
     "food_business_license",
     "road_transport_license",
     "taxpayer_qualification",
-    "articles_keypage",
 }
 
 

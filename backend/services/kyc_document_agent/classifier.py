@@ -17,7 +17,6 @@ CLASSIFICATION_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("household_register", ("居民户口簿", "户口簿")),
     ("lease_contract_keypage", ("租赁合同", "出租方", "承租方")),
     ("real_estate_query", ("不动产登记信息查询", "产调")),
-    ("articles_keypage", ("公司章程",)),
     ("special_business_license", ("特许经营许可证",)),
     ("food_business_license", ("食品经营许可证",)),
     ("road_transport_license", ("道路运输经营许可证",)),

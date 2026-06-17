@@ -38,7 +38,6 @@ SKILL_MODULES = {
     "lease_contract_keypage": "backend.services.kyc_document_agent.skills.lease_contract_keypage_skill",
     "real_estate_query": "backend.services.kyc_document_agent.skills.real_estate_query_skill",
     "shareholder_id_card": "backend.services.kyc_document_agent.skills.shareholder_id_card_skill",
-    "articles_keypage": "backend.services.kyc_document_agent.skills.articles_keypage_skill",
     "special_business_license": "backend.services.kyc_document_agent.skills.special_business_license_skill",
     "food_business_license": "backend.services.kyc_document_agent.skills.food_business_license_skill",
     "road_transport_license": "backend.services.kyc_document_agent.skills.road_transport_license_skill",

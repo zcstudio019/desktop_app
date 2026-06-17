@@ -210,7 +210,6 @@ KYC_PROFILE_DOC_TYPES = {
     'lease_contract_keypage',
     'real_estate_query',
     'shareholder_id_card',
-    'articles_keypage',
     'special_business_license',
     'food_business_license',
     'road_transport_license',

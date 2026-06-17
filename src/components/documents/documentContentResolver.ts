@@ -7,6 +7,7 @@ export type DocumentContentSource =
   | 'selectedDocument.latestExtraction.reportMarkdown'
   | 'selectedDocument.extraction.report_markdown'
   | 'selectedDocument.extracted_json.report_markdown'
+  | 'selectedDocument.extracted_json.markdown'
   | 'selectedDocument.extracted_json.markdown_report'
   | 'selectedDocument.structured_json.report_markdown'
   | 'selectedDocument.structured_json.markdown_report'
@@ -209,6 +210,7 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
     ['selectedDocument.latestExtraction.reportMarkdown', nonEmpty(latestExtraction.reportMarkdown)],
     ['selectedDocument.extraction.report_markdown', nonEmpty(extraction.report_markdown ?? extractedData.report_markdown ?? extractedData.markdown_report ?? extractedData.markdown_summary)],
     ['selectedDocument.extracted_json.report_markdown', nonEmpty(extractedJson.report_markdown)],
+    ['selectedDocument.extracted_json.markdown', nonEmpty(extractedJson.markdown)],
     ['selectedDocument.extracted_json.markdown_report', nonEmpty(extractedJson.markdown_report)],
     ['selectedDocument.structured_json.report_markdown', nonEmpty(structuredJson.report_markdown)],
     ['selectedDocument.structured_json.markdown_report', nonEmpty(structuredJson.markdown_report)],
