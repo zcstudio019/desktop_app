@@ -35,8 +35,15 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             f"| {_value(item.name)} | {_value(item.subscribed_amount)} | {_value(item.contribution_method)} | "
             f"{_value(item.contribution_deadline)} | {_value(ratio)} |"
         )
-    if not rows:
-        rows.append("| 未识别 | 未识别 | 未识别 | 未识别 | 未识别 |")
+    shareholder_table = [
+        "### 股东及出资信息",
+        "| 股东姓名/名称 | 出资额 | 出资方式 | 出资时间 | 出资比例 |",
+        "|---|---:|---|---|---:|",
+        *rows,
+    ] if rows else [
+        "### 股东及出资信息",
+        "- 股东信息：未识别",
+    ]
     warnings = "；".join(result.warnings) if result.warnings else "无"
     page_count_check = f"共识别 {result.page_count} 页" if result.page_count else "未识别"
     return "\n".join(
@@ -55,10 +62,7 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             f"- 章程生效规则：{_value(result.articles_effective_rule)}",
             f"- 签署日期：{_value(signature.get('signing_date'))}",
             "",
-            "### 股东及出资信息",
-            "| 股东姓名/名称 | 出资额 | 出资方式 | 出资时间 | 出资比例 |",
-            "|---|---:|---|---|---:|",
-            *rows,
+            *shareholder_table,
             "",
             f"- 注册资本合计：{registered_capital}",
             f"- 股东出资额合计：{_value(capital_check.get('shareholder_total_amount_text'))}",

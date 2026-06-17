@@ -133,6 +133,24 @@ def normalize_shareholder_text(text: str) -> str:
     return source
 
 
+def strip_shareholder_headers(text: str) -> str:
+    source = str(text or "")
+    headers = [
+        "股东的姓名或者名称",
+        "股东姓名/名称",
+        "股东姓名",
+        "姓名或者名称",
+        "姓名或名称",
+        "出资额",
+        "出资方式",
+        "出资日期",
+        "出资时间",
+    ]
+    for header in headers:
+        source = source.replace(header, " ")
+    return source
+
+
 def extract_shareholder_block(text: str) -> str:
     source = normalize_shareholder_text(text)
     markers = [
@@ -225,33 +243,42 @@ def dedupe_shareholders(items: list[Shareholder]) -> list[Shareholder]:
 
 
 def parse_shareholders_by_regex(block: str, registered_capital_amount: float | None) -> list[Shareholder]:
-    normalized = normalize_shareholder_text(block)
+    normalized = strip_shareholder_headers(normalize_shareholder_text(block))
     date = r"(?:19|20)\d{2}\s*(?:年|[./-])\s*(?:1[0-2]|0?[1-9])\s*(?:月|[./-])\s*(?:3[01]|[12]\d|0?[1-9])\s*日?"
     amount = r"\d+(?:\.\d+)?\s*万\s*元"
     method = r"货币|现金|实物|知识产权|土地使用权|股权|债权|其他"
     separators = r"(?:\s+|\s*\|\s*|\s*[,，、]\s*)"
-    pattern = re.compile(
-        rf"(?P<name>[\u4e00-\u9fff·路]{{2,20}}){separators}"
-        rf"(?P<amount>{amount}){separators}"
-        rf"(?P<method>{method}){separators}"
-        rf"(?P<date>{date})"
-    )
+    patterns = [
+        re.compile(
+            rf"(?P<name>[\u4e00-\u9fff·路]{{2,20}}){separators}"
+            rf"(?P<amount>{amount}){separators}"
+            rf"(?P<method>{method}){separators}"
+            rf"(?P<date>{date})"
+        ),
+        re.compile(
+            rf"(?P<name>[\u4e00-\u9fff·路]{{2,10}})\s*"
+            rf"(?P<amount>{amount})\s*"
+            rf"(?P<method>{method})\s*"
+            rf"(?P<date>{date})"
+        ),
+    ]
     items: list[Shareholder] = []
-    for match in pattern.finditer(normalized):
-        shareholder = make_shareholder(
-            match.group("name"),
-            match.group("amount"),
-            match.group("method"),
-            match.group("date"),
-            registered_capital_amount,
-        )
-        if shareholder:
-            items.append(shareholder)
+    for pattern in patterns:
+        for match in pattern.finditer(normalized):
+            shareholder = make_shareholder(
+                match.group("name"),
+                match.group("amount"),
+                match.group("method"),
+                match.group("date"),
+                registered_capital_amount,
+            )
+            if shareholder:
+                items.append(shareholder)
     return dedupe_shareholders(items)
 
 
 def parse_shareholders_by_tokens(block: str, registered_capital_amount: float | None) -> list[Shareholder]:
-    source = normalize_shareholder_text(block)
+    source = strip_shareholder_headers(normalize_shareholder_text(block))
     token_pattern = re.compile(
         r"[\u4e00-\u9fff·路]{2,20}|\d+(?:\.\d+)?\s*万\s*元?|(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}"
     )
@@ -304,6 +331,7 @@ def recover_missing_shareholders(
     if diff <= 0.01:
         return current
     source = normalize_shareholder_text(block)
+    source = strip_shareholder_headers(source)
     diff_pattern = rf"{diff:g}\s*万\s*元?"
     date = r"(?:19|20)\d{2}\s*(?:年|[./-])\s*(?:1[0-2]|0?[1-9])\s*(?:月|[./-])\s*(?:3[01]|[12]\d|0?[1-9])\s*日?"
     method = r"货币|现金|实物|知识产权|土地使用权|股权|债权|其他"
