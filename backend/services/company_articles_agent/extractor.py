@@ -1,13 +1,24 @@
 from __future__ import annotations
 
-import re
 import logging
+import re
+from dataclasses import dataclass
+from itertools import combinations
 from typing import Any
 
 from .schema import Shareholder
 
 logger = logging.getLogger(__name__)
 SHAREHOLDER_LOG_PREFIX = "[CompanyArticles][ShareholderExtract]"
+
+
+@dataclass
+class ShareholderCandidate:
+    shareholder: Shareholder
+    source: str
+    in_shareholder_block: bool
+    confidence: float
+    raw_text: str = ""
 
 
 def compact_text(text: str) -> str:
@@ -210,9 +221,9 @@ def is_valid_shareholder_name(name: str) -> bool:
         return False
     forbidden = (
         "股东", "股权", "转让", "姓名", "名称", "出资", "方式", "时间", "日期",
-        "注册资本", "公司", "会议", "决议", "董事", "监事", "经理", "法定代表人",
+        "注册资本", "会议", "决议", "董事", "监事", "经理", "法定代表人",
         "财务", "清算", "解散", "章程", "成立后", "签发", "证明书", "名册",
-        "货币", "万元", "人民币", "章", "条",
+        "货币", "万元", "人民币", "建筑科科", "章", "条",
     )
     invalid_phrases = ("股权转让后", "转让后", "公司成立后", "股东会会议", "本章程", "出资证明书")
     invalid_suffixes = ("后", "前", "时", "的", "和", "或", "及", "章", "条")
@@ -287,6 +298,148 @@ def shareholder_total_matches_registered(
         return False
     total = sum(float(item.subscribed_amount_number or 0) for item in shareholders)
     return abs(total - float(registered_capital_amount)) <= 0.01
+
+
+def is_natural_person_name(name: str) -> bool:
+    text = clean_clause(name)
+    return bool(re.fullmatch(r"[\u4e00-\u9fff·路]{2,4}", text)) and not any(
+        word in text for word in ("公司", "有限", "科技", "贸易", "建筑", "股权", "转让", "章程")
+    )
+
+
+def candidate_has_abnormal_name(name: str) -> bool:
+    text = clean_clause(name)
+    abnormal = (
+        "股权", "转让", "会议", "董事", "监事", "经理", "清算", "解散", "章程",
+        "注册资本", "出资额", "人民币", "万元", "建筑科科", "高级管理人员", "财务",
+    )
+    return any(word in text for word in abnormal)
+
+
+def make_candidates(
+    shareholders: list[Shareholder],
+    source: str,
+    in_shareholder_block: bool,
+    raw_text: str,
+) -> list[ShareholderCandidate]:
+    base_scores = {
+        "table_row": 100,
+        "shareholder_block_regex": 90,
+        "compact_regex": 80,
+        "token_fallback": 70,
+        "amount_recovery": 60,
+        "full_text_fallback": 40,
+    }
+    candidates: list[ShareholderCandidate] = []
+    for item in shareholders:
+        confidence = float(base_scores.get(source, 50))
+        if in_shareholder_block:
+            confidence += 20
+        else:
+            confidence -= 30
+        if any(keyword in raw_text for keyword in ("股东的姓名或者名称", "出资额", "出资方式", "出资日期", "出资时间")):
+            confidence += 20
+        if is_natural_person_name(item.name):
+            confidence += 15
+        if source == "full_text_fallback":
+            confidence -= 30
+        if candidate_has_abnormal_name(item.name):
+            confidence -= 100
+        candidates.append(ShareholderCandidate(item, source, in_shareholder_block, confidence, raw_text[:200]))
+    return candidates
+
+
+def shareholder_candidate_debug(items: list[ShareholderCandidate]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": item.shareholder.name,
+            "amount": item.shareholder.subscribed_amount,
+            "date": item.shareholder.contribution_deadline,
+            "source": item.source,
+            "in_shareholder_block": item.in_shareholder_block,
+            "confidence": item.confidence,
+            "raw_text": item.raw_text,
+        }
+        for item in items
+    ]
+
+
+def dedupe_candidates(candidates: list[ShareholderCandidate]) -> list[ShareholderCandidate]:
+    best_by_exact: dict[tuple[str, str, str, str], ShareholderCandidate] = {}
+    for candidate in candidates:
+        item = candidate.shareholder
+        key = (
+            item.name,
+            f"{float(item.subscribed_amount_number or 0):g}",
+            item.contribution_method,
+            item.contribution_deadline,
+        )
+        current = best_by_exact.get(key)
+        if current is None or candidate.confidence > current.confidence:
+            best_by_exact[key] = candidate
+    return list(best_by_exact.values())
+
+
+def final_select_shareholders(
+    candidates: list[ShareholderCandidate],
+    registered_capital_amount: float | None,
+    shareholder_block: str,
+) -> list[Shareholder]:
+    normalized_candidates = dedupe_candidates([
+        candidate for candidate in candidates if is_valid_shareholder_name(candidate.shareholder.name)
+    ])
+    rejected: list[dict[str, str]] = []
+    best_by_amount_date: dict[tuple[str, str, str], ShareholderCandidate] = {}
+    for candidate in normalized_candidates:
+        item = candidate.shareholder
+        key = (
+            f"{float(item.subscribed_amount_number or 0):g}",
+            item.contribution_method,
+            item.contribution_deadline,
+        )
+        current = best_by_amount_date.get(key)
+        if current is None or candidate.confidence > current.confidence:
+            if current is not None:
+                rejected.append({"name": current.shareholder.name, "reason": "duplicate_amount_date_lower_confidence"})
+            best_by_amount_date[key] = candidate
+        else:
+            rejected.append({"name": item.name, "reason": "duplicate_amount_date_lower_confidence"})
+    filtered = list(best_by_amount_date.values())
+    selected_candidates: list[ShareholderCandidate] = []
+    if registered_capital_amount and filtered:
+        matching_groups: list[tuple[float, int, int, int, tuple[ShareholderCandidate, ...]]] = []
+        for size in range(1, min(len(filtered), 8) + 1):
+            for group in combinations(filtered, size):
+                total = sum(float(item.shareholder.subscribed_amount_number or 0) for item in group)
+                if total - float(registered_capital_amount) > 0.01:
+                    continue
+                if abs(total - float(registered_capital_amount)) <= 0.01:
+                    score = sum(item.confidence for item in group)
+                    block_count = sum(1 for item in group if item.in_shareholder_block)
+                    table_count = sum(1 for item in group if item.source in {"table_row", "shareholder_block_regex"})
+                    natural_count = sum(1 for item in group if is_natural_person_name(item.shareholder.name))
+                    matching_groups.append((score, block_count, table_count, natural_count, group))
+        if matching_groups:
+            matching_groups.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+            selected_candidates = list(matching_groups[0][4])
+    if not selected_candidates:
+        filtered.sort(key=lambda item: item.confidence, reverse=True)
+        running_total = 0.0
+        for candidate in filtered:
+            amount = float(candidate.shareholder.subscribed_amount_number or 0)
+            if registered_capital_amount and running_total + amount - float(registered_capital_amount) > 0.01:
+                rejected.append({"name": candidate.shareholder.name, "reason": "total_exceeds_registered_capital"})
+                continue
+            selected_candidates.append(candidate)
+            running_total += amount
+    selected_names = {id(item) for item in selected_candidates}
+    for candidate in filtered:
+        if id(candidate) not in selected_names and not any(row.get("name") == candidate.shareholder.name for row in rejected):
+            rejected.append({"name": candidate.shareholder.name, "reason": "not_in_best_capital_combination"})
+    logger.debug("%s candidates=%s", SHAREHOLDER_LOG_PREFIX, shareholder_candidate_debug(candidates))
+    logger.debug("%s selected_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_candidate_debug(selected_candidates))
+    logger.debug("%s rejected_candidates=%s", SHAREHOLDER_LOG_PREFIX, rejected)
+    return [item.shareholder for item in selected_candidates]
 
 
 def parse_shareholders_by_regex(block: str, registered_capital_amount: float | None) -> list[Shareholder]:
@@ -458,7 +611,11 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
     compact_matches = parse_shareholders_by_compact(block, registered_capital_amount)
     logger.debug("%s compact_regex_matches=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(compact_matches))
 
-    shareholders = dedupe_shareholders([*row_matches, *compact_matches])
+    candidates = [
+        *make_candidates(row_matches, "table_row", True, block),
+        *make_candidates(compact_matches, "compact_regex", True, block),
+    ]
+    shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
     if shareholder_total_matches_registered(shareholders, registered_capital_amount):
         logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
         return shareholders
@@ -467,7 +624,8 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
         token_rows = parse_shareholders_by_tokens(block, registered_capital_amount)
         logger.debug("%s token_fallback_tokens=%s", SHAREHOLDER_LOG_PREFIX, shareholder_tokens_for_debug(block))
         logger.debug("%s token_fallback_rows=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(token_rows))
-        shareholders = dedupe_shareholders([*shareholders, *token_rows])
+        candidates.extend(make_candidates(token_rows, "token_fallback", True, block))
+        shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
     if shareholder_total_matches_registered(shareholders, registered_capital_amount):
         logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
         return shareholders
@@ -481,14 +639,16 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
             *parse_shareholders_by_compact(text, registered_capital_amount),
             *parse_shareholders_by_tokens(text, registered_capital_amount),
         ])
-        shareholders = dedupe_shareholders([*shareholders, *full_text_matches])
+        candidates.extend(make_candidates(full_text_matches, "full_text_fallback", False, text))
+        shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
     if shareholder_total_matches_registered(shareholders, registered_capital_amount):
         logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
         return shareholders
 
     recovered = recover_missing_shareholders(block, shareholders, registered_capital_amount)
     logger.debug("%s recovered_rows=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(recovered))
-    shareholders = dedupe_shareholders(recovered)
+    candidates.extend(make_candidates(recovered, "amount_recovery", True, block))
+    shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
     if not shareholders:
         logger.debug("%s shareholders_empty_after_all_strategies=true", SHAREHOLDER_LOG_PREFIX)
     logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
