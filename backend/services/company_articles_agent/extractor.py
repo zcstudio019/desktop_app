@@ -22,6 +22,15 @@ class ShareholderCandidate:
     raw_text: str = ""
 
 
+@dataclass(slots=True)
+class ExternalNameCandidate:
+    name: str
+    source_page: int
+    source_page_type: str
+    raw_context: str
+    confidence: float
+
+
 def compact_text(text: str) -> str:
     return re.sub(r"\s+", "", str(text or ""))
 
@@ -342,20 +351,37 @@ def shareholder_total_matches_registered(
 
 
 EXTERNAL_NAME_STOPWORDS = {
-    "公司", "股东", "发起人", "出资", "情况", "姓名", "名称", "证件", "号码",
-    "签字", "签名", "盖章", "日期", "承诺", "经办人", "登记机关", "营业执照",
-    "法定代表人", "财务负责人", "出资额", "出资方式", "出资时间", "认缴出资",
-    "公司印章", "之日起生", "本章程", "股东会", "决议", "联络员", "登记",
-    "材料证明章", "市场监督管理局",
+    "类型", "姓名", "名称", "股东", "发起人", "出资", "出资额", "出资方式",
+    "出资日期", "出资时间", "证件", "证件号码", "身份证", "身份证件",
+    "认缴", "实缴", "比例", "公司", "住所", "电话", "邮箱", "职务",
+    "董事", "监事", "经理", "法定代表人", "财务负责人", "联络员",
+    "经办人", "登记机关", "营业执照", "承诺书", "申请书", "通知书",
+    "股东会", "决议", "章程", "签字", "签名", "盖章", "日期", "年月日",
+    "情况", "号码", "承诺", "认缴出资", "公司印章", "之日起生", "本章程",
+    "登记", "材料证明章", "市场监督管理局",
 }
 
 
-def _valid_external_person_name(value: str) -> bool:
+def is_valid_external_shareholder_name(
+    value: str,
+    source_page_type: str = "",
+    raw_context: str = "",
+) -> bool:
     name = clean_clause(value)
+    if name in EXTERNAL_NAME_STOPWORDS:
+        return False
+    if any(token in name for token in EXTERNAL_NAME_STOPWORDS if len(token) >= 2):
+        return False
     return (
         bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,4}", name))
         and is_natural_person_name(name)
-        and not any(token in name for token in EXTERNAL_NAME_STOPWORDS)
+        and source_page_type
+        in {
+            "",
+            "shareholder_contribution_attachment",
+            "shareholder_resolution",
+            "articles_signature_page",
+        }
     )
 
 
@@ -363,6 +389,7 @@ def _extract_external_names_from_text(
     text: str,
     *,
     allow_standalone_names: bool = False,
+    source_page_type: str = "",
 ) -> list[str]:
     source = normalize_shareholder_text(text)
     names: list[str] = []
@@ -373,29 +400,38 @@ def _extract_external_names_from_text(
     for pattern in labelled_patterns:
         for match in re.finditer(pattern, source):
             for candidate in re.findall(r"[\u4e00-\u9fff·]{2,4}", match.group(1)):
-                if _valid_external_person_name(candidate) and candidate not in names:
+                if is_valid_external_shareholder_name(
+                    candidate, source_page_type, match.group(0)
+                ) and candidate not in names:
                     names.append(candidate)
     for line in source.splitlines():
         match = re.match(
             r"\s*([\u4e00-\u9fff·]{2,4})\s+(?:(?:\d{6,18}[0-9Xx]?)|(?:\d+(?:\.\d+)?\s*万))",
             line,
         )
-        if match and _valid_external_person_name(match.group(1)) and match.group(1) not in names:
+        if match and is_valid_external_shareholder_name(
+            match.group(1), source_page_type, line
+        ) and match.group(1) not in names:
             names.append(match.group(1))
     if allow_standalone_names:
         for line in source.splitlines():
             candidate = clean_clause(line)
-            if _valid_external_person_name(candidate) and candidate not in names:
+            if is_valid_external_shareholder_name(
+                candidate, source_page_type, line
+            ) and candidate not in names:
                 names.append(candidate)
     return names
 
 
-def extract_external_shareholder_names(
+def extract_external_shareholder_name_candidates(
     pages_or_text: list[dict[str, Any]] | str,
     page_classes: list[Any] | None = None,
-) -> list[str]:
+) -> list[ExternalNameCandidate]:
     if isinstance(pages_or_text, str):
-        return _extract_external_names_from_text(pages_or_text)
+        return [
+            ExternalNameCandidate(name, 0, "", pages_or_text[:200], 70)
+            for name in _extract_external_names_from_text(pages_or_text)
+        ]
     allowed_types = {
         "shareholder_contribution_attachment",
         "shareholder_resolution",
@@ -405,8 +441,12 @@ def extract_external_shareholder_names(
         int(getattr(item, "page", 0)): str(getattr(item, "page_type", ""))
         for item in (page_classes or [])
     }
-    occurrence_count: Counter[str] = Counter()
-    first_seen: list[str] = []
+    base_confidence = {
+        "shareholder_contribution_attachment": 90,
+        "shareholder_resolution": 80,
+        "articles_signature_page": 80,
+    }
+    candidates: list[ExternalNameCandidate] = []
     for index, page in enumerate(pages_or_text or [], start=1):
         if not isinstance(page, dict):
             continue
@@ -417,19 +457,49 @@ def extract_external_shareholder_names(
         for name in _extract_external_names_from_text(
             str(page.get("text") or ""),
             allow_standalone_names=page_type == "shareholder_contribution_attachment",
+            source_page_type=page_type or "",
         ):
-            occurrence_count[name] += 1
-            if name not in first_seen:
-                first_seen.append(name)
-    selected = sorted(
-        first_seen,
-        key=lambda name: (-occurrence_count[name], first_seen.index(name)),
+            candidates.append(
+                ExternalNameCandidate(
+                    name=name,
+                    source_page=page_no,
+                    source_page_type=page_type or "",
+                    raw_context=str(page.get("text") or "")[:300],
+                    confidence=base_confidence.get(page_type or "", -100),
+                )
+            )
+    return candidates
+
+
+def extract_external_shareholder_names(
+    pages_or_text: list[dict[str, Any]] | str,
+    page_classes: list[Any] | None = None,
+) -> list[str]:
+    candidates = extract_external_shareholder_name_candidates(
+        pages_or_text,
+        page_classes,
     )
+    occurrence_count = Counter(
+        item.name for item in candidates if item.confidence >= 70
+    )
+    first_seen = list(dict.fromkeys(
+        item.name for item in candidates if item.confidence >= 70
+    ))
+    selected = sorted(first_seen, key=lambda name: (-occurrence_count[name], first_seen.index(name)))
     logger.debug(
-        "%s external_shareholder_names=%s occurrence_count=%s",
+        "%s external_shareholder_names=%s occurrence_count=%s candidates=%s",
         SHAREHOLDER_LOG_PREFIX,
         selected,
         dict(occurrence_count),
+        [
+            {
+                "name": item.name,
+                "source_page": item.source_page,
+                "source_page_type": item.source_page_type,
+                "confidence": item.confidence,
+            }
+            for item in candidates
+        ],
     )
     return selected
 
@@ -446,7 +516,8 @@ def repair_duplicate_shareholder_names_by_external_names(
         if abs(total - float(registered_capital_amount)) > 0.01:
             return shareholders
     cleaned_external = list(dict.fromkeys(
-        name for name in external_names if _valid_external_person_name(name)
+        name for name in external_names
+        if is_valid_external_shareholder_name(name)
     ))
     counts = Counter(item.name for item in shareholders)
     duplicate_names = [name for name, count in counts.items() if count > 1]
@@ -455,12 +526,16 @@ def repair_duplicate_shareholder_names_by_external_names(
     if not duplicate_names or len(missing_names) < duplicate_slots:
         return shareholders
     replacement_index = 0
+    original_names = [item.name for item in shareholders]
+    original_total = sum(float(item.subscribed_amount_number or 0) for item in shareholders)
     for duplicate_name in duplicate_names:
         duplicate_indexes = [
             index for index, item in enumerate(shareholders) if item.name == duplicate_name
         ]
         for replace_index in duplicate_indexes[1:]:
             replacement = missing_names[replacement_index]
+            if not is_valid_external_shareholder_name(replacement):
+                continue
             shareholders[replace_index].name = replacement
             replacement_index += 1
             logger.debug(
@@ -471,6 +546,21 @@ def repair_duplicate_shareholder_names_by_external_names(
                 replacement,
                 cleaned_external,
             )
+    repaired_names = [item.name for item in shareholders]
+    repaired_total = sum(float(item.subscribed_amount_number or 0) for item in shareholders)
+    repair_invalid = (
+        len(repaired_names) != len(set(repaired_names))
+        or any(not is_valid_external_shareholder_name(name) for name in repaired_names)
+        or abs(repaired_total - original_total) > 0.01
+    )
+    if repair_invalid:
+        for item, original_name in zip(shareholders, original_names):
+            item.name = original_name
+        logger.warning(
+            "%s repair_rolled_back=true repaired_names=%s",
+            SHAREHOLDER_LOG_PREFIX,
+            repaired_names,
+        )
     return shareholders
 
 

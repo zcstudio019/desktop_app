@@ -5,11 +5,13 @@ from backend.services.company_articles_agent.company_articles_locator import loc
 from backend.services.company_articles_agent.extractor import (
     clean_articles_title,
     clean_company_address,
+    extract_external_shareholder_name_candidates,
     extract_external_shareholder_names,
     extract_fields,
     repair_shareholder_dates_by_majority,
     repair_duplicate_shareholder_names_by_external_names,
     repair_shareholder_names_by_external_names,
+    is_valid_external_shareholder_name,
 )
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
 from backend.services.company_articles_agent.page_classifier import classify_company_articles_pages
@@ -200,7 +202,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v7_shareholder_name_column_ocr"
+    assert content["extraction_version"] == "company_articles_v8_external_name_stopwords"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -512,7 +514,7 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
             "page": 5,
             "text": (
                 "股东（发起人）出资情况\n证件号码\n认缴出资额\n"
-                "李亚光\n梁啸民\n徐绚纹\n王毅"
+                "类型\n姓名\n证件号码\n李亚光\n梁啸民\n徐绚纹\n王毅"
             ),
         },
         {"page": 6, "text": "法定代表人信息\n移动电话\n电子邮箱\n身份证件号码"},
@@ -605,6 +607,9 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
     assert block.page_numbers == [13, 14, 15, 16, 17]
     external_names = extract_external_shareholder_names(pages, classes)
     assert set(external_names) == {"李亚光", "梁啸民", "徐绚纹", "王毅"}
+    assert "类型" not in external_names
+    assert "姓名" not in external_names
+    assert "证件号码" not in external_names
 
     result = CompanyArticlesAgent().run(
         {"text": "", "raw_pages": pages, "filename": "崇景公司章程.pdf"}
@@ -637,6 +642,7 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
     assert "股东出资额合计与注册资本不一致，请人工复核" not in markdown
     assert markdown.count("| 李亚光 |") == 1
     assert markdown.count("| 王毅 |") == 1
+    assert "| 类型 |" not in markdown
 
 
 def test_company_articles_title_ignores_body_phrase() -> None:
@@ -697,13 +703,57 @@ def test_company_articles_repairs_duplicate_name_even_when_capital_already_match
     ]
     repaired = repair_duplicate_shareholder_names_by_external_names(
         shareholders,
-        ["李亚光", "梁啸民", "徐绚纹", "王毅"],
+        ["李亚光", "梁啸民", "徐绚纹", "类型", "姓名", "证件号码", "王毅"],
         100,
     )
     assert [item.name for item in repaired] == ["李亚光", "梁啸民", "徐绚纹", "王毅"]
     assert sum(float(item.subscribed_amount_number or 0) for item in repaired) == 100
     assert [item.name for item in repaired].count("李亚光") == 1
     assert [item.name for item in repaired].count("王毅") == 1
+    assert "类型" not in [item.name for item in repaired]
+
+
+def test_company_articles_external_names_filter_header_fields() -> None:
+    pages = [
+        {
+            "page": 5,
+            "text": (
+                "股东（发起人）出资情况\n类型\n姓名\n证件号码\n"
+                "李亚光\n梁啸民\n徐绚纹\n王毅"
+            ),
+        }
+    ]
+    classes = classify_company_articles_pages(pages)
+    candidates = extract_external_shareholder_name_candidates(pages, classes)
+    external_names = extract_external_shareholder_names(pages, classes)
+    assert external_names == ["李亚光", "梁啸民", "徐绚纹", "王毅"]
+    assert all(item.confidence >= 70 for item in candidates)
+    assert all(item.source_page_type == "shareholder_contribution_attachment" for item in candidates)
+    assert not is_valid_external_shareholder_name(
+        "类型",
+        "shareholder_contribution_attachment",
+        "类型",
+    )
+    assert "类型" not in external_names
+    assert "姓名" not in external_names
+    assert "证件号码" not in external_names
+
+
+def test_company_articles_markdown_never_renders_header_as_shareholder_name() -> None:
+    result = CompanyArticlesResult(
+        registered_capital="人民币20万元",
+        registered_capital_amount=20,
+        shareholders=[
+            Shareholder("类型", "20万元", 20, "货币", "2048.04.02", "100.00%")
+        ],
+        capital_check={
+            "shareholder_total_amount_text": "20万元",
+            "message": "出资额合计与注册资本一致",
+        },
+    )
+    markdown = render_company_articles_markdown(result, filename="非法表头章程.pdf")
+    assert "| 类型 |" not in markdown
+    assert "| 未识别 | 20万元 | 货币 | 2048.04.02 | 100.00% |" in markdown
 
 
 def test_company_articles_classifier_uses_merged_image_and_crop_ocr_text() -> None:

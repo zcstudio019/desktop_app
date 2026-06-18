@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .extractor import is_valid_external_shareholder_name
 from .schema import CompanyArticlesResult
 
 
@@ -28,11 +29,17 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
     registered_capital = _capital_text(result)
     rows = []
     for item in result.shareholders:
+        shareholder_name = item.name
+        if not is_valid_external_shareholder_name(shareholder_name):
+            shareholder_name = "未识别"
+            warning = "股东姓名包含无效表头字段，请人工复核"
+            if warning not in result.warnings:
+                result.warnings.append(warning)
         ratio = item.contribution_ratio
         if not ratio and result.registered_capital_amount and item.subscribed_amount_number is not None:
             ratio = f"{item.subscribed_amount_number / result.registered_capital_amount * 100:.2f}%"
         rows.append(
-            f"| {_value(item.name)} | {_value(item.subscribed_amount)} | {_value(item.contribution_method)} | "
+            f"| {_value(shareholder_name)} | {_value(item.subscribed_amount)} | {_value(item.contribution_method)} | "
             f"{_value(item.contribution_deadline)} | {_value(ratio)} |"
         )
     shareholder_table = [
