@@ -164,12 +164,13 @@ class CompanyArticlesAgent:
                     "[CompanyArticles][ShareholderRepair] missing_names=%s",
                     missing_names,
                 )
+                extracted["shareholders"] = repair_duplicate_shareholder_names_by_external_names(
+                    shareholders,
+                    external_names,
+                    extracted.get("registered_capital_amount"),
+                )
                 extracted["shareholders"] = repair_shareholder_dates_by_majority(
-                    repair_duplicate_shareholder_names_by_external_names(
-                        shareholders,
-                        external_names,
-                        extracted.get("registered_capital_amount"),
-                    )
+                    extracted["shareholders"]
                 )
                 logger.debug(
                     "[CompanyArticles][ShareholderRepair] after_repair_shareholders=%s",
@@ -207,6 +208,10 @@ class CompanyArticlesAgent:
                     "confidence": 75,
                 }
         extracted["page_count"] = len(pages) if pages else extracted.get("page_count")
+        logger.debug(
+            "[CompanyArticles][ShareholderDateFlow] signing_date=%s",
+            (extracted.get("signature_info") or {}).get("signing_date") or "未识别",
+        )
         normalized = normalize_company_articles(extracted, filename=filename, raw_text=main_text)
         normalized.metadata.update(
             {

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .schema import CompanyArticlesResult, Shareholder
+
+logger = logging.getLogger(__name__)
 
 
 def _missing(value: Any) -> bool:
@@ -17,11 +20,23 @@ def _text(value: Any) -> str:
 def normalize_company_articles(data: dict[str, Any], *, filename: str = "", raw_text: str = "") -> CompanyArticlesResult:
     shareholders = data.get("shareholders") if isinstance(data.get("shareholders"), list) else []
     normalized_shareholders: list[Shareholder] = []
-    for item in shareholders:
+    for fallback_index, item in enumerate(shareholders):
         if isinstance(item, Shareholder):
-            normalized_shareholders.append(item)
+            shareholder = item
         elif isinstance(item, dict):
-            normalized_shareholders.append(Shareholder(**{key: item.get(key) for key in Shareholder.__dataclass_fields__}))
+            shareholder = Shareholder(**{key: item.get(key) for key in Shareholder.__dataclass_fields__})
+        else:
+            continue
+        if shareholder.row_index is None:
+            shareholder.row_index = fallback_index
+        if _missing(shareholder.contribution_deadline):
+            shareholder.contribution_deadline = "未识别"
+        logger.debug(
+            "[CompanyArticles][ShareholderDateFlow] stage=final_normalizer name=%s contribution_deadline=%s",
+            shareholder.name,
+            shareholder.contribution_deadline,
+        )
+        normalized_shareholders.append(shareholder)
 
     result = CompanyArticlesResult(
         title=_text(data.get("title")),

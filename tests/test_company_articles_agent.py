@@ -12,12 +12,16 @@ from backend.services.company_articles_agent.extractor import (
     is_valid_company_address,
     is_valid_company_name,
     normalize_contribution_dates,
+    normalize_contribution_time_cell,
+    parse_contribution_method_cell,
+    parse_shareholders_by_table_lines,
     repair_shareholder_dates_by_majority,
     repair_duplicate_shareholder_names_by_external_names,
     repair_shareholder_names_by_external_names,
     is_valid_external_shareholder_name,
 )
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
+from backend.services.company_articles_agent.normalizer import normalize_company_articles
 from backend.services.company_articles_agent.page_classifier import classify_company_articles_pages
 from backend.services.company_articles_agent.schema import CompanyArticlesResult, Shareholder
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
@@ -886,8 +890,77 @@ def test_company_articles_parses_multiple_contribution_months_and_methods() -> N
     assert shareholders[3]["contribution_ratio"] == "12.13%"
     assert shareholders[4]["contribution_ratio"] == "1.01%"
     assert all(item["contribution_deadline"] != "2004.04.20" for item in shareholders)
-    assert "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 69.31% |" in markdown
+    expected_rows = [
+        "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 5.00% |",
+        "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 69.31% |",
+        "| 陈鹏 | 1277.5万元 | 现金 | 2004.04 / 2005.07 / 2009.05 | 12.55% |",
+        "| 胡海荣 | 1235万元 | 现金 | 2004.04 / 2005.07 / 2009.05 | 12.13% |",
+        "| 陈建生 | 102.5万元 | 现金 | 2004.04 / 2005.07 | 1.01% |",
+    ]
+    assert all(row in markdown for row in expected_rows)
+    assert [markdown.index(row) for row in expected_rows] == sorted(
+        markdown.index(row) for row in expected_rows
+    )
+    forbidden_rows = [
+        "| 林武 | 509万元 | 现金 | 2004.04.20 | 5.00% |",
+        "| 林勇 | 7056万元 | 现金 | 2004.04.20 | 69.31% |",
+        "| 陈鹏 | 1277.5万元 | 现金 | 2004.04.20 | 12.55% |",
+        "| 胡海荣 | 1235万元 | 现金 | 2004.04.20 | 12.13% |",
+        "| 陈建生 | 102.5万元 | 现金 | 2004.04.20 | 1.01% |",
+    ]
+    assert all(row not in markdown for row in forbidden_rows)
+    assert result["structured_data"]["signature_info"]["signing_date"] == "2004.04.20"
     assert result["structured_data"]["capital_check"]["message"] == "出资额合计与注册资本一致"
+
+
+def test_company_articles_parses_naiji_shareholder_table_rows_directly() -> None:
+    block = """
+股东的姓名或者名称 出资额 出资方式 出资时间
+林武 509万元 现金 2004.4 / 2005.7 / 2009.5 / 2012.9
+林勇 7056万元 现金、知识产权 2004.4 / 2005.7 / 2009.5 / 2012.9
+陈鹏 1277.5万元 现金 2004.4 / 2005.7 / 2009.5
+胡海荣 1235万元 现金 2004.4 / 2005.7 / 2009.5
+陈建生 102.5万元 现金 2004.4 / 2005.7
+"""
+    shareholders = parse_shareholders_by_table_lines(block, 10180)
+
+    assert normalize_contribution_time_cell(
+        "2004.4 / 2005.7 / 2009.5 / 2012.9"
+    ) == "2004.04 / 2005.07 / 2009.05 / 2012.09"
+    assert parse_contribution_method_cell("现金、知识产权") == "现金、知识产权"
+    assert [
+        (item.row_index, item.name, item.contribution_method, item.contribution_deadline)
+        for item in shareholders
+    ] == [
+        (0, "林武", "现金", "2004.04 / 2005.07 / 2009.05 / 2012.09"),
+        (1, "林勇", "现金、知识产权", "2004.04 / 2005.07 / 2009.05 / 2012.09"),
+        (2, "陈鹏", "现金", "2004.04 / 2005.07 / 2009.05"),
+        (3, "胡海荣", "现金", "2004.04 / 2005.07 / 2009.05"),
+        (4, "陈建生", "现金", "2004.04 / 2005.07"),
+    ]
+
+
+def test_company_articles_never_uses_signing_date_as_shareholder_deadline() -> None:
+    normalized = normalize_company_articles(
+        {
+            "shareholders": [
+                {
+                    "name": "林武",
+                    "subscribed_amount": "509万元",
+                    "subscribed_amount_number": 509,
+                    "contribution_method": "现金",
+                    "contribution_deadline": "",
+                    "contribution_ratio": "5.00%",
+                }
+            ],
+            "signature_info": {"signing_date": "2004.04.20"},
+        }
+    )
+    markdown = render_company_articles_markdown(normalized)
+
+    assert normalized.shareholders[0].contribution_deadline == "未识别"
+    assert "| 林武 | 509万元 | 现金 | 未识别 | 5.00% |" in markdown
+    assert "| 林武 | 509万元 | 现金 | 2004.04.20 | 5.00% |" not in markdown
 
 
 def test_company_articles_classifier_uses_merged_image_and_crop_ocr_text() -> None:

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .extractor import is_valid_renderable_shareholder_name
 from .schema import CompanyArticlesResult
+
+logger = logging.getLogger(__name__)
 
 
 def _value(value: Any) -> str:
@@ -28,7 +31,11 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
     rules = result.major_resolution_rules or {}
     registered_capital = _capital_text(result)
     rows = []
-    for item in result.shareholders:
+    ordered_shareholders = sorted(
+        enumerate(result.shareholders),
+        key=lambda pair: pair[1].row_index if pair[1].row_index is not None else pair[0],
+    )
+    for _, item in ordered_shareholders:
         shareholder_name = item.name
         if not is_valid_renderable_shareholder_name(shareholder_name):
             shareholder_name = "未识别"
@@ -38,9 +45,15 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
         ratio = item.contribution_ratio
         if not ratio and result.registered_capital_amount and item.subscribed_amount_number is not None:
             ratio = f"{item.subscribed_amount_number / result.registered_capital_amount * 100:.2f}%"
+        deadline = item.contribution_deadline or "未识别"
+        logger.debug(
+            "[CompanyArticles][ShareholderDateFlow] stage=renderer name=%s contribution_deadline=%s",
+            item.name,
+            deadline,
+        )
         rows.append(
             f"| {_value(shareholder_name)} | {_value(item.subscribed_amount)} | {_value(item.contribution_method)} | "
-            f"{_value(item.contribution_deadline)} | {_value(ratio)} |"
+            f"{_value(deadline)} | {_value(ratio)} |"
         )
     shareholder_table = [
         "### 股东及出资信息",

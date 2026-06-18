@@ -40,6 +40,7 @@ class Shareholder:
     contribution_method: str = ""
     contribution_deadline: str = ""
     contribution_ratio: str = ""
+    row_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

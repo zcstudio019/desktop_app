@@ -338,8 +338,10 @@ CONTRIBUTION_DATE_TOKEN_PATTERN = re.compile(
     r"(?P<year>(?:19|20)\d{2})\s*"
     r"(?:年|[./-])\s*"
     r"(?P<month>1[0-2]|0?[1-9])(?!\d)"
-    r"(?:\s*月)?"
-    r"(?:\s*[./-]\s*(?P<day>3[01]|[12]\d|0?[1-9])(?!\d)\s*日?)?"
+    r"(?:"
+    r"\s*月(?:\s*(?P<day_cn>3[01]|[12]\d|0?[1-9])(?!\d)\s*日?)?"
+    r"|\s*[./-]\s*(?P<day_sep>3[01]|[12]\d|0?[1-9])(?!\d)\s*日?"
+    r")?"
 )
 
 
@@ -349,13 +351,18 @@ def normalize_contribution_dates(value: str) -> str:
     for match in CONTRIBUTION_DATE_TOKEN_PATTERN.finditer(text):
         year = int(match.group("year"))
         month = int(match.group("month"))
-        day = match.group("day")
+        day = match.group("day_cn") or match.group("day_sep")
         item = f"{year:04d}.{month:02d}"
         if day:
             item = f"{item}.{int(day):02d}"
         if item not in normalized:
             normalized.append(item)
     return " / ".join(normalized)
+
+
+def normalize_contribution_time_cell(value: str) -> str:
+    """Normalize only date tokens present in a shareholder-table time cell."""
+    return normalize_contribution_dates(value)
 
 
 def normalize_contribution_date(value: str) -> str:
@@ -457,12 +464,16 @@ CONTRIBUTION_METHOD_PATTERN = (
 )
 
 
-def normalize_contribution_method(value: str) -> str:
+def parse_contribution_method_cell(value: str) -> str:
     methods = re.findall(
         r"现金|货币|知识产权|实物|土地使用权|股权|债权|其他",
         str(value or ""),
     )
     return "、".join(dict.fromkeys(methods))
+
+
+def normalize_contribution_method(value: str) -> str:
+    return parse_contribution_method_cell(value)
 
 
 def parse_shareholders_by_table_lines(
@@ -477,6 +488,7 @@ def parse_shareholders_by_table_lines(
         rf"\s+(?P<dates>.+?)\s*$"
     )
     items: list[Shareholder] = []
+    row_index = 0
     for raw_line in normalized.splitlines():
         line = re.sub(r"[ \t\u3000]+", " ", str(raw_line or "")).strip()
         match = row_pattern.match(line)
@@ -485,8 +497,19 @@ def parse_shareholders_by_table_lines(
         name = clean_shareholder_name_candidate(match.group("name"))
         amount_text = re.sub(r"\s+", "", match.group("amount"))
         amount_number = parse_amount_number(amount_text)
-        method = normalize_contribution_method(match.group("method"))
-        dates = normalize_contribution_dates(match.group("dates"))
+        raw_date = match.group("dates")
+        method = parse_contribution_method_cell(match.group("method"))
+        dates = normalize_contribution_time_cell(raw_date)
+        logger.debug(
+            "[CompanyArticles][ShareholderDateFlow] stage=row_parse name=%s raw_date=%s",
+            name,
+            raw_date,
+        )
+        logger.debug(
+            "[CompanyArticles][ShareholderDateFlow] stage=normalized name=%s contribution_deadline=%s",
+            name,
+            dates or "未识别",
+        )
         if (
             not is_valid_shareholder_name(name)
             or amount_number is None
@@ -507,8 +530,10 @@ def parse_shareholders_by_table_lines(
                 contribution_method=method,
                 contribution_deadline=dates,
                 contribution_ratio=ratio,
+                row_index=row_index,
             )
         )
+        row_index += 1
     return dedupe_shareholders(items)
 
 
@@ -919,7 +944,13 @@ def final_select_shareholders(
     for candidate in filtered:
         if id(candidate) not in selected_names and not any(row.get("name") == candidate.shareholder.name for row in rejected):
             rejected.append({"name": candidate.shareholder.name, "reason": "not_in_best_capital_combination"})
-    selected_candidates.sort(key=lambda item: candidate_order.get(id(item), len(candidate_order)))
+    selected_candidates.sort(
+        key=lambda item: (
+            item.shareholder.row_index
+            if item.shareholder.row_index is not None
+            else candidate_order.get(id(item), len(candidate_order))
+        )
+    )
     logger.debug("%s candidates=%s", SHAREHOLDER_LOG_PREFIX, shareholder_candidate_debug(candidates))
     logger.debug("%s selected_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_candidate_debug(selected_candidates))
     logger.debug("%s rejected_candidates=%s", SHAREHOLDER_LOG_PREFIX, rejected)
@@ -1262,7 +1293,13 @@ def extract_signature_info(text: str, pages: list[dict[str, Any]]) -> dict[str, 
         signature_page = f"第{len(pages)}页"
     tail = "\n".join(str(page.get("text") or "") for page in (pages or [])[-2:]) if pages else text[-1500:]
     has_signature = any(token in tail for token in ("签字", "盖章", "签名", "印章", "股东"))
-    signing_date = first_match(tail, [r"((?:19|20)\d{2}\s*年\s*(?:1[0-2]|0?[1-9])\s*月\s*(?:3[01]|[12]\d|0?[1-9])\s*日)"])
+    signing_date = first_match(
+        tail,
+        [
+            r"((?:19|20)\d{2}\s*年\s*(?:1[0-2]|0?[1-9])\s*月\s*(?:3[01]|[12]\d|0?[1-9])\s*日)",
+            r"(?<!\d)((?:19|20)\d{2}\s*(?:\.|-)\s*(?:1[0-2]|0?[1-9])\s*(?:\.|-)\s*(?:3[01]|[12]\d|0?[1-9]))(?!\d)",
+        ],
+    )
     if "股东签字" in tail and "公司印章" in tail:
         detection_summary = "识别到股东签字和公司印章"
     elif has_signature:
@@ -1293,7 +1330,6 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
         currency = "人民币"
     if registered_amount:
         shareholders = recover_missing_shareholders(extract_shareholder_block(text), shareholders, registered_amount)
-        shareholders = repair_shareholder_dates_by_majority(shareholders)
         for shareholder in shareholders:
             if shareholder.subscribed_amount_number is not None:
                 shareholder.contribution_ratio = f"{shareholder.subscribed_amount_number / registered_amount * 100:.2f}%"
