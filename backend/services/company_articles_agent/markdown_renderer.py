@@ -38,6 +38,15 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
         "[CompanyArticles][FinalRenderer] shareholders_before_render=%s",
         [item.to_dict() for item in result.shareholders],
     )
+    is_naiji_runtime_trace = (
+        result.doc_type == "company_articles"
+        and "耐吉章程" in str(filename or result.metadata.get("filename") or "")
+    )
+    if is_naiji_runtime_trace:
+        logger.info(
+            "[CompanyArticles][V7_RENDERER_HIT] filename=%s",
+            filename or result.metadata.get("filename") or "",
+        )
     result = guard_and_repair_shareholders_before_render(result)
     signature = result.signature_info or {}
     capital_check = result.capital_check or {}
@@ -71,6 +80,7 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             f"{_value(deadline)} | {_value(ratio)} |"
         )
     shareholder_table = [
+        *(["<!-- COMPANY_ARTICLES_V7_RENDERER_HIT -->"] if is_naiji_runtime_trace else []),
         "### 股东及出资信息",
         "| 股东姓名/名称 | 出资额 | 出资方式 | 出资时间 | 出资比例 |",
         "|---|---:|---|---|---:|",

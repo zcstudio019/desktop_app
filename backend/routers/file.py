@@ -1612,6 +1612,9 @@ def _extract_structured_data(
         if document_type_code in PROPERTY_CERT_PROCESS_TYPES:
             logger.info("[property] extracted result=%s", content)
         content_doc_type = str(content.get("doc_type") or content.get("document_type_code") or document_type_code)
+        if content_doc_type == "company_articles":
+            content["source_file"] = filename
+            content["filename"] = filename
         is_kyc_content = content.get("agent_type") == "kyc_document_agent" or content_doc_type in KYC_EXTRACTION_TYPES
         if raw_pages and not is_kyc_content:
             content["raw_pages"] = raw_pages

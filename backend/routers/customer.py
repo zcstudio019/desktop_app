@@ -1784,6 +1784,13 @@ async def _get_customer_detail_local(
                     if company_articles_added:
                         continue
                     markdown = _company_articles_display_markdown_from_payload(extracted_data)
+                    logger.info(
+                        "[CompanyArticles][CustomerDetail] endpoint=GET /api/customers/{record_id} "
+                        "record_id=%s extraction_version=%s markdown_source=display_markdown marker=%s",
+                        record_id,
+                        COMPANY_ARTICLES_SCHEMA_VERSION,
+                        "COMPANY_ARTICLES_V7_RENDERER_HIT" in markdown,
+                    )
                     all_fields["公司章程"] = {
                         "doc_type": "company_articles",
                         "doc_type_name": "公司章程",
@@ -3043,6 +3050,9 @@ async def get_document_detail(
         "updated_at": latest_extraction.get("created_at") or document.get("upload_time") or "",
         "report_markdown": report_markdown,
         "reportMarkdown": report_markdown,
+        "display_markdown": report_markdown if document_type == "company_articles" else "",
+        "markdown": report_markdown if document_type == "company_articles" else "",
+        "doc_type": document_type,
         "extraction_version": COMPANY_ARTICLES_SCHEMA_VERSION if document_type == "company_articles" else "",
         "extraction": latest_extraction,
         "latest_extraction": latest_extraction,

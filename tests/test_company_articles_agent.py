@@ -214,7 +214,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v6_final_markdown_deadline_guard"
+    assert content["extraction_version"] == "company_articles_v7_runtime_trace"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -1083,7 +1083,15 @@ def test_company_articles_renderer_hard_gate_repairs_stale_structured_data() -> 
     assert "2004.04.20" not in shareholder_section
 
 
-def test_naiji_final_markdown_no_signing_date_deadline() -> None:
+def test_naiji_final_markdown_runtime_path_and_deadline() -> None:
+    shareholder_block = """
+股东的姓名或者名称 出资额 出资方式 出资时间
+林武 509万元 现金 2004.4 / 2005.7 / 2009.5 / 2012.9
+林勇 7056万元 现金、知识产权 2004.4 / 2005.7 / 2009.5 / 2012.9
+陈鹏 1277.5万元 现金 2004.4 / 2005.7 / 2009.5
+胡海荣 1235万元 现金 2004.4 / 2005.7 / 2009.5
+陈建生 102.5万元 现金 2004.4 / 2005.7
+"""
     stale = CompanyArticlesResult(
         registered_capital="人民币10180万元",
         registered_capital_amount=10180,
@@ -1095,6 +1103,8 @@ def test_naiji_final_markdown_no_signing_date_deadline() -> None:
             Shareholder("林勇", "7056万元", 7056, "现金", "2004.04.20", "69.31%"),
         ],
         signature_info={"signing_date": "2004.04.20"},
+        shareholder_table_block=shareholder_block,
+        internal_blocks={"shareholder_block": shareholder_block},
     )
 
     markdown = render_company_articles_markdown(
@@ -1121,6 +1131,7 @@ def test_naiji_final_markdown_no_signing_date_deadline() -> None:
     assert all(row in shareholder_section for row in expected_rows)
     assert all(row not in shareholder_section for row in forbidden_rows)
     assert [item.name for item in stale.shareholders] == ["林武", "林勇", "陈鹏", "胡海荣", "陈建生"]
+    assert "<!-- COMPANY_ARTICLES_V7_RENDERER_HIT -->" in markdown
 
 
 def test_company_articles_stale_version_is_reextracted_from_saved_raw_text() -> None:
@@ -1143,7 +1154,7 @@ def test_company_articles_stale_version_is_reextracted_from_saved_raw_text() -> 
     )
 
     assert refreshed is not None
-    assert refreshed["extraction_version"] == "company_articles_v6_final_markdown_deadline_guard"
+    assert refreshed["extraction_version"] == "company_articles_v7_runtime_trace"
     assert "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in refreshed["display_markdown"]
     assert "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in refreshed["display_markdown"]
 

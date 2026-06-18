@@ -143,7 +143,7 @@ export function getDisplayMarkdown(payload: unknown): string {
   return '';
 }
 
-const COMPANY_ARTICLES_EXTRACTION_VERSION = 'company_articles_v6_final_markdown_deadline_guard';
+const COMPANY_ARTICLES_EXTRACTION_VERSION = 'company_articles_v7_runtime_trace';
 
 function getCompanyArticlesMarkdown(content: Record<string, unknown> | undefined, documentType?: string): string {
   if (!content) return '';

@@ -109,16 +109,18 @@ function isCompanyArticlesPayload(sectionName: string, payload: unknown): boolea
   });
 }
 
-function pickCompanyArticlesMarkdown(payload: unknown): string {
+function pickCompanyArticlesMarkdown(payload: unknown): { markdown: string; source: string } {
   if (typeof payload === 'string' && payload.trim().startsWith('## 公司章程')) {
-    return payload.trim();
+    return { markdown: payload.trim(), source: 'sectionValue' };
   }
   const records = collectNestedRecords(payload);
-  const currentVersion = 'company_articles_v6_final_markdown_deadline_guard';
+  const currentVersion = 'company_articles_v7_runtime_trace';
   const versions = records
     .map((record) => String(record.extraction_version || record.extractionVersion || record.schema_version || record.schemaVersion || '').trim())
     .filter(Boolean);
-  if (versions.length && !versions.includes(currentVersion)) return '';
+  if (versions.length && !versions.includes(currentVersion)) {
+    return { markdown: '', source: 'version_mismatch' };
+  }
   const priorities = [
     'display_markdown',
     'displayMarkdown',
@@ -130,18 +132,20 @@ function pickCompanyArticlesMarkdown(payload: unknown): string {
     'summary_markdown',
     'summaryMarkdown',
   ];
-  const candidates: string[] = [];
+  const candidates: Array<{ markdown: string; source: string }> = [];
   priorities.forEach((key) => {
     records.forEach((record) => {
       const markdown = String(record[key] || '').trim();
-      if (markdown && markdown.includes('## 公司章程')) candidates.push(markdown);
+      if (markdown && markdown.includes('## 公司章程')) {
+        candidates.push({ markdown, source: key });
+      }
     });
   });
   return (
-    candidates.find((item) => item.includes('经营范围') && item.includes('法定代表人：由执行董事担任')) ||
-    candidates.find((item) => !item.includes('法定代表人：暂无')) ||
+    candidates.find((item) => item.markdown.includes('经营范围') && item.markdown.includes('法定代表人：由执行董事担任')) ||
+    candidates.find((item) => !item.markdown.includes('法定代表人：暂无')) ||
     candidates[0] ||
-    ''
+    { markdown: '', source: 'empty' }
   );
 }
 
@@ -162,7 +166,13 @@ export function CustomerDetailFieldRenderer({
   }
 
   if (isCompanyArticlesPayload(sectionName, parsedValue)) {
-    const markdown = pickCompanyArticlesMarkdown(parsedValue);
+    const { markdown, source } = pickCompanyArticlesMarkdown(parsedValue);
+    const payloadRecord = parseMaybeRecord(parsedValue);
+    console.info(
+      `[CompanyArticles][FrontendRender] docType=company_articles markdownSource=${source} ` +
+      `extractionVersion=${String(payloadRecord.extraction_version || payloadRecord.schema_version || '')} ` +
+      `markdownPreview=${markdown.slice(0, 240).replace(/\s+/g, ' ')}`
+    );
     return (
       <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>

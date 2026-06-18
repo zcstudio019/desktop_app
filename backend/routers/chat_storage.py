@@ -592,7 +592,7 @@ async def _replace_existing_documents_of_same_type(
         )
         return
 
-    if should_append_same_type_document(document_type_code):
+    if should_append_same_type_document(document_type_code) and document_type_code != "company_articles":
         logger.info(
             "[Local Save] Skip replacement for multi-instance document type customer_id=%s type=%s",
             customer_id,

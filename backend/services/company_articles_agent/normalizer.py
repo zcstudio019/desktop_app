@@ -8,16 +8,6 @@ from .schema import CompanyArticlesResult, Shareholder
 
 logger = logging.getLogger(__name__)
 
-NAIJI_SHAREHOLDER_ORDER = ["林武", "林勇", "陈鹏", "胡海荣", "陈建生"]
-NAIJI_SHAREHOLDER_REPAIR = {
-    "林武": ("现金", "2004.04 / 2005.07 / 2009.05 / 2012.09"),
-    "林勇": ("现金、知识产权", "2004.04 / 2005.07 / 2009.05 / 2012.09"),
-    "陈鹏": ("现金", "2004.04 / 2005.07 / 2009.05"),
-    "胡海荣": ("现金", "2004.04 / 2005.07 / 2009.05"),
-    "陈建生": ("现金", "2004.04 / 2005.07"),
-}
-
-
 def _missing(value: Any) -> bool:
     return value is None or str(value).strip() == ""
 
@@ -148,11 +138,17 @@ def validate_shareholder_deadlines_before_render(
     return guard_and_repair_shareholders_before_render(result)
 
 
-def guard_and_repair_shareholders_before_render(
+def guard_shareholder_deadlines_not_signing_date(
     result: CompanyArticlesResult,
 ) -> CompanyArticlesResult:
-    """Renderer-entry guard that rejects signing-date shareholder deadlines."""
-    result = finalize_company_articles_shareholders(result)
+    """Reject shareholder deadlines copied wholesale from the signing date."""
+    block = str(
+        result.shareholder_table_block
+        or (result.internal_blocks or {}).get("shareholder_block")
+        or (result.internal_blocks or {}).get("shareholder_table_raw_text")
+        or (result.internal_blocks or {}).get("shareholder_table_crop_ocr_text")
+        or ""
+    )
     signing_date = normalize_contribution_date(
         str((result.signature_info or {}).get("signing_date") or "")
     )
@@ -160,57 +156,39 @@ def guard_and_repair_shareholders_before_render(
         normalize_contribution_date(str(item.contribution_deadline or ""))
         for item in result.shareholders
     ]
-    names = {item.name for item in result.shareholders}
-    registered_capital_matches = (
-        abs(float(result.registered_capital_amount or 0) - 10180) <= 0.01
-        or "10180万元" in str(result.registered_capital or "").replace(" ", "")
-    )
-    is_naiji_signing_date_overwrite = (
-        result.doc_type == "company_articles"
-        and len(result.shareholders) >= 3
+    should_rebuild = (
+        len(result.shareholders) >= 3
         and bool(signing_date)
         and len(set(deadlines)) == 1
         and deadlines[0] == signing_date
-        and len(names.intersection(NAIJI_SHAREHOLDER_ORDER)) >= 3
-        and registered_capital_matches
+        and _contains_multiple_year_months(block)
     )
-    if not is_naiji_signing_date_overwrite:
+    if not should_rebuild:
         return result
 
-    block = str(
-        result.shareholder_table_block
-        or (result.internal_blocks or {}).get("shareholder_block")
-        or (result.internal_blocks or {}).get("shareholder_table_raw_text")
-        or (result.internal_blocks or {}).get("articles_block_text")
-        or ""
-    )
     rebuilt = rebuild_shareholders_from_shareholder_block(
         block,
         result.registered_capital_amount,
-    ) if block else []
-    rebuilt_by_name = {item.name: item for item in rebuilt}
-    current_by_name = {item.name: item for item in result.shareholders}
-    repaired: list[Shareholder] = []
-    for row_index, name in enumerate(NAIJI_SHAREHOLDER_ORDER):
-        item = rebuilt_by_name.get(name) or current_by_name.get(name)
-        if not item:
-            continue
-        if name not in rebuilt_by_name:
-            method, deadline = NAIJI_SHAREHOLDER_REPAIR[name]
-            item.contribution_method = method
-            item.contribution_deadline = deadline
-        item.row_index = row_index
-        repaired.append(item)
-    if repaired:
-        result.shareholders = repaired
+    )
+    if rebuilt:
+        result.shareholders = rebuilt
     else:
         for item in result.shareholders:
             item.contribution_deadline = "未识别"
-    warning = "股东出资时间疑似被签署日期覆盖，已取消错误兜底"
+    warning = "股东出资时间疑似被签署日期覆盖，已从股东表重建"
     if warning not in result.warnings:
         result.warnings.append(warning)
     logger.warning(
-        "[CompanyArticles][FinalRenderer] signing_date_deadline_guard_triggered=true shareholders=%s",
+        "[CompanyArticles][DeadlineGuard] signing_date_overwrite=true rebuilt=%s shareholders=%s",
+        bool(rebuilt),
         [item.to_dict() for item in result.shareholders],
     )
     return result
+
+
+def guard_and_repair_shareholders_before_render(
+    result: CompanyArticlesResult,
+) -> CompanyArticlesResult:
+    """Renderer-entry guard that rejects signing-date shareholder deadlines."""
+    result = finalize_company_articles_shareholders(result)
+    return guard_shareholder_deadlines_not_signing_date(result)

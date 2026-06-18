@@ -102,6 +102,10 @@ export interface DocumentDetailResponse {
   updated_at?: string;
   report_markdown?: string;
   reportMarkdown?: string;
+  display_markdown?: string;
+  markdown?: string;
+  doc_type?: string;
+  extraction_version?: string;
   extraction?: Record<string, unknown>;
   latest_extraction?: Record<string, unknown>;
   latestExtraction?: Record<string, unknown>;
