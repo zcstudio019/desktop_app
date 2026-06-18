@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from .extractor import is_valid_renderable_shareholder_name
-from .normalizer import validate_shareholder_deadlines_before_render
+from .normalizer import guard_and_repair_shareholders_before_render
 from .schema import SCHEMA_VERSION
 from .schema import CompanyArticlesResult
 
@@ -28,13 +28,17 @@ def _capital_text(result: CompanyArticlesResult) -> str:
 
 def render_company_articles_markdown(result: CompanyArticlesResult, *, filename: str = "") -> str:
     logger.info(
-        "[CompanyArticles][FinalMarkdownSource] function=render_company_articles_markdown"
+        "[CompanyArticles][FinalRenderer] using function=render_company_articles_markdown"
     )
     logger.info(
-        "[CompanyArticles][FinalMarkdownSource] extraction_version=%s",
+        "[CompanyArticles][FinalRenderer] extraction_version=%s",
         SCHEMA_VERSION,
     )
-    result = validate_shareholder_deadlines_before_render(result)
+    logger.info(
+        "[CompanyArticles][FinalRenderer] shareholders_before_render=%s",
+        [item.to_dict() for item in result.shareholders],
+    )
+    result = guard_and_repair_shareholders_before_render(result)
     signature = result.signature_info or {}
     capital_check = result.capital_check or {}
     governance = result.governance or {}

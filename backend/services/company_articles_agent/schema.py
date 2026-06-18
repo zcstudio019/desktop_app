@@ -6,7 +6,7 @@ from typing import Any
 
 DOC_TYPE = "company_articles"
 DOC_TYPE_NAME = "公司章程"
-SCHEMA_VERSION = "company_articles_v5_no_signing_date_deadline"
+SCHEMA_VERSION = "company_articles_v6_final_markdown_deadline_guard"
 
 
 STRUCTURED_DATA_KEYS = (

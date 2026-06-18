@@ -114,7 +114,7 @@ function pickCompanyArticlesMarkdown(payload: unknown): string {
     return payload.trim();
   }
   const records = collectNestedRecords(payload);
-  const currentVersion = 'company_articles_v5_no_signing_date_deadline';
+  const currentVersion = 'company_articles_v6_final_markdown_deadline_guard';
   const versions = records
     .map((record) => String(record.extraction_version || record.extractionVersion || record.schema_version || record.schemaVersion || '').trim())
     .filter(Boolean);

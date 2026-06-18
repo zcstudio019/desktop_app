@@ -214,7 +214,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v5_no_signing_date_deadline"
+    assert content["extraction_version"] == "company_articles_v6_final_markdown_deadline_guard"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -1083,6 +1083,46 @@ def test_company_articles_renderer_hard_gate_repairs_stale_structured_data() -> 
     assert "2004.04.20" not in shareholder_section
 
 
+def test_naiji_final_markdown_no_signing_date_deadline() -> None:
+    stale = CompanyArticlesResult(
+        registered_capital="人民币10180万元",
+        registered_capital_amount=10180,
+        shareholders=[
+            Shareholder("林武", "509万元", 509, "现金", "2004.04.20", "5.00%"),
+            Shareholder("陈鹏", "1277.5万元", 1277.5, "现金", "2004.04.20", "12.55%"),
+            Shareholder("胡海荣", "1235万元", 1235, "现金", "2004.04.20", "12.13%"),
+            Shareholder("陈建生", "102.5万元", 102.5, "现金", "2004.04.20", "1.01%"),
+            Shareholder("林勇", "7056万元", 7056, "现金", "2004.04.20", "69.31%"),
+        ],
+        signature_info={"signing_date": "2004.04.20"},
+    )
+
+    markdown = render_company_articles_markdown(
+        stale,
+        filename="耐吉章程2025.05.30(1).pdf",
+    )
+    shareholder_section = markdown.split("### 股东及出资信息", 1)[1].split(
+        "- 注册资本合计", 1
+    )[0]
+    expected_rows = [
+        "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 5.00% |",
+        "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 69.31% |",
+        "| 陈鹏 | 1277.5万元 | 现金 | 2004.04 / 2005.07 / 2009.05 | 12.55% |",
+        "| 胡海荣 | 1235万元 | 现金 | 2004.04 / 2005.07 / 2009.05 | 12.13% |",
+        "| 陈建生 | 102.5万元 | 现金 | 2004.04 / 2005.07 | 1.01% |",
+    ]
+    forbidden_rows = [
+        "| 林武 | 509万元 | 现金 | 2004.04.20",
+        "| 林勇 | 7056万元 | 现金 | 2004.04.20",
+        "| 陈鹏 | 1277.5万元 | 现金 | 2004.04.20",
+        "| 胡海荣 | 1235万元 | 现金 | 2004.04.20",
+        "| 陈建生 | 102.5万元 | 现金 | 2004.04.20",
+    ]
+    assert all(row in shareholder_section for row in expected_rows)
+    assert all(row not in shareholder_section for row in forbidden_rows)
+    assert [item.name for item in stale.shareholders] == ["林武", "林勇", "陈鹏", "胡海荣", "陈建生"]
+
+
 def test_company_articles_stale_version_is_reextracted_from_saved_raw_text() -> None:
     raw_text = """
 上海耐吉科技股份有限公司章程
@@ -1103,7 +1143,7 @@ def test_company_articles_stale_version_is_reextracted_from_saved_raw_text() -> 
     )
 
     assert refreshed is not None
-    assert refreshed["extraction_version"] == "company_articles_v5_no_signing_date_deadline"
+    assert refreshed["extraction_version"] == "company_articles_v6_final_markdown_deadline_guard"
     assert "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in refreshed["display_markdown"]
     assert "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in refreshed["display_markdown"]
 
