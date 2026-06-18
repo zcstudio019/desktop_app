@@ -385,11 +385,12 @@ def final_select_shareholders(
     registered_capital_amount: float | None,
     shareholder_block: str,
 ) -> list[Shareholder]:
+    candidate_order = {id(candidate): index for index, candidate in enumerate(candidates)}
     normalized_candidates = dedupe_candidates([
         candidate for candidate in candidates if is_valid_shareholder_name(candidate.shareholder.name)
     ])
     rejected: list[dict[str, str]] = []
-    best_by_amount_date: dict[tuple[str, str, str], ShareholderCandidate] = {}
+    grouped_by_amount_date: dict[tuple[str, str, str], list[ShareholderCandidate]] = {}
     for candidate in normalized_candidates:
         item = candidate.shareholder
         key = (
@@ -397,14 +398,18 @@ def final_select_shareholders(
             item.contribution_method,
             item.contribution_deadline,
         )
-        current = best_by_amount_date.get(key)
-        if current is None or candidate.confidence > current.confidence:
-            if current is not None:
-                rejected.append({"name": current.shareholder.name, "reason": "duplicate_amount_date_lower_confidence"})
-            best_by_amount_date[key] = candidate
-        else:
-            rejected.append({"name": item.name, "reason": "duplicate_amount_date_lower_confidence"})
-    filtered = list(best_by_amount_date.values())
+        grouped_by_amount_date.setdefault(key, []).append(candidate)
+    filtered: list[ShareholderCandidate] = []
+    for group in grouped_by_amount_date.values():
+        max_confidence = max(item.confidence for item in group)
+        for candidate in group:
+            if candidate.confidence == max_confidence:
+                filtered.append(candidate)
+            else:
+                rejected.append({
+                    "name": candidate.shareholder.name,
+                    "reason": "duplicate_amount_date_lower_confidence",
+                })
     selected_candidates: list[ShareholderCandidate] = []
     if registered_capital_amount and filtered:
         matching_groups: list[tuple[float, int, int, int, tuple[ShareholderCandidate, ...]]] = []
@@ -436,6 +441,7 @@ def final_select_shareholders(
     for candidate in filtered:
         if id(candidate) not in selected_names and not any(row.get("name") == candidate.shareholder.name for row in rejected):
             rejected.append({"name": candidate.shareholder.name, "reason": "not_in_best_capital_combination"})
+    selected_candidates.sort(key=lambda item: candidate_order.get(id(item), len(candidate_order)))
     logger.debug("%s candidates=%s", SHAREHOLDER_LOG_PREFIX, shareholder_candidate_debug(candidates))
     logger.debug("%s selected_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_candidate_debug(selected_candidates))
     logger.debug("%s rejected_candidates=%s", SHAREHOLDER_LOG_PREFIX, rejected)
@@ -445,7 +451,7 @@ def final_select_shareholders(
 def parse_shareholders_by_regex(block: str, registered_capital_amount: float | None) -> list[Shareholder]:
     normalized = strip_shareholder_headers(normalize_shareholder_text(block))
     date = r"(?:19|20)\d{2}\s*(?:年|[./-])\s*(?:1[0-2]|0?[1-9])\s*(?:月|[./-])\s*(?:3[01]|[12]\d|0?[1-9])\s*日?"
-    amount = r"\d+(?:\.\d+)?\s*万\s*元"
+    amount = r"\d+(?:\.\d+)?\s*万\s*元?"
     method = r"货币|现金|实物|知识产权|土地使用权|股权|债权|其他"
     separators = r"(?:\s+|\s*\|\s*|\s*[,，、]\s*)"
     patterns = [
@@ -482,7 +488,7 @@ def parse_shareholders_by_compact(block: str, registered_capital_amount: float |
     date = r"(?:19|20)\d{2}(?:年|[./-])(?:1[0-2]|0?[1-9])(?:月|[./-])(?:3[01]|[12]\d|0?[1-9])日?"
     pattern = re.compile(
         rf"(?P<name>[\u4e00-\u9fff·路]{{2,10}})"
-        rf"(?P<amount>\d+(?:\.\d+)?万元)"
+        rf"(?P<amount>\d+(?:\.\d+)?万元?)"
         rf"(?P<method>货币|现金|实物|知识产权|土地使用权|股权|债权|其他)"
         rf"(?P<date>{date})"
     )
@@ -702,12 +708,18 @@ def extract_signature_info(text: str, pages: list[dict[str, Any]]) -> dict[str, 
     tail = "\n".join(str(page.get("text") or "") for page in (pages or [])[-2:]) if pages else text[-1500:]
     has_signature = any(token in tail for token in ("签字", "盖章", "签名", "印章", "股东"))
     signing_date = first_match(tail, [r"((?:19|20)\d{2}\s*年\s*(?:1[0-2]|0?[1-9])\s*月\s*(?:3[01]|[12]\d|0?[1-9])\s*日)"])
+    if "股东签字" in tail and "公司印章" in tail:
+        detection_summary = "识别到股东签字和公司印章"
+    elif has_signature:
+        detection_summary = "识别到手写签名和红色印章"
+    else:
+        detection_summary = "未识别到签字或盖章"
     return {
         "signature_page": signature_page or "未识别",
         "has_signature_or_stamp": "有" if has_signature else "未识别",
         "detected_signature_count": 1 if has_signature else 0,
         "signing_date": clean_clause(signing_date) or "未填写/未识别",
-        "signature_detection_summary": "识别到手写签名和红色印章" if has_signature else "未识别到签字或盖章",
+        "signature_detection_summary": detection_summary,
     }
 
 

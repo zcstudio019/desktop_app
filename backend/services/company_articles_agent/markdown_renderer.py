@@ -46,6 +46,13 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
     ]
     warnings = "；".join(result.warnings) if result.warnings else "无"
     page_count_check = f"共识别 {result.page_count} 页" if result.page_count else "未识别"
+    articles_pages = result.metadata.get("articles_page_numbers") if isinstance(result.metadata, dict) else []
+    if isinstance(articles_pages, list) and articles_pages:
+        if len(articles_pages) > 1:
+            articles_range = f"第{articles_pages[0]}-{articles_pages[-1]}页"
+        else:
+            articles_range = f"第{articles_pages[0]}页"
+        page_count_check = f"{page_count_check}；章程正文页：{articles_range}"
     return "\n".join(
         [
             "## 公司章程",

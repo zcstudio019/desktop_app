@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from backend.services.company_articles_agent import CompanyArticlesAgent, CompanyArticlesSkill, detect_company_articles
+from backend.services.company_articles_agent.company_articles_locator import locate_articles_block
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
+from backend.services.company_articles_agent.page_classifier import classify_company_articles_pages
 from backend.services.company_articles_agent.schema import CompanyArticlesResult
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
 from backend.services.document_agents.registry import DOCUMENT_AGENT_REGISTRY, get_document_agent
@@ -489,3 +491,124 @@ def test_company_articles_markdown_does_not_create_fake_unknown_shareholder_row(
     markdown = render_company_articles_markdown(result, filename="空股东章程.pdf")
     assert "| 未识别 | 未识别 | 未识别 | 未识别 | 未识别 |" not in markdown
     assert "- 股东信息：未识别" in markdown
+
+
+def test_company_articles_locates_articles_inside_registration_archive_bundle() -> None:
+    pages = [
+        {"page": 1, "text": "准予变更登记通知书\n经审查，准予变更登记\n登记机关"},
+        {"page": 2, "text": "准予变更登记通知书\n变更事项"},
+        {"page": 3, "text": "公司登记（备案）申请书\n基本信息\n申请人声明"},
+        {"page": 4, "text": "公司登记备案申请书\n变更信息\n申请人声明"},
+        {"page": 5, "text": "股东（发起人）出资情况\n证件号码\n认缴出资额"},
+        {"page": 6, "text": "法定代表人信息\n移动电话\n电子邮箱\n身份证件号码"},
+        {"page": 7, "text": "董事、监事、经理信息\n身份证件号码"},
+        {"page": 8, "text": "承诺书\n申请人承诺"},
+        {"page": 9, "text": "财务负责人信息\n移动电话\n电子邮箱"},
+        {"page": 10, "text": "联络员信息\n移动电话\n电子邮箱"},
+        {"page": 11, "text": "指定代表或者共同委托代理人授权委托书"},
+        {"page": 12, "text": "股东会决议\n同意变更后的经营范围\n通过公司新的章程"},
+        {
+            "page": 13,
+            "text": """
+上海崇璟项目管理有限公司章程
+依据《中华人民共和国公司法》制定本章程。
+第一章 公司的名称和住所
+第一条 公司名称：上海崇璟项目管理有限公司
+第二条 公司住所：上海市普陀区武威路88弄21号3层97室
+第二章 公司经营范围
+第三条 公司经营范围：建筑项目管理，建设工程监理服务，建筑装修装饰工程专业施工，物业管理，从事信息科技专业领域内的技术咨询、技术服务，企业管理咨询。【依法须经批准的项目，经相关部门批准后方可开展经营活动】
+第三章 公司注册资本
+第四条 公司注册资本：人民币100.0000万元
+第四章 股东的姓名或者名称、出资方式、出资额和出资时间
+第五条 股东的姓名或者名称 出资额 出资方式 出资时间
+李亚光 20万 货币 2048.4.2
+梁啸民 20万 货币 2048.4.2
+徐绚纹 40万 货币 2048.4.2
+王毅 20万 货币 2048.4.2
+第六条 公司成立后，应向股东签发出资证明书。
+""",
+        },
+        {
+            "page": 14,
+            "text": """
+第五章 公司的机构及其产生办法、职权、议事规则
+股东会是公司的权力机构。
+股东会会议由股东按照出资比例行使表决权。
+修改公司章程、增加或者减少注册资本以及公司合并、分立、解散或者变更公司形式，
+须经代表全体股东三分之二以上表决权的股东通过。
+公司不设董事会，设执行董事一名，由股东会选举产生。
+""",
+        },
+        {
+            "page": 15,
+            "text": """
+第六章 经理、监事和公司的法定代表人
+经理由股东会决定聘任或者解聘。
+公司不设监事会，设监事一人。
+公司的法定代表人由执行董事担任。
+第七章 股权转让
+股东之间可以相互转让全部或者部分股权，其他股东在同等条件下有优先购买权。
+""",
+        },
+        {
+            "page": 16,
+            "text": """
+第八章 财务、会计、利润分配
+公司依照法律、行政法规建立财务会计制度，股东按照出资比例分取红利。
+第九章 公司的解散事由与清算办法
+公司解散时，清算组由股东组成。
+第十章 高级管理人员义务
+高级管理人员不得侵占公司财产，不得挪用公司资金，不得泄露公司秘密。
+""",
+        },
+        {
+            "page": 17,
+            "text": """
+本章程自全体股东盖章、签字之日起生效。
+股东签字：李亚光 梁啸民 徐绚纹 王毅
+公司印章
+签署日期：
+""",
+        },
+        {"page": 18, "text": "营业执照\n统一社会信用代码\n名称 上海崇璟项目管理有限公司\n登记机关\n成立日期"},
+        {"page": 19, "text": "营业执照\n统一社会信用代码\n住所 上海市普陀区武威路88弄21号3层97室\n登记机关"},
+    ]
+
+    classes = classify_company_articles_pages(pages)
+    block = locate_articles_block(pages)
+    assert classes[0].page_type == "change_registration_notice"
+    assert classes[11].page_type == "shareholder_resolution"
+    assert classes[17].page_type == "business_license"
+    assert classes[18].page_type == "business_license"
+    assert block is not None
+    assert block.page_numbers == [13, 14, 15, 16, 17]
+
+    result = CompanyArticlesAgent().run(
+        {"text": "", "raw_pages": pages, "filename": "崇景公司章程.pdf"}
+    ).to_dict()
+    structured = result["structured_data"]
+    shareholders = structured["shareholders"]
+    markdown = result["display_markdown"]
+
+    assert result["doc_type"] == "company_articles"
+    assert structured["title"] == "上海崇璟项目管理有限公司章程"
+    assert structured["company_name"] == "上海崇璟项目管理有限公司"
+    assert structured["company_address"] == "上海市普陀区武威路88弄21号3层97室"
+    assert structured["registered_capital"] == "人民币100万元"
+    assert structured["registered_capital_amount"] == 100
+    assert len(shareholders) == 4
+    assert [(item["name"], item["subscribed_amount"], item["contribution_deadline"], item["contribution_ratio"]) for item in shareholders] == [
+        ("李亚光", "20万元", "2048.04.02", "20.00%"),
+        ("梁啸民", "20万元", "2048.04.02", "20.00%"),
+        ("徐绚纹", "40万元", "2048.04.02", "40.00%"),
+        ("王毅", "20万元", "2048.04.02", "20.00%"),
+    ]
+    assert structured["capital_check"]["shareholder_total_amount"] == 100
+    assert structured["capital_check"]["message"] == "出资额合计与注册资本一致"
+    assert structured["signature_info"]["signature_page"] == "第17页"
+    assert structured["signature_info"]["signature_detection_summary"] == "识别到股东签字和公司印章"
+    assert "章程正文页：第13-17页" in markdown
+    assert "章程标题：未识别" not in markdown
+    assert "公司名称：未识别" not in markdown
+    assert "股东信息：未识别" not in markdown
+    assert "股东出资额合计与注册资本不一致，请人工复核" not in markdown

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .company_articles_locator import locate_articles_block
 from .extractor import detect_company_articles
 from .markdown_renderer import render_company_articles_markdown
 from .normalizer import normalize_company_articles
@@ -17,6 +18,23 @@ def merge_ocr_pages(raw_text: str, pages: list[dict[str, Any]] | None = None) ->
     return str(raw_text or "")
 
 
+def _is_missing(value: Any) -> bool:
+    return value is None or str(value).strip() in {"", "未识别"}
+
+
+def _fill_basic_fallback_fields(
+    extracted: dict[str, Any],
+    fallback_data: dict[str, Any],
+) -> None:
+    for key in ("company_name", "company_address", "business_scope"):
+        if _is_missing(extracted.get(key)) and not _is_missing(fallback_data.get(key)):
+            extracted[key] = fallback_data[key]
+    if _is_missing(extracted.get("registered_capital")) and not _is_missing(fallback_data.get("registered_capital")):
+        extracted["registered_capital"] = fallback_data["registered_capital"]
+        extracted["registered_capital_amount"] = fallback_data.get("registered_capital_amount")
+        extracted["currency"] = fallback_data.get("currency") or "人民币"
+
+
 class CompanyArticlesAgent:
     doc_type = DOC_TYPE
     doc_type_name = DOC_TYPE_NAME
@@ -30,21 +48,48 @@ class CompanyArticlesAgent:
         pages = raw_pages if isinstance(raw_pages, list) else []
         filename = str(context.get("filename") or "")
         full_text = merge_ocr_pages(str(context.get("text") or context.get("raw_text") or ""), pages)
-        extracted = CompanyArticlesSkill().extract(text=full_text, pages=pages, filename=filename)
-        normalized = normalize_company_articles(extracted, filename=filename, raw_text=full_text)
+        articles_block = locate_articles_block(pages) if pages else None
+        main_text = articles_block.text if articles_block else full_text
+        main_pages = articles_block.pages if articles_block else pages
+        extracted = CompanyArticlesSkill().extract(text=main_text, pages=main_pages, filename=filename)
+        if articles_block:
+            for fallback_type in ("shareholder_resolution", "business_license"):
+                fallback_pages = [
+                    {"page": item.page, "text": item.text}
+                    for item in articles_block.page_classes
+                    if item.page_type == fallback_type
+                ]
+                if not fallback_pages:
+                    continue
+                fallback_text = merge_ocr_pages("", fallback_pages)
+                fallback_data = CompanyArticlesSkill().extract(
+                    text=fallback_text,
+                    pages=fallback_pages,
+                    filename=filename,
+                )
+                _fill_basic_fallback_fields(extracted, fallback_data)
+        extracted["page_count"] = len(pages) if pages else extracted.get("page_count")
+        normalized = normalize_company_articles(extracted, filename=filename, raw_text=main_text)
         normalized.metadata.update(
             {
                 "filename": filename,
                 "customer_id": str(context.get("customer_id") or ""),
                 "customer_name": str(context.get("customer_name") or ""),
                 "source": str(context.get("source") or "upload"),
+                "articles_page_numbers": articles_block.page_numbers if articles_block else [],
+                "articles_start_page": articles_block.start_page if articles_block else None,
+                "articles_end_page": articles_block.end_page if articles_block else None,
+                "articles_locator_confidence": articles_block.confidence if articles_block else 0,
             }
         )
+        if not articles_block and len(pages) > 1:
+            normalized.warnings.append("未定位到独立章程正文页，已使用全文兜底")
         validated = validate_company_articles(normalized)
         validated.markdown = render_company_articles_markdown(validated, filename=filename)
         validated.display_markdown = validated.markdown
         validated.evidence = {
             "source_pages": [page.get("page") or page.get("page_index") for page in pages if isinstance(page, dict)],
+            "articles_pages": articles_block.page_numbers if articles_block else [],
             "text_length": len(full_text),
         }
         return validated
