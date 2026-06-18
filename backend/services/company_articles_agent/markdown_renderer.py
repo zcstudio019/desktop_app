@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .extractor import is_valid_external_shareholder_name
+from .extractor import is_valid_renderable_shareholder_name
 from .schema import CompanyArticlesResult
 
 
@@ -30,7 +30,7 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
     rows = []
     for item in result.shareholders:
         shareholder_name = item.name
-        if not is_valid_external_shareholder_name(shareholder_name):
+        if not is_valid_renderable_shareholder_name(shareholder_name):
             shareholder_name = "未识别"
             warning = "股东姓名包含无效表头字段，请人工复核"
             if warning not in result.warnings:

@@ -19,14 +19,16 @@ class ArticlesBlock:
 
 STOP_PAGE_TYPES = {
     "business_license",
-    "change_registration_notice",
-    "company_registration_application",
+    "notice",
+    "application_form",
     "shareholder_resolution",
+    "commitment_letter",
+    "material_catalog",
 }
 
 
 def _is_continuation(item: PageClassResult, started: bool) -> bool:
-    if item.page_type in {"company_articles_page", "company_articles_continuation"}:
+    if item.page_type in {"company_articles_page", "company_articles_continuation", "articles_signature_page"}:
         return True
     if not started or item.page_type in STOP_PAGE_TYPES:
         return False
@@ -36,6 +38,7 @@ def _is_continuation(item: PageClassResult, started: bool) -> bool:
         for token in (
             "第六章", "第七章", "第八章", "第九章", "第十章",
             "股东会", "执行董事", "监事", "经理", "法定代表人",
+            "董事会", "监事会", "发起人", "认购股份", "持股比例",
             "股权转让", "财务会计", "利润分配", "解散", "清算",
             "高级管理人员", "本章程", "股东签字", "股东盖章",
         )

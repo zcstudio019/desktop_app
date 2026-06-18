@@ -68,17 +68,54 @@ def parse_amount_number(value: str) -> float | None:
         return None
 
 
+COMPANY_SUFFIX_PATTERN = r"(?:股份有限公司|有限责任公司|有限公司)"
+INVALID_ARTICLES_TITLES = {
+    "公司章程", "本公司章程", "及本公司章程", "新的公司章程",
+    "通过公司新的章程", "修改公司章程", "本章程",
+    "),股份有限公司章程", "),有限公司章程", ",股份有限公司章程",
+    "，股份有限公司章程",
+}
+
+
+def is_valid_articles_title(value: str) -> bool:
+    title = clean_clause(value)
+    if not title or title in INVALID_ARTICLES_TITLES:
+        return False
+    if title[0] in "),，,、（() ":
+        return False
+    match = re.fullmatch(
+        rf"(?P<name>[\u4e00-\u9fffA-Za-z0-9（）()·\-]{{4,80}}{COMPANY_SUFFIX_PATTERN})章程",
+        title,
+    )
+    if not match:
+        return False
+    company_part = match.group("name")
+    chinese_count = len(re.findall(r"[\u4e00-\u9fff]", company_part))
+    suffix = re.search(rf"{COMPANY_SUFFIX_PATTERN}$", company_part)
+    stem = company_part[:suffix.start()] if suffix else ""
+    return chinese_count >= 4 and len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", stem)) >= 2
+
+
+def is_valid_company_name(value: str) -> bool:
+    name = clean_clause(value)
+    if not name or name[0] in "),，,、（() ":
+        return False
+    match = re.fullmatch(
+        rf"[\u4e00-\u9fffA-Za-z0-9（）()·\-]{{4,80}}{COMPANY_SUFFIX_PATTERN}",
+        name,
+    )
+    if not match:
+        return False
+    suffix = re.search(rf"{COMPANY_SUFFIX_PATTERN}$", name)
+    stem = name[:suffix.start()] if suffix else ""
+    return len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", stem)) >= 2
+
+
 def clean_articles_title(title: str, company_name: str = "") -> str:
     value = clean_clause(title)
-    invalid = (
-        "及本公司章程", "本公司章程", "公司章程", "新的公司章程",
-        "通过公司新的章程", "修改公司章程", "本章程",
-    )
-    if value in invalid or any(value.startswith(prefix) for prefix in ("根据", "依据")):
+    if not is_valid_articles_title(value):
         value = ""
-    if value and (not value.endswith("有限公司章程") or len(value) < 10):
-        value = ""
-    if not value and company_name and company_name != "未识别":
+    if not value and is_valid_company_name(company_name):
         value = f"{company_name}章程"
     return value
 
@@ -88,7 +125,7 @@ def extract_title(text: str) -> tuple[str, str]:
     boundaries = [position for position in (head.find("依据《"), head.find("第一章")) if position >= 0]
     title_region = head[:min(boundaries)] if boundaries else head
     candidates = re.findall(
-        r"([\u4e00-\u9fffA-Za-z0-9（）()·路\-]{4,80}有限公司章程)",
+        rf"([\u4e00-\u9fffA-Za-z0-9（）()·\-]{{4,80}}{COMPANY_SUFFIX_PATTERN}章程)",
         title_region,
     )
     title = ""
@@ -105,12 +142,15 @@ def extract_company_name(text: str, title_company_name: str = "") -> str:
     value = first_match(
         text,
         [
-            r"第一条\s*公司名称[：:\s]*([^\n。；;]{4,80}有限公司)",
-            r"公司名称[：:\s]*([^\n。；;]{4,80}有限公司)",
-            r"名称[：:\s]*([^\n。；;]{4,80}有限公司)",
+            rf"第一条\s*公司名称[：:\s]*([^\n。；;]{{4,80}}{COMPANY_SUFFIX_PATTERN})",
+            rf"公司名称[：:\s]*([^\n。；;]{{4,80}}{COMPANY_SUFFIX_PATTERN})",
+            rf"名称[：:\s]*([^\n。；;]{{4,80}}{COMPANY_SUFFIX_PATTERN})",
         ],
     )
-    return clean_clause(value) or title_company_name
+    value = clean_clause(value)
+    if is_valid_company_name(value):
+        return value
+    return title_company_name if is_valid_company_name(title_company_name) else ""
 
 
 def clean_company_address(address: str, company_name: str = "") -> str:
@@ -135,6 +175,20 @@ def clean_company_address(address: str, company_name: str = "") -> str:
     return value.rstrip("；;、，,。 ")
 
 
+ADDRESS_FEATURES = ("省", "市", "区", "县", "路", "街", "弄", "号", "室", "楼", "镇", "村", "园", "大厦")
+ADDRESS_INVALID_TOKENS = (
+    "法定代表人", "注册资本", "公司类型", "经营范围", "股东", "股东名称",
+    "出资额", "出资方式", "申请", "备案", "登记", "有限责任公司股东",
+)
+
+
+def is_valid_company_address(value: str) -> bool:
+    address = clean_clause(value)
+    if not address or any(token in address for token in ADDRESS_INVALID_TOKENS):
+        return False
+    return sum(1 for token in ADDRESS_FEATURES if token in address) >= 2
+
+
 def extract_company_address(text: str, company_name: str = "") -> str:
     value = first_match(
         text,
@@ -144,7 +198,8 @@ def extract_company_address(text: str, company_name: str = "") -> str:
             r"住所[：:\s]*([^\n。；;]{4,180})",
         ],
     )
-    return clean_company_address(value, company_name)
+    value = clean_company_address(value, company_name)
+    return value if is_valid_company_address(value) else ""
 
 
 def extract_business_scope(text: str) -> str:
@@ -204,12 +259,27 @@ def strip_shareholder_headers(text: str) -> str:
         "股东的姓名或者名称",
         "股东姓名/名称",
         "股东姓名",
+        "股东名称",
+        "发起人姓名或者名称",
+        "发起人姓名",
+        "发起人名称",
+        "发起人",
         "姓名或者名称",
         "姓名或名称",
         "出资额",
+        "认缴出资额",
+        "实缴出资额",
         "出资方式",
         "出资日期",
         "出资时间",
+        "认缴日期",
+        "实缴日期",
+        "缴付期限",
+        "认购股份数",
+        "认购股份",
+        "股份数",
+        "持股比例",
+        "出资比例",
     ]
     for header in headers:
         source = source.replace(header, " ")
@@ -221,6 +291,15 @@ def extract_shareholder_block(text: str) -> str:
     markers = [
         "股东的姓名或者名称",
         "股东姓名",
+        "股东名称",
+        "发起人姓名或者名称",
+        "发起人姓名",
+        "发起人名称",
+        "发起人",
+        "认缴出资额",
+        "认购股份",
+        "持股比例",
+        "股份数",
         "出资方式、出资额和出资",
         "出资额 出资方式 出资",
         "出资日期",
@@ -237,6 +316,8 @@ def extract_shareholder_block(text: str) -> str:
         r"(?:\n|\s)公司成立后",
         r"(?:\n|\s)公司机构",
         r"(?:\n|\s)股东会",
+        r"(?:\n|\s)董事会",
+        r"(?:\n|\s)监事会",
         r"(?:\n|\s)第[一二三四五六七八九十]+章",
         r"(?:\n|\s)第[六七八九十]+条",
     ]
@@ -267,7 +348,7 @@ def normalize_contribution_date(value: str) -> str:
 
 def is_valid_shareholder_name(name: str) -> bool:
     text = clean_clause(name)
-    if not re.fullmatch(r"[\u4e00-\u9fff·路]{2,10}", text):
+    if not re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,40}", text):
         return False
     forbidden = (
         "股东", "股权", "转让", "姓名", "名称", "出资", "方式", "时间", "日期",
@@ -277,11 +358,22 @@ def is_valid_shareholder_name(name: str) -> bool:
     )
     invalid_phrases = ("股权转让后", "转让后", "公司成立后", "股东会会议", "本章程", "出资证明书")
     invalid_suffixes = ("后", "前", "时", "的", "和", "或", "及", "章", "条")
-    return (
+    clean_context = (
         not any(item in text for item in forbidden)
         and text not in invalid_phrases
         and not text.endswith(invalid_suffixes)
     )
+    if not clean_context:
+        return False
+    return bool(
+        re.fullmatch(r"[\u4e00-\u9fff·]{2,10}", text)
+        or re.search(r"(?:股份有限公司|有限责任公司|有限公司|合伙企业)$", text)
+    )
+
+
+def is_valid_renderable_shareholder_name(name: str) -> bool:
+    text = clean_clause(name)
+    return is_valid_shareholder_name(text) and text not in EXTERNAL_NAME_STOPWORDS
 
 
 def clean_shareholder_name_candidate(name: str) -> str:
@@ -789,6 +881,50 @@ def parse_shareholders_by_regex(block: str, registered_capital_amount: float | N
     return dedupe_shareholders(items)
 
 
+def parse_shareholders_by_share_subscription(
+    block: str,
+    registered_capital_amount: float | None,
+) -> list[Shareholder]:
+    normalized = strip_shareholder_headers(normalize_shareholder_text(block))
+    date = r"(?:19|20)\d{2}\s*(?:年|[./-])\s*(?:1[0-2]|0?[1-9])\s*(?:月|[./-])\s*(?:3[01]|[12]\d|0?[1-9])\s*日?"
+    method = r"货币|现金|实物|知识产权|土地使用权|股权|债权|其他"
+    amount = r"(?P<amount>\d+(?:\.\d+)?\s*(?:万股|股|万元|万))"
+    ratio = r"(?P<ratio>\d+(?:\.\d+)?\s*%)"
+    name = r"(?P<name>[\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,40})"
+    patterns = (
+        re.compile(
+            rf"{name}\s+{amount}\s+{ratio}\s+(?P<method>{method})\s+(?P<date>{date})"
+        ),
+        re.compile(
+            rf"{name}\s+{amount}\s+(?P<method>{method})\s+(?P<date>{date})(?:\s+{ratio})?"
+        ),
+    )
+    items: list[Shareholder] = []
+    for pattern in patterns:
+        for match in pattern.finditer(normalized):
+            clean_name = clean_shareholder_name_candidate(match.group("name"))
+            amount_text = re.sub(r"\s+", "", match.group("amount"))
+            amount_number = parse_amount_number(amount_text)
+            if not is_valid_shareholder_name(clean_name) or amount_number is None:
+                continue
+            ratio_text = clean_clause(match.groupdict().get("ratio") or "")
+            if not ratio_text and registered_capital_amount:
+                ratio_text = f"{amount_number / registered_capital_amount * 100:.2f}%"
+            if amount_text.endswith("万"):
+                amount_text = f"{amount_text}元"
+            items.append(
+                Shareholder(
+                    name=clean_name,
+                    subscribed_amount=amount_text,
+                    subscribed_amount_number=amount_number,
+                    contribution_method=clean_clause(match.group("method")),
+                    contribution_deadline=normalize_contribution_date(match.group("date")),
+                    contribution_ratio=ratio_text,
+                )
+            )
+    return dedupe_shareholders(items)
+
+
 def parse_shareholders_by_compact(block: str, registered_capital_amount: float | None) -> list[Shareholder]:
     source = compact_shareholder_text(block)
     date = r"(?:19|20)\d{2}(?:年|[./-])(?:1[0-2]|0?[1-9])(?:月|[./-])(?:3[01]|[12]\d|0?[1-9])日?"
@@ -907,6 +1043,10 @@ def recover_missing_shareholders(
 
 def extract_shareholders(text: str, registered_capital_amount: float | None = None) -> list[Shareholder]:
     block = extract_shareholder_block(text)
+    logger.debug(
+        "[CompanyArticles][Shareholders] block_text_preview=%s",
+        block[:2000],
+    )
     normalized_block = normalize_shareholder_text(block)
     if not block.strip():
         logger.debug("%s shareholder_block_empty=true", SHAREHOLDER_LOG_PREFIX)
@@ -916,7 +1056,16 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
     logger.debug("%s normalized_shareholder_block=%s", SHAREHOLDER_LOG_PREFIX, normalized_block)
 
     row_matches = parse_shareholders_by_regex(block, registered_capital_amount)
+    share_subscription_matches = parse_shareholders_by_share_subscription(
+        block,
+        registered_capital_amount,
+    )
     logger.debug("%s row_regex_matches=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(row_matches))
+    logger.debug(
+        "%s share_subscription_matches=%s",
+        SHAREHOLDER_LOG_PREFIX,
+        shareholder_debug_dict(share_subscription_matches),
+    )
     if not row_matches:
         logger.debug("%s regex_match_count=0", SHAREHOLDER_LOG_PREFIX)
 
@@ -925,8 +1074,13 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
 
     candidates = [
         *make_candidates(row_matches, "table_row", True, block),
+        *make_candidates(share_subscription_matches, "table_row", True, block),
         *make_candidates(compact_matches, "compact_regex", True, block),
     ]
+    logger.debug(
+        "[CompanyArticles][Shareholders] candidates=%s",
+        shareholder_candidate_debug(candidates),
+    )
     shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
     capital_matched = shareholder_total_matches_registered(shareholders, registered_capital_amount)
     if not capital_matched and len(shareholders) < 2:
@@ -958,6 +1112,10 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
     if not shareholders:
         logger.debug("%s shareholders_empty_after_all_strategies=true", SHAREHOLDER_LOG_PREFIX)
     logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
+    logger.debug(
+        "[CompanyArticles][Shareholders] final=%s",
+        shareholder_debug_dict(shareholders),
+    )
     return shareholders
 
 
@@ -1028,6 +1186,7 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
     title, title_company = extract_title(text)
     company_name = extract_company_name(text, title_company)
     title = clean_articles_title(title, company_name)
+    company_address = extract_company_address(text, company_name)
     registered_capital, registered_amount, currency = extract_registered_capital(text)
     shareholders = extract_shareholders(text, registered_amount)
     shareholder_total = sum(float(item.subscribed_amount_number or 0) for item in shareholders)
@@ -1055,7 +1214,7 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
     return {
         "title": title,
         "company_name": company_name,
-        "company_address": extract_company_address(text, company_name),
+        "company_address": company_address,
         "business_scope": extract_business_scope(text),
         "registered_capital": registered_capital,
         "registered_capital_amount": registered_amount,
@@ -1070,6 +1229,28 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
         "articles_effective_rule": "本章程自全体股东盖章、签字之日起生效" if "全体股东盖章" in text or "签字之日起生效" in text else short_sentence(text, "生效") or "未识别",
         "signature_info": extract_signature_info(text, pages),
         "page_count": len(pages) if pages else len(re.findall(r"---\s*第?\s*\d+\s*页", text or "")) or 1,
+        "field_evidence": {
+            "title": {
+                "candidate": title,
+                "source": "articles_title_top",
+                "confidence": 100 if title else 0,
+            },
+            "company_name": {
+                "candidate": company_name,
+                "source": "articles_clause" if "公司名称" in text else "articles_title_top",
+                "confidence": 90 if company_name else 0,
+            },
+            "company_address": {
+                "candidate": company_address,
+                "source": "articles_clause",
+                "confidence": 90 if company_address else 0,
+            },
+            "registered_capital": {
+                "candidate": registered_capital,
+                "source": "articles_clause",
+                "confidence": 90 if registered_capital else 0,
+            },
+        },
     }
 
 

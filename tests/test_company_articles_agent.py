@@ -8,6 +8,9 @@ from backend.services.company_articles_agent.extractor import (
     extract_external_shareholder_name_candidates,
     extract_external_shareholder_names,
     extract_fields,
+    is_valid_articles_title,
+    is_valid_company_address,
+    is_valid_company_name,
     repair_shareholder_dates_by_majority,
     repair_duplicate_shareholder_names_by_external_names,
     repair_shareholder_names_by_external_names,
@@ -202,7 +205,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v8_external_name_stopwords"
+    assert content["extraction_version"] == "company_articles_v9_joint_stock_confidence"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -599,7 +602,7 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
 
     classes = classify_company_articles_pages(pages)
     block = locate_articles_block(pages)
-    assert classes[0].page_type == "change_registration_notice"
+    assert classes[0].page_type == "notice"
     assert classes[11].page_type == "shareholder_resolution"
     assert classes[17].page_type == "business_license"
     assert classes[18].page_type == "business_license"
@@ -754,6 +757,88 @@ def test_company_articles_markdown_never_renders_header_as_shareholder_name() ->
     markdown = render_company_articles_markdown(result, filename="非法表头章程.pdf")
     assert "| 类型 |" not in markdown
     assert "| 未识别 | 20万元 | 货币 | 2048.04.02 | 100.00% |" in markdown
+
+
+def test_company_articles_rejects_garbage_title_and_company_name() -> None:
+    invalid_titles = [
+        "),股份有限公司章程",
+        "及本公司章程",
+        "公司章程",
+        "本公司章程",
+    ]
+    assert all(not is_valid_articles_title(value) for value in invalid_titles)
+    assert is_valid_articles_title("上海耐吉科技股份有限公司章程")
+
+    invalid_names = [
+        "),股份有限公司",
+        "股份有限公司",
+        "有限公司",
+    ]
+    assert all(not is_valid_company_name(value) for value in invalid_names)
+    assert is_valid_company_name("上海耐吉科技股份有限公司")
+
+
+def test_company_articles_rejects_application_form_field_string_as_address() -> None:
+    assert not is_valid_company_address(
+        "注定代农人、注册资本、公司类型、经范制、有限责任公司股东(股东地名或者名称"
+    )
+    assert is_valid_company_address("上海市浦东新区耐吉路88号1号楼101室")
+
+
+def test_company_articles_supports_joint_stock_company_founder_table() -> None:
+    text = """
+上海耐吉科技股份有限公司章程
+依据《中华人民共和国公司法》制定本章程
+第一章 公司名称和住所
+第一条 公司名称：上海耐吉科技股份有限公司
+第二条 公司住所：上海市浦东新区耐吉路88号1号楼101室
+第二章 公司经营范围
+第三条 公司经营范围：技术开发、技术服务。
+第三章 公司注册资本
+第四条 公司注册资本：人民币10180万元
+第四章 发起人及认购股份
+第五条 发起人姓名或者名称 认购股份数 持股比例 出资方式 出资时间
+张三 6000万股 58.94% 货币 2030.12.31
+李四 4180万股 41.06% 货币 2030.12.31
+第六条 公司设股东大会、董事会和监事会。
+"""
+    pages = [
+        {"page": 1, "text": "公司登记（备案）申请书\n基本信息\n法定代表人\n注册资本\n公司类型\n经营范围\n申请人声明"},
+        {"page": 2, "text": text},
+        {"page": 3, "text": "第五章 股东大会\n股东大会是公司的权力机构。\n董事会依法行使职权。"},
+        {"page": 4, "text": "第六章 财务、会计和利润分配\n第七章 解散与清算\n本章程自发起人签字盖章之日起生效。"},
+        {"page": 5, "text": "发起人签字盖章：张三 李四"},
+        {"page": 28, "text": "营业执照\n统一社会信用代码\n登记机关\n成立日期"},
+        {"page": 29, "text": "营业执照\n名称 上海耐吉科技股份有限公司\n住所 上海市浦东新区耐吉路88号1号楼101室\n登记机关"},
+    ]
+    classes = classify_company_articles_pages(pages)
+    assert classes[0].page_type == "application_form"
+    block = locate_articles_block(pages)
+    assert block is not None
+    assert block.page_numbers == [2, 3, 4, 5]
+
+    result = CompanyArticlesAgent().run(
+        {"text": "", "raw_pages": pages, "filename": "耐吉章程2025.05.30(1).pdf"}
+    ).to_dict()
+    structured = result["structured_data"]
+    markdown = result["display_markdown"]
+    assert structured["title"] == "上海耐吉科技股份有限公司章程"
+    assert structured["company_name"] == "上海耐吉科技股份有限公司"
+    assert structured["company_address"] == "上海市浦东新区耐吉路88号1号楼101室"
+    assert structured["registered_capital"] == "人民币10180万元"
+    assert len(structured["shareholders"]) == 2
+    assert structured["shareholders"][0]["subscribed_amount"] == "6000万股"
+    assert structured["shareholders"][0]["contribution_ratio"] == "58.94%"
+    assert structured["shareholders"][1]["subscribed_amount"] == "4180万股"
+    assert structured["capital_check"]["message"] == "出资额合计与注册资本一致"
+    for garbage in (
+        "),股份有限公司章程",
+        "),股份有限公司",
+        "注定代农人",
+        "经范制",
+        "有限责任公司股东(股东地名或者名称",
+    ):
+        assert garbage not in markdown
 
 
 def test_company_articles_classifier_uses_merged_image_and_crop_ocr_text() -> None:

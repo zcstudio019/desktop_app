@@ -15,24 +15,30 @@ class PageClassResult:
 
 
 NON_ARTICLE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("change_registration_notice", ("准予变更登记通知书", "准予变更登记", "经审查")),
-    ("company_registration_application", ("公司登记(备案)申请书", "公司登记备案申请书", "申请人声明")),
+    ("notice", ("准予变更登记通知书", "准予设立登记通知书", "准予变更登记", "经审查")),
+    ("application_form", ("公司登记(备案)申请书", "公司登记备案申请书", "申请人声明", "基本信息")),
     ("shareholder_contribution_attachment", ("股东(发起人)出资情况", "股东发起人出资情况", "认缴出资额", "证件号码")),
-    ("legal_representative_information", ("法定代表人信息", "身份证件号码", "移动电话", "电子邮箱")),
-    ("management_information", ("董事监事经理信息", "董事、监事、经理信息")),
+    ("legal_representative_info", ("法定代表人信息", "身份证件号码", "移动电话", "电子邮箱")),
+    ("director_supervisor_manager_info", ("董事监事经理信息", "董事、监事、经理信息")),
     ("shareholder_resolution", ("股东会决议", "通过公司新的章程", "同意变更后的经营范围")),
     ("business_license", ("营业执照", "统一社会信用代码", "成立日期", "登记机关")),
+    ("commitment_letter", ("承诺书", "申请人承诺", "郑重承诺")),
+    ("material_catalog", ("材料目录", "材料证明", "提交材料", "申请材料")),
 )
 
 
 ARTICLE_SCORE_RULES: tuple[tuple[str, int], ...] = (
+    ("股份有限公司章程", 100),
+    ("有限责任公司章程", 100),
     ("有限公司章程", 100),
-    ("公司章程", 100),
     ("第一章公司的名称和住所", 50),
     ("第一章公司名称和住所", 50),
-    ("依据《中华人民共和国公司法》", 40),
+    ("依据《中华人民共和国公司法》", 50),
     ("公司注册资本", 40),
     ("股东的姓名或者名称", 40),
+    ("发起人", 40),
+    ("认购股份", 40),
+    ("持股比例", 40),
     ("公司的机构及其产生办法、职权、议事规则", 40),
     ("股东会是公司的权力机构", 30),
     ("公司的法定代表人", 30),
@@ -42,6 +48,17 @@ ARTICLE_SCORE_RULES: tuple[tuple[str, int], ...] = (
     ("本章程自全体股东盖章、签字之日起生效", 40),
     ("本章程", 20),
 )
+
+
+def _valid_articles_title_in_top(text: str) -> bool:
+    top = str(text or "")[:1000]
+    return bool(
+        re.search(
+            r"(?<![),，、])[\u4e00-\u9fff（）()·A-Za-z0-9]{4,80}"
+            r"(?:股份有限公司|有限责任公司|有限公司)章程",
+            top,
+        )
+    )
 
 
 def _compact(value: str) -> str:
@@ -65,6 +82,9 @@ def classify_company_articles_page(page: dict[str, Any], index: int = 1) -> Page
         if _compact(feature) in compact:
             score += points
             matched.append(feature)
+    if _valid_articles_title_in_top(text):
+        score = max(score, 100)
+        matched.append("valid_articles_title")
 
     explicit_type = "other"
     for page_type, keywords in NON_ARTICLE_RULES:
@@ -84,7 +104,18 @@ def classify_company_articles_page(page: dict[str, Any], index: int = 1) -> Page
             explicit_type = page_type
             break
 
-    if score >= 80:
+    structural_count = sum(
+        1
+        for token in (
+            "第一章", "公司名称", "公司住所", "公司注册资本", "股东的姓名或者名称",
+            "发起人", "认购股份", "股东会", "董事会", "股权转让", "财务会计",
+            "利润分配", "解散", "清算", "本章程",
+        )
+        if token in compact
+    )
+    if explicit_type != "other" and not _valid_articles_title_in_top(text) and structural_count < 3:
+        page_type = explicit_type
+    elif score >= 80:
         page_type = "company_articles_page"
     elif explicit_type != "other":
         page_type = explicit_type
