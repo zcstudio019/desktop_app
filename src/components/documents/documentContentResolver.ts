@@ -39,7 +39,7 @@ function nonEmpty(value: unknown): string {
 }
 
 function firstMarkdownFromRecord(...records: JsonRecord[]): string {
-  const currentVersion = 'company_articles_v4_shareholder_table_cell_strict';
+  const currentVersion = 'company_articles_v5_no_signing_date_deadline';
   const versionedRecords = records.filter((record) =>
     nonEmpty(record.extraction_version ?? record.extractionVersion ?? record.schema_version ?? record.schemaVersion)
   );

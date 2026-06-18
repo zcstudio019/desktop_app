@@ -214,7 +214,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v4_shareholder_table_cell_strict"
+    assert content["extraction_version"] == "company_articles_v5_no_signing_date_deadline"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -917,6 +917,57 @@ def test_company_articles_parses_multiple_contribution_months_and_methods() -> N
     assert result["structured_data"]["capital_check"]["message"] == "出资额合计与注册资本一致"
 
 
+def test_naiji_shareholder_deadline_not_signing_date() -> None:
+    text = """
+上海耐吉科技股份有限公司章程
+第一条 公司名称：上海耐吉科技股份有限公司
+第二条 公司住所：上海市浦东新区耐吉路88号1号楼101室
+第三条 公司经营范围：技术开发。
+第四条 公司注册资本：人民币10180万元
+股东的姓名或者名称 出资额 出资方式 出资时间
+林武 509万元 现金 2004.4 / 2005.7 / 2009.5 / 2012.9
+林勇 7056万元 现金、知识产权 2004.4 / 2005.7 / 2009.5 / 2012.9
+陈鹏 1277.5万元 现金 2004.4 / 2005.7 / 2009.5
+胡海荣 1235万元 现金 2004.4 / 2005.7 / 2009.5
+陈建生 102.5万元 现金 2004.4 / 2005.7
+签署日期：2004.04.20
+"""
+    result = CompanyArticlesAgent().run(
+        {
+            "text": text,
+            "raw_pages": [{"page": 1, "text": text}],
+            "filename": "耐吉章程2025.05.30(1).pdf",
+        }
+    ).to_dict()
+    markdown = result["display_markdown"]
+    shareholder_section = markdown.split("### 股东及出资信息", 1)[1].split(
+        "- 注册资本合计", 1
+    )[0]
+    expected_rows = [
+        "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 5.00% |",
+        "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 69.31% |",
+        "| 陈鹏 | 1277.5万元 | 现金 | 2004.04 / 2005.07 / 2009.05 | 12.55% |",
+        "| 胡海荣 | 1235万元 | 现金 | 2004.04 / 2005.07 / 2009.05 | 12.13% |",
+        "| 陈建生 | 102.5万元 | 现金 | 2004.04 / 2005.07 | 1.01% |",
+    ]
+    assert all(row in shareholder_section for row in expected_rows)
+    assert "2004.04.20" not in shareholder_section
+
+    shareholders = result["structured_data"]["shareholders"]
+    assert [item["name"] for item in shareholders] == ["林武", "林勇", "陈鹏", "胡海荣", "陈建生"]
+    assert [item["contribution_deadline"] for item in shareholders] == [
+        "2004.04 / 2005.07 / 2009.05 / 2012.09",
+        "2004.04 / 2005.07 / 2009.05 / 2012.09",
+        "2004.04 / 2005.07 / 2009.05",
+        "2004.04 / 2005.07 / 2009.05",
+        "2004.04 / 2005.07",
+    ]
+    assert shareholders[1]["contribution_method"] == "现金、知识产权"
+    internal_blocks = result["structured_data"]["internal_blocks"]
+    assert "2005.7" in internal_blocks["shareholder_block"]
+    assert "2012.9" in internal_blocks["shareholder_table_raw_text"]
+
+
 def test_company_articles_parses_naiji_shareholder_table_rows_directly() -> None:
     block = """
 股东的姓名或者名称 出资额 出资方式 出资时间
@@ -1005,6 +1056,33 @@ def test_company_articles_recovers_signing_date_overwrite_from_table_block() -> 
     assert result.shareholders[1].contribution_deadline == "2004.04 / 2005.07 / 2009.05 / 2012.09"
 
 
+def test_company_articles_renderer_hard_gate_repairs_stale_structured_data() -> None:
+    block = """
+股东的姓名或者名称 出资额 出资方式 出资时间
+林武 509万元 现金 2004.4 / 2005.7 / 2009.5 / 2012.9
+林勇 7056万元 现金、知识产权 2004.4 / 2005.7 / 2009.5 / 2012.9
+"""
+    stale = CompanyArticlesResult(
+        registered_capital="人民币7565万元",
+        registered_capital_amount=7565,
+        shareholders=[
+            Shareholder("林武", "509万元", 509, "现金", "2004.04.20", "6.73%", 0),
+            Shareholder("林勇", "7056万元", 7056, "现金", "2004.04.20", "93.27%", 1),
+        ],
+        signature_info={"signing_date": "2004.04.20"},
+        internal_blocks={"shareholder_block": block},
+    )
+
+    markdown = render_company_articles_markdown(stale, filename="耐吉章程2025.05.30(1).pdf")
+    shareholder_section = markdown.split("### 股东及出资信息", 1)[1].split(
+        "- 注册资本合计", 1
+    )[0]
+
+    assert "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in shareholder_section
+    assert "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in shareholder_section
+    assert "2004.04.20" not in shareholder_section
+
+
 def test_company_articles_stale_version_is_reextracted_from_saved_raw_text() -> None:
     raw_text = """
 上海耐吉科技股份有限公司章程
@@ -1025,7 +1103,7 @@ def test_company_articles_stale_version_is_reextracted_from_saved_raw_text() -> 
     )
 
     assert refreshed is not None
-    assert refreshed["extraction_version"] == "company_articles_v4_shareholder_table_cell_strict"
+    assert refreshed["extraction_version"] == "company_articles_v5_no_signing_date_deadline"
     assert "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in refreshed["display_markdown"]
     assert "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in refreshed["display_markdown"]
 

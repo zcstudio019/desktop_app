@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .extractor import normalize_contribution_date, rebuild_shareholders_from_table_block
+from .extractor import normalize_contribution_date, rebuild_shareholders_from_shareholder_block
 from .schema import CompanyArticlesResult, Shareholder
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,7 @@ def normalize_company_articles(data: dict[str, Any], *, filename: str = "", raw_
         articles_effective_rule=_text(data.get("articles_effective_rule")),
         signature_info=data.get("signature_info") if isinstance(data.get("signature_info"), dict) else {},
         shareholder_table_block=str(data.get("shareholder_table_block") or ""),
+        internal_blocks=data.get("internal_blocks") if isinstance(data.get("internal_blocks"), dict) else {},
         page_count=int(data.get("page_count") or 0),
         raw_text_preview=str(raw_text or "")[:500],
         metadata={"filename": filename},
@@ -86,7 +87,14 @@ def finalize_company_articles_shareholders(
     shareholder_block: str = "",
 ) -> CompanyArticlesResult:
     """Last safety gate before validation/rendering; signing dates never fill shareholder dates."""
-    block = str(shareholder_block or result.shareholder_table_block or "")
+    block = str(
+        shareholder_block
+        or result.shareholder_table_block
+        or (result.internal_blocks or {}).get("shareholder_block")
+        or (result.internal_blocks or {}).get("shareholder_table_raw_text")
+        or (result.internal_blocks or {}).get("shareholder_table_crop_ocr_text")
+        or ""
+    )
     signing_date = normalize_contribution_date(str((result.signature_info or {}).get("signing_date") or ""))
     deadlines = [str(item.contribution_deadline or "").strip() for item in result.shareholders]
     all_same_as_signing = (
@@ -96,7 +104,7 @@ def finalize_company_articles_shareholders(
         and deadlines[0] == signing_date
     )
     if all_same_as_signing and _contains_multiple_year_months(block):
-        rebuilt = rebuild_shareholders_from_table_block(block, result.registered_capital_amount)
+        rebuilt = rebuild_shareholders_from_shareholder_block(block, result.registered_capital_amount)
         if rebuilt:
             by_key = {
                 (item.name, f"{float(item.subscribed_amount_number or 0):g}"): item
@@ -123,3 +131,9 @@ def finalize_company_articles_shareholders(
         key=lambda item: item.row_index if item.row_index is not None else len(result.shareholders)
     )
     return result
+
+
+def validate_shareholder_deadlines_before_render(
+    result: CompanyArticlesResult,
+) -> CompanyArticlesResult:
+    return finalize_company_articles_shareholders(result)

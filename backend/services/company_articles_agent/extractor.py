@@ -550,6 +550,16 @@ def rebuild_shareholders_from_table_block(
     )
 
 
+def rebuild_shareholders_from_shareholder_block(
+    shareholder_block: str,
+    registered_capital_amount: float | None,
+) -> list[Shareholder]:
+    return rebuild_shareholders_from_table_block(
+        shareholder_block,
+        registered_capital_amount,
+    )
+
+
 def shareholder_total_matches_registered(
     shareholders: list[Shareholder],
     registered_capital_amount: float | None,
@@ -1376,6 +1386,13 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
         "articles_effective_rule": "本章程自全体股东盖章、签字之日起生效" if "全体股东盖章" in text or "签字之日起生效" in text else short_sentence(text, "生效") or "未识别",
         "signature_info": extract_signature_info(text, pages),
         "shareholder_table_block": shareholder_table_block,
+        "internal_blocks": {
+            "articles_block_text": text,
+            "shareholder_block": shareholder_table_block,
+            "shareholder_table_raw_text": shareholder_table_block,
+            "shareholder_table_page": "",
+            "shareholder_table_crop_ocr_text": shareholder_table_block,
+        },
         "page_count": len(pages) if pages else len(re.findall(r"---\s*第?\s*\d+\s*页", text or "")) or 1,
         "field_evidence": {
             "title": {

@@ -38,7 +38,7 @@ describe('CustomerDetailFieldRenderer company articles', () => {
         sectionName="公司章程"
         sectionValue={{
           doc_type: 'company_articles',
-          extraction_version: 'company_articles_v4_shareholder_table_cell_strict',
+          extraction_version: 'company_articles_v5_no_signing_date_deadline',
           structured_data: {
             title: '上海乐芙兰电子商务有限公司章程',
             company_address: '上海市长宁区广顺路33号3幢6层672室',
