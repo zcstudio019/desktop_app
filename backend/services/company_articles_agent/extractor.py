@@ -341,62 +341,134 @@ def shareholder_total_matches_registered(
     return abs(total - float(registered_capital_amount)) <= 0.01
 
 
-def extract_external_shareholder_names(text: str) -> list[str]:
+EXTERNAL_NAME_STOPWORDS = {
+    "公司", "股东", "发起人", "出资", "情况", "姓名", "名称", "证件", "号码",
+    "签字", "签名", "盖章", "日期", "承诺", "经办人", "登记机关", "营业执照",
+    "法定代表人", "财务负责人", "出资额", "出资方式", "出资时间", "认缴出资",
+    "公司印章", "之日起生", "本章程", "股东会", "决议",
+}
+
+
+def _valid_external_person_name(value: str) -> bool:
+    name = clean_clause(value)
+    return (
+        bool(re.fullmatch(r"[\u4e00-\u9fff·]{2,4}", name))
+        and is_natural_person_name(name)
+        and not any(token in name for token in EXTERNAL_NAME_STOPWORDS)
+    )
+
+
+def _extract_external_names_from_text(text: str) -> list[str]:
     source = normalize_shareholder_text(text)
     names: list[str] = []
     labelled_patterns = (
-        r"(?:^|\n)\s*(?:股东签字|股东签名|股东姓名|股东的姓名或者名称)\s*[：:]\s*([^\n]{2,120})",
-        r"(?:^|\n)\s*(?:签字|签名)\s*[：:]\s*([^\n]{2,120})",
+        r"(?:^|\n)\s*(?:股东签字|股东签名|股东姓名|股东的姓名或者名称|股东（签字、盖章）)\s*[：:]?\s+([^\n]{2,120})",
+        r"(?:^|\n)\s*(?:签字|签名)\s*[：:]?\s+([^\n]{2,120})",
     )
     for pattern in labelled_patterns:
         for match in re.finditer(pattern, source):
             for candidate in re.findall(r"[\u4e00-\u9fff·]{2,4}", match.group(1)):
-                if is_natural_person_name(candidate) and candidate not in names:
+                if _valid_external_person_name(candidate) and candidate not in names:
                     names.append(candidate)
     for line in source.splitlines():
         match = re.match(
             r"\s*([\u4e00-\u9fff·]{2,4})\s+(?:(?:\d{6,18}[0-9Xx]?)|(?:\d+(?:\.\d+)?\s*万))",
             line,
         )
-        if match and is_natural_person_name(match.group(1)) and match.group(1) not in names:
+        if match and _valid_external_person_name(match.group(1)) and match.group(1) not in names:
             names.append(match.group(1))
     return names
+
+
+def extract_external_shareholder_names(
+    pages_or_text: list[dict[str, Any]] | str,
+    page_classes: list[Any] | None = None,
+) -> list[str]:
+    if isinstance(pages_or_text, str):
+        return _extract_external_names_from_text(pages_or_text)
+    allowed_types = {
+        "shareholder_contribution_attachment",
+        "shareholder_resolution",
+        "articles_signature_page",
+    }
+    class_by_page = {
+        int(getattr(item, "page", 0)): str(getattr(item, "page_type", ""))
+        for item in (page_classes or [])
+    }
+    occurrence_count: Counter[str] = Counter()
+    first_seen: list[str] = []
+    for index, page in enumerate(pages_or_text or [], start=1):
+        if not isinstance(page, dict):
+            continue
+        page_no = int(page.get("page") or page.get("page_index") or index)
+        if class_by_page.get(page_no) not in allowed_types:
+            continue
+        for name in _extract_external_names_from_text(str(page.get("text") or "")):
+            occurrence_count[name] += 1
+            if name not in first_seen:
+                first_seen.append(name)
+    selected = sorted(
+        first_seen,
+        key=lambda name: (-occurrence_count[name], first_seen.index(name)),
+    )
+    logger.debug(
+        "%s external_shareholder_names=%s occurrence_count=%s",
+        SHAREHOLDER_LOG_PREFIX,
+        selected,
+        dict(occurrence_count),
+    )
+    return selected
+
+
+def repair_duplicate_shareholder_names_by_external_names(
+    shareholders: list[Shareholder],
+    external_names: list[str],
+    registered_capital_amount: float | None = None,
+) -> list[Shareholder]:
+    if len(shareholders) < 2:
+        return shareholders
+    if registered_capital_amount is not None:
+        total = sum(float(item.subscribed_amount_number or 0) for item in shareholders)
+        if abs(total - float(registered_capital_amount)) > 0.01:
+            return shareholders
+    cleaned_external = list(dict.fromkeys(
+        name for name in external_names if _valid_external_person_name(name)
+    ))
+    counts = Counter(item.name for item in shareholders)
+    duplicate_names = [name for name, count in counts.items() if count > 1]
+    missing_names = [name for name in cleaned_external if name not in counts]
+    duplicate_slots = sum(counts[name] - 1 for name in duplicate_names)
+    if not duplicate_names or len(missing_names) < duplicate_slots:
+        return shareholders
+    replacement_index = 0
+    for duplicate_name in duplicate_names:
+        duplicate_indexes = [
+            index for index, item in enumerate(shareholders) if item.name == duplicate_name
+        ]
+        for replace_index in duplicate_indexes[1:]:
+            replacement = missing_names[replacement_index]
+            shareholders[replace_index].name = replacement
+            replacement_index += 1
+            logger.debug(
+                "%s repaired_shareholder_name index=%s old=%s new=%s external_names=%s",
+                SHAREHOLDER_LOG_PREFIX,
+                replace_index,
+                duplicate_name,
+                replacement,
+                cleaned_external,
+            )
+    return shareholders
 
 
 def repair_shareholder_names_by_external_names(
     shareholders: list[Shareholder],
     external_names: list[str],
 ) -> list[Shareholder]:
-    if len(shareholders) < 2:
-        return shareholders
-    cleaned_external = list(dict.fromkeys(
-        name for name in external_names if is_natural_person_name(name)
-    ))
-    if len(cleaned_external) != len(shareholders):
-        return shareholders
-    counts = Counter(item.name for item in shareholders)
-    duplicate_names = {name for name, count in counts.items() if count > 1}
-    missing_names = [name for name in cleaned_external if name not in counts]
-    if len(duplicate_names) != 1 or len(missing_names) != 1:
-        return shareholders
-    duplicate_name = next(iter(duplicate_names))
-    replacement = missing_names[0]
-    duplicate_indexes = [
-        index for index, item in enumerate(shareholders) if item.name == duplicate_name
-    ]
-    if len(duplicate_indexes) < 2:
-        return shareholders
-    replace_index = duplicate_indexes[-1]
-    shareholders[replace_index].name = replacement
-    logger.debug(
-        "%s repaired_shareholder_name index=%s old=%s new=%s external_names=%s",
-        SHAREHOLDER_LOG_PREFIX,
-        replace_index,
-        duplicate_name,
-        replacement,
-        cleaned_external,
+    return repair_duplicate_shareholder_names_by_external_names(
+        shareholders,
+        external_names,
+        None,
     )
-    return shareholders
 
 
 def repair_shareholder_dates_by_majority(
@@ -752,24 +824,19 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
         *make_candidates(compact_matches, "compact_regex", True, block),
     ]
     shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
-    if shareholder_total_matches_registered(shareholders, registered_capital_amount):
-        logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
-        return shareholders
-
-    if len(shareholders) < 2:
+    capital_matched = shareholder_total_matches_registered(shareholders, registered_capital_amount)
+    if not capital_matched and len(shareholders) < 2:
         token_rows = parse_shareholders_by_tokens(block, registered_capital_amount)
         logger.debug("%s token_fallback_tokens=%s", SHAREHOLDER_LOG_PREFIX, shareholder_tokens_for_debug(block))
         logger.debug("%s token_fallback_rows=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(token_rows))
         candidates.extend(make_candidates(token_rows, "token_fallback", True, block))
         shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
-    if shareholder_total_matches_registered(shareholders, registered_capital_amount):
-        logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
-        return shareholders
+        capital_matched = shareholder_total_matches_registered(shareholders, registered_capital_amount)
 
-    if not shareholders or (
+    if not capital_matched and (not shareholders or (
         registered_capital_amount
         and abs(sum(float(item.subscribed_amount_number or 0) for item in shareholders) - registered_capital_amount) >= 0.01
-    ):
+    )):
         full_text_matches = dedupe_shareholders([
             *parse_shareholders_by_regex(text, registered_capital_amount),
             *parse_shareholders_by_compact(text, registered_capital_amount),
@@ -777,14 +844,13 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
         ])
         candidates.extend(make_candidates(full_text_matches, "full_text_fallback", False, text))
         shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
-    if shareholder_total_matches_registered(shareholders, registered_capital_amount):
-        logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))
-        return shareholders
+        capital_matched = shareholder_total_matches_registered(shareholders, registered_capital_amount)
 
-    recovered = recover_missing_shareholders(block, shareholders, registered_capital_amount)
-    logger.debug("%s recovered_rows=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(recovered))
-    candidates.extend(make_candidates(recovered, "amount_recovery", True, block))
-    shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
+    if not capital_matched:
+        recovered = recover_missing_shareholders(block, shareholders, registered_capital_amount)
+        logger.debug("%s recovered_rows=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(recovered))
+        candidates.extend(make_candidates(recovered, "amount_recovery", True, block))
+        shareholders = final_select_shareholders(candidates, registered_capital_amount, block)
     if not shareholders:
         logger.debug("%s shareholders_empty_after_all_strategies=true", SHAREHOLDER_LOG_PREFIX)
     logger.debug("%s final_shareholders=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(shareholders))

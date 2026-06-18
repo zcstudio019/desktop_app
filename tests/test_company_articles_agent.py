@@ -5,8 +5,10 @@ from backend.services.company_articles_agent.company_articles_locator import loc
 from backend.services.company_articles_agent.extractor import (
     clean_articles_title,
     clean_company_address,
+    extract_external_shareholder_names,
     extract_fields,
     repair_shareholder_dates_by_majority,
+    repair_duplicate_shareholder_names_by_external_names,
     repair_shareholder_names_by_external_names,
 )
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
@@ -198,7 +200,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v5_boundary_shareholder_repair"
+    assert content["extraction_version"] == "company_articles_v6_external_name_repair"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -519,7 +521,13 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
         {"page": 9, "text": "财务负责人信息\n移动电话\n电子邮箱"},
         {"page": 10, "text": "联络员信息\n移动电话\n电子邮箱"},
         {"page": 11, "text": "指定代表或者共同委托代理人授权委托书"},
-        {"page": 12, "text": "股东会决议\n同意变更后的经营范围\n通过公司新的章程"},
+        {
+            "page": 12,
+            "text": (
+                "股东会决议\n同意变更后的经营范围\n通过公司新的章程\n"
+                "股东签字：徐绚纹 李亚光 王毅 梁啸民"
+            ),
+        },
         {
             "page": 13,
             "text": """
@@ -595,6 +603,8 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
     assert classes[18].page_type == "business_license"
     assert block is not None
     assert block.page_numbers == [13, 14, 15, 16, 17]
+    external_names = extract_external_shareholder_names(pages, classes)
+    assert set(external_names) == {"李亚光", "梁啸民", "徐绚纹", "王毅"}
 
     result = CompanyArticlesAgent().run(
         {"text": "", "raw_pages": pages, "filename": "崇景公司章程.pdf"}
@@ -674,6 +684,24 @@ def test_company_articles_repairs_duplicate_name_and_outlier_date() -> None:
         ("徐绚纹", "2048.04.02"),
         ("王毅", "2048.04.02"),
     ]
+
+
+def test_company_articles_repairs_duplicate_name_even_when_capital_already_matches() -> None:
+    shareholders = [
+        Shareholder("李亚光", "20万元", 20, "货币", "2048.04.02", "20.00%"),
+        Shareholder("梁啸民", "20万元", 20, "货币", "2048.04.02", "20.00%"),
+        Shareholder("徐绚纹", "40万元", 40, "货币", "2048.04.02", "40.00%"),
+        Shareholder("李亚光", "20万元", 20, "货币", "2048.04.02", "20.00%"),
+    ]
+    repaired = repair_duplicate_shareholder_names_by_external_names(
+        shareholders,
+        ["李亚光", "梁啸民", "徐绚纹", "王毅"],
+        100,
+    )
+    assert [item.name for item in repaired] == ["李亚光", "梁啸民", "徐绚纹", "王毅"]
+    assert sum(float(item.subscribed_amount_number or 0) for item in repaired) == 100
+    assert [item.name for item in repaired].count("李亚光") == 1
+    assert [item.name for item in repaired].count("王毅") == 1
 
 
 def test_company_articles_classifier_uses_merged_image_and_crop_ocr_text() -> None:

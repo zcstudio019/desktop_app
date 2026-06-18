@@ -70,6 +70,16 @@ def classify_company_articles_page(page: dict[str, Any], index: int = 1) -> Page
     for page_type, keywords in NON_ARTICLE_RULES:
         hits = sum(1 for keyword in keywords if _compact(keyword) in compact)
         required_hits = 2
+        if page_type == "shareholder_contribution_attachment" and any(
+            _compact(keyword) in compact
+            for keyword in ("股东(发起人)出资情况", "股东发起人出资情况")
+        ):
+            required_hits = 1
+        if page_type == "shareholder_resolution" and re.search(
+            r"(?:^|\n)\s*股东会决议(?:\s|$)",
+            text,
+        ):
+            required_hits = 1
         if hits >= required_hits:
             explicit_type = page_type
             break
@@ -83,6 +93,11 @@ def classify_company_articles_page(page: dict[str, Any], index: int = 1) -> Page
         for token in ("股东会", "执行董事", "监事", "注册资本", "股权", "财务会计", "清算", "法定代表人")
     ):
         page_type = "company_articles_continuation"
+    elif any(
+        token in text
+        for token in ("股东签字：", "股东签字:", "股东签名：", "股东签名:", "股东（签字、盖章）")
+    ):
+        page_type = "articles_signature_page"
     else:
         page_type = "other"
     return PageClassResult(
