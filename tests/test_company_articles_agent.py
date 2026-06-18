@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from backend.services.company_articles_agent import CompanyArticlesAgent, CompanyArticlesSkill, detect_company_articles
 from backend.services.company_articles_agent.company_articles_locator import locate_articles_block
+from backend.services.company_articles_agent.extractor import (
+    clean_articles_title,
+    clean_company_address,
+    extract_fields,
+    repair_shareholder_dates_by_majority,
+    repair_shareholder_names_by_external_names,
+)
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
 from backend.services.company_articles_agent.page_classifier import classify_company_articles_pages
-from backend.services.company_articles_agent.schema import CompanyArticlesResult
+from backend.services.company_articles_agent.schema import CompanyArticlesResult, Shareholder
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
 from backend.services.document_agents.registry import DOCUMENT_AGENT_REGISTRY, get_document_agent
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
@@ -191,7 +198,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v4_archive_image_ocr"
+    assert content["extraction_version"] == "company_articles_v5_boundary_shareholder_repair"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -499,7 +506,13 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
         {"page": 2, "text": "准予变更登记通知书\n变更事项"},
         {"page": 3, "text": "公司登记（备案）申请书\n基本信息\n申请人声明"},
         {"page": 4, "text": "公司登记备案申请书\n变更信息\n申请人声明"},
-        {"page": 5, "text": "股东（发起人）出资情况\n证件号码\n认缴出资额"},
+        {
+            "page": 5,
+            "text": (
+                "股东（发起人）出资情况\n证件号码\n认缴出资额\n"
+                "李亚光 20万\n梁啸民 20万\n徐绚纹 40万\n王毅 20万"
+            ),
+        },
         {"page": 6, "text": "法定代表人信息\n移动电话\n电子邮箱\n身份证件号码"},
         {"page": 7, "text": "董事、监事、经理信息\n身份证件号码"},
         {"page": 8, "text": "承诺书\n申请人承诺"},
@@ -524,7 +537,7 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
 李亚光 20万 货币 2048.4.2
 梁啸民 20万 货币 2048.4.2
 徐绚纹 40万 货币 2048.4.2
-王毅 20万 货币 2048.4.2
+李亚光 20万 货币 2048.4.21
 第六条 公司成立后，应向股东签发出资证明书。
 """,
         },
@@ -612,6 +625,55 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
     assert "公司名称：未识别" not in markdown
     assert "股东信息：未识别" not in markdown
     assert "股东出资额合计与注册资本不一致，请人工复核" not in markdown
+
+
+def test_company_articles_title_ignores_body_phrase() -> None:
+    text = """
+上海崇璟项目管理有限公司章程
+依据《中华人民共和国公司法》及本公司章程，经全体股东讨论制定。
+第一章 公司的名称和住所
+第一条 公司名称：上海崇璟项目管理有限公司
+"""
+    extracted = extract_fields(text, pages=[{"page": 13, "text": text}], filename="崇景公司章程.pdf")
+    assert extracted["title"] == "上海崇璟项目管理有限公司章程"
+    assert clean_articles_title("及本公司章程", "上海崇璟项目管理有限公司") == "上海崇璟项目管理有限公司章程"
+
+
+def test_company_articles_address_stops_before_company_name_and_chapter() -> None:
+    address = clean_company_address(
+        "上海市普陀区武威路88弄21号3层97室；上海崇璟项目管理有限公司 第二章 公司经营范围",
+        "上海崇璟项目管理有限公司",
+    )
+    assert address == "上海市普陀区武威路88弄21号3层97室"
+    extracted = extract_fields(
+        "第一条 公司名称：上海崇璟项目管理有限公司\n"
+        "第二条 公司住所：上海市普陀区武威路88弄21号3层97室；上海崇璟项目管理有限公司 第二章 公司经营范围\n"
+        "第三条 公司经营范围：建筑项目管理\n第三章 公司注册资本\n"
+        "第四条 公司注册资本：人民币100万元",
+        pages=[{"page": 13, "text": "章程正文"}],
+    )
+    assert extracted["company_address"] == "上海市普陀区武威路88弄21号3层97室"
+
+
+def test_company_articles_repairs_duplicate_name_and_outlier_date() -> None:
+    shareholders = [
+        Shareholder("李亚光", "20万元", 20, "货币", "2048.04.02", "20.00%"),
+        Shareholder("梁啸民", "20万元", 20, "货币", "2048.04.02", "20.00%"),
+        Shareholder("徐绚纹", "40万元", 40, "货币", "2048.04.02", "40.00%"),
+        Shareholder("李亚光", "20万元", 20, "货币", "2048.04.21", "20.00%"),
+    ]
+    repaired = repair_shareholder_dates_by_majority(
+        repair_shareholder_names_by_external_names(
+            shareholders,
+            ["李亚光", "梁啸民", "徐绚纹", "王毅"],
+        )
+    )
+    assert [(item.name, item.contribution_deadline) for item in repaired] == [
+        ("李亚光", "2048.04.02"),
+        ("梁啸民", "2048.04.02"),
+        ("徐绚纹", "2048.04.02"),
+        ("王毅", "2048.04.02"),
+    ]
 
 
 def test_company_articles_classifier_uses_merged_image_and_crop_ocr_text() -> None:

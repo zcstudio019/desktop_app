@@ -4,7 +4,12 @@ import logging
 from typing import Any
 
 from .company_articles_locator import locate_articles_block
-from .extractor import detect_company_articles
+from .extractor import (
+    detect_company_articles,
+    extract_external_shareholder_names,
+    repair_shareholder_dates_by_majority,
+    repair_shareholder_names_by_external_names,
+)
 from .markdown_renderer import render_company_articles_markdown
 from .normalizer import normalize_company_articles
 from .schema import DOC_TYPE, DOC_TYPE_NAME, SCHEMA_VERSION, CompanyArticlesResult
@@ -80,6 +85,31 @@ class CompanyArticlesAgent:
         main_pages = articles_block.pages if articles_block else pages
         extracted = CompanyArticlesSkill().extract(text=main_text, pages=main_pages, filename=filename)
         if articles_block:
+            external_name_texts = [
+                item.text
+                for item in articles_block.page_classes
+                if item.page_type in {
+                    "shareholder_contribution_attachment",
+                    "shareholder_resolution",
+                }
+            ]
+            if articles_block.pages:
+                external_name_texts.append(str(articles_block.pages[-1].get("text") or ""))
+            external_names: list[str] = []
+            for evidence_text in external_name_texts:
+                for name in extract_external_shareholder_names(evidence_text):
+                    if name not in external_names:
+                        external_names.append(name)
+            shareholders = extracted.get("shareholders")
+            if isinstance(shareholders, list):
+                extracted["shareholders"] = repair_shareholder_dates_by_majority(
+                    repair_shareholder_names_by_external_names(shareholders, external_names)
+                )
+                logger.debug(
+                    "[CompanyArticles][ShareholderRepair] external_names=%s final_names=%s",
+                    external_names,
+                    [getattr(item, "name", "") for item in extracted["shareholders"]],
+                )
             for fallback_type in ("shareholder_resolution", "business_license"):
                 fallback_pages = [
                     {"page": item.page, "text": item.text}

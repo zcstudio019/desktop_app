@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
@@ -58,17 +59,35 @@ def parse_amount_number(value: str) -> float | None:
         return None
 
 
-def extract_title(text: str) -> tuple[str, str]:
-    head = "\n".join((text or "").splitlines()[:20])
-    title = first_match(
-        head,
-        [
-            r"([\u4e00-\u9fffA-Za-z0-9（）()·路\-]{2,80}有限公司章程)",
-            r"([\u4e00-\u9fffA-Za-z0-9（）()·路\-]{2,80}公司章程)",
-        ],
+def clean_articles_title(title: str, company_name: str = "") -> str:
+    value = clean_clause(title)
+    invalid = (
+        "及本公司章程", "本公司章程", "公司章程", "新的公司章程",
+        "通过公司新的章程", "修改公司章程", "本章程",
     )
-    if not title:
-        title = first_match(text, [r"([\u4e00-\u9fffA-Za-z0-9（）()·路\-]{2,80}有限公司章程)"])
+    if value in invalid or any(value.startswith(prefix) for prefix in ("根据", "依据")):
+        value = ""
+    if value and (not value.endswith("有限公司章程") or len(value) < 10):
+        value = ""
+    if not value and company_name and company_name != "未识别":
+        value = f"{company_name}章程"
+    return value
+
+
+def extract_title(text: str) -> tuple[str, str]:
+    head = str(text or "")[:800]
+    boundaries = [position for position in (head.find("依据《"), head.find("第一章")) if position >= 0]
+    title_region = head[:min(boundaries)] if boundaries else head
+    candidates = re.findall(
+        r"([\u4e00-\u9fffA-Za-z0-9（）()·路\-]{4,80}有限公司章程)",
+        title_region,
+    )
+    title = ""
+    for candidate in candidates:
+        candidate = clean_articles_title(candidate)
+        if candidate:
+            title = candidate
+            break
     company_name = title[:-2] if title.endswith("章程") else ""
     return title, company_name
 
@@ -85,16 +104,38 @@ def extract_company_name(text: str, title_company_name: str = "") -> str:
     return clean_clause(value) or title_company_name
 
 
-def extract_company_address(text: str) -> str:
+def clean_company_address(address: str, company_name: str = "") -> str:
+    value = clean_clause(address)
+    value = re.split(
+        r"(?:第二章|第三条|公司经营范围|经营范围|公司注册资本|第[一二三四五六七八九十]+章|第[三四五六七八九十]+条)",
+        value,
+        maxsplit=1,
+    )[0]
+    if "；上海" in value:
+        left, right = value.split("；", 1)
+        if any(token in right for token in ("公司", "项目管理", "有限")):
+            value = left
+    if company_name:
+        value = value.split(company_name, 1)[0]
+        for size in range(min(len(company_name), 12), 5, -1):
+            fragment = company_name[:size]
+            if fragment in value:
+                value = value.split(fragment, 1)[0]
+                break
+    value = re.sub(r"[；;、，,]\s*上海[\u4e00-\u9fff]{2,20}(?:公司|有限|项目管.*)?$", "", value)
+    return value.rstrip("；;、，,。 ")
+
+
+def extract_company_address(text: str, company_name: str = "") -> str:
     value = first_match(
         text,
         [
-            r"第二条\s*公司住所[：:\s]*([\s\S]{4,180}?)(?=\s*(?:第二章|第三条|公司经营范围|经营范围|\n第[一二三四五六七八九十]+章))",
-            r"公司住所[：:\s]*([\s\S]{4,180}?)(?=\s*(?:第二章|第三条|公司经营范围|经营范围|\n第[一二三四五六七八九十]+章))",
+            r"第二条\s*公司住所[：:\s]*([\s\S]{4,180}?)(?=\s*(?:第二章|第三条|公司经营范围|经营范围|公司注册资本|\n第[一二三四五六七八九十]+章|\n第[三四五六七八九十]+条))",
+            r"公司住所[：:\s]*([\s\S]{4,180}?)(?=\s*(?:第二章|第三条|公司经营范围|经营范围|公司注册资本|\n第[一二三四五六七八九十]+章|\n第[三四五六七八九十]+条))",
             r"住所[：:\s]*([^\n。；;]{4,180})",
         ],
     )
-    return clean_clause(value)
+    return clean_company_address(value, company_name)
 
 
 def extract_business_scope(text: str) -> str:
@@ -298,6 +339,95 @@ def shareholder_total_matches_registered(
         return False
     total = sum(float(item.subscribed_amount_number or 0) for item in shareholders)
     return abs(total - float(registered_capital_amount)) <= 0.01
+
+
+def extract_external_shareholder_names(text: str) -> list[str]:
+    source = normalize_shareholder_text(text)
+    names: list[str] = []
+    labelled_patterns = (
+        r"(?:^|\n)\s*(?:股东签字|股东签名|股东姓名|股东的姓名或者名称)\s*[：:]\s*([^\n]{2,120})",
+        r"(?:^|\n)\s*(?:签字|签名)\s*[：:]\s*([^\n]{2,120})",
+    )
+    for pattern in labelled_patterns:
+        for match in re.finditer(pattern, source):
+            for candidate in re.findall(r"[\u4e00-\u9fff·]{2,4}", match.group(1)):
+                if is_natural_person_name(candidate) and candidate not in names:
+                    names.append(candidate)
+    for line in source.splitlines():
+        match = re.match(
+            r"\s*([\u4e00-\u9fff·]{2,4})\s+(?:(?:\d{6,18}[0-9Xx]?)|(?:\d+(?:\.\d+)?\s*万))",
+            line,
+        )
+        if match and is_natural_person_name(match.group(1)) and match.group(1) not in names:
+            names.append(match.group(1))
+    return names
+
+
+def repair_shareholder_names_by_external_names(
+    shareholders: list[Shareholder],
+    external_names: list[str],
+) -> list[Shareholder]:
+    if len(shareholders) < 2:
+        return shareholders
+    cleaned_external = list(dict.fromkeys(
+        name for name in external_names if is_natural_person_name(name)
+    ))
+    if len(cleaned_external) != len(shareholders):
+        return shareholders
+    counts = Counter(item.name for item in shareholders)
+    duplicate_names = {name for name, count in counts.items() if count > 1}
+    missing_names = [name for name in cleaned_external if name not in counts]
+    if len(duplicate_names) != 1 or len(missing_names) != 1:
+        return shareholders
+    duplicate_name = next(iter(duplicate_names))
+    replacement = missing_names[0]
+    duplicate_indexes = [
+        index for index, item in enumerate(shareholders) if item.name == duplicate_name
+    ]
+    if len(duplicate_indexes) < 2:
+        return shareholders
+    replace_index = duplicate_indexes[-1]
+    shareholders[replace_index].name = replacement
+    logger.debug(
+        "%s repaired_shareholder_name index=%s old=%s new=%s external_names=%s",
+        SHAREHOLDER_LOG_PREFIX,
+        replace_index,
+        duplicate_name,
+        replacement,
+        cleaned_external,
+    )
+    return shareholders
+
+
+def repair_shareholder_dates_by_majority(
+    shareholders: list[Shareholder],
+) -> list[Shareholder]:
+    if len(shareholders) < 3:
+        return shareholders
+    dates = [item.contribution_deadline for item in shareholders if item.contribution_deadline]
+    if len(dates) < 3:
+        return shareholders
+    counts = Counter(dates)
+    majority_date, majority_count = counts.most_common(1)[0]
+    if majority_count <= len(shareholders) / 2:
+        return shareholders
+    majority_match = re.fullmatch(r"(\d{4})\.(\d{2})\.(\d{2})", majority_date)
+    if not majority_match:
+        return shareholders
+    for item in shareholders:
+        if item.contribution_deadline == majority_date:
+            continue
+        current = re.fullmatch(r"(\d{4})\.(\d{2})\.(\d{2})", item.contribution_deadline)
+        if current and current.group(1, 2) == majority_match.group(1, 2):
+            logger.debug(
+                "%s repaired_shareholder_date name=%s old=%s new=%s",
+                SHAREHOLDER_LOG_PREFIX,
+                item.name,
+                item.contribution_deadline,
+                majority_date,
+            )
+            item.contribution_deadline = majority_date
+    return shareholders
 
 
 def is_natural_person_name(name: str) -> bool:
@@ -727,6 +857,7 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
     pages = pages or []
     title, title_company = extract_title(text)
     company_name = extract_company_name(text, title_company)
+    title = clean_articles_title(title, company_name)
     registered_capital, registered_amount, currency = extract_registered_capital(text)
     shareholders = extract_shareholders(text, registered_amount)
     shareholder_total = sum(float(item.subscribed_amount_number or 0) for item in shareholders)
@@ -736,6 +867,7 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
         currency = "人民币"
     if registered_amount:
         shareholders = recover_missing_shareholders(extract_shareholder_block(text), shareholders, registered_amount)
+        shareholders = repair_shareholder_dates_by_majority(shareholders)
         for shareholder in shareholders:
             if shareholder.subscribed_amount_number is not None:
                 shareholder.contribution_ratio = f"{shareholder.subscribed_amount_number / registered_amount * 100:.2f}%"
@@ -753,7 +885,7 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
     return {
         "title": title,
         "company_name": company_name,
-        "company_address": extract_company_address(text),
+        "company_address": extract_company_address(text, company_name),
         "business_scope": extract_business_scope(text),
         "registered_capital": registered_capital,
         "registered_capital_amount": registered_amount,
