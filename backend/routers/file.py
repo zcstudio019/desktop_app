@@ -1075,6 +1075,33 @@ def _company_articles_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[in
     ]
 
 
+def _company_articles_shareholder_attachment_crop_boxes(
+    image_bytes: bytes,
+) -> list[tuple[str, tuple[int, int, int, int]]]:
+    with Image.open(BytesIO(image_bytes)) as image:
+        width, height = image.size
+    return [
+        (
+            "shareholder_attachment_table",
+            (
+                max(0, int(width * 0.10)),
+                max(0, int(height * 0.18)),
+                min(width, int(width * 0.70)),
+                min(height, int(height * 0.65)),
+            ),
+        ),
+        (
+            "shareholder_name_column",
+            (
+                max(0, int(width * 0.10)),
+                max(0, int(height * 0.18)),
+                min(width, int(width * 0.35)),
+                min(height, int(height * 0.65)),
+            ),
+        ),
+    ]
+
+
 def _company_articles_keyword_count(text: str) -> int:
     compact = re.sub(r"\s+", "", str(text or ""))
     return sum(1 for keyword in COMPANY_ARTICLES_OCR_KEYWORDS if re.sub(r"\s+", "", keyword) in compact)
@@ -1160,6 +1187,36 @@ def _ocr_company_articles_pdf_pages(
                 except OCRServiceError as exc:
                     logger.warning(
                         "[CompanyArticles][OCR] page=%s region=%s crop_ocr_failed=true filename=%s error=%s",
+                        page_no,
+                        region_name,
+                        filename,
+                        exc,
+                    )
+        compact_page_text = re.sub(r"\s+", "", merged_before_crops)
+        is_shareholder_attachment = (
+            "股东(发起人)出资情况" in compact_page_text
+            or "股东（发起人）出资情况" in merged_before_crops
+            or ("认缴出资额" in compact_page_text and "证件号码" in compact_page_text)
+            or (len(images) >= 13 and page_no == 5)
+        )
+        if is_shareholder_attachment:
+            for region_name, box in _company_articles_shareholder_attachment_crop_boxes(image_bytes):
+                try:
+                    crop_bytes = _crop_image_region(image_bytes, box)
+                    crop_text = ocr_service.recognize_image(
+                        _company_articles_ocr_variant(crop_bytes)
+                    ).strip()
+                    if crop_text:
+                        crop_parts.append(crop_text)
+                    logger.debug(
+                        "[CompanyArticles][ExternalNameOCR] page=%s region=%s text=%s",
+                        page_no,
+                        region_name,
+                        crop_text[:2000] or "(empty)",
+                    )
+                except OCRServiceError as exc:
+                    logger.warning(
+                        "[CompanyArticles][ExternalNameOCR] page=%s region=%s failed=true filename=%s error=%s",
                         page_no,
                         region_name,
                         filename,

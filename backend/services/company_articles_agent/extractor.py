@@ -345,7 +345,8 @@ EXTERNAL_NAME_STOPWORDS = {
     "公司", "股东", "发起人", "出资", "情况", "姓名", "名称", "证件", "号码",
     "签字", "签名", "盖章", "日期", "承诺", "经办人", "登记机关", "营业执照",
     "法定代表人", "财务负责人", "出资额", "出资方式", "出资时间", "认缴出资",
-    "公司印章", "之日起生", "本章程", "股东会", "决议",
+    "公司印章", "之日起生", "本章程", "股东会", "决议", "联络员", "登记",
+    "材料证明章", "市场监督管理局",
 }
 
 
@@ -358,7 +359,11 @@ def _valid_external_person_name(value: str) -> bool:
     )
 
 
-def _extract_external_names_from_text(text: str) -> list[str]:
+def _extract_external_names_from_text(
+    text: str,
+    *,
+    allow_standalone_names: bool = False,
+) -> list[str]:
     source = normalize_shareholder_text(text)
     names: list[str] = []
     labelled_patterns = (
@@ -377,6 +382,11 @@ def _extract_external_names_from_text(text: str) -> list[str]:
         )
         if match and _valid_external_person_name(match.group(1)) and match.group(1) not in names:
             names.append(match.group(1))
+    if allow_standalone_names:
+        for line in source.splitlines():
+            candidate = clean_clause(line)
+            if _valid_external_person_name(candidate) and candidate not in names:
+                names.append(candidate)
     return names
 
 
@@ -403,7 +413,11 @@ def extract_external_shareholder_names(
         page_no = int(page.get("page") or page.get("page_index") or index)
         if class_by_page.get(page_no) not in allowed_types:
             continue
-        for name in _extract_external_names_from_text(str(page.get("text") or "")):
+        page_type = class_by_page.get(page_no)
+        for name in _extract_external_names_from_text(
+            str(page.get("text") or ""),
+            allow_standalone_names=page_type == "shareholder_contribution_attachment",
+        ):
             occurrence_count[name] += 1
             if name not in first_seen:
                 first_seen.append(name)

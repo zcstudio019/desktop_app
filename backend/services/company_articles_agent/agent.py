@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from typing import Any
 
 from .company_articles_locator import locate_articles_block
@@ -84,6 +85,7 @@ class CompanyArticlesAgent:
         main_text = articles_block.text if articles_block else full_text
         main_pages = articles_block.pages if articles_block else pages
         extracted = CompanyArticlesSkill().extract(text=main_text, pages=main_pages, filename=filename)
+        external_names: list[str] = []
         if articles_block:
             external_names = extract_external_shareholder_names(
                 pages,
@@ -91,6 +93,30 @@ class CompanyArticlesAgent:
             )
             shareholders = extracted.get("shareholders")
             if isinstance(shareholders, list):
+                before_names = [getattr(item, "name", "") for item in shareholders]
+                name_counts = Counter(name for name in before_names if name)
+                duplicate_names = [
+                    name for name, count in name_counts.items() if count > 1
+                ]
+                missing_names = [
+                    name for name in external_names if name not in name_counts
+                ]
+                logger.debug(
+                    "[CompanyArticles][ShareholderRepair] before_repair_shareholders=%s",
+                    before_names,
+                )
+                logger.debug(
+                    "[CompanyArticles][ShareholderRepair] external_shareholder_names=%s",
+                    external_names,
+                )
+                logger.debug(
+                    "[CompanyArticles][ShareholderRepair] duplicate_names=%s",
+                    duplicate_names,
+                )
+                logger.debug(
+                    "[CompanyArticles][ShareholderRepair] missing_names=%s",
+                    missing_names,
+                )
                 extracted["shareholders"] = repair_shareholder_dates_by_majority(
                     repair_duplicate_shareholder_names_by_external_names(
                         shareholders,
@@ -99,8 +125,7 @@ class CompanyArticlesAgent:
                     )
                 )
                 logger.debug(
-                    "[CompanyArticles][ShareholderRepair] external_names=%s final_names=%s",
-                    external_names,
+                    "[CompanyArticles][ShareholderRepair] after_repair_shareholders=%s",
                     [getattr(item, "name", "") for item in extracted["shareholders"]],
                 )
             for fallback_type in ("shareholder_resolution", "business_license"):

@@ -200,7 +200,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v6_external_name_repair"
+    assert content["extraction_version"] == "company_articles_v7_shareholder_name_column_ocr"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -512,7 +512,7 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
             "page": 5,
             "text": (
                 "股东（发起人）出资情况\n证件号码\n认缴出资额\n"
-                "李亚光 20万\n梁啸民 20万\n徐绚纹 40万\n王毅 20万"
+                "李亚光\n梁啸民\n徐绚纹\n王毅"
             ),
         },
         {"page": 6, "text": "法定代表人信息\n移动电话\n电子邮箱\n身份证件号码"},
@@ -635,6 +635,8 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
     assert "公司名称：未识别" not in markdown
     assert "股东信息：未识别" not in markdown
     assert "股东出资额合计与注册资本不一致，请人工复核" not in markdown
+    assert markdown.count("| 李亚光 |") == 1
+    assert markdown.count("| 王毅 |") == 1
 
 
 def test_company_articles_title_ignores_body_phrase() -> None:
@@ -743,3 +745,7 @@ def test_company_articles_upload_path_uses_all_page_high_dpi_ocr() -> None:
     assert '"shareholder_table"' in source
     assert "max(0, int(height * 0.45))" in source
     assert "min(height, int(height * 0.75))" in source
+    assert '"shareholder_attachment_table"' in source
+    assert "max(0, int(height * 0.18))" in source
+    assert "min(width, int(width * 0.70))" in source
+    assert '"shareholder_name_column"' in source
