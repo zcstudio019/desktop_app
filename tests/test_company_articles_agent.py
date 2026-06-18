@@ -191,7 +191,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v3_canonical_markdown_only"
+    assert content["extraction_version"] == "company_articles_v4_archive_image_ocr"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -612,3 +612,44 @@ def test_company_articles_locates_articles_inside_registration_archive_bundle() 
     assert "公司名称：未识别" not in markdown
     assert "股东信息：未识别" not in markdown
     assert "股东出资额合计与注册资本不一致，请人工复核" not in markdown
+
+
+def test_company_articles_classifier_uses_merged_image_and_crop_ocr_text() -> None:
+    page_13 = {
+        "page": 13,
+        "pdf_text": "上海崇璟项目管理有限公司 2025-01-01 验证码",
+        "image_ocr_text": (
+            "上海崇璟项目管理有限公司章程\n第一章 公司的名称和住所\n"
+            "第一条 公司名称：上海崇璟项目管理有限公司\n"
+            "第二条 公司住所：上海市普陀区武威路88弄21号3层97室\n"
+            "第四条 公司注册资本：人民币100万元"
+        ),
+        "crop_ocr_text": (
+            "股东的姓名 出资额 出资方式 出资时间\n"
+            "李亚光 20万 货币 2048.4.2\n梁啸民 20万 货币 2048.4.2\n"
+            "徐绚纹 40万 货币 2048.4.2\n王毅 20万 货币 2048.4.2"
+        ),
+    }
+    page_13["text"] = "\n".join(
+        [page_13["pdf_text"], page_13["image_ocr_text"], page_13["crop_ocr_text"]]
+    )
+    classified = classify_company_articles_pages([page_13])
+    assert classified[0].page_type == "company_articles_page"
+    assert "上海崇璟项目管理有限公司章程" in classified[0].text
+    assert "公司注册资本" in classified[0].text
+    assert "李亚光 20万 货币 2048.4.2" in classified[0].text
+
+
+def test_company_articles_upload_path_uses_all_page_high_dpi_ocr() -> None:
+    source = (
+        __import__("pathlib").Path(__file__).parents[1]
+        / "backend"
+        / "routers"
+        / "file.py"
+    ).read_text(encoding="utf-8")
+    assert "def _ocr_company_articles_pdf_pages(" in source
+    assert "file_service.pdf_to_images(file_bytes, dpi=400)" in source
+    assert "text_content, raw_pages = _ocr_company_articles_pdf_pages(" in source
+    assert '"shareholder_table"' in source
+    assert "max(0, int(height * 0.45))" in source
+    assert "min(height, int(height * 0.75))" in source

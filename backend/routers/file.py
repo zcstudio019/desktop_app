@@ -1010,6 +1010,204 @@ def _ocr_company_articles_front_pages(file_bytes: bytes, file_type: str, filenam
         return ""
 
 
+COMPANY_ARTICLES_OCR_KEYWORDS = (
+    "有限公司章程",
+    "公司章程",
+    "第一章",
+    "公司名称",
+    "公司住所",
+    "公司经营范围",
+    "公司注册资本",
+    "股东的姓名",
+    "出资额",
+    "出资方式",
+    "股东会",
+    "执行董事",
+    "股权转让",
+    "本章程",
+)
+
+
+def _merge_unique_ocr_text(parts: list[str]) -> str:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        text = str(part or "").strip()
+        compact = re.sub(r"\s+", "", text)
+        if not compact or compact in seen:
+            continue
+        seen.add(compact)
+        merged.append(text)
+    return "\n\n".join(merged)
+
+
+def _company_articles_ocr_variant(image_bytes: bytes) -> bytes:
+    with Image.open(BytesIO(image_bytes)) as image:
+        grayscale = ImageOps.grayscale(image.convert("RGB"))
+        denoised = grayscale.filter(ImageFilter.MedianFilter(size=3))
+        contrasted = ImageEnhance.Contrast(ImageOps.autocontrast(denoised)).enhance(2.2)
+        sharpened = contrasted.filter(ImageFilter.UnsharpMask(radius=1.5, percent=160, threshold=3))
+        return _image_to_jpeg_bytes(sharpened)
+
+
+def _company_articles_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[int, int, int, int]]]:
+    with Image.open(BytesIO(image_bytes)) as image:
+        width, height = image.size
+    return [
+        (
+            "body_center",
+            (
+                max(0, int(width * 0.08)),
+                max(0, int(height * 0.08)),
+                min(width, int(width * 0.92)),
+                min(height, int(height * 0.92)),
+            ),
+        ),
+        (
+            "shareholder_table",
+            (
+                max(0, int(width * 0.10)),
+                max(0, int(height * 0.45)),
+                min(width, int(width * 0.90)),
+                min(height, int(height * 0.75)),
+            ),
+        ),
+    ]
+
+
+def _company_articles_keyword_count(text: str) -> int:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return sum(1 for keyword in COMPANY_ARTICLES_OCR_KEYWORDS if re.sub(r"\s+", "", keyword) in compact)
+
+
+def _ocr_company_articles_pdf_pages(
+    file_bytes: bytes,
+    filename: str,
+    native_pages: list[dict[str, Any]] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    images = file_service.pdf_to_images(file_bytes, dpi=400)
+    if not images:
+        raise HTTPException(status_code=400, detail=PDF_TO_IMAGE_FAILED_MESSAGE)
+
+    native_by_page = {
+        int(item.get("page") or item.get("page_index") or index): str(item.get("text") or "")
+        for index, item in enumerate(native_pages or [], start=1)
+        if isinstance(item, dict)
+    }
+    whole_page_texts: list[str] = []
+    for page_no, image_bytes in enumerate(images, start=1):
+        pdf_text = native_by_page.get(page_no, "")
+        image_ocr_text = ""
+        try:
+            image_ocr_text = ocr_service.recognize_image(
+                _company_articles_ocr_variant(image_bytes)
+            ).strip()
+        except OCRServiceError as exc:
+            logger.warning(
+                "[CompanyArticles][OCR] page=%s whole_page_ocr_failed=true filename=%s error=%s",
+                page_no,
+                filename,
+                exc,
+            )
+        whole_page_texts.append(image_ocr_text)
+        logger.debug(
+            "[CompanyArticles][OCR] page=%s pdf_text_len=%s",
+            page_no,
+            len(pdf_text),
+        )
+        logger.debug(
+            "[CompanyArticles][OCR] page=%s image_ocr_text_len=%s",
+            page_no,
+            len(image_ocr_text),
+        )
+
+    whole_text = "\n".join(whole_page_texts)
+    resolution_pages = [
+        index for index, text in enumerate(whole_page_texts, start=1)
+        if "股东会决议" in text or "通过公司新的章程" in text
+    ]
+    license_pages = [
+        index for index, text in enumerate(whole_page_texts, start=1)
+        if sum(token in text for token in ("营业执照", "统一社会信用代码", "登记机关", "成立日期")) >= 2
+    ]
+    first_resolution = max(resolution_pages) if resolution_pages else 0
+    first_license = min(license_pages) if license_pages else len(images) + 1
+
+    raw_pages: list[dict[str, Any]] = []
+    for page_no, image_bytes in enumerate(images, start=1):
+        pdf_text = native_by_page.get(page_no, "")
+        image_ocr_text = whole_page_texts[page_no - 1]
+        merged_before_crops = _merge_unique_ocr_text([pdf_text, image_ocr_text])
+        keyword_count = _company_articles_keyword_count(merged_before_crops)
+        between_resolution_and_license = first_resolution < page_no < first_license
+        needs_crops = keyword_count > 0 or between_resolution_and_license
+        crop_parts: list[str] = []
+        if needs_crops:
+            for region_name, box in _company_articles_crop_boxes(image_bytes):
+                try:
+                    crop_bytes = _crop_image_region(image_bytes, box)
+                    crop_text = ocr_service.recognize_image(
+                        _company_articles_ocr_variant(crop_bytes)
+                    ).strip()
+                    if crop_text:
+                        crop_parts.append(crop_text)
+                    if region_name == "shareholder_table":
+                        logger.debug(
+                            "[CompanyArticles][TableOCR] page=%s table_crop_ocr_text=%s",
+                            page_no,
+                            crop_text[:2000] or "(empty)",
+                        )
+                except OCRServiceError as exc:
+                    logger.warning(
+                        "[CompanyArticles][OCR] page=%s region=%s crop_ocr_failed=true filename=%s error=%s",
+                        page_no,
+                        region_name,
+                        filename,
+                        exc,
+                    )
+        crop_ocr_text = _merge_unique_ocr_text(crop_parts)
+        merged_text = _merge_unique_ocr_text([pdf_text, image_ocr_text, crop_ocr_text])
+        logger.debug(
+            "[CompanyArticles][OCR] page=%s merged_text_preview=%s",
+            page_no,
+            merged_text[:1000] or "(empty)",
+        )
+        if page_no == 13 and not any(keyword in merged_text for keyword in COMPANY_ARTICLES_OCR_KEYWORDS):
+            logger.error("[CompanyArticles][OCR] page=13 articles_keywords_missing=true")
+        if page_no == 13 and "公司注册资本" in merged_text and not any(
+            token in merged_text for token in ("股东的姓名", "出资额", "出资方式")
+        ):
+            capital_match = re.search(
+                r"注册资本[：:\s]*人民币?\s*(\d+(?:\.\d+)?)\s*万",
+                merged_text,
+            )
+            logger.warning("[CompanyArticles][TableOCR] page=13 shareholders_match_count=0 reason=table_ocr_failed")
+            logger.warning(
+                "[CompanyArticles][TableOCR] page=13 registered_capital_amount=%s",
+                capital_match.group(1) if capital_match else "unknown",
+            )
+        raw_pages.append(
+            {
+                "page": page_no,
+                "pdf_text": pdf_text,
+                "image_ocr_text": image_ocr_text,
+                "crop_ocr_text": crop_ocr_text,
+                "text": merged_text or OCR_PAGE_FAILED_PLACEHOLDER,
+                "source": "company_articles_image_ocr",
+                "ocr_dpi": 400,
+            }
+        )
+    logger.info(
+        "[CompanyArticles][OCR] filename=%s pages=%s resolution_pages=%s license_pages=%s full_text_len=%s",
+        filename,
+        len(raw_pages),
+        resolution_pages,
+        license_pages,
+        len(whole_text),
+    )
+    return _build_raw_text_from_pages(raw_pages), raw_pages
+
+
 def _property_certificate_seal_crop_boxes(image_bytes: bytes) -> list[tuple[str, tuple[int, int, int, int]]]:
     with Image.open(BytesIO(image_bytes)) as image:
         width, height = image.size
@@ -1455,9 +1653,25 @@ async def _process_file_bytes(
         if seal_region_text:
             text_content = f"{text_content}\n\n--- Business License Seal Region OCR ---\n{seal_region_text}"
     if document_type_code == "company_articles":
-        front_page_ocr_text = _ocr_company_articles_front_pages(file_bytes, file_type, filename)
-        if front_page_ocr_text:
-            text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
+        if file_type == "pdf":
+            if progress_callback:
+                await progress_callback("正在逐页识别公司章程")
+            try:
+                text_content, raw_pages = _ocr_company_articles_pdf_pages(
+                    file_bytes,
+                    filename,
+                    native_pages=raw_pages,
+                )
+            except Exception as exc:  # pragma: no cover - preserve native text fallback
+                logger.warning(
+                    "[CompanyArticles][OCR] full_page_ocr_failed=true filename=%s error=%s",
+                    filename,
+                    exc,
+                )
+        else:
+            front_page_ocr_text = _ocr_company_articles_front_pages(file_bytes, file_type, filename)
+            if front_page_ocr_text:
+                text_content = f"{text_content}\n\n--- Company Articles Front Page OCR ---\n{front_page_ocr_text}"
     if document_type_code in PROPERTY_CERT_PROCESS_TYPES:
         if progress_callback:
             await progress_callback("正在判断页面类型")

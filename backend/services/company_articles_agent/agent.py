@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .company_articles_locator import locate_articles_block
@@ -9,6 +10,8 @@ from .normalizer import normalize_company_articles
 from .schema import DOC_TYPE, DOC_TYPE_NAME, SCHEMA_VERSION, CompanyArticlesResult
 from .skill import CompanyArticlesSkill
 from .validator import validate_company_articles
+
+logger = logging.getLogger(__name__)
 
 
 def merge_ocr_pages(raw_text: str, pages: list[dict[str, Any]] | None = None) -> str:
@@ -47,6 +50,30 @@ class CompanyArticlesAgent:
         raw_pages = context.get("raw_pages") if isinstance(context.get("raw_pages"), list) else context.get("pages")
         pages = raw_pages if isinstance(raw_pages, list) else []
         filename = str(context.get("filename") or "")
+        for index, page in enumerate(pages, start=1):
+            if not isinstance(page, dict):
+                continue
+            page_no = page.get("page") or page.get("page_index") or index
+            page_text = str(page.get("text") or "")
+            logger.debug(
+                "[CompanyArticles][OCR] page=%s pdf_text_len=%s image_ocr_text_len=%s merged_text_preview=%s",
+                page_no,
+                len(str(page.get("pdf_text") or "")),
+                len(str(page.get("image_ocr_text") or "")),
+                page_text[:1000],
+            )
+            try:
+                is_page_13 = int(page_no) == 13
+            except (TypeError, ValueError):
+                is_page_13 = False
+            if is_page_13 and not any(
+                token in page_text
+                for token in (
+                    "有限公司章程", "公司章程", "第一章", "公司名称", "公司住所",
+                    "公司经营范围", "公司注册资本", "股东的姓名", "出资额", "出资方式",
+                )
+            ):
+                logger.error("[CompanyArticles][OCR] page=13 articles_keywords_missing=true")
         full_text = merge_ocr_pages(str(context.get("text") or context.get("raw_text") or ""), pages)
         articles_block = locate_articles_block(pages) if pages else None
         main_text = articles_block.text if articles_block else full_text
