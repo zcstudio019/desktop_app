@@ -11,6 +11,7 @@ from backend.services.company_articles_agent.extractor import (
     is_valid_articles_title,
     is_valid_company_address,
     is_valid_company_name,
+    normalize_contribution_dates,
     repair_shareholder_dates_by_majority,
     repair_duplicate_shareholder_names_by_external_names,
     repair_shareholder_names_by_external_names,
@@ -205,7 +206,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v9_joint_stock_confidence"
+    assert content["extraction_version"] == "company_articles_v10_multi_contribution_months"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -839,6 +840,54 @@ def test_company_articles_supports_joint_stock_company_founder_table() -> None:
         "有限责任公司股东(股东地名或者名称",
     ):
         assert garbage not in markdown
+
+
+def test_company_articles_parses_multiple_contribution_months_and_methods() -> None:
+    text = """
+上海耐吉科技股份有限公司章程
+第一章 公司名称和住所
+第一条 公司名称：上海耐吉科技股份有限公司
+第二条 公司住所：上海市浦东新区耐吉路88号1号楼101室
+第三条 公司经营范围：技术开发。
+第四条 公司注册资本：人民币10180万元
+第四章 股东的姓名或者名称、出资方式、出资额和出资时间
+股东的姓名或者名称 出资额 出资方式 出资时间
+林武 509万元 现金 2004.4 / 2005.7 / 2009.5 / 2012.9
+林勇 7056万元 现金、知识产权 2004.4 / 2005.7 / 2009.5 / 2012.9
+陈鹏 1277.5万元 现金 2004.4 / 2005.7 / 2009.5
+胡海荣 1235万元 现金 2004.4 / 2005.7 / 2009.5
+陈建生 102.5万元 现金 2004.4 / 2005.7
+第六条 公司成立后。
+签署日期：2004.04.20
+"""
+    result = CompanyArticlesAgent().run(
+        {
+            "text": text,
+            "raw_pages": [{"page": 1, "text": text}],
+            "filename": "耐吉章程2025.05.30(1).pdf",
+        }
+    ).to_dict()
+    shareholders = result["structured_data"]["shareholders"]
+    markdown = result["display_markdown"]
+
+    assert normalize_contribution_dates(
+        "2004.4 / 2005.7 / 2009.5 / 2012.9"
+    ) == "2004.04 / 2005.07 / 2009.05 / 2012.09"
+    assert [(item["name"], item["contribution_method"], item["contribution_deadline"]) for item in shareholders] == [
+        ("林武", "现金", "2004.04 / 2005.07 / 2009.05 / 2012.09"),
+        ("林勇", "现金、知识产权", "2004.04 / 2005.07 / 2009.05 / 2012.09"),
+        ("陈鹏", "现金", "2004.04 / 2005.07 / 2009.05"),
+        ("胡海荣", "现金", "2004.04 / 2005.07 / 2009.05"),
+        ("陈建生", "现金", "2004.04 / 2005.07"),
+    ]
+    assert shareholders[0]["contribution_ratio"] == "5.00%"
+    assert shareholders[1]["contribution_ratio"] == "69.31%"
+    assert shareholders[2]["contribution_ratio"] == "12.55%"
+    assert shareholders[3]["contribution_ratio"] == "12.13%"
+    assert shareholders[4]["contribution_ratio"] == "1.01%"
+    assert all(item["contribution_deadline"] != "2004.04.20" for item in shareholders)
+    assert "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 69.31% |" in markdown
+    assert result["structured_data"]["capital_check"]["message"] == "出资额合计与注册资本一致"
 
 
 def test_company_articles_classifier_uses_merged_image_and_crop_ocr_text() -> None:

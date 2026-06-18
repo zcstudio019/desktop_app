@@ -334,16 +334,35 @@ def compact_shareholder_text(text: str) -> str:
     return re.sub(r"[\s|,，、]+", "", source)
 
 
-def normalize_contribution_date(value: str) -> str:
+CONTRIBUTION_DATE_TOKEN_PATTERN = re.compile(
+    r"(?P<year>(?:19|20)\d{2})\s*"
+    r"(?:年|[./-])\s*"
+    r"(?P<month>1[0-2]|0?[1-9])(?!\d)"
+    r"(?:\s*月)?"
+    r"(?:\s*[./-]\s*(?P<day>3[01]|[12]\d|0?[1-9])(?!\d)\s*日?)?"
+)
+
+
+def normalize_contribution_dates(value: str) -> str:
     text = clean_clause(value)
-    text = re.sub(r"\s+", "", text)
-    match = re.search(r"((?:19|20)\d{2})年(1[0-2]|0?[1-9])月(3[01]|[12]\d|0?[1-9])日", text)
-    if match:
-        return f"{int(match.group(1)):04d}.{int(match.group(2)):02d}.{int(match.group(3)):02d}"
-    match = re.search(r"((?:19|20)\d{2})[./-](1[0-2]|0?[1-9])[./-](3[01]|[12]\d|0?[1-9])", text)
-    if match:
-        return f"{int(match.group(1)):04d}.{int(match.group(2)):02d}.{int(match.group(3)):02d}"
-    return re.sub(r"[/-]", ".", text)
+    normalized: list[str] = []
+    for match in CONTRIBUTION_DATE_TOKEN_PATTERN.finditer(text):
+        year = int(match.group("year"))
+        month = int(match.group("month"))
+        day = match.group("day")
+        item = f"{year:04d}.{month:02d}"
+        if day:
+            item = f"{item}.{int(day):02d}"
+        if item not in normalized:
+            normalized.append(item)
+    return " / ".join(normalized)
+
+
+def normalize_contribution_date(value: str) -> str:
+    normalized = normalize_contribution_dates(value)
+    if normalized:
+        return normalized
+    return re.sub(r"[/-]", ".", re.sub(r"\s+", "", clean_clause(value)))
 
 
 def is_valid_shareholder_name(name: str) -> bool:
@@ -430,6 +449,67 @@ def dedupe_shareholders(items: list[Shareholder]) -> list[Shareholder]:
         seen[key] = len(deduped)
         deduped.append(item)
     return deduped
+
+
+CONTRIBUTION_METHOD_PATTERN = (
+    r"(?:现金|货币|知识产权|实物|土地使用权|股权|债权|其他)"
+    r"(?:\s*[、,，/]\s*(?:现金|货币|知识产权|实物|土地使用权|股权|债权|其他))*"
+)
+
+
+def normalize_contribution_method(value: str) -> str:
+    methods = re.findall(
+        r"现金|货币|知识产权|实物|土地使用权|股权|债权|其他",
+        str(value or ""),
+    )
+    return "、".join(dict.fromkeys(methods))
+
+
+def parse_shareholders_by_table_lines(
+    block: str,
+    registered_capital_amount: float | None,
+) -> list[Shareholder]:
+    normalized = normalize_shareholder_text(block)
+    row_pattern = re.compile(
+        rf"^\s*(?P<name>[\u4e00-\u9fffA-Za-z0-9（）()·\-]{{2,40}})"
+        rf"\s+(?P<amount>\d+(?:\.\d+)?\s*(?:万元?|万股|股))"
+        rf"\s+(?P<method>{CONTRIBUTION_METHOD_PATTERN})"
+        rf"\s+(?P<dates>.+?)\s*$"
+    )
+    items: list[Shareholder] = []
+    for raw_line in normalized.splitlines():
+        line = re.sub(r"[ \t\u3000]+", " ", str(raw_line or "")).strip()
+        match = row_pattern.match(line)
+        if not match:
+            continue
+        name = clean_shareholder_name_candidate(match.group("name"))
+        amount_text = re.sub(r"\s+", "", match.group("amount"))
+        amount_number = parse_amount_number(amount_text)
+        method = normalize_contribution_method(match.group("method"))
+        dates = normalize_contribution_dates(match.group("dates"))
+        if (
+            not is_valid_shareholder_name(name)
+            or amount_number is None
+            or not method
+            or not dates
+        ):
+            continue
+        ratio = ""
+        if registered_capital_amount:
+            ratio = f"{amount_number / registered_capital_amount * 100:.2f}%"
+        if amount_text.endswith("万"):
+            amount_text = f"{amount_text}元"
+        items.append(
+            Shareholder(
+                name=name,
+                subscribed_amount=amount_text,
+                subscribed_amount_number=amount_number,
+                contribution_method=method,
+                contribution_deadline=dates,
+                contribution_ratio=ratio,
+            )
+        )
+    return dedupe_shareholders(items)
 
 
 def shareholder_total_matches_registered(
@@ -1056,11 +1136,20 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
     logger.debug("%s normalized_shareholder_block=%s", SHAREHOLDER_LOG_PREFIX, normalized_block)
 
     row_matches = parse_shareholders_by_regex(block, registered_capital_amount)
+    table_line_matches = parse_shareholders_by_table_lines(
+        block,
+        registered_capital_amount,
+    )
     share_subscription_matches = parse_shareholders_by_share_subscription(
         block,
         registered_capital_amount,
     )
     logger.debug("%s row_regex_matches=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(row_matches))
+    logger.debug(
+        "%s table_line_matches=%s",
+        SHAREHOLDER_LOG_PREFIX,
+        shareholder_debug_dict(table_line_matches),
+    )
     logger.debug(
         "%s share_subscription_matches=%s",
         SHAREHOLDER_LOG_PREFIX,
@@ -1072,11 +1161,19 @@ def extract_shareholders(text: str, registered_capital_amount: float | None = No
     compact_matches = parse_shareholders_by_compact(block, registered_capital_amount)
     logger.debug("%s compact_regex_matches=%s", SHAREHOLDER_LOG_PREFIX, shareholder_debug_dict(compact_matches))
 
-    candidates = [
-        *make_candidates(row_matches, "table_row", True, block),
-        *make_candidates(share_subscription_matches, "table_row", True, block),
-        *make_candidates(compact_matches, "compact_regex", True, block),
-    ]
+    if table_line_matches:
+        candidates = make_candidates(
+            table_line_matches,
+            "table_row",
+            True,
+            block,
+        )
+    else:
+        candidates = [
+            *make_candidates(row_matches, "table_row", True, block),
+            *make_candidates(share_subscription_matches, "table_row", True, block),
+            *make_candidates(compact_matches, "compact_regex", True, block),
+        ]
     logger.debug(
         "[CompanyArticles][Shareholders] candidates=%s",
         shareholder_candidate_debug(candidates),
