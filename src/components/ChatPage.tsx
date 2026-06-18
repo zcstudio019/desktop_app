@@ -143,16 +143,16 @@ export function getDisplayMarkdown(payload: unknown): string {
   return '';
 }
 
+const COMPANY_ARTICLES_EXTRACTION_VERSION = 'company_articles_v4_shareholder_table_cell_strict';
+
 function getCompanyArticlesMarkdown(content: Record<string, unknown> | undefined, documentType?: string): string {
   if (!content) return '';
   if (getPayloadDocType(content, documentType) !== 'company_articles') return '';
   const records = getNestedRecords(content);
-  const version = records
+  const versions = records
     .map((record) => String(record.extraction_version || record.extractionVersion || record.schema_version || record.schemaVersion || '').trim())
-    .find(Boolean);
-  if (version === 'company_articles_v3_canonical_markdown_only') {
-    return getDisplayMarkdown(content);
-  }
+    .filter(Boolean);
+  if (versions.length && !versions.includes(COMPANY_ARTICLES_EXTRACTION_VERSION)) return '';
   const candidates: string[] = [];
   [
     'display_markdown',

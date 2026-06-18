@@ -86,8 +86,9 @@ from backend.services.risk_assessment_service import RiskAssessmentService
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
-from backend.services.company_articles_agent.normalizer import normalize_company_articles
+from backend.services.company_articles_agent.normalizer import finalize_company_articles_shareholders, normalize_company_articles
 from backend.services.company_articles_agent.schema import SCHEMA_VERSION as COMPANY_ARTICLES_SCHEMA_VERSION
+from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
 from backend.services.company_articles_agent.validator import validate_company_articles
 from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
 from backend.services.financing_kyc_diagnostic_service import build_financing_kyc_diagnostic
@@ -1761,6 +1762,7 @@ async def _get_customer_detail_local(
 
     try:
         extractions = await storage_service.get_extractions_by_customer(record_id)
+        company_articles_added = False
 
         # 将所有提取结果合并到 all_fields，保持原始数据结构
         for extraction in extractions:
@@ -1779,6 +1781,8 @@ async def _get_customer_detail_local(
                     or ""
                 )
                 if doc_type == "company_articles":
+                    if company_articles_added:
+                        continue
                     markdown = _company_articles_display_markdown_from_payload(extracted_data)
                     all_fields["公司章程"] = {
                         "doc_type": "company_articles",
@@ -1788,6 +1792,7 @@ async def _get_customer_detail_local(
                         "markdown": markdown,
                         "report_markdown": markdown,
                     }
+                    company_articles_added = True
                     continue
                 # 如果 extracted_data 已经是嵌套字典，直接使用
                 # 例如：{"报告基础信息": {"报告编号": "xxx", "报告时间": "xxx"}}
@@ -1904,11 +1909,22 @@ def _build_profile_response(
 
 
 def _company_articles_display_markdown_from_payload(payload: dict[str, Any]) -> str:
+    refreshed = refresh_stale_company_articles_payload(payload)
+    if refreshed is None:
+        return (
+            "## 公司章程\n- 资料类型：公司章程\n"
+            f"- 提示：旧提取版本已失效（当前版本 {COMPANY_ARTICLES_SCHEMA_VERSION}），请重新上传或重新提取。"
+        )
+    payload = refreshed
     structured_data = payload.get("structured_data") if isinstance(payload.get("structured_data"), dict) else {}
     if structured_data:
         normalized = normalize_company_articles(
             structured_data,
             filename=str(payload.get("source_file") or payload.get("filename") or ""),
+        )
+        normalized = finalize_company_articles_shareholders(
+            normalized,
+            shareholder_block=str(structured_data.get("shareholder_table_block") or payload.get("raw_text") or ""),
         )
         normalized = validate_company_articles(normalized)
         normalized.markdown = render_company_articles_markdown(normalized, filename=str(payload.get("source_file") or payload.get("filename") or ""))
@@ -3002,6 +3018,8 @@ async def get_document_detail(
     if document_type == "financial_report" and not report_markdown and structured_json:
         display_json = extracted_data.get("display_json") or to_financial_report_display_json(structured_json)
         report_markdown = render_financial_report_markdown(display_json)
+    elif document_type == "company_articles":
+        report_markdown = _company_articles_display_markdown_from_payload(extracted_data)
     _log_debug_markdown_source(
         endpoint="GET /api/documents/{doc_id}",
         customer_id=str(document.get("customer_id") or ""),
@@ -3025,6 +3043,7 @@ async def get_document_detail(
         "updated_at": latest_extraction.get("created_at") or document.get("upload_time") or "",
         "report_markdown": report_markdown,
         "reportMarkdown": report_markdown,
+        "extraction_version": COMPANY_ARTICLES_SCHEMA_VERSION if document_type == "company_articles" else "",
         "extraction": latest_extraction,
         "latest_extraction": latest_extraction,
         "latestExtraction": latest_extraction,

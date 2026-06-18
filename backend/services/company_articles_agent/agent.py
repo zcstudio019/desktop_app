@@ -15,7 +15,7 @@ from .extractor import (
     repair_duplicate_shareholder_names_by_external_names,
 )
 from .markdown_renderer import render_company_articles_markdown
-from .normalizer import normalize_company_articles
+from .normalizer import finalize_company_articles_shareholders, normalize_company_articles
 from .schema import DOC_TYPE, DOC_TYPE_NAME, SCHEMA_VERSION, CompanyArticlesResult
 from .skill import CompanyArticlesSkill
 from .validator import validate_company_articles
@@ -76,6 +76,10 @@ class CompanyArticlesAgent:
         return detect_company_articles(str(context.get("text") or ""), str(context.get("filename") or ""))
 
     def run(self, context: dict[str, Any]) -> CompanyArticlesResult:
+        logger.info(
+            "[CompanyArticles][ShareholderFinal] extraction_version=%s",
+            SCHEMA_VERSION,
+        )
         raw_pages = context.get("raw_pages") if isinstance(context.get("raw_pages"), list) else context.get("pages")
         pages = raw_pages if isinstance(raw_pages, list) else []
         filename = str(context.get("filename") or "")
@@ -212,7 +216,18 @@ class CompanyArticlesAgent:
             "[CompanyArticles][ShareholderDateFlow] signing_date=%s",
             (extracted.get("signature_info") or {}).get("signing_date") or "未识别",
         )
+        for shareholder in extracted.get("shareholders") or []:
+            logger.debug(
+                "[CompanyArticles][ShareholderDateFlow] stage=structured_data name=%s method=%s deadline=%s",
+                getattr(shareholder, "name", ""),
+                getattr(shareholder, "contribution_method", ""),
+                getattr(shareholder, "contribution_deadline", "") or "未识别",
+            )
         normalized = normalize_company_articles(extracted, filename=filename, raw_text=main_text)
+        normalized = finalize_company_articles_shareholders(
+            normalized,
+            shareholder_block=str(extracted.get("shareholder_table_block") or ""),
+        )
         normalized.metadata.update(
             {
                 "filename": filename,

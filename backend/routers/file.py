@@ -33,6 +33,7 @@ from backend.routers.chat_helpers import extract_customer_name as extract_custom
 from backend.routers.chat_storage import _save_to_local_storage
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
+from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
 from backend.services.id_card_ocr_preprocess_service import (
     ID_CARD_LOW_QUALITY_MESSAGE,
     ocr_id_card_with_variants,
@@ -194,6 +195,21 @@ def _normalize_file_process_job_status(job: dict[str, Any]) -> str:
     finished_at = str(job.get("finished_at") or "").strip()
     error_message = str(job.get("error_message") or "").strip()
     result_payload = job.get("result_json") if isinstance(job.get("result_json"), dict) else None
+    if isinstance(result_payload, dict):
+        content = result_payload.get("content")
+        if isinstance(content, dict) and str(
+            content.get("doc_type")
+            or content.get("document_type_code")
+            or result_payload.get("documentType")
+            or ""
+        ) == "company_articles":
+            refreshed = refresh_stale_company_articles_payload(content)
+            result_payload = dict(result_payload)
+            result_payload["content"] = refreshed or {
+                "doc_type": "company_articles",
+                "document_type_code": "company_articles",
+                "display_markdown": "## 公司章程\n- 提示：旧提取版本已失效，请重新上传或重新提取。",
+            }
 
     if raw_status == "submitted":
         raw_status = "running"

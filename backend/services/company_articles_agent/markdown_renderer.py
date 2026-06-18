@@ -47,8 +47,9 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             ratio = f"{item.subscribed_amount_number / result.registered_capital_amount * 100:.2f}%"
         deadline = item.contribution_deadline or "未识别"
         logger.debug(
-            "[CompanyArticles][ShareholderDateFlow] stage=renderer name=%s contribution_deadline=%s",
+            "[CompanyArticles][ShareholderDateFlow] stage=markdown_renderer name=%s method=%s deadline=%s",
             item.name,
+            item.contribution_method,
             deadline,
         )
         rows.append(

@@ -27,7 +27,9 @@ from backend.services.financial_report_agent.customer_report_aggregator import a
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
-from backend.services.company_articles_agent.normalizer import normalize_company_articles
+from backend.services.company_articles_agent.normalizer import finalize_company_articles_shareholders, normalize_company_articles
+from backend.services.company_articles_agent.schema import SCHEMA_VERSION as COMPANY_ARTICLES_SCHEMA_VERSION
+from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
 from backend.services.company_articles_agent.validator import validate_company_articles
 from backend.services.kyc_document_agent.renderer import get_display_fields, render_markdown as render_kyc_markdown
 from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
@@ -312,9 +314,17 @@ def _render_kyc_business_markdown(extracted_data: dict[str, Any], file_name: str
 
 
 def _render_company_articles_profile_markdown(extracted_data: dict[str, Any], file_name: str) -> str:
+    refreshed = refresh_stale_company_articles_payload(extracted_data)
+    if refreshed is None:
+        return '## 公司章程\n- 资料类型：公司章程\n- 提示：旧提取版本已失效，请重新上传或重新提取。'
+    extracted_data = refreshed
     structured_data = extracted_data.get('structured_data') if isinstance(extracted_data.get('structured_data'), dict) else {}
     if structured_data:
         result = normalize_company_articles(structured_data, filename=file_name)
+        result = finalize_company_articles_shareholders(
+            result,
+            shareholder_block=str(structured_data.get('shareholder_table_block') or extracted_data.get('raw_text') or ''),
+        )
         result = validate_company_articles(result)
         result.markdown = render_company_articles_markdown(result, filename=file_name)
         result.display_markdown = result.markdown
@@ -1905,6 +1915,7 @@ async def _build_single_document_section(
     if extraction_type == 'company_articles' and isinstance(extracted_data, dict):
         source_document['source_type'] = 'company_articles'
         source_document['source_type_name'] = '公司章程'
+        source_document['schema_version'] = COMPANY_ARTICLES_SCHEMA_VERSION
         return _render_company_articles_profile_markdown(extracted_data, file_name), source_document
     if extraction_type == 'shuimui_report' and isinstance(extracted_data, dict):
         source_document['source_type'] = 'shuimui_report'
@@ -2366,6 +2377,23 @@ async def get_or_create_customer_profile(storage_service: Any, customer_id: str)
             and ('## 结婚证' in markdown or 'marriage_certificate' in markdown)
             and _looks_like_raw_kyc_markdown(markdown)
         )
+        has_stale_company_articles_section = (
+            existing.get('source_mode') != 'manual'
+            and any(
+                isinstance(doc, dict)
+                and doc.get('source_type') == 'company_articles'
+                and doc.get('schema_version') != COMPANY_ARTICLES_SCHEMA_VERSION
+                for doc in source_documents
+            )
+        )
+        if has_stale_company_articles_section:
+            logger.warning(
+                "[CompanyArticles][VersionGate] stale profile detected customer_id=%s; regenerate",
+                customer_id,
+            )
+            generated = await build_auto_profile_payload(storage_service, customer_id)
+            saved = await storage_service.upsert_customer_profile(generated)
+            return saved, True
         if has_stale_kyc_json_section:
             logger.warning("[Profile Sync][KYC] stale raw-json markdown detected customer_id=%s; regenerate", customer_id)
             generated = await build_auto_profile_payload(storage_service, customer_id)

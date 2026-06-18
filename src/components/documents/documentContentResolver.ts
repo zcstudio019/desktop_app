@@ -39,9 +39,15 @@ function nonEmpty(value: unknown): string {
 }
 
 function firstMarkdownFromRecord(...records: JsonRecord[]): string {
-  const version = records
-    .map((record) => nonEmpty(record.extraction_version ?? record.extractionVersion ?? record.schema_version ?? record.schemaVersion))
-    .find(Boolean);
+  const currentVersion = 'company_articles_v4_shareholder_table_cell_strict';
+  const versionedRecords = records.filter((record) =>
+    nonEmpty(record.extraction_version ?? record.extractionVersion ?? record.schema_version ?? record.schemaVersion)
+  );
+  const currentRecords = versionedRecords.filter((record) =>
+    nonEmpty(record.extraction_version ?? record.extractionVersion ?? record.schema_version ?? record.schemaVersion) === currentVersion
+  );
+  const sourceRecords = versionedRecords.length ? currentRecords : records;
+  if (versionedRecords.length && !currentRecords.length) return '';
   const priorities = [
     'display_markdown',
     'displayMarkdown',
@@ -55,12 +61,11 @@ function firstMarkdownFromRecord(...records: JsonRecord[]): string {
   ];
   const candidates: string[] = [];
   for (const key of priorities) {
-    for (const record of records) {
+    for (const record of sourceRecords) {
       const markdown = nonEmpty(record[key]);
       if (markdown) candidates.push(markdown);
     }
   }
-  if (version === 'company_articles_v3_canonical_markdown_only') return candidates[0] || '';
   return (
     candidates.find((item) => item.includes('## 公司章程') && item.includes('经营范围') && item.includes('法定代表人：由执行董事担任')) ||
     candidates.find((item) => item.includes('## 公司章程') && !item.includes('法定代表人：暂无')) ||

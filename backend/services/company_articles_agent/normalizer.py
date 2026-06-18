@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .extractor import normalize_contribution_date, rebuild_shareholders_from_table_block
 from .schema import CompanyArticlesResult, Shareholder
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,9 @@ def normalize_company_articles(data: dict[str, Any], *, filename: str = "", raw_
         if _missing(shareholder.contribution_deadline):
             shareholder.contribution_deadline = "未识别"
         logger.debug(
-            "[CompanyArticles][ShareholderDateFlow] stage=final_normalizer name=%s contribution_deadline=%s",
+            "[CompanyArticles][ShareholderDateFlow] stage=final_normalizer name=%s method=%s deadline=%s",
             shareholder.name,
+            shareholder.contribution_method,
             shareholder.contribution_deadline,
         )
         normalized_shareholders.append(shareholder)
@@ -55,6 +57,7 @@ def normalize_company_articles(data: dict[str, Any], *, filename: str = "", raw_
         senior_management_obligations_summary=_text(data.get("senior_management_obligations_summary")),
         articles_effective_rule=_text(data.get("articles_effective_rule")),
         signature_info=data.get("signature_info") if isinstance(data.get("signature_info"), dict) else {},
+        shareholder_table_block=str(data.get("shareholder_table_block") or ""),
         page_count=int(data.get("page_count") or 0),
         raw_text_preview=str(raw_text or "")[:500],
         metadata={"filename": filename},
@@ -67,4 +70,56 @@ def normalize_company_articles(data: dict[str, Any], *, filename: str = "", raw_
         result.signature_info["has_signature_or_stamp"] = "未识别"
     if _missing(result.signature_info.get("signature_detection_summary")):
         result.signature_info["signature_detection_summary"] = "未识别"
+    return result
+
+
+def _contains_multiple_year_months(text: str) -> bool:
+    import re
+
+    tokens = re.findall(r"(?:19|20)\d{2}\s*[./年-]\s*(?:1[0-2]|0?[1-9])", str(text or ""))
+    return len({re.sub(r"\s+", "", token) for token in tokens}) >= 2
+
+
+def finalize_company_articles_shareholders(
+    result: CompanyArticlesResult,
+    *,
+    shareholder_block: str = "",
+) -> CompanyArticlesResult:
+    """Last safety gate before validation/rendering; signing dates never fill shareholder dates."""
+    block = str(shareholder_block or result.shareholder_table_block or "")
+    signing_date = normalize_contribution_date(str((result.signature_info or {}).get("signing_date") or ""))
+    deadlines = [str(item.contribution_deadline or "").strip() for item in result.shareholders]
+    all_same_as_signing = (
+        len(result.shareholders) >= 2
+        and bool(signing_date)
+        and len(set(deadlines)) == 1
+        and deadlines[0] == signing_date
+    )
+    if all_same_as_signing and _contains_multiple_year_months(block):
+        rebuilt = rebuild_shareholders_from_table_block(block, result.registered_capital_amount)
+        if rebuilt:
+            by_key = {
+                (item.name, f"{float(item.subscribed_amount_number or 0):g}"): item
+                for item in rebuilt
+            }
+            for fallback_index, item in enumerate(result.shareholders):
+                recovered = by_key.get((item.name, f"{float(item.subscribed_amount_number or 0):g}"))
+                if recovered:
+                    item.contribution_method = recovered.contribution_method
+                    item.contribution_deadline = recovered.contribution_deadline
+                    item.row_index = recovered.row_index
+                else:
+                    item.contribution_deadline = "未识别"
+                    if item.row_index is None:
+                        item.row_index = fallback_index
+        else:
+            for item in result.shareholders:
+                item.contribution_deadline = "未识别"
+        warning = "股东出资时间疑似被签署日期错误覆盖"
+        if warning not in result.warnings:
+            result.warnings.append(warning)
+
+    result.shareholders.sort(
+        key=lambda item: item.row_index if item.row_index is not None else len(result.shareholders)
+    )
     return result

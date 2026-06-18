@@ -501,8 +501,10 @@ def parse_shareholders_by_table_lines(
         method = parse_contribution_method_cell(match.group("method"))
         dates = normalize_contribution_time_cell(raw_date)
         logger.debug(
-            "[CompanyArticles][ShareholderDateFlow] stage=row_parse name=%s raw_date=%s",
+            "[CompanyArticles][ShareholderDateFlow] stage=table_cell_parse name=%s method=%s deadline=%s raw_date=%s",
             name,
+            method,
+            dates or "未识别",
             raw_date,
         )
         logger.debug(
@@ -535,6 +537,17 @@ def parse_shareholders_by_table_lines(
         )
         row_index += 1
     return dedupe_shareholders(items)
+
+
+def rebuild_shareholders_from_table_block(
+    shareholder_block: str,
+    registered_capital_amount: float | None,
+) -> list[Shareholder]:
+    """Rebuild a standard four-column shareholder table strictly from its rows."""
+    return parse_shareholders_by_table_lines(
+        shareholder_block,
+        registered_capital_amount,
+    )
 
 
 def shareholder_total_matches_registered(
@@ -1322,6 +1335,7 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
     title = clean_articles_title(title, company_name)
     company_address = extract_company_address(text, company_name)
     registered_capital, registered_amount, currency = extract_registered_capital(text)
+    shareholder_table_block = extract_shareholder_block(text)
     shareholders = extract_shareholders(text, registered_amount)
     shareholder_total = sum(float(item.subscribed_amount_number or 0) for item in shareholders)
     if not registered_amount and shareholder_total and "公司注册资本" in compact_text(text):
@@ -1329,7 +1343,7 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
         registered_capital = f"人民币{shareholder_total:g}万元"
         currency = "人民币"
     if registered_amount:
-        shareholders = recover_missing_shareholders(extract_shareholder_block(text), shareholders, registered_amount)
+        shareholders = recover_missing_shareholders(shareholder_table_block, shareholders, registered_amount)
         for shareholder in shareholders:
             if shareholder.subscribed_amount_number is not None:
                 shareholder.contribution_ratio = f"{shareholder.subscribed_amount_number / registered_amount * 100:.2f}%"
@@ -1361,6 +1375,7 @@ def extract_fields(text: str, pages: list[dict[str, Any]] | None = None, filenam
         "senior_management_obligations_summary": "高级管理人员包括经理、副经理、财务负责人；不得侵占公司财产；不得挪用公司资金；不得未经同意订立合同或者交易；不得泄露公司秘密。" if "高级管理人员" in text or "不得挪用公司资金" in text else "未识别",
         "articles_effective_rule": "本章程自全体股东盖章、签字之日起生效" if "全体股东盖章" in text or "签字之日起生效" in text else short_sentence(text, "生效") or "未识别",
         "signature_info": extract_signature_info(text, pages),
+        "shareholder_table_block": shareholder_table_block,
         "page_count": len(pages) if pages else len(re.findall(r"---\s*第?\s*\d+\s*页", text or "")) or 1,
         "field_evidence": {
             "title": {

@@ -114,6 +114,11 @@ function pickCompanyArticlesMarkdown(payload: unknown): string {
     return payload.trim();
   }
   const records = collectNestedRecords(payload);
+  const currentVersion = 'company_articles_v4_shareholder_table_cell_strict';
+  const versions = records
+    .map((record) => String(record.extraction_version || record.extractionVersion || record.schema_version || record.schemaVersion || '').trim())
+    .filter(Boolean);
+  if (versions.length && !versions.includes(currentVersion)) return '';
   const priorities = [
     'display_markdown',
     'displayMarkdown',

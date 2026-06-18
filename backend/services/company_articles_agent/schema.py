@@ -6,7 +6,7 @@ from typing import Any
 
 DOC_TYPE = "company_articles"
 DOC_TYPE_NAME = "公司章程"
-SCHEMA_VERSION = "company_articles_v10_multi_contribution_months"
+SCHEMA_VERSION = "company_articles_v4_shareholder_table_cell_strict"
 
 
 STRUCTURED_DATA_KEYS = (
@@ -27,6 +27,7 @@ STRUCTURED_DATA_KEYS = (
     "senior_management_obligations_summary",
     "articles_effective_rule",
     "signature_info",
+    "shareholder_table_block",
     "page_count",
     "warnings",
 )
@@ -70,6 +71,7 @@ class CompanyArticlesResult:
     senior_management_obligations_summary: str = ""
     articles_effective_rule: str = ""
     signature_info: dict[str, Any] = field(default_factory=dict)
+    shareholder_table_block: str = ""
     page_count: int = 0
     warnings: list[str] = field(default_factory=list)
     markdown: str = ""

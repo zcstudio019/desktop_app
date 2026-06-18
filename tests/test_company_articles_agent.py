@@ -21,9 +21,13 @@ from backend.services.company_articles_agent.extractor import (
     is_valid_external_shareholder_name,
 )
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
-from backend.services.company_articles_agent.normalizer import normalize_company_articles
+from backend.services.company_articles_agent.normalizer import (
+    finalize_company_articles_shareholders,
+    normalize_company_articles,
+)
 from backend.services.company_articles_agent.page_classifier import classify_company_articles_pages
 from backend.services.company_articles_agent.schema import CompanyArticlesResult, Shareholder
+from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
 from backend.services.document_agents.registry import DOCUMENT_AGENT_REGISTRY, get_document_agent
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
@@ -210,7 +214,7 @@ def test_build_structured_extraction_uses_document_agent_not_legacy_or_kyc() -> 
     assert content["markdown"].startswith("## 公司章程")
     assert content["display_markdown"] == content["markdown"]
     assert content["report_markdown"] == content["markdown"]
-    assert content["extraction_version"] == "company_articles_v10_multi_contribution_months"
+    assert content["extraction_version"] == "company_articles_v4_shareholder_table_cell_strict"
     assert content["display_markdown"] == content["report_markdown"] == content["markdown"]
     assert "agent_type" not in content
     assert "title" not in content
@@ -961,6 +965,69 @@ def test_company_articles_never_uses_signing_date_as_shareholder_deadline() -> N
     assert normalized.shareholders[0].contribution_deadline == "未识别"
     assert "| 林武 | 509万元 | 现金 | 未识别 | 5.00% |" in markdown
     assert "| 林武 | 509万元 | 现金 | 2004.04.20 | 5.00% |" not in markdown
+
+
+def test_company_articles_recovers_signing_date_overwrite_from_table_block() -> None:
+    block = """
+股东的姓名或者名称 出资额 出资方式 出资时间
+林武 509万元 现金 2004.4 / 2005.7 / 2009.5 / 2012.9
+林勇 7056万元 现金、知识产权 2004.4 / 2005.7 / 2009.5 / 2012.9
+"""
+    result = normalize_company_articles(
+        {
+            "registered_capital_amount": 7565,
+            "shareholders": [
+                {
+                    "name": "林武",
+                    "subscribed_amount": "509万元",
+                    "subscribed_amount_number": 509,
+                    "contribution_method": "现金",
+                    "contribution_deadline": "2004.04.20",
+                },
+                {
+                    "name": "林勇",
+                    "subscribed_amount": "7056万元",
+                    "subscribed_amount_number": 7056,
+                    "contribution_method": "现金",
+                    "contribution_deadline": "2004.04.20",
+                },
+            ],
+            "signature_info": {"signing_date": "2004.04.20"},
+            "shareholder_table_block": block,
+        }
+    )
+
+    finalize_company_articles_shareholders(result, shareholder_block=block)
+
+    assert [item.name for item in result.shareholders] == ["林武", "林勇"]
+    assert result.shareholders[0].contribution_deadline == "2004.04 / 2005.07 / 2009.05 / 2012.09"
+    assert result.shareholders[1].contribution_method == "现金、知识产权"
+    assert result.shareholders[1].contribution_deadline == "2004.04 / 2005.07 / 2009.05 / 2012.09"
+
+
+def test_company_articles_stale_version_is_reextracted_from_saved_raw_text() -> None:
+    raw_text = """
+上海耐吉科技股份有限公司章程
+第四条 公司注册资本：人民币7565万元
+股东的姓名或者名称 出资额 出资方式 出资时间
+林武 509万元 现金 2004.4 / 2005.7 / 2009.5 / 2012.9
+林勇 7056万元 现金、知识产权 2004.4 / 2005.7 / 2009.5 / 2012.9
+签署日期：2004.04.20
+"""
+    refreshed = refresh_stale_company_articles_payload(
+        {
+            "doc_type": "company_articles",
+            "extraction_version": "company_articles_v3_old",
+            "raw_text": raw_text,
+            "raw_pages": [{"page": 1, "text": raw_text}],
+            "filename": "耐吉章程2025.05.30(1).pdf",
+        }
+    )
+
+    assert refreshed is not None
+    assert refreshed["extraction_version"] == "company_articles_v4_shareholder_table_cell_strict"
+    assert "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in refreshed["display_markdown"]
+    assert "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 |" in refreshed["display_markdown"]
 
 
 def test_company_articles_classifier_uses_merged_image_and_crop_ocr_text() -> None:
