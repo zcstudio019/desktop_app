@@ -212,3 +212,55 @@ def test_opening_bank_suffix_normalization_and_operating_detail_layers():
     assert "- 有效入账笔数：5" in markdown
     assert "上海建工智慧营造有限公司 | 5 | 未识别" in markdown
     assert markdown.count("上海建工智慧营造有限公司") >= 6
+
+
+def test_shanghai_bank_adapter_uses_table_columns_and_filename_period():
+    header = ["交易日期", "摘要", "借方发生额", "贷方发生额", "余额", "对方账号", "对方户名", "用途", "流水号"]
+    rows = [
+        header,
+        ["2025-04-08", "工程款", "--", "1,234.56", "9,999.00", "880001", "上海客户甲有限公司", "项目回款", "S001"],
+        ["2025/04/09", "材料款", "￥500.00", "", "9,499.00", "880002", "上海供应商乙有限公司", "材料采购", "S002"],
+        ["2025.04.10", "同户划转", "", "200.00元", "9,699.00", "880003", "上海测试科技有限公司", "转账", "S003"],
+        ["2025-04-11", "账户管理费", "10.00", "", "9,689.00", "", "上海银行", "费用", "S004"],
+        ["2026-12-08", "OCR错误日期", "", "100.00", "9,789.00", "880005", "错误单位", "项目款", "S005"],
+    ]
+    pages = [{
+        "page": 1,
+        "text": "上海银行股份有限公司\n上海银行对账单\n账户号：03005029359\n客户名称：上海测试科技有限公司\n开户网点：上海银行张江支行\n2010-00-10 2026-12-08",
+        "table_rows": rows,
+        "source": "pdf_layout",
+    }] + [{"page": page, "text": "上海银行交易明细", "table_rows": [], "source": "pdf_layout"} for page in range(2, 30)]
+    content = build_structured_extraction("\n".join(page["text"] for page in pages), "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
+    data = content["extracted_json"]
+    assert data["bank_format"] == "shanghai_bank"
+    assert data["bank_name"] == "上海银行"
+    assert data["statement_title"] == "上海银行对账单"
+    assert data["account_no"] == "03005029359"
+    assert data["account_name"] == "上海测试科技有限公司"
+    assert data["opening_bank"] == "上海银行张江支行"
+    assert data["period_start"] == "2025-04-01"
+    assert data["period_end"] == "2026-03-31"
+    assert data["page_count"] == 29
+    assert data["valid_transaction_count"] == 4
+    assert data["raw_transaction_count"] == 5
+    assert data["ocr_anomaly_count"] == 1
+    assert data["candidate_transaction_rows"] == 5
+    assert data["ocr_abnormal_rows"] == 1
+    assert data["raw_text_blocks_count"] < 942
+    assert data["amount_recognition_status"] == "完整识别"
+    assert data["self_transfer_count"] == 1
+    assert data["effective_operating_inflow_count"] == 1
+    assert data["effective_operating_outflow_count"] == 1
+    assert data["transactions"][0]["direction"] == "入账"
+    assert data["transactions"][0]["amount"] == 1234.56
+    assert "2010-00-10" not in content["markdown_summary"]
+    assert "2026-12-08" not in content["markdown_summary"]
+
+
+def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
+    pages = [{"page": 1, "text": "上海银行对账单\n客户名称：测试公司", "table_rows": [], "source": "ocr"}]
+    content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
+    markdown = content["markdown_summary"]
+    assert "### 解析诊断" in markdown
+    assert "- 银行格式：上海银行" in markdown
+    assert "### 有效经营入账方汇总" not in markdown
