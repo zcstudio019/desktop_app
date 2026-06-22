@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import logging
 from collections import Counter, defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -11,6 +12,8 @@ from typing import Any, Iterable
 
 from .base import BaseExtractionSkill, ExtractionInput, ExtractionResult
 
+logger = logging.getLogger(__name__)
+
 
 HEADERS = (
     "凭证号", "对方账号", "交易时间", "借贷标志", "对方单位", "对方行号",
@@ -18,6 +21,17 @@ HEADERS = (
 )
 DATE_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})[年/.-]?(\d{1,2})[月/.-]?(\d{1,2})(?:日)?(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?")
 PERIOD_RE = re.compile(r"(?<!\d)((?:19|20)\d{6})\s*(?:-|—|~|至|到)\s*((?:19|20)\d{6})(?!\d)")
+LABELED_PERIOD_RE = re.compile(r"时间范围\s*[:：]\s*((?:19|20)\d{6})\s*[-－—]\s*((?:19|20)\d{6})")
+ACCOUNT_NO_RE = re.compile(r"(?:本方)?账号\s*[:：]\s*([0-9]{8,32})")
+TRANSACTION_ANCHOR_RE = re.compile(
+    r"(?P<voucher_no>\d{6,})\s+"
+    r"(?P<counterparty_account>\d{5,32})\s+"
+    r"(?P<trade_date>(?:19|20)\d{2}-\d{2}-\d{2})\s+"
+    r"(?P<trade_time>\d{2}:\d{2}:\d{2})"
+    r"(?P<rest>.*?)"
+    r"(?=(?:\d{6,}\s+\d{5,32}\s+(?:19|20)\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})|\Z)",
+    re.S,
+)
 AMOUNT_LABEL_RE = re.compile(
     r"(?P<label>实收金额|应收金额|交易金额|发生额|借方发生额|贷方发生额|收入|支出|贷款金额|归还金额|还款金额|本金|利息|金额)\s*[:：]?\s*"
     r"(?P<amount>[+-]?(?:人民币|￥|¥)?\s*\d[\d,]*(?:\.\d{1,2})?)"
@@ -68,13 +82,31 @@ def _find_labeled(source: str, labels: Iterable[str], stop: Iterable[str] = ()) 
     return _clean(match.group(1)) if match else ""
 
 
+def _load_native_pdf_pages(file_path: str) -> list[dict[str, Any]]:
+    """Recover native page text when the upload adapter did not pass raw_pages."""
+    path = Path(str(file_path or ""))
+    if not path.is_file() or path.suffix.lower() != ".pdf":
+        return []
+    try:
+        import fitz  # type: ignore
+
+        pages: list[dict[str, Any]] = []
+        with fitz.open(str(path)) as document:
+            for page_no, page in enumerate(document, start=1):
+                pages.append({"page": page_no, "text": page.get_text("text") or "", "source": "bank_statement_skill_pdf_native"})
+        return pages
+    except Exception as exc:  # pragma: no cover - upload raw_pages remains primary
+        logger.warning("[BankStatementSkill] native_pdf_recovery_failed file=%s error=%s", path.name, exc)
+        return []
+
+
 def _periods(raw_pages: list[dict[str, Any]], text: str) -> tuple[list[dict[str, Any]], str, str]:
     evidence: list[dict[str, Any]] = []
     values: list[tuple[str, str]] = []
     pages = raw_pages or [{"page": 1, "text": text}]
     for item in pages:
         page_text = str(item.get("text") or "")
-        found = PERIOD_RE.findall(page_text)
+        found = LABELED_PERIOD_RE.findall(page_text) or PERIOD_RE.findall(page_text)
         for start, end in found:
             start_fmt, end_fmt = _date(start), _date(end)
             values.append((start_fmt, end_fmt))
@@ -159,7 +191,7 @@ def _transactions_from_pages(raw_pages: list[dict[str, Any]], text: str) -> tupl
     evidence: list[dict[str, Any]] = []
     explicit_amount_column = False
     pages = raw_pages or [{"page": 1, "text": text, "table_rows": []}]
-    continuation_markers = ("附言", "指令编号", "支付交易序号", "报文种类", "提交人", "产品名称", "费用名称", "应收金额", "实收金额", "起息日期", "止息日期", "利率", "利息", "贷款账号", "贷款帐号", "借据编号")
+    continuation_markers = ("附言", "指令编号", "支付交易序号", "报文种类", "提交人", "产品名称", "费用名称", "应收金额", "实收金额", "起息日期", "止息日期", "利率", "利息", "贷款账号", "贷款帐号", "借据编号", "处理种类")
     for page_item in pages:
         page = int(page_item.get("page") or 0)
         rows = page_item.get("table_rows") if isinstance(page_item.get("table_rows"), list) else []
@@ -196,36 +228,67 @@ def _transactions_from_pages(raw_pages: list[dict[str, Any]], text: str) -> tupl
                 _append_info(transactions[-1], " ".join(filter(None, cells)))
                 transactions[-1]["交易分类"] = classify_transaction(transactions[-1])
                 _extract_amount(transactions[-1])
-        # Text-only fallback: keep transactions conservative; a date and 借/贷 are mandatory.
-        if len(transactions) == page_before:
-            for line in lines:
-                date_value = _date(line)
-                side_match = re.search(r"(?:^|\s)(借|贷)(?:\s|$)", line)
-                if date_value and side_match:
-                    tx = _new_tx(page)
-                    tx["交易时间"] = date_value
-                    tx["借贷标志"] = side_match.group(1)
-                    tx["收支方向"] = "入账" if side_match.group(1) == "贷" else "出账"
-                    tx["摘要"] = _clean(line)
-                    tx["交易分类"] = classify_transaction(tx)
-                    _extract_amount(tx)
-                    transactions.append(tx)
-                elif transactions and any(marker in line for marker in continuation_markers):
-                    _append_info(transactions[-1], line)
-                    transactions[-1]["交易分类"] = classify_transaction(transactions[-1])
-                    _extract_amount(transactions[-1])
+        # Native-text fallback. Borrow/lend columns are optional: the stable anchor is
+        # voucher + counterparty account + date + time, followed by continuation text.
+        page_text = str(page_item.get("text") or "")
+        for match in TRANSACTION_ANCHOR_RE.finditer(page_text):
+            rest = _clean(match.group("rest"))
+            tx = _new_tx(page)
+            tx["凭证号"] = match.group("voucher_no")
+            tx["对方账号"] = match.group("counterparty_account")
+            tx["交易时间"] = f"{match.group('trade_date')} {match.group('trade_time')}"
+            side_match = re.search(r"(?:^|\s)(借|贷)(?:\s|$)", rest)
+            tx["借贷标志"] = side_match.group(1) if side_match else "未识别"
+            tx["收支方向"] = "入账" if tx["借贷标志"] == "贷" else ("出账" if tx["借贷标志"] == "借" else "未识别")
+            tx["回单个性化信息"] = rest
+            process_match = re.search(r"处理种类\s*[:：]\s*([^:：；;]{1,80})", rest)
+            appendix_match = re.search(r"附言\s*[:：]\s*([^:：；;]{1,120})", rest)
+            purpose_match = re.search(r"用途\s*[:：]\s*([^:：；;]{1,120})", rest)
+            tx["摘要"] = _clean(process_match.group(1)) if process_match else ""
+            tx["备注"] = _clean(appendix_match.group(1)) if appendix_match else ""
+            tx["用途"] = _clean(purpose_match.group(1)) if purpose_match else ""
+            tx["交易分类"] = classify_transaction(tx)
+            _extract_amount(tx)
+            transactions.append(tx)
     # Deduplicate coordinate/table representations of the same row.
     unique: list[dict[str, Any]] = []
-    seen: set[tuple[Any, ...]] = set()
+    seen: dict[tuple[Any, ...], dict[str, Any]] = {}
     for tx in transactions:
-        key = (tx.get("凭证号"), tx.get("对方账号"), tx.get("交易时间"), tx.get("借贷标志"), tx.get("对方单位"), tx.get("摘要"), tx.get("来源页码"))
+        if tx.get("凭证号") and tx.get("对方账号") and tx.get("交易时间"):
+            key = (tx.get("凭证号"), tx.get("对方账号"), tx.get("交易时间"), tx.get("来源页码"))
+        else:
+            key = (tx.get("凭证号"), tx.get("对方账号"), tx.get("交易时间"), tx.get("借贷标志"), tx.get("对方单位"), tx.get("摘要"), tx.get("来源页码"))
         if key in seen:
+            existing = seen[key]
+            for field in ("借贷标志", "收支方向", "对方单位", "对方行号", "用途", "摘要", "备注", "金额", "余额", "金额来源"):
+                if existing.get(field) in (None, "", "未识别") and tx.get(field) not in (None, "", "未识别"):
+                    existing[field] = tx[field]
+            _append_info(existing, str(tx.get("回单个性化信息") or ""))
+            existing["交易分类"] = classify_transaction(existing)
+            _extract_amount(existing)
             continue
-        seen.add(key)
+        seen[key] = tx
         unique.append(tx)
     unique.sort(key=lambda item: (str(item.get("交易时间") or ""), int(item.get("来源页码") or 0)))
     for index, tx in enumerate(unique, start=1):
         tx["序号"] = index
+        tx.update({
+            "voucher_no": tx.get("凭证号") or "",
+            "counterparty_account": tx.get("对方账号") or "",
+            "transaction_time": tx.get("交易时间") or "",
+            "debit_credit_flag": tx.get("借贷标志") or "未识别",
+            "direction": tx.get("收支方向") or "未识别",
+            "counterparty_name": tx.get("对方单位") or "",
+            "counterparty_bank_no": tx.get("对方行号") or "",
+            "purpose": tx.get("用途") or "",
+            "summary": tx.get("摘要") or "",
+            "remark": tx.get("备注") or "",
+            "amount": tx.get("金额"),
+            "balance": tx.get("余额"),
+            "receipt_info": tx.get("回单个性化信息") or "",
+            "category": tx.get("交易分类") or "其他",
+            "source_page": tx.get("来源页码") or 0,
+        })
         evidence.append({"field": "交易明细", "page": tx["来源页码"], "record": index, "locator": f"凭证号={tx.get('凭证号') or '未识别'};交易时间={tx.get('交易时间')}"})
     return unique, evidence, explicit_amount_column
 
@@ -239,6 +302,18 @@ def _summary(result: dict[str, Any]) -> None:
     result["outflow_count"] = sum(tx.get("收支方向") == "出账" for tx in txs)
     result["recognizable_inflow"] = sum((tx["金额"] for tx in recognized if tx.get("收支方向") == "入账"), Decimal("0"))
     result["recognizable_outflow"] = sum((tx["金额"] for tx in recognized if tx.get("收支方向") == "出账"), Decimal("0"))
+    transaction_dates = [str(tx.get("交易时间") or "")[:10] for tx in txs if str(tx.get("交易时间") or "")[:10]]
+    has_direction = any(tx.get("借贷标志") in {"借", "贷"} for tx in txs)
+    result["debit_count"] = result["outflow_count"] if has_direction else None
+    result["credit_count"] = result["inflow_count"] if has_direction else None
+    result["debit_total_amount"] = result["recognizable_outflow"] if txs and len(recognized) == len(txs) and has_direction else None
+    result["credit_total_amount"] = result["recognizable_inflow"] if txs and len(recognized) == len(txs) and has_direction else None
+    result["first_transaction_date"] = min(transaction_dates) if transaction_dates else ""
+    result["last_transaction_date"] = max(transaction_dates) if transaction_dates else ""
+    inflow_amounts = [tx["金额"] for tx in recognized if tx.get("收支方向") == "入账"]
+    outflow_amounts = [tx["金额"] for tx in recognized if tx.get("收支方向") == "出账"]
+    result["max_in_amount"] = max(inflow_amounts) if inflow_amounts else None
+    result["max_out_amount"] = max(outflow_amounts) if outflow_amounts else None
     monthly: dict[str, dict[str, Any]] = {}
     if result.get("period_start") and result.get("period_end"):
         cursor = datetime.strptime(result["period_start"][:7] + "-01", "%Y-%m-%d")
@@ -284,6 +359,10 @@ def _cell(value: Any) -> str:
     return _clean(value).replace("|", "\\|") or "—"
 
 
+def _display(value: Any) -> str:
+    return _clean(value) if value not in (None, "") else "未识别"
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, Decimal):
         return float(value)
@@ -299,14 +378,31 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         "## 银行对账单", "",
         "- 资料类型：银行对账单", f"- 来源文件：{_cell(result.get('source_file'))}",
         "- 原件状态：可查看", f"- 提取状态：{result.get('extraction_status', '成功')}", "",
-        "### 基本信息",
-        f"- 银行名称：{_cell(result.get('bank_name'))}", f"- 对账单标题：{_cell(result.get('statement_title'))}",
-        f"- 本方账号：{_cell(result.get('account_no'))}", f"- 本方账户户名：{_cell(result.get('account_name'))}",
-        f"- 本方开户行：{_cell(result.get('opening_bank'))}", f"- 币种：{_cell(result.get('currency'))}",
-        f"- 单位：{_cell(result.get('unit'))}", f"- 时间范围：{_cell(result.get('period_start'))} 至 {_cell(result.get('period_end'))}",
-        f"- 页数：{result.get('page_count', 0)}页", f"- 交易记录数：{result.get('transaction_count', 0)}",
-        f"- 金额识别状态：{result.get('amount_recognition_status')}", "", "### 账户流水概览",
-        f"- 入账笔数：{result.get('inflow_count', 0)}", f"- 出账笔数：{result.get('outflow_count', 0)}",
+        "### 账户信息",
+        f"- 客户名称：{_display(result.get('account_name'))}",
+        f"- 开户行：{_display(result.get('opening_bank'))}",
+        f"- 账号：{_display(result.get('account_no'))}",
+        f"- 银行名称：{_display(result.get('bank_name'))}",
+        f"- 对账单标题：{_display(result.get('statement_title'))}",
+        f"- 币种：{_display(result.get('currency'))}",
+        f"- 单位：{_display(result.get('unit'))}",
+        f"- 时间范围：{_display(result.get('period_text'))}",
+        f"- 页数：{result.get('page_count', 0)}页",
+        f"- 金额识别状态：{_display(result.get('amount_recognition_status'))}", "",
+        "### 汇总信息",
+        f"- 借方总金额：{_money(result.get('debit_total_amount'))}",
+        f"- 贷方总金额：{_money(result.get('credit_total_amount'))}",
+        f"- 借方总笔数：{_display(result.get('debit_count'))}",
+        f"- 贷方总笔数：{_display(result.get('credit_count'))}",
+        f"- 总笔数：{result.get('transaction_count', 0)}", "",
+        "### 交易明细摘要",
+        f"- 交易明细总数：{len(result.get('transactions') or [])}",
+        f"- 首笔交易日期：{_display(result.get('first_transaction_date'))}",
+        f"- 末笔交易日期：{_display(result.get('last_transaction_date'))}",
+        f"- 最大入账金额：{_money(result.get('max_in_amount'))}",
+        f"- 最大出账金额：{_money(result.get('max_out_amount'))}", "",
+        "### 账户流水概览",
+        f"- 入账笔数：{_display(result.get('credit_count'))}", f"- 出账笔数：{_display(result.get('debit_count'))}",
     ]
     if result.get("amount_recognition_status") == "完整识别":
         inflow, outflow = result["recognizable_inflow"], result["recognizable_outflow"]
@@ -348,31 +444,57 @@ class BankStatementSkill(BaseExtractionSkill):
     def extract(self, input_data: ExtractionInput) -> ExtractionResult:
         metadata = input_data.metadata or {}
         raw_pages = metadata.get("raw_pages") if isinstance(metadata.get("raw_pages"), list) else []
+        if not raw_pages:
+            raw_pages = _load_native_pdf_pages(input_data.file_path)
         text = str(input_data.raw_text or "")
         page_text = "\n".join(str(item.get("text") or "") for item in raw_pages)
         source = f"{text}\n{page_text}"
+        logger.info("[BankStatementSkill] file=%s pages=%s", input_data.file_name, len({int(item.get('page') or index) for index, item in enumerate(raw_pages, 1)}))
+        for index, page in enumerate(raw_pages, start=1):
+            value = str(page.get("text") or "")
+            logger.info("[BankStatementSkill] page=%s text_len=%s preview=%s", page.get("page") or index, len(value), _clean(value[:500]))
+        logger.info(
+            "[BankStatementSkill] raw_text_len=%s preview=%s title_hit=%s account_label_hit=%s period_label_hit=%s",
+            len(source), _clean(source[:500]), "中国工商银行账户明细清单" in source,
+            bool(re.search(r"(?:本方)?账号\s*[:：]", source)), bool(re.search(r"时间范围\s*[:：]", source)),
+        )
         period_evidence, period_start, period_end = _periods(raw_pages, source)
         transactions, tx_evidence, explicit_amount_column = _transactions_from_pages(raw_pages, source)
         title = "中国工商银行账户明细清单" if "中国工商银行账户明细清单" in source else _find_labeled(source, ("对账单标题", "标题"))
         bank_name = "中国工商银行" if ("中国工商银行" in source or "工商银行" in input_data.file_name) else _find_labeled(source, ("银行名称",))
-        account_no = _find_labeled(source, ("本方账号", "账号"), ("本方账号户名", "本方账户户名", "户名", "币种", "本方账号开户行"))
-        account_no_match = re.search(r"(?<!\d)\d{12,30}(?!\d)", account_no)
-        account_no = account_no_match.group(0) if account_no_match else ""
+        account_no_match = ACCOUNT_NO_RE.search(source)
+        account_no = account_no_match.group(1) if account_no_match else ""
+        is_icbc_statement = bool(title == "中国工商银行账户明细清单" or "中国工商银行账户明细清单" in source)
+        period_text = f"{period_start} 至 {period_end}" if period_start and period_end else ""
+        period_ranges = [str(item.get("raw_value") or "").replace(" ", "") for item in period_evidence]
+        logger.info("[BankStatementSkill] account_no=%s", account_no or "未识别")
+        logger.info("[BankStatementSkill] period_ranges=%s", period_ranges)
+        logger.info("[BankStatementSkill] transactions_count=%s", len(transactions))
         result: dict[str, Any] = {
             "doc_type": "bank_statement", "doc_type_name": "银行对账单", "agent_type": "bank_statement_agent",
             "source_file": input_data.file_name or (Path(input_data.file_path).name if input_data.file_path else ""),
-            "original_status": "可查看", "extraction_status": "成功", "bank_name": bank_name,
+            "original_status": "可查看", "extract_status": "成功", "extraction_status": "成功", "bank_name": bank_name,
             "statement_title": title or ("账户明细清单" if "账户明细清单" in source else "银行对账单"),
             "account_no": account_no,
             "account_name": _find_labeled(source, ("本方账号户名", "本方账户户名", "本方户名", "账户户名"), ("币种", "本方账号开户行", "开户行", "单位", "记账时间范围")),
             "opening_bank": _find_labeled(source, ("本方账号开户行", "本方开户行", "开户行"), ("记账时间范围", "时间范围", "币种", "单位")),
-            "currency": _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围")) or ("人民币" if "人民币" in source else ""),
-            "unit": _find_labeled(source, ("单位",), ("本方账号开户行", "本方开户行", "开户行", "币种", "记账时间范围", "交易时间")) or ("元" if re.search(r"单位\s*[:：]?\s*元", source) else ""),
-            "period_start": period_start, "period_end": period_end,
+            "currency": _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围", "时间范围")) or ("人民币" if is_icbc_statement or "人民币" in source else ""),
+            "unit": _find_labeled(source, ("单位",), ("本方账号开户行", "本方开户行", "开户行", "币种", "记账时间范围", "时间范围", "交易时间")) or ("元" if is_icbc_statement or re.search(r"单位\s*[:：]?\s*元", source) else ""),
+            "period_start": period_start, "period_end": period_end, "period_text": period_text,
             "page_count": len({int(item.get("page") or index) for index, item in enumerate(raw_pages, 1)}) or int(metadata.get("page_count") or 0),
             "transactions": transactions, "evidence": period_evidence + tx_evidence,
         }
         _summary(result)
+        # Compatibility aliases for existing storage/profile readers. The canonical
+        # fields above remain the single source of truth.
+        result.update({
+            "customer_name": result["account_name"], "bank_branch": result["opening_bank"],
+            "account_number": result["account_no"], "date_range": result["period_text"],
+            "start_date": result["period_start"], "end_date": result["period_end"],
+            "debit_transaction_count": result["debit_count"], "credit_transaction_count": result["credit_count"],
+            "total_transaction_count": result["transaction_count"], "transaction_detail_count": len(result["transactions"]),
+            "max_credit_amount": result["max_in_amount"], "max_debit_amount": result["max_out_amount"],
+        })
         result["risk_tips"] = []
         if any(tx["交易分类"] == "贷款发放" for tx in transactions): result["risk_tips"].append("存在银行贷款发放记录。")
         if any(tx["交易分类"] == "贷款归还" for tx in transactions): result["risk_tips"].append("存在银行贷款归还记录。")

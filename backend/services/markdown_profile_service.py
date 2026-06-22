@@ -1779,10 +1779,12 @@ def _bank_statement_cell(value: Any) -> str:
 
 
 def _bank_statement_date_range(extracted_data: dict[str, Any]) -> str:
+    if extracted_data.get('period_text'):
+        return _marriage_display(extracted_data.get('period_text'))
     if extracted_data.get('date_range'):
         return _marriage_display(extracted_data.get('date_range'))
-    start_date = str(extracted_data.get('start_date') or '').strip()
-    end_date = str(extracted_data.get('end_date') or '').strip()
+    start_date = str(extracted_data.get('period_start') or extracted_data.get('start_date') or '').strip()
+    end_date = str(extracted_data.get('period_end') or extracted_data.get('end_date') or '').strip()
     if start_date and end_date:
         return f'{start_date} 至 {end_date}'
     return '暂无'
@@ -1797,16 +1799,21 @@ def _build_bank_statement_section_lines(file_name: str, original_status: str, ex
         '',
         '### 账户信息',
         f"- 客户名称：{_marriage_display(extracted_data.get('account_name') or extracted_data.get('customer_name'))}",
-        f"- 开户行：{_marriage_display(extracted_data.get('bank_branch') or extracted_data.get('bank_name'))}",
-        f"- 账号：{_marriage_display(extracted_data.get('account_number'))}",
+        f"- 开户行：{_marriage_display(extracted_data.get('opening_bank') or extracted_data.get('bank_branch'))}",
+        f"- 账号：{_marriage_display(extracted_data.get('account_no') or extracted_data.get('account_number'))}",
+        f"- 银行名称：{_marriage_display(extracted_data.get('bank_name'))}",
+        f"- 对账单标题：{_marriage_display(extracted_data.get('statement_title'))}",
         f"- 币种：{_marriage_display(extracted_data.get('currency'))}",
-        f"- 记账日期：{_bank_statement_date_range(extracted_data)}",
+        f"- 单位：{_marriage_display(extracted_data.get('unit'))}",
+        f"- 时间范围：{_bank_statement_date_range(extracted_data)}",
+        f"- 页数：{_marriage_display(extracted_data.get('page_count'))}页",
+        f"- 金额识别状态：{_marriage_display(extracted_data.get('amount_recognition_status'))}",
         '',
         '### 汇总信息',
         f"- 借方总金额：{_marriage_display(extracted_data.get('debit_total_amount') or extracted_data.get('total_expense'))}",
         f"- 贷方总金额：{_marriage_display(extracted_data.get('credit_total_amount') or extracted_data.get('total_income'))}",
-        f"- 借方总笔数：{_marriage_display(extracted_data.get('debit_transaction_count'))}",
-        f"- 贷方总笔数：{_marriage_display(extracted_data.get('credit_transaction_count'))}",
+        f"- 借方总笔数：{_marriage_display(extracted_data.get('debit_count') if extracted_data.get('debit_count') is not None else extracted_data.get('debit_transaction_count'))}",
+        f"- 贷方总笔数：{_marriage_display(extracted_data.get('credit_count') if extracted_data.get('credit_count') is not None else extracted_data.get('credit_transaction_count'))}",
         f"- 总笔数：{_marriage_display(extracted_data.get('total_transaction_count') or extracted_data.get('transaction_count'))}",
         '',
         '### 交易明细摘要',
@@ -2146,7 +2153,27 @@ async def _build_single_document_section(
     if extraction_type == 'vehicle_license' and isinstance(extracted_data, dict):
         return _markdown_section('行驶证', _build_vehicle_license_section_lines(file_name, original_status, extracted_data)), source_document
     if extraction_type == 'bank_statement' and isinstance(extracted_data, dict):
-        return _markdown_section('银行对账单', _build_bank_statement_section_lines(file_name, original_status, extracted_data)), source_document
+        saved_markdown = str(
+            extracted_data.get('display_markdown')
+            or extracted_data.get('report_markdown')
+            or extracted_data.get('markdown_summary')
+            or extracted_data.get('markdown')
+            or ''
+        ).strip()
+        if saved_markdown:
+            logger.info("[Profile Sync][BankStatement] using agent markdown markdown_len=%s", len(saved_markdown))
+            return saved_markdown, source_document
+        canonical = extracted_data.get('extracted_json') or extracted_data.get('data') or extracted_data
+        if isinstance(canonical, dict) and canonical.get('doc_type') == 'bank_statement':
+            try:
+                from backend.extraction_skills.bank_statement import render_bank_statement_markdown
+
+                markdown = render_bank_statement_markdown(canonical)
+                logger.info("[Profile Sync][BankStatement] rebuilt canonical agent markdown markdown_len=%s", len(markdown))
+                return markdown, source_document
+            except Exception:
+                logger.exception("[Profile Sync][BankStatement] canonical markdown rebuild failed")
+        return _markdown_section('银行对账单', _build_bank_statement_section_lines(file_name, original_status, canonical if isinstance(canonical, dict) else extracted_data)), source_document
     if extraction_type == 'marriage_cert' and isinstance(extracted_data, dict):
         lines = [
             f'- \u8d44\u6599\u7c7b\u578b\uff1a{type_name}',
