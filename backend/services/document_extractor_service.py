@@ -39,6 +39,7 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
     "company_articles",
     "property_cert",
     "real_estate_cert",
+    "bank_statement",
 }
 
 KYC_DOC_TYPES = {
@@ -107,6 +108,7 @@ ID_CARD_PATTERN = re.compile(r"([1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-
 UNIFIED_CODE_PATTERN = re.compile(r"\b([0-9A-Z]{18})\b")
 
 TYPE_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("bank_statement", ("中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")),
     ("financial_report", ("资产负债表", "利润表", "现金流量表", "财务报表报送", "财务报表")),
     ("business_license", ("营业执照", "统一社会信用代码", "法定代表人")),
     ("account_license", ("开户许可证", "开户银行", "核准号")),
@@ -120,6 +122,16 @@ TYPE_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("property_report", ("不动产", "房屋坐落", "权利人")),
     ("special_license", ("许可证", "有效期", "发证机关")),
 )
+
+OFFICIAL_BANK_STATEMENT_KEYWORDS = (
+    "中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement",
+)
+
+
+def _looks_like_official_bank_statement(text: str, filename: str = "") -> bool:
+    source = f"{filename}\n{text}".lower()
+    return any(keyword.lower() in source for keyword in OFFICIAL_BANK_STATEMENT_KEYWORDS)
+
 
 BANK_DATE_KEYS = ("交易日期", "记账日期", "日期", "入账日期", "交易时间")
 BANK_CREDIT_KEYS = ("收入", "贷方发生额", "贷方金额", "贷方", "credit", "入账金额")
@@ -142,6 +154,8 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
+    if _looks_like_official_bank_statement(text_content, filename) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
+        return "bank_statement"
     if normalized_explicit:
         return normalized_explicit
 
@@ -3043,6 +3057,8 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
+    if _looks_like_official_bank_statement(text_content, filename) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
+        return "bank_statement"
     if normalized_explicit:
         return normalized_explicit
 

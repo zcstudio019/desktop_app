@@ -9,6 +9,7 @@ from backend.extraction_skills.personal_credit import build_personal_credit_repo
 from backend.services.enterprise_bank_statement_agent.adapter import (
     EnterpriseBankStatementAgentAdapter as EnterpriseBankStatementAgentAdapterV2,
 )
+from backend.services.bank_statement_agent import BankStatementAgentAdapter
 from backend.services.company_articles_agent.adapter import CompanyArticlesAgentAdapter
 from backend.services.financial_report_agent.adapter import FinancialReportAgentAdapter
 from backend.services.personal_bank_statement_agent.adapter import PersonalBankStatementAgentAdapter
@@ -155,6 +156,7 @@ _PERSONAL_BANK_STATEMENT_AGENT = PersonalBankStatementAgentAdapter()
 _FINANCIAL_REPORT_AGENT = FinancialReportAgentAdapter()
 _PROPERTY_CERT_AGENT = PropertyCertAgentAdapter()
 _COMPANY_ARTICLES_AGENT = CompanyArticlesAgentAdapter()
+_BANK_STATEMENT_AGENT = BankStatementAgentAdapter()
 
 DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "enterprise_credit_report": _ENTERPRISE_CREDIT_AGENT,
@@ -176,6 +178,7 @@ DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "company_articles": _COMPANY_ARTICLES_AGENT,
     "property_cert": _PROPERTY_CERT_AGENT,
     "real_estate_cert": _PROPERTY_CERT_AGENT,
+    "bank_statement": _BANK_STATEMENT_AGENT,
     "财务报表": _FINANCIAL_REPORT_AGENT,
     "财务数据": _FINANCIAL_REPORT_AGENT,
     "企业流水": _ENTERPRISE_BANK_STATEMENT_AGENT,

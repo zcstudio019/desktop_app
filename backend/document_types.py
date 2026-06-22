@@ -192,7 +192,7 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         name="银行对账单",
         storage_label="银行对账单",
         formats=("pdf", "xlsx"),
-        aliases=("银行对账单", "对账单", "银行账单"),
+        aliases=("银行对账单", "银行账户明细", "账户明细清单", "银行流水明细", "中国工商银行账户明细清单", "对账单", "银行账单", "statement", "bank statement"),
         store_original=True,
         store_markdown=True,
     ),
@@ -210,6 +210,15 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
 DOCUMENT_TYPES_BY_CODE = {item.code: item for item in DOCUMENT_TYPE_DEFINITIONS}
 
 DOCUMENT_TYPE_CANONICAL_ALIASES = {
+    "bank_statement": "bank_statement",
+    "bank statement": "bank_statement",
+    "statement": "bank_statement",
+    "银行对账单": "bank_statement",
+    "银行账户明细": "bank_statement",
+    "账户明细清单": "bank_statement",
+    "银行流水明细": "bank_statement",
+    "中国工商银行账户明细清单": "bank_statement",
+    "对账单": "bank_statement",
     "financial_data": "financial_report",
     "financial_report": "financial_report",
     "财务数据": "financial_report",

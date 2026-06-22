@@ -14,6 +14,8 @@
  */
 
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
   FileText, Upload, Check, X, Loader2, AlertCircle,
   Building2, User, Landmark, Wallet, BarChart3, Home, FileSearch, Receipt, Link
@@ -751,6 +753,16 @@ function getKycPreviewContent(result: ExtractionResult): Record<string, unknown>
     documentType: result.documentType,
     document_type: result.documentType,
   };
+}
+
+function getBankStatementMarkdown(result: ExtractionResult): string {
+  if (result.documentType !== 'bank_statement') return '';
+  const content = result.content || {};
+  for (const key of ['display_markdown', 'report_markdown', 'markdown_summary', 'markdown', 'summary']) {
+    const value = content[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
 }
 
 // ============================================
@@ -1574,7 +1586,7 @@ const UploadPage: React.FC = () => {
   ]);
 
   const viewResult = useCallback((result: ExtractionResult) => {
-    if (isKycExtractionResult(getKycPreviewContent(result))) {
+    if (isKycExtractionResult(getKycPreviewContent(result)) || getBankStatementMarkdown(result)) {
       setPreviewResult(result);
       return;
     }
@@ -1989,6 +2001,27 @@ const UploadPage: React.FC = () => {
             </div>
             <div className="max-h-[calc(86vh-72px)] overflow-auto p-5">
               <KycExtractionResult result={getKycPreviewContent(previewResult) as unknown as KycExtractionResultType} />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {previewResult && getBankStatementMarkdown(previewResult) ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+          <div className="max-h-[90vh] w-full max-w-7xl overflow-hidden rounded-lg bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <div className="text-base font-semibold text-slate-900">银行对账单解析结果</div>
+                <div className="mt-0.5 text-xs text-slate-500">银行对账单</div>
+              </div>
+              <button onClick={() => setPreviewResult(null)} className="rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="关闭">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[calc(90vh-72px)] overflow-auto p-5">
+              <article className="prose prose-slate max-w-none overflow-x-auto [&_table]:block [&_table]:w-max [&_table]:min-w-full [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{getBankStatementMarkdown(previewResult)}</ReactMarkdown>
+              </article>
             </div>
           </div>
         </div>

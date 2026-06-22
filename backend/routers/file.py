@@ -1507,13 +1507,28 @@ async def _extract_content_from_file(
 
 def _resolve_document_type_code(text_content: str, explicit_type: str | None, rows: list[dict], filename: str = "") -> str:
     normalized = normalize_document_type_code(explicit_type)
-    if normalized:
+    official_bank_statement = any(
+        keyword.lower() in f"{filename}\n{text_content}".lower()
+        for keyword in ("中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")
+    )
+    if normalized and not (official_bank_statement and normalized in {"enterprise_flow", "enterprise_bank_statement"}):
         return normalized
     try:
         return detect_document_type_code(text_content, explicit_type, rows=rows, filename=filename, ai_service=ai_service)
     except AIServiceError as exc:
         logger.error("AI classification error: %s", exc)
         raise HTTPException(status_code=500, detail=AI_CLASSIFICATION_FAILED_MESSAGE) from exc
+
+
+def _bank_statement_needs_ocr_supplement(text: str, raw_pages: list[dict[str, Any]]) -> bool:
+    required = ("凭证号", "对方账号", "交易时间", "借贷标志", "对方单位", "摘要", "备注", "回单个性化信息")
+    header_hits = sum(key in str(text or "") for key in required)
+    table_hits = 0
+    for page in raw_pages:
+        for row in page.get("table_rows") or []:
+            joined = " ".join(str(cell or "") for cell in row)
+            table_hits = max(table_hits, sum(key in joined for key in required))
+    return header_hits < 5 and table_hits < 5
 
 
 def _extract_structured_data(
@@ -1777,6 +1792,15 @@ async def _process_file_bytes(
                 raw_pages.extend(ocr_pages)
         except Exception as exc:  # pragma: no cover - best-effort extraction supplement
             logger.warning("[FinancialReportAgent][OCR_FALLBACK] failed filename=%s error=%s", filename, exc)
+    if document_type_code == "bank_statement" and file_type == "pdf" and _bank_statement_needs_ocr_supplement(text_content, raw_pages):
+        logger.info("[BankStatementAgent][OCR_FALLBACK] native table incomplete, OCR all pages filename=%s", filename)
+        try:
+            ocr_text, ocr_pages = _ocr_pdf_pages(file_bytes)
+            if ocr_pages:
+                text_content = f"{text_content}\n\n--- 银行对账单 OCR 补充 ---\n{ocr_text}".strip()
+                raw_pages.extend(ocr_pages)
+        except Exception as exc:  # pragma: no cover - best-effort extraction supplement
+            logger.warning("[BankStatementAgent][OCR_FALLBACK] failed filename=%s error=%s", filename, exc)
     if progress_callback:
         await progress_callback("正在保存结构化结果" if document_type_code in PROPERTY_CERT_PROCESS_TYPES else "正在结构化提取")
     if document_type_code == "bank_statement" and (
