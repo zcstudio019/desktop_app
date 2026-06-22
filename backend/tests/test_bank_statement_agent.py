@@ -69,7 +69,7 @@ def test_bank_statement_extracts_core_fields_periods_and_safe_amounts():
 def test_bank_statement_markdown_is_chinese_and_not_json():
     content = build_structured_extraction("中国工商银行账户明细清单", "bank_statement", raw_pages=sample_pages(), filename="sample.pdf")
     markdown = content["display_markdown"]
-    for heading in ("## 银行对账单", "### 账户信息", "### 流水分析摘要", "### 有效经营入账分析", "### 有效经营出账分析", "### 剔除项汇总", "### 贷款及融资相关交易", "### 银行费用及利息", "### 重点交易明细", "### 风险提示", "### 需人工复核"):
+    for heading in ("## 银行对账单", "### 账户信息", "### 流水分析摘要", "### 有效经营入账方汇总", "### 有效经营入账明细", "### 有效经营出账方汇总", "### 有效经营出账明细", "### 剔除项汇总", "### 贷款及融资相关交易", "### 银行费用及利息", "### 重点交易明细", "### 风险提示", "### 需人工复核"):
         assert heading in markdown
     for forbidden in ('"doc_type"', "transaction_category", "raw_text", "undefined", "null", "None"):
         assert forbidden not in markdown
@@ -172,6 +172,43 @@ def test_effective_flow_excludes_self_transfers_garbage_and_invalid_dates():
     assert names == {"上海真实客户有限公司", "上海真实供应商有限公司"}
     markdown = content["markdown_summary"]
     assert "### 剔除项汇总" in markdown
-    assert "上海意川建筑科技有限公司" not in markdown.split("### 有效经营入账分析", 1)[1].split("### 有效经营出账分析", 1)[0]
+    assert "上海意川建筑科技有限公司" not in markdown.split("### 有效经营入账方汇总", 1)[1].split("### 有效经营出账方汇总", 1)[0]
     for forbidden in ("回单个性化信息", "指令编号", "支付交易序号", "报文种类", "提交人", "HQP928", "w191001", "1910-01-34"):
         assert forbidden not in markdown
+
+
+def test_opening_bank_suffix_normalization_and_operating_detail_layers():
+    from backend.extraction_skills.bank_statement import normalize_opening_bank_name
+
+    assert normalize_opening_bank_name("工行 张江科技秀沿路", "中国工商银行") == "工行张江科技秀沿路支行"
+    assert normalize_opening_bank_name("工行张江科技秀沿路支行", "中国工商银行") == "工行张江科技秀沿路支行"
+    assert normalize_opening_bank_name("中国工商银行上海分行", "中国工商银行") == "中国工商银行上海分行"
+    header = ["凭证号", "对方账号", "交易时间", "借贷标志", "对方单位", "对方行号", "用途", "摘要", "备注", "回单个性化信息"]
+    dates = [
+        "2025-09-26 11:50:10", "2025-11-04 14:36:25", "2025-11-28 13:15:40",
+        "2025-12-25 11:50:30", "2026-02-11 13:29:20",
+    ]
+    purposes = ["张江A04C-01", "张江A04C-01", "张江创新药A04C-01", "张江创新药基地A04C-01工程款", "张江创新药基地A04C-01工程款"]
+    rows = [header] + [
+        [str(200000 + index), str(700000 + index), trade_time, "贷", "上海建工智慧营造有限公司", "", purpose, "工程款", "", ""]
+        for index, (trade_time, purpose) in enumerate(zip(dates, purposes), start=1)
+    ]
+    pages = [{
+        "page": 1,
+        "text": "中国工商银行账户明细清单\n账号：1001068319100134987\n本方账号户名：上海意川建筑科技有限公司\n本方账号开户行：工行张江科技秀沿路\n时间范围：20250401 - 20260331",
+        "table_rows": rows,
+        "source": "pdf_layout",
+    }]
+    content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="sample.pdf")
+    data = content["extracted_json"]
+    assert data["opening_bank"] == "工行张江科技秀沿路支行"
+    assert data["effective_inflow_count"] == 5
+    assert data["effective_operating_inflow_count"] == 5
+    assert data["effective_operating_inflow_counterparty_count"] == 1
+    assert data["effective_inflow_counterparties"][0]["count"] == 5
+    assert len(data["effective_operating_inflow_transactions"]) == 5
+    markdown = content["markdown_summary"]
+    assert "- 有效经营入账方数量：1" in markdown
+    assert "- 有效入账笔数：5" in markdown
+    assert "上海建工智慧营造有限公司 | 5 | 未识别" in markdown
+    assert markdown.count("上海建工智慧营造有限公司") >= 6

@@ -210,6 +210,19 @@ def _normalize_entity_name(value: Any) -> str:
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff()]", "", text).lower()
 
 
+def normalize_opening_bank_name(value: Any, bank_name: str = "") -> str:
+    """Normalize branch whitespace without dropping institution suffixes."""
+    text = re.sub(r"[\s　]+", "", str(value or "")).strip("：:；;,，")
+    if not text:
+        return ""
+    if text.endswith(("支行", "分行", "营业部", "分理处")):
+        return text
+    bank_context = f"{bank_name}{text}"
+    if text.endswith("路") and ("工行" in bank_context or "中国工商银行" in bank_context):
+        return f"{text}支行"
+    return text
+
+
 def _clean_display_text(value: Any) -> str:
     text = _clean(value)
     if not text:
@@ -472,8 +485,16 @@ def _summary(result: dict[str, Any]) -> None:
         return [{**item, "main_description": "、".join(name for name, _ in item.pop("descriptions").most_common(3))} for item in ranked]
 
     result["effective_transactions"] = effective
-    result["effective_inflow_counterparties"] = aggregate(effective, "入账")
-    result["effective_outflow_counterparties"] = aggregate(effective, "出账")
+    operating_inflow = [tx for tx in effective if tx.get("交易分类") == "经营入账" and tx.get("收支方向") == "入账"]
+    operating_outflow = [tx for tx in effective if tx.get("交易分类") == "经营出账" and tx.get("收支方向") == "出账"]
+    result["effective_operating_inflow_transactions"] = operating_inflow
+    result["effective_operating_outflow_transactions"] = operating_outflow
+    result["effective_operating_inflow_count"] = len(operating_inflow)
+    result["effective_operating_outflow_count"] = len(operating_outflow)
+    result["effective_inflow_counterparties"] = aggregate(operating_inflow, "入账")
+    result["effective_outflow_counterparties"] = aggregate(operating_outflow, "出账")
+    result["effective_operating_inflow_counterparty_count"] = len(result["effective_inflow_counterparties"])
+    result["effective_operating_outflow_counterparty_count"] = len(result["effective_outflow_counterparties"])
     result["counterparty_summary"] = result["effective_inflow_counterparties"] + result["effective_outflow_counterparties"]
     category_names = ("经营入账", "经营出账", "往来入账", "往来出账", "贷款发放", "贷款归还", "利息收入", "利息支出", "银行费用", "资金拆借", "其他")
     result["category_summary"] = [
@@ -526,19 +547,39 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         "- 本方同名划转说明：本方户名与对方单位一致的交易已从经营流水分析中剔除",
         f"- 有效入账笔数：{result.get('effective_inflow_count', 0)}",
         f"- 有效出账笔数：{result.get('effective_outflow_count', 0)}",
+        f"- 有效经营入账方数量：{result.get('effective_operating_inflow_counterparty_count', 0)}",
+        f"- 有效经营出账方数量：{result.get('effective_operating_outflow_counterparty_count', 0)}",
         f"- 银行费用笔数：{result.get('bank_fee_count', 0)}",
         f"- 贷款/利息相关笔数：{result.get('loan_interest_count', 0)}",
     ]
     if result.get("amount_recognition_status") != "完整识别":
         lines.append("- 金额识别说明：当前 PDF 主表金额列未完整识别，仅保留明确识别金额，不进行完整收入、支出和净流入测算")
-    lines += ["", "### 有效经营入账分析", "| 排名 | 入账方名称 | 笔数 | 可识别金额 | 主要用途/摘要 |", "|---:|---|---:|---:|---|"]
+    lines += [
+        "", "### 有效经营入账方汇总",
+        "- 说明：本表按入账方名称汇总展示，不是逐笔交易明细。",
+        f"- 有效经营入账方数量：{result.get('effective_operating_inflow_counterparty_count', 0)} 个",
+        f"- 有效经营入账笔数：{result.get('effective_operating_inflow_count', 0)} 笔", "",
+        "| 排名 | 入账方名称 | 入账笔数 | 可识别金额 | 主要用途/摘要 |", "|---:|---|---:|---:|---|",
+    ]
     for index, item in enumerate(result.get("effective_inflow_counterparties") or [], start=1):
         amount = _money(item.get("recognizable_amount")) if item.get("recognized_amount_count") else "未识别"
         lines.append(f"| {index} | {_cell(item.get('counterparty'))} | {item.get('count', 0)} | {amount} | {_cell(item.get('main_description'))} |")
-    lines += ["", "### 有效经营出账分析", "| 排名 | 出账方名称 | 笔数 | 可识别金额 | 主要用途/摘要 |", "|---:|---|---:|---:|---|"]
+    lines += ["", "### 有效经营入账明细", "| 序号 | 交易时间 | 入账方名称 | 用途 | 摘要 | 金额 |", "|---:|---|---|---|---|---:|"]
+    for index, tx in enumerate(result.get("effective_operating_inflow_transactions") or [], start=1):
+        lines.append(f"| {index} | {_cell(tx.get('交易时间'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_purpose'))} | {_cell(tx.get('clean_summary'))} | {_money(tx.get('金额'))} |")
+    lines += [
+        "", "### 有效经营出账方汇总",
+        "- 说明：本表按出账方名称汇总展示，不是逐笔交易明细。",
+        f"- 有效经营出账方数量：{result.get('effective_operating_outflow_counterparty_count', 0)} 个",
+        f"- 有效经营出账笔数：{result.get('effective_operating_outflow_count', 0)} 笔", "",
+        "| 排名 | 出账方名称 | 出账笔数 | 可识别金额 | 主要用途/摘要 |", "|---:|---|---:|---:|---|",
+    ]
     for index, item in enumerate(result.get("effective_outflow_counterparties") or [], start=1):
         amount = _money(item.get("recognizable_amount")) if item.get("recognized_amount_count") else "未识别"
         lines.append(f"| {index} | {_cell(item.get('counterparty'))} | {item.get('count', 0)} | {amount} | {_cell(item.get('main_description'))} |")
+    lines += ["", "### 有效经营出账明细", "| 序号 | 交易时间 | 出账方名称 | 用途 | 摘要 | 金额 |", "|---:|---|---|---|---|---:|"]
+    for index, tx in enumerate(result.get("effective_operating_outflow_transactions") or [], start=1):
+        lines.append(f"| {index} | {_cell(tx.get('交易时间'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_purpose'))} | {_cell(tx.get('clean_summary'))} | {_money(tx.get('金额'))} |")
     lines += ["", "### 剔除项汇总", "| 剔除类型 | 笔数 | 说明 |", "|---|---:|---|"]
     for item in result.get("exclusion_summary") or []:
         lines.append(f"| {_cell(item.get('type'))} | {item.get('count', 0)} | {_cell(item.get('description'))} |")
@@ -597,6 +638,9 @@ class BankStatementSkill(BaseExtractionSkill):
         logger.info("[BankStatementSkill] account_no=%s", account_no or "未识别")
         logger.info("[BankStatementSkill] period_ranges=%s", period_ranges)
         logger.info("[BankStatementSkill] transactions_count=%s", len(transactions))
+        opening_bank_raw = _find_labeled(source, ("本方账号开户行", "本方开户行", "开户行"), ("记账时间范围", "时间范围", "币种", "单位"))
+        opening_bank = normalize_opening_bank_name(opening_bank_raw, bank_name)
+        logger.info("[BankStatementSkill] opening_bank_raw=%s opening_bank=%s", opening_bank_raw or "未识别", opening_bank or "未识别")
         result: dict[str, Any] = {
             "doc_type": "bank_statement", "doc_type_name": "银行对账单", "agent_type": "bank_statement_agent",
             "source_file": input_data.file_name or (Path(input_data.file_path).name if input_data.file_path else ""),
@@ -604,7 +648,7 @@ class BankStatementSkill(BaseExtractionSkill):
             "statement_title": title or ("账户明细清单" if "账户明细清单" in source else "银行对账单"),
             "account_no": account_no,
             "account_name": _find_labeled(source, ("本方账号户名", "本方账户户名", "本方户名", "账户户名"), ("币种", "本方账号开户行", "开户行", "单位", "记账时间范围")),
-            "opening_bank": _find_labeled(source, ("本方账号开户行", "本方开户行", "开户行"), ("记账时间范围", "时间范围", "币种", "单位")),
+            "opening_bank": opening_bank,
             "currency": _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围", "时间范围")) or ("人民币" if is_icbc_statement or "人民币" in source else ""),
             "unit": _find_labeled(source, ("单位",), ("本方账号开户行", "本方开户行", "开户行", "币种", "记账时间范围", "时间范围", "交易时间")) or ("元" if is_icbc_statement or re.search(r"单位\s*[:：]?\s*元", source) else ""),
             "period_start": period_start, "period_end": period_end, "period_text": period_text,
