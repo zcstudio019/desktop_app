@@ -37,14 +37,19 @@ AMOUNT_LABEL_RE = re.compile(
     r"(?P<amount>[+-]?(?:人民币|￥|¥)?\s*\d[\d,]*(?:\.\d{1,2})?)"
 )
 
-CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("贷款发放", ("贷款发放", "对公贷款记账", "贷款账号", "借据编号")),
-    ("贷款归还", ("贷款归还", "对公贷款批量正常分期", "还款", "贷款帐号")),
-    ("利息支出", ("对公贷款利息支付", "利息支出", "利率", "息余积数")),
-    ("银行手续费", ("跨行汇款手续费", "对公跨行汇款手续费", "对公跨行快汇手续费", "企业网银证书年费", "USBKey证书工本费", "财智账户卡年费", "到账伴侣协议费", "企业网银账户半年费")),
-    ("经营收入", ("货款", "工程款", "项目款", "材料款", "劳务费", "电缆款", "灯具款", "风管材料款", "防火包裹材料款")),
-    ("往来款", ("往来款", "转账", "普通汇兑", "汇兑业务")),
-    ("资金拆借", ("借款",)),
+OPERATING_KEYWORDS = ("货款", "工程款", "项目款", "材料款", "劳务费", "电缆款", "灯具款", "风管材料款", "防火包裹材料款")
+CURRENT_ACCOUNT_KEYWORDS = ("往来款", "转账", "普通汇兑", "汇兑业务")
+BANK_FEE_KEYWORDS = ("手续费", "年费", "工本费", "协议费", "半年费", "跨行快汇")
+LOAN_DISBURSEMENT_KEYWORDS = ("贷款发放", "对公贷款记账")
+LOAN_REPAYMENT_KEYWORDS = ("贷款归还", "对公贷款批量正常分期", "还款")
+INTEREST_EXPENSE_KEYWORDS = ("对公贷款利息支付", "利息支出", "息余积数")
+SENSITIVE_DISPLAY_MARKERS = (
+    "指令编号", "支付交易序号", "报文种类", "提交人", "起息日期", "止息日期", "止息日",
+    "利息期间", "贷款账号", "贷款帐号", "借据编号", "HQP928", "w191001",
+)
+GARBAGE_COUNTERPARTY_MARKERS = (
+    "HQP928", "w191001", "期:", "期：", "起息日期", "止息日", "支付交易序号", "指令编号", "提交人",
+    "若与实际交易不符", "文件下载后", "重要提示",
 )
 
 
@@ -151,7 +156,7 @@ def _extract_amount(tx: dict[str, Any], explicit_amount: str = "", explicit_bala
     category = str(tx.get("交易分类") or "")
     priorities = (
         ("利息",) if "利息" in category else
-        (("实收金额", "应收金额") if category == "银行手续费" else
+        (("实收金额", "应收金额") if category == "银行费用" else
          ("交易金额", "发生额", "贷款金额", "归还金额", "还款金额", "本金", "实收金额", "应收金额", "利息", "金额"))
     )
     for wanted in priorities:
@@ -163,11 +168,23 @@ def _extract_amount(tx: dict[str, Any], explicit_amount: str = "", explicit_bala
 
 def classify_transaction(tx: dict[str, Any]) -> str:
     text = " ".join(str(tx.get(key) or "") for key in ("用途", "摘要", "备注", "回单个性化信息"))
-    if "利息" in text and tx.get("借贷标志") == "贷" and "利息支付" not in text:
+    direction = tx.get("收支方向")
+    if any(keyword in text for keyword in BANK_FEE_KEYWORDS):
+        return "银行费用"
+    if any(keyword in text for keyword in LOAN_REPAYMENT_KEYWORDS):
+        return "贷款归还"
+    if any(keyword in text for keyword in LOAN_DISBURSEMENT_KEYWORDS):
+        return "贷款发放"
+    if any(keyword in text for keyword in INTEREST_EXPENSE_KEYWORDS):
+        return "利息支出"
+    if "利息" in text and direction == "入账" and "利息支付" not in text:
         return "利息收入"
-    for category, keywords in CATEGORY_RULES:
-        if any(keyword.lower() in text.lower() for keyword in keywords):
-            return category
+    if any(keyword in text for keyword in OPERATING_KEYWORDS):
+        return "经营入账" if direction == "入账" else ("经营出账" if direction == "出账" else "其他")
+    if any(keyword in text for keyword in CURRENT_ACCOUNT_KEYWORDS):
+        return "往来入账" if direction == "入账" else ("往来出账" if direction == "出账" else "其他")
+    if "借款" in text:
+        return "资金拆借"
     return "其他"
 
 
@@ -184,6 +201,115 @@ def _append_info(tx: dict[str, Any], value: str) -> None:
     value = _clean(value)
     if value and value not in str(tx.get("回单个性化信息") or ""):
         tx["回单个性化信息"] = "；".join(filter(None, (str(tx.get("回单个性化信息") or ""), value)))
+
+
+def _normalize_entity_name(value: Any) -> str:
+    text = str(value or "").replace("（", "(").replace("）", ")").replace("　", "")
+    text = re.sub(r"\s+", "", text)
+    text = text.replace("有限 公司", "有限公司")
+    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff()]", "", text).lower()
+
+
+def _clean_display_text(value: Any) -> str:
+    text = _clean(value)
+    if not text:
+        return ""
+    marker_pattern = "|".join(re.escape(marker) for marker in SENSITIVE_DISPLAY_MARKERS)
+    text = re.split(marker_pattern, text, maxsplit=1, flags=re.I)[0]
+    text = re.sub(r"(?:附言|处理种类|用途)\s*[:：]\s*", "", text)
+    return _clean(text).strip("：:；;,，")
+
+
+def _invalid_counterparty_reason(value: Any) -> str:
+    text = _clean(value)
+    compact = _normalize_entity_name(text)
+    if not text or text == "—":
+        return "对方单位为空"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return "对方单位为日期"
+    if text.startswith((":", "：")) or any(marker.lower() in text.lower() for marker in GARBAGE_COUNTERPARTY_MARKERS):
+        return "对方单位疑似回单说明或 OCR 垃圾字段"
+    if compact.isdigit():
+        return "对方单位为纯数字"
+    if len(compact) < 4:
+        return "对方单位过短"
+    return ""
+
+
+def _is_bank_internal_counterparty(value: Any) -> bool:
+    compact = _normalize_entity_name(value)
+    return any(keyword in compact for keyword in ("中国工商银行", "工商银行", "银行系统", "银行内部"))
+
+
+def _valid_transaction_datetime(value: Any, period_start: str, period_end: str) -> bool:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", text):
+        return False
+    try:
+        trade_time = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        start = datetime.strptime(period_start, "%Y-%m-%d") if period_start else None
+        end = datetime.strptime(period_end, "%Y-%m-%d") if period_end else None
+    except ValueError:
+        return False
+    if start and trade_time < start:
+        return False
+    if end and trade_time.date() > end.date():
+        return False
+    return True
+
+
+def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
+    account_name_normalized = _normalize_entity_name(result.get("account_name") or result.get("customer_name"))
+    period_start = str(result.get("period_start") or "")
+    period_end = str(result.get("period_end") or "")
+    for tx in result.get("transactions") or []:
+        counterparty = tx.get("对方单位") or tx.get("counterparty_name") or ""
+        normalized_counterparty = _normalize_entity_name(counterparty)
+        invalid_counterparty = _invalid_counterparty_reason(counterparty)
+        is_self = bool(account_name_normalized and normalized_counterparty == account_name_normalized)
+        is_valid_time = _valid_transaction_datetime(tx.get("交易时间") or tx.get("transaction_time"), period_start, period_end)
+        category = classify_transaction(tx)
+        raw_text = " ".join(str(tx.get(key) or "") for key in ("用途", "摘要", "备注", "回单个性化信息"))
+        is_bank_fee = category == "银行费用"
+        is_loan = category in {"贷款发放", "贷款归还", "资金拆借"}
+        is_interest = category in {"利息收入", "利息支出"} or "利息" in raw_text
+        is_bank_internal = _is_bank_internal_counterparty(counterparty)
+        is_ocr_anomaly = not is_valid_time or bool(invalid_counterparty and invalid_counterparty != "对方单位为空")
+
+        reasons: list[str] = []
+        if is_self:
+            reasons.append("本方户名与对方单位一致，疑似同主体账户划转")
+        if is_bank_fee:
+            reasons.append("银行手续费或账户服务费用")
+        if is_loan or is_interest:
+            reasons.append("贷款及利息相关交易")
+        if is_bank_internal:
+            reasons.append("银行系统内部交易对手")
+        if not is_valid_time:
+            reasons.append("交易时间无效或超出对账单时间范围")
+        elif invalid_counterparty:
+            reasons.append(invalid_counterparty)
+
+        tx["交易分类"] = category
+        tx["is_valid_transaction"] = is_valid_time
+        tx["is_self_transfer"] = is_self
+        tx["is_bank_fee"] = is_bank_fee
+        tx["is_loan_related"] = is_loan
+        tx["is_interest_related"] = is_interest
+        tx["is_ocr_anomaly"] = is_ocr_anomaly
+        tx["is_bank_internal_counterparty"] = is_bank_internal
+        tx["exclude_from_effective_flow"] = bool(reasons)
+        tx["exclude_reason"] = "；".join(dict.fromkeys(reasons))
+        tx["clean_counterparty_name"] = "" if invalid_counterparty else _clean(counterparty)
+        tx["clean_summary"] = _clean_display_text(tx.get("摘要") or tx.get("summary"))
+        tx["clean_purpose"] = _clean_display_text(tx.get("用途") or tx.get("purpose"))
+        tx["display_remark"] = _clean_display_text(tx.get("备注") or tx.get("remark"))
+        tx.update({
+            "category": category, "is_self_transfer": is_self,
+            "exclude_from_effective_flow": bool(reasons), "exclude_reason": tx["exclude_reason"],
+            "clean_counterparty_name": tx["clean_counterparty_name"], "clean_summary": tx["clean_summary"],
+            "clean_purpose": tx["clean_purpose"], "display_remark": tx["display_remark"],
+        })
 
 
 def _transactions_from_pages(raw_pages: list[dict[str, Any]], text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
@@ -295,64 +421,74 @@ def _transactions_from_pages(raw_pages: list[dict[str, Any]], text: str) -> tupl
 
 def _summary(result: dict[str, Any]) -> None:
     txs = result["transactions"]
-    recognized = [tx for tx in txs if tx.get("金额") is not None]
-    result["amount_recognition_status"] = "完整识别" if txs and len(recognized) == len(txs) else ("部分识别" if recognized else "未识别")
+    valid = [tx for tx in txs if tx.get("is_valid_transaction")]
+    effective = [tx for tx in valid if not tx.get("exclude_from_effective_flow")]
+    recognized = [tx for tx in valid if tx.get("金额") is not None]
+    result["amount_recognition_status"] = "完整识别" if valid and len(recognized) == len(valid) else ("部分识别" if recognized else "未识别")
     result["transaction_count"] = len(txs)
-    result["inflow_count"] = sum(tx.get("收支方向") == "入账" for tx in txs)
-    result["outflow_count"] = sum(tx.get("收支方向") == "出账" for tx in txs)
+    result["raw_transaction_count"] = len(txs)
+    result["valid_transaction_count"] = len(valid)
+    result["effective_transaction_count"] = len(effective)
+    result["self_transfer_count"] = sum(bool(tx.get("is_self_transfer")) for tx in valid)
+    result["bank_fee_count"] = sum(bool(tx.get("is_bank_fee")) for tx in valid)
+    result["loan_interest_count"] = sum(bool(tx.get("is_loan_related") or tx.get("is_interest_related")) for tx in valid)
+    result["ocr_anomaly_count"] = sum(bool(tx.get("is_ocr_anomaly")) for tx in txs)
+    result["inflow_count"] = sum(tx.get("收支方向") == "入账" for tx in valid)
+    result["outflow_count"] = sum(tx.get("收支方向") == "出账" for tx in valid)
+    result["effective_inflow_count"] = sum(tx.get("收支方向") == "入账" for tx in effective)
+    result["effective_outflow_count"] = sum(tx.get("收支方向") == "出账" for tx in effective)
     result["recognizable_inflow"] = sum((tx["金额"] for tx in recognized if tx.get("收支方向") == "入账"), Decimal("0"))
     result["recognizable_outflow"] = sum((tx["金额"] for tx in recognized if tx.get("收支方向") == "出账"), Decimal("0"))
-    transaction_dates = [str(tx.get("交易时间") or "")[:10] for tx in txs if str(tx.get("交易时间") or "")[:10]]
-    has_direction = any(tx.get("借贷标志") in {"借", "贷"} for tx in txs)
+    transaction_dates = [str(tx.get("交易时间") or "")[:10] for tx in valid]
+    has_direction = any(tx.get("借贷标志") in {"借", "贷"} for tx in valid)
     result["debit_count"] = result["outflow_count"] if has_direction else None
     result["credit_count"] = result["inflow_count"] if has_direction else None
-    result["debit_total_amount"] = result["recognizable_outflow"] if txs and len(recognized) == len(txs) and has_direction else None
-    result["credit_total_amount"] = result["recognizable_inflow"] if txs and len(recognized) == len(txs) and has_direction else None
+    result["debit_total_amount"] = result["recognizable_outflow"] if valid and len(recognized) == len(valid) and has_direction else None
+    result["credit_total_amount"] = result["recognizable_inflow"] if valid and len(recognized) == len(valid) and has_direction else None
     result["first_transaction_date"] = min(transaction_dates) if transaction_dates else ""
     result["last_transaction_date"] = max(transaction_dates) if transaction_dates else ""
     inflow_amounts = [tx["金额"] for tx in recognized if tx.get("收支方向") == "入账"]
     outflow_amounts = [tx["金额"] for tx in recognized if tx.get("收支方向") == "出账"]
     result["max_in_amount"] = max(inflow_amounts) if inflow_amounts else None
     result["max_out_amount"] = max(outflow_amounts) if outflow_amounts else None
-    monthly: dict[str, dict[str, Any]] = {}
-    if result.get("period_start") and result.get("period_end"):
-        cursor = datetime.strptime(result["period_start"][:7] + "-01", "%Y-%m-%d")
-        end = datetime.strptime(result["period_end"][:7] + "-01", "%Y-%m-%d")
-        while cursor <= end:
-            monthly[cursor.strftime("%Y-%m")] = {"month": cursor.strftime("%Y-%m"), "inflow_count": 0, "outflow_count": 0, "recognizable_inflow": Decimal("0"), "recognizable_outflow": Decimal("0"), "categories": Counter()}
-            cursor = datetime(cursor.year + (cursor.month == 12), 1 if cursor.month == 12 else cursor.month + 1, 1)
-    for tx in txs:
-        month = str(tx.get("交易时间") or "")[:7]
-        item = monthly.setdefault(month, {"month": month, "inflow_count": 0, "outflow_count": 0, "recognizable_inflow": Decimal("0"), "recognizable_outflow": Decimal("0"), "categories": Counter()})
-        direction = tx.get("收支方向")
-        if direction == "入账": item["inflow_count"] += 1
-        if direction == "出账": item["outflow_count"] += 1
-        if tx.get("金额") is not None and direction in {"入账", "出账"}:
-            item["recognizable_inflow" if direction == "入账" else "recognizable_outflow"] += tx["金额"]
-        item["categories"][tx.get("交易分类") or "其他"] += 1
-    result["monthly_summary"] = [{**item, "main_description": "、".join(name for name, _ in item.pop("categories").most_common(3))} for _, item in sorted(monthly.items()) if item["month"]]
-    categories = {name: {"category": name, "count": 0, "recognizable_amount": Decimal("0")} for name in ("经营收入", "往来款", "贷款发放", "贷款归还", "利息支出", "利息收入", "银行手续费", "资金拆借", "其他")}
-    counterparties: dict[tuple[str, str], dict[str, Any]] = {}
-    for tx in txs:
-        category = tx.get("交易分类") or "其他"
-        categories[category]["count"] += 1
-        if tx.get("金额") is not None:
-            categories[category]["recognizable_amount"] += tx["金额"]
-        name = _clean(tx.get("对方单位"))
-        if name:
-            key = (name, tx.get("收支方向") or "未识别")
-            item = counterparties.setdefault(key, {"counterparty": name, "direction": key[1], "count": 0, "recognizable_amount": Decimal("0"), "descriptions": Counter()})
+
+    def aggregate(items: list[dict[str, Any]], direction: str) -> list[dict[str, Any]]:
+        groups: dict[str, dict[str, Any]] = {}
+        for tx in items:
+            if tx.get("收支方向") != direction:
+                continue
+            name = str(tx.get("clean_counterparty_name") or "").strip()
+            if not name:
+                continue
+            item = groups.setdefault(name, {"counterparty": name, "count": 0, "recognizable_amount": Decimal("0"), "recognized_amount_count": 0, "descriptions": Counter()})
             item["count"] += 1
             if tx.get("金额") is not None:
                 item["recognizable_amount"] += tx["金额"]
-            desc = _clean(tx.get("摘要") or tx.get("用途"))
+                item["recognized_amount_count"] += 1
+            desc = tx.get("clean_purpose") or tx.get("clean_summary")
             if desc:
                 item["descriptions"][desc] += 1
-    result["category_summary"] = list(categories.values())
-    ranked = sorted(counterparties.values(), key=lambda item: (-item["count"], item["counterparty"]))
-    result["counterparty_summary"] = [{**item, "main_description": "、".join(name for name, _ in item.pop("descriptions").most_common(3))} for item in ranked]
-    result["loan_related_transactions"] = [tx for tx in txs if tx.get("交易分类") in {"贷款发放", "贷款归还", "利息支出"} or any(key in " ".join(str(tx.get(field) or "") for field in ("摘要", "备注", "回单个性化信息")) for key in ("借据编号", "贷款账号", "贷款帐号"))]
-    result["fee_interest_transactions"] = [tx for tx in txs if tx.get("交易分类") in {"银行手续费", "利息支出", "利息收入"}]
+        ranked = sorted(groups.values(), key=lambda item: (-item["count"], -item["recognizable_amount"], item["counterparty"]))
+        return [{**item, "main_description": "、".join(name for name, _ in item.pop("descriptions").most_common(3))} for item in ranked]
+
+    result["effective_transactions"] = effective
+    result["effective_inflow_counterparties"] = aggregate(effective, "入账")
+    result["effective_outflow_counterparties"] = aggregate(effective, "出账")
+    result["counterparty_summary"] = result["effective_inflow_counterparties"] + result["effective_outflow_counterparties"]
+    category_names = ("经营入账", "经营出账", "往来入账", "往来出账", "贷款发放", "贷款归还", "利息收入", "利息支出", "银行费用", "资金拆借", "其他")
+    result["category_summary"] = [
+        {"category": name, "count": sum(tx.get("交易分类") == name for tx in valid), "recognizable_amount": sum((tx["金额"] for tx in recognized if tx.get("交易分类") == name), Decimal("0"))}
+        for name in category_names
+    ]
+    result["loan_related_transactions"] = [tx for tx in valid if tx.get("is_loan_related") or tx.get("is_interest_related")]
+    result["fee_interest_transactions"] = [tx for tx in valid if tx.get("is_bank_fee") or tx.get("is_interest_related")]
+    result["focus_transactions"] = sorted(effective + result["loan_related_transactions"], key=lambda tx: str(tx.get("交易时间") or ""))
+    result["exclusion_summary"] = [
+        {"type": "本方同名划转", "count": result["self_transfer_count"], "description": "本方户名与对方单位一致，疑似同主体账户划转"},
+        {"type": "银行手续费", "count": result["bank_fee_count"], "description": "手续费、年费、工本费、协议费等"},
+        {"type": "贷款及利息", "count": result["loan_interest_count"], "description": "贷款发放、贷款归还、贷款利息支付、利息收入"},
+        {"type": "OCR异常行", "count": result["ocr_anomaly_count"], "description": "无效日期或说明字段被误识别为交易记录、交易对手"},
+    ]
 
 
 def _cell(value: Any) -> str:
@@ -375,64 +511,55 @@ def _json_safe(value: Any) -> Any:
 
 def render_bank_statement_markdown(result: dict[str, Any]) -> str:
     lines = [
-        "## 银行对账单", "",
-        "- 资料类型：银行对账单", f"- 来源文件：{_cell(result.get('source_file'))}",
-        "- 原件状态：可查看", f"- 提取状态：{result.get('extraction_status', '成功')}", "",
-        "### 账户信息",
-        f"- 客户名称：{_display(result.get('account_name'))}",
-        f"- 开户行：{_display(result.get('opening_bank'))}",
-        f"- 账号：{_display(result.get('account_no'))}",
-        f"- 银行名称：{_display(result.get('bank_name'))}",
-        f"- 对账单标题：{_display(result.get('statement_title'))}",
-        f"- 币种：{_display(result.get('currency'))}",
-        f"- 单位：{_display(result.get('unit'))}",
-        f"- 时间范围：{_display(result.get('period_text'))}",
-        f"- 页数：{result.get('page_count', 0)}页",
-        f"- 金额识别状态：{_display(result.get('amount_recognition_status'))}", "",
-        "### 汇总信息",
-        f"- 借方总金额：{_money(result.get('debit_total_amount'))}",
-        f"- 贷方总金额：{_money(result.get('credit_total_amount'))}",
-        f"- 借方总笔数：{_display(result.get('debit_count'))}",
-        f"- 贷方总笔数：{_display(result.get('credit_count'))}",
-        f"- 总笔数：{result.get('transaction_count', 0)}", "",
-        "### 交易明细摘要",
-        f"- 交易明细总数：{len(result.get('transactions') or [])}",
-        f"- 首笔交易日期：{_display(result.get('first_transaction_date'))}",
-        f"- 末笔交易日期：{_display(result.get('last_transaction_date'))}",
-        f"- 最大入账金额：{_money(result.get('max_in_amount'))}",
-        f"- 最大出账金额：{_money(result.get('max_out_amount'))}", "",
-        "### 账户流水概览",
-        f"- 入账笔数：{_display(result.get('credit_count'))}", f"- 出账笔数：{_display(result.get('debit_count'))}",
+        "## 银行对账单", "", "- 资料类型：银行对账单",
+        f"- 来源文件：{_cell(result.get('source_file'))}", "- 原件状态：可查看",
+        f"- 提取状态：{result.get('extraction_status', '成功')}", "", "### 账户信息",
+        f"- 客户名称：{_display(result.get('account_name'))}", f"- 开户行：{_display(result.get('opening_bank'))}",
+        f"- 账号：{_display(result.get('account_no'))}", f"- 银行名称：{_display(result.get('bank_name'))}",
+        f"- 对账单标题：{_display(result.get('statement_title'))}", f"- 币种：{_display(result.get('currency'))}",
+        f"- 单位：{_display(result.get('unit'))}", f"- 时间范围：{_display(result.get('period_text'))}",
+        f"- 页数：{result.get('page_count', 0)}页", f"- 金额识别状态：{_display(result.get('amount_recognition_status'))}",
+        "", "### 流水分析摘要",
+        f"- 原始交易笔数：{result.get('raw_transaction_count', 0)}",
+        f"- 有效交易笔数：{result.get('effective_transaction_count', 0)}",
+        f"- 本方同名划转笔数：{result.get('self_transfer_count', 0)}",
+        "- 本方同名划转说明：本方户名与对方单位一致的交易已从经营流水分析中剔除",
+        f"- 有效入账笔数：{result.get('effective_inflow_count', 0)}",
+        f"- 有效出账笔数：{result.get('effective_outflow_count', 0)}",
+        f"- 银行费用笔数：{result.get('bank_fee_count', 0)}",
+        f"- 贷款/利息相关笔数：{result.get('loan_interest_count', 0)}",
     ]
-    if result.get("amount_recognition_status") == "完整识别":
-        inflow, outflow = result["recognizable_inflow"], result["recognizable_outflow"]
-        lines += [f"- 总入账金额：{_money(inflow)}", f"- 总出账金额：{_money(outflow)}", f"- 净流入：{_money(inflow - outflow)}"]
-    else:
-        lines.append("- 金额识别说明：本对账单主表未稳定识别到完整交易金额列，仅从明确金额字段或回单个性化信息中提取部分金额，因此不生成完整收入、支出和净流入统计。")
-    inflow_categories = [item["category"] for item in result["category_summary"] if item["count"] and item["category"] in {"经营收入", "往来款", "贷款发放", "利息收入", "资金拆借", "其他"}]
-    outflow_categories = [item["category"] for item in result["category_summary"] if item["count"] and item["category"] in {"往来款", "贷款归还", "利息支出", "银行手续费", "资金拆借", "其他"}]
-    lines += [f"- 主要入账类型：{'、'.join(inflow_categories) or '未识别'}", f"- 主要出账类型：{'、'.join(outflow_categories) or '未识别'}", "", "### 月度汇总", "| 月份 | 入账笔数 | 出账笔数 | 可识别入账金额 | 可识别出账金额 | 主要交易说明 |", "|---|---:|---:|---:|---:|---|"]
-    for item in result["monthly_summary"]:
-        lines.append(f"| {_cell(item['month'])} | {item['inflow_count']} | {item['outflow_count']} | {_money(item['recognizable_inflow'])} | {_money(item['recognizable_outflow'])} | {_cell(item['main_description'])} |")
-    lines += ["", "### 交易分类汇总", "| 分类 | 笔数 | 可识别金额 | 说明 |", "|---|---:|---:|---|"]
-    for item in result["category_summary"]:
-        lines.append(f"| {item['category']} | {item['count']} | {_money(item['recognizable_amount'])} | 仅汇总明确识别金额 |")
-    lines += ["", "### 主要交易对手", "| 排名 | 对方单位 | 交易方向 | 笔数 | 可识别金额 | 主要摘要/用途 |", "|---:|---|---|---:|---:|---|"]
-    for index, item in enumerate(result["counterparty_summary"], start=1):
-        lines.append(f"| {index} | {_cell(item['counterparty'])} | {_cell(item['direction'])} | {item['count']} | {_money(item['recognizable_amount'])} | {_cell(item['main_description'])} |")
-    lines += ["", "### 交易明细", "| 序号 | 交易时间 | 借贷标志 | 收支方向 | 对方账号 | 对方单位 | 用途 | 摘要 | 备注 | 金额 | 分类 |", "|---:|---|---|---|---|---|---|---|---|---:|---|"]
-    for tx in result["transactions"]:
-        lines.append("| " + " | ".join((_cell(tx.get("序号")), _cell(tx.get("交易时间")), _cell(tx.get("借贷标志")), _cell(tx.get("收支方向")), _cell(tx.get("对方账号")), _cell(tx.get("对方单位")), _cell(tx.get("用途")), _cell(tx.get("摘要")), _cell(tx.get("备注")), _money(tx.get("金额")), _cell(tx.get("交易分类")))) + " |")
-    lines += ["", "### 贷款及融资相关交易", "| 交易时间 | 收支方向 | 摘要 | 备注 | 回单个性化信息 | 金额 |", "|---|---|---|---|---|---:|"]
-    for tx in result["loan_related_transactions"]:
-        lines.append(f"| {_cell(tx.get('交易时间'))} | {_cell(tx.get('收支方向'))} | {_cell(tx.get('摘要'))} | {_cell(tx.get('备注'))} | {_cell(tx.get('回单个性化信息'))} | {_money(tx.get('金额'))} |")
-    lines += ["", "### 银行费用及利息", "| 交易时间 | 类型 | 摘要 | 实收金额 | 回单个性化信息 |", "|---|---|---|---:|---|"]
-    for tx in result["fee_interest_transactions"]:
-        lines.append(f"| {_cell(tx.get('交易时间'))} | {_cell(tx.get('交易分类'))} | {_cell(tx.get('摘要'))} | {_money(tx.get('金额'))} | {_cell(tx.get('回单个性化信息'))} |")
-    lines += ["", "### 风险提示"] + [f"- {item}" for item in result["risk_tips"]]
-    if result["manual_review_items"]:
+    if result.get("amount_recognition_status") != "完整识别":
+        lines.append("- 金额识别说明：当前 PDF 主表金额列未完整识别，仅保留明确识别金额，不进行完整收入、支出和净流入测算")
+    lines += ["", "### 有效经营入账分析", "| 排名 | 入账方名称 | 笔数 | 可识别金额 | 主要用途/摘要 |", "|---:|---|---:|---:|---|"]
+    for index, item in enumerate(result.get("effective_inflow_counterparties") or [], start=1):
+        amount = _money(item.get("recognizable_amount")) if item.get("recognized_amount_count") else "未识别"
+        lines.append(f"| {index} | {_cell(item.get('counterparty'))} | {item.get('count', 0)} | {amount} | {_cell(item.get('main_description'))} |")
+    lines += ["", "### 有效经营出账分析", "| 排名 | 出账方名称 | 笔数 | 可识别金额 | 主要用途/摘要 |", "|---:|---|---:|---:|---|"]
+    for index, item in enumerate(result.get("effective_outflow_counterparties") or [], start=1):
+        amount = _money(item.get("recognizable_amount")) if item.get("recognized_amount_count") else "未识别"
+        lines.append(f"| {index} | {_cell(item.get('counterparty'))} | {item.get('count', 0)} | {amount} | {_cell(item.get('main_description'))} |")
+    lines += ["", "### 剔除项汇总", "| 剔除类型 | 笔数 | 说明 |", "|---|---:|---|"]
+    for item in result.get("exclusion_summary") or []:
+        lines.append(f"| {_cell(item.get('type'))} | {item.get('count', 0)} | {_cell(item.get('description'))} |")
+    lines += ["", "### 贷款及融资相关交易", "| 交易时间 | 收支方向 | 对方单位 | 摘要 | 金额 | 说明 |", "|---|---|---|---|---:|---|"]
+    for tx in result.get("loan_related_transactions") or []:
+        lines.append(f"| {_cell(tx.get('交易时间'))} | {_cell(tx.get('收支方向'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_summary') or tx.get('clean_purpose'))} | {_money(tx.get('金额'))} | {_cell(tx.get('交易分类'))} |")
+    lines += ["", "### 银行费用及利息", "| 交易时间 | 类型 | 收支方向 | 金额 | 摘要 |", "|---|---|---|---:|---|"]
+    for tx in result.get("fee_interest_transactions") or []:
+        lines.append(f"| {_cell(tx.get('交易时间'))} | {_cell(tx.get('交易分类'))} | {_cell(tx.get('收支方向'))} | {_money(tx.get('金额'))} | {_cell(tx.get('clean_summary') or tx.get('clean_purpose') or tx.get('display_remark'))} |")
+    lines += ["", "### 重点交易明细", "| 序号 | 交易时间 | 收支方向 | 对方单位 | 用途 | 摘要 | 金额 | 分类 | 是否剔除 |", "|---:|---|---|---|---|---|---:|---|---|"]
+    for index, tx in enumerate(result.get("focus_transactions") or [], start=1):
+        exclusion = f"是，{tx.get('exclude_reason')}" if tx.get("exclude_from_effective_flow") else "否"
+        lines.append(f"| {index} | {_cell(tx.get('交易时间'))} | {_cell(tx.get('收支方向'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_purpose'))} | {_cell(tx.get('clean_summary'))} | {_money(tx.get('金额'))} | {_cell(tx.get('交易分类'))} | {_cell(exclusion)} |")
+    lines += ["", "### 风险提示"] + [f"- {item}" for item in result.get("risk_tips") or []]
+    if result.get("manual_review_items"):
         lines += ["", "### 需人工复核"] + [f"- {item}" for item in result["manual_review_items"]]
-    return "\n".join(lines).replace("None", "").replace("null", "").replace("undefined", "")
+    markdown = "\n".join(lines).replace("None", "").replace("null", "").replace("undefined", "")
+    # Defense in depth: internal receipt/evidence labels must never leak to display Markdown.
+    for marker in ("回单个性化信息", "指令编号", "支付交易序号", "报文种类", "提交人", "HQP928", "w191001"):
+        markdown = markdown.replace(marker, "")
+    return markdown
 
 
 class BankStatementSkill(BaseExtractionSkill):
@@ -484,6 +611,7 @@ class BankStatementSkill(BaseExtractionSkill):
             "page_count": len({int(item.get("page") or index) for index, item in enumerate(raw_pages, 1)}) or int(metadata.get("page_count") or 0),
             "transactions": transactions, "evidence": period_evidence + tx_evidence,
         }
+        _clean_and_mark_transactions(result)
         _summary(result)
         # Compatibility aliases for existing storage/profile readers. The canonical
         # fields above remain the single source of truth.
@@ -496,18 +624,22 @@ class BankStatementSkill(BaseExtractionSkill):
             "max_credit_amount": result["max_in_amount"], "max_debit_amount": result["max_out_amount"],
         })
         result["risk_tips"] = []
-        if any(tx["交易分类"] == "贷款发放" for tx in transactions): result["risk_tips"].append("存在银行贷款发放记录。")
-        if any(tx["交易分类"] == "贷款归还" for tx in transactions): result["risk_tips"].append("存在银行贷款归还记录。")
-        if sum(tx["交易分类"] == "往来款" for tx in transactions) > 1: result["risk_tips"].append("存在多笔往来款，建议结合交易对手和合同核验资金性质。")
-        if result["amount_recognition_status"] != "完整识别": result["risk_tips"].append("本文件金额字段识别不完整，暂不建议直接用于完整流水测算。")
-        if result["fee_interest_transactions"]: result["risk_tips"].append("存在银行手续费或贷款利息收支记录。")
-        if any(tx["交易分类"] == "资金拆借" for tx in transactions): result["risk_tips"].append("存在资金拆借相关交易，建议进一步核验借款主体和用途。")
+        if result["self_transfer_count"] >= 2:
+            result["risk_tips"].append("存在多笔本方同名账户划转，已从有效经营流水中剔除，建议结合其他账户流水核验资金闭环。")
+        if any(tx["交易分类"] in {"贷款归还", "利息支出"} for tx in result["loan_related_transactions"]):
+            result["risk_tips"].append("存在贷款归还或贷款利息支出记录。")
+        if result["amount_recognition_status"] != "完整识别":
+            result["risk_tips"].append("当前 PDF 主表金额列未完整识别，不建议直接用于完整流水测算。")
+        if result["effective_inflow_count"] < 3:
+            result["risk_tips"].append("有效经营入账需结合其他银行账户流水进一步核验。")
+        if any(tx["交易分类"] == "资金拆借" for tx in result["loan_related_transactions"]):
+            result["risk_tips"].append("存在资金拆借相关交易，建议进一步核验借款主体和用途。")
         if not result["risk_tips"]: result["risk_tips"].append("未从已识别内容中发现需要特别提示的事项。")
         result["manual_review_items"] = []
         if result["amount_recognition_status"] != "完整识别": result["manual_review_items"].append("金额列缺失或金额识别不完整。")
-        if transactions and sum(not tx.get("对方单位") for tx in transactions) / len(transactions) >= 0.3: result["manual_review_items"].append("对方单位为空较多。")
+        if transactions and sum(not tx.get("clean_counterparty_name") for tx in transactions) / len(transactions) >= 0.3: result["manual_review_items"].append("对方单位为空或被判定为无效值的交易较多。")
         if len(period_evidence) > 1: result["manual_review_items"].append("文件包含多个时间区间，已按同一账户合并，建议核对区间连续性。")
-        if any(tx["交易分类"] in {"贷款发放", "贷款归还", "资金拆借", "往来款"} for tx in transactions): result["manual_review_items"].append("存在贷款、借款或往来款交易，建议人工核验资金性质。")
+        if any(tx["交易分类"] in {"贷款发放", "贷款归还", "资金拆借", "往来入账", "往来出账"} for tx in transactions): result["manual_review_items"].append("存在贷款、借款或往来款交易，建议人工核验资金性质。")
         result["amount_column_detected"] = explicit_amount_column
         markdown = render_bank_statement_markdown(result)
         warnings = list(result["manual_review_items"])
