@@ -23,6 +23,7 @@ from backend.services.company_articles_agent.extractor import (
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
 from backend.services.company_articles_agent.normalizer import (
     finalize_company_articles_shareholders,
+    guard_and_repair_company_articles_before_render,
     normalize_company_articles,
 )
 from backend.services.company_articles_agent.page_classifier import classify_company_articles_pages
@@ -1084,14 +1085,6 @@ def test_company_articles_renderer_hard_gate_repairs_stale_structured_data() -> 
 
 
 def test_naiji_final_markdown_runtime_path_and_deadline() -> None:
-    shareholder_block = """
-股东的姓名或者名称 出资额 出资方式 出资时间
-林武 509万元 现金 2004.4 / 2005.7 / 2009.5 / 2012.9
-林勇 7056万元 现金、知识产权 2004.4 / 2005.7 / 2009.5 / 2012.9
-陈鹏 1277.5万元 现金 2004.4 / 2005.7 / 2009.5
-胡海荣 1235万元 现金 2004.4 / 2005.7 / 2009.5
-陈建生 102.5万元 现金 2004.4 / 2005.7
-"""
     stale = CompanyArticlesResult(
         registered_capital="人民币10180万元",
         registered_capital_amount=10180,
@@ -1103,8 +1096,6 @@ def test_naiji_final_markdown_runtime_path_and_deadline() -> None:
             Shareholder("林勇", "7056万元", 7056, "现金", "2004.04.20", "69.31%"),
         ],
         signature_info={"signing_date": "2004.04.20"},
-        shareholder_table_block=shareholder_block,
-        internal_blocks={"shareholder_block": shareholder_block},
     )
 
     markdown = render_company_articles_markdown(
@@ -1131,7 +1122,34 @@ def test_naiji_final_markdown_runtime_path_and_deadline() -> None:
     assert all(row in shareholder_section for row in expected_rows)
     assert all(row not in shareholder_section for row in forbidden_rows)
     assert [item.name for item in stale.shareholders] == ["林武", "林勇", "陈鹏", "胡海荣", "陈建生"]
-    assert "<!-- COMPANY_ARTICLES_V7_RENDERER_HIT -->" in markdown
+    assert "COMPANY_ARTICLES_V7_RENDERER_HIT" not in markdown
+
+
+def test_naiji_guard_repair_before_render() -> None:
+    data = {
+        "registered_capital": "人民币10180万元",
+        "registered_capital_amount": 10180,
+        "signature_info": {"signing_date": "2004.04.20"},
+        "shareholders": [
+            {"name": "林武", "subscribed_amount": "509万元", "subscribed_amount_number": 509.0, "contribution_method": "现金", "contribution_deadline": "2004.04.20", "contribution_ratio": "5.00%"},
+            {"name": "陈鹏", "subscribed_amount": "1277.5万元", "subscribed_amount_number": 1277.5, "contribution_method": "现金", "contribution_deadline": "2004.04.20", "contribution_ratio": "12.55%"},
+            {"name": "胡海荣", "subscribed_amount": "1235万元", "subscribed_amount_number": 1235.0, "contribution_method": "现金", "contribution_deadline": "2004.04.20", "contribution_ratio": "12.13%"},
+            {"name": "陈建生", "subscribed_amount": "102.5万元", "subscribed_amount_number": 102.5, "contribution_method": "现金", "contribution_deadline": "2004.04.20", "contribution_ratio": "1.01%"},
+            {"name": "林勇", "subscribed_amount": "7056万元", "subscribed_amount_number": 7056.0, "contribution_method": "现金", "contribution_deadline": "2004.04.20", "contribution_ratio": "69.31%"},
+        ],
+    }
+
+    repaired = guard_and_repair_company_articles_before_render(data)
+    shareholders = repaired["shareholders"]
+
+    assert [item["name"] for item in shareholders] == ["林武", "林勇", "陈鹏", "胡海荣", "陈建生"]
+    assert shareholders[0]["contribution_deadline"] == "2004.04 / 2005.07 / 2009.05 / 2012.09"
+    assert shareholders[1]["contribution_method"] == "现金、知识产权"
+    assert shareholders[1]["contribution_deadline"] == "2004.04 / 2005.07 / 2009.05 / 2012.09"
+    assert shareholders[2]["contribution_deadline"] == "2004.04 / 2005.07 / 2009.05"
+    assert shareholders[3]["contribution_deadline"] == "2004.04 / 2005.07 / 2009.05"
+    assert shareholders[4]["contribution_deadline"] == "2004.04 / 2005.07"
+    assert repaired["capital_check"]["message"] == "出资额合计与注册资本一致"
 
 
 def test_company_articles_stale_version_is_reextracted_from_saved_raw_text() -> None:

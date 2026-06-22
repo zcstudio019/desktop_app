@@ -4,7 +4,10 @@ import logging
 from typing import Any
 
 from .extractor import is_valid_renderable_shareholder_name
-from .normalizer import guard_and_repair_shareholders_before_render
+from .normalizer import (
+    guard_and_repair_company_articles_before_render,
+    guard_and_repair_shareholders_before_render,
+)
 from .schema import SCHEMA_VERSION
 from .schema import CompanyArticlesResult
 
@@ -27,6 +30,9 @@ def _capital_text(result: CompanyArticlesResult) -> str:
 
 
 def render_company_articles_markdown(result: CompanyArticlesResult, *, filename: str = "") -> str:
+    result = guard_and_repair_company_articles_before_render(result, filename=filename)
+    assert isinstance(result, CompanyArticlesResult)
+    result = guard_and_repair_shareholders_before_render(result)
     logger.info(
         "[CompanyArticles][FinalRenderer] using function=render_company_articles_markdown"
     )
@@ -47,7 +53,6 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             "[CompanyArticles][V7_RENDERER_HIT] filename=%s",
             filename or result.metadata.get("filename") or "",
         )
-    result = guard_and_repair_shareholders_before_render(result)
     signature = result.signature_info or {}
     capital_check = result.capital_check or {}
     governance = result.governance or {}
@@ -80,7 +85,6 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             f"{_value(deadline)} | {_value(ratio)} |"
         )
     shareholder_table = [
-        *(["<!-- COMPANY_ARTICLES_V7_RENDERER_HIT -->"] if is_naiji_runtime_trace else []),
         "### 股东及出资信息",
         "| 股东姓名/名称 | 出资额 | 出资方式 | 出资时间 | 出资比例 |",
         "|---|---:|---|---|---:|",
@@ -98,7 +102,7 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
         else:
             articles_range = f"第{articles_pages[0]}页"
         page_count_check = f"{page_count_check}；章程正文页：{articles_range}"
-    return "\n".join(
+    markdown = "\n".join(
         [
             "## 公司章程",
             "- 资料类型：公司章程",
@@ -157,3 +161,30 @@ def render_company_articles_markdown(result: CompanyArticlesResult, *, filename:
             f"- 需人工复核：{warnings}",
         ]
     )
+    names = {item.name for item in result.shareholders}
+    should_assert_naiji = (
+        "耐吉" in str(filename or result.metadata.get("filename") or "")
+        or "耐吉" in str(result.company_name or "")
+        or abs(float(result.registered_capital_amount or 0) - 10180.0) <= 0.01
+    ) and len(names.intersection({"林武", "林勇", "陈鹏", "胡海荣", "陈建生"})) >= 3
+    if should_assert_naiji:
+        required_rows = (
+            "| 林武 | 509万元 | 现金 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 5.00% |",
+            "| 林勇 | 7056万元 | 现金、知识产权 | 2004.04 / 2005.07 / 2009.05 / 2012.09 | 69.31% |",
+            "| 陈鹏 | 1277.5万元 | 现金 | 2004.04 / 2005.07 / 2009.05 | 12.55% |",
+            "| 胡海荣 | 1235万元 | 现金 | 2004.04 / 2005.07 / 2009.05 | 12.13% |",
+            "| 陈建生 | 102.5万元 | 现金 | 2004.04 / 2005.07 | 1.01% |",
+        )
+        forbidden_rows = tuple(
+            f"| {name} |" for name in NAIJI_FORBIDDEN_SIGNING_DATE_NAMES
+        )
+        assert all(row in markdown for row in required_rows), "Naiji shareholder repair missing from final Markdown"
+        assert not any(
+            line.startswith(prefix) and "2004.04.20" in line
+            for line in markdown.splitlines()
+            for prefix in forbidden_rows
+        ), "Naiji final Markdown still contains signing-date shareholder deadlines"
+    return markdown
+
+
+NAIJI_FORBIDDEN_SIGNING_DATE_NAMES = ("林武", "林勇", "陈鹏", "胡海荣", "陈建生")

@@ -1786,10 +1786,10 @@ async def _get_customer_detail_local(
                     markdown = _company_articles_display_markdown_from_payload(extracted_data)
                     logger.info(
                         "[CompanyArticles][CustomerDetail] endpoint=GET /api/customers/{record_id} "
-                        "record_id=%s extraction_version=%s markdown_source=display_markdown marker=%s",
+                        "record_id=%s extraction_version=%s markdown_source=display_markdown naiji_rows_repaired=%s",
                         record_id,
                         COMPANY_ARTICLES_SCHEMA_VERSION,
-                        "COMPANY_ARTICLES_V7_RENDERER_HIT" in markdown,
+                        "| 林勇 | 7056万元 | 现金、知识产权 |" in markdown,
                     )
                     all_fields["公司章程"] = {
                         "doc_type": "company_articles",
