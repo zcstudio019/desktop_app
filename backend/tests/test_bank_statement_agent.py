@@ -332,3 +332,31 @@ def test_shanghai_bank_date_anchor_fallback_for_whole_line_ocr_boxes():
     assert data["valid_transaction_count"] == 2
     assert [tx["direction"] for tx in data["transactions"]] == ["入账", "出账"]
     assert [tx["amount"] for tx in data["transactions"]] == [1234.56, 500.0]
+
+
+def test_shanghai_bank_forces_date_anchor_fallback_when_data_page_has_no_header():
+    def box(y0, text):
+        return {"x0": 10, "y0": y0, "x1": 830, "y1": y0 + 16, "text": text, "confidence": 0.9}
+
+    page1_boxes = [
+        box(10, "上海银行对账单"), box(30, "账号 03005029359"),
+        box(50, "客户名称 上海测试科技有限公司"), box(70, "开户网点 上海银行张江支行"),
+        box(180, "交易日期 摘要 借方发生额 贷方发生额 余额 对方账号 对方户名"),
+    ]
+    page2_boxes = [
+        box(100, "2025-04-08 工程款 0.00 1,234.56 9,999.00 880001001 上海客户甲有限公司"),
+        box(130, "04-09 材料款 500.00 0.00 9,499.00 880002002 上海供应商乙有限公司"),
+    ]
+    pages = [
+        {"page": 1, "text": "\n".join(item["text"] for item in page1_boxes), "text_boxes": page1_boxes, "page_width": 850, "page_height": 1000, "table_rows": [], "source": "ocr_with_locations"},
+        {"page": 2, "text": "\n".join(item["text"] for item in page2_boxes), "text_boxes": page2_boxes, "page_width": 850, "page_height": 1000, "table_rows": [], "source": "ocr_with_locations"},
+    ]
+    content = build_structured_extraction("\n".join(page["text"] for page in pages), "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
+    data = content["extracted_json"]
+    assert data["parse_diagnostics"]["coordinate_parse_valid_count"] == 0
+    assert data["parse_diagnostics"]["parser_path"] == "date_anchor_text_fallback"
+    assert data["parse_diagnostics"]["fallback_date_anchor_candidates"] == 2
+    assert data["parse_diagnostics"]["fallback_valid_transactions"] == 2
+    assert data["candidate_transaction_rows"] == 2
+    assert data["valid_transaction_count"] == 2
+    assert [tx["transaction_time"] for tx in data["transactions"]] == ["2025-04-08", "2025-04-09"]

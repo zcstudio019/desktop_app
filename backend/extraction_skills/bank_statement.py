@@ -436,7 +436,7 @@ def _amount_tokens(text: str) -> list[tuple[str, Decimal, int]]:
     return tokens
 
 
-def _text_fallback_fields(text: str, date_token: str, columns: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _text_fallback_fields(text: str, date_token: str, columns: list[dict[str, Any]] | None = None, own_account: str = "") -> dict[str, Any]:
     source = _clean(text)
     amounts = _amount_tokens(source)
     nonzero = [(raw, value, pos) for raw, value, pos in amounts if value != 0]
@@ -445,8 +445,10 @@ def _text_fallback_fields(text: str, date_token: str, columns: list[dict[str, An
     for raw, _value, _pos in amounts:
         scrubbed_for_accounts = scrubbed_for_accounts.replace(raw, " ")
     for match in re.finditer(r"(?<!\d)(\d{8,32})(?!\d)", scrubbed_for_accounts):
-        account_candidates.append(match.group(1))
-    company_matches = re.findall(r"[\u4e00-\u9fffA-Za-z0-9（）()]{2,80}(?:有限责任公司|有限公司|公司|商行|个体工商户|银行|支行|分行|营业部)", source)
+        candidate = match.group(1)
+        if candidate != str(own_account or "") and candidate not in account_candidates:
+            account_candidates.append(candidate)
+    company_matches = re.findall(r"[\u4e00-\u9fffA-Za-z0-9（）()]{1,80}(?:有限责任公司|有限公司|公司|商行|个体工商户|银行|支行|分行|营业部|合作社|经营部|中心|店)", source)
     counterparty_name = max(company_matches, key=len) if company_matches else ""
     amount = nonzero[0][1] if nonzero else None
     direction = "未识别"
@@ -458,6 +460,11 @@ def _text_fallback_fields(text: str, date_token: str, columns: list[dict[str, An
             amount, direction, flag = debit, "出账", "借"
         elif credit != 0 and debit == 0:
             amount, direction, flag = credit, "入账", "贷"
+    if direction == "未识别":
+        if re.search(r"(?:贷方|收入|收款)", source) and not re.search(r"(?:借方|支出|付款)", source):
+            direction, flag = "入账", "贷"
+        elif re.search(r"(?:借方|支出|付款)", source) and not re.search(r"(?:贷方|收入|收款)", source):
+            direction, flag = "出账", "借"
     cleaned = source.replace(date_token, " ")
     for raw, _value, _pos in amounts:
         cleaned = cleaned.replace(raw, " ")
@@ -468,6 +475,7 @@ def _text_fallback_fields(text: str, date_token: str, columns: list[dict[str, An
     summary = _clean(re.sub(r"\s+", " ", cleaned)).strip("|：:；;,，-")
     return {
         "amount": amount, "direction": direction, "flag": flag,
+        "amount_candidates": [value for _raw, value, _pos in nonzero],
         "counterparty_account": account_candidates[0] if account_candidates else "",
         "counterparty_name": counterparty_name, "summary": summary,
         "balance": amounts[-1][1] if len(amounts) >= 2 else None,
@@ -600,19 +608,136 @@ def _parse_shanghai_coordinate_table(
     return transactions, boxes, page_lines, detected_headers, candidate_artifacts, invalid_rows
 
 
+def parse_shanghai_bank_by_date_anchor(
+    page_lines: list[dict[str, Any]],
+    period_start: str,
+    period_end: str,
+    detected_headers: list[dict[str, Any]] | None = None,
+    own_account: str = "",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """Second-stage parser that cuts transaction blocks by valid dates, independent of columns."""
+    header_y_by_page = {
+        int(item.get("page") or 0): min(
+            float(item.get("header_y") or 0),
+            float(next((current.get("header_y") for current in detected_headers or [] if int(current.get("page") or 0) == int(item.get("page") or 0)), item.get("header_y") or 0)),
+        )
+        for item in detected_headers or []
+    }
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for line in page_lines:
+        page = int(line.get("page") or 0)
+        if page in header_y_by_page and float(line.get("y_center") or 0) <= header_y_by_page[page]:
+            continue
+        if any(marker in str(line.get("text") or "") for marker in SHANGHAI_FOOTER_MARKERS):
+            continue
+        if re.search(r"第\s*\d+\s*页|共\s*\d+\s*页", str(line.get("text") or "")):
+            continue
+        grouped[page].append(line)
+    transactions: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    invalid = 0
+    last_date: date | None = None
+    for page, lines in sorted(grouped.items()):
+        lines.sort(key=lambda item: (float(item.get("y_center") or 0), int(item.get("line_no") or 0)))
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            trade_date, date_token = _date_anchor_in_text(str(line.get("text") or ""), period_start, period_end, last_date)
+            if not trade_date:
+                index += 1
+                continue
+            last_date = trade_date
+            block = [str(line.get("text") or "")]
+            consumed = 0
+            for following in lines[index + 1:index + 6]:
+                next_date, _next_token = _date_anchor_in_text(str(following.get("text") or ""), period_start, period_end, last_date)
+                if next_date:
+                    break
+                if any(marker in str(following.get("text") or "") for marker in SHANGHAI_FOOTER_MARKERS):
+                    break
+                block.append(str(following.get("text") or ""))
+                consumed += 1
+            raw_line_text = _clean(" ".join(block))
+            fields = _text_fallback_fields(raw_line_text, date_token, own_account=own_account)
+            support = sum(bool(fields.get(key)) for key in ("amount", "summary", "counterparty_account", "counterparty_name", "balance"))
+            artifact = {
+                "page": page, "line_no": line.get("line_no"), "transaction_date": trade_date.isoformat(),
+                "raw_line_text": raw_line_text, "amount_candidates": fields.get("amount_candidates") or [],
+                "counterparty_account": fields.get("counterparty_account") or "",
+                "counterparty_name": fields.get("counterparty_name") or "", "summary": fields.get("summary") or "",
+                "direction": fields.get("direction") or "未识别",
+            }
+            if support < 1:
+                artifact["status"] = "invalid_no_transaction_fields"
+                invalid += 1
+                candidates.append(artifact)
+                index += max(1, consumed + 1)
+                continue
+            tx = _new_tx(page)
+            tx.update({
+                "交易时间": trade_date.isoformat(), "借贷标志": fields.get("flag") or "未识别",
+                "收支方向": fields.get("direction") or "未识别", "对方账号": fields.get("counterparty_account") or "",
+                "对方单位": fields.get("counterparty_name") or "", "摘要": fields.get("summary") or "",
+                "金额": fields.get("amount"), "余额": fields.get("balance"),
+                "金额来源": "上海银行日期锚点文本" if fields.get("amount") is not None else "",
+                "raw_line_text": raw_line_text, "amount_candidates": fields.get("amount_candidates") or [],
+            })
+            tx["交易分类"] = classify_transaction(tx)
+            transactions.append(tx)
+            artifact["status"] = "valid"
+            candidates.append(artifact)
+            index += max(1, consumed + 1)
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for tx in transactions:
+        key = (tx.get("交易时间"), tx.get("对方账号"), tx.get("对方单位"), tx.get("金额"), tx.get("摘要"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(tx)
+    return unique, candidates, invalid
+
+
 def parse_shanghai_bank_statement(
     raw_pages: list[dict[str, Any]],
     period_start: str,
     period_end: str,
+    own_account: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, dict[str, Any]]:
+    logger.info("[ShanghaiBankAdapter] detected_bank_format=shanghai_bank")
     logger.info("[ShanghaiBankAdapter] pages=%s", len({int(item.get('page') or index) for index, item in enumerate(raw_pages, 1)}))
     logger.info("[ShanghaiBankAdapter] raw_text_len=%s", sum(len(str(item.get("text") or "")) for item in raw_pages))
     coordinate_transactions, boxes, page_lines, detected_header_artifacts, candidate_artifacts, coordinate_invalid = _parse_shanghai_coordinate_table(raw_pages, period_start, period_end)
+    if not page_lines:
+        for page_item in raw_pages:
+            page_no = int(page_item.get("page") or 0)
+            for line_no, text_line in enumerate(str(page_item.get("text") or "").splitlines(), start=1):
+                if _clean(text_line):
+                    page_lines.append({"page": page_no, "line_no": line_no, "y_center": float(line_no * 20), "text": _clean(text_line), "boxes": []})
     logger.info("[ShanghaiBankAdapter] ocr_boxes_count=%s", len(boxes))
     for page_no in sorted({int(item.get("page") or 0) for item in raw_pages}):
         logger.info("[ShanghaiBankAdapter] page=%s lines_count=%s", page_no, sum(int(line.get("page") or 0) == page_no for line in page_lines))
     logger.info("[ShanghaiBankAdapter] detected_headers=%s", detected_header_artifacts)
-    if detected_header_artifacts:
+    logger.info("[ShanghaiBankAdapter] detected_headers_count=%s", len(detected_header_artifacts))
+    logger.info("[ShanghaiBankAdapter] coordinate_parse_valid_count=%s", len(coordinate_transactions))
+    fallback_transactions: list[dict[str, Any]] = []
+    fallback_candidates: list[dict[str, Any]] = []
+    fallback_invalid = 0
+    if not coordinate_transactions:
+        fallback_transactions, fallback_candidates, fallback_invalid = parse_shanghai_bank_by_date_anchor(
+            page_lines, period_start, period_end, detected_header_artifacts, own_account,
+        )
+        logger.info("[ShanghaiBankAdapter] fallback_date_anchor_candidates=%s", len(fallback_candidates))
+        logger.info("[ShanghaiBankAdapter] fallback_valid_transactions=%s", len(fallback_transactions))
+        logger.info("[ShanghaiBankAdapter] first_10_fallback_transactions=%s", fallback_candidates[:10])
+        if not fallback_candidates:
+            for line in page_lines[:50]:
+                logger.info("[ShanghaiBankAdapter] fallback_below_header_line page=%s line=%s text=%s", line.get("page"), line.get("line_no"), line.get("text"))
+        if fallback_transactions:
+            coordinate_transactions = fallback_transactions
+            candidate_artifacts = fallback_candidates
+            coordinate_invalid = fallback_invalid
+    if detected_header_artifacts or coordinate_transactions:
         deduplicated_transactions: list[dict[str, Any]] = []
         seen_transactions: set[tuple[Any, ...]] = set()
         for tx in coordinate_transactions:
@@ -626,10 +751,13 @@ def parse_shanghai_bank_statement(
         seen_candidates: set[tuple[Any, ...]] = set()
         for item in candidate_artifacts:
             cells = item.get("cells") or {}
-            key = (
-                item.get("page"), cells.get("transaction_date"), cells.get("debit_amount"), cells.get("credit_amount"),
-                cells.get("counterparty_account"), cells.get("counterparty_name"), cells.get("summary"), item.get("status"),
-            )
+            if cells:
+                key = (
+                    item.get("page"), cells.get("transaction_date"), cells.get("debit_amount"), cells.get("credit_amount"),
+                    cells.get("counterparty_account"), cells.get("counterparty_name"), cells.get("summary"), item.get("status"),
+                )
+            else:
+                key = (item.get("page"), item.get("transaction_date"), item.get("raw_line_text"), item.get("status"))
             if key in seen_candidates:
                 continue
             seen_candidates.add(key)
@@ -656,13 +784,17 @@ def parse_shanghai_bank_statement(
             "invalid_candidate_rows": coordinate_invalid,
             "raw_text_blocks_count": len(boxes),
             "page_lines_count": len(page_lines),
-            "parser_path": "coordinate_table",
+            "parser_path": "coordinate_table" if not fallback_transactions else "date_anchor_text_fallback",
+            "coordinate_parse_valid_count": 0 if fallback_transactions else len(coordinate_transactions),
+            "fallback_date_anchor_candidates": len(fallback_candidates),
+            "fallback_valid_transactions": len(fallback_transactions),
+            "first_10_fallback_transactions": fallback_candidates[:10],
         }
         _write_shanghai_debug_artifacts(raw_pages, boxes, page_lines, detected_header_artifacts, candidate_artifacts)
         logger.info("[ShanghaiBankAdapter] candidate_transaction_rows=%s", len(candidate_artifacts))
         logger.info("[ShanghaiBankAdapter] valid_transaction_count=%s", len(coordinate_transactions))
         logger.info("[ShanghaiBankAdapter] invalid_candidate_rows=%s", coordinate_invalid)
-        return coordinate_transactions, evidence, True, diagnostics
+        return coordinate_transactions, evidence, bool(any(tx.get("金额") is not None for tx in coordinate_transactions)), diagnostics
     transactions: list[dict[str, Any]] = []
     evidence: list[dict[str, Any]] = []
     header_names: set[str] = set()
@@ -1305,7 +1437,9 @@ class BankStatementSkill(BaseExtractionSkill):
         selected_period_source = str(period_evidence[0].get("source") or "unknown") if period_evidence else "missing"
         logger.info("[BankStatementSkill] selected_period=%s~%s source=%s", period_start or "未识别", period_end or "未识别", selected_period_source)
         if bank_format == BANK_FORMAT_SHANGHAI:
-            transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_shanghai_bank_statement(raw_pages, period_start, period_end)
+            transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_shanghai_bank_statement(
+                raw_pages, period_start, period_end, account_info.get("account_no") or "",
+            )
         elif bank_format == BANK_FORMAT_ICBC:
             transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_icbc_statement(raw_pages, source)
         else:
