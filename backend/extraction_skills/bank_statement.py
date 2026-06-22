@@ -295,8 +295,10 @@ def _normalize_trade_date(value: Any) -> str:
 
 
 SHANGHAI_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
-    "transaction_date": ("交易日期", "记账日期", "账务日期", "交易时间", "日期"),
-    "summary": ("交易摘要", "摘要", "用途", "备注"),
+    "transaction_date": ("交易日期", "记账日期", "账务日期", "日期"),
+    "transaction_time": ("交易时间", "时间"),
+    "purpose": ("交易用途", "用途"),
+    "summary": ("交易摘要", "摘要", "备注"),
     "debit_amount": ("借方发生额", "借方金额", "支出金额", "付款金额", "支出", "借方"),
     "credit_amount": ("贷方发生额", "贷方金额", "收入金额", "收款金额", "收入", "贷方"),
     "balance": ("账户余额", "余额"),
@@ -305,6 +307,10 @@ SHANGHAI_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "counterparty_bank": ("对方开户行", "对方行名", "对方银行", "开户行"),
 }
 SHANGHAI_FOOTER_MARKERS = ("本明细仅限", "重要提示", "若与实际交易不符", "文件下载后", "打印时间", "操作员", "复核", "合计", "小计")
+SHANGHAI_PAGE_BLOCK_HEADERS = (
+    "交易用途", "摘要", "对手名称", "对方名称", "对手账号", "对方账号", "余额",
+    "记账日期", "交易日期", "交易时间", "借方发生额", "贷方发生额",
+)
 
 
 def _page_lines_from_boxes(raw_pages: list[dict[str, Any]], tolerance: float = 8.0) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -429,11 +435,108 @@ def _date_anchor_in_text(text: str, period_start: str, period_end: str, last_dat
 
 def _amount_tokens(text: str) -> list[tuple[str, Decimal, int]]:
     tokens: list[tuple[str, Decimal, int]] = []
-    for match in re.finditer(r"(?<![\d-])(?:￥|¥)?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})(?:\s*元)?|(?<![\d-])(?:￥|¥)?\s*\d+\.\d{2}(?:\s*元)?", str(text or "")):
+    source = str(text or "")
+    for match in re.finditer(r"(?<![\d-])(?:￥|¥)?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})(?:\s*元)?|(?<![\d-])(?:￥|¥)?\s*\d+\.\d{2}(?:\s*元)?", source):
         amount = _decimal(match.group(0))
-        if amount is not None:
-            tokens.append((match.group(0), amount, match.start()))
+        if amount is None:
+            continue
+        raw = match.group(0).strip()
+        context = source[max(0, match.start() - 12):match.end() + 12]
+        plain = raw.replace("￥", "").replace("¥", "").replace("元", "").replace(" ", "").replace(",", "")
+        month_day_like = bool(re.fullmatch(r"\d{1,2}\.\d{1,2}", plain)) and 1 <= int(plain.split(".")[0]) <= 12 and 1 <= int(plain.split(".")[1]) <= 31
+        date_context = bool(re.search(r"(?:月|日|租房|公寓|日期|20\d{2}[./年-])", context))
+        # Text fallback is deliberately conservative: M.DD fragments are dates/remarks,
+        # never authoritative transaction amounts. Explicit debit/credit columns bypass this.
+        if month_day_like or date_context:
+            continue
+        tokens.append((match.group(0), amount, match.start()))
     return tokens
+
+
+def _column_block_field(line: str) -> str:
+    compact = re.sub(r"[\s:：|]+", "", str(line or ""))
+    for field, aliases in SHANGHAI_HEADER_ALIASES.items():
+        for alias in sorted(aliases, key=len, reverse=True):
+            if compact == re.sub(r"\s+", "", alias):
+                return field
+    return ""
+
+
+def parse_shanghai_bank_column_blocks(
+    page_text: str, page_no: int, period_start: str, period_end: str, own_account: str = "",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """Restore pages whose PDF extraction serializes each table column top-to-bottom."""
+    lines = [_clean(line) for line in str(page_text or "").splitlines() if _clean(line)]
+    header_positions = [(index, _column_block_field(line)) for index, line in enumerate(lines)]
+    header_positions = [(index, field) for index, field in header_positions if field]
+    fields_found = {field for _index, field in header_positions}
+    if "transaction_date" not in fields_found or len(fields_found) < 3:
+        return [], [], 0
+
+    columns: dict[str, list[str]] = defaultdict(list)
+    for pos, (start, field) in enumerate(header_positions):
+        end = header_positions[pos + 1][0] if pos + 1 < len(header_positions) else len(lines)
+        values = []
+        for value in lines[start + 1:end]:
+            if _column_block_field(value) or any(marker in value for marker in SHANGHAI_FOOTER_MARKERS):
+                continue
+            if re.search(r"第\s*\d+\s*页|共\s*\d+\s*页", value):
+                continue
+            values.append(value)
+        if len(values) > len(columns[field]):
+            columns[field] = values
+
+    date_values = columns.get("transaction_date") or []
+    transactions: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    invalid = 0
+    last_date: date | None = None
+    for index, date_value in enumerate(date_values):
+        trade_date = _short_date_with_period(date_value, period_start, period_end, last_date)
+        row = {field: values[index] if index < len(values) else "" for field, values in columns.items()}
+        artifact = {"page": page_no, "row_index": index + 1, "cells": row, "status": "candidate"}
+        if not trade_date:
+            artifact["status"] = "invalid_date"
+            artifacts.append(artifact)
+            invalid += 1
+            continue
+        last_date = trade_date
+        debit = _positive_amount(row.get("debit_amount"))
+        credit = _positive_amount(row.get("credit_amount"))
+        balance = _positive_amount(row.get("balance"))
+        if debit is not None and credit is None:
+            direction, flag, amount = "出账", "借", debit
+        elif credit is not None and debit is None:
+            direction, flag, amount = "入账", "贷", credit
+        elif debit is not None and credit is not None:
+            direction, flag, amount = "未识别", "未识别", None
+            artifact["manual_review"] = "借贷金额列同时非零"
+        else:
+            direction, flag, amount = "未识别", "未识别", None
+        support = sum(bool(row.get(field)) for field in ("purpose", "summary", "counterparty_account", "counterparty_name")) + int(amount is not None) + int(balance is not None)
+        if support < 1:
+            artifact["status"] = "invalid_no_transaction_fields"
+            artifacts.append(artifact)
+            invalid += 1
+            continue
+        raw_row = " ".join(str(row.get(field) or "") for field in (
+            "transaction_date", "transaction_time", "purpose", "summary", "counterparty_account", "counterparty_name",
+            "debit_amount", "credit_amount", "balance",
+        ))
+        tx = _new_tx(page_no)
+        tx.update({
+            "交易时间": trade_date.isoformat(), "借贷标志": flag, "收支方向": direction,
+            "用途": row.get("purpose") or "", "摘要": row.get("summary") or "",
+            "对方账号": row.get("counterparty_account") or "", "对方单位": row.get("counterparty_name") or "",
+            "金额": amount, "余额": balance,
+            "金额来源": "上海银行列块借贷金额列" if amount is not None else "",
+            "raw_line_text": _clean(raw_row), "parser_source": "shanghai_column_block",
+        })
+        tx["交易分类"] = classify_transaction(tx)
+        transactions.append(tx)
+        artifact["status"] = "valid"
+        artifacts.append(artifact)
+    return transactions, artifacts, invalid
 
 
 def _text_fallback_fields(text: str, date_token: str, columns: list[dict[str, Any]] | None = None, own_account: str = "") -> dict[str, Any]:
@@ -720,6 +823,26 @@ def parse_shanghai_bank_statement(
     logger.info("[ShanghaiBankAdapter] detected_headers=%s", detected_header_artifacts)
     logger.info("[ShanghaiBankAdapter] detected_headers_count=%s", len(detected_header_artifacts))
     logger.info("[ShanghaiBankAdapter] coordinate_parse_valid_count=%s", len(coordinate_transactions))
+    column_transactions: list[dict[str, Any]] = []
+    column_candidates: list[dict[str, Any]] = []
+    column_invalid = 0
+    for page_item in raw_pages:
+        page_transactions, page_candidates, page_invalid = parse_shanghai_bank_column_blocks(
+            str(page_item.get("text") or ""), int(page_item.get("page") or 0), period_start, period_end, own_account,
+        )
+        column_transactions.extend(page_transactions)
+        column_candidates.extend(page_candidates)
+        column_invalid += page_invalid
+    logger.info("[ShanghaiBankAdapter] column_block_candidates=%s", len(column_candidates))
+    logger.info("[ShanghaiBankAdapter] column_block_valid_count=%s", len(column_transactions))
+    parser_path = "coordinate_table"
+    # A recovered column block is structurally safer than rows assembled from a
+    # page-wide date anchor, so prefer it whenever it produced real rows.
+    if column_transactions:
+        coordinate_transactions = column_transactions
+        candidate_artifacts = column_candidates
+        coordinate_invalid = column_invalid
+        parser_path = "column_block"
     fallback_transactions: list[dict[str, Any]] = []
     fallback_candidates: list[dict[str, Any]] = []
     fallback_invalid = 0
@@ -737,6 +860,7 @@ def parse_shanghai_bank_statement(
             coordinate_transactions = fallback_transactions
             candidate_artifacts = fallback_candidates
             coordinate_invalid = fallback_invalid
+            parser_path = "date_anchor_text_fallback"
     if detected_header_artifacts or coordinate_transactions:
         deduplicated_transactions: list[dict[str, Any]] = []
         seen_transactions: set[tuple[Any, ...]] = set()
@@ -784,7 +908,9 @@ def parse_shanghai_bank_statement(
             "invalid_candidate_rows": coordinate_invalid,
             "raw_text_blocks_count": len(boxes),
             "page_lines_count": len(page_lines),
-            "parser_path": "coordinate_table" if not fallback_transactions else "date_anchor_text_fallback",
+            "parser_path": parser_path,
+            "column_block_candidates": len(column_candidates),
+            "column_block_valid_count": len(column_transactions),
             "coordinate_parse_valid_count": 0 if fallback_transactions else len(coordinate_transactions),
             "fallback_date_anchor_candidates": len(fallback_candidates),
             "fallback_valid_transactions": len(fallback_transactions),
@@ -995,8 +1121,18 @@ def _clean_display_text(value: Any) -> str:
 def _invalid_counterparty_reason(value: Any) -> str:
     text = _clean(value)
     compact = _normalize_entity_name(text)
+    invalid_exact = {
+        "企业网上银行", "有限公司", "公司", "运营有限公司", "）有限公司", "对手名称", "对手账号",
+        "对方名称", "对方账号", "余额", "代发专用账户", "单位活期存款",
+    }
     if not text or text == "—":
         return "对方单位为空"
+    if compact in {_normalize_entity_name(item) for item in invalid_exact}:
+        return "对方单位为渠道、表头或不完整公司名称"
+    if len(compact) > 60:
+        return "对方单位疑似整页列块或多个名称拼接"
+    if len(re.findall(r"(?:有限责任公司|有限公司|公司)", compact)) > 1:
+        return "对方单位包含多个公司名称"
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
         return "对方单位为日期"
     if text.startswith((":", "：")) or any(marker.lower() in text.lower() for marker in GARBAGE_COUNTERPARTY_MARKERS):
@@ -1006,6 +1142,56 @@ def _invalid_counterparty_reason(value: Any) -> str:
     if len(compact) < 4:
         return "对方单位过短"
     return ""
+
+
+def _split_account_prefixed_counterparty(tx: dict[str, Any]) -> None:
+    value = _clean(tx.get("对方单位") or tx.get("counterparty_name"))
+    match = re.fullmatch(r"\s*(\d{8,32})\s*([\u4e00-\u9fff].{1,60})\s*", value)
+    if match:
+        if not (tx.get("对方账号") or tx.get("counterparty_account")):
+            tx["对方账号"] = match.group(1)
+            tx["counterparty_account"] = match.group(1)
+        tx["对方单位"] = _clean(match.group(2))
+        tx["counterparty_name"] = tx["对方单位"]
+    if _normalize_entity_name(tx.get("对方单位")) == _normalize_entity_name("企业网上银行"):
+        tx["channel"] = "企业网上银行"
+        tx["对方单位"] = ""
+        tx["counterparty_name"] = ""
+
+
+def _is_page_block_transaction(tx: dict[str, Any]) -> bool:
+    raw = " ".join(str(tx.get(key) or "") for key in ("raw_line_text", "用途", "摘要", "备注"))
+    header_hits = sum(marker in raw for marker in SHANGHAI_PAGE_BLOCK_HEADERS)
+    purpose = _clean(tx.get("用途") or tx.get("purpose"))
+    summary = _clean(tx.get("摘要") or tx.get("summary"))
+    counterparty = _clean(tx.get("对方单位") or tx.get("counterparty_name"))
+    return header_hits >= 2 or len(purpose) > 80 or len(summary) > 80 or len(counterparty) > 60
+
+
+def _infer_account_name_from_counterparties(result: dict[str, Any]) -> None:
+    if result.get("account_name") or result.get("bank_format") != BANK_FORMAT_SHANGHAI:
+        return
+    stats: dict[str, dict[str, Any]] = {}
+    for tx in result.get("transactions") or []:
+        _split_account_prefixed_counterparty(tx)
+        name = _clean(tx.get("对方单位") or tx.get("counterparty_name"))
+        if _invalid_counterparty_reason(name) or _is_page_block_transaction(tx):
+            continue
+        normalized = _normalize_entity_name(name)
+        if not normalized or not re.search(r"(?:有限责任公司|有限公司|公司)$", normalized):
+            continue
+        item = stats.setdefault(normalized, {"name": re.sub(r"[\s　]+", "", name), "count": 0, "directions": set()})
+        item["count"] += 1
+        direction = tx.get("收支方向") or tx.get("direction")
+        if direction in {"入账", "出账"}:
+            item["directions"].add(direction)
+    eligible = [item for item in stats.values() if item["count"] >= 2 and item["directions"] == {"入账", "出账"}]
+    if not eligible:
+        return
+    selected = max(eligible, key=lambda item: (item["count"], len(item["name"])))
+    result["account_name"] = selected["name"]
+    result["account_name_source"] = "high_frequency_counterparty_fallback"
+    result["account_name_needs_review"] = True
 
 
 def _is_bank_internal_counterparty(value: Any) -> bool:
@@ -1036,6 +1222,7 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
     period_start = str(result.get("period_start") or "")
     period_end = str(result.get("period_end") or "")
     for tx in result.get("transactions") or []:
+        _split_account_prefixed_counterparty(tx)
         counterparty = tx.get("对方单位") or tx.get("counterparty_name") or ""
         normalized_counterparty = _normalize_entity_name(counterparty)
         invalid_counterparty = _invalid_counterparty_reason(counterparty)
@@ -1050,7 +1237,8 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
         is_loan = category in {"贷款发放", "贷款归还", "资金拆借"}
         is_interest = category in {"利息收入", "利息支出"} or "利息" in raw_text
         is_bank_internal = _is_bank_internal_counterparty(counterparty)
-        is_ocr_anomaly = not is_valid_time or bool(invalid_counterparty and invalid_counterparty != "对方单位为空")
+        is_page_block = result.get("bank_format") == BANK_FORMAT_SHANGHAI and _is_page_block_transaction(tx)
+        is_ocr_anomaly = not is_valid_time or is_page_block or bool(invalid_counterparty and invalid_counterparty != "对方单位为空")
 
         reasons: list[str] = []
         if is_self:
@@ -1063,11 +1251,15 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
             reasons.append("银行系统内部交易对手")
         if not is_valid_time:
             reasons.append("交易时间无效或超出对账单时间范围")
+        elif is_page_block:
+            reasons.append("整页列块误合并为单条交易")
         elif invalid_counterparty:
             reasons.append(invalid_counterparty)
 
         tx["交易分类"] = category
-        tx["is_valid_transaction"] = is_valid_time
+        tx["is_valid_transaction"] = is_valid_time and not is_page_block
+        tx["is_page_block"] = is_page_block
+        tx["invalid_reason"] = "整页列块误合并为单条交易" if is_page_block else ""
         tx["is_self_transfer"] = is_self
         tx["is_bank_fee"] = is_bank_fee
         tx["is_loan_related"] = is_loan
@@ -1076,9 +1268,9 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
         tx["is_bank_internal_counterparty"] = is_bank_internal
         tx["exclude_from_effective_flow"] = bool(reasons)
         tx["exclude_reason"] = "；".join(dict.fromkeys(reasons))
-        tx["clean_counterparty_name"] = "" if invalid_counterparty else _clean(counterparty)
-        tx["clean_summary"] = _clean_display_text(tx.get("摘要") or tx.get("summary"))
-        tx["clean_purpose"] = _clean_display_text(tx.get("用途") or tx.get("purpose"))
+        tx["clean_counterparty_name"] = "" if invalid_counterparty or is_page_block else _clean(counterparty)[:40]
+        tx["clean_summary"] = "" if is_page_block else _clean_display_text(tx.get("摘要") or tx.get("summary"))[:40]
+        tx["clean_purpose"] = "" if is_page_block else _clean_display_text(tx.get("用途") or tx.get("purpose"))[:40]
         tx["display_remark"] = _clean_display_text(tx.get("备注") or tx.get("remark"))
         tx.update({
             "category": category, "is_self_transfer": is_self,
@@ -1354,6 +1546,13 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
             "- 建议处理：请检查表头字段映射或 OCR 表格恢复",
         ]
         return "\n".join(lines)
+    if result.get("bank_format") == BANK_FORMAT_SHANGHAI and (result.get("parse_diagnostics") or {}).get("parser_path") == "column_block":
+        lines += [
+            "", "### 解析质量提示",
+            "- 上海银行对账单采用列块恢复方式解析。",
+            "- 若单页交易被识别为整页块，已从有效流水中剔除。",
+            "- 客户名称、账号或开户行如仍未识别，建议结合原件首页复核。",
+        ]
     lines += [
         "", "### 有效经营入账方汇总",
         "- 说明：本表按入账方名称汇总展示，不是逐笔交易明细。",
@@ -1481,6 +1680,7 @@ class BankStatementSkill(BaseExtractionSkill):
             "transactions": transactions, "evidence": account_evidence + period_evidence + tx_evidence,
             "parse_diagnostics": parse_diagnostics, "text_recognized": bool(source.strip()),
         }
+        _infer_account_name_from_counterparties(result)
         _clean_and_mark_transactions(result)
         _summary(result)
         if bank_format == BANK_FORMAT_SHANGHAI:
@@ -1517,6 +1717,8 @@ class BankStatementSkill(BaseExtractionSkill):
         if transactions and sum(not tx.get("clean_counterparty_name") for tx in transactions) / len(transactions) >= 0.3: result["manual_review_items"].append("对方单位为空或被判定为无效值的交易较多。")
         if len(period_evidence) > 1: result["manual_review_items"].append("文件包含多个时间区间，已按同一账户合并，建议核对区间连续性。")
         if any(tx["交易分类"] in {"贷款发放", "贷款归还", "资金拆借", "往来入账", "往来出账"} for tx in transactions): result["manual_review_items"].append("存在贷款、借款或往来款交易，建议人工核验资金性质。")
+        if result.get("account_name_needs_review"):
+            result["manual_review_items"].append("客户名称由高频同名交易对手兜底识别，建议人工复核。")
         result["amount_column_detected"] = explicit_amount_column
         markdown = render_bank_statement_markdown(result)
         warnings = list(result["manual_review_items"])

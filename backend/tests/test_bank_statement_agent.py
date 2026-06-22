@@ -360,3 +360,86 @@ def test_shanghai_bank_forces_date_anchor_fallback_when_data_page_has_no_header(
     assert data["candidate_transaction_rows"] == 2
     assert data["valid_transaction_count"] == 2
     assert [tx["transaction_time"] for tx in data["transactions"]] == ["2025-04-08", "2025-04-09"]
+
+
+def test_shanghai_bank_column_blocks_are_zipped_into_individual_rows():
+    text = """上海银行对账单
+记账日期
+2025-04-08
+2025-04-09
+2025-04-10
+交易用途
+项目回款
+材料采购
+同户划转
+摘要
+工程款
+跨行转账
+往来款
+借方发生额
+0.00
+500.00
+200.00
+贷方发生额
+1,234.56
+0.00
+0.00
+余额
+9,999.00
+9,499.00
+9,299.00
+对手账号
+880001001
+31001515100050022023
+880003003
+对手名称
+上海客户甲有限公司
+31001515100050022023上海凤环实业有限公司
+上海意川建筑科技有限 公司
+"""
+    pages = [{"page": 1, "text": text, "table_rows": [], "source": "pdf_layout"}]
+    content = build_structured_extraction(text, "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
+    data = content["extracted_json"]
+    assert data["parse_diagnostics"]["parser_path"] == "column_block"
+    assert data["candidate_transaction_rows"] == 3
+    assert data["valid_transaction_count"] == 3
+    assert [tx["summary"] for tx in data["transactions"]] == ["工程款", "跨行转账", "往来款"]
+    assert data["transactions"][1]["counterparty_account"] == "31001515100050022023"
+    assert data["transactions"][1]["counterparty_name"] == "上海凤环实业有限公司"
+    assert all("交易用途" not in (tx.get("summary") or "") for tx in data["transactions"])
+
+
+def test_shanghai_bank_rejects_date_fragments_channels_and_page_blocks():
+    from backend.extraction_skills.bank_statement import _amount_tokens, _clean_and_mark_transactions
+
+    assert _amount_tokens("5.15日租房 6.15 公寓 2025.6.14") == []
+    result = {
+        "bank_format": "shanghai_bank", "account_name": "上海意川建筑科技有限公司",
+        "period_start": "2025-04-01", "period_end": "2026-03-31",
+        "transactions": [
+            {"交易时间": "2025-05-15", "对方单位": "企业网上银行", "摘要": "转账", "用途": "", "备注": ""},
+            {"交易时间": "2025-05-16", "对方单位": "上海客户有限公司", "摘要": "交易用途 报销 摘要 跨行转账 对手名称 上海客户有限公司 对手账号 123 余额", "用途": "", "备注": ""},
+        ],
+    }
+    _clean_and_mark_transactions(result)
+    assert result["transactions"][0]["clean_counterparty_name"] == ""
+    assert result["transactions"][0]["channel"] == "企业网上银行"
+    assert result["transactions"][1]["is_page_block"] is True
+    assert result["transactions"][1]["is_valid_transaction"] is False
+
+
+def test_shanghai_bank_infers_high_frequency_bidirectional_own_name():
+    from backend.extraction_skills.bank_statement import _infer_account_name_from_counterparties
+
+    result = {
+        "bank_format": "shanghai_bank", "account_name": "",
+        "transactions": [
+            {"对方单位": "上海意川建筑科技有限 公司", "收支方向": "入账"},
+            {"对方单位": "上海 意川 建筑 科技 有限公司", "收支方向": "出账"},
+            {"对方单位": "上海意川建筑科技有限公司", "收支方向": "入账"},
+            {"对方单位": "上海凤环实业有限公司", "收支方向": "出账"},
+        ],
+    }
+    _infer_account_name_from_counterparties(result)
+    assert result["account_name"] == "上海意川建筑科技有限公司"
+    assert result["account_name_source"] == "high_frequency_counterparty_fallback"
