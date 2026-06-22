@@ -213,9 +213,13 @@ def _account_header_text(raw_pages: list[dict[str, Any]], source: str) -> str:
 def _header_labeled_value(header: str, labels: tuple[str, ...]) -> str:
     expression = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
     match = re.search(rf"(?:{expression})\s*[:：]\s*([^\n\r|]{{1,100}})", header, re.I)
-    if not match:
-        return ""
-    value = match.group(1)
+    if match:
+        value = match.group(1)
+    else:
+        loose = re.search(rf"(?:{expression})\s*[:：]?\s+(?![:：])([^\n\r|]{{1,100}})", header, re.I)
+        if not loose:
+            return ""
+        value = loose.group(1)
     value = re.split(r"(?=(?:本方账号开户行|开户行名称|开户机构|开户网点|开户银行|开户行|本方账号户名|账号户名|账户名称|客户名称|单位名称|存款人名称|企业名称|户名|币种|单位|时间范围|对账期间)\s*[:：])", value, maxsplit=1)[0]
     return _clean(value)
 
@@ -383,11 +387,11 @@ def _short_date_with_period(value: Any, period_start: str, period_end: str, last
     parsed = parse_valid_date(str(value or "").strip())
     if parsed:
         return parsed
-    match = re.search(r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?!\d)", str(value or ""))
+    match = re.search(r"(?<!\d)(\d{1,2})(?:[./-](\d{1,2})|月(\d{1,2})日)(?!\d)", str(value or ""))
     start, end = parse_valid_date(period_start), parse_valid_date(period_end)
     if not match or not start or not end:
         return None
-    month, day = int(match.group(1)), int(match.group(2))
+    month, day = int(match.group(1)), int(match.group(2) or match.group(3))
     candidate_years = list(range(start.year, end.year + 1))
     candidates: list[date] = []
     for year in candidate_years:
@@ -404,6 +408,70 @@ def _short_date_with_period(value: Any, period_start: str, period_end: str, last
         if forward:
             return min(forward)
     return candidates[0]
+
+
+def _date_anchor_in_text(text: str, period_start: str, period_end: str, last_date: date | None = None) -> tuple[date | None, str]:
+    patterns = (
+        r"(?<!\d)(20\d{2}[./-]\d{1,2}[./-]\d{1,2})(?!\d)",
+        r"(?<!\d)(20\d{6})(?!\d)",
+        r"(?<!\d)(\d{1,2}[./-]\d{1,2})(?!\d)",
+        r"(?<!\d)(\d{1,2}月\d{1,2}日)(?!\d)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, str(text or ""))
+        if not match:
+            continue
+        parsed = _short_date_with_period(match.group(1), period_start, period_end, last_date)
+        if parsed:
+            return parsed, match.group(1)
+    return None, ""
+
+
+def _amount_tokens(text: str) -> list[tuple[str, Decimal, int]]:
+    tokens: list[tuple[str, Decimal, int]] = []
+    for match in re.finditer(r"(?<![\d-])(?:￥|¥)?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})(?:\s*元)?|(?<![\d-])(?:￥|¥)?\s*\d+\.\d{2}(?:\s*元)?", str(text or "")):
+        amount = _decimal(match.group(0))
+        if amount is not None:
+            tokens.append((match.group(0), amount, match.start()))
+    return tokens
+
+
+def _text_fallback_fields(text: str, date_token: str, columns: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    source = _clean(text)
+    amounts = _amount_tokens(source)
+    nonzero = [(raw, value, pos) for raw, value, pos in amounts if value != 0]
+    account_candidates = []
+    scrubbed_for_accounts = source.replace(date_token, " ")
+    for raw, _value, _pos in amounts:
+        scrubbed_for_accounts = scrubbed_for_accounts.replace(raw, " ")
+    for match in re.finditer(r"(?<!\d)(\d{8,32})(?!\d)", scrubbed_for_accounts):
+        account_candidates.append(match.group(1))
+    company_matches = re.findall(r"[\u4e00-\u9fffA-Za-z0-9（）()]{2,80}(?:有限责任公司|有限公司|公司|商行|个体工商户|银行|支行|分行|营业部)", source)
+    counterparty_name = max(company_matches, key=len) if company_matches else ""
+    amount = nonzero[0][1] if nonzero else None
+    direction = "未识别"
+    flag = "未识别"
+    # With the usual Shanghai-bank order, three amounts represent debit, credit and balance.
+    if len(amounts) >= 3:
+        debit, credit = amounts[0][1], amounts[1][1]
+        if debit != 0 and credit == 0:
+            amount, direction, flag = debit, "出账", "借"
+        elif credit != 0 and debit == 0:
+            amount, direction, flag = credit, "入账", "贷"
+    cleaned = source.replace(date_token, " ")
+    for raw, _value, _pos in amounts:
+        cleaned = cleaned.replace(raw, " ")
+    for account in account_candidates:
+        cleaned = cleaned.replace(account, " ")
+    if counterparty_name:
+        cleaned = cleaned.replace(counterparty_name, " ")
+    summary = _clean(re.sub(r"\s+", " ", cleaned)).strip("|：:；;,，-")
+    return {
+        "amount": amount, "direction": direction, "flag": flag,
+        "counterparty_account": account_candidates[0] if account_candidates else "",
+        "counterparty_name": counterparty_name, "summary": summary,
+        "balance": amounts[-1][1] if len(amounts) >= 2 else None,
+    }
 
 
 def _write_shanghai_debug_artifacts(
@@ -445,20 +513,31 @@ def _parse_shanghai_coordinate_table(
         last_tx: dict[str, Any] | None = None
         last_tx_y = 0.0
         page_width = float(pages_by_no.get(page_no, {}).get("page_width") or max((box["x1"] for line in lines for box in line.get("boxes") or []), default=1000))
-        for line in lines:
+        for line_index, line in enumerate(lines):
             matches = _header_matches(line)
             if len(matches) >= 3 and "transaction_date" in matches:
                 active_columns = _column_ranges(matches, page_width)
-                detected_headers.append({
+                header_artifact = {
                     "page": page_no, "header_line": line["text"], "matched_headers": sorted(matches),
                     "header_y": line["y_center"], "header_columns": active_columns,
-                })
+                    "header_boxes": [{key: box.get(key) for key in ("x0", "x1", "y0", "y1", "text")} for box in line.get("boxes") or []],
+                }
+                detected_headers.append(header_artifact)
+                logger.info("[ShanghaiBankAdapter] header_found page=%s y=%.2f text=%s", page_no, line["y_center"], line["text"])
+                logger.info("[ShanghaiBankAdapter] header_boxes=%s", header_artifact["header_boxes"])
+                for below in lines[line_index + 1:line_index + 31]:
+                    below_boxes = [{"x0": box.get("x0"), "x1": box.get("x1"), "text": box.get("text")} for box in below.get("boxes") or []]
+                    logger.info("[ShanghaiBankAdapter] below_header_line page=%s line=%s y=%.2f text=%s", page_no, below["line_no"], below["y_center"], below["text"])
+                    logger.info("[ShanghaiBankAdapter] below_header_boxes=%s", below_boxes)
                 last_tx = None
                 continue
             if not active_columns or any(marker in line["text"] for marker in SHANGHAI_FOOTER_MARKERS) or re.search(r"第\s*\d+\s*页|共\s*\d+\s*页", line["text"]):
                 continue
             cells = _cells_from_line(line, active_columns)
             trade_date = _short_date_with_period(cells.get("transaction_date"), period_start, period_end, last_date)
+            date_token = str(cells.get("transaction_date") or "")
+            if not trade_date:
+                trade_date, date_token = _date_anchor_in_text(line["text"], period_start, period_end, last_date)
             if not trade_date:
                 has_continuation = any(cells.get(field) for field in ("counterparty_account", "counterparty_name", "summary"))
                 has_amount = _positive_amount(cells.get("debit_amount")) is not None or _positive_amount(cells.get("credit_amount")) is not None
@@ -469,16 +548,30 @@ def _parse_shanghai_coordinate_table(
                         last_tx["对方单位"] = cells["counterparty_name"]
                     if cells.get("summary"):
                         last_tx["备注"] = _clean(" ".join(filter(None, (last_tx.get("备注"), cells["summary"]))))
+                    logger.info("[ShanghaiBankAdapter] line_merged page=%s line=%s reason=continuation_without_date", page_no, line["line_no"])
+                else:
+                    logger.info("[ShanghaiBankAdapter] line_rejected page=%s line=%s reason=no_valid_transaction_date text=%s", page_no, line["line_no"], line["text"])
                 continue
             last_date = trade_date
+            block_lines = [line["text"]]
+            for following in lines[line_index + 1:line_index + 4]:
+                next_date, _next_token = _date_anchor_in_text(following["text"], period_start, period_end, last_date)
+                if next_date or any(marker in following["text"] for marker in SHANGHAI_FOOTER_MARKERS):
+                    break
+                block_lines.append(following["text"])
+            fallback = _text_fallback_fields(" ".join(block_lines), date_token, active_columns)
+            cells["summary"] = cells.get("summary") or fallback["summary"]
+            cells["counterparty_account"] = cells.get("counterparty_account") or fallback["counterparty_account"]
+            cells["counterparty_name"] = cells.get("counterparty_name") or fallback["counterparty_name"]
             debit = _positive_amount(cells.get("debit_amount"))
             credit = _positive_amount(cells.get("credit_amount"))
             support = sum(bool(cells.get(field)) for field in ("summary", "counterparty_account", "counterparty_name")) + int(debit is not None) + int(credit is not None) + int(_positive_amount(cells.get("balance")) is not None)
             candidate = {"page": page_no, "line_no": line["line_no"], "y_center": line["y_center"], "text": line["text"], "cells": cells, "status": "candidate"}
-            if support < 2:
+            if support < 1 and fallback.get("amount") is None and fallback.get("balance") is None:
                 candidate["status"] = "invalid_support_fields"
                 invalid_rows += 1
                 candidate_artifacts.append(candidate)
+                logger.info("[ShanghaiBankAdapter] line_rejected page=%s line=%s reason=no_transaction_fields text=%s", page_no, line["line_no"], line["text"])
                 continue
             if debit is not None and credit is None:
                 direction, flag, amount = "出账", "借", debit
@@ -488,16 +581,16 @@ def _parse_shanghai_coordinate_table(
                 direction, flag, amount = ("出账", "借", debit) if debit >= credit else ("入账", "贷", credit)
                 candidate["manual_review"] = "借贷金额列同时非零"
             else:
-                candidate["status"] = "invalid_amount_columns"
-                invalid_rows += 1
-                candidate_artifacts.append(candidate)
-                continue
+                amount = fallback.get("amount")
+                direction = fallback.get("direction") or "未识别"
+                flag = fallback.get("flag") or "未识别"
             tx = _new_tx(page_no)
             tx.update({
                 "交易时间": trade_date.isoformat(), "借贷标志": flag, "收支方向": direction,
                 "对方账号": cells.get("counterparty_account") or "", "对方单位": cells.get("counterparty_name") or "",
                 "对方行号": cells.get("counterparty_bank") or "", "摘要": cells.get("summary") or "",
-                "金额": amount, "余额": _positive_amount(cells.get("balance")), "金额来源": "上海银行坐标借贷金额列",
+                "金额": amount, "余额": _positive_amount(cells.get("balance")) or fallback.get("balance"),
+                "金额来源": "上海银行坐标借贷金额列" if debit is not None or credit is not None else ("上海银行日期锚点文本" if amount is not None else ""),
             })
             tx["交易分类"] = classify_transaction(tx)
             transactions.append(tx)
@@ -601,6 +694,9 @@ def parse_shanghai_bank_statement(
             values = {field: cells[index] if index < len(cells) else "" for index, field in mapping.items()}
             trade_time = _normalize_trade_date(values.get("交易时间"))
             if not trade_time:
+                short_date = _short_date_with_period(values.get("交易时间"), period_start, period_end)
+                trade_time = short_date.isoformat() if short_date else ""
+            if not trade_time:
                 continue
             candidate_rows += 1
             trade_date = parse_valid_date(trade_time[:10])
@@ -620,10 +716,11 @@ def parse_shanghai_bank_statement(
                 direction = "出账" if flag == "借" else "入账"
                 amount = _positive_amount(values.get("金额"))
             else:
-                invalid_rows += 1
-                continue
+                direction, flag = "未识别", "未识别"
+                amount = _positive_amount(values.get("金额"))
             support = sum(bool(_clean(values.get(field))) for field in ("对方账号", "对方单位", "摘要", "用途")) + int(amount is not None)
-            if support < 2:
+            support += int(_positive_amount(values.get("余额")) is not None)
+            if support < 1:
                 invalid_rows += 1
                 continue
             tx = _new_tx(page_no)
@@ -1201,6 +1298,8 @@ class BankStatementSkill(BaseExtractionSkill):
         logger.info("[BankStatementSkill] detected_bank_format=%s", bank_format)
         account_info, account_evidence = _extract_account_info(raw_pages, source, bank_format)
         logger.info("[BankStatementSkill] account_info_candidates=%s", account_info)
+        if bank_format == BANK_FORMAT_SHANGHAI:
+            logger.info("[ShanghaiBankAdapter] first_page_header_text=%s", account_info.get("header_preview") or "未识别")
         period_evidence, period_start, period_end = _periods(raw_pages, source, input_data.file_name)
         logger.info("[BankStatementSkill] period_candidates=%s", period_evidence)
         selected_period_source = str(period_evidence[0].get("source") or "unknown") if period_evidence else "missing"

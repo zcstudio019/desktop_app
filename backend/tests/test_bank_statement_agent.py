@@ -305,3 +305,30 @@ def test_shanghai_bank_coordinate_header_and_column_recovery():
     assert [tx["direction"] for tx in data["transactions"]] == ["入账", "出账"]
     assert [tx["amount"] for tx in data["transactions"]] == [1234.56, 500.0]
     assert data["transactions"][1]["transaction_time"] == "2025-04-09"
+
+
+def test_shanghai_bank_date_anchor_fallback_for_whole_line_ocr_boxes():
+    def box(y0, text):
+        return {"x0": 10, "y0": y0, "x1": 830, "y1": y0 + 16, "text": text, "confidence": 0.9}
+
+    boxes = [
+        box(10, "上海银行对账单"), box(30, "账号"), box(50, "03005029359"),
+        box(70, "客户名称"), box(90, "上海测试科技有限公司"),
+        box(110, "开户网点"), box(130, "上海银行张江支行"),
+        box(180, "交易日期 摘要 借方发生额 贷方发生额 余额 对方账号 对方户名"),
+        box(210, "2025-04-08 工程款 0.00 1,234.56 9,999.00 880001001 上海客户甲有限公司"),
+        box(240, "04/09 材料款 500.00 0.00 9,499.00 880002002 上海供应商乙有限公司"),
+    ]
+    pages = [{
+        "page": 1, "text": "\n".join(item["text"] for item in boxes), "text_boxes": boxes,
+        "page_width": 850, "page_height": 1000, "table_rows": [], "source": "ocr_with_locations",
+    }]
+    content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
+    data = content["extracted_json"]
+    assert data["account_no"] == "03005029359"
+    assert data["account_name"] == "上海测试科技有限公司"
+    assert data["opening_bank"] == "上海银行张江支行"
+    assert data["candidate_transaction_rows"] == 2
+    assert data["valid_transaction_count"] == 2
+    assert [tx["direction"] for tx in data["transactions"]] == ["入账", "出账"]
+    assert [tx["amount"] for tx in data["transactions"]] == [1234.56, 500.0]
