@@ -85,11 +85,16 @@ class FileService:
                 text = page.get_text("text") or ""
                 grouped: dict[tuple[int, int], list[tuple[float, str]]] = {}
                 positioned_words: list[tuple[float, float, str]] = []
+                text_boxes: list[dict[str, Any]] = []
                 for word in page.get_text("words", sort=True) or []:
                     if len(word) < 8:
                         continue
                     grouped.setdefault((int(word[5]), int(word[6])), []).append((float(word[0]), str(word[4])))
                     positioned_words.append((float(word[1]), float(word[0]), str(word[4])))
+                    text_boxes.append({
+                        "x0": float(word[0]), "y0": float(word[1]), "x1": float(word[2]), "y1": float(word[3]),
+                        "text": str(word[4]), "confidence": 1.0, "source": "pdf_native_word",
+                    })
                 visual_rows = [
                     [token for _x, token in sorted(items, key=lambda pair: pair[0]) if token.strip()]
                     for _key, items in sorted(grouped.items())
@@ -126,6 +131,9 @@ class FileService:
                     # Structured cells preserve comparison columns such as 年初余额.
                     # Coordinate rows join values split into separate PDF text blocks.
                     "table_rows": structured_rows + [row for row in coordinate_rows if row] + [row for row in visual_rows if row],
+                    "text_boxes": text_boxes,
+                    "page_width": float(page.rect.width),
+                    "page_height": float(page.rect.height),
                     "source": "pdf_layout",
                 })
             doc.close()

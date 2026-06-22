@@ -65,3 +65,6 @@ data/users.json
 data/activity_log.json
 data/product_cache.json
 data/application_cache.json
+
+# Runtime bank-statement parser artifacts
+logs/bank_statement_debug/

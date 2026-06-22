@@ -205,6 +205,39 @@ class OCRService:
             if isinstance(e, (OCRQuotaError, OCRAPIError)):
                 raise
             raise OCRAPIError(f"OCR 识别失败: {str(e)}")
+
+    def recognize_image_with_locations(self, image_bytes: bytes) -> dict:
+        """Recognize text while preserving word/line coordinates for table recovery."""
+        if not BAIDU_OCR_API_KEY or not BAIDU_OCR_SECRET_KEY:
+            raise OCRConfigError("百度 OCR 配置不完整，请在配置文件中设置 API_KEY 和 SECRET_KEY")
+        if len(image_bytes) > 4 * 1024 * 1024:
+            raise OCRImageError("图片大小超过 4MB 限制，请先压缩图片后重试")
+        try:
+            result = self.client.basicAccurate(image_bytes, {"detect_direction": "true", "probability": "true"})
+            if "error_code" in result:
+                raise OCRAPIError(str(result.get("error_msg") or "OCR 识别失败"), result.get("error_code"))
+            boxes: list[dict] = []
+            lines: list[str] = []
+            for item in result.get("words_result") or []:
+                words = str(item.get("words") or "").strip()
+                location = item.get("location") or {}
+                if not words:
+                    continue
+                left = float(location.get("left") or 0)
+                top = float(location.get("top") or 0)
+                width = float(location.get("width") or 0)
+                height = float(location.get("height") or 0)
+                probability = item.get("probability") or {}
+                boxes.append({
+                    "x0": left, "y0": top, "x1": left + width, "y1": top + height,
+                    "text": words, "confidence": float(probability.get("average") or 0), "source": "baidu_ocr",
+                })
+                lines.append(words)
+            return {"text": "\n".join(lines), "boxes": boxes}
+        except (OCRConfigError, OCRImageError, OCRAPIError):
+            raise
+        except Exception as exc:
+            raise OCRAPIError(f"OCR 识别失败: {exc}") from exc
     
     def recognize_pdf(self, pdf_bytes: bytes) -> str:
         """识别 PDF 中的文字（需要先转图片）

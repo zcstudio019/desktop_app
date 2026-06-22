@@ -264,3 +264,44 @@ def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
     assert "### 解析诊断" in markdown
     assert "- 银行格式：上海银行" in markdown
     assert "### 有效经营入账方汇总" not in markdown
+
+
+def test_shanghai_bank_coordinate_header_and_column_recovery():
+    def box(x0, y0, x1, y1, text):
+        return {"x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": text, "confidence": 0.99}
+
+    boxes = [
+        box(10, 10, 220, 25, "上海银行对账单"),
+        box(10, 35, 220, 50, "账户号：03005029359"),
+        box(250, 35, 520, 50, "客户名称：上海测试科技有限公司"),
+        box(10, 60, 280, 75, "开户网点：上海银行张江支行"),
+        box(10, 100, 90, 118, "交易日期"), box(110, 100, 180, 118, "摘要"),
+        box(220, 100, 300, 118, "借方发生额"), box(330, 100, 410, 118, "贷方发生额"),
+        box(440, 100, 500, 118, "余额"), box(530, 100, 610, 118, "对方账号"),
+        box(650, 100, 740, 118, "对方户名"),
+        box(10, 130, 90, 148, "2025-04-08"), box(110, 130, 180, 148, "工程款"),
+        box(220, 130, 300, 148, "--"), box(330, 130, 410, 148, "1,234.56"),
+        box(440, 130, 500, 148, "9,999.00"), box(530, 130, 610, 148, "880001"),
+        box(650, 130, 800, 148, "上海客户甲有限公司"),
+        box(10, 160, 90, 178, "04-09"), box(110, 160, 180, 178, "材料款"),
+        box(220, 160, 300, 178, "500.00"), box(330, 160, 410, 178, "--"),
+        box(440, 160, 500, 178, "9,499.00"), box(530, 160, 610, 178, "880002"),
+        box(650, 160, 810, 178, "上海供应商乙有限公司"),
+    ]
+    pages = [{
+        "page": 1, "text": "上海银行对账单\n账户号：03005029359\n客户名称：上海测试科技有限公司\n开户网点：上海银行张江支行",
+        "text_boxes": boxes, "page_width": 850, "page_height": 1000, "table_rows": [], "source": "ocr_with_locations",
+    }]
+    content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
+    data = content["extracted_json"]
+    assert data["parse_diagnostics"]["parser_path"] == "coordinate_table"
+    assert data["parse_diagnostics"]["page_lines_count"] >= 6
+    assert data["candidate_transaction_rows"] == 2
+    assert data["valid_transaction_count"] == 2
+    assert data["ocr_abnormal_rows"] == 0
+    assert data["account_no"] == "03005029359"
+    assert data["account_name"] == "上海测试科技有限公司"
+    assert data["opening_bank"] == "上海银行张江支行"
+    assert [tx["direction"] for tx in data["transactions"]] == ["入账", "出账"]
+    assert [tx["amount"] for tx in data["transactions"]] == [1234.56, 500.0]
+    assert data["transactions"][1]["transaction_time"] == "2025-04-09"

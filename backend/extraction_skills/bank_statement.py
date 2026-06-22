@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import logging
 import calendar
+import csv
+import json
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -189,6 +191,20 @@ def _periods(raw_pages: list[dict[str, Any]], text: str, filename: str = "") -> 
 
 def _account_header_text(raw_pages: list[dict[str, Any]], source: str) -> str:
     first_pages = sorted((item for item in raw_pages if isinstance(item, dict)), key=lambda item: int(item.get("page") or 0))[:2]
+    if first_pages and first_pages[0].get("text_boxes"):
+        first_page = first_pages[0]
+        page_height = float(first_page.get("page_height") or max((float(box.get("y1") or 0) for box in first_page.get("text_boxes") or []), default=1))
+        for ratio in (0.25, 0.40):
+            selected = [box for box in first_page.get("text_boxes") or [] if float(box.get("y1") or 0) <= page_height * ratio]
+            if selected:
+                synthetic_page = {**first_page, "text_boxes": selected}
+                _boxes, lines = _page_lines_from_boxes([synthetic_page])
+                header_line_index = next((index for index, line in enumerate(lines) if len(_header_matches(line)) >= 3), None)
+                if header_line_index is not None:
+                    lines = lines[:header_line_index]
+                header_text = "\n".join(line["text"] for line in lines)
+                if ratio == 0.40 or re.search(r"(?:账号|账户号|客户名称|户名|开户行|开户网点)\s*[:：]", header_text):
+                    return header_text
     text = "\n".join(str(item.get("text") or "")[:5000] for item in first_pages) or str(source or "")[:8000]
     table_header = re.search(r"(?:交易日期|记账日期|交易时间).{0,120}(?:摘要|借方发生额|贷方发生额|收入|支出)", text, re.S)
     return text[:table_header.start()] if table_header else text
@@ -222,7 +238,7 @@ def _extract_account_info(raw_pages: list[dict[str, Any]], source: str, bank_for
         "account_no": account_no,
         "account_name": account_name,
         "opening_bank": opening_bank,
-        "header_preview": _clean(header[:500]),
+        "header_preview": _clean(header[:1000]),
         "bank_format": bank_format,
     }, evidence
 
@@ -274,11 +290,286 @@ def _normalize_trade_date(value: Any) -> str:
     return f"{parsed.isoformat()} {time_value}" if time_value else parsed.isoformat()
 
 
+SHANGHAI_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "transaction_date": ("交易日期", "记账日期", "账务日期", "交易时间", "日期"),
+    "summary": ("交易摘要", "摘要", "用途", "备注"),
+    "debit_amount": ("借方发生额", "借方金额", "支出金额", "付款金额", "支出", "借方"),
+    "credit_amount": ("贷方发生额", "贷方金额", "收入金额", "收款金额", "收入", "贷方"),
+    "balance": ("账户余额", "余额"),
+    "counterparty_account": ("对方账号", "对手账号", "对方账户", "对方帐号"),
+    "counterparty_name": ("对方账户名称", "对方户名", "对方名称", "对方单位", "对手户名", "对手名称"),
+    "counterparty_bank": ("对方开户行", "对方行名", "对方银行", "开户行"),
+}
+SHANGHAI_FOOTER_MARKERS = ("本明细仅限", "重要提示", "若与实际交易不符", "文件下载后", "打印时间", "操作员", "复核", "合计", "小计")
+
+
+def _page_lines_from_boxes(raw_pages: list[dict[str, Any]], tolerance: float = 8.0) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    all_boxes: list[dict[str, Any]] = []
+    page_lines: list[dict[str, Any]] = []
+    for page_item in raw_pages:
+        page_no = int(page_item.get("page") or 0)
+        boxes = []
+        for raw_box in page_item.get("text_boxes") or []:
+            text = _clean(raw_box.get("text"))
+            if not text:
+                continue
+            box = {
+                "page": page_no, "x0": float(raw_box.get("x0") or 0), "y0": float(raw_box.get("y0") or 0),
+                "x1": float(raw_box.get("x1") or 0), "y1": float(raw_box.get("y1") or 0),
+                "text": text, "confidence": float(raw_box.get("confidence") or 0),
+            }
+            box["y_center"] = (box["y0"] + box["y1"]) / 2
+            boxes.append(box)
+            all_boxes.append(box)
+        lines: list[dict[str, Any]] = []
+        for box in sorted(boxes, key=lambda item: (item["y_center"], item["x0"])):
+            line = next((item for item in reversed(lines[-3:]) if abs(item["y_center"] - box["y_center"]) <= tolerance), None)
+            if line is None:
+                line = {"page": page_no, "y_center": box["y_center"], "boxes": []}
+                lines.append(line)
+            line["boxes"].append(box)
+            count = len(line["boxes"])
+            line["y_center"] = ((line["y_center"] * (count - 1)) + box["y_center"]) / count
+        for line_no, line in enumerate(lines, start=1):
+            line["boxes"].sort(key=lambda item: item["x0"])
+            line["line_no"] = line_no
+            line["text"] = " ".join(item["text"] for item in line["boxes"])
+            page_lines.append(line)
+    return all_boxes, page_lines
+
+
+def _header_matches(line: dict[str, Any]) -> dict[str, dict[str, float]]:
+    boxes = line.get("boxes") or []
+    matches: dict[str, dict[str, float]] = {}
+    for field, aliases in SHANGHAI_HEADER_ALIASES.items():
+        for width in (1, 2, 3):
+            for start in range(len(boxes)):
+                selected = boxes[start:start + width]
+                if not selected:
+                    continue
+                compact = re.sub(r"\s+", "", "".join(item["text"] for item in selected))
+                if any(alias in compact for alias in aliases):
+                    matches[field] = {
+                        "center": (selected[0]["x0"] + selected[-1]["x1"]) / 2,
+                        "x0": selected[0]["x0"], "x1": selected[-1]["x1"],
+                    }
+                    break
+            if field in matches:
+                break
+    return matches
+
+
+def _column_ranges(matches: dict[str, dict[str, float]], page_width: float) -> list[dict[str, Any]]:
+    ordered = sorted(((field, value["center"]) for field, value in matches.items()), key=lambda item: item[1])
+    columns: list[dict[str, Any]] = []
+    for index, (field, center) in enumerate(ordered):
+        left = 0.0 if index == 0 else (ordered[index - 1][1] + center) / 2
+        right = page_width if index == len(ordered) - 1 else (center + ordered[index + 1][1]) / 2
+        columns.append({"field": field, "x0": left, "x1": right, "center": center})
+    return columns
+
+
+def _cells_from_line(line: dict[str, Any], columns: list[dict[str, Any]]) -> dict[str, str]:
+    cells: dict[str, list[str]] = {column["field"]: [] for column in columns}
+    for box in line.get("boxes") or []:
+        center = (box["x0"] + box["x1"]) / 2
+        column = next((item for item in columns if item["x0"] <= center < item["x1"]), None)
+        if column:
+            cells[column["field"]].append(box["text"])
+    return {field: _clean(" ".join(parts)) for field, parts in cells.items()}
+
+
+def _short_date_with_period(value: Any, period_start: str, period_end: str, last_date: date | None = None) -> date | None:
+    parsed = parse_valid_date(str(value or "").strip())
+    if parsed:
+        return parsed
+    match = re.search(r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?!\d)", str(value or ""))
+    start, end = parse_valid_date(period_start), parse_valid_date(period_end)
+    if not match or not start or not end:
+        return None
+    month, day = int(match.group(1)), int(match.group(2))
+    candidate_years = list(range(start.year, end.year + 1))
+    candidates: list[date] = []
+    for year in candidate_years:
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if start <= candidate <= end:
+            candidates.append(candidate)
+    if not candidates:
+        return None
+    if last_date:
+        forward = [item for item in candidates if item >= last_date]
+        if forward:
+            return min(forward)
+    return candidates[0]
+
+
+def _write_shanghai_debug_artifacts(
+    raw_pages: list[dict[str, Any]], boxes: list[dict[str, Any]], page_lines: list[dict[str, Any]],
+    detected_headers: list[dict[str, Any]], candidate_rows: list[dict[str, Any]],
+) -> None:
+    try:
+        debug_dir = Path(__file__).resolve().parents[2] / "logs" / "bank_statement_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        raw_parts = [f"--- page {int(item.get('page') or 0)} ---\n{str(item.get('text') or '')[:2000]}" for item in raw_pages]
+        (debug_dir / "shanghai_bank_raw_text.txt").write_text("\n\n".join(raw_parts), encoding="utf-8")
+        with (debug_dir / "shanghai_bank_ocr_boxes.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=("page", "x0", "y0", "x1", "y1", "text", "confidence"))
+            writer.writeheader()
+            writer.writerows({key: item.get(key, "") for key in writer.fieldnames} for item in boxes)
+        line_text = "\n".join(f"{item['page']}\t{item['line_no']}\t{item['y_center']:.2f}\t{item['text']}" for item in page_lines)
+        (debug_dir / "shanghai_bank_page_lines.txt").write_text(line_text, encoding="utf-8")
+        (debug_dir / "shanghai_bank_detected_headers.json").write_text(json.dumps(detected_headers, ensure_ascii=False, indent=2), encoding="utf-8")
+        (debug_dir / "shanghai_bank_candidate_rows.json").write_text(json.dumps(candidate_rows, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - debug output must not break parsing
+        logger.warning("[ShanghaiBankAdapter] debug_artifact_write_failed error=%s", exc)
+
+
+def _parse_shanghai_coordinate_table(
+    raw_pages: list[dict[str, Any]], period_start: str, period_end: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
+    boxes, page_lines = _page_lines_from_boxes(raw_pages)
+    transactions: list[dict[str, Any]] = []
+    detected_headers: list[dict[str, Any]] = []
+    candidate_artifacts: list[dict[str, Any]] = []
+    invalid_rows = 0
+    lines_by_page: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    pages_by_no = {int(item.get("page") or 0): item for item in raw_pages}
+    for line in page_lines:
+        lines_by_page[int(line["page"])].append(line)
+    last_date: date | None = None
+    for page_no, lines in sorted(lines_by_page.items()):
+        active_columns: list[dict[str, Any]] = []
+        last_tx: dict[str, Any] | None = None
+        last_tx_y = 0.0
+        page_width = float(pages_by_no.get(page_no, {}).get("page_width") or max((box["x1"] for line in lines for box in line.get("boxes") or []), default=1000))
+        for line in lines:
+            matches = _header_matches(line)
+            if len(matches) >= 3 and "transaction_date" in matches:
+                active_columns = _column_ranges(matches, page_width)
+                detected_headers.append({
+                    "page": page_no, "header_line": line["text"], "matched_headers": sorted(matches),
+                    "header_y": line["y_center"], "header_columns": active_columns,
+                })
+                last_tx = None
+                continue
+            if not active_columns or any(marker in line["text"] for marker in SHANGHAI_FOOTER_MARKERS) or re.search(r"第\s*\d+\s*页|共\s*\d+\s*页", line["text"]):
+                continue
+            cells = _cells_from_line(line, active_columns)
+            trade_date = _short_date_with_period(cells.get("transaction_date"), period_start, period_end, last_date)
+            if not trade_date:
+                has_continuation = any(cells.get(field) for field in ("counterparty_account", "counterparty_name", "summary"))
+                has_amount = _positive_amount(cells.get("debit_amount")) is not None or _positive_amount(cells.get("credit_amount")) is not None
+                if last_tx and has_continuation and not has_amount and line["y_center"] - last_tx_y <= 35:
+                    if not last_tx.get("对方账号") and cells.get("counterparty_account"):
+                        last_tx["对方账号"] = cells["counterparty_account"]
+                    if not last_tx.get("对方单位") and cells.get("counterparty_name"):
+                        last_tx["对方单位"] = cells["counterparty_name"]
+                    if cells.get("summary"):
+                        last_tx["备注"] = _clean(" ".join(filter(None, (last_tx.get("备注"), cells["summary"]))))
+                continue
+            last_date = trade_date
+            debit = _positive_amount(cells.get("debit_amount"))
+            credit = _positive_amount(cells.get("credit_amount"))
+            support = sum(bool(cells.get(field)) for field in ("summary", "counterparty_account", "counterparty_name")) + int(debit is not None) + int(credit is not None) + int(_positive_amount(cells.get("balance")) is not None)
+            candidate = {"page": page_no, "line_no": line["line_no"], "y_center": line["y_center"], "text": line["text"], "cells": cells, "status": "candidate"}
+            if support < 2:
+                candidate["status"] = "invalid_support_fields"
+                invalid_rows += 1
+                candidate_artifacts.append(candidate)
+                continue
+            if debit is not None and credit is None:
+                direction, flag, amount = "出账", "借", debit
+            elif credit is not None and debit is None:
+                direction, flag, amount = "入账", "贷", credit
+            elif debit is not None and credit is not None:
+                direction, flag, amount = ("出账", "借", debit) if debit >= credit else ("入账", "贷", credit)
+                candidate["manual_review"] = "借贷金额列同时非零"
+            else:
+                candidate["status"] = "invalid_amount_columns"
+                invalid_rows += 1
+                candidate_artifacts.append(candidate)
+                continue
+            tx = _new_tx(page_no)
+            tx.update({
+                "交易时间": trade_date.isoformat(), "借贷标志": flag, "收支方向": direction,
+                "对方账号": cells.get("counterparty_account") or "", "对方单位": cells.get("counterparty_name") or "",
+                "对方行号": cells.get("counterparty_bank") or "", "摘要": cells.get("summary") or "",
+                "金额": amount, "余额": _positive_amount(cells.get("balance")), "金额来源": "上海银行坐标借贷金额列",
+            })
+            tx["交易分类"] = classify_transaction(tx)
+            transactions.append(tx)
+            candidate["status"] = "valid"
+            candidate_artifacts.append(candidate)
+            last_tx, last_tx_y = tx, line["y_center"]
+    return transactions, boxes, page_lines, detected_headers, candidate_artifacts, invalid_rows
+
+
 def parse_shanghai_bank_statement(
     raw_pages: list[dict[str, Any]],
     period_start: str,
     period_end: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, dict[str, Any]]:
+    logger.info("[ShanghaiBankAdapter] pages=%s", len({int(item.get('page') or index) for index, item in enumerate(raw_pages, 1)}))
+    logger.info("[ShanghaiBankAdapter] raw_text_len=%s", sum(len(str(item.get("text") or "")) for item in raw_pages))
+    coordinate_transactions, boxes, page_lines, detected_header_artifacts, candidate_artifacts, coordinate_invalid = _parse_shanghai_coordinate_table(raw_pages, period_start, period_end)
+    logger.info("[ShanghaiBankAdapter] ocr_boxes_count=%s", len(boxes))
+    for page_no in sorted({int(item.get("page") or 0) for item in raw_pages}):
+        logger.info("[ShanghaiBankAdapter] page=%s lines_count=%s", page_no, sum(int(line.get("page") or 0) == page_no for line in page_lines))
+    logger.info("[ShanghaiBankAdapter] detected_headers=%s", detected_header_artifacts)
+    if detected_header_artifacts:
+        deduplicated_transactions: list[dict[str, Any]] = []
+        seen_transactions: set[tuple[Any, ...]] = set()
+        for tx in coordinate_transactions:
+            key = (tx.get("交易时间"), tx.get("对方账号"), tx.get("对方单位"), tx.get("金额"), tx.get("收支方向"))
+            if key in seen_transactions:
+                continue
+            seen_transactions.add(key)
+            deduplicated_transactions.append(tx)
+        coordinate_transactions = sorted(deduplicated_transactions, key=lambda tx: str(tx.get("交易时间") or ""))
+        unique_candidates: list[dict[str, Any]] = []
+        seen_candidates: set[tuple[Any, ...]] = set()
+        for item in candidate_artifacts:
+            cells = item.get("cells") or {}
+            key = (
+                item.get("page"), cells.get("transaction_date"), cells.get("debit_amount"), cells.get("credit_amount"),
+                cells.get("counterparty_account"), cells.get("counterparty_name"), cells.get("summary"), item.get("status"),
+            )
+            if key in seen_candidates:
+                continue
+            seen_candidates.add(key)
+            unique_candidates.append(item)
+        candidate_artifacts = unique_candidates
+        coordinate_invalid = sum(item.get("status") != "valid" for item in candidate_artifacts)
+        evidence: list[dict[str, Any]] = []
+        for index, tx in enumerate(coordinate_transactions, start=1):
+            tx["序号"] = index
+            tx.update({
+                "voucher_no": tx.get("凭证号") or "", "counterparty_account": tx.get("对方账号") or "",
+                "transaction_time": tx.get("交易时间") or "", "debit_credit_flag": tx.get("借贷标志") or "未识别",
+                "direction": tx.get("收支方向") or "未识别", "counterparty_name": tx.get("对方单位") or "",
+                "counterparty_bank_no": tx.get("对方行号") or "", "purpose": tx.get("用途") or "",
+                "summary": tx.get("摘要") or "", "remark": tx.get("备注") or "", "amount": tx.get("金额"),
+                "balance": tx.get("余额"), "receipt_info": "", "category": tx.get("交易分类") or "其他", "source_page": tx.get("来源页码") or 0,
+            })
+            evidence.append({"field": "交易明细", "page": tx["来源页码"], "record": index, "source": "shanghai_bank_coordinate_table"})
+        diagnostics = {
+            "table_headers_detected": sorted({field for item in detected_header_artifacts for field in item.get("matched_headers") or []}),
+            "detected_header_artifacts": detected_header_artifacts,
+            "candidate_transaction_rows": len(candidate_artifacts),
+            "candidate_rows_preview": candidate_artifacts[:10],
+            "invalid_candidate_rows": coordinate_invalid,
+            "raw_text_blocks_count": len(boxes),
+            "page_lines_count": len(page_lines),
+            "parser_path": "coordinate_table",
+        }
+        _write_shanghai_debug_artifacts(raw_pages, boxes, page_lines, detected_header_artifacts, candidate_artifacts)
+        logger.info("[ShanghaiBankAdapter] candidate_transaction_rows=%s", len(candidate_artifacts))
+        logger.info("[ShanghaiBankAdapter] valid_transaction_count=%s", len(coordinate_transactions))
+        logger.info("[ShanghaiBankAdapter] invalid_candidate_rows=%s", coordinate_invalid)
+        return coordinate_transactions, evidence, True, diagnostics
     transactions: list[dict[str, Any]] = []
     evidence: list[dict[str, Any]] = []
     header_names: set[str] = set()
@@ -290,6 +581,12 @@ def parse_shanghai_bank_statement(
         source_rows = page_item.get("table_rows") if isinstance(page_item.get("table_rows"), list) else []
         rows = [[_clean(cell) for cell in row] for row in source_rows if isinstance(row, (list, tuple))]
         rows.extend([[_clean(cell) for cell in re.split(r"\s*\|\s*|\t+", line)] for line in str(page_item.get("text") or "").splitlines() if "|" in line or "\t" in line])
+        if not source_rows and not boxes:
+            rows.extend([
+                [_clean(cell) for cell in re.split(r"\s{2,}", line) if _clean(cell)]
+                for line in str(page_item.get("text") or "").splitlines()
+                if re.search(r"\s{2,}", line)
+            ])
         mapping: dict[int, str] = {}
         for cells in rows:
             detected = _header_mapping(cells)
@@ -364,8 +661,15 @@ def parse_shanghai_bank_statement(
         "table_headers_detected": sorted(header_names),
         "candidate_transaction_rows": candidate_rows,
         "invalid_candidate_rows": invalid_rows,
-        "raw_text_blocks_count": sum(len(item.get("table_rows") or []) for item in raw_pages),
+        "raw_text_blocks_count": len(boxes) or sum(len(item.get("table_rows") or []) for item in raw_pages),
+        "page_lines_count": len(page_lines),
+        "candidate_rows_preview": [],
+        "parser_path": "table_rows_or_text_fallback",
     }
+    _write_shanghai_debug_artifacts(raw_pages, boxes, page_lines, detected_header_artifacts, candidate_artifacts)
+    logger.info("[ShanghaiBankAdapter] candidate_transaction_rows=%s", candidate_rows)
+    logger.info("[ShanghaiBankAdapter] valid_transaction_count=%s", len(unique))
+    logger.info("[ShanghaiBankAdapter] invalid_candidate_rows=%s", invalid_rows)
     return unique, evidence, amount_column_detected, diagnostics
 
 
@@ -683,7 +987,9 @@ def _summary(result: dict[str, Any]) -> None:
     valid = [tx for tx in txs if tx.get("is_valid_transaction")]
     effective = [tx for tx in valid if not tx.get("exclude_from_effective_flow")]
     recognized = [tx for tx in valid if tx.get("金额") is not None]
-    result["amount_recognition_status"] = "完整识别" if valid and len(recognized) == len(valid) else ("部分识别" if recognized else "未识别")
+    amount_ratio = (len(recognized) / len(valid)) if valid else 0.0
+    result["amount_recognition_status"] = "完整识别" if amount_ratio >= 0.8 else ("部分识别" if recognized else "未识别")
+    result["amount_recognition_ratio"] = round(amount_ratio, 4)
     result["transaction_count"] = len(txs)
     result["raw_transaction_count"] = len(txs)
     result["valid_transaction_count"] = len(valid)
@@ -802,9 +1108,20 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         lines.append("- 金额识别说明：当前 PDF 主表金额列未完整识别，仅保留明确识别金额，不进行完整收入、支出和净流入测算")
     if result.get("valid_transaction_count", 0) == 0 and result.get("text_recognized"):
         bank_format_name = {BANK_FORMAT_ICBC: "工商银行", BANK_FORMAT_SHANGHAI: "上海银行", BANK_FORMAT_GENERIC: "通用银行对账单"}.get(result.get("bank_format"), "通用银行对账单")
+        headers = set((result.get("parse_diagnostics") or {}).get("table_headers_detected") or [])
+        if headers and "transaction_date" not in headers:
+            failure_reason = "已识别表头，但日期列识别失败"
+        elif headers and not headers.intersection({"debit_amount", "credit_amount"}):
+            failure_reason = "已识别表头，但借方/贷方金额列识别失败"
+        elif headers and "counterparty_name" not in headers:
+            failure_reason = "已识别表头，但对方户名列识别失败或坐标列切分失败"
+        elif headers:
+            failure_reason = "已识别表头，但交易行坐标列切分或行合并失败"
+        else:
+            failure_reason = f"未能识别{bank_format_name}交易明细表格结构"
         lines += [
             "", "### 解析诊断", "- 已识别文本：是", f"- 银行格式：{bank_format_name}",
-            f"- 失败原因：未能识别{bank_format_name}交易明细表格结构",
+            f"- 失败原因：{failure_reason}",
             "- 建议处理：请检查表头字段映射或 OCR 表格恢复",
         ]
         return "\n".join(lines)

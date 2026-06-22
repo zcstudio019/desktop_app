@@ -464,6 +464,28 @@ def _ocr_pdf_pages(file_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
     return _build_raw_text_from_pages(raw_pages), raw_pages
 
 
+def _ocr_pdf_pages_with_boxes(file_bytes: bytes) -> tuple[str, list[dict[str, Any]]]:
+    images = file_service.pdf_to_images(file_bytes, dpi=260)
+    if not images:
+        raise HTTPException(status_code=400, detail=PDF_TO_IMAGE_FAILED_MESSAGE)
+    raw_pages: list[dict[str, Any]] = []
+    for index, image_bytes in enumerate(images, start=1):
+        compressed = file_service.compress_image(image_bytes)
+        try:
+            recognized = ocr_service.recognize_image_with_locations(compressed)
+            with Image.open(BytesIO(compressed)) as image:
+                width, height = image.size
+            raw_pages.append({
+                "page": index, "text": str(recognized.get("text") or ""),
+                "text_boxes": recognized.get("boxes") or [], "page_width": width, "page_height": height,
+                "source": "ocr_with_locations",
+            })
+        except OCRServiceError as exc:
+            logger.warning("OCR with boxes failed for page %s: %s", index, exc)
+            raw_pages.append({"page": index, "text": OCR_PAGE_FAILED_PLACEHOLDER, "text_boxes": [], "source": "ocr_with_locations"})
+    return _build_raw_text_from_pages(raw_pages), raw_pages
+
+
 def _filename_suggests_id_card(filename: str) -> bool:
     normalized = str(filename or "").lower()
     return any(keyword in normalized for keyword in ("身份证", "居民身份证", "法人身份证", "idcard", "id_card"))
@@ -1795,7 +1817,7 @@ async def _process_file_bytes(
     if document_type_code == "bank_statement" and file_type == "pdf" and _bank_statement_needs_ocr_supplement(text_content, raw_pages):
         logger.info("[BankStatementAgent][OCR_FALLBACK] native table incomplete, OCR all pages filename=%s", filename)
         try:
-            ocr_text, ocr_pages = _ocr_pdf_pages(file_bytes)
+            ocr_text, ocr_pages = _ocr_pdf_pages_with_boxes(file_bytes)
             if ocr_pages:
                 text_content = f"{text_content}\n\n--- 银行对账单 OCR 补充 ---\n{ocr_text}".strip()
                 raw_pages.extend(ocr_pages)
