@@ -398,7 +398,9 @@ def test_generic_bank_statement_rejects_counterparty_list_as_account_name():
     assert data["account_name"] == ""
     assert data["customer_name"] == ""
     assert "百威（中国）销售有限公司 福建律动信息技术有限公司" not in content["markdown_summary"]
-    assert "- 客户名称：未识别" in content["markdown_summary"]
+    assert "## 银行流水文件" in content["markdown_summary"]
+    assert "- 提取状态：部分成功" in content["markdown_summary"]
+    assert "未形成标准账户流水明细" in content["markdown_summary"]
     assert data["account_no"] == ""
     assert data["bank_name"] == ""
 
@@ -407,8 +409,9 @@ def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
     pages = [{"page": 1, "text": "上海银行对账单\n客户名称：测试公司", "table_rows": [], "source": "ocr"}]
     content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
     markdown = content["markdown_summary"]
-    assert "### 解析诊断" in markdown
-    assert "- 银行格式：上海银行" in markdown
+    assert "## 银行流水文件" in markdown
+    assert "- 提取状态：部分成功" in markdown
+    assert "未形成标准账户流水明细" in markdown
     assert "### 有效经营入账方汇总" not in markdown
 
 

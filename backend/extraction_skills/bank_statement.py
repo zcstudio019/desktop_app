@@ -2103,28 +2103,49 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
             "- 是否纳入经营流水聚合：否",
             "- 原因：文件未包含可稳定识别的本方账号、账户户名、交易时间范围和标准流水表格。",
             "",
-            "### 银行回单集合 Agent 建议入口",
-            "该文件更适合使用“银行回单集合 Agent”提取：",
-            "",
-            "- 回单日期",
-            "- 收款方",
-            "- 付款方",
-            "- 付款账号",
-            "- 收款账号",
-            "- 金额",
-            "- 用途",
-            "- 摘要",
-            "- 回单编号",
+            "### 后续处理建议",
+            "该文件更适合使用“银行回单集合 Agent”提取回单日期、收付款方、账号、金额、用途、摘要和回单编号。",
             "",
             "### 需人工复核",
             "- 当前文件疑似为银行回单集合，不是标准银行账户明细。",
-            "- 建议上传银行账户明细、账户流水 PDF 或 Excel。",
-            "- 如需解析回单，请走“银行回单集合 Agent”。",
+            "- 未识别稳定的本方账号、本方户名和交易时间范围。",
+            "- 暂未纳入客户级经营流水统计。",
+            "- 建议上传银行账户明细/账户流水 PDF 或 Excel。",
+            "- 如需解析回单，请使用“银行回单集合 Agent”。",
         ]
-        for item in result.get("manual_review_items") or []:
-            if item not in "\n".join(lines):
-                lines.append(f"- {item}")
         return "\n".join(lines).replace("None", "").replace("null", "").replace("undefined", "")
+
+    nonstandard_low_quality = (
+        result.get("statement_subtype") == "unknown_bank_statement"
+        and (
+            result.get("account_info_valid") is False
+            or result.get("transactions_valid") is False
+            or result.get("valid_transaction_count", 0) == 0
+            or result.get("can_join_effective_flow_statistics") is False
+            or (not result.get("account_no") and result.get("valid_transaction_count", 0) == 0)
+        )
+    )
+    if nonstandard_low_quality:
+        return "\n".join([
+            "## 银行流水文件",
+            "",
+            "- 资料类型：银行流水文件",
+            f"- 来源文件：{_cell(result.get('source_file'))}",
+            "- 原件状态：可查看",
+            "- 提取状态：部分成功",
+            "- 说明：已识别为银行流水相关文件，但未形成标准账户流水明细，暂不纳入银行流水聚合分析。",
+            "",
+            "### 解析结果",
+            "- 文件类型：未知银行对账单 / 非标准银行流水文件",
+            f"- 识别银行：{_display(result.get('bank_name'))}",
+            "- 是否形成账户流水明细：否",
+            "- 是否纳入经营流水聚合：否",
+            "- 原因：未识别本方账号、账户户名、交易时间范围和标准流水表格。",
+            "",
+            "### 需人工复核",
+            "- 当前文件未形成标准银行账户流水明细。",
+            "- 建议上传银行账户明细、账户流水 PDF 或 Excel。",
+        ]).replace("None", "").replace("null", "").replace("undefined", "")
 
     lines = [
         "## 银行对账单", "", "- 资料类型：银行对账单",

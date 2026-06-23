@@ -155,16 +155,22 @@ def test_low_quality_receipt_bundle_files_do_not_pollute_customer_aggregate():
 
     markdown = render_customer_bank_flow_aggregate_markdown(data)
     assert "聚合状态：未达标" in markdown
+    assert "金额识别完整度：不可评估" in markdown
+    assert "金额识别完整度说明：当前文件未形成有效交易明细，无法评估金额识别完整度。" in markdown
+    assert "交易统计说明：当前仅统计已形成标准流水明细的交易" in markdown
     assert "文件解析质量清单" in markdown
-    assert "疑似回单集合" in markdown
+    assert "疑似银行回单集合" in markdown
     assert "暂无已识别银行账户" in markdown
     assert bad_name not in markdown
     assert "上海乐芙兰电子商务有限公司" in markdown
     assert "无法计算" in markdown
+    assert "### 客户级流水摘要" not in markdown
     assert "### 主要入账客户" not in markdown
     assert "### 主要出账供应商" not in markdown
     assert "### 内部划转及关联人往来" not in markdown
     assert "暂无可统计的有效交易明细，无法计算剔除项" in markdown
+    assert "金额完整识别文件数" not in markdown
+    assert "金额未识别文件数" not in markdown
     assert "0/0" not in markdown
     assert "2000-00" not in markdown
 
@@ -181,6 +187,8 @@ def test_receipt_bundle_single_file_markdown_uses_receipt_bundle_language():
     assert "提取状态：部分成功" in markdown
     assert "是否形成账户流水明细：否" in markdown
     assert "是否纳入经营流水聚合：否" in markdown
-    assert "银行回单集合 Agent" in markdown
+    assert "后续处理建议" in markdown
+    assert "回单日期、收付款方、账号、金额、用途、摘要和回单编号" in markdown
     assert "有效入账笔数" not in markdown
     assert "有效出账笔数" not in markdown
+    assert "金额列缺失" not in markdown

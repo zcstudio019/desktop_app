@@ -103,20 +103,20 @@ def _clean_account_name(value: Any) -> str:
 def _statement_subtype_label(subtype: str) -> str:
     return {
         "account_statement": "标准账户流水",
-        "receipt_bundle": "疑似回单集合",
-        "unknown_bank_statement": "未知银行对账单",
-    }.get(subtype or "", "银行对账单")
+        "receipt_bundle": "疑似银行回单集合",
+        "unknown_bank_statement": "非标准银行流水文件",
+    }.get(subtype or "", "未识别银行文件")
 
 
 def _quality_status_label(status: str, subtype: str = "") -> str:
     if subtype == "receipt_bundle":
-        return "回单集合"
+        return "回单集合，未形成账户流水"
     return {
-        "success": "解析成功",
-        "partial": "部分解析",
+        "success": "已形成标准流水明细",
+        "partial": "待人工复核",
         "failed": "解析失败",
         "invalid_account_info": "账户信息无效",
-        "invalid_transaction_structure": "交易结构未恢复",
+        "invalid_transaction_structure": "未形成标准流水明细",
     }.get(status or "", "待复核")
 
 
@@ -167,7 +167,9 @@ def _infer_quality(payload: dict[str, Any]) -> dict[str, Any]:
         can_join_effective = False
 
     status = str(payload.get("parse_quality_status") or "")
-    if not status:
+    if not transactions_valid and payload.get("statement_subtype") != "receipt_bundle":
+        status = "invalid_transaction_structure"
+    elif not status:
         if account_info_valid and transactions_valid and amounts_valid:
             status = "success"
         elif not transactions_valid:
@@ -529,6 +531,8 @@ def aggregate_customer_bank_statements(
         "source_files": source_files,
         "file_quality": file_quality,
         "included_files_count": included_count,
+        "receipt_bundle_file_count": sum(1 for row in file_quality if row["statement_subtype"] == "receipt_bundle"),
+        "nonstandard_bank_file_count": sum(1 for row in file_quality if row["statement_subtype"] == "unknown_bank_statement"),
         "file_only_files_count": sum(1 for row in file_quality if not row["included"] and row["parse_quality_status"] in {"partial", "invalid_transaction_structure"}),
         "failed_or_review_files_count": sum(1 for row in file_quality if not row["included"]),
         "bank_accounts": [
@@ -573,7 +577,7 @@ def aggregate_customer_bank_statements(
         "amount_partial_file_count": amount_status_counter.get("部分识别", 0),
         "amount_unrecognized_file_count": len(source_files) - amount_status_counter.get("完整识别", 0) - amount_status_counter.get("部分识别", 0),
         "parse_completion_rate": f"{len(transactions)}/{len(raw_transactions)}" if raw_transactions else "不可计算，原因：未形成有效交易明细。",
-        "amount_integrity": "完整" if amounts_available and amount_status_counter.get("完整识别", 0) == included_count else ("部分" if amounts_available else "不完整"),
+        "amount_integrity": "完整" if amounts_available and amount_status_counter.get("完整识别", 0) == included_count else ("部分" if amounts_available else "不可评估"),
         "aggregate_status": aggregate_status,
         "amount_statistics_available": amounts_available,
     }
@@ -616,6 +620,9 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         f"- 重复交易笔数：{data.get('duplicate_transaction_count', 0)}",
         f"- 金额识别完整度：{data.get('amount_integrity') or UNKNOWN}",
     ]
+    if unavailable:
+        lines.append("- 金额识别完整度说明：当前文件未形成有效交易明细，无法评估金额识别完整度。")
+    lines.append("- 交易统计说明：当前仅统计已形成标准流水明细的交易，疑似回单集合或未达标文件不计入交易笔数。")
     if data.get("aggregate_status") == "未达标":
         lines.append(f"- 说明：当前 {data.get('file_count', 0)} 份文件均未形成标准账户流水明细，疑似为银行回单集合或非标准对账单，因此暂不能生成客户级有效经营流水分析。建议上传银行账户明细/账户流水 PDF 或 Excel。")
     elif data.get("file_count") == 1:
@@ -647,31 +654,6 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         lines = lines[:-2]
         lines.append("暂无已识别银行账户。")
 
-    lines += ["", "### 客户级流水摘要"]
-    if unavailable:
-        reason = f"{data.get('file_count', 0)} 份文件交易金额未形成有效结构化明细"
-        lines += [
-            f"- 有效经营入账金额：无法计算，原因：{reason}。",
-            f"- 有效经营出账金额：无法计算，原因：{reason}。",
-            f"- 经营净流入：无法计算，原因：{reason}。",
-            f"- 月均有效经营入账：无法计算，原因：{reason}。",
-            f"- 月均有效经营出账：无法计算，原因：{reason}。",
-        ]
-    else:
-        lines += [
-            f"- 有效经营入账金额：{_money(data.get('effective_in_amount'))}",
-            f"- 有效经营出账金额：{_money(data.get('effective_out_amount'))}",
-            f"- 经营净流入：{_money(data.get('operating_net_inflow'))}",
-            f"- 月均有效经营入账：{_money(data.get('average_monthly_effective_in'))}",
-            f"- 月均有效经营出账：{_money(data.get('average_monthly_effective_out'))}",
-        ]
-    lines += [
-        f"- 内部账户划转金额：{_money(data.get('internal_transfer_amount'), unavailable=unavailable)}",
-        f"- 法人/关联人往来金额：{_money(data.get('related_person_transfer_amount'), unavailable=unavailable)}",
-        f"- 贷款及利息相关金额：{_money(data.get('loan_related_amount'), unavailable=unavailable)}",
-        f"- 银行费用及税费金额：{_money(data.get('bank_fee_tax_amount'), unavailable=unavailable)}",
-    ]
-
     if unavailable:
         lines += [
             "",
@@ -679,10 +661,28 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
             "- 有效经营入账金额：无法计算",
             "- 有效经营出账金额：无法计算",
             "- 经营净流入：无法计算",
+            "- 月均有效经营入账：无法计算",
+            "- 月均有效经营出账：无法计算",
             "- 主要入账客户：无法计算",
             "- 主要出账供应商：无法计算",
             "- 内部划转及关联人往来：无法计算",
-            "- 原因：当前文件未形成有效账户流水明细。",
+            "- 贷款及利息相关金额：无法计算",
+            "- 银行费用及税费金额：无法计算",
+            "- 原因：当前文件未形成标准账户流水明细，无法进行客户级经营流水统计。",
+        ]
+    else:
+        lines += [
+            "",
+            "### 客户级流水摘要",
+            f"- 有效经营入账金额：{_money(data.get('effective_in_amount'))}",
+            f"- 有效经营出账金额：{_money(data.get('effective_out_amount'))}",
+            f"- 经营净流入：{_money(data.get('operating_net_inflow'))}",
+            f"- 月均有效经营入账：{_money(data.get('average_monthly_effective_in'))}",
+            f"- 月均有效经营出账：{_money(data.get('average_monthly_effective_out'))}",
+            f"- 内部账户划转金额：{_money(data.get('internal_transfer_amount'))}",
+            f"- 法人/关联人往来金额：{_money(data.get('related_person_transfer_amount'))}",
+            f"- 贷款及利息相关金额：{_money(data.get('loan_related_amount'))}",
+            f"- 银行费用及税费金额：{_money(data.get('bank_fee_tax_amount'))}",
         ]
 
     lines += [
@@ -723,15 +723,27 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
     lines += [
         f"- 总文件数：{data.get('file_count', 0)}",
         f"- 纳入聚合文件数：{data.get('included_files_count', 0)}",
-        f"- 仅展示/待复核文件数：{data.get('failed_or_review_files_count', 0)}",
+        f"- 待复核文件数：{data.get('failed_or_review_files_count', 0)}",
         f"- 已识别账户数：{data.get('account_count', 0)}",
         f"- 有效交易笔数：{data.get('raw_transaction_count', 0)}",
         f"- 已去重交易笔数：{data.get('deduplicated_transaction_count', 0)}",
-        f"- 金额完整识别文件数：{data.get('amount_complete_file_count', 0)}",
-        f"- 金额部分识别文件数：{data.get('amount_partial_file_count', 0)}",
-        f"- 金额未识别文件数：{data.get('amount_unrecognized_file_count', 0)}",
         f"- 解析完整率：{data.get('parse_completion_rate') or UNKNOWN}",
     ]
+    if unavailable:
+        lines.append("- 当前文件均未形成标准账户流水明细，暂不能生成经营流水统计。")
+        subtype_parts = []
+        if data.get("receipt_bundle_file_count", 0):
+            subtype_parts.append(f"{data.get('receipt_bundle_file_count', 0)} 份疑似银行回单集合")
+        if data.get("nonstandard_bank_file_count", 0):
+            subtype_parts.append(f"{data.get('nonstandard_bank_file_count', 0)} 份为非标准银行流水文件")
+        if subtype_parts:
+            lines.append(f"- 其中 {'，'.join(subtype_parts)}。")
+    else:
+        lines += [
+            f"- 金额完整识别文件数：{data.get('amount_complete_file_count', 0)}",
+            f"- 金额部分识别文件数：{data.get('amount_partial_file_count', 0)}",
+            f"- 金额未识别文件数：{data.get('amount_unrecognized_file_count', 0)}",
+        ]
     lines += [f"- {item}" for item in data.get("manual_review_items") or []]
     lines += ["", "### 风险提示"] + [f"- {item}" for item in data.get("risk_tips") or []]
     return "\n".join(lines)
