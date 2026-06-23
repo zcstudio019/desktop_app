@@ -2,6 +2,7 @@ from backend.services.bank_statement_agent.aggregator import (
     aggregate_customer_bank_statements,
     render_customer_bank_flow_aggregate_markdown,
 )
+from backend.extraction_skills.bank_statement import render_bank_statement_markdown
 
 
 def statement(file_name, bank, account_no, account_name, transactions, start="2025-04-01", end="2025-04-30"):
@@ -156,8 +157,30 @@ def test_low_quality_receipt_bundle_files_do_not_pollute_customer_aggregate():
     assert "聚合状态：未达标" in markdown
     assert "文件解析质量清单" in markdown
     assert "疑似回单集合" in markdown
-    assert "户名" in markdown
+    assert "暂无已识别银行账户" in markdown
     assert bad_name not in markdown
     assert "上海乐芙兰电子商务有限公司" in markdown
     assert "无法计算" in markdown
+    assert "### 主要入账客户" not in markdown
+    assert "### 主要出账供应商" not in markdown
+    assert "### 内部划转及关联人往来" not in markdown
+    assert "暂无可统计的有效交易明细，无法计算剔除项" in markdown
+    assert "0/0" not in markdown
     assert "2000-00" not in markdown
+
+
+def test_receipt_bundle_single_file_markdown_uses_receipt_bundle_language():
+    markdown = render_bank_statement_markdown({
+        "source_file": "31006662901300306458920240531_4.pdf",
+        "statement_subtype": "receipt_bundle",
+        "bank_name": "中国工商银行",
+        "manual_review_items": ["交易明细结构未恢复，暂不纳入客户级有效经营流水统计。"],
+    })
+    assert "## 银行回单集合" in markdown
+    assert "资料类型：银行回单集合" in markdown
+    assert "提取状态：部分成功" in markdown
+    assert "是否形成账户流水明细：否" in markdown
+    assert "是否纳入经营流水聚合：否" in markdown
+    assert "银行回单集合 Agent" in markdown
+    assert "有效入账笔数" not in markdown
+    assert "有效出账笔数" not in markdown

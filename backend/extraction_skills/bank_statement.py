@@ -123,7 +123,7 @@ def detect_statement_subtype(bank_format: str, source: str) -> str:
     text = str(source or "")
     if bank_format == BANK_FORMAT_ICBC and "中国工商银行账户明细清单" in text:
         return "account_statement"
-    if any(marker in text for marker in ("单位国内汇款", "电子回单", "回单编号", "回单批量", "网银回单")):
+    if bank_format == BANK_FORMAT_ICBC and any(marker in text for marker in ("单位国内汇款", "电子回单", "回单编号", "回单批量", "网银回单")):
         return "receipt_bundle"
     if any(marker in text for marker in ("账户明细查询", "账户明细清单", "交易流水号")):
         return "account_statement"
@@ -2086,6 +2086,46 @@ def _json_safe(value: Any) -> Any:
 
 
 def render_bank_statement_markdown(result: dict[str, Any]) -> str:
+    if result.get("statement_subtype") == "receipt_bundle":
+        lines = [
+            "## 银行回单集合",
+            "",
+            "- 资料类型：银行回单集合",
+            f"- 来源文件：{_cell(result.get('source_file'))}",
+            "- 原件状态：可查看",
+            "- 提取状态：部分成功",
+            "- 说明：已识别为银行回单集合，但未形成标准账户流水明细，暂不纳入银行流水聚合分析。",
+            "",
+            "### 解析结果",
+            "- 文件类型：疑似银行回单集合",
+            f"- 识别银行：{_display(result.get('bank_name'))}",
+            "- 是否形成账户流水明细：否",
+            "- 是否纳入经营流水聚合：否",
+            "- 原因：文件未包含可稳定识别的本方账号、账户户名、交易时间范围和标准流水表格。",
+            "",
+            "### 银行回单集合 Agent 建议入口",
+            "该文件更适合使用“银行回单集合 Agent”提取：",
+            "",
+            "- 回单日期",
+            "- 收款方",
+            "- 付款方",
+            "- 付款账号",
+            "- 收款账号",
+            "- 金额",
+            "- 用途",
+            "- 摘要",
+            "- 回单编号",
+            "",
+            "### 需人工复核",
+            "- 当前文件疑似为银行回单集合，不是标准银行账户明细。",
+            "- 建议上传银行账户明细、账户流水 PDF 或 Excel。",
+            "- 如需解析回单，请走“银行回单集合 Agent”。",
+        ]
+        for item in result.get("manual_review_items") or []:
+            if item not in "\n".join(lines):
+                lines.append(f"- {item}")
+        return "\n".join(lines).replace("None", "").replace("null", "").replace("undefined", "")
+
     lines = [
         "## 银行对账单", "", "- 资料类型：银行对账单",
         f"- 来源文件：{_cell(result.get('source_file'))}", "- 原件状态：可查看",

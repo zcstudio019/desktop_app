@@ -572,7 +572,7 @@ def aggregate_customer_bank_statements(
         "amount_complete_file_count": amount_status_counter.get("完整识别", 0),
         "amount_partial_file_count": amount_status_counter.get("部分识别", 0),
         "amount_unrecognized_file_count": len(source_files) - amount_status_counter.get("完整识别", 0) - amount_status_counter.get("部分识别", 0),
-        "parse_completion_rate": f"{len(transactions)}/{len(raw_transactions)}" if raw_transactions else "0/0",
+        "parse_completion_rate": f"{len(transactions)}/{len(raw_transactions)}" if raw_transactions else "不可计算，原因：未形成有效交易明细。",
         "amount_integrity": "完整" if amounts_available and amount_status_counter.get("完整识别", 0) == included_count else ("部分" if amounts_available else "不完整"),
         "aggregate_status": aggregate_status,
         "amount_statistics_available": amounts_available,
@@ -580,7 +580,7 @@ def aggregate_customer_bank_statements(
     if result["file_count"] == 1:
         result["manual_review_items"].append("当前仅基于 1 个银行账户/1 份对账单进行聚合分析。")
     if not included_count:
-        result["manual_review_items"].append("当前文件可能不是标准银行对账单，或未形成有效账户流水明细，暂不能生成经营流水统计。")
+        result["manual_review_items"].append("当前文件可能不是标准银行对账单，或未形成标准账户流水明细，暂不能生成经营流水统计。")
         result["manual_review_items"].append("建议上传银行账户明细/账户流水 PDF 或 Excel，并确认本方账号、本方户名和交易时间范围。")
     if any(row["statement_subtype"] == "receipt_bundle" for row in file_quality):
         result["manual_review_items"].append("存在疑似银行回单集合，未纳入经营流水聚合。")
@@ -617,7 +617,7 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         f"- 金额识别完整度：{data.get('amount_integrity') or UNKNOWN}",
     ]
     if data.get("aggregate_status") == "未达标":
-        lines.append(f"- 说明：当前 {data.get('file_count', 0)} 份银行对账单均未形成有效交易明细，暂不能生成客户级有效经营流水分析。")
+        lines.append(f"- 说明：当前 {data.get('file_count', 0)} 份文件均未形成标准账户流水明细，疑似为银行回单集合或非标准对账单，因此暂不能生成客户级有效经营流水分析。建议上传银行账户明细/账户流水 PDF 或 Excel。")
     elif data.get("file_count") == 1:
         lines.append("- 提示：当前仅基于 1 个银行账户/1 份对账单进行聚合分析。")
     else:
@@ -644,7 +644,8 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         for index, account in enumerate(accounts, start=1):
             lines.append(f"| {index} | {account.get('bank_name') or '—'} | {account.get('opening_bank') or '—'} | {account.get('account_no') or '—'} | {account.get('account_name') or UNKNOWN} | {account.get('time_range') or UNKNOWN} | {account.get('file_count', 0)} | {account.get('transaction_count', 0)} |")
     else:
-        lines.append("| 1 | — | — | 未识别 | 未识别 | 未识别 | 0 | 0 |")
+        lines = lines[:-2]
+        lines.append("暂无已识别银行账户。")
 
     lines += ["", "### 客户级流水摘要"]
     if unavailable:
@@ -680,6 +681,8 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
             "- 经营净流入：无法计算",
             "- 主要入账客户：无法计算",
             "- 主要出账供应商：无法计算",
+            "- 内部划转及关联人往来：无法计算",
+            "- 原因：当前文件未形成有效账户流水明细。",
         ]
 
     lines += [
@@ -696,22 +699,25 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
     else:
         lines.append("暂无可用交易日期。")
 
-    lines += ["", "### 主要入账客户", "| 排名 | 入账方名称 | 金额 | 笔数 | 占比 | 主要用途 |", "|---:|---|---:|---:|---:|---|"]
-    for item in data.get("customer_inflow_summary") or []:
-        lines.append(f"| {item.get('rank')} | {item.get('name')} | {_money(item.get('amount'))} | {item.get('count')} | {item.get('ratio', 0):.2%} | {item.get('main_purpose') or '—'} |")
-    lines += ["", "### 主要出账供应商", "| 排名 | 出账方名称 | 金额 | 笔数 | 占比 | 主要用途 |", "|---:|---|---:|---:|---:|---|"]
-    for item in data.get("supplier_outflow_summary") or []:
-        lines.append(f"| {item.get('rank')} | {item.get('name')} | {_money(item.get('amount'))} | {item.get('count')} | {item.get('ratio', 0):.2%} | {item.get('main_purpose') or '—'} |")
+    if data.get("deduplicated_transaction_count", 0):
+        lines += ["", "### 主要入账客户", "| 排名 | 入账方名称 | 金额 | 笔数 | 占比 | 主要用途 |", "|---:|---|---:|---:|---:|---|"]
+        for item in data.get("customer_inflow_summary") or []:
+            lines.append(f"| {item.get('rank')} | {item.get('name')} | {_money(item.get('amount'))} | {item.get('count')} | {item.get('ratio', 0):.2%} | {item.get('main_purpose') or '—'} |")
+        lines += ["", "### 主要出账供应商", "| 排名 | 出账方名称 | 金额 | 笔数 | 占比 | 主要用途 |", "|---:|---|---:|---:|---:|---|"]
+        for item in data.get("supplier_outflow_summary") or []:
+            lines.append(f"| {item.get('rank')} | {item.get('name')} | {_money(item.get('amount'))} | {item.get('count')} | {item.get('ratio', 0):.2%} | {item.get('main_purpose') or '—'} |")
 
-    lines += ["", "### 内部划转及关联人往来", "| 类型 | 交易时间 | 收支方向 | 对方名称 | 关系/原因 | 金额 | 来源账户 |", "|---|---|---|---|---|---:|---|"]
-    for tx in data.get("internal_related_transactions") or []:
-        kind = "关联人转账" if tx.get("is_related_person_transfer") else "内部账户划转"
-        reason = tx.get("related_person_role") or tx.get("exclude_reason") or "内部往来"
-        lines.append(f"| {kind} | {tx.get('trade_time') or tx.get('book_date') or '—'} | {tx.get('direction') or '—'} | {tx.get('counterparty_name') or '—'} | {reason} | {_money(tx.get('amount'), unavailable=unavailable)} | {tx.get('bank_name') or ''} {tx.get('account_no') or ''} |")
+        lines += ["", "### 内部划转及关联人往来", "| 类型 | 交易时间 | 收支方向 | 对方名称 | 关系/原因 | 金额 | 来源账户 |", "|---|---|---|---|---|---:|---|"]
+        for tx in data.get("internal_related_transactions") or []:
+            kind = "关联人转账" if tx.get("is_related_person_transfer") else "内部账户划转"
+            reason = tx.get("related_person_role") or tx.get("exclude_reason") or "内部往来"
+            lines.append(f"| {kind} | {tx.get('trade_time') or tx.get('book_date') or '—'} | {tx.get('direction') or '—'} | {tx.get('counterparty_name') or '—'} | {reason} | {_money(tx.get('amount'), unavailable=unavailable)} | {tx.get('bank_name') or ''} {tx.get('account_no') or ''} |")
 
-    lines += ["", "### 剔除项汇总", "| 剔除类型 | 笔数 | 金额 | 说明 |", "|---|---:|---:|---|"]
-    for item in data.get("excluded_summary") or []:
-        lines.append(f"| {item.get('type')} | {item.get('count', 0)} | {_money(item.get('amount'), unavailable=unavailable)} | {item.get('description') or ''} |")
+        lines += ["", "### 剔除项汇总", "| 剔除类型 | 笔数 | 金额 | 说明 |", "|---|---:|---:|---|"]
+        for item in data.get("excluded_summary") or []:
+            lines.append(f"| {item.get('type')} | {item.get('count', 0)} | {_money(item.get('amount'), unavailable=unavailable)} | {item.get('description') or ''} |")
+    else:
+        lines += ["", "### 剔除项汇总", "暂无可统计的有效交易明细，无法计算剔除项。"]
 
     lines += ["", "### 解析质量与需复核事项"]
     lines += [
