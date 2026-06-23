@@ -103,3 +103,61 @@ def test_related_person_transfer_excluded_with_profile_but_personal_name_not_gue
     assert without_profile["related_person_transfer_count"] == 0
     assert without_profile["effective_out_amount"] == 37000
     assert "关联人名单缺失" in " ".join(without_profile["manual_review_items"])
+
+
+def test_low_quality_receipt_bundle_files_do_not_pollute_customer_aggregate():
+    bad_name = "上海顺衡物流有限公司 单位国内汇款手续费 上海汇付支付有限公司 薯一薯二文化传媒有限公司 支付宝 华润守正招标有限公司"
+    files = []
+    for index in range(1, 5):
+        files.append({
+            "extraction_type": "bank_statement",
+            "file_name": f"3100666290130030645892024053{index}_{index}.pdf",
+            "extracted_data": {
+                "extracted_json": {
+                    "doc_type": "bank_statement",
+                    "source_file": f"3100666290130030645892024053{index}_{index}.pdf",
+                    "bank_name": "中国工商银行",
+                    "statement_subtype": "receipt_bundle",
+                    "account_name": bad_name,
+                    "account_no": "",
+                    "opening_bank": "",
+                    "period_start": "",
+                    "period_end": "",
+                    "amount_recognition_status": "未识别",
+                    "parse_quality_status": "partial",
+                    "account_info_valid": False,
+                    "transactions_valid": False,
+                    "amounts_valid": False,
+                    "can_join_effective_flow_statistics": False,
+                    "candidate_transaction_rows": 30,
+                    "transactions": [
+                        {"transaction_time": "2000-00", "counterparty_name": "上海汇付支付有限公司", "summary": "单位国内汇款手续费"}
+                    ],
+                }
+            },
+        })
+
+    data = aggregate_customer_bank_statements(
+        files,
+        customer_profile={"name": "上海乐芙兰电子商务有限公司"},
+    )
+    assert data["customer_name"] == "上海乐芙兰电子商务有限公司"
+    assert data["file_count"] == 4
+    assert data["account_count"] == 0
+    assert data["unrecognized_account_file_count"] == 4
+    assert data["included_files_count"] == 0
+    assert data["raw_transaction_count"] == 0
+    assert data["deduplicated_transaction_count"] == 0
+    assert data["aggregate_status"] == "未达标"
+    assert data["period_start"] == ""
+    assert data["monthly_summary"] == []
+
+    markdown = render_customer_bank_flow_aggregate_markdown(data)
+    assert "聚合状态：未达标" in markdown
+    assert "文件解析质量清单" in markdown
+    assert "疑似回单集合" in markdown
+    assert "户名" in markdown
+    assert bad_name not in markdown
+    assert "上海乐芙兰电子商务有限公司" in markdown
+    assert "无法计算" in markdown
+    assert "2000-00" not in markdown

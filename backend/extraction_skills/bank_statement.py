@@ -119,6 +119,17 @@ def _generic_header_bank_name(header_text: str) -> str:
     return next((name for name in GENERIC_BANK_NAMES if name in str(header_text or "")), "")
 
 
+def detect_statement_subtype(bank_format: str, source: str) -> str:
+    text = str(source or "")
+    if bank_format == BANK_FORMAT_ICBC and "中国工商银行账户明细清单" in text:
+        return "account_statement"
+    if any(marker in text for marker in ("单位国内汇款", "电子回单", "回单编号", "回单批量", "网银回单")):
+        return "receipt_bundle"
+    if any(marker in text for marker in ("账户明细查询", "账户明细清单", "交易流水号")):
+        return "account_statement"
+    return "unknown_bank_statement"
+
+
 def clean_opening_bank(value: Any, *, account_no: str = "", account_name: str = "") -> str:
     text = re.sub(r"[\s\u3000\t\r\n]+", "", str(value or "")).strip("，,。；;：:")
     if not text:
@@ -2013,6 +2024,49 @@ def _apply_header_summary(result: dict[str, Any]) -> None:
         result["amount_recognition_status"] = "完整识别"
 
 
+def _apply_parse_quality(result: dict[str, Any], *, customer_profile_name: str = "", amount_column_detected: bool = False) -> None:
+    ok_name, _name_reason = validate_account_name(result.get("account_name"))
+    account_name_valid = ok_name or bool(customer_profile_name)
+    account_info_valid = bool(account_name_valid and result.get("account_no") and result.get("bank_name"))
+    valid_transactions = [tx for tx in result.get("transactions") or [] if tx.get("is_valid_transaction") and not tx.get("is_page_block")]
+    transaction_support = [
+        tx for tx in valid_transactions
+        if (tx.get("交易时间") or tx.get("transaction_time")) and (tx.get("金额") is not None or tx.get("收支方向") in {"入账", "出账"})
+    ]
+    transactions_valid = bool(transaction_support)
+    amounts_valid = bool(amount_column_detected and any(tx.get("金额") is not None for tx in transaction_support))
+    if result.get("amount_recognition_status") == "完整识别" and any(tx.get("金额") is not None for tx in transaction_support):
+        amounts_valid = True
+    subtype = result.get("statement_subtype") or "unknown_bank_statement"
+    score = 0
+    score += 35 if account_info_valid else (10 if account_name_valid or result.get("account_no") or result.get("bank_name") else 0)
+    score += 40 if transactions_valid else 0
+    score += 25 if amounts_valid else 0
+    if account_info_valid and transactions_valid and amounts_valid:
+        status = "success"
+    elif not account_info_valid and not transactions_valid:
+        status = "invalid_account_info" if subtype != "receipt_bundle" else "partial"
+    elif not transactions_valid:
+        status = "invalid_transaction_structure"
+    else:
+        status = "partial"
+    result.update({
+        "parse_quality_status": status,
+        "parse_quality_score": score,
+        "account_info_valid": account_info_valid,
+        "transactions_valid": transactions_valid,
+        "amounts_valid": amounts_valid,
+        "can_join_aggregate": not (not account_info_valid and not transactions_valid),
+        "can_join_amount_statistics": bool(transactions_valid and amounts_valid),
+        "can_join_effective_flow_statistics": bool(transactions_valid and amounts_valid),
+        "parsed_transactions_count": len(transaction_support),
+    })
+    if subtype == "receipt_bundle":
+        result["can_join_effective_flow_statistics"] = False
+        result["can_join_amount_statistics"] = False
+        result["parse_quality_status"] = "partial"
+
+
 def _cell(value: Any) -> str:
     return _clean(value).replace("|", "\\|") or "—"
 
@@ -2180,6 +2234,7 @@ class BankStatementSkill(BaseExtractionSkill):
             bool(re.search(r"(?:本方)?账号\s*[:：]", source)), bool(re.search(r"时间范围\s*[:：]", source)),
         )
         bank_format = detect_bank_format(text, page_text)
+        statement_subtype = detect_statement_subtype(bank_format, source)
         logger.info("[BankStatementSkill] detected_bank_format=%s", bank_format)
         account_info, account_evidence = _extract_account_info(raw_pages, source, bank_format)
         logger.info("[BankStatementSkill] account_info_candidates=%s", account_info)
@@ -2225,6 +2280,7 @@ class BankStatementSkill(BaseExtractionSkill):
         logger.info("[BankStatementSkill] opening_bank_raw=%s opening_bank=%s", opening_bank_raw or "未识别", opening_bank or "未识别")
         result: dict[str, Any] = {
             "doc_type": "bank_statement", "doc_type_name": "银行对账单", "agent_type": "bank_statement_agent", "bank_format": bank_format,
+            "statement_subtype": statement_subtype,
             "source_file": input_data.file_name or (Path(input_data.file_path).name if input_data.file_path else ""),
             "original_status": "可查看", "extract_status": "成功", "extraction_status": "成功", "bank_name": bank_name,
             "statement_title": title or ("账户明细清单" if "账户明细清单" in source else "银行对账单"),
@@ -2240,12 +2296,12 @@ class BankStatementSkill(BaseExtractionSkill):
             "related_person_roles": related_person_roles,
         }
         pending_manual_review_items: list[str] = []
+        ok_name, name_reject_reason = validate_account_name(result.get("account_name"))
+        if not ok_name and result.get("account_name"):
+            logger.info("[BankStatementSkill] final_account_name_rejected=%s reason=%s", result.get("account_name"), name_reject_reason)
+            result["account_name"] = ""
+            pending_manual_review_items.append("疑似将交易对手名称误识别为客户名称，已拦截，需人工复核本方户名。")
         if bank_format == BANK_FORMAT_GENERIC:
-            ok_name, name_reject_reason = validate_account_name(result.get("account_name"))
-            if not ok_name and result.get("account_name"):
-                logger.info("[GenericBankStatementParser] final_account_name_rejected=%s reason=%s", result.get("account_name"), name_reject_reason)
-                result["account_name"] = ""
-                pending_manual_review_items.append("疑似将交易对手名称误识别为客户名称，已拦截，需人工复核本方户名。")
             if not result.get("bank_name"):
                 result["bank_name"] = _generic_header_bank_name(account_info.get("header_preview") or "")
         _infer_account_name_from_counterparties(result)
@@ -2258,6 +2314,15 @@ class BankStatementSkill(BaseExtractionSkill):
         result["raw_text_blocks_count"] = int(parse_diagnostics.get("raw_text_blocks_count") or 0)
         result["candidate_transaction_rows"] = int(parse_diagnostics.get("candidate_transaction_rows") or len(transactions))
         result["ocr_abnormal_rows"] = int(result.get("ocr_anomaly_count") or 0)
+        result["amount_column_detected"] = explicit_amount_column
+        customer_profile = metadata.get("customer_profile") if isinstance(metadata.get("customer_profile"), dict) else {}
+        customer_profile_name = str(
+            metadata.get("customer_name")
+            or customer_profile.get("customer_name")
+            or customer_profile.get("name")
+            or ""
+        )
+        _apply_parse_quality(result, customer_profile_name=customer_profile_name, amount_column_detected=explicit_amount_column)
         logger.info("[BankStatementSkill] valid_transaction_count=%s", result.get("valid_transaction_count", 0))
         # Compatibility aliases for existing storage/profile readers. The canonical
         # fields above remain the single source of truth.
@@ -2293,7 +2358,12 @@ class BankStatementSkill(BaseExtractionSkill):
             result["manual_review_items"].append("客户名称由高频同名交易对手兜底识别，建议人工复核。")
         if result.get("parse_completeness"):
             result["manual_review_items"].append(f"上海银行页头总笔数与已解析交易笔数存在差异，解析完整率：{result['parse_completeness']}。")
-        result["amount_column_detected"] = explicit_amount_column
+        if result.get("statement_subtype") == "receipt_bundle":
+            result["manual_review_items"].append("当前文件可能不是标准银行对账单，而是银行回单集合。")
+        if not result.get("transactions_valid"):
+            result["manual_review_items"].append("交易明细结构未恢复，暂不纳入客户级有效经营流水统计。")
+        if not result.get("account_info_valid"):
+            result["manual_review_items"].append("账户信息未达聚合质量要求，需人工复核本方户名、账号和银行名称。")
         markdown = render_bank_statement_markdown(result)
         warnings = list(result["manual_review_items"])
         confidence = min(0.98, 0.45 + (0.1 if account_no else 0) + (0.1 if period_start else 0) + (0.2 if transactions else 0) + (0.05 if result["page_count"] else 0))
