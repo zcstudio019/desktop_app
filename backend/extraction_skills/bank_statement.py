@@ -57,6 +57,16 @@ GARBAGE_COUNTERPARTY_MARKERS = (
     "HQP928", "w191001", "期:", "期：", "起息日期", "止息日", "支付交易序号", "指令编号", "提交人",
     "若与实际交易不符", "文件下载后", "重要提示",
 )
+GENERIC_TABLE_HEADER_KEYWORDS = (
+    "交易日期", "交易时间", "记账日期", "发生日期", "入账日期", "对方户名", "对手名称",
+    "对方名称", "收款方", "付款方", "交易对方", "摘要", "用途", "借方发生额",
+    "贷方发生额", "交易金额", "发生额", "余额",
+)
+GENERIC_BANK_NAMES = (
+    "中国工商银行", "上海银行", "中国建设银行", "中国农业银行", "中国银行", "招商银行", "交通银行",
+    "浦发银行", "中信银行", "民生银行", "平安银行", "兴业银行", "光大银行", "广发银行",
+    "江苏银行", "南京银行", "浙商银行", "泰隆银行", "温州银行", "宁波银行",
+)
 
 
 def _clean(value: Any) -> str:
@@ -73,6 +83,40 @@ def clean_account_name(value: Any) -> str:
     text = _normalize_company_spacing(value)
     text = re.split(r"(?:借方总金额|贷方总金额|总笔数)\s*[:：]?", text, maxsplit=1)[0]
     return text.strip("，,。；;：:")
+
+
+def validate_account_name(name: Any) -> tuple[bool, str]:
+    text = _clean(str(name or ""))
+    compact = re.sub(r"[\s\u3000]+", "", text)
+    if not compact:
+        return False, "empty"
+    if len(compact) > 80:
+        return False, "too_long"
+    if len(re.findall(r"有限公司|公司", compact)) >= 2:
+        return False, "multiple_counterparty_names"
+    forbidden = ("对手名称", "对方户名", "对方名称", "收款方", "付款方", "交易用途", "摘要", "余额", "单位国内汇款", "交易对方")
+    if any(marker in compact for marker in forbidden):
+        return False, "contains_transaction_table_field"
+    return True, ""
+
+
+def _generic_header_account_name(header_text: str) -> tuple[str, list[dict[str, str]], list[dict[str, str]]]:
+    candidates: list[dict[str, str]] = []
+    rejected: list[dict[str, str]] = []
+    pattern = r"(?:户名|账户名称|客户名称|单位名称|存款人名称|账户户名|本方户名)\s*[:：\s]*([^\n\r|]{2,120})"
+    for match in re.finditer(pattern, header_text):
+        value = _clean(match.group(1))
+        ok, reason = validate_account_name(value)
+        item = {"value": value, "source": "header"}
+        if ok:
+            candidates.append(item)
+        else:
+            rejected.append({**item, "reason": reason})
+    return (candidates[0]["value"] if candidates else ""), candidates, rejected
+
+
+def _generic_header_bank_name(header_text: str) -> str:
+    return next((name for name in GENERIC_BANK_NAMES if name in str(header_text or "")), "")
 
 
 def clean_opening_bank(value: Any, *, account_no: str = "", account_name: str = "") -> str:
@@ -238,8 +282,15 @@ def _account_header_text(raw_pages: list[dict[str, Any]], source: str) -> str:
                 if ratio == 0.40 or re.search(r"(?:账号|账户号|客户名称|户名|开户行|开户网点)\s*[:：]", header_text):
                     return header_text
     text = "\n".join(str(item.get("text") or "")[:5000] for item in first_pages) or str(source or "")[:8000]
-    table_header = re.search(r"(?:交易日期|记账日期|交易时间).{0,120}(?:摘要|借方发生额|贷方发生额|收入|支出)", text, re.S)
-    return text[:table_header.start()] if table_header else text
+    return _text_before_generic_table_header(text)
+
+
+def _text_before_generic_table_header(text: str) -> str:
+    positions = [match.start() for keyword in GENERIC_TABLE_HEADER_KEYWORDS for match in re.finditer(re.escape(keyword), str(text or ""))]
+    if positions:
+        return str(text or "")[:min(positions)]
+    table_header = re.search(r"(?:交易日期|记账日期|交易时间).{0,120}(?:摘要|借方发生额|贷方发生额|收入|支出)", str(text or ""), re.S)
+    return str(text or "")[:table_header.start()] if table_header else str(text or "")
 
 
 def _header_labeled_value(header: str, labels: tuple[str, ...]) -> str:
@@ -265,7 +316,19 @@ def _extract_account_info(raw_pages: list[dict[str, Any]], source: str, bank_for
     account_value = _header_labeled_value(header, account_labels)
     account_match = re.search(r"(?<!\d)(\d{8,32})(?!\d)", account_value)
     account_no = str(shanghai_native.get("account_no") or (account_match.group(1) if account_match else ""))
-    account_name = str(shanghai_native.get("account_name") or _header_labeled_value(header, name_labels))
+    if bank_format == BANK_FORMAT_GENERIC:
+        generic_account_name, account_name_candidates, rejected_account_name_candidates = _generic_header_account_name(header)
+        account_name = generic_account_name
+        logger.info("[GenericBankStatementParser] header_text_preview=%s", _clean(header[:1000]))
+        source_for_pos = "\n".join(str(item.get("text") or "")[:5000] for item in raw_pages[:2]) or str(source or "")[:8000]
+        table_positions = [source_for_pos.find(keyword) for keyword in GENERIC_TABLE_HEADER_KEYWORDS if source_for_pos.find(keyword) >= 0]
+        logger.info("[GenericBankStatementParser] table_header_pos=%s", min(table_positions) if table_positions else -1)
+        logger.info("[GenericBankStatementParser] account_name_candidates=%s", account_name_candidates)
+        logger.info("[GenericBankStatementParser] rejected_account_name_candidates=%s", rejected_account_name_candidates)
+        logger.info("[GenericBankStatementParser] reject_reason=%s", rejected_account_name_candidates[0]["reason"] if rejected_account_name_candidates else "")
+        logger.info("[GenericBankStatementParser] final_account_name=%s", account_name or "未识别")
+    else:
+        account_name = str(shanghai_native.get("account_name") or _header_labeled_value(header, name_labels))
     opening_bank = str(shanghai_native.get("opening_bank") or _header_labeled_value(header, branch_labels))
     evidence: list[dict[str, Any]] = []
     for field, value in (("account_no", account_no), ("account_name", account_name), ("opening_bank", opening_bank)):
@@ -2176,6 +2239,15 @@ class BankStatementSkill(BaseExtractionSkill):
             "parse_diagnostics": parse_diagnostics, "text_recognized": bool(source.strip()),
             "related_person_roles": related_person_roles,
         }
+        pending_manual_review_items: list[str] = []
+        if bank_format == BANK_FORMAT_GENERIC:
+            ok_name, name_reject_reason = validate_account_name(result.get("account_name"))
+            if not ok_name and result.get("account_name"):
+                logger.info("[GenericBankStatementParser] final_account_name_rejected=%s reason=%s", result.get("account_name"), name_reject_reason)
+                result["account_name"] = ""
+                pending_manual_review_items.append("疑似将交易对手名称误识别为客户名称，已拦截，需人工复核本方户名。")
+            if not result.get("bank_name"):
+                result["bank_name"] = _generic_header_bank_name(account_info.get("header_preview") or "")
         _infer_account_name_from_counterparties(result)
         _clean_and_mark_transactions(result)
         _summary(result)
@@ -2212,6 +2284,7 @@ class BankStatementSkill(BaseExtractionSkill):
             result["risk_tips"].append("存在资金拆借相关交易，建议进一步核验借款主体和用途。")
         if not result["risk_tips"]: result["risk_tips"].append("未从已识别内容中发现需要特别提示的事项。")
         result["manual_review_items"] = []
+        result["manual_review_items"].extend(pending_manual_review_items)
         if result["amount_recognition_status"] != "完整识别": result["manual_review_items"].append("金额列缺失或金额识别不完整。")
         if transactions and sum(not tx.get("clean_counterparty_name") for tx in transactions) / len(transactions) >= 0.3: result["manual_review_items"].append("对方单位为空或被判定为无效值的交易较多。")
         if len(period_evidence) > 1: result["manual_review_items"].append("文件包含多个时间区间，已按同一账户合并，建议核对区间连续性。")

@@ -379,6 +379,30 @@ FT25092611111111 2025-09-26 11:50:10 2025-09-26 入账(贷方) 300,000.00 2,816,
     assert "存在公司账户与法人/关联人之间的资金往来" in markdown
 
 
+def test_generic_bank_statement_rejects_counterparty_list_as_account_name():
+    text = """银行交易明细
+交易日期 对方户名 对方账号 摘要 交易金额 余额
+2024-05-13 百威（中国）销售有限公司 622201 单位国内汇款手续费 100.00 900.00
+2024-05-13 福建律动信息技术有限公司 622202 单位国内汇款手续费 200.00 700.00
+2024-05-13 福建西优网络有限公司 622203 单位国内汇款手续费 300.00 400.00
+2024-05-13 上海告趣信息科技有限公司 622204 单位国内汇款手续费 400.00 0.00
+"""
+    content = build_structured_extraction(
+        text,
+        "bank_statement",
+        raw_pages=[{"page": 1, "text": text, "table_rows": [], "source": "ocr"}],
+        filename="31006662901300306458920240513_1.pdf",
+    )
+    data = content["extracted_json"]
+    assert data["bank_format"] == "generic_bank_statement"
+    assert data["account_name"] == ""
+    assert data["customer_name"] == ""
+    assert "百威（中国）销售有限公司 福建律动信息技术有限公司" not in content["markdown_summary"]
+    assert "- 客户名称：未识别" in content["markdown_summary"]
+    assert data["account_no"] == ""
+    assert data["bank_name"] == ""
+
+
 def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
     pages = [{"page": 1, "text": "上海银行对账单\n客户名称：测试公司", "table_rows": [], "source": "ocr"}]
     content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
