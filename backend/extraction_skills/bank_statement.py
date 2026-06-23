@@ -257,20 +257,35 @@ def _extract_account_info(raw_pages: list[dict[str, Any]], source: str, bank_for
 def _parse_shanghai_native_header(raw_pages: list[dict[str, Any]], source: str = "") -> dict[str, Any]:
     """Parse Shanghai Bank native text header/totals before any OCR/table fallback."""
     first_pages = sorted((item for item in raw_pages if isinstance(item, dict)), key=lambda item: int(item.get("page") or 0))[:2]
-    text = "\n".join(str(item.get("text") or "")[:6000] for item in first_pages) or str(source or "")[:10000]
+    text = str(source or "")[:10000] or "\n".join(str(item.get("text") or "")[:6000] for item in first_pages)
+    if first_pages:
+        text = f"{text}\n" + "\n".join(str(item.get("text") or "")[:6000] for item in first_pages)
     compact = _clean(text.replace("\u3000", " "))
     result: dict[str, Any] = {}
+    header_match = re.search(
+        r"选择账号\s*[:：]\s*(?P<account_no>\d{5,32})\s+"
+        r"开户行\s*[:：]\s*(?P<opening_bank>.*?)\s+"
+        r"币种\s*[:：]\s*(?P<currency>人民币|美元|欧元|港币|日元)\s+"
+        r"(?P<account_name>.*?)(?=\s*借方总金额\s*[:：])",
+        compact,
+        re.S,
+    )
+    if header_match:
+        result["account_no"] = header_match.group("account_no")
+        result["opening_bank"] = _normalize_company_spacing(header_match.group("opening_bank"))
+        result["currency"] = header_match.group("currency")
+        result["account_name"] = _normalize_company_spacing(header_match.group("account_name"))
     account_match = re.search(r"选择账号\s*[:：]\s*([0-9]{5,32})", compact)
     if account_match:
-        result["account_no"] = account_match.group(1)
+        result.setdefault("account_no", account_match.group(1))
     branch_match = re.search(r"开户行\s*[:：]\s*(.+?)(?=\s*(?:币种|客户名称|借方总金额|总笔数)\s*[:：]|$)", compact)
-    if branch_match:
+    if branch_match and "opening_bank" not in result:
         result["opening_bank"] = _clean(branch_match.group(1))
     currency_match = re.search(r"币种\s*[:：]\s*(人民币|美元|欧元|港币|日元)", compact)
-    if currency_match:
+    if currency_match and "currency" not in result:
         result["currency"] = currency_match.group(1)
     name_match = re.search(r"币种\s*[:：]\s*(?:人民币|美元|欧元|港币|日元)\s*(?P<name>[\u4e00-\u9fff\s（）()]{4,100}?)(?=\s*借方总金额\s*[:：])", compact)
-    if name_match:
+    if name_match and "account_name" not in result:
         result["account_name"] = _normalize_company_spacing(name_match.group("name"))
     period_match = re.search(r"记账日期\s*[:：]\s*(\d{4}-\d{2}-\d{2})\s*[-—－]{2,3}\s*(\d{4}-\d{2}-\d{2})", compact)
     if period_match:
@@ -845,7 +860,7 @@ def parse_shanghai_bank_by_date_anchor(
     return unique, candidates, invalid
 
 
-SHANGHAI_SERIAL_RE = re.compile(r"(?:FT\d{8,}|BEA\d{8,}\d?|ONLINE\.AC\.CLOSURE\S*|\d{3}\.\d{8,}\.\d+|\d{8,32}-\d{8})")
+SHANGHAI_SERIAL_RE = re.compile(r"(?:FT\d{8,}|BEA\d{8,}|V\d{8,}|G\d{8,}|ONLINE\.AC\.CLOSURE\S*|\d{3}\.\d{8,}\.\d+|\d{8,32}-\d{8})")
 SHANGHAI_NATIVE_ROW_RE = re.compile(
     rf"(?P<serial_no>{SHANGHAI_SERIAL_RE.pattern})\s+"
     r"(?P<trade_time>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+"
@@ -853,17 +868,39 @@ SHANGHAI_NATIVE_ROW_RE = re.compile(
     r"(?P<direction_raw>入账\(贷方\)|出账\(借方\))\s+"
     r"(?P<amount>[\d,]+\.\d{2})\s+"
     r"(?P<balance>[\d,]+\.\d{2})\s*"
-    r"(?P<rest>.*)$"
+    rf"(?P<rest>.*?)(?=\n?\s*{SHANGHAI_SERIAL_RE.pattern}\s+\d{{4}}-\d{{2}}-\d{{2}}\s+\d{{2}}:\d{{2}}:\d{{2}}|\Z)",
+    re.S,
 )
 SHANGHAI_SUMMARY_KEYWORDS = (
-    "跨行转账", "ETC业务扣款", "企业短信业务服务费", "企业网上银行", "缴税", "扣款", "帐户结息", "账户结息",
+    "企业电子银行行内及跨行同城转账手续费收费", "企业电子银行跨行异地转账手续费收费",
+    "企业网上银行跨行同城转账", "企业网上银行跨行异地转账", "企业短信业务服务费收费",
+    "单位活期存款利息收入", "帐户结息（贷记）", "扣款（缴税）", "企业短信业务服务费",
+    "跨行转账", "ETC业务扣款", "企业网上银行", "缴税", "帐户结息", "账户结息",
     "转账", "手续费", "银行手续费", "代发专用账户", "单位活期存款",
 )
 
 
-def _normalize_shanghai_native_lines(raw_pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _shanghai_native_text(raw_pages: list[dict[str, Any]], source_text: str = "") -> str:
+    if source_text and _is_shanghai_native_statement_text(source_text):
+        return re.sub(r"(BEA\d{8,})\s*\n\s*(\d)\s+(?=\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", r"\1\2 ", str(source_text))
+    parts = [str(source_text or "")]
+    parts.extend(str(item.get("text") or "") for item in raw_pages if isinstance(item, dict))
+    text = "\n".join(part for part in parts if part)
+    text = re.sub(r"(BEA\d{8,})\s*\n\s*(\d)\s+(?=\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", r"\1\2 ", text)
+    return text
+
+
+def _is_shanghai_native_statement_text(text: str) -> bool:
+    compact = str(text or "")
+    required = ("账户明细查询", "交易流水号", "交易时间", "记账日期", "交易方向", "交易金额", "余额")
+    return all(item in compact for item in required)
+
+
+def _normalize_shanghai_native_lines(raw_pages: list[dict[str, Any]], source_text: str = "") -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
-    for page_item in raw_pages:
+    pages = [{"page": 1, "text": source_text}] if source_text else []
+    pages.extend(raw_pages)
+    for page_item in pages:
         page_no = int(page_item.get("page") or 0)
         lines = [_clean(line) for line in str(page_item.get("text") or "").splitlines()]
         lines = [line for line in lines if line]
@@ -884,18 +921,21 @@ def _normalize_shanghai_native_lines(raw_pages: list[dict[str, Any]]) -> list[di
 
 def _parse_shanghai_rest(rest: str, own_account: str = "") -> dict[str, str]:
     text = _clean(rest)
+    text = re.sub(r"有限\s+公司", "有限公司", text)
+    text = re.sub(r"公\s+司", "公司", text)
+    text = text.replace("跨行同城 转账", "跨行同城转账").replace("跨行异地 转账", "跨行异地转账")
     result = {"counterparty_account": "", "counterparty_name": "", "summary": "", "purpose": "", "remark": ""}
     account_match = re.match(r"(?P<account>\d{8,32})\s*(?P<remain>.*)$", text)
     if account_match:
         result["counterparty_account"] = account_match.group("account")
         text = _clean(account_match.group("remain"))
-    keyword_positions = [(text.find(keyword), keyword) for keyword in SHANGHAI_SUMMARY_KEYWORDS if text.find(keyword) >= 0]
+    keyword_positions = [(text.find(keyword), keyword) for keyword in sorted(SHANGHAI_SUMMARY_KEYWORDS, key=len, reverse=True) if text.find(keyword) >= 0]
     keyword_positions.sort(key=lambda item: item[0])
     if keyword_positions:
         pos, keyword = keyword_positions[0]
         before = _normalize_company_spacing(text[:pos])
         after = _clean(text[pos + len(keyword):])
-        result["counterparty_name"] = "" if _normalize_entity_name(before) in {_normalize_entity_name("企业网上银行"), _normalize_entity_name("企业短信业务服务费"), _normalize_entity_name("ETC业务扣款"), _normalize_entity_name("缴税"), _normalize_entity_name("帐户结息")} else before
+        result["counterparty_name"] = "" if _normalize_entity_name(before) in {_normalize_entity_name("企业网上银行"), _normalize_entity_name("企业短信业务服务费"), _normalize_entity_name("ETC业务扣款"), _normalize_entity_name("缴税"), _normalize_entity_name("帐户结息"), _normalize_entity_name("单位活期存款")} else before
         result["summary"] = keyword
         result["purpose"] = after[:120]
     else:
@@ -917,23 +957,29 @@ def parse_shanghai_bank_native_text_rows(
     period_start: str,
     period_end: str,
     own_account: str = "",
+    source_text: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
-    page_lines = _normalize_shanghai_native_lines(raw_pages)
+    native_text = _shanghai_native_text(raw_pages, source_text)
+    page_lines = _normalize_shanghai_native_lines(raw_pages, source_text)
     transactions: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     invalid = 0
     start = parse_valid_date(period_start)
     end = parse_valid_date(period_end)
-    for line in page_lines:
-        text = str(line.get("text") or "")
-        match = SHANGHAI_NATIVE_ROW_RE.match(text)
-        if not match:
-            continue
+    matches = list(SHANGHAI_NATIVE_ROW_RE.finditer(native_text))
+    if not matches:
+        for line in page_lines:
+            text = str(line.get("text") or "")
+            match = SHANGHAI_NATIVE_ROW_RE.match(text)
+            if not match:
+                continue
+            matches.append(match)
+    for offset, match in enumerate(matches, start=1):
         data = match.groupdict()
         trade_date = parse_valid_date(data["trade_time"][:10])
         artifact = {
-            "page": line.get("page"), "line_no": line.get("line_no"), "serial_no": data["serial_no"],
-            "transaction_date": data["trade_time"], "raw_line_text": text, "status": "candidate",
+            "page": 1, "line_no": offset, "serial_no": data["serial_no"],
+            "transaction_date": data["trade_time"], "raw_line_text": _clean(match.group(0)), "status": "candidate",
         }
         candidates.append(artifact)
         if not trade_date or (start and trade_date < start) or (end and trade_date > end):
@@ -950,7 +996,7 @@ def parse_shanghai_bank_native_text_rows(
             artifact["status"] = "invalid_no_transaction_fields"
             invalid += 1
             continue
-        tx = _new_tx(int(line.get("page") or 0))
+        tx = _new_tx(1)
         tx.update({
             "凭证号": data["serial_no"],
             "交易流水号": data["serial_no"],
@@ -966,7 +1012,7 @@ def parse_shanghai_bank_native_text_rows(
             "摘要": rest_fields.get("summary") or "",
             "用途": rest_fields.get("purpose") or "",
             "备注": rest_fields.get("remark") or "",
-            "raw_line_text": text,
+            "raw_line_text": _clean(match.group(0)),
             "parser_source": "shanghai_native_text_row",
         })
         tx["交易分类"] = classify_transaction(tx)
@@ -993,18 +1039,34 @@ def parse_shanghai_bank_statement(
     period_start: str,
     period_end: str,
     own_account: str = "",
+    source_text: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, dict[str, Any]]:
     logger.info("[ShanghaiBankAdapter] detected_bank_format=shanghai_bank")
     logger.info("[ShanghaiBankAdapter] pages=%s", len({int(item.get('page') or index) for index, item in enumerate(raw_pages, 1)}))
     logger.info("[ShanghaiBankAdapter] raw_text_len=%s", sum(len(str(item.get("text") or "")) for item in raw_pages))
-    native_header = _parse_shanghai_native_header(raw_pages)
-    native_transactions, native_candidates, native_invalid = parse_shanghai_bank_native_text_rows(raw_pages, period_start, period_end, own_account)
-    logger.info("[ShanghaiBankNativeParser] header_account_no=%s", native_header.get("account_no") or "未识别")
-    logger.info("[ShanghaiBankNativeParser] header_account_name=%s", native_header.get("account_name") or "未识别")
-    logger.info("[ShanghaiBankNativeParser] header_opening_bank=%s", native_header.get("opening_bank") or "未识别")
+    combined_native_text = _shanghai_native_text(raw_pages, source_text)
+    native_header = _parse_shanghai_native_header(raw_pages, source_text)
+    native_activated = _is_shanghai_native_statement_text(combined_native_text)
+    logger.info("[ShanghaiBankNativeParser] activated=%s", str(native_activated).lower())
+    native_transactions: list[dict[str, Any]] = []
+    native_candidates: list[dict[str, Any]] = []
+    native_invalid = 0
+    if native_activated:
+        native_transactions, native_candidates, native_invalid = parse_shanghai_bank_native_text_rows(raw_pages, period_start, period_end, own_account, source_text)
+    else:
+        missing = [item for item in ("账户明细查询", "交易流水号", "交易时间", "记账日期", "交易方向", "交易金额", "余额") if item not in combined_native_text]
+        logger.info("[ShanghaiBankNativeParser] activated=false missing_markers=%s", missing)
+    logger.info("[ShanghaiBankNativeParser] account_no=%s", native_header.get("account_no") or "未识别")
+    logger.info("[ShanghaiBankNativeParser] opening_bank=%s", native_header.get("opening_bank") or "未识别")
+    logger.info("[ShanghaiBankNativeParser] account_name=%s", native_header.get("account_name") or "未识别")
     logger.info("[ShanghaiBankNativeParser] total_count_from_header=%s", native_header.get("transaction_count") or "未识别")
-    logger.info("[ShanghaiBankNativeParser] parsed_transactions_count=%s", len(native_transactions))
-    logger.info("[ShanghaiBankNativeParser] first_10_transactions=%s", native_candidates[:10])
+    logger.info("[ShanghaiBankNativeParser] debit_total_amount=%s", native_header.get("debit_total_amount") or "未识别")
+    logger.info("[ShanghaiBankNativeParser] credit_total_amount=%s", native_header.get("credit_total_amount") or "未识别")
+    logger.info("[ShanghaiBankNativeParser] native_matches_count=%s", len(native_transactions))
+    logger.info("[ShanghaiBankNativeParser] first_5_transactions=%s", native_candidates[:5])
+    if native_activated and not native_candidates:
+        anchor = combined_native_text.find("交易流水号")
+        logger.info("[ShanghaiBankNativeParser] native_match_failed_preview=%s", _clean(combined_native_text[anchor:anchor + 3000] if anchor >= 0 else combined_native_text[:3000]))
     if native_transactions:
         evidence: list[dict[str, Any]] = []
         for index, tx in enumerate(native_transactions, start=1):
@@ -1469,6 +1531,8 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
         is_bank_fee = category == "银行费用"
         is_loan = category in {"贷款发放", "贷款归还", "资金拆借"}
         is_interest = category in {"利息收入", "利息支出"} or "利息" in raw_text
+        is_tax = any(marker in raw_text for marker in ("缴税", "扣款（缴税）"))
+        is_payroll = "代发专用账户" in counterparty or any(marker in raw_text for marker in ("工资", "年终奖"))
         is_bank_internal = _is_bank_internal_counterparty(counterparty)
         is_page_block = result.get("bank_format") == BANK_FORMAT_SHANGHAI and _is_page_block_transaction(tx)
         is_ocr_anomaly = not is_valid_time or is_page_block or bool(invalid_counterparty and invalid_counterparty != "对方单位为空")
@@ -1480,6 +1544,10 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
             reasons.append("银行手续费或账户服务费用")
         if is_loan or is_interest:
             reasons.append("贷款及利息相关交易")
+        if is_tax:
+            reasons.append("税费交易")
+        if is_payroll:
+            reasons.append("工资代发交易")
         if is_bank_internal:
             reasons.append("银行系统内部交易对手")
         if not is_valid_time:
@@ -1778,6 +1846,21 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         f"- 对账单标题：{_display(result.get('statement_title'))}", f"- 币种：{_display(result.get('currency'))}",
         f"- 单位：{_display(result.get('unit'))}", f"- 时间范围：{_display(result.get('period_text'))}",
         f"- 页数：{result.get('page_count', 0)}页", f"- 金额识别状态：{_display(result.get('amount_recognition_status'))}",
+    ]
+    if result.get("bank_format") == BANK_FORMAT_SHANGHAI and (result.get("debit_total_amount") is not None or result.get("credit_total_amount") is not None or result.get("header_transaction_count")):
+        parsed_count = result.get("parsed_transaction_count", len(result.get("transactions") or []))
+        total_count = result.get("header_transaction_count") or result.get("transaction_count") or 0
+        lines += [
+            "", "### 汇总信息",
+            f"- 借方总金额：{_money(result.get('debit_total_amount'))}",
+            f"- 贷方总金额：{_money(result.get('credit_total_amount'))}",
+            f"- 借方总笔数：{_display(result.get('debit_count'))}",
+            f"- 贷方总笔数：{_display(result.get('credit_count'))}",
+            f"- 总笔数：{_display(total_count)}",
+            f"- 已解析交易笔数：{parsed_count}",
+            f"- 解析完整率：{parsed_count}/{total_count}" if total_count else f"- 解析完整率：{parsed_count}/未识别",
+        ]
+    lines += [
         "", "### 流水分析摘要",
         f"- 原始交易笔数：{result.get('raw_transaction_count', 0)}",
         f"- 有效交易笔数：{result.get('effective_transaction_count', 0)}",
@@ -1902,7 +1985,7 @@ class BankStatementSkill(BaseExtractionSkill):
         logger.info("[BankStatementSkill] selected_period=%s~%s source=%s", period_start or "未识别", period_end or "未识别", selected_period_source)
         if bank_format == BANK_FORMAT_SHANGHAI:
             transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_shanghai_bank_statement(
-                raw_pages, period_start, period_end, account_info.get("account_no") or "",
+                raw_pages, period_start, period_end, account_info.get("account_no") or "", text,
             )
         elif bank_format == BANK_FORMAT_ICBC:
             transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_icbc_statement(raw_pages, source)
@@ -1985,6 +2068,8 @@ class BankStatementSkill(BaseExtractionSkill):
         if any(tx["交易分类"] in {"贷款发放", "贷款归还", "资金拆借", "往来入账", "往来出账"} for tx in transactions): result["manual_review_items"].append("存在贷款、借款或往来款交易，建议人工核验资金性质。")
         if result.get("account_name_needs_review"):
             result["manual_review_items"].append("客户名称由高频同名交易对手兜底识别，建议人工复核。")
+        if result.get("parse_completeness"):
+            result["manual_review_items"].append(f"上海银行页头总笔数与已解析交易笔数存在差异，解析完整率：{result['parse_completeness']}。")
         result["amount_column_detected"] = explicit_amount_column
         markdown = render_bank_statement_markdown(result)
         warnings = list(result["manual_review_items"])
