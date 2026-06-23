@@ -1529,6 +1529,21 @@ async def _extract_content_from_file(
 
 def _resolve_document_type_code(text_content: str, explicit_type: str | None, rows: list[dict], filename: str = "") -> str:
     normalized = normalize_document_type_code(explicit_type)
+    receipt_source = f"{filename}\n{text_content}"
+    receipt_like = (
+        any(keyword in receipt_source for keyword in ("单位国内汇款", "电子回单", "银行回单", "汇款回单", "转账回单", "付款凭证", "收款凭证", "回单编号", "业务编号"))
+        or (any(keyword in receipt_source for keyword in ("付款人", "付款账号")) and any(keyword in receipt_source for keyword in ("收款人", "收款账号")))
+    )
+    standard_bank_table = (
+        "账户明细" in receipt_source
+        or "账户明细清单" in receipt_source
+        or (
+            any(keyword in receipt_source for keyword in ("余额", "借方发生额", "贷方发生额"))
+            and any(keyword in receipt_source for keyword in ("交易日期", "交易时间", "记账日期"))
+        )
+    )
+    if receipt_like and not standard_bank_table and normalized in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
+        return "bank_receipt_bundle"
     official_bank_statement = any(
         keyword.lower() in f"{filename}\n{text_content}".lower()
         for keyword in ("中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")

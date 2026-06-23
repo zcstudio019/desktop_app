@@ -342,9 +342,25 @@ def aggregate_customer_bank_statements(
 
     for extraction in extractions:
         payload = _payload(extraction)
-        if (payload.get("doc_type") or payload.get("document_type_code") or extraction.get("extraction_type")) != "bank_statement":
+        doc_type = payload.get("doc_type") or payload.get("document_type_code") or extraction.get("extraction_type")
+        if doc_type not in {"bank_statement", "bank_receipt_bundle"}:
             continue
         source_file = str(extraction.get("file_name") or payload.get("source_file") or payload.get("file_name") or "")
+        if doc_type == "bank_receipt_bundle":
+            file_quality.append({
+                "source_file": source_file,
+                "bank_name": payload.get("bank_name") or UNKNOWN,
+                "statement_subtype": "receipt_bundle",
+                "statement_subtype_label": _statement_subtype_label("receipt_bundle"),
+                "account_no": UNKNOWN,
+                "account_name": UNKNOWN,
+                "parse_quality_status": "partial",
+                "parse_quality_label": _quality_status_label("partial", "receipt_bundle"),
+                "included": False,
+                "problem": "银行回单集合，可用于交易凭证辅助核验，未纳入经营流水聚合",
+            })
+            source_files.append({"file_name": source_file, "status": payload.get("parse_quality_status") or "partial", "account_no": ""})
+            continue
         quality = _infer_quality(payload)
         valid_account_name = quality["account_name_clean"]
         bank_name = str(payload.get("bank_name") or "")

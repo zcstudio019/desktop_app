@@ -197,6 +197,15 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
         store_markdown=True,
     ),
     DocumentTypeDefinition(
+        code="bank_receipt_bundle",
+        name="银行回单集合",
+        storage_label="银行回单集合",
+        formats=("pdf", "image"),
+        aliases=("银行回单集合", "银行回单", "电子回单", "汇款回单", "转账回单", "付款凭证", "收款凭证", "bank_receipt_bundle"),
+        store_original=True,
+        store_markdown=True,
+    ),
+    DocumentTypeDefinition(
         code="bank_statement_detail",
         name="银行对账明细",
         storage_label="银行对账明细",
@@ -211,6 +220,14 @@ DOCUMENT_TYPES_BY_CODE = {item.code: item for item in DOCUMENT_TYPE_DEFINITIONS}
 
 DOCUMENT_TYPE_CANONICAL_ALIASES = {
     "bank_statement": "bank_statement",
+    "bank_receipt_bundle": "bank_receipt_bundle",
+    "银行回单集合": "bank_receipt_bundle",
+    "银行回单": "bank_receipt_bundle",
+    "电子回单": "bank_receipt_bundle",
+    "汇款回单": "bank_receipt_bundle",
+    "转账回单": "bank_receipt_bundle",
+    "付款凭证": "bank_receipt_bundle",
+    "收款凭证": "bank_receipt_bundle",
     "bank statement": "bank_statement",
     "statement": "bank_statement",
     "银行对账单": "bank_statement",
@@ -332,6 +349,7 @@ def should_append_same_type_document(value: str | None) -> bool:
         "个人流水",
         "个人银行流水",
         "bank_statement",
+        "bank_receipt_bundle",
         "enterprise_bank_statement",
         "bank_statement_enterprise",
         "company_bank_statement",

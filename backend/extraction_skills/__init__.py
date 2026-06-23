@@ -5,6 +5,7 @@ from typing import Any
 from backend.document_types import normalize_document_type_code
 
 from .base import BaseExtractionSkill, ExtractionInput, ExtractionResult
+from .bank_receipt_bundle import BankReceiptBundleSkill
 from .bank_statement import BankStatementSkill
 from .enterprise_credit import EnterpriseCreditSkill
 from .personal_credit import PersonalCreditSkill
@@ -21,6 +22,7 @@ _ALIASES = {
 _ENTERPRISE_CREDIT_SKILL = EnterpriseCreditSkill()
 _PERSONAL_CREDIT_SKILL = PersonalCreditSkill()
 _BANK_STATEMENT_SKILL = BankStatementSkill()
+_BANK_RECEIPT_BUNDLE_SKILL = BankReceiptBundleSkill()
 
 _SKILLS: dict[str, BaseExtractionSkill] = {
     "enterprise_credit": _ENTERPRISE_CREDIT_SKILL,
@@ -28,6 +30,7 @@ _SKILLS: dict[str, BaseExtractionSkill] = {
     "personal_credit_report": _PERSONAL_CREDIT_SKILL,
     "personal_credit": _PERSONAL_CREDIT_SKILL,
     "bank_statement": _BANK_STATEMENT_SKILL,
+    "bank_receipt_bundle": _BANK_RECEIPT_BUNDLE_SKILL,
 }
 
 

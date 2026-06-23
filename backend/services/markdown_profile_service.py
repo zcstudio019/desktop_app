@@ -2697,7 +2697,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
     ]
     bank_statement_extractions = [
         item for item in extractions
-        if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') == 'bank_statement'
+        if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') in {'bank_statement', 'bank_receipt_bundle'}
     ]
     financial_report_extractions = [
         item for item in extractions

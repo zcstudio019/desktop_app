@@ -6,6 +6,7 @@ from typing import Any
 from backend.document_types import get_document_display_name, get_document_storage_label, normalize_document_type_code
 from backend.extraction_skills.enterprise_credit import build_enterprise_credit_content
 from backend.extraction_skills.personal_credit import build_personal_credit_report_content
+from backend.services.bank_receipt_bundle_agent import BankReceiptBundleAgentAdapter
 from backend.services.enterprise_bank_statement_agent.adapter import (
     EnterpriseBankStatementAgentAdapter as EnterpriseBankStatementAgentAdapterV2,
 )
@@ -157,6 +158,7 @@ _FINANCIAL_REPORT_AGENT = FinancialReportAgentAdapter()
 _PROPERTY_CERT_AGENT = PropertyCertAgentAdapter()
 _COMPANY_ARTICLES_AGENT = CompanyArticlesAgentAdapter()
 _BANK_STATEMENT_AGENT = BankStatementAgentAdapter()
+_BANK_RECEIPT_BUNDLE_AGENT = BankReceiptBundleAgentAdapter()
 
 DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "enterprise_credit_report": _ENTERPRISE_CREDIT_AGENT,
@@ -179,6 +181,7 @@ DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "property_cert": _PROPERTY_CERT_AGENT,
     "real_estate_cert": _PROPERTY_CERT_AGENT,
     "bank_statement": _BANK_STATEMENT_AGENT,
+    "bank_receipt_bundle": _BANK_RECEIPT_BUNDLE_AGENT,
     "财务报表": _FINANCIAL_REPORT_AGENT,
     "财务数据": _FINANCIAL_REPORT_AGENT,
     "企业流水": _ENTERPRISE_BANK_STATEMENT_AGENT,

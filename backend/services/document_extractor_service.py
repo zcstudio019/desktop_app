@@ -127,10 +127,35 @@ OFFICIAL_BANK_STATEMENT_KEYWORDS = (
     "中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement",
 )
 
+BANK_RECEIPT_BUNDLE_KEYWORDS = (
+    "单位国内汇款", "电子回单", "银行回单", "汇款回单", "转账回单", "付款凭证", "收款凭证",
+    "回单编号", "业务编号", "付款人", "收款人", "付款账号", "收款账号",
+)
+
+STANDARD_BANK_STATEMENT_TABLE_KEYWORDS = (
+    "交易日期", "交易时间", "记账日期", "余额", "借方发生额", "贷方发生额", "账户明细", "账户明细清单",
+)
+
 
 def _looks_like_official_bank_statement(text: str, filename: str = "") -> bool:
     source = f"{filename}\n{text}".lower()
     return any(keyword.lower() in source for keyword in OFFICIAL_BANK_STATEMENT_KEYWORDS)
+
+
+def _looks_like_bank_receipt_bundle(text: str, filename: str = "") -> bool:
+    source = f"{filename}\n{text}"
+    hit_count = sum(1 for keyword in BANK_RECEIPT_BUNDLE_KEYWORDS if keyword in source)
+    has_receipt_marker = any(keyword in source for keyword in ("电子回单", "单位国内汇款", "回单编号", "业务编号", "银行回单", "交易回单"))
+    has_parties = any(keyword in source for keyword in ("付款人", "付款账号")) and any(keyword in source for keyword in ("收款人", "收款账号"))
+    has_standard_statement_table = (
+        "账户明细" in source
+        or "账户明细清单" in source
+        or (
+            any(keyword in source for keyword in ("余额", "借方发生额", "贷方发生额"))
+            and any(keyword in source for keyword in ("交易日期", "交易时间", "记账日期"))
+        )
+    )
+    return (has_receipt_marker or hit_count >= 3 or has_parties) and not has_standard_statement_table
 
 
 BANK_DATE_KEYS = ("交易日期", "记账日期", "日期", "入账日期", "交易时间")
@@ -154,6 +179,8 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
+    if _looks_like_bank_receipt_bundle(text_content, filename) and normalized_explicit in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
+        return "bank_receipt_bundle"
     if _looks_like_official_bank_statement(text_content, filename) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_statement"
     if normalized_explicit:
@@ -205,6 +232,13 @@ def build_structured_extraction(
         content = extract_account_license(text_content)
     elif normalized_code == "company_articles":
         content = extract_company_articles(text_content, ai_service=ai_service)
+    elif normalized_code == "bank_receipt_bundle":
+        result = run_document_extraction_agent("bank_receipt_bundle", text_content, "", metadata={})
+        content = result.raw_agent_result or {
+            "extracted_json": result.extracted_json,
+            "markdown_summary": result.markdown_summary,
+            "display_markdown": result.markdown_summary,
+        }
     elif normalized_code == "bank_statement":
         content = extract_bank_statement_from_rows(rows, text_content) if rows else extract_bank_statement_pdf_fields(text_content)
     elif normalized_code == "bank_statement_detail":
@@ -3057,6 +3091,8 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
+    if _looks_like_bank_receipt_bundle(text_content, filename) and normalized_explicit in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
+        return "bank_receipt_bundle"
     if _looks_like_official_bank_statement(text_content, filename) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_statement"
     if normalized_explicit:
@@ -3108,6 +3144,13 @@ def build_structured_extraction(
         content = extract_account_license(text_content)
     elif normalized_code == "company_articles":
         content = extract_company_articles(text_content, ai_service=ai_service)
+    elif normalized_code == "bank_receipt_bundle":
+        result = run_document_extraction_agent("bank_receipt_bundle", text_content, "", metadata={})
+        content = result.raw_agent_result or {
+            "extracted_json": result.extracted_json,
+            "markdown_summary": result.markdown_summary,
+            "display_markdown": result.markdown_summary,
+        }
     elif normalized_code == "bank_statement":
         content = extract_bank_statement_from_rows(rows, text_content) if rows else extract_bank_statement_pdf_fields(text_content)
     elif normalized_code == "bank_statement_detail":
