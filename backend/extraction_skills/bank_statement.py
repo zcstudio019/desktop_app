@@ -69,6 +69,32 @@ def _normalize_company_spacing(value: Any) -> str:
     return text
 
 
+def clean_account_name(value: Any) -> str:
+    text = _normalize_company_spacing(value)
+    text = re.split(r"(?:借方总金额|贷方总金额|总笔数)\s*[:：]?", text, maxsplit=1)[0]
+    return text.strip("，,。；;：:")
+
+
+def clean_opening_bank(value: Any, *, account_no: str = "", account_name: str = "") -> str:
+    text = re.sub(r"[\s\u3000\t\r\n]+", "", str(value or "")).strip("，,。；;：:")
+    if not text:
+        return ""
+    branch_match = re.search(r"(上海银行[\u4e00-\u9fffA-Za-z0-9（）()]*?(?:支行|营业部|分行|网点)(?:营业部)?)", text)
+    if branch_match:
+        text = branch_match.group(1)
+    if account_no:
+        text = text.replace(str(account_no), "")
+    if "开户行" in text:
+        text = re.split(r"开户行[:：]?", text, maxsplit=1)[-1]
+    for marker in ("币种", "人民币", "美元", "欧元", "港币", "日元", "选择账号", "借方总金额", "贷方总金额", "总笔数"):
+        if marker in text:
+            text = text.split(marker, 1)[0]
+    clean_name = clean_account_name(account_name)
+    if clean_name and clean_name in text:
+        text = text.split(clean_name, 1)[0]
+    return text.strip("，,。；;：:")
+
+
 def _date(value: str) -> str:
     match = DATE_RE.search(str(value or ""))
     if not match:
@@ -272,21 +298,29 @@ def _parse_shanghai_native_header(raw_pages: list[dict[str, Any]], source: str =
     )
     if header_match:
         result["account_no"] = header_match.group("account_no")
-        result["opening_bank"] = _normalize_company_spacing(header_match.group("opening_bank"))
+        opening_bank_raw = _clean(header_match.group("opening_bank"))
+        account_name_clean = clean_account_name(header_match.group("account_name"))
+        result["opening_bank"] = clean_opening_bank(opening_bank_raw, account_no=result["account_no"], account_name=account_name_clean)
         result["currency"] = header_match.group("currency")
-        result["account_name"] = _normalize_company_spacing(header_match.group("account_name"))
+        result["account_name"] = account_name_clean
+        logger.info("[ShanghaiBankHeaderParser] raw_header_line=%s", _clean(header_match.group(0)))
+        logger.info("[ShanghaiBankHeaderParser] account_no=%s", result["account_no"])
+        logger.info("[ShanghaiBankHeaderParser] opening_bank_raw=%s", opening_bank_raw)
+        logger.info("[ShanghaiBankHeaderParser] opening_bank_clean=%s", result["opening_bank"])
+        logger.info("[ShanghaiBankHeaderParser] currency=%s", result["currency"])
+        logger.info("[ShanghaiBankHeaderParser] account_name=%s", result["account_name"])
     account_match = re.search(r"选择账号\s*[:：]\s*([0-9]{5,32})", compact)
     if account_match:
         result.setdefault("account_no", account_match.group(1))
     branch_match = re.search(r"开户行\s*[:：]\s*(.+?)(?=\s*(?:币种|客户名称|借方总金额|总笔数)\s*[:：]|$)", compact)
     if branch_match and "opening_bank" not in result:
-        result["opening_bank"] = _clean(branch_match.group(1))
+        result["opening_bank"] = clean_opening_bank(branch_match.group(1), account_no=str(result.get("account_no") or ""), account_name=str(result.get("account_name") or ""))
     currency_match = re.search(r"币种\s*[:：]\s*(人民币|美元|欧元|港币|日元)", compact)
     if currency_match and "currency" not in result:
         result["currency"] = currency_match.group(1)
     name_match = re.search(r"币种\s*[:：]\s*(?:人民币|美元|欧元|港币|日元)\s*(?P<name>[\u4e00-\u9fff\s（）()]{4,100}?)(?=\s*借方总金额\s*[:：])", compact)
     if name_match and "account_name" not in result:
-        result["account_name"] = _normalize_company_spacing(name_match.group("name"))
+        result["account_name"] = clean_account_name(name_match.group("name"))
     period_match = re.search(r"记账日期\s*[:：]\s*(\d{4}-\d{2}-\d{2})\s*[-—－]{2,3}\s*(\d{4}-\d{2}-\d{2})", compact)
     if period_match:
         result["period_start"], result["period_end"] = period_match.groups()
@@ -1397,6 +1431,20 @@ def normalize_opening_bank_name(value: Any, bank_name: str = "") -> str:
     return text
 
 
+def sanitize_opening_bank_for_display(value: Any, *, bank_format: str = "", account_no: str = "", account_name: str = "") -> str:
+    if bank_format == BANK_FORMAT_SHANGHAI:
+        cleaned = clean_opening_bank(value, account_no=account_no, account_name=account_name)
+        forbidden = ["币种", "人民币", "选择账号", "借方总金额", "总笔数"]
+        if account_no:
+            forbidden.append(account_no)
+        if account_name:
+            forbidden.append(account_name)
+        if any(marker and marker in cleaned for marker in forbidden):
+            cleaned = clean_opening_bank(cleaned, account_no=account_no, account_name=account_name)
+        return cleaned if not any(marker and marker in cleaned for marker in forbidden) else ""
+    return normalize_opening_bank_name(value, "")
+
+
 def _clean_display_text(value: Any) -> str:
     text = _clean(value)
     if not text:
@@ -2011,7 +2059,11 @@ class BankStatementSkill(BaseExtractionSkill):
         logger.info("[BankStatementSkill] period_ranges=%s", period_ranges)
         logger.info("[BankStatementSkill] transactions_count=%s", len(transactions))
         opening_bank_raw = account_info.get("opening_bank") or ""
-        opening_bank = normalize_opening_bank_name(opening_bank_raw, bank_name)
+        account_name_clean = clean_account_name(account_info.get("account_name") or "") if bank_format == BANK_FORMAT_SHANGHAI else (account_info.get("account_name") or "")
+        opening_bank = (
+            sanitize_opening_bank_for_display(opening_bank_raw, bank_format=bank_format, account_no=account_no, account_name=account_name_clean)
+            if bank_format == BANK_FORMAT_SHANGHAI else normalize_opening_bank_name(opening_bank_raw, bank_name)
+        )
         logger.info("[BankStatementSkill] opening_bank_raw=%s opening_bank=%s", opening_bank_raw or "未识别", opening_bank or "未识别")
         result: dict[str, Any] = {
             "doc_type": "bank_statement", "doc_type_name": "银行对账单", "agent_type": "bank_statement_agent", "bank_format": bank_format,
@@ -2019,7 +2071,7 @@ class BankStatementSkill(BaseExtractionSkill):
             "original_status": "可查看", "extract_status": "成功", "extraction_status": "成功", "bank_name": bank_name,
             "statement_title": title or ("账户明细清单" if "账户明细清单" in source else "银行对账单"),
             "account_no": account_no,
-            "account_name": account_info.get("account_name") or "",
+            "account_name": account_name_clean,
             "opening_bank": opening_bank,
             "currency": _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围", "时间范围")) or ("人民币" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI} or "人民币" in source else ""),
             "unit": _find_labeled(source, ("单位",), ("本方账号开户行", "本方开户行", "开户行", "币种", "记账时间范围", "时间范围", "交易时间")) or ("元" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI} or re.search(r"单位\s*[:：]?\s*元", source) else ""),

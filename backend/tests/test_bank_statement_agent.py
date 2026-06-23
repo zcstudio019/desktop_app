@@ -319,6 +319,29 @@ G025122114005920 2025-12-21 14:00:00 2025-12-21 出账(借方) 66.00 1,087,934.0
     assert "币种:03005029359" not in content["markdown_summary"]
 
 
+def test_shanghai_bank_header_cleaning_removes_polluted_opening_bank_fragments():
+    from backend.extraction_skills.bank_statement import clean_opening_bank, clean_account_name
+
+    account_name = clean_account_name("上海意川建筑科技 有限公司")
+    polluted = "币种:03005029359上海银行浦西支行营业部人民币上海意川建筑科技有限公司"
+    assert account_name == "上海意川建筑科技有限公司"
+    assert clean_opening_bank(polluted, account_no="03005029359", account_name=account_name) == "上海银行浦西支行营业部"
+
+    text = """账户明细查询
+记账日期: 2025-04-01---2026-03-31
+选择账号: 03005029359 开户行: 上海银行浦西支行营业部 币种: 人民币 上海意川建筑科技 有限公司
+借方总金额: 110,247,648.48 总笔数: 684 借方总笔数: 565 贷方总笔数: 119 贷方总金额: 107,714,789.82
+交易流水号 交易时间 记账日期 交易方向 交易金额 余额 对手账号 对手名称 摘要 交易用途 备注
+FT25091864343793 2025-04-01 11:12:46 2025-04-01 出账(借方) 25,184.84 2,536,212.12 6230520710081831770 陆德斐 跨行转账 奔驰车分期款
+"""
+    content = build_structured_extraction(text, "bank_statement", raw_pages=[{"page": 1, "text": text, "table_rows": []}], filename="上海银行对账单202504-202603.pdf")
+    data = content["extracted_json"]
+    assert data["opening_bank"] == "上海银行浦西支行营业部"
+    assert "币种" not in data["opening_bank"]
+    assert "03005029359" not in data["opening_bank"]
+    assert data["account_name"] not in data["opening_bank"]
+
+
 def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
     pages = [{"page": 1, "text": "上海银行对账单\n客户名称：测试公司", "table_rows": [], "source": "ocr"}]
     content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
