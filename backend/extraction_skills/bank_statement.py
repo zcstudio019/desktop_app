@@ -2111,7 +2111,6 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
             "- 未识别稳定的本方账号、本方户名和交易时间范围。",
             "- 暂未纳入客户级经营流水统计。",
             "- 建议上传银行账户明细/账户流水 PDF 或 Excel。",
-            "- 如需解析回单，请使用“银行回单集合 Agent”。",
         ]
         return "\n".join(lines).replace("None", "").replace("null", "").replace("undefined", "")
 
@@ -2141,6 +2140,9 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
             "- 是否形成账户流水明细：否",
             "- 是否纳入经营流水聚合：否",
             "- 原因：未识别本方账号、账户户名、交易时间范围和标准流水表格。",
+            "",
+            "### 后续处理建议",
+            "建议人工确认该文件是否为标准银行账户流水。如为回单、凭证或截图类文件，应走对应的回单/凭证解析链路；如需用于经营流水分析，请上传银行账户明细/账户流水 PDF 或 Excel。",
             "",
             "### 需人工复核",
             "- 当前文件未形成标准银行账户流水明细。",

@@ -620,11 +620,8 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         f"- 重复交易笔数：{data.get('duplicate_transaction_count', 0)}",
         f"- 金额识别完整度：{data.get('amount_integrity') or UNKNOWN}",
     ]
-    if unavailable:
-        lines.append("- 金额识别完整度说明：当前文件未形成有效交易明细，无法评估金额识别完整度。")
-    lines.append("- 交易统计说明：当前仅统计已形成标准流水明细的交易，疑似回单集合或未达标文件不计入交易笔数。")
     if data.get("aggregate_status") == "未达标":
-        lines.append(f"- 说明：当前 {data.get('file_count', 0)} 份文件均未形成标准账户流水明细，疑似为银行回单集合或非标准对账单，因此暂不能生成客户级有效经营流水分析。建议上传银行账户明细/账户流水 PDF 或 Excel。")
+        lines.append(f"- 聚合说明：当前 {data.get('file_count', 0)} 份文件均未形成标准账户流水明细，疑似为银行回单集合或非标准银行流水文件，暂不能生成客户级有效经营流水分析。当前交易统计仅统计已形成标准流水明细的交易，未达标文件不计入交易笔数。建议上传银行账户明细/账户流水 PDF 或 Excel。")
     elif data.get("file_count") == 1:
         lines.append("- 提示：当前仅基于 1 个银行账户/1 份对账单进行聚合分析。")
     else:
@@ -738,12 +735,22 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
             subtype_parts.append(f"{data.get('nonstandard_bank_file_count', 0)} 份为非标准银行流水文件")
         if subtype_parts:
             lines.append(f"- 其中 {'，'.join(subtype_parts)}。")
+        lines.append("- 建议上传银行账户明细/账户流水 PDF 或 Excel，并确认本方账号、本方户名和交易时间范围。")
+        if any("关联人名单缺失" in str(item) for item in data.get("manual_review_items") or []):
+            lines.append("- 关联人名单缺失，建议维护法人/股东/高管名单。")
     else:
         lines += [
             f"- 金额完整识别文件数：{data.get('amount_complete_file_count', 0)}",
             f"- 金额部分识别文件数：{data.get('amount_partial_file_count', 0)}",
             f"- 金额未识别文件数：{data.get('amount_unrecognized_file_count', 0)}",
         ]
-    lines += [f"- {item}" for item in data.get("manual_review_items") or []]
-    lines += ["", "### 风险提示"] + [f"- {item}" for item in data.get("risk_tips") or []]
+        lines += [f"- {item}" for item in data.get("manual_review_items") or []]
+    if unavailable:
+        lines += [
+            "",
+            "### 分析限制",
+            "- 当前文件均未形成有效交易明细，暂不能据此判断客户经营流水、主要客户、主要供应商、经营净流入和内部往来情况。",
+        ]
+    else:
+        lines += ["", "### 风险提示"] + [f"- {item}" for item in data.get("risk_tips") or []]
     return "\n".join(lines)

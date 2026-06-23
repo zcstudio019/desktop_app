@@ -156,8 +156,8 @@ def test_low_quality_receipt_bundle_files_do_not_pollute_customer_aggregate():
     markdown = render_customer_bank_flow_aggregate_markdown(data)
     assert "聚合状态：未达标" in markdown
     assert "金额识别完整度：不可评估" in markdown
-    assert "金额识别完整度说明：当前文件未形成有效交易明细，无法评估金额识别完整度。" in markdown
-    assert "交易统计说明：当前仅统计已形成标准流水明细的交易" in markdown
+    assert "聚合说明：当前 4 份文件均未形成标准账户流水明细" in markdown
+    assert "当前交易统计仅统计已形成标准流水明细的交易" in markdown
     assert "文件解析质量清单" in markdown
     assert "疑似银行回单集合" in markdown
     assert "暂无已识别银行账户" in markdown
@@ -171,6 +171,8 @@ def test_low_quality_receipt_bundle_files_do_not_pollute_customer_aggregate():
     assert "暂无可统计的有效交易明细，无法计算剔除项" in markdown
     assert "金额完整识别文件数" not in markdown
     assert "金额未识别文件数" not in markdown
+    assert "### 风险提示" not in markdown
+    assert "### 分析限制" in markdown
     assert "0/0" not in markdown
     assert "2000-00" not in markdown
 
