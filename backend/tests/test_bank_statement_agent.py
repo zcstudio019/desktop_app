@@ -257,6 +257,43 @@ def test_shanghai_bank_adapter_uses_table_columns_and_filename_period():
     assert "2026-12-08" not in content["markdown_summary"]
 
 
+def test_shanghai_bank_native_text_row_parser_uses_header_and_serial_rows():
+    text = """账户明细查询
+记账日期: 2025-04-01---2026-03-31
+选择账号: 03005029359 开户行: 上海银行浦西支行营业部 币种: 人民币 上海意川建筑科技 有限公司
+借方总金额: 110,247,648.48 总笔数: 684 借方总笔数: 565 贷方总笔数: 119 贷方总金额: 107,714,789.82
+交易流水号 交易时间 记账日期 交易方向 交易金额 余额 对手账号 对手名称 摘要 交易用途 备注
+FT25091864343793 2025-04-01 11:12:46 2025-04-01 出账(借方) 25,184.84 2,536,212.12 6230520710081831770 陆德斐 跨行转账 奔驰车分期款
+FT25091690973952 2025-04-01 14:27:53 2025-04-01 出账(借方) 200,000.00 2,336,212.12 32050176624200001278 靖江市桐梧贸易有限公司 跨行转账 临空项目2024.12月A2区防火包裹材料款
+FT25092611111111 2025-09-26 11:50:10 2025-09-26 入账(贷方) 300,000.00 2,636,212.12 31001515100050022023 上海建工智慧营造有限公司 跨行转账 张江A04C-01工程款
+BEA25107140212966000
+1 2025-04-17 14:02:12 2025-04-17 出账(借方) 100,000.00 2,236,212.12 31050178360000008649上海意川建筑科技有限 公司 跨行转账 本方划转
+"""
+    pages = [{"page": 1, "text": text, "table_rows": [], "source": "pdf_native"}]
+    content = build_structured_extraction(text, "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
+    data = content["extracted_json"]
+    assert data["parse_diagnostics"]["parser_path"] == "native_text_row"
+    assert data["account_name"] == "上海意川建筑科技有限公司"
+    assert data["opening_bank"] == "上海银行浦西支行营业部"
+    assert data["account_no"] == "03005029359"
+    assert data["period_start"] == "2025-04-01"
+    assert data["period_end"] == "2026-03-31"
+    assert data["raw_transaction_count"] == 684
+    assert data["transaction_count"] == 684
+    assert data["debit_count"] == 565
+    assert data["credit_count"] == 119
+    assert data["debit_total_amount"] == 110247648.48
+    assert data["credit_total_amount"] == 107714789.82
+    assert data["amount_recognition_status"] == "完整识别"
+    assert data["valid_transaction_count"] == 4
+    assert data["effective_operating_inflow_count"] == 1
+    assert data["effective_operating_outflow_count"] == 1
+    assert data["self_transfer_count"] == 1
+    assert any(tx["counterparty_name"] == "上海意川建筑科技有限公司" and tx["is_self_transfer"] for tx in data["transactions"])
+    assert "企业网上银行" not in "\n".join(item["counterparty"] for item in data["effective_outflow_counterparties"])
+    assert "交易用途 摘要 对手名称 对手账号 余额" not in content["markdown_summary"]
+
+
 def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
     pages = [{"page": 1, "text": "上海银行对账单\n客户名称：测试公司", "table_rows": [], "source": "ocr"}]
     content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")

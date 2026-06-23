@@ -43,11 +43,11 @@ AMOUNT_LABEL_RE = re.compile(
     r"(?P<amount>[+-]?(?:人民币|￥|¥)?\s*\d[\d,]*(?:\.\d{1,2})?)"
 )
 
-OPERATING_KEYWORDS = ("货款", "工程款", "项目款", "材料款", "劳务费", "电缆款", "灯具款", "风管材料款", "防火包裹材料款")
+OPERATING_KEYWORDS = ("货款", "工程款", "工程款安装", "项目款", "材料款", "劳务费", "劳务款", "电缆款", "桥架款", "灯具款", "风管", "风管材料款", "防火包裹材料款", "扶持资金", "房租", "服务费", "咨询费", "快递费", "水费", "餐费", "报销")
 CURRENT_ACCOUNT_KEYWORDS = ("往来款", "转账", "普通汇兑", "汇兑业务")
-BANK_FEE_KEYWORDS = ("手续费", "年费", "工本费", "协议费", "半年费", "跨行快汇")
+BANK_FEE_KEYWORDS = ("手续费", "年费", "工本费", "协议费", "半年费", "跨行快汇", "企业短信业务服务费", "账户管理费", "短信费", "网银费", "ETC业务扣款")
 LOAN_DISBURSEMENT_KEYWORDS = ("贷款发放", "对公贷款记账")
-LOAN_REPAYMENT_KEYWORDS = ("贷款归还", "对公贷款批量正常分期", "还款")
+LOAN_REPAYMENT_KEYWORDS = ("贷款归还", "对公贷款批量正常分期", "还款", "还贷款及利息", "融资还款", "担保费", "融资租赁")
 INTEREST_EXPENSE_KEYWORDS = ("对公贷款利息支付", "利息支出", "息余积数")
 SENSITIVE_DISPLAY_MARKERS = (
     "指令编号", "支付交易序号", "报文种类", "提交人", "起息日期", "止息日期", "止息日",
@@ -61,6 +61,12 @@ GARBAGE_COUNTERPARTY_MARKERS = (
 
 def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip(" |\t\r\n")
+
+
+def _normalize_company_spacing(value: Any) -> str:
+    text = re.sub(r"[\s\u3000]+", "", str(value or "")).strip("，,。；;：:")
+    text = text.replace("有限 公司", "有限公司").replace("有限责任 公司", "有限责任公司")
+    return text
 
 
 def _date(value: str) -> str:
@@ -138,7 +144,7 @@ def _period_range_candidates(text: str) -> list[tuple[date, date, str]]:
     candidates: list[tuple[date, date, str]] = []
     date_token = r"((?:20)\d{2}(?:年|[./-])?\d{1,2}(?:月|[./-])?\d{1,2}日?)"
     patterns = (
-        rf"(?:时间范围|对账期间|查询日期|起止日期)\s*[:：]?\s*{date_token}\s*(?:至|到|[-－—~])\s*{date_token}",
+        rf"(?:时间范围|对账期间|查询日期|起止日期|记账日期)\s*[:：]?\s*{date_token}\s*(?:至|到|[-－—~]{{1,3}})\s*{date_token}",
         rf"起始日期\s*[:：]?\s*{date_token}.*?结束日期\s*[:：]?\s*{date_token}",
     )
     for pattern in patterns:
@@ -226,14 +232,15 @@ def _header_labeled_value(header: str, labels: tuple[str, ...]) -> str:
 
 def _extract_account_info(raw_pages: list[dict[str, Any]], source: str, bank_format: str) -> tuple[dict[str, str], list[dict[str, Any]]]:
     header = _account_header_text(raw_pages, source)
+    shanghai_native = _parse_shanghai_native_header(raw_pages, source) if bank_format == BANK_FORMAT_SHANGHAI else {}
     account_labels = ("本方账号", "银行账号", "对账账号", "结算账号", "户名账号", "账号/卡号", "账户号", "账号", "账户")
     name_labels = ("本方账号户名", "账号户名", "账户名称", "客户名称", "单位名称", "存款人名称", "企业名称", "户名")
     branch_labels = ("本方账号开户行", "开户行名称", "开户机构", "开户网点", "开户银行", "开户行")
     account_value = _header_labeled_value(header, account_labels)
     account_match = re.search(r"(?<!\d)(\d{8,32})(?!\d)", account_value)
-    account_no = account_match.group(1) if account_match else ""
-    account_name = _header_labeled_value(header, name_labels)
-    opening_bank = _header_labeled_value(header, branch_labels)
+    account_no = str(shanghai_native.get("account_no") or (account_match.group(1) if account_match else ""))
+    account_name = str(shanghai_native.get("account_name") or _header_labeled_value(header, name_labels))
+    opening_bank = str(shanghai_native.get("opening_bank") or _header_labeled_value(header, branch_labels))
     evidence: list[dict[str, Any]] = []
     for field, value in (("account_no", account_no), ("account_name", account_name), ("opening_bank", opening_bank)):
         if value:
@@ -245,6 +252,43 @@ def _extract_account_info(raw_pages: list[dict[str, Any]], source: str, bank_for
         "header_preview": _clean(header[:1000]),
         "bank_format": bank_format,
     }, evidence
+
+
+def _parse_shanghai_native_header(raw_pages: list[dict[str, Any]], source: str = "") -> dict[str, Any]:
+    """Parse Shanghai Bank native text header/totals before any OCR/table fallback."""
+    first_pages = sorted((item for item in raw_pages if isinstance(item, dict)), key=lambda item: int(item.get("page") or 0))[:2]
+    text = "\n".join(str(item.get("text") or "")[:6000] for item in first_pages) or str(source or "")[:10000]
+    compact = _clean(text.replace("\u3000", " "))
+    result: dict[str, Any] = {}
+    account_match = re.search(r"选择账号\s*[:：]\s*([0-9]{5,32})", compact)
+    if account_match:
+        result["account_no"] = account_match.group(1)
+    branch_match = re.search(r"开户行\s*[:：]\s*(.+?)(?=\s*(?:币种|客户名称|借方总金额|总笔数)\s*[:：]|$)", compact)
+    if branch_match:
+        result["opening_bank"] = _clean(branch_match.group(1))
+    currency_match = re.search(r"币种\s*[:：]\s*(人民币|美元|欧元|港币|日元)", compact)
+    if currency_match:
+        result["currency"] = currency_match.group(1)
+    name_match = re.search(r"币种\s*[:：]\s*(?:人民币|美元|欧元|港币|日元)\s*(?P<name>[\u4e00-\u9fff\s（）()]{4,100}?)(?=\s*借方总金额\s*[:：])", compact)
+    if name_match:
+        result["account_name"] = _normalize_company_spacing(name_match.group("name"))
+    period_match = re.search(r"记账日期\s*[:：]\s*(\d{4}-\d{2}-\d{2})\s*[-—－]{2,3}\s*(\d{4}-\d{2}-\d{2})", compact)
+    if period_match:
+        result["period_start"], result["period_end"] = period_match.groups()
+    summary_patterns = {
+        "debit_total_amount": r"借方总金额\s*[:：]\s*([\d,]+\.\d{2})",
+        "credit_total_amount": r"贷方总金额\s*[:：]\s*([\d,]+\.\d{2})",
+        "transaction_count": r"总笔数\s*[:：]\s*(\d+)",
+        "debit_count": r"借方总笔数\s*[:：]\s*(\d+)",
+        "credit_count": r"贷方总笔数\s*[:：]\s*(\d+)",
+    }
+    for key, pattern in summary_patterns.items():
+        match = re.search(pattern, compact)
+        if not match:
+            continue
+        result[key] = int(match.group(1)) if key.endswith("_count") or key == "transaction_count" else _decimal(match.group(1))
+    result["header_preview"] = compact[:1000]
+    return result
 
 
 def _header_mapping(cells: list[str]) -> dict[int, str]:
@@ -801,6 +845,149 @@ def parse_shanghai_bank_by_date_anchor(
     return unique, candidates, invalid
 
 
+SHANGHAI_SERIAL_RE = re.compile(r"(?:FT\d{8,}|BEA\d{8,}\d?|ONLINE\.AC\.CLOSURE\S*|\d{3}\.\d{8,}\.\d+|\d{8,32}-\d{8})")
+SHANGHAI_NATIVE_ROW_RE = re.compile(
+    rf"(?P<serial_no>{SHANGHAI_SERIAL_RE.pattern})\s+"
+    r"(?P<trade_time>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+"
+    r"(?P<book_date>\d{4}-\d{2}-\d{2})\s+"
+    r"(?P<direction_raw>入账\(贷方\)|出账\(借方\))\s+"
+    r"(?P<amount>[\d,]+\.\d{2})\s+"
+    r"(?P<balance>[\d,]+\.\d{2})\s*"
+    r"(?P<rest>.*)$"
+)
+SHANGHAI_SUMMARY_KEYWORDS = (
+    "跨行转账", "ETC业务扣款", "企业短信业务服务费", "企业网上银行", "缴税", "扣款", "帐户结息", "账户结息",
+    "转账", "手续费", "银行手续费", "代发专用账户", "单位活期存款",
+)
+
+
+def _normalize_shanghai_native_lines(raw_pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for page_item in raw_pages:
+        page_no = int(page_item.get("page") or 0)
+        lines = [_clean(line) for line in str(page_item.get("text") or "").splitlines()]
+        lines = [line for line in lines if line]
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            # BEA25107140212966000 / 1 2025-... is a common native-text wrap.
+            if re.fullmatch(SHANGHAI_SERIAL_RE, line) and index + 1 < len(lines):
+                next_line = lines[index + 1]
+                merge_match = re.match(r"^(\d?)\s*((?:20)\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b.*)$", next_line)
+                if merge_match:
+                    line = f"{line}{merge_match.group(1)} {merge_match.group(2)}".strip()
+                    index += 1
+            normalized.append({"page": page_no, "line_no": index + 1, "text": line})
+            index += 1
+    return normalized
+
+
+def _parse_shanghai_rest(rest: str, own_account: str = "") -> dict[str, str]:
+    text = _clean(rest)
+    result = {"counterparty_account": "", "counterparty_name": "", "summary": "", "purpose": "", "remark": ""}
+    account_match = re.match(r"(?P<account>\d{8,32})\s*(?P<remain>.*)$", text)
+    if account_match:
+        result["counterparty_account"] = account_match.group("account")
+        text = _clean(account_match.group("remain"))
+    keyword_positions = [(text.find(keyword), keyword) for keyword in SHANGHAI_SUMMARY_KEYWORDS if text.find(keyword) >= 0]
+    keyword_positions.sort(key=lambda item: item[0])
+    if keyword_positions:
+        pos, keyword = keyword_positions[0]
+        before = _normalize_company_spacing(text[:pos])
+        after = _clean(text[pos + len(keyword):])
+        result["counterparty_name"] = "" if _normalize_entity_name(before) in {_normalize_entity_name("企业网上银行"), _normalize_entity_name("企业短信业务服务费"), _normalize_entity_name("ETC业务扣款"), _normalize_entity_name("缴税"), _normalize_entity_name("帐户结息")} else before
+        result["summary"] = keyword
+        result["purpose"] = after[:120]
+    else:
+        name_match = re.search(r"([\u4e00-\u9fff（）()]{2,60}(?:有限公司|公司|商行|个体工商户|银行|支行|合作社|经营部|店|中心|专户))", text)
+        if name_match:
+            result["counterparty_name"] = _normalize_company_spacing(name_match.group(1))
+            result["purpose"] = _clean(text.replace(name_match.group(1), "", 1))[:120]
+        elif re.fullmatch(r"[\u4e00-\u9fff]{2,4}", text):
+            result["counterparty_name"] = text
+        else:
+            result["summary"] = text[:60]
+    if own_account and result["counterparty_account"] == own_account:
+        result["counterparty_account"] = ""
+    return result
+
+
+def parse_shanghai_bank_native_text_rows(
+    raw_pages: list[dict[str, Any]],
+    period_start: str,
+    period_end: str,
+    own_account: str = "",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    page_lines = _normalize_shanghai_native_lines(raw_pages)
+    transactions: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    invalid = 0
+    start = parse_valid_date(period_start)
+    end = parse_valid_date(period_end)
+    for line in page_lines:
+        text = str(line.get("text") or "")
+        match = SHANGHAI_NATIVE_ROW_RE.match(text)
+        if not match:
+            continue
+        data = match.groupdict()
+        trade_date = parse_valid_date(data["trade_time"][:10])
+        artifact = {
+            "page": line.get("page"), "line_no": line.get("line_no"), "serial_no": data["serial_no"],
+            "transaction_date": data["trade_time"], "raw_line_text": text, "status": "candidate",
+        }
+        candidates.append(artifact)
+        if not trade_date or (start and trade_date < start) or (end and trade_date > end):
+            artifact["status"] = "invalid_date_out_of_period"
+            invalid += 1
+            continue
+        amount = _positive_amount(data["amount"])
+        balance = _positive_amount(data["balance"])
+        direction = "出账" if "出账" in data["direction_raw"] else "入账"
+        flag = "借" if direction == "出账" else "贷"
+        rest_fields = _parse_shanghai_rest(data.get("rest") or "", own_account)
+        support = int(amount is not None) + int(balance is not None) + sum(bool(rest_fields.get(key)) for key in ("counterparty_account", "counterparty_name", "summary", "purpose"))
+        if support < 1:
+            artifact["status"] = "invalid_no_transaction_fields"
+            invalid += 1
+            continue
+        tx = _new_tx(int(line.get("page") or 0))
+        tx.update({
+            "凭证号": data["serial_no"],
+            "交易流水号": data["serial_no"],
+            "交易时间": data["trade_time"],
+            "记账日期": data["book_date"],
+            "借贷标志": flag,
+            "收支方向": direction,
+            "金额": amount,
+            "余额": balance,
+            "金额来源": "上海银行交易金额列" if amount is not None else "",
+            "对方账号": rest_fields.get("counterparty_account") or "",
+            "对方单位": rest_fields.get("counterparty_name") or "",
+            "摘要": rest_fields.get("summary") or "",
+            "用途": rest_fields.get("purpose") or "",
+            "备注": rest_fields.get("remark") or "",
+            "raw_line_text": text,
+            "parser_source": "shanghai_native_text_row",
+        })
+        tx["交易分类"] = classify_transaction(tx)
+        transactions.append(tx)
+        artifact.update({
+            "status": "valid", "amount": amount, "balance": balance, "direction": direction,
+            "counterparty_account": tx["对方账号"], "counterparty_name": tx["对方单位"],
+            "summary": tx["摘要"], "purpose": tx["用途"], "category": tx["交易分类"],
+        })
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for tx in transactions:
+        key = (tx.get("凭证号"), tx.get("交易时间"), tx.get("金额"), tx.get("余额"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(tx)
+    unique.sort(key=lambda tx: str(tx.get("交易时间") or ""))
+    return unique, candidates, invalid
+
+
 def parse_shanghai_bank_statement(
     raw_pages: list[dict[str, Any]],
     period_start: str,
@@ -810,6 +997,46 @@ def parse_shanghai_bank_statement(
     logger.info("[ShanghaiBankAdapter] detected_bank_format=shanghai_bank")
     logger.info("[ShanghaiBankAdapter] pages=%s", len({int(item.get('page') or index) for index, item in enumerate(raw_pages, 1)}))
     logger.info("[ShanghaiBankAdapter] raw_text_len=%s", sum(len(str(item.get("text") or "")) for item in raw_pages))
+    native_header = _parse_shanghai_native_header(raw_pages)
+    native_transactions, native_candidates, native_invalid = parse_shanghai_bank_native_text_rows(raw_pages, period_start, period_end, own_account)
+    logger.info("[ShanghaiBankNativeParser] header_account_no=%s", native_header.get("account_no") or "未识别")
+    logger.info("[ShanghaiBankNativeParser] header_account_name=%s", native_header.get("account_name") or "未识别")
+    logger.info("[ShanghaiBankNativeParser] header_opening_bank=%s", native_header.get("opening_bank") or "未识别")
+    logger.info("[ShanghaiBankNativeParser] total_count_from_header=%s", native_header.get("transaction_count") or "未识别")
+    logger.info("[ShanghaiBankNativeParser] parsed_transactions_count=%s", len(native_transactions))
+    logger.info("[ShanghaiBankNativeParser] first_10_transactions=%s", native_candidates[:10])
+    if native_transactions:
+        evidence: list[dict[str, Any]] = []
+        for index, tx in enumerate(native_transactions, start=1):
+            tx["序号"] = index
+            tx.update({
+                "voucher_no": tx.get("凭证号") or "", "counterparty_account": tx.get("对方账号") or "",
+                "transaction_time": tx.get("交易时间") or "", "debit_credit_flag": tx.get("借贷标志") or "未识别",
+                "direction": tx.get("收支方向") or "未识别", "counterparty_name": tx.get("对方单位") or "",
+                "counterparty_bank_no": tx.get("对方行号") or "", "purpose": tx.get("用途") or "",
+                "summary": tx.get("摘要") or "", "remark": tx.get("备注") or "", "amount": tx.get("金额"),
+                "balance": tx.get("余额"), "receipt_info": "", "category": tx.get("交易分类") or "其他", "source_page": tx.get("来源页码") or 0,
+            })
+            evidence.append({"field": "交易明细", "page": tx["来源页码"], "record": index, "source": "shanghai_bank_native_text_row"})
+        diagnostics = {
+            "table_headers_detected": ["交易流水号", "交易时间", "记账日期", "交易方向", "交易金额", "余额", "对手账号", "对手名称", "摘要", "交易用途", "备注"],
+            "candidate_transaction_rows": int(native_header.get("transaction_count") or len(native_candidates)),
+            "parsed_transaction_count": len(native_transactions),
+            "candidate_rows_preview": native_candidates[:10],
+            "invalid_candidate_rows": native_invalid,
+            "raw_text_blocks_count": 0,
+            "page_lines_count": sum(len(str(item.get("text") or "").splitlines()) for item in raw_pages),
+            "parser_path": "native_text_row",
+            "header_summary": native_header,
+            "coordinate_parse_valid_count": 0,
+            "fallback_date_anchor_candidates": 0,
+            "fallback_valid_transactions": 0,
+            "first_10_fallback_transactions": [],
+        }
+        logger.info("[ShanghaiBankAdapter] candidate_transaction_rows=%s", diagnostics["candidate_transaction_rows"])
+        logger.info("[ShanghaiBankAdapter] valid_transaction_count=%s", len(native_transactions))
+        logger.info("[ShanghaiBankAdapter] invalid_candidate_rows=%s", native_invalid)
+        return native_transactions, evidence, True, diagnostics
     coordinate_transactions, boxes, page_lines, detected_header_artifacts, candidate_artifacts, coordinate_invalid = _parse_shanghai_coordinate_table(raw_pages, period_start, period_end)
     if not page_lines:
         for page_item in raw_pages:
@@ -1124,6 +1351,7 @@ def _invalid_counterparty_reason(value: Any) -> str:
     invalid_exact = {
         "企业网上银行", "有限公司", "公司", "运营有限公司", "）有限公司", "对手名称", "对手账号",
         "对方名称", "对方账号", "余额", "代发专用账户", "单位活期存款",
+        "企业短信业务服务费", "ETC业务扣款", "缴税", "帐户结息", "账户结息",
     }
     if not text or text == "—":
         return "对方单位为空"
@@ -1139,7 +1367,7 @@ def _invalid_counterparty_reason(value: Any) -> str:
         return "对方单位疑似回单说明或 OCR 垃圾字段"
     if compact.isdigit():
         return "对方单位为纯数字"
-    if len(compact) < 4:
+    if len(compact) < 4 and not re.fullmatch(r"[\u4e00-\u9fff]{2,3}", text):
         return "对方单位过短"
     return ""
 
@@ -1226,7 +1454,12 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
         counterparty = tx.get("对方单位") or tx.get("counterparty_name") or ""
         normalized_counterparty = _normalize_entity_name(counterparty)
         invalid_counterparty = _invalid_counterparty_reason(counterparty)
-        is_self = bool(account_name_normalized and normalized_counterparty == account_name_normalized)
+        is_self = bool(
+            account_name_normalized and (
+                normalized_counterparty == account_name_normalized or
+                (normalized_counterparty.startswith(account_name_normalized) and any(marker in normalized_counterparty for marker in ("专户", "工资", "农民工")))
+            )
+        )
         is_valid_time = _valid_transaction_datetime(
             tx.get("交易时间") or tx.get("transaction_time"), period_start, period_end,
             allow_date_only=result.get("bank_format") == BANK_FORMAT_SHANGHAI,
@@ -1242,7 +1475,7 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
 
         reasons: list[str] = []
         if is_self:
-            reasons.append("本方户名与对方单位一致，疑似同主体账户划转")
+            reasons.append("本方户名与对方单位一致或本方关联账户划转")
         if is_bank_fee:
             reasons.append("银行手续费或账户服务费用")
         if is_loan or is_interest:
@@ -1485,6 +1718,38 @@ def _summary(result: dict[str, Any]) -> None:
     ]
 
 
+def _apply_header_summary(result: dict[str, Any]) -> None:
+    header = (result.get("parse_diagnostics") or {}).get("header_summary") or {}
+    if result.get("bank_format") != BANK_FORMAT_SHANGHAI or not header:
+        return
+    parsed_count = len(result.get("transactions") or [])
+    if header.get("transaction_count"):
+        result["transaction_count"] = int(header["transaction_count"])
+        result["raw_transaction_count"] = int(header["transaction_count"])
+        result["header_transaction_count"] = int(header["transaction_count"])
+        result["parsed_transaction_count"] = parsed_count
+        if parsed_count and parsed_count != int(header["transaction_count"]):
+            result["parse_completeness"] = f"{parsed_count}/{int(header['transaction_count'])}"
+    if header.get("debit_count") is not None:
+        result["debit_count"] = int(header["debit_count"])
+    if header.get("credit_count") is not None:
+        result["credit_count"] = int(header["credit_count"])
+    if header.get("debit_total_amount") is not None:
+        result["debit_total_amount"] = header["debit_total_amount"]
+    if header.get("credit_total_amount") is not None:
+        result["credit_total_amount"] = header["credit_total_amount"]
+    if header.get("currency"):
+        result["currency"] = header["currency"]
+    if header.get("period_start") and not result.get("period_start"):
+        result["period_start"] = header["period_start"]
+    if header.get("period_end") and not result.get("period_end"):
+        result["period_end"] = header["period_end"]
+    if result.get("period_start") and result.get("period_end"):
+        result["period_text"] = f"{result['period_start']} 至 {result['period_end']}"
+    if header.get("debit_total_amount") is not None and header.get("credit_total_amount") is not None:
+        result["amount_recognition_status"] = "完整识别"
+
+
 def _cell(value: Any) -> str:
     return _clean(value).replace("|", "\\|") or "—"
 
@@ -1650,7 +1915,7 @@ class BankStatementSkill(BaseExtractionSkill):
             title = "中国工商银行账户明细清单" if "中国工商银行账户明细清单" in source else _find_labeled(source, ("对账单标题", "标题"))
             bank_name = "中国工商银行"
         elif bank_format == BANK_FORMAT_SHANGHAI:
-            title = next((item for item in ("上海银行对账单", "上海银行账户明细", "上海银行交易明细") if item in source), "银行对账单")
+            title = next((item for item in ("账户明细查询", "上海银行对账单", "上海银行账户明细", "上海银行交易明细") if item in source), "银行对账单")
             bank_name = "上海银行"
         else:
             title = _find_labeled(source, ("对账单标题", "标题")) or "银行对账单"
@@ -1686,6 +1951,7 @@ class BankStatementSkill(BaseExtractionSkill):
         if bank_format == BANK_FORMAT_SHANGHAI:
             result["raw_transaction_count"] = int(parse_diagnostics.get("candidate_transaction_rows") or len(transactions))
             result["ocr_anomaly_count"] = int(parse_diagnostics.get("invalid_candidate_rows") or 0)
+            _apply_header_summary(result)
         result["raw_text_blocks_count"] = int(parse_diagnostics.get("raw_text_blocks_count") or 0)
         result["candidate_transaction_rows"] = int(parse_diagnostics.get("candidate_transaction_rows") or len(transactions))
         result["ocr_abnormal_rows"] = int(result.get("ocr_anomaly_count") or 0)
