@@ -23,6 +23,10 @@ from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator i
     aggregate_customer_enterprise_flows,
 )
 from backend.services.enterprise_bank_statement_agent.flow_rules import get_enterprise_flow_rules
+from backend.services.bank_statement_agent.aggregator import (
+    aggregate_customer_bank_statements,
+    render_customer_bank_flow_aggregate_markdown,
+)
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
@@ -2691,6 +2695,10 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
         item for item in extractions
         if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') in PERSONAL_FLOW_TYPES
     ]
+    bank_statement_extractions = [
+        item for item in extractions
+        if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') == 'bank_statement'
+    ]
     financial_report_extractions = [
         item for item in extractions
         if (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') == 'financial_report'
@@ -3618,6 +3626,58 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
                 exc_info=True,
             )
             sections.append(_markdown_section('个人流水摘要', ['- 个人流水客户级汇总暂时生成失败，请查看来源文档列表。']))
+
+    logger.info("[Profile Sync][BankStatementAggregate] found count=%s", len(bank_statement_extractions))
+    if bank_statement_extractions:
+        try:
+            customer_profile = {}
+            try:
+                customer_profile = await storage_service.get_customer(customer_id)
+            except Exception:
+                customer_profile = {}
+            enriched_bank_statements: list[dict[str, Any]] = []
+            for extraction in bank_statement_extractions:
+                item = dict(extraction)
+                document = None
+                doc_id = item.get('doc_id')
+                if doc_id:
+                    try:
+                        document = await storage_service.get_document(doc_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "profile_markdown bank_statement_document_meta_failed customer_id=%s doc_id=%s error=%s",
+                            customer_id,
+                            doc_id,
+                            exc,
+                        )
+                item['file_name'] = (document or {}).get('file_name') or item.get('file_name') or ''
+                item['file_hash'] = (document or {}).get('file_hash') or item.get('file_hash') or ''
+                item['file_size'] = (document or {}).get('file_size') or 0
+                item['created_at'] = (document or {}).get('upload_time') or item.get('created_at') or ''
+                item['is_active'] = (document or {}).get('is_active') if document and 'is_active' in document else item.get('is_active', True)
+                if item.get('is_active') is not False:
+                    enriched_bank_statements.append(item)
+            aggregated_bank_flow = aggregate_customer_bank_statements(
+                enriched_bank_statements,
+                customer_id=customer_id,
+                customer_profile=customer_profile if isinstance(customer_profile, dict) else {},
+            )
+            if aggregated_bank_flow.get('file_count'):
+                sections.append(render_customer_bank_flow_aggregate_markdown(aggregated_bank_flow))
+                logger.info(
+                    "[Profile Sync][BankStatementAggregate] files=%s accounts=%s tx=%s",
+                    aggregated_bank_flow.get('file_count'),
+                    aggregated_bank_flow.get('account_count'),
+                    aggregated_bank_flow.get('deduplicated_transaction_count'),
+                )
+        except Exception as exc:
+            logger.warning(
+                "profile_markdown bank_statement_aggregate_failed customer_id=%s error=%s",
+                customer_id,
+                exc,
+                exc_info=True,
+            )
+            sections.append(_markdown_section('银行流水聚合分析', ['- 银行流水客户级聚合暂时生成失败，请查看来源文档列表。']))
 
     for extraction in other_extractions:
         extraction_id = extraction.get('extraction_id') or ''
