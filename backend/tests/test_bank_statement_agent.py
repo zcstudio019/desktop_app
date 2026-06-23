@@ -342,6 +342,43 @@ FT25091864343793 2025-04-01 11:12:46 2025-04-01 出账(借方) 25,184.84 2,536,2
     assert data["account_name"] not in data["opening_bank"]
 
 
+def test_related_person_transfer_is_excluded_only_when_profile_matches():
+    text = """账户明细查询
+记账日期: 2025-04-01---2026-03-31
+选择账号: 03005029359 开户行: 上海银行浦西支行营业部 币种: 人民币 上海意川建筑科技 有限公司
+借方总金额: 110,247,648.48 总笔数: 684 借方总笔数: 565 贷方总笔数: 119 贷方总金额: 107,714,789.82
+交易流水号 交易时间 记账日期 交易方向 交易金额 余额 对手账号 对手名称 摘要 交易用途 备注
+FT25091864343793 2025-04-01 11:12:46 2025-04-01 出账(借方) 25,184.84 2,536,212.12 6230520710081831770 陆德斐 跨行转账 材料款
+FT25091690973952 2025-04-01 14:27:53 2025-04-01 出账(借方) 20,000.00 2,516,212.12 6230520710081831771 黎云 跨行转账 材料款
+FT25092611111111 2025-09-26 11:50:10 2025-09-26 入账(贷方) 300,000.00 2,816,212.12 31001515100050022023 上海建工智慧营造有限公司 跨行转账 张江项目工程款
+"""
+    result = run_document_extraction_agent(
+        "bank_statement",
+        text,
+        "上海银行对账单202504-202603.pdf",
+        metadata={
+            "raw_pages": [{"page": 1, "text": text, "table_rows": [], "source": "pdf_native"}],
+            "customer_profile": {"legal_representative_name": "陆德斐"},
+        },
+    )
+    data = result.extracted_json
+    related = next(tx for tx in data["transactions"] if tx["counterparty_name"] == "陆德斐")
+    unrelated = next(tx for tx in data["transactions"] if tx["counterparty_name"] == "黎云")
+    assert related["is_related_person_transfer"] is True
+    assert related["related_person_role"] == "法定代表人"
+    assert related["exclude_from_effective_flow"] is True
+    assert "公司账户与法人/关联人之间转账" in related["exclude_reason"]
+    assert unrelated.get("is_related_person_transfer") is False
+    assert data["related_person_transfer_count"] == 1
+    assert data["effective_operating_outflow_count"] == 1
+    assert data["effective_outflow_counterparties"][0]["counterparty"] == "黎云"
+    markdown = result.markdown_summary
+    assert "### 关联人及内部往来" in markdown
+    assert "| 关联人转账 | 2025-04-01 11:12:46 | 出账 | 陆德斐 | 法定代表人 | 跨行转账 | 材料款 | 25,184.84 |" in markdown
+    assert "| 关联人转账 | 1 | 公司账户与法人/实控人/股东/高管等关联个人之间的转账 |" in markdown
+    assert "存在公司账户与法人/关联人之间的资金往来" in markdown
+
+
 def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
     pages = [{"page": 1, "text": "上海银行对账单\n客户名称：测试公司", "table_rows": [], "source": "ocr"}]
     content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")

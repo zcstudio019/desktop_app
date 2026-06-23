@@ -1418,6 +1418,70 @@ def _normalize_entity_name(value: Any) -> str:
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff()]", "", text).lower()
 
 
+def normalize_person_name(value: Any) -> str:
+    text = re.sub(r"^\s*\d{8,32}\s*", "", str(value or ""))
+    text = re.sub(r"[\s\u3000\r\n\t]+", "", text)
+    text = re.sub(r"(先生|女士|小姐|总|经理|法人|法定代表人|实控人|实际控制人|股东|高管)$", "", text)
+    chinese = "".join(re.findall(r"[\u4e00-\u9fff]", text))
+    if 2 <= len(chinese) <= 6:
+        return chinese
+    return ""
+
+
+def _iter_name_values(value: Any) -> Iterable[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item for item in re.split(r"[,，、;/；\s]+", value) if item]
+    if isinstance(value, dict):
+        name = value.get("name") or value.get("姓名") or value.get("person_name") or value.get("personName")
+        return [str(name)] if name else []
+    if isinstance(value, (list, tuple, set)):
+        names: list[str] = []
+        for item in value:
+            names.extend(_iter_name_values(item))
+        return names
+    return [str(value)]
+
+
+def _related_person_map_from_metadata(metadata: dict[str, Any] | None) -> dict[str, dict[str, str]]:
+    source = metadata or {}
+    containers = [
+        source,
+        source.get("customer_profile") or {},
+        source.get("customer") or {},
+        source.get("profile") or {},
+        source.get("company_profile") or {},
+    ]
+    roles: dict[str, dict[str, str]] = {}
+
+    def add(value: Any, role: str) -> None:
+        for name in _iter_name_values(value):
+            normalized = normalize_person_name(name)
+            if normalized:
+                roles[normalized] = {"name": normalized, "role": role}
+
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        add(container.get("legal_representative_name") or container.get("legalRepresentativeName") or container.get("法定代表人"), "法定代表人")
+        add(container.get("actual_controller_name") or container.get("actualControllerName") or container.get("实际控制人") or container.get("实控人"), "实际控制人")
+        add(container.get("shareholder_names") or container.get("shareholderNames") or container.get("shareholders") or container.get("股东"), "股东")
+        add(container.get("executive_names") or container.get("executiveNames") or container.get("executives") or container.get("高管"), "高管")
+        contact_role = str(container.get("contact_person_role") or container.get("contactPersonRole") or container.get("联系人角色") or "")
+        if any(marker in contact_role for marker in ("法人", "法定代表人", "实控", "实际控制", "股东", "高管", "董事", "监事", "经理")):
+            add(container.get("contact_person_name") or container.get("contactPersonName") or container.get("联系人"), contact_role or "关联联系人")
+    manual_roles = source.get("related_person_roles") or source.get("relatedPersonRoles") or {}
+    if isinstance(manual_roles, dict):
+        for name, role in manual_roles.items():
+            add(name, str(role or "人工维护关联人"))
+    for name in _iter_name_values(source.get("related_person_names") or source.get("relatedPersonNames")):
+        normalized = normalize_person_name(name)
+        if normalized and normalized not in roles:
+            roles[normalized] = {"name": normalized, "role": "人工维护关联人"}
+    return roles
+
+
 def normalize_opening_bank_name(value: Any, bank_name: str = "") -> str:
     """Normalize branch whitespace without dropping institution suffixes."""
     text = re.sub(r"[\s　]+", "", str(value or "")).strip("：:；;,，")
@@ -1557,12 +1621,16 @@ def _valid_transaction_datetime(value: Any, period_start: str, period_end: str, 
 
 def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
     account_name_normalized = _normalize_entity_name(result.get("account_name") or result.get("customer_name"))
+    related_roles = result.get("related_person_roles") if isinstance(result.get("related_person_roles"), dict) else {}
     period_start = str(result.get("period_start") or "")
     period_end = str(result.get("period_end") or "")
     for tx in result.get("transactions") or []:
         _split_account_prefixed_counterparty(tx)
         counterparty = tx.get("对方单位") or tx.get("counterparty_name") or ""
         normalized_counterparty = _normalize_entity_name(counterparty)
+        normalized_person = normalize_person_name(counterparty)
+        related_person = related_roles.get(normalized_person) if normalized_person else None
+        is_related_person = bool(related_person)
         invalid_counterparty = _invalid_counterparty_reason(counterparty)
         is_self = bool(
             account_name_normalized and (
@@ -1588,6 +1656,8 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
         reasons: list[str] = []
         if is_self:
             reasons.append("本方户名与对方单位一致或本方关联账户划转")
+        if is_related_person:
+            reasons.append("公司账户与法人/关联人之间转账，已从有效经营流水中剔除")
         if is_bank_fee:
             reasons.append("银行手续费或账户服务费用")
         if is_loan or is_interest:
@@ -1610,7 +1680,12 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
         tx["is_page_block"] = is_page_block
         tx["invalid_reason"] = "整页列块误合并为单条交易" if is_page_block else ""
         tx["is_self_transfer"] = is_self
+        tx["is_related_person_transfer"] = is_related_person
+        tx["related_person_name"] = (related_person or {}).get("name", "") if isinstance(related_person, dict) else ""
+        tx["related_person_role"] = (related_person or {}).get("role", "") if isinstance(related_person, dict) else ""
         tx["is_bank_fee"] = is_bank_fee
+        tx["is_tax_payment"] = is_tax
+        tx["is_salary_payment"] = is_payroll
         tx["is_loan_related"] = is_loan
         tx["is_interest_related"] = is_interest
         tx["is_ocr_anomaly"] = is_ocr_anomaly
@@ -1622,7 +1697,9 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
         tx["clean_purpose"] = "" if is_page_block else _clean_display_text(tx.get("用途") or tx.get("purpose"))[:40]
         tx["display_remark"] = _clean_display_text(tx.get("备注") or tx.get("remark"))
         tx.update({
-            "category": category, "is_self_transfer": is_self,
+            "category": category, "is_self_transfer": is_self, "is_related_person_transfer": is_related_person,
+            "related_person_name": tx["related_person_name"], "related_person_role": tx["related_person_role"],
+            "is_tax_payment": is_tax, "is_salary_payment": is_payroll,
             "exclude_from_effective_flow": bool(reasons), "exclude_reason": tx["exclude_reason"],
             "clean_counterparty_name": tx["clean_counterparty_name"], "clean_summary": tx["clean_summary"],
             "clean_purpose": tx["clean_purpose"], "display_remark": tx["display_remark"],
@@ -1765,7 +1842,10 @@ def _summary(result: dict[str, Any]) -> None:
     result["valid_transaction_count"] = len(valid)
     result["effective_transaction_count"] = len(effective)
     result["self_transfer_count"] = sum(bool(tx.get("is_self_transfer")) for tx in valid)
+    result["related_person_transfer_count"] = sum(bool(tx.get("is_related_person_transfer")) for tx in valid)
     result["bank_fee_count"] = sum(bool(tx.get("is_bank_fee")) for tx in valid)
+    result["tax_payment_count"] = sum(bool(tx.get("is_tax_payment")) for tx in valid)
+    result["salary_payment_count"] = sum(bool(tx.get("is_salary_payment")) for tx in valid)
     result["loan_interest_count"] = sum(bool(tx.get("is_loan_related") or tx.get("is_interest_related")) for tx in valid)
     result["ocr_anomaly_count"] = sum(bool(tx.get("is_ocr_anomaly")) for tx in txs)
     result["inflow_count"] = sum(tx.get("收支方向") == "入账" for tx in valid)
@@ -1825,11 +1905,15 @@ def _summary(result: dict[str, Any]) -> None:
     ]
     result["loan_related_transactions"] = [tx for tx in valid if tx.get("is_loan_related") or tx.get("is_interest_related")]
     result["fee_interest_transactions"] = [tx for tx in valid if tx.get("is_bank_fee") or tx.get("is_interest_related")]
+    result["related_internal_transactions"] = [tx for tx in valid if tx.get("is_self_transfer") or tx.get("is_related_person_transfer")]
     result["focus_transactions"] = sorted(effective + result["loan_related_transactions"], key=lambda tx: str(tx.get("交易时间") or ""))
     result["exclusion_summary"] = [
         {"type": "本方同名划转", "count": result["self_transfer_count"], "description": "本方户名与对方单位一致，疑似同主体账户划转"},
-        {"type": "银行手续费", "count": result["bank_fee_count"], "description": "手续费、年费、工本费、协议费等"},
-        {"type": "贷款及利息", "count": result["loan_interest_count"], "description": "贷款发放、贷款归还、贷款利息支付、利息收入"},
+        {"type": "关联人转账", "count": result["related_person_transfer_count"], "description": "公司账户与法人/实控人/股东/高管等关联个人之间的转账"},
+        {"type": "银行手续费", "count": result["bank_fee_count"], "description": "手续费、年费、短信费、ETC 等"},
+        {"type": "税费", "count": result["tax_payment_count"], "description": "缴税、扣款缴税"},
+        {"type": "工资代发", "count": result["salary_payment_count"], "description": "代发工资、年终奖等"},
+        {"type": "贷款及利息", "count": result["loan_interest_count"], "description": "贷款发放、贷款归还、贷款利息、融资租赁"},
         {"type": "OCR异常行", "count": result["ocr_anomaly_count"], "description": "无效日期或说明字段被误识别为交易记录、交易对手"},
     ]
 
@@ -1914,6 +1998,8 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         f"- 有效交易笔数：{result.get('effective_transaction_count', 0)}",
         f"- 本方同名划转笔数：{result.get('self_transfer_count', 0)}",
         "- 本方同名划转说明：本方户名与对方单位一致的交易已从经营流水分析中剔除",
+        f"- 关联人转账笔数：{result.get('related_person_transfer_count', 0)}",
+        "- 关联人转账说明：公司账户与法人/实控人/股东/高管等关联个人之间的转账，已从有效经营流水中剔除",
         f"- 有效入账笔数：{result.get('effective_inflow_count', 0)}",
         f"- 有效出账笔数：{result.get('effective_outflow_count', 0)}",
         f"- 有效经营入账方数量：{result.get('effective_operating_inflow_counterparty_count', 0)}",
@@ -1975,6 +2061,14 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
     lines += ["", "### 有效经营出账明细", "| 序号 | 交易时间 | 出账方名称 | 用途 | 摘要 | 金额 |", "|---:|---|---|---|---|---:|"]
     for index, tx in enumerate(result.get("effective_operating_outflow_transactions") or [], start=1):
         lines.append(f"| {index} | {_cell(tx.get('交易时间'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_purpose'))} | {_cell(tx.get('clean_summary'))} | {_money(tx.get('金额'))} |")
+    lines += ["", "### 关联人及内部往来", "| 类型 | 交易时间 | 收支方向 | 对方名称 | 关联关系 | 摘要 | 用途 | 金额 | 剔除说明 |", "|---|---|---|---|---|---|---|---:|---|"]
+    for tx in result.get("related_internal_transactions") or []:
+        tx_type = "关联人转账" if tx.get("is_related_person_transfer") else "本方同名/关联账户"
+        relation = tx.get("related_person_role") or ("本方同名或关联账户" if tx.get("is_self_transfer") else "—")
+        lines.append(
+            f"| {_cell(tx_type)} | {_cell(tx.get('交易时间'))} | {_cell(tx.get('收支方向'))} | {_cell(tx.get('clean_counterparty_name') or tx.get('对方单位'))} | "
+            f"{_cell(relation)} | {_cell(tx.get('clean_summary'))} | {_cell(tx.get('clean_purpose'))} | {_money(tx.get('金额'))} | {_cell(tx.get('exclude_reason'))} |"
+        )
     lines += ["", "### 剔除项汇总", "| 剔除类型 | 笔数 | 说明 |", "|---|---:|---|"]
     for item in result.get("exclusion_summary") or []:
         lines.append(f"| {_cell(item.get('type'))} | {item.get('count', 0)} | {_cell(item.get('description'))} |")
@@ -2006,6 +2100,7 @@ class BankStatementSkill(BaseExtractionSkill):
 
     def extract(self, input_data: ExtractionInput) -> ExtractionResult:
         metadata = input_data.metadata or {}
+        related_person_roles = _related_person_map_from_metadata(metadata)
         raw_pages = metadata.get("raw_pages") if isinstance(metadata.get("raw_pages"), list) else []
         if not raw_pages:
             raw_pages = _load_native_pdf_pages(input_data.file_path)
@@ -2079,6 +2174,7 @@ class BankStatementSkill(BaseExtractionSkill):
             "page_count": len({int(item.get("page") or index) for index, item in enumerate(raw_pages, 1)}) or int(metadata.get("page_count") or 0),
             "transactions": transactions, "evidence": account_evidence + period_evidence + tx_evidence,
             "parse_diagnostics": parse_diagnostics, "text_recognized": bool(source.strip()),
+            "related_person_roles": related_person_roles,
         }
         _infer_account_name_from_counterparties(result)
         _clean_and_mark_transactions(result)
@@ -2104,6 +2200,8 @@ class BankStatementSkill(BaseExtractionSkill):
         result["risk_tips"] = []
         if result["self_transfer_count"] >= 2:
             result["risk_tips"].append("存在多笔本方同名账户划转，已从有效经营流水中剔除，建议结合其他账户流水核验资金闭环。")
+        if result.get("related_person_transfer_count", 0) > 0:
+            result["risk_tips"].append("存在公司账户与法人/关联人之间的资金往来，已从有效经营流水中剔除，建议结合借款协议、报销单据、备用金台账核验资金性质。")
         if any(tx["交易分类"] in {"贷款归还", "利息支出"} for tx in result["loan_related_transactions"]):
             result["risk_tips"].append("存在贷款归还或贷款利息支出记录。")
         if result["amount_recognition_status"] != "完整识别":
