@@ -392,6 +392,8 @@ def aggregate_customer_bank_statements(
             "statement_subtype_label": _statement_subtype_label(subtype),
             "account_no": account_no or UNKNOWN,
             "account_name": valid_account_name or UNKNOWN,
+            "date_range": f"{_date(payload.get('period_start'))} 至 {_date(payload.get('period_end'))}" if _date(payload.get("period_start")) and _date(payload.get("period_end")) else UNKNOWN,
+            "transaction_count": len(quality["valid_transactions"]),
             "parse_quality_status": quality["parse_quality_status"],
             "parse_quality_label": _quality_status_label(quality["parse_quality_status"], subtype),
             "included": included,
@@ -451,7 +453,9 @@ def aggregate_customer_bank_statements(
                 "period_start": start,
                 "period_end": end,
                 "transaction_count": len(quality["valid_transactions"]),
-                "status": "已纳入月度聚合",
+                "raw_transaction_count": len(quality["valid_transactions"]),
+                "valid_transaction_count": len(quality["valid_transactions"]),
+                "status": f"已纳入 {statement_month} 月度聚合",
             })
             logger.info("[BankStatementAggregator] monthly_group_key=%s", group_key)
             logger.info("[BankStatementAggregator] monthly_group_file_count=%s", group["file_count"])
@@ -690,10 +694,15 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         f"- 客户名称：{data.get('customer_name') or UNKNOWN}",
         f"- 覆盖文件数：{data.get('file_count', 0)} 份",
         f"- 标准账户流水文件数：{data.get('standard_account_statement_file_count', data.get('included_files_count', 0))} 份",
-        f"- 银行回单集合文件数：{data.get('receipt_bundle_file_count', 0)} 份",
-        f"- 非标准银行流水文件数：{data.get('nonstandard_bank_file_count', 0)} 份",
-        f"- 辅助回单明细数量：{data.get('receipt_detail_count', 0)} 条",
-        f"- 辅助回单金额合计：{_money(data.get('receipt_detail_amount_total')) if data.get('receipt_detail_count', 0) else '未识别'}",
+    ]
+    if data.get("receipt_bundle_file_count", 0):
+        lines.append(f"- 银行回单集合文件数：{data.get('receipt_bundle_file_count', 0)} 份")
+        lines.append(f"- 辅助回单明细数量：{data.get('receipt_detail_count', 0)} 条")
+        if data.get("receipt_detail_count", 0):
+            lines.append(f"- 辅助回单金额合计：{_money(data.get('receipt_detail_amount_total'))}")
+    if data.get("nonstandard_bank_file_count", 0):
+        lines.append(f"- 非标准银行流水文件数：{data.get('nonstandard_bank_file_count', 0)} 份")
+    lines += [
         f"- 已识别银行账户数：{data.get('account_count', 0)} 个",
         f"- 未识别账户文件数：{data.get('unrecognized_account_file_count', 0)} 份",
         f"- 覆盖时间范围：{period_text}",
@@ -717,12 +726,12 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
     lines += [
         "",
         "### 文件解析质量清单",
-        "| 序号 | 来源文件 | 识别银行 | 文件类型 | 账号 | 户名 | 交易明细状态 | 是否纳入经营流水聚合 | 问题说明 |",
-        "|---:|---|---|---|---|---|---|---|---|",
+        "| 序号 | 来源文件 | 识别银行 | 文件类型 | 日期范围 | 交易笔数 | 是否纳入经营流水聚合 | 问题说明 |",
+        "|---:|---|---|---|---|---:|---|---|",
     ]
     for index, row in enumerate(data.get("file_quality") or [], start=1):
         included = "是" if row.get("included") else "否"
-        lines.append(f"| {index} | {row.get('source_file') or '—'} | {row.get('bank_name') or UNKNOWN} | {row.get('statement_subtype_label') or '银行对账单'} | {row.get('account_no') or UNKNOWN} | {row.get('account_name') or UNKNOWN} | {row.get('parse_quality_label') or UNKNOWN} | {included} | {row.get('problem') or '—'} |")
+        lines.append(f"| {index} | {row.get('source_file') or '—'} | {row.get('bank_name') or UNKNOWN} | {row.get('statement_subtype_label') or '银行对账单'} | {row.get('date_range') or UNKNOWN} | {row.get('transaction_count', 0)} | {included} | {row.get('problem') or '—'} |")
 
     lines += [
         "",
@@ -754,8 +763,8 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         lines += [
             "",
             "### 来源文件",
-            "| 序号 | 来源文件 | 日期范围 | 交易笔数 | 状态 |",
-            "|---:|---|---|---:|---|",
+            "| 序号 | 来源文件 | 日期范围 | 原始交易笔数 | 有效交易笔数 | 状态 |",
+            "|---:|---|---|---:|---:|---|",
         ]
         source_index = 1
         for group in monthly_groups:
@@ -763,7 +772,9 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
                 file_range = _account_time_range(file_item)
                 lines.append(
                     f"| {source_index} | {file_item.get('source_file') or '—'} | {file_range} | "
-                    f"{file_item.get('transaction_count', 0)} | {file_item.get('status') or '已纳入月度聚合'} |"
+                    f"{file_item.get('raw_transaction_count', file_item.get('transaction_count', 0))} | "
+                    f"{file_item.get('valid_transaction_count', file_item.get('transaction_count', 0))} | "
+                    f"{file_item.get('status') or '已纳入月度聚合'} |"
                 )
                 source_index += 1
 

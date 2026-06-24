@@ -233,9 +233,11 @@ def test_bocm_multiple_files_same_account_aggregate_as_one_account():
     assert data["monthly_file_groups"][0]["transaction_count"] == 3
     markdown = render_customer_bank_flow_aggregate_markdown(data)
     assert "已识别银行账户数：1 个" in markdown
-    assert "银行回单集合文件数：0 份" in markdown
+    assert "银行回单集合文件数：0 份" not in markdown
+    assert "辅助回单明细数量：0 条" not in markdown
     assert "| 序号 | 银行名称 | 开户机构 | 账号 | 户名 | 时间范围 | 文件数 | 交易笔数 |" in markdown
     assert "### 月度文件清单" in markdown
     assert "| 2024-05 | 交通银行 | 310066629013003064589 | 上海乐芙兰电子商务有限公司 | 3 |" in markdown
     assert "### 来源文件" in markdown
+    assert "| 序号 | 来源文件 | 识别银行 | 文件类型 | 日期范围 | 交易笔数 | 是否纳入经营流水聚合 | 问题说明 |" in markdown
     assert "交通银行上海长宁支行" in markdown

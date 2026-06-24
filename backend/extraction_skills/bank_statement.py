@@ -2792,6 +2792,28 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
             "- 建议上传银行账户明细、账户流水 PDF 或 Excel。",
         ]).replace("None", "").replace("null", "").replace("undefined", "")
 
+    if result.get("bank_format") == BANK_FORMAT_BOCM:
+        month_label = f"{result.get('statement_year')}-{result.get('statement_month')}" if result.get("statement_year") and result.get("statement_month") else "月度"
+        account_label = f"{_display(result.get('bank_name'))}｜{_display(result.get('account_no'))}"
+        return "\n".join([
+            "## 银行对账单",
+            "",
+            f"- 来源文件：{_cell(result.get('source_file'))}",
+            "- 原件状态：可查看",
+            f"- 提取状态：{result.get('extraction_status', '成功')}",
+            f"- 展示状态：已纳入 {month_label} 月度聚合",
+            f"- 所属账户：{account_label}",
+            "- 账户信息：已在上方“账户清单”统一展示",
+            "",
+            "### 文件摘要",
+            f"- 日期范围：{_display(result.get('period_text'))}",
+            f"- 原始交易笔数：{result.get('raw_transaction_count', result.get('transaction_count', 0))}",
+            f"- 有效交易笔数：{result.get('valid_transaction_count', 0)}",
+            "- 已纳入客户级银行流水聚合：是",
+            "",
+            "详细交易明细不在单份文件重复展开，由“银行流水聚合分析”统一展示。",
+        ]).replace("None", "").replace("null", "").replace("undefined", "")
+
     lines = [
         "## 银行对账单", "", "- 资料类型：银行对账单",
         f"- 来源文件：{_cell(result.get('source_file'))}", "- 原件状态：可查看",
@@ -2821,19 +2843,6 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         f"- 时间范围：{_display(result.get('period_text'))}",
         f"- 页数：{result.get('page_count', 0)}页", f"- 金额识别状态：{_display(result.get('amount_recognition_status'))}",
     ]
-    if result.get("bank_format") == BANK_FORMAT_BOCM:
-        month_label = f"{result.get('statement_year')}-{result.get('statement_month')}" if result.get("statement_year") and result.get("statement_month") else "月度"
-        lines.insert(6, f"- 展示状态：已纳入 {month_label} 月度聚合")
-        lines += [
-            "",
-            "### 文件摘要",
-            f"- 原始交易笔数：{result.get('raw_transaction_count', result.get('transaction_count', 0))}",
-            f"- 有效交易笔数：{result.get('valid_transaction_count', 0)}",
-            "- 已纳入客户级银行流水聚合：是",
-            "",
-            "详细交易明细不在单份文件重复展开，由“银行流水聚合分析”统一展示。",
-        ]
-        return "\n".join(lines).replace("None", "").replace("null", "").replace("undefined", "")
     if result.get("bank_format") == BANK_FORMAT_SHANGHAI and (result.get("debit_total_amount") is not None or result.get("credit_total_amount") is not None or result.get("header_transaction_count")):
         parsed_count = result.get("parsed_transaction_count", len(result.get("transactions") or []))
         total_count = result.get("header_transaction_count") or result.get("transaction_count") or 0

@@ -455,8 +455,10 @@ def test_bocm_statement_is_not_misrouted_to_receipt_bundle_and_parses_header_tra
     markdown = content["display_markdown"]
     assert "## 银行对账单" in markdown
     assert "交通银行" in markdown
-    assert "- 户名：上海乐芙兰电子商务有限公司" in markdown
-    assert "- 开户机构：交通银行上海长宁支行" in markdown
+    assert "账户信息：已在上方“账户清单”统一展示" in markdown
+    assert "所属账户：交通银行｜310066629013003064589" in markdown
+    assert "- 户名：上海乐芙兰电子商务有限公司" not in markdown
+    assert "- 开户机构：交通银行上海长宁支行" not in markdown
     assert "客户名称：" not in markdown
     assert '"doc_type"' not in markdown
     assert "raw_text" not in markdown
@@ -527,11 +529,10 @@ def test_bocm_header_parser_handles_staggered_ocr_header_without_page_no_polluti
     assert data["statement_month"] == "05"
     assert data["period_text"] == "2024-05-20 至 2024-05-20"
     markdown = content["display_markdown"]
-    assert "户名：上海乐芙兰电子商务有限公司" in markdown
+    assert "账户信息：已在上方“账户清单”统一展示" in markdown
     assert "客户名称：" not in markdown
     assert "户名：页码" not in markdown
-    assert "年份：2024" in markdown
-    assert "月份：05" in markdown
+    assert "展示状态：已纳入 2024-05 月度聚合" in markdown
 
 
 def test_bocm_header_parser_uses_text_box_layout_values():
@@ -595,7 +596,7 @@ def test_bocm_filename_account_and_customer_profile_fallback_rejects_numeric_acc
     assert data["statement_month"] == "05"
     assert data["period_text"] == "2024-05-13 至 2024-05-13"
     markdown = content["display_markdown"]
-    assert "户名：上海乐芙兰电子商务有限公司" in markdown
+    assert "账户信息：已在上方“账户清单”统一展示" in markdown
     assert "户名：3" not in markdown
     assert "重点交易明细" not in markdown
 
