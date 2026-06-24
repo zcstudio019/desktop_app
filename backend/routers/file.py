@@ -1538,17 +1538,19 @@ def _resolve_document_type_code(text_content: str, explicit_type: str | None, ro
         "账户明细" in receipt_source
         or "账户明细查询" in receipt_source
         or "账户明细清单" in receipt_source
+        or "明细对账单" in receipt_source
+        or "交通银行上海市分行明细对账单" in receipt_source
         or ("交易流水号" in receipt_source and "交易时间" in receipt_source and "余额" in receipt_source)
         or (
             any(keyword in receipt_source for keyword in ("余额", "借方发生额", "贷方发生额"))
-            and any(keyword in receipt_source for keyword in ("交易日期", "交易时间", "记账日期"))
+            and any(keyword in receipt_source for keyword in ("交易日期", "交易时间", "记账日期", "会计日期"))
         )
     )
     if receipt_like and not standard_bank_table and normalized in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_receipt_bundle"
     official_bank_statement = any(
         keyword.lower() in f"{filename}\n{text_content}".lower()
-        for keyword in ("中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")
+        for keyword in ("中国工商银行账户明细清单", "交通银行上海市分行明细对账单", "明细对账单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")
     )
     if normalized and not (official_bank_statement and normalized in {"enterprise_flow", "enterprise_bank_statement"}):
         return normalized

@@ -194,3 +194,38 @@ def test_receipt_bundle_single_file_markdown_uses_receipt_bundle_language():
     assert "有效入账笔数" not in markdown
     assert "有效出账笔数" not in markdown
     assert "金额列缺失" not in markdown
+
+
+def test_bocm_multiple_files_same_account_aggregate_as_one_account():
+    tx1 = tx("2024-05-13", "出账", "766.14", "上海顺衡物流有限公司", account="622200001", summary="物流费", purpose="单位国内汇款手续费", category="经营出账", balance="145209.67")
+    tx2 = tx("2024-05-24", "入账", "206360.00", "上海汇付支付有限公司", account="622200002", summary="货款", purpose="单位国内汇款", category="经营入账", balance="351569.67")
+    tx3 = tx("2024-05-31", "出账", "3000.00", "江苏苏泰华庆贸易有限公司", account="622200003", summary="材料款", purpose="单位国内汇款", category="经营出账", balance="348569.67")
+    files = [
+        statement("31006662901300306458920240520_2.pdf", "交通银行", "310066629013003064589", "上海乐芙兰电子商务有限公司", [tx1], start="2024-05-01", end="2024-05-20"),
+        statement("31006662901300306458920240524_3.pdf", "交通银行", "310066629013003064589", "上海乐芙兰电子商务有限公司", [tx2], start="2024-05-01", end="2024-05-24"),
+        statement("31006662901300306458920240531_4.pdf", "交通银行", "310066629013003064589", "上海乐芙兰电子商务有限公司", [tx3], start="2024-05-01", end="2024-05-31"),
+    ]
+    for item in files:
+        payload = item["extracted_data"]["extracted_json"]
+        payload["bank_format"] = "bocm_statement"
+        payload["statement_subtype"] = "account_statement"
+        payload["opening_bank"] = "交通银行上海长宁支行"
+        payload["parse_quality_status"] = "success"
+        payload["account_info_valid"] = True
+        payload["transactions_valid"] = True
+        payload["amounts_valid"] = True
+        payload["can_join_effective_flow_statistics"] = True
+    data = aggregate_customer_bank_statements(files, customer_profile={"name": "上海乐芙兰电子商务有限公司"})
+    assert data["file_count"] == 3
+    assert data["included_files_count"] == 3
+    assert data["receipt_bundle_file_count"] == 0
+    assert data["account_count"] == 1
+    assert data["bank_accounts"][0]["bank_name"] == "交通银行"
+    assert data["bank_accounts"][0]["opening_bank"] == "交通银行上海长宁支行"
+    assert data["bank_accounts"][0]["account_no"] == "310066629013003064589"
+    assert data["bank_accounts"][0]["account_name"] == "上海乐芙兰电子商务有限公司"
+    assert data["bank_accounts"][0]["file_count"] == 3
+    markdown = render_customer_bank_flow_aggregate_markdown(data)
+    assert "已识别银行账户数：1 个" in markdown
+    assert "银行回单集合文件数：0 份" in markdown
+    assert "交通银行上海长宁支行" in markdown

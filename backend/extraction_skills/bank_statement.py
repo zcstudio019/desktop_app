@@ -24,6 +24,7 @@ HEADERS = (
 )
 BANK_FORMAT_ICBC = "icbc"
 BANK_FORMAT_SHANGHAI = "shanghai_bank"
+BANK_FORMAT_BOCM = "bocm_statement"
 BANK_FORMAT_GENERIC = "generic_bank_statement"
 DATE_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})[年/.-]?(\d{1,2})[月/.-]?(\d{1,2})(?:日)?(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?")
 PERIOD_RE = re.compile(r"(?<!\d)((?:19|20)\d{6})\s*(?:-|—|~|至|到)\s*((?:19|20)\d{6})(?!\d)")
@@ -61,6 +62,11 @@ GENERIC_TABLE_HEADER_KEYWORDS = (
     "交易日期", "交易时间", "记账日期", "发生日期", "入账日期", "对方户名", "对手名称",
     "对方名称", "收款方", "付款方", "交易对方", "摘要", "用途", "借方发生额",
     "贷方发生额", "交易金额", "发生额", "余额",
+)
+BOCM_TABLE_HEADER_KEYWORDS = (
+    "交通银行上海市分行明细对账单", "明细对账单", "开户机构", "账号", "户名", "会计日期",
+    "交易日期", "交易名称", "借方发生额", "贷方发生额", "余额", "对方账号", "对方户名",
+    "对方行名", "摘要", "流水号",
 )
 GENERIC_BANK_NAMES = (
     "中国工商银行", "上海银行", "中国建设银行", "中国农业银行", "中国银行", "招商银行", "交通银行",
@@ -121,6 +127,8 @@ def _generic_header_bank_name(header_text: str) -> str:
 
 def detect_statement_subtype(bank_format: str, source: str) -> str:
     text = str(source or "")
+    if bank_format == BANK_FORMAT_BOCM:
+        return "account_statement"
     if bank_format == BANK_FORMAT_ICBC and "中国工商银行账户明细清单" in text:
         return "account_statement"
     if bank_format == BANK_FORMAT_ICBC and any(marker in text for marker in ("单位国内汇款", "电子回单", "回单编号", "回单批量", "网银回单")):
@@ -199,7 +207,25 @@ def _load_native_pdf_pages(file_path: str) -> list[dict[str, Any]]:
 
 
 def detect_bank_format(raw_text: str, ocr_text: str = "") -> str:
-    source = f"{raw_text}\n{ocr_text}".lower()
+    raw_source = f"{raw_text}\n{ocr_text}"
+    source = raw_source.lower()
+    header_source = raw_source[:5000]
+    if (
+        "交通银行上海市分行明细对账单" in header_source
+        or (
+            "明细对账单" in header_source
+            and "开户机构" in header_source
+            and "会计日期" in raw_source
+            and "借方发生额" in raw_source
+            and "贷方发生额" in raw_source
+            and "对方户名" in raw_source
+        )
+    ):
+        counterparty_banks = sorted({name for name in ("中国工商银行", "中国建设银行", "中国农业银行", "华夏银行", "招商银行", "中国银行") if name in raw_source})
+        logger.info("[BankFormatDetector] title_bank_name=交通银行")
+        logger.info("[BankFormatDetector] counterparty_bank_names_ignored=%s", counterparty_banks)
+        logger.info("[BankFormatDetector] final_bank_name=交通银行")
+        return BANK_FORMAT_BOCM
     if any(keyword.lower() in source for keyword in ("中国工商银行账户明细清单", "中国工商银行", "工商银行", "工行")):
         return BANK_FORMAT_ICBC
     if any(keyword.lower() in source for keyword in ("上海银行股份有限公司", "上海银行对账单", "上海银行账户明细", "上海银行交易明细", "上海银行", "shanghai bank")):
@@ -304,6 +330,64 @@ def _text_before_generic_table_header(text: str) -> str:
     return str(text or "")[:table_header.start()] if table_header else str(text or "")
 
 
+def _bocm_header_text(raw_pages: list[dict[str, Any]], source: str) -> str:
+    text = "\n".join(str(item.get("text") or "")[:6000] for item in raw_pages[:2]) or str(source or "")[:10000]
+    positions = [text.find(keyword) for keyword in ("序号", "会计日期", "借方发生额", "贷方发生额") if text.find(keyword) >= 0]
+    return text[:min(positions)] if positions else text[:4000]
+
+
+def _month_end(year: int, month: int) -> str:
+    last = calendar.monthrange(year, month)[1]
+    return f"{year:04d}-{month:02d}-{last:02d}"
+
+
+def parse_bocm_statement_header(raw_pages: list[dict[str, Any]], source: str) -> dict[str, Any]:
+    header = _bocm_header_text(raw_pages, source)
+    full = "\n".join(str(item.get("text") or "")[:8000] for item in raw_pages[:2]) or str(source or "")[:12000]
+    title = "交通银行上海市分行明细对账单" if "交通银行上海市分行明细对账单" in full else ("明细对账单" if "明细对账单" in full else "")
+    opening_bank = _find_labeled(header, ("开户机构",), ("账号", "户名", "年份", "月份", "币种"))
+    account_no_raw = _find_labeled(header, ("账号",), ("户名", "年份", "月份", "币种"))
+    account_match = re.search(r"(?<!\d)(\d{8,32})(?!\d)", account_no_raw)
+    account_no = account_match.group(1) if account_match else ""
+    account_name = _find_labeled(header, ("户名",), ("年份", "月份", "币种", "序号", "会计日期"))
+    year_text = _find_labeled(header, ("年份",), ("月份", "币种", "序号"))
+    month_text = _find_labeled(header, ("月份",), ("币种", "序号"))
+    currency = _find_labeled(header, ("币种",), ("序号", "会计日期")) or ("人民币" if "人民币" in header else "")
+    year_match = re.search(r"(20\d{2})", year_text or header)
+    month_match = re.search(r"(\d{1,2})", month_text)
+    period_start = ""
+    period_end = ""
+    if year_match and month_match:
+        year = int(year_match.group(1))
+        month = int(month_match.group(1))
+        if 1 <= month <= 12:
+            period_start = f"{year:04d}-{month:02d}-01"
+            period_end = _month_end(year, month)
+    cutoff = re.search(r"出单截至日期\s*[:：]?\s*((?:20\d{2})[-/.年]?\d{1,2}[-/.月]?\d{1,2})", full)
+    if cutoff:
+        cutoff_date = _date(cutoff.group(1))
+        if cutoff_date:
+            period_end = cutoff_date
+    result = {
+        "title": title,
+        "bank_name": "交通银行" if title or "交通银行" in header[:500] else "",
+        "opening_bank": _clean(opening_bank),
+        "account_no": account_no,
+        "account_name": _clean(account_name),
+        "currency": currency,
+        "period_start": period_start,
+        "period_end": period_end,
+        "header_preview": _clean(header[:1000]),
+    }
+    logger.info("[BOCMStatementParser] activated=true")
+    logger.info("[BOCMStatementParser] title=%s", result["title"] or "未识别")
+    logger.info("[BOCMStatementParser] account_no=%s", result["account_no"] or "未识别")
+    logger.info("[BOCMStatementParser] account_name=%s", result["account_name"] or "未识别")
+    logger.info("[BOCMStatementParser] opening_bank=%s", result["opening_bank"] or "未识别")
+    logger.info("[BOCMStatementParser] currency=%s", result["currency"] or "未识别")
+    return result
+
+
 def _header_labeled_value(header: str, labels: tuple[str, ...]) -> str:
     expression = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
     match = re.search(rf"(?:{expression})\s*[:：]\s*([^\n\r|]{{1,100}})", header, re.I)
@@ -321,12 +405,13 @@ def _header_labeled_value(header: str, labels: tuple[str, ...]) -> str:
 def _extract_account_info(raw_pages: list[dict[str, Any]], source: str, bank_format: str) -> tuple[dict[str, str], list[dict[str, Any]]]:
     header = _account_header_text(raw_pages, source)
     shanghai_native = _parse_shanghai_native_header(raw_pages, source) if bank_format == BANK_FORMAT_SHANGHAI else {}
+    bocm_header = parse_bocm_statement_header(raw_pages, source) if bank_format == BANK_FORMAT_BOCM else {}
     account_labels = ("本方账号", "银行账号", "对账账号", "结算账号", "户名账号", "账号/卡号", "账户号", "账号", "账户")
     name_labels = ("本方账号户名", "账号户名", "账户名称", "客户名称", "单位名称", "存款人名称", "企业名称", "户名")
     branch_labels = ("本方账号开户行", "开户行名称", "开户机构", "开户网点", "开户银行", "开户行")
     account_value = _header_labeled_value(header, account_labels)
     account_match = re.search(r"(?<!\d)(\d{8,32})(?!\d)", account_value)
-    account_no = str(shanghai_native.get("account_no") or (account_match.group(1) if account_match else ""))
+    account_no = str(bocm_header.get("account_no") or shanghai_native.get("account_no") or (account_match.group(1) if account_match else ""))
     if bank_format == BANK_FORMAT_GENERIC:
         generic_account_name, account_name_candidates, rejected_account_name_candidates = _generic_header_account_name(header)
         account_name = generic_account_name
@@ -338,9 +423,11 @@ def _extract_account_info(raw_pages: list[dict[str, Any]], source: str, bank_for
         logger.info("[GenericBankStatementParser] rejected_account_name_candidates=%s", rejected_account_name_candidates)
         logger.info("[GenericBankStatementParser] reject_reason=%s", rejected_account_name_candidates[0]["reason"] if rejected_account_name_candidates else "")
         logger.info("[GenericBankStatementParser] final_account_name=%s", account_name or "未识别")
+    elif bank_format == BANK_FORMAT_BOCM:
+        account_name = str(bocm_header.get("account_name") or "")
     else:
         account_name = str(shanghai_native.get("account_name") or _header_labeled_value(header, name_labels))
-    opening_bank = str(shanghai_native.get("opening_bank") or _header_labeled_value(header, branch_labels))
+    opening_bank = str(bocm_header.get("opening_bank") or shanghai_native.get("opening_bank") or _header_labeled_value(header, branch_labels))
     evidence: list[dict[str, Any]] = []
     for field, value in (("account_no", account_no), ("account_name", account_name), ("opening_bank", opening_bank)):
         if value:
@@ -349,7 +436,7 @@ def _extract_account_info(raw_pages: list[dict[str, Any]], source: str, bank_for
         "account_no": account_no,
         "account_name": account_name,
         "opening_bank": opening_bank,
-        "header_preview": _clean(header[:1000]),
+        "header_preview": _clean((bocm_header.get("header_preview") or header)[:1000]),
         "bank_format": bank_format,
     }, evidence
 
@@ -1714,7 +1801,7 @@ def _clean_and_mark_transactions(result: dict[str, Any]) -> None:
         )
         is_valid_time = _valid_transaction_datetime(
             tx.get("交易时间") or tx.get("transaction_time"), period_start, period_end,
-            allow_date_only=result.get("bank_format") == BANK_FORMAT_SHANGHAI,
+            allow_date_only=result.get("bank_format") in {BANK_FORMAT_SHANGHAI, BANK_FORMAT_BOCM},
         )
         category = classify_transaction(tx)
         raw_text = " ".join(str(tx.get(key) or "") for key in ("用途", "摘要", "备注", "回单个性化信息"))
@@ -1901,6 +1988,267 @@ def parse_generic_bank_statement(raw_pages: list[dict[str, Any]], text: str) -> 
         "table_headers_detected": [], "candidate_transaction_rows": len(transactions),
         "invalid_candidate_rows": 0, "raw_text_blocks_count": sum(len(item.get("table_rows") or []) for item in raw_pages),
     }
+
+
+def _bocm_date(value: Any) -> str:
+    text = re.sub(r"\D", "", str(value or ""))
+    if len(text) >= 8:
+        try:
+            return date(int(text[:4]), int(text[4:6]), int(text[6:8])).strftime("%Y-%m-%d")
+        except ValueError:
+            return ""
+    return _date(str(value or ""))
+
+
+def _bocm_header_mapping(cells: list[str]) -> dict[int, str]:
+    fields = {
+        "序号": "transaction_index",
+        "会计日期": "accounting_date",
+        "交易日期": "trade_date",
+        "交易名称": "transaction_name",
+        "凭证种类": "voucher_type",
+        "凭证号码": "voucher_no",
+        "借方发生额": "debit_amount",
+        "贷方发生额": "credit_amount",
+        "余额": "balance",
+        "卡号": "card_no",
+        "交易地点": "transaction_location",
+        "对方账号": "counterparty_account",
+        "对方户名": "counterparty_name",
+        "对方行名": "counterparty_bank",
+        "摘要": "summary",
+        "流水号": "serial_no",
+    }
+    mapping: dict[int, str] = {}
+    for index, cell in enumerate(cells):
+        compact = _clean(cell).replace(" ", "")
+        for label, field in fields.items():
+            if label in compact:
+                mapping[index] = field
+                break
+    return mapping
+
+
+def _bocm_tx_from_fields(fields: dict[str, Any], page: int, previous_balance: Decimal | None = None) -> tuple[dict[str, Any] | None, str]:
+    index_text = str(fields.get("transaction_index") or "").strip()
+    if not re.fullmatch(r"\d{1,6}", index_text):
+        return None, "missing_index"
+    trade_date = _bocm_date(fields.get("trade_date") or fields.get("accounting_date"))
+    accounting_date = _bocm_date(fields.get("accounting_date") or fields.get("trade_date"))
+    if not (trade_date or accounting_date):
+        return None, "missing_date"
+    debit = _positive_amount(fields.get("debit_amount"))
+    credit = _positive_amount(fields.get("credit_amount"))
+    balance = _decimal(fields.get("balance"))
+    amount = debit or credit
+    direction = "出账" if debit is not None else ("入账" if credit is not None else "未识别")
+    if amount is None and previous_balance is not None and balance is not None:
+        delta = balance - previous_balance
+        if delta != 0:
+            amount = abs(delta)
+            direction = "入账" if delta > 0 else "出账"
+            if delta > 0:
+                credit = amount
+            else:
+                debit = amount
+    support = any(_clean(fields.get(key)) for key in ("transaction_name", "counterparty_account", "counterparty_name", "counterparty_bank", "summary", "serial_no"))
+    if amount is None:
+        return None, "missing_amount"
+    if not support:
+        return None, "missing_transaction_fields"
+    tx = _new_tx(page)
+    tx["序号"] = int(index_text)
+    tx["凭证号"] = _clean(fields.get("voucher_no") or fields.get("serial_no") or "")
+    tx["对方账号"] = _clean(fields.get("counterparty_account") or "")
+    tx["对方单位"] = _clean(fields.get("counterparty_name") or "")
+    tx["对方行号"] = _clean(fields.get("counterparty_bank") or "")
+    tx["交易时间"] = trade_date or accounting_date
+    tx["借贷标志"] = "借" if direction == "出账" else ("贷" if direction == "入账" else "未识别")
+    tx["收支方向"] = direction
+    tx["用途"] = _clean(fields.get("transaction_name") or "")
+    tx["摘要"] = _clean(fields.get("summary") or "")
+    tx["备注"] = _clean(fields.get("transaction_location") or fields.get("voucher_type") or "")
+    tx["金额"] = amount
+    tx["余额"] = balance
+    tx["金额来源"] = "借方发生额" if debit is not None else ("贷方发生额" if credit is not None else "余额变化")
+    tx["交易分类"] = classify_transaction(tx)
+    tx["accounting_date"] = accounting_date
+    tx["trade_date"] = trade_date
+    tx["transaction_name"] = _clean(fields.get("transaction_name") or "")
+    tx["debit_amount"] = debit
+    tx["credit_amount"] = credit
+    tx["counterparty_bank"] = tx["对方行号"]
+    tx["serial_no"] = _clean(fields.get("serial_no") or "")
+    tx["is_valid_transaction"] = True
+    return tx, ""
+
+
+def _parse_bocm_text_rows(page_text: str, page: int, previous_balance: Decimal | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Decimal | None]:
+    transactions: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    footer_keywords = ("承前", "本月累计", "当前账单", "出单截至日期", "以下此页无其他交易信息", "页码", "对账专用章")
+    lines = [_clean(line) for line in str(page_text or "").splitlines() if _clean(line)]
+    if previous_balance is None:
+        for line in lines:
+            if "承前" not in line:
+                continue
+            balance_candidates = re.findall(r"(?<!\d)(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d)", line)
+            if balance_candidates:
+                previous_balance = _decimal(balance_candidates[-1])
+                break
+    blocks: list[str] = []
+    current = ""
+    anchor = re.compile(r"^\s*(\d{1,6})\s+(20\d{6})\s+(20\d{6})\b")
+    for line in lines:
+        if any(keyword in line for keyword in footer_keywords):
+            continue
+        if anchor.search(line):
+            if current:
+                blocks.append(current)
+            current = line
+        elif current:
+            current = f"{current} {line}"
+    if current:
+        blocks.append(current)
+    for block in blocks:
+        match = anchor.search(block)
+        if not match:
+            continue
+        rest = block[match.end():].strip()
+        amounts = [(m.group(0), m.start()) for m in re.finditer(r"(?<!\d)(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?!\d)", rest)]
+        if len(amounts) < 2:
+            rejected.append({"page": page, "reason": "missing_amount_columns", "text": block[:300]})
+            continue
+        balance_value = _decimal(amounts[-1][0])
+        amount_value: Decimal | None = None
+        direction = "未识别"
+        if previous_balance is not None and balance_value is not None:
+            for amount_text, _pos in amounts[:-1]:
+                candidate = _decimal(amount_text)
+                if candidate is None:
+                    continue
+                if abs((balance_value - previous_balance) - candidate) <= Decimal("0.01"):
+                    amount_value = candidate
+                    direction = "入账"
+                    break
+                if abs((previous_balance - balance_value) - candidate) <= Decimal("0.01"):
+                    amount_value = candidate
+                    direction = "出账"
+                    break
+        if amount_value is None:
+            amount_value = _decimal(amounts[0][0])
+            if any(keyword in block for keyword in ("手续费", "服务费", "扣费", "扣款", "支付", "支出")):
+                direction = "出账"
+            elif any(keyword in block for keyword in ("收款", "入账", "收入", "货款")):
+                direction = "入账"
+        first_amount_pos = amounts[0][1]
+        last_amount_end = amounts[-1][1] + len(amounts[-1][0])
+        before_amount = rest[:first_amount_pos].strip()
+        after_balance = rest[last_amount_end:].strip()
+        account_match = re.search(r"(?<!\d)(\d{8,32})(?!\d)", after_balance)
+        counterparty_account = account_match.group(1) if account_match else ""
+        after_account = after_balance[account_match.end():].strip() if account_match else after_balance
+        serial_match = re.search(r"([A-Za-z0-9._-]{8,})\s*$", after_account)
+        serial_no = serial_match.group(1) if serial_match else ""
+        if serial_no:
+            after_account = after_account[:serial_match.start()].strip()
+        counterparty_bank = ""
+        bank_match = re.search(
+            r"((?:中国工商|中国建设|中国农业|中国银行|交通|招商|华夏|浦发|中信|民生|平安|兴业|光大|广发|江苏|南京|上海)?银行[^ ]{0,60}(?:支行|分行|营业部)?)",
+            after_account,
+        )
+        if bank_match:
+            counterparty_bank = bank_match.group(1)
+            counterparty_name = after_account[:bank_match.start()].strip()
+            summary = after_account[bank_match.end():].strip()
+        else:
+            parts = after_account.split()
+            counterparty_name = parts[0] if parts else ""
+            summary = " ".join(parts[1:]) if len(parts) > 1 else ""
+        fields = {
+            "transaction_index": match.group(1),
+            "accounting_date": match.group(2),
+            "trade_date": match.group(3),
+            "transaction_name": before_amount.split()[0] if before_amount else "",
+            "debit_amount": str(amount_value) if direction == "出账" else "",
+            "credit_amount": str(amount_value) if direction == "入账" else "",
+            "balance": amounts[-1][0],
+            "counterparty_account": counterparty_account,
+            "counterparty_name": counterparty_name,
+            "counterparty_bank": counterparty_bank,
+            "summary": summary,
+            "serial_no": serial_no,
+        }
+        tx, reason = _bocm_tx_from_fields(fields, page, previous_balance)
+        if tx:
+            if direction == "未识别":
+                tx["收支方向"] = "未识别"
+                tx["借贷标志"] = "未识别"
+            transactions.append(tx)
+            previous_balance = tx.get("余额") if tx.get("余额") is not None else previous_balance
+        else:
+            rejected.append({"page": page, "reason": reason, "text": block[:300]})
+    return transactions, rejected, previous_balance
+
+
+def parse_bocm_statement_transactions(raw_pages: list[dict[str, Any]], text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, dict[str, Any]]:
+    transactions: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    pages = raw_pages or [{"page": 1, "text": text, "table_rows": []}]
+    explicit_amount_column = False
+    previous_balance: Decimal | None = None
+    for page_item in pages:
+        page = int(page_item.get("page") or 1)
+        rows = page_item.get("table_rows") if isinstance(page_item.get("table_rows"), list) else []
+        mapping: dict[int, str] = {}
+        for raw_row in rows:
+            if not isinstance(raw_row, (list, tuple)):
+                continue
+            cells = [_clean(cell) for cell in raw_row]
+            candidate = _bocm_header_mapping(cells)
+            if len(candidate) >= 6 and {"accounting_date", "trade_date", "debit_amount", "credit_amount", "balance"} & set(candidate.values()):
+                mapping = candidate
+                explicit_amount_column = True
+                continue
+            if not mapping:
+                continue
+            fields = {field: cells[index] if index < len(cells) else "" for index, field in mapping.items()}
+            tx, reason = _bocm_tx_from_fields(fields, page, previous_balance)
+            if tx:
+                transactions.append(tx)
+                previous_balance = tx.get("余额") if tx.get("余额") is not None else previous_balance
+            elif any(fields.values()):
+                rejected.append({"page": page, "reason": reason, "fields": fields})
+        text_txs, text_rejected, previous_balance = _parse_bocm_text_rows(str(page_item.get("text") or ""), page, previous_balance)
+        transactions.extend(text_txs)
+        rejected.extend(text_rejected)
+    unique: list[dict[str, Any]] = []
+    seen = set()
+    for tx in transactions:
+        key = (tx.get("序号"), tx.get("交易时间"), tx.get("金额"), tx.get("余额"), tx.get("对方账号"), tx.get("来源页码"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(tx)
+        evidence.append({"type": "bocm_transaction", "page": tx.get("来源页码"), "index": tx.get("序号")})
+    diagnostics = {
+        "parser_path": "bocm_statement",
+        "table_headers_detected": ["序号", "会计日期", "交易日期", "借方发生额", "贷方发生额", "余额", "对方账号", "对方户名", "对方行名", "摘要", "流水号"],
+        "candidate_transaction_rows": len(unique) + len(rejected),
+        "invalid_candidate_rows": len(rejected),
+        "raw_text_blocks_count": sum(len(str(item.get("text") or "").splitlines()) for item in pages),
+        "reject_reasons": dict(Counter(str(item.get("reason") or "unknown") for item in rejected)),
+    }
+    logger.info("[BOCMStatementParser] parsed_transactions_count=%s", len(unique))
+    logger.info("[BOCMStatementParser] first_10_transactions=%s", _json_safe(unique[:10]))
+    if not unique:
+        combined = "\n".join(str(item.get("text") or "") for item in pages)
+        header_pos = min([pos for pos in (combined.find("序号"), combined.find("会计日期"), combined.find("借方发生额")) if pos >= 0] or [0])
+        logger.warning("[BOCMStatementParser] header_near_text=%s", combined[header_pos:header_pos + 1500])
+        logger.warning("[BOCMStatementParser] first_page_3000=%s", str(pages[0].get("text") or "")[:3000] if pages else "")
+        logger.warning("[BOCMStatementParser] candidate_rows=%s reject_reasons=%s", diagnostics["candidate_transaction_rows"], diagnostics["reject_reasons"])
+    return unique, evidence, True, diagnostics
 
 
 def _summary(result: dict[str, Any]) -> None:
@@ -2190,7 +2538,7 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
     if result.get("amount_recognition_status") != "完整识别":
         lines.append("- 金额识别说明：当前 PDF 主表金额列未完整识别，仅保留明确识别金额，不进行完整收入、支出和净流入测算")
     if result.get("valid_transaction_count", 0) == 0 and result.get("text_recognized"):
-        bank_format_name = {BANK_FORMAT_ICBC: "工商银行", BANK_FORMAT_SHANGHAI: "上海银行", BANK_FORMAT_GENERIC: "通用银行对账单"}.get(result.get("bank_format"), "通用银行对账单")
+        bank_format_name = {BANK_FORMAT_ICBC: "工商银行", BANK_FORMAT_SHANGHAI: "上海银行", BANK_FORMAT_BOCM: "交通银行", BANK_FORMAT_GENERIC: "通用银行对账单"}.get(result.get("bank_format"), "通用银行对账单")
         headers = set((result.get("parse_diagnostics") or {}).get("table_headers_detected") or [])
         if headers and "transaction_date" not in headers:
             failure_reason = "已识别表头，但日期列识别失败"
@@ -2304,6 +2652,10 @@ class BankStatementSkill(BaseExtractionSkill):
         if bank_format == BANK_FORMAT_SHANGHAI:
             logger.info("[ShanghaiBankAdapter] first_page_header_text=%s", account_info.get("header_preview") or "未识别")
         period_evidence, period_start, period_end = _periods(raw_pages, source, input_data.file_name)
+        bocm_header = parse_bocm_statement_header(raw_pages, source) if bank_format == BANK_FORMAT_BOCM else {}
+        if bank_format == BANK_FORMAT_BOCM:
+            period_start = bocm_header.get("period_start") or period_start
+            period_end = bocm_header.get("period_end") or period_end
         logger.info("[BankStatementSkill] period_candidates=%s", period_evidence)
         selected_period_source = str(period_evidence[0].get("source") or "unknown") if period_evidence else "missing"
         logger.info("[BankStatementSkill] selected_period=%s~%s source=%s", period_start or "未识别", period_end or "未识别", selected_period_source)
@@ -2311,6 +2663,8 @@ class BankStatementSkill(BaseExtractionSkill):
             transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_shanghai_bank_statement(
                 raw_pages, period_start, period_end, account_info.get("account_no") or "", text,
             )
+        elif bank_format == BANK_FORMAT_BOCM:
+            transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_bocm_statement_transactions(raw_pages, source)
         elif bank_format == BANK_FORMAT_ICBC:
             transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_icbc_statement(raw_pages, source)
         else:
@@ -2324,6 +2678,9 @@ class BankStatementSkill(BaseExtractionSkill):
         elif bank_format == BANK_FORMAT_SHANGHAI:
             title = next((item for item in ("账户明细查询", "上海银行对账单", "上海银行账户明细", "上海银行交易明细") if item in source), "银行对账单")
             bank_name = "上海银行"
+        elif bank_format == BANK_FORMAT_BOCM:
+            title = bocm_header.get("title") or "交通银行明细对账单"
+            bank_name = "交通银行"
         else:
             title = _find_labeled(source, ("对账单标题", "标题")) or "银行对账单"
             bank_name = _find_labeled(source, ("银行名称",))
@@ -2350,8 +2707,8 @@ class BankStatementSkill(BaseExtractionSkill):
             "account_no": account_no,
             "account_name": account_name_clean,
             "opening_bank": opening_bank,
-            "currency": _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围", "时间范围")) or ("人民币" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI} or "人民币" in source else ""),
-            "unit": _find_labeled(source, ("单位",), ("本方账号开户行", "本方开户行", "开户行", "币种", "记账时间范围", "时间范围", "交易时间")) or ("元" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI} or re.search(r"单位\s*[:：]?\s*元", source) else ""),
+            "currency": (bocm_header.get("currency") if bank_format == BANK_FORMAT_BOCM else "") or _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围", "时间范围")) or ("人民币" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI, BANK_FORMAT_BOCM} or "人民币" in source else ""),
+            "unit": _find_labeled(source, ("单位",), ("本方账号开户行", "本方开户行", "开户行", "币种", "记账时间范围", "时间范围", "交易时间")) or ("元" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI, BANK_FORMAT_BOCM} or re.search(r"单位\s*[:：]?\s*元", source) else ""),
             "period_start": period_start, "period_end": period_end, "period_text": period_text,
             "page_count": len({int(item.get("page") or index) for index, item in enumerate(raw_pages, 1)}) or int(metadata.get("page_count") or 0),
             "transactions": transactions, "evidence": account_evidence + period_evidence + tx_evidence,

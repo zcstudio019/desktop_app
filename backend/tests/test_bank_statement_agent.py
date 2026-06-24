@@ -405,6 +405,95 @@ def test_generic_bank_statement_rejects_counterparty_list_as_account_name():
     assert data["bank_name"] == ""
 
 
+def test_bocm_statement_is_not_misrouted_to_receipt_bundle_and_parses_header_transactions():
+    header = ["序号", "会计日期", "交易日期", "交易名称", "凭证种类", "凭证号码", "借方发生额", "贷方发生额", "余额", "卡号", "交易地点", "对方账号", "对方户名", "对方行名", "摘要", "流水号"]
+    rows = [
+        header,
+        ["1", "20240513", "20240513", "单位国内汇款手续费", "", "V001", "766.14", "", "145,209.67", "", "上海", "622200001", "上海顺衡物流有限公司", "中国工商银行股份有限公司上海市习勤路支行", "物流费", "L001"],
+        ["2", "20240513", "20240513", "单位国内汇款", "", "V002", "", "206,360.00", "351,569.67", "", "上海", "622200002", "上海汇付支付有限公司", "中国建设银行股份有限公司上海第五支行", "货款", "L002"],
+    ]
+    text = """交通银行上海市分行明细对账单
+开户机构：交通银行上海长宁支行
+账号：310066629013003064589
+户名：上海乐芙兰电子商务有限公司
+年份：2024
+月份：05
+币种：人民币
+序号 会计日期 交易日期 交易名称 凭证种类 凭证号码 借方发生额 贷方发生额 余额 卡号 交易地点 对方账号 对方户名 对方行名 摘要 流水号
+1 20240513 20240513 单位国内汇款手续费 766.14 145,209.67 622200001 上海顺衡物流有限公司 中国工商银行股份有限公司上海市习勤路支行 物流费 L001
+2 20240513 20240513 单位国内汇款 206,360.00 351,569.67 622200002 上海汇付支付有限公司 中国建设银行股份有限公司上海第五支行 货款 L002
+本月累计借方发生额：10,871,650.78
+"""
+    assert detect_document_type_code(text, filename="31006662901300306458920240520_2.pdf") == "bank_statement"
+    content = build_structured_extraction(
+        text,
+        "bank_statement",
+        raw_pages=[{"page": 1, "text": text, "table_rows": rows, "source": "pdf_layout"}],
+        filename="31006662901300306458920240520_2.pdf",
+    )
+    data = content["extracted_json"]
+    assert data["doc_type"] == "bank_statement"
+    assert data["bank_format"] == "bocm_statement"
+    assert data["statement_subtype"] == "account_statement"
+    assert data["agent_type"] == "bank_statement_agent"
+    assert data["bank_name"] == "交通银行"
+    assert data["statement_title"] == "交通银行上海市分行明细对账单"
+    assert data["opening_bank"] == "交通银行上海长宁支行"
+    assert data["account_no"] == "310066629013003064589"
+    assert data["account_name"] == "上海乐芙兰电子商务有限公司"
+    assert data["currency"] == "人民币"
+    assert data["period_start"] == "2024-05-01"
+    assert data["period_end"] == "2024-05-31"
+    assert data["valid_transaction_count"] == 2
+    assert data["transactions"][0]["收支方向"] == "出账"
+    assert data["transactions"][0]["金额"] == 766.14
+    assert data["transactions"][1]["收支方向"] == "入账"
+    assert data["transactions"][1]["金额"] == 206360.0
+    assert data["transactions"][0]["counterparty_bank"] == "中国工商银行股份有限公司上海市习勤路支行"
+    assert data["bank_name"] != "中国工商银行"
+    assert data["amount_recognition_status"] == "完整识别"
+    markdown = content["display_markdown"]
+    assert "## 银行对账单" in markdown
+    assert "交通银行" in markdown
+    assert '"doc_type"' not in markdown
+    assert "raw_text" not in markdown
+
+
+def test_bocm_statement_native_text_fallback_parses_without_table_rows():
+    text = """交通银行上海市分行明细对账单
+开户机构：交通银行上海长宁支行
+账号：310066629013003064589
+户名：上海乐芙兰电子商务有限公司
+年份：2024
+月份：05
+币种：人民币
+承前余额 145,975.81
+序号 会计日期 交易日期 交易名称 凭证种类 凭证号码 借方发生额 贷方发生额 余额 卡号 交易地点 对方账号 对方户名 对方行名 摘要 流水号
+1 20240513 20240513 单位国内汇款手续费 766.14 145,209.67 622200001 上海顺衡物流有限公司 中国工商银行股份有限公司上海市习勤路支行 物流费 L001
+2 20240513 20240513 单位国内汇款 206,360.00 351,569.67 622200002 上海汇付支付有限公司 中国建设银行股份有限公司上海第五支行 货款 L002
+本月累计借方发生额：10,871,650.78
+"""
+    content = build_structured_extraction(
+        text,
+        "bank_statement",
+        raw_pages=[{"page": 1, "text": text, "table_rows": [], "source": "pdf_text"}],
+        filename="31006662901300306458920240520_2.pdf",
+    )
+    data = content["extracted_json"]
+    assert data["bank_format"] == "bocm_statement"
+    assert data["bank_name"] == "交通银行"
+    assert data["account_no"] == "310066629013003064589"
+    assert data["account_name"] == "上海乐芙兰电子商务有限公司"
+    assert data["valid_transaction_count"] == 2
+    assert data["transactions"][0]["收支方向"] == "出账"
+    assert data["transactions"][0]["对方单位"] == "上海顺衡物流有限公司"
+    assert data["transactions"][0]["对方行号"] == "中国工商银行股份有限公司上海市习勤路支行"
+    assert data["transactions"][0]["金额"] == 766.14
+    assert data["transactions"][1]["收支方向"] == "入账"
+    assert data["transactions"][1]["对方单位"] == "上海汇付支付有限公司"
+    assert data["transactions"][1]["金额"] == 206360.0
+
+
 def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
     pages = [{"page": 1, "text": "上海银行对账单\n客户名称：测试公司", "table_rows": [], "source": "ocr"}]
     content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")

@@ -135,7 +135,8 @@ BANK_RECEIPT_BUNDLE_KEYWORDS = (
 )
 
 STANDARD_BANK_STATEMENT_TABLE_KEYWORDS = (
-    "交易日期", "交易时间", "记账日期", "余额", "借方发生额", "贷方发生额", "账户明细", "账户明细清单",
+    "交易日期", "交易时间", "记账日期", "会计日期", "余额", "借方发生额", "贷方发生额",
+    "账户明细", "账户明细查询", "账户明细清单", "明细对账单", "对方账号", "对方户名", "对方行名", "流水号",
 )
 
 
@@ -153,10 +154,12 @@ def _looks_like_bank_receipt_bundle(text: str, filename: str = "") -> bool:
         "账户明细" in source
         or "账户明细查询" in source
         or "账户明细清单" in source
+        or "明细对账单" in source
+        or "交通银行上海市分行明细对账单" in source
         or ("交易流水号" in source and "交易时间" in source and "余额" in source)
         or (
             any(keyword in source for keyword in ("余额", "借方发生额", "贷方发生额"))
-            and any(keyword in source for keyword in ("交易日期", "交易时间", "记账日期"))
+            and any(keyword in source for keyword in ("交易日期", "交易时间", "记账日期", "会计日期"))
         )
     )
     return (has_receipt_marker or hit_count >= 3 or has_parties) and not has_standard_statement_table
@@ -185,7 +188,11 @@ def detect_document_type_code(
     normalized_explicit = normalize_document_type_code(explicit_type)
     if _looks_like_bank_receipt_bundle(text_content, filename) and normalized_explicit in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_receipt_bundle"
-    if _looks_like_official_bank_statement(text_content, filename) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
+    if (
+        _looks_like_official_bank_statement(text_content, filename)
+        or "交通银行上海市分行明细对账单" in str(text_content or "")
+        or "明细对账单" in str(text_content or "")
+    ) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_statement"
     if normalized_explicit:
         return normalized_explicit
@@ -3097,7 +3104,11 @@ def detect_document_type_code(
     normalized_explicit = normalize_document_type_code(explicit_type)
     if _looks_like_bank_receipt_bundle(text_content, filename) and normalized_explicit in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_receipt_bundle"
-    if _looks_like_official_bank_statement(text_content, filename) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
+    if (
+        _looks_like_official_bank_statement(text_content, filename)
+        or "交通银行上海市分行明细对账单" in str(text_content or "")
+        or "明细对账单" in str(text_content or "")
+    ) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_statement"
     if normalized_explicit:
         return normalized_explicit
