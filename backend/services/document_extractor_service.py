@@ -9456,6 +9456,29 @@ def build_structured_extraction(
                 "historical_financial_reports": historical_financial_reports or [],
             },
         )
+        if (
+            normalized_code == "bank_statement"
+            and isinstance(agent_result.extracted_json, dict)
+            and agent_result.extracted_json.get("statement_subtype") == "receipt_bundle"
+        ):
+            logger.info(
+                "[bank_statement] reroute_receipt_bundle_to_agent filename=%s statement_subtype=receipt_bundle",
+                filename,
+            )
+            normalized_code = "bank_receipt_bundle"
+            agent_result = run_document_extraction_agent(
+                document_type="bank_receipt_bundle",
+                raw_text=str(text_content or ""),
+                filename=filename,
+                customer_id=customer_id,
+                metadata={
+                    "customer_name": customer_name,
+                    "raw_pages": raw_pages,
+                    "rows": rows,
+                    "file_path": file_path,
+                    "document_type": "bank_receipt_bundle",
+                },
+            )
         if isinstance(agent_result.raw_agent_result, dict):
             content = dict(agent_result.raw_agent_result)
             content["document_type_code"] = normalized_code

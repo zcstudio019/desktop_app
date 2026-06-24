@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import json
+import logging
 from collections import Counter, defaultdict
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -11,6 +13,7 @@ from .base import BaseExtractionSkill, ExtractionInput, ExtractionResult
 
 DOC_TYPE = "bank_receipt_bundle"
 DOC_TYPE_NAME = "银行回单集合"
+logger = logging.getLogger(__name__)
 
 
 def _clean(value: Any) -> str:
@@ -18,6 +21,15 @@ def _clean(value: Any) -> str:
     text = re.sub(r"\s*\n\s*", "\n", text)
     text = text.replace("有限 公司", "有限公司").replace("有 限公司", "有限公司").replace("公 司", "公司")
     return text.strip(" \n\t:：,，。；;")
+
+
+def _clean_party_name(value: Any) -> str:
+    text = _clean(value).replace("\n", "")
+    text = re.sub(r"(付款人名称?|付款单位|付款户名|汇款人|付款方|付款账户名称|收款人名称?|收款单位|收款户名|收款方|收款账户名称|账号|账户|金额|用途|摘要|附言|备注)\s*[:：]?", "", text)
+    text = _clean(text)
+    if len(re.findall(r"(?:有限)?公司", text)) >= 2:
+        return text[:80]
+    return text[:80]
 
 
 def _cell(value: Any) -> str:
@@ -97,7 +109,8 @@ def _bank_name(text: str) -> str:
 def _label_value(text: str, labels: tuple[str, ...], *, max_chars: int = 120) -> str:
     label_pattern = "|".join(re.escape(label) for label in labels)
     stop_labels = (
-        "付款人", "付款人名称", "付款账号", "付款账户", "收款人", "收款人名称", "收款账号", "收款账户",
+        "付款人", "付款人名称", "付款单位", "付款户名", "汇款人", "付款方", "付款账户名称", "付款账号", "付款账户",
+        "收款人", "收款人名称", "收款单位", "收款户名", "收款方", "收款账户名称", "收款账号", "收款账户",
         "付款方", "收款方", "金额", "交易金额", "汇款金额", "人民币金额", "小写金额", "大写金额", "用途", "汇款用途", "交易用途", "附言", "备注", "摘要",
         "回单编号", "业务编号", "流水号", "交易流水号", "指令编号", "日期", "交易日期", "回单日期",
         "付款银行", "收款银行", "开户行", "状态", "渠道",
@@ -122,6 +135,19 @@ def _extract_account(text: str, labels: tuple[str, ...]) -> str:
     return match.group(1) if match else ""
 
 
+def _unknown_accounts(text: str, known: set[str]) -> list[str]:
+    accounts = []
+    for match in re.finditer(r"\b\d{8,32}\b", text):
+        value = match.group(0)
+        if value in known:
+            continue
+        around = text[max(0, match.start() - 12): match.end() + 12]
+        if any(keyword in around for keyword in ("回单编号", "业务编号", "流水号", "交易流水号", "指令编号", "金额", "日期", "电话", "页")):
+            continue
+        accounts.append(value)
+    return accounts[:5]
+
+
 def _extract_amount(text: str) -> Decimal | None:
     amount_labels = ("交易金额", "汇款金额", "人民币金额", "小写金额", "金额")
     for label in amount_labels:
@@ -132,6 +158,18 @@ def _extract_amount(text: str) -> Decimal | None:
     if cn_match:
         return _cn_number_to_decimal(cn_match.group(1))
     return None
+
+
+def _fallback_amount_candidate(text: str) -> Decimal | None:
+    candidates: list[Decimal] = []
+    for match in re.finditer(r"(?<!\d)(?:￥|¥|CNY\s*)?([1-9]\d{0,2}(?:,\d{3})*\.\d{2}|[1-9]\d+\.\d{2})(?:元)?(?!\d)", text, re.I):
+        around = text[max(0, match.start() - 20): match.end() + 20]
+        if any(keyword in around for keyword in ("日期", "账号", "账户", "编号", "流水号", "指令", "页码", "电话")):
+            continue
+        amount = _money_value(match.group(1))
+        if amount is not None:
+            candidates.append(amount)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _extract_date(text: str) -> tuple[str, str]:
@@ -165,14 +203,14 @@ def _receipt_no(text: str) -> tuple[str, str]:
 def _split_blocks(pages: list[dict[str, Any]], source_text: str) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     primary_markers = ("中国工商银行电子回单", "网上银行电子回单", "电子回单", "交易回单")
-    secondary_markers = ("单位国内汇款", "回单编号", "业务编号", "交易流水号")
+    secondary_markers = ("单位国内汇款手续费", "单位国内汇款手", "单位国内汇款", "回单编号", "业务编号", "交易流水号", "指令序号", "付款人", "收款人")
     if pages:
         for index, page in enumerate(pages, start=1):
             text = str(page.get("text") or "")
             if not text.strip():
                 continue
             starts = sorted({m.start() for marker in primary_markers for m in re.finditer(re.escape(marker), text)})
-            if len(starts) <= 1:
+            if not starts:
                 starts = sorted({
                     m.start()
                     for marker in secondary_markers
@@ -191,18 +229,28 @@ def _split_blocks(pages: list[dict[str, Any]], source_text: str) -> list[dict[st
     return blocks
 
 
+def split_receipt_blocks(raw_text: str, ocr_pages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    return _split_blocks(ocr_pages or [], raw_text)
+
+
 def _parse_receipt(block: dict[str, Any], fallback_bank: str) -> dict[str, Any]:
     text = _clean(block.get("text"))
     date, time = _extract_date(text)
     receipt_no, business_no = _receipt_no(text)
-    payer_name = _label_value(text, ("付款人名称", "付款人", "付款单位", "付款户名", "汇款人", "付款方"), max_chars=80)
-    payee_name = _label_value(text, ("收款人名称", "收款人", "收款单位", "收款户名", "收款方"), max_chars=80)
+    payer_name = _clean_party_name(_label_value(text, ("付款人名称", "付款人", "付款单位", "付款户名", "汇款人", "付款方", "付款账户名称"), max_chars=100))
+    payee_name = _clean_party_name(_label_value(text, ("收款人名称", "收款人", "收款单位", "收款户名", "收款方", "收款账户名称"), max_chars=100))
     payer_account = _extract_account(text, ("付款账号", "付款人账号", "付款账户", "付款人账户"))
     payee_account = _extract_account(text, ("收款账号", "收款人账号", "收款账户", "收款人账户"))
     amount = _extract_amount(text)
-    purpose = _label_value(text, ("汇款用途", "交易用途", "用途", "附言"), max_chars=120)
+    amount_source = "labeled_amount" if amount is not None else ""
+    if amount is None:
+        amount = _fallback_amount_candidate(text)
+        amount_source = "single_amount_candidate" if amount is not None else ""
+    purpose = _label_value(text, ("汇款用途", "交易用途", "用途", "附言", "备注"), max_chars=120)
     summary = _label_value(text, ("摘要",), max_chars=120)
     remark = _label_value(text, ("备注",), max_chars=120)
+    known_accounts = {item for item in (payer_account, payee_account) if item}
+    unknown_accounts = _unknown_accounts(text, known_accounts)
     receipt = {
         "receipt_date": date,
         "receipt_time": time,
@@ -216,6 +264,7 @@ def _parse_receipt(block: dict[str, Any], fallback_bank: str) -> dict[str, Any]:
         "payee_account": payee_account,
         "payee_bank": _label_value(text, ("收款银行", "收款行", "收款开户行"), max_chars=80),
         "amount": amount,
+        "amount_source": amount_source,
         "currency": "人民币" if "人民币" in text or amount is not None else "",
         "summary": summary,
         "purpose": purpose,
@@ -224,16 +273,35 @@ def _parse_receipt(block: dict[str, Any], fallback_bank: str) -> dict[str, Any]:
         "status": _label_value(text, ("状态", "交易状态"), max_chars=60),
         "source_page": int(block.get("page") or 1),
         "confidence": 0.0,
+        "unknown_accounts": unknown_accounts,
         "raw_text": text[:1000],
     }
+    criteria = {
+        "date": bool(date),
+        "amount": amount is not None,
+        "party": bool(payer_name or payee_name),
+        "account": bool(payer_account or payee_account or unknown_accounts),
+        "purpose_or_summary": bool(purpose or summary or remark),
+        "receipt_no": bool(receipt_no or business_no),
+    }
     score = 0
-    score += 0.25 if date else 0
-    score += 0.25 if payer_name or payee_name else 0
-    score += 0.25 if amount is not None else 0
-    score += 0.15 if payer_account or payee_account else 0
-    score += 0.10 if receipt_no or business_no else 0
+    score += 0.22 if criteria["date"] else 0
+    score += 0.24 if criteria["amount"] else 0
+    score += 0.22 if criteria["party"] else 0
+    score += 0.14 if criteria["account"] else 0
+    score += 0.10 if criteria["purpose_or_summary"] else 0
+    score += 0.08 if criteria["receipt_no"] else 0
     receipt["confidence"] = round(score, 2)
-    receipt["is_valid"] = bool(date and (payer_name or payee_name) and amount is not None)
+    receipt["matched_criteria"] = [name for name, matched in criteria.items() if matched]
+    receipt["is_valid"] = sum(1 for matched in criteria.values() if matched) >= 2
+    if not receipt["is_valid"]:
+        receipt["reject_reason"] = "有效字段不足，未满足回单候选最小条件"
+    elif not (payer_name or payee_name):
+        receipt["reject_reason"] = "缺少收付款方，需人工复核"
+    elif amount is None:
+        receipt["reject_reason"] = "缺少金额，需人工复核"
+    else:
+        receipt["reject_reason"] = ""
     return receipt
 
 
@@ -271,6 +339,7 @@ def render_bank_receipt_bundle_markdown(result: dict[str, Any]) -> str:
         f"- 提取状态：{_cell(result.get('extract_status'))}",
         f"- 识别银行：{_cell(result.get('bank_name'))}",
         f"- 回单数量：{result.get('receipt_count', 0)} 张",
+        f"- 有效回单数量：{result.get('valid_receipt_count', 0)} 张",
         f"- 可识别金额合计：{_money(result.get('recognizable_amount_total'))}",
         "- 是否纳入银行流水聚合：否",
         "- 说明：银行回单集合仅作为交易凭证提取，不作为标准账户流水参与经营流水统计。",
@@ -279,7 +348,10 @@ def render_bank_receipt_bundle_markdown(result: dict[str, Any]) -> str:
         "| 序号 | 回单日期 | 付款方 | 付款账号 | 收款方 | 收款账号 | 金额 | 用途 | 摘要 | 回单编号 |",
         "|---:|---|---|---|---|---|---:|---|---|---|",
     ]
-    for index, receipt in enumerate(result.get("receipts") or [], start=1):
+    receipts = result.get("receipts") or []
+    if not receipts:
+        lines.append("| — | 暂未形成可用回单明细。 | — | — | — | — | 未识别 | — | — | — |")
+    for index, receipt in enumerate(receipts, start=1):
         lines.append(
             f"| {index} | {_cell(receipt.get('receipt_date'))} | {_cell(receipt.get('payer_name'))} | {_cell(receipt.get('payer_account'))} | "
             f"{_cell(receipt.get('payee_name'))} | {_cell(receipt.get('payee_account'))} | {_money(receipt.get('amount'))} | "
@@ -314,24 +386,55 @@ class BankReceiptBundleSkill(BaseExtractionSkill):
         metadata = input_data.metadata or {}
         raw_pages = metadata.get("raw_pages") if isinstance(metadata.get("raw_pages"), list) else []
         source_text = "\n".join([str(input_data.raw_text or ""), *[str(page.get("text") or "") for page in raw_pages]])
+        source_file = input_data.file_name or (Path(input_data.file_path).name if input_data.file_path else "")
+        receipt_keywords = ("中国工商银行电子回单", "电子回单", "网上银行电子回单", "单位国内汇款", "单位国内汇款手续费", "单位国内汇款手", "回单编号", "业务编号", "交易流水号", "指令序号", "付款人", "收款人", "付款账号", "收款账号", "汇款金额", "交易金额")
+        keyword_hits = [keyword for keyword in receipt_keywords if keyword in source_text]
         bank_name = _bank_name(source_text)
-        blocks = _split_blocks(raw_pages, source_text)
+        blocks = split_receipt_blocks(source_text, raw_pages)
         receipts = [_parse_receipt(block, bank_name) for block in blocks]
         valid = [item for item in receipts if item.get("is_valid")]
         total = sum((_money_value(item.get("amount")) or Decimal("0") for item in valid), Decimal("0"))
+        logger.info("[BankReceiptBundleAgent] activated=true")
+        logger.info("[BankReceiptBundleAgent] source_file=%s", source_file)
+        logger.info("[BankReceiptBundleAgent] raw_text_len=%s", len(source_text or ""))
+        logger.info("[BankReceiptBundleAgent] receipt_keyword_hits=%s", keyword_hits)
+        logger.info("[BankReceiptBundleAgent] receipt_blocks_count=%s", len(blocks))
+        logger.info("[BankReceiptBundleAgent] candidate_receipts_count=%s", len(receipts))
+        logger.info("[BankReceiptBundleAgent] valid_receipts_count=%s", len(valid))
+        logger.info(
+            "[BankReceiptBundleAgent] first_5_receipts=%s",
+            json.dumps([
+                {
+                    "receipt_date": item.get("receipt_date"),
+                    "payer_name": item.get("payer_name"),
+                    "payee_name": item.get("payee_name"),
+                    "amount": str(item.get("amount") or ""),
+                    "receipt_no": item.get("receipt_no") or item.get("business_no"),
+                    "confidence": item.get("confidence"),
+                    "reject_reason": item.get("reject_reason"),
+                }
+                for item in receipts[:5]
+            ], ensure_ascii=False),
+        )
+        if not valid:
+            logger.warning("[BankReceiptBundleAgent] first_3000_raw_text=%s", source_text[:3000])
+            logger.warning("[BankReceiptBundleAgent] first_3_receipt_blocks=%s", json.dumps([{"page": block.get("page"), "text": str(block.get("text") or "")[:1000]} for block in blocks[:3]], ensure_ascii=False))
+            logger.warning("[BankReceiptBundleAgent] reject_reasons=%s", Counter(str(item.get("reject_reason") or "字段不足") for item in receipts))
         result = {
             "doc_type": DOC_TYPE,
             "doc_type_name": DOC_TYPE_NAME,
             "agent_type": "bank_receipt_bundle_agent",
-            "source_file": input_data.file_name or (Path(input_data.file_path).name if input_data.file_path else ""),
+            "source_file": source_file,
             "original_status": "可查看",
             "extract_status": "成功" if valid else "部分成功",
             "extraction_status": "成功" if valid else "部分成功",
             "bank_name": bank_name or "未识别",
-            "receipt_count": len(receipts) if valid else 0,
+            "receipt_count": len(valid),
             "valid_receipt_count": len(valid),
+            "candidate_receipts_count": len(receipts),
+            "receipt_blocks_count": len(blocks),
             "recognizable_amount_total": total if receipts else None,
-            "amount_recognition_status": "完整识别" if receipts and all(item.get("amount") is not None for item in receipts) else ("部分识别" if any(item.get("amount") is not None for item in receipts) else "未识别"),
+            "amount_recognition_status": "完整识别" if valid and all(item.get("amount") is not None for item in valid) else ("部分识别" if any(item.get("amount") is not None for item in valid) else "未识别"),
             "parse_quality_status": "success" if valid else "partial",
             "can_join_bank_statement_aggregate": False,
             "receipts": receipts if valid else [],
