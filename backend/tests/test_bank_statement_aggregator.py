@@ -1,5 +1,6 @@
 from backend.services.bank_statement_agent.aggregator import (
     aggregate_customer_bank_statements,
+    extract_year_month_from_filename_or_folder,
     render_customer_bank_flow_aggregate_markdown,
 )
 from backend.extraction_skills.bank_statement import render_bank_statement_markdown
@@ -235,9 +236,43 @@ def test_bocm_multiple_files_same_account_aggregate_as_one_account():
     assert "已识别银行账户数：1 个" in markdown
     assert "银行回单集合文件数：0 份" not in markdown
     assert "辅助回单明细数量：0 条" not in markdown
-    assert "| 序号 | 银行名称 | 开户机构 | 账号 | 户名 | 时间范围 | 文件数 | 交易笔数 |" in markdown
-    assert "### 月度文件清单" in markdown
+    assert "| 序号 | 银行名称 | 开户机构 | 账号 | 户名 | 覆盖月份 | 时间范围 | 文件数 | 交易笔数 |" in markdown
+    assert "### 月度账户文件清单" in markdown
     assert "| 2024-05 | 交通银行 | 310066629013003064589 | 上海乐芙兰电子商务有限公司 | 3 |" in markdown
-    assert "### 来源文件" in markdown
+    assert "### 来源文件汇总" in markdown
+    assert "### 来源文件\n" not in markdown
     assert "| 序号 | 来源文件 | 识别银行 | 文件类型 | 日期范围 | 交易笔数 | 是否纳入经营流水聚合 | 问题说明 |" in markdown
     assert "交通银行上海长宁支行" in markdown
+
+
+def test_extract_year_month_from_filename_or_folder_supports_common_month_names():
+    assert extract_year_month_from_filename_or_folder("2024.01月对账单") == "2024-01"
+    assert extract_year_month_from_filename_or_folder("交行对账单2024-05") == "2024-05"
+    assert extract_year_month_from_filename_or_folder("交通银行202405") == "2024-05"
+    assert extract_year_month_from_filename_or_folder("2024_12") == "2024-12"
+
+
+def test_cross_month_files_are_grouped_by_account_and_month_with_missing_month_hint():
+    jan = tx("2024-01-20", "入账", "1000.00", "客户甲有限公司", purpose="工程款", category="经营入账")
+    feb = tx("2024-02-20", "出账", "200.00", "供应商乙有限公司", purpose="材料款", category="经营出账")
+    may = tx("2024-05-20", "入账", "3000.00", "客户甲有限公司", purpose="工程款", category="经营入账")
+    files = [
+        statement("交行对账单2024.01.pdf", "交通银行", "310066629013003064589", "上海乐芙兰电子商务有限公司", [jan], start="2024-01-01", end="2024-01-31"),
+        statement("交行对账单2024.02.pdf", "交通银行", "310066629013003064589", "上海乐芙兰电子商务有限公司", [feb], start="2024-02-01", end="2024-02-29"),
+        statement("交行对账单2024.05.pdf", "交通银行", "310066629013003064589", "上海乐芙兰电子商务有限公司", [may], start="2024-05-01", end="2024-05-31"),
+    ]
+    data = aggregate_customer_bank_statements(files, customer_profile={"name": "上海乐芙兰电子商务有限公司"})
+    assert data["account_count"] == 1
+    assert data["covered_month_count"] == 3
+    assert data["recognized_months"] == ["2024-01", "2024-02", "2024-05"]
+    assert data["missing_months"] == ["2024-03", "2024-04"]
+    assert len(data["monthly_file_groups"]) == 3
+    assert data["source_file_summary"][0]["month"] == "2024-01"
+    markdown = render_customer_bank_flow_aggregate_markdown(data)
+    assert "覆盖月份数：3 个月" in markdown
+    assert "### 月度账户文件清单" in markdown
+    assert "### 来源文件汇总" in markdown
+    assert "### 缺失月份提示" in markdown
+    assert "2024-03、2024-04" in markdown
+    assert "| 合计 |" in markdown
+    assert "| 排名 | 入账方名称 | 合计金额 | 笔数 | 占比 | 覆盖月份 | 主要用途 |" in markdown
