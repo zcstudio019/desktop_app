@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
-from backend.services.document_extractor_service import detect_document_type_code
+from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
 from backend.services.bank_statement_agent.aggregator import (
     aggregate_customer_bank_statements,
     render_customer_bank_flow_aggregate_markdown,
@@ -86,6 +86,60 @@ def test_bank_receipt_bundle_extracts_receipt_rows_and_markdown():
         assert forbidden not in markdown
 
 
+def test_bank_statement_build_is_rerouted_to_receipt_bundle_agent():
+    text = "\n".join(page["text"] for page in receipt_pages())
+    content = build_structured_extraction(
+        text,
+        "bank_statement",
+        raw_pages=receipt_pages(),
+        filename="31006662901300306458920240531_4.pdf",
+    )
+    data = content["extracted_json"]
+    assert content["document_type_code"] == "bank_receipt_bundle"
+    assert content["agent_type"] == "bank_receipt_bundle_agent"
+    assert data["doc_type"] == "bank_receipt_bundle"
+    assert data["receipt_count"] == 2
+    assert "## 银行回单集合" in content["display_markdown"]
+    assert "建议使用“银行回单集合 Agent”" not in content["display_markdown"]
+
+
+def test_bank_receipt_bundle_splits_multiple_receipts_on_one_page_and_chinese_amount():
+    page_text = """中国工商银行电子回单
+单位国内汇款
+业务日期：2024-05-20
+付款方：上海乐芙兰电子商务有限公司
+付款账号：310066629013003064589
+收款方：南京华韵商务服务有限公司
+收款账号：6222000099998888777
+大写金额：人民币壹仟贰佰叁拾肆元伍角陆分
+交易用途：服务费
+交易流水号：FLOW202405200001
+中国工商银行电子回单
+单位国内汇款
+回单日期：2024-05-20
+付款方：上海乐芙兰电子商务有限公司
+付款账号：310066629013003064589
+收款方：江苏苏泰华庆贸易有限公司
+收款账号：6222000066667777888
+小写金额：￥3,000.00
+用途：材料款
+回单编号：FLOW202405200002
+"""
+    result = run_document_extraction_agent(
+        "bank_receipt_bundle",
+        page_text,
+        "31006662901300306458920240520_2.pdf",
+        metadata={"raw_pages": [{"page": 1, "text": page_text, "table_rows": [], "source": "pdf_native"}]},
+    )
+    data = result.extracted_json
+    assert data["receipt_count"] == 2
+    assert data["valid_receipt_count"] == 2
+    assert data["receipts"][0]["amount"] == Decimal("1234.56")
+    assert data["receipts"][0]["payee_name"] == "南京华韵商务服务有限公司"
+    assert data["receipts"][1]["amount"] == Decimal("3000.00")
+    assert data["receipts"][1]["payee_name"] == "江苏苏泰华庆贸易有限公司"
+
+
 def test_receipt_bundle_does_not_override_standard_bank_statement_detection():
     text = """中国工商银行账户明细清单
 账号：1001068319100134987
@@ -118,11 +172,19 @@ def test_receipt_bundle_is_only_auxiliary_material_in_bank_statement_aggregate()
     assert aggregate["raw_transaction_count"] == 0
     assert aggregate["deduplicated_transaction_count"] == 0
     assert aggregate["aggregate_status"] == "未达标"
+    assert aggregate["standard_account_statement_file_count"] == 0
+    assert aggregate["receipt_bundle_file_count"] == 1
+    assert aggregate["receipt_bundle_with_details_count"] == 1
+    assert aggregate["receipt_detail_count"] == 2
     assert aggregate["file_quality"][0]["statement_subtype"] == "receipt_bundle"
     assert aggregate["file_quality"][0]["included"] is False
+    assert "已提取 2 条回单明细" in aggregate["file_quality"][0]["problem"]
 
     markdown = render_customer_bank_flow_aggregate_markdown(aggregate)
     assert "银行流水聚合分析" in markdown
+    assert "标准账户流水文件数：0 份" in markdown
+    assert "银行回单集合文件数：1 份" in markdown
+    assert "辅助回单材料：已识别 1 份银行回单集合，合计提取 2 条回单明细" in markdown
     assert "疑似银行回单集合" in markdown
     assert "暂无法生成的统计" in markdown
     assert "客户级流水摘要" not in markdown

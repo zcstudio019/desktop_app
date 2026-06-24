@@ -40,6 +40,49 @@ def _money(value: Any) -> str:
     return f"{amount:,.2f}" if amount is not None else "未识别"
 
 
+def _cn_number_to_decimal(value: str) -> Decimal | None:
+    text = _clean(value)
+    if not text:
+        return None
+    digits = {
+        "零": 0, "〇": 0, "一": 1, "壹": 1, "二": 2, "贰": 2, "两": 2, "三": 3, "叁": 3,
+        "四": 4, "肆": 4, "五": 5, "伍": 5, "六": 6, "陆": 6, "七": 7, "柒": 7,
+        "八": 8, "捌": 8, "九": 9, "玖": 9,
+    }
+    small_units = {"十": 10, "拾": 10, "百": 100, "佰": 100, "千": 1000, "仟": 1000}
+    big_units = {"万": 10000, "亿": 100000000}
+
+    def parse_integer(part: str) -> int:
+        total = 0
+        section = 0
+        number = 0
+        for char in part:
+            if char in digits:
+                number = digits[char]
+            elif char in small_units:
+                unit = small_units[char]
+                section += (number or 1) * unit
+                number = 0
+            elif char in big_units:
+                section += number
+                total += section * big_units[char]
+                section = 0
+                number = 0
+        return total + section + number
+
+    integer_text = text.split("元", 1)[0].replace("人民币", "").replace("整", "")
+    if not integer_text:
+        return None
+    amount = Decimal(parse_integer(integer_text))
+    jiao = re.search(r"([零〇一壹二贰两三叁四肆五伍六陆七柒八捌九玖])角", text)
+    fen = re.search(r"([零〇一壹二贰两三叁四肆五伍六陆七柒八捌九玖])分", text)
+    if jiao:
+        amount += Decimal(digits[jiao.group(1)]) / Decimal("10")
+    if fen:
+        amount += Decimal(digits[fen.group(1)]) / Decimal("100")
+    return amount
+
+
 def _bank_name(text: str) -> str:
     if "中国工商银行" in text or "工商银行" in text or "工行" in text:
         return "中国工商银行"
@@ -55,7 +98,7 @@ def _label_value(text: str, labels: tuple[str, ...], *, max_chars: int = 120) ->
     label_pattern = "|".join(re.escape(label) for label in labels)
     stop_labels = (
         "付款人", "付款人名称", "付款账号", "付款账户", "收款人", "收款人名称", "收款账号", "收款账户",
-        "金额", "交易金额", "汇款金额", "用途", "汇款用途", "交易用途", "附言", "备注", "摘要",
+        "付款方", "收款方", "金额", "交易金额", "汇款金额", "人民币金额", "小写金额", "大写金额", "用途", "汇款用途", "交易用途", "附言", "备注", "摘要",
         "回单编号", "业务编号", "流水号", "交易流水号", "指令编号", "日期", "交易日期", "回单日期",
         "付款银行", "收款银行", "开户行", "状态", "渠道",
     )
@@ -80,16 +123,19 @@ def _extract_account(text: str, labels: tuple[str, ...]) -> str:
 
 
 def _extract_amount(text: str) -> Decimal | None:
-    amount_labels = ("交易金额", "汇款金额", "人民币金额", "金额")
+    amount_labels = ("交易金额", "汇款金额", "人民币金额", "小写金额", "金额")
     for label in amount_labels:
         match = re.search(rf"{re.escape(label)}\s*[:：]?\s*(?:人民币|￥|¥)?\s*([0-9][\d,]*\.\d{{2}})", text)
         if match:
             return _money_value(match.group(1))
+    cn_match = re.search(r"(?:大写金额|金额大写|人民币大写)\s*[:：]?\s*(人民币?[零〇一壹二贰两三叁四肆五伍六陆七柒八捌九玖十拾百佰千仟万亿]+元(?:[零〇一壹二贰两三叁四肆五伍六陆七柒八捌九玖]角)?(?:[零〇一壹二贰两三叁四肆五伍六陆七柒八捌九玖]分)?整?)", text)
+    if cn_match:
+        return _cn_number_to_decimal(cn_match.group(1))
     return None
 
 
 def _extract_date(text: str) -> tuple[str, str]:
-    label = r"(?:回单日期|交易日期|日期|付款日期|汇款日期|记账日期)"
+    label = r"(?:回单日期|交易日期|业务日期|日期|付款日期|汇款日期|记账日期)"
     match = re.search(rf"{label}\s*[:：]?\s*((?:20\d{{2}})[-/年.](?:0?\d|1[0-2])[-/月.](?:[0-3]?\d)日?)(?:\s+(\d{{2}}:\d{{2}}:\d{{2}}))?", text)
     if not match:
         match = re.search(r"((?:20\d{2})[-/年.](?:0?\d|1[0-2])[-/月.](?:[0-3]?\d)日?)(?:\s+(\d{2}:\d{2}:\d{2}))?", text)
@@ -118,8 +164,8 @@ def _receipt_no(text: str) -> tuple[str, str]:
 
 def _split_blocks(pages: list[dict[str, Any]], source_text: str) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
-    primary_markers = ("网上银行电子回单", "电子回单", "交易回单")
-    secondary_markers = ("单位国内汇款",)
+    primary_markers = ("中国工商银行电子回单", "网上银行电子回单", "电子回单", "交易回单")
+    secondary_markers = ("单位国内汇款", "回单编号", "业务编号", "交易流水号")
     if pages:
         for index, page in enumerate(pages, start=1):
             text = str(page.get("text") or "")
@@ -130,7 +176,7 @@ def _split_blocks(pages: list[dict[str, Any]], source_text: str) -> list[dict[st
                 starts = sorted({
                     m.start()
                     for marker in secondary_markers
-                    for m in re.finditer(rf"(?m)^\s*{re.escape(marker)}\s*$", text)
+                    for m in re.finditer(rf"(?m)^\s*{re.escape(marker)}(?:\s*[:：]?\s*\S*)?\s*$", text)
                 })
             if len(starts) <= 1:
                 blocks.append({"page": int(page.get("page") or index), "text": text})
@@ -149,7 +195,7 @@ def _parse_receipt(block: dict[str, Any], fallback_bank: str) -> dict[str, Any]:
     text = _clean(block.get("text"))
     date, time = _extract_date(text)
     receipt_no, business_no = _receipt_no(text)
-    payer_name = _label_value(text, ("付款人名称", "付款人", "付款单位", "付款户名", "汇款人"), max_chars=80)
+    payer_name = _label_value(text, ("付款人名称", "付款人", "付款单位", "付款户名", "汇款人", "付款方"), max_chars=80)
     payee_name = _label_value(text, ("收款人名称", "收款人", "收款单位", "收款户名", "收款方"), max_chars=80)
     payer_account = _extract_account(text, ("付款账号", "付款人账号", "付款账户", "付款人账户"))
     payee_account = _extract_account(text, ("收款账号", "收款人账号", "收款账户", "收款人账户"))
@@ -272,7 +318,7 @@ class BankReceiptBundleSkill(BaseExtractionSkill):
         blocks = _split_blocks(raw_pages, source_text)
         receipts = [_parse_receipt(block, bank_name) for block in blocks]
         valid = [item for item in receipts if item.get("is_valid")]
-        total = sum((_money_value(item.get("amount")) or Decimal("0") for item in receipts), Decimal("0"))
+        total = sum((_money_value(item.get("amount")) or Decimal("0") for item in valid), Decimal("0"))
         result = {
             "doc_type": DOC_TYPE,
             "doc_type_name": DOC_TYPE_NAME,

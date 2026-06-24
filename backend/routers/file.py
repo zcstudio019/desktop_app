@@ -1531,12 +1531,14 @@ def _resolve_document_type_code(text_content: str, explicit_type: str | None, ro
     normalized = normalize_document_type_code(explicit_type)
     receipt_source = f"{filename}\n{text_content}"
     receipt_like = (
-        any(keyword in receipt_source for keyword in ("单位国内汇款", "电子回单", "银行回单", "汇款回单", "转账回单", "付款凭证", "收款凭证", "回单编号", "业务编号"))
+        any(keyword in receipt_source for keyword in ("单位国内汇款", "电子回单", "网上银行电子回单", "银行回单", "汇款回单", "转账回单", "付款凭证", "收款凭证", "回单编号", "业务编号", "交易流水号", "汇款金额", "交易金额"))
         or (any(keyword in receipt_source for keyword in ("付款人", "付款账号")) and any(keyword in receipt_source for keyword in ("收款人", "收款账号")))
     )
     standard_bank_table = (
         "账户明细" in receipt_source
+        or "账户明细查询" in receipt_source
         or "账户明细清单" in receipt_source
+        or ("交易流水号" in receipt_source and "交易时间" in receipt_source and "余额" in receipt_source)
         or (
             any(keyword in receipt_source for keyword in ("余额", "借方发生额", "贷方发生额"))
             and any(keyword in receipt_source for keyword in ("交易日期", "交易时间", "记账日期"))

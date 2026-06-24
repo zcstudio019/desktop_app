@@ -40,6 +40,7 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
     "property_cert",
     "real_estate_cert",
     "bank_statement",
+    "bank_receipt_bundle",
 }
 
 KYC_DOC_TYPES = {
@@ -129,7 +130,8 @@ OFFICIAL_BANK_STATEMENT_KEYWORDS = (
 
 BANK_RECEIPT_BUNDLE_KEYWORDS = (
     "单位国内汇款", "电子回单", "银行回单", "汇款回单", "转账回单", "付款凭证", "收款凭证",
-    "回单编号", "业务编号", "付款人", "收款人", "付款账号", "收款账号",
+    "网上银行电子回单", "回单编号", "业务编号", "交易流水号", "付款人", "收款人", "付款账号", "收款账号",
+    "汇款金额", "交易金额",
 )
 
 STANDARD_BANK_STATEMENT_TABLE_KEYWORDS = (
@@ -145,11 +147,13 @@ def _looks_like_official_bank_statement(text: str, filename: str = "") -> bool:
 def _looks_like_bank_receipt_bundle(text: str, filename: str = "") -> bool:
     source = f"{filename}\n{text}"
     hit_count = sum(1 for keyword in BANK_RECEIPT_BUNDLE_KEYWORDS if keyword in source)
-    has_receipt_marker = any(keyword in source for keyword in ("电子回单", "单位国内汇款", "回单编号", "业务编号", "银行回单", "交易回单"))
+    has_receipt_marker = any(keyword in source for keyword in ("网上银行电子回单", "电子回单", "单位国内汇款", "回单编号", "业务编号", "银行回单", "交易回单"))
     has_parties = any(keyword in source for keyword in ("付款人", "付款账号")) and any(keyword in source for keyword in ("收款人", "收款账号"))
     has_standard_statement_table = (
         "账户明细" in source
+        or "账户明细查询" in source
         or "账户明细清单" in source
+        or ("交易流水号" in source and "交易时间" in source and "余额" in source)
         or (
             any(keyword in source for keyword in ("余额", "借方发生额", "贷方发生额"))
             and any(keyword in source for keyword in ("交易日期", "交易时间", "记账日期"))
@@ -9369,6 +9373,8 @@ def build_structured_extraction(
     normalized_code = normalize_document_type_code(document_type_code) or document_type_code
     rows = rows or []
     raw_pages = raw_pages or []
+    if normalized_code in {"bank_statement", "enterprise_flow", "enterprise_bank_statement"} and _looks_like_bank_receipt_bundle(text_content, filename):
+        normalized_code = "bank_receipt_bundle"
     if should_route_to_property_cert(document_type=normalized_code, filename=filename, text=text_content):
         return _build_property_cert_structured_extraction(
             text_content,

@@ -110,7 +110,7 @@ def _statement_subtype_label(subtype: str) -> str:
 
 def _quality_status_label(status: str, subtype: str = "") -> str:
     if subtype == "receipt_bundle":
-        return "回单集合，未形成账户流水"
+        return "已提取回单明细（非标准流水）" if status == "success" else "回单集合，未形成账户流水"
     return {
         "success": "已形成标准流水明细",
         "partial": "待人工复核",
@@ -347,6 +347,13 @@ def aggregate_customer_bank_statements(
             continue
         source_file = str(extraction.get("file_name") or payload.get("source_file") or payload.get("file_name") or "")
         if doc_type == "bank_receipt_bundle":
+            receipt_count = int(payload.get("valid_receipt_count") or payload.get("receipt_count") or 0)
+            quality_status = "success" if receipt_count > 0 else str(payload.get("parse_quality_status") or "partial")
+            problem = (
+                f"银行回单集合，已提取 {receipt_count} 条回单明细；未纳入经营流水聚合。"
+                if receipt_count > 0
+                else "银行回单集合，未形成可用回单明细；未纳入经营流水聚合。"
+            )
             file_quality.append({
                 "source_file": source_file,
                 "bank_name": payload.get("bank_name") or UNKNOWN,
@@ -354,12 +361,13 @@ def aggregate_customer_bank_statements(
                 "statement_subtype_label": _statement_subtype_label("receipt_bundle"),
                 "account_no": UNKNOWN,
                 "account_name": UNKNOWN,
-                "parse_quality_status": "partial",
-                "parse_quality_label": _quality_status_label("partial", "receipt_bundle"),
+                "parse_quality_status": quality_status,
+                "parse_quality_label": _quality_status_label(quality_status, "receipt_bundle"),
                 "included": False,
-                "problem": "银行回单集合，可用于交易凭证辅助核验，未纳入经营流水聚合",
+                "receipt_count": receipt_count,
+                "problem": problem,
             })
-            source_files.append({"file_name": source_file, "status": payload.get("parse_quality_status") or "partial", "account_no": ""})
+            source_files.append({"file_name": source_file, "status": quality_status, "account_no": ""})
             continue
         quality = _infer_quality(payload)
         valid_account_name = quality["account_name_clean"]
@@ -547,7 +555,10 @@ def aggregate_customer_bank_statements(
         "source_files": source_files,
         "file_quality": file_quality,
         "included_files_count": included_count,
+        "standard_account_statement_file_count": included_count,
         "receipt_bundle_file_count": sum(1 for row in file_quality if row["statement_subtype"] == "receipt_bundle"),
+        "receipt_bundle_with_details_count": sum(1 for row in file_quality if row["statement_subtype"] == "receipt_bundle" and int(row.get("receipt_count") or 0) > 0),
+        "receipt_detail_count": sum(int(row.get("receipt_count") or 0) for row in file_quality if row["statement_subtype"] == "receipt_bundle"),
         "nonstandard_bank_file_count": sum(1 for row in file_quality if row["statement_subtype"] == "unknown_bank_statement"),
         "file_only_files_count": sum(1 for row in file_quality if not row["included"] and row["parse_quality_status"] in {"partial", "invalid_transaction_structure"}),
         "failed_or_review_files_count": sum(1 for row in file_quality if not row["included"]),
@@ -627,6 +638,9 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         "",
         f"- 客户名称：{data.get('customer_name') or UNKNOWN}",
         f"- 覆盖文件数：{data.get('file_count', 0)} 份",
+        f"- 标准账户流水文件数：{data.get('standard_account_statement_file_count', data.get('included_files_count', 0))} 份",
+        f"- 银行回单集合文件数：{data.get('receipt_bundle_file_count', 0)} 份",
+        f"- 非标准银行流水文件数：{data.get('nonstandard_bank_file_count', 0)} 份",
         f"- 已识别银行账户数：{data.get('account_count', 0)} 个",
         f"- 未识别账户文件数：{data.get('unrecognized_account_file_count', 0)} 份",
         f"- 覆盖时间范围：{period_text}",
@@ -642,6 +656,9 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         lines.append("- 提示：当前仅基于 1 个银行账户/1 份对账单进行聚合分析。")
     else:
         lines.append(f"- 提示：已合并 {data.get('file_count', 0)} 份银行对账单，覆盖 {data.get('account_count', 0)} 个已识别银行账户。")
+    if data.get("receipt_bundle_file_count", 0):
+        detail_text = f"，合计提取 {data.get('receipt_detail_count', 0)} 条回单明细" if data.get("receipt_detail_count", 0) else ""
+        lines.append(f"- 辅助回单材料：已识别 {data.get('receipt_bundle_file_count', 0)} 份银行回单集合{detail_text}，可用于交易凭证辅助核验，但未纳入经营流水统计。")
 
     lines += [
         "",
