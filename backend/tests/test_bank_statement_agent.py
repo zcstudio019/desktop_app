@@ -455,6 +455,9 @@ def test_bocm_statement_is_not_misrouted_to_receipt_bundle_and_parses_header_tra
     markdown = content["display_markdown"]
     assert "## 银行对账单" in markdown
     assert "交通银行" in markdown
+    assert "- 户名：上海乐芙兰电子商务有限公司" in markdown
+    assert "- 开户机构：交通银行上海长宁支行" in markdown
+    assert "客户名称：" not in markdown
     assert '"doc_type"' not in markdown
     assert "raw_text" not in markdown
 
@@ -524,8 +527,9 @@ def test_bocm_header_parser_handles_staggered_ocr_header_without_page_no_polluti
     assert data["statement_month"] == "05"
     assert data["period_text"] == "2024-05-01 至 2024-05-31"
     markdown = content["display_markdown"]
-    assert "客户名称：上海乐芙兰电子商务有限公司" in markdown
-    assert "客户名称：页码" not in markdown
+    assert "户名：上海乐芙兰电子商务有限公司" in markdown
+    assert "客户名称：" not in markdown
+    assert "户名：页码" not in markdown
     assert "年份：2024" in markdown
     assert "月份：05" in markdown
 

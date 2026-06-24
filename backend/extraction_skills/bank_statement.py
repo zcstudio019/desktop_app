@@ -109,6 +109,12 @@ def validate_account_name(name: Any) -> tuple[bool, str]:
     forbidden = ("对手名称", "对方户名", "对方名称", "收款方", "付款方", "交易用途", "摘要", "余额", "单位国内汇款", "交易对方")
     if any(marker in compact for marker in forbidden):
         return False, "contains_transaction_table_field"
+    bocm_counterparty_fragments = (
+        "百威（中国）销", "百威(中国)销", "上海汇付支付有", "上海顺衡物流有", "上海基连网络科",
+        "支付宝（中国）", "支付宝(中国)", "华润守正招标有",
+    )
+    if any(fragment in compact for fragment in bocm_counterparty_fragments):
+        return False, "counterparty_name_pollution"
     return True, ""
 
 
@@ -338,7 +344,11 @@ def _text_before_generic_table_header(text: str) -> str:
 
 def _bocm_header_text(raw_pages: list[dict[str, Any]], source: str) -> str:
     text = "\n".join(str(item.get("text") or "")[:6000] for item in raw_pages[:2]) or str(source or "")[:10000]
-    positions = [text.find(keyword) for keyword in ("序号", "会计日期", "借方发生额", "贷方发生额") if text.find(keyword) >= 0]
+    positions = [
+        text.find(keyword)
+        for keyword in ("序号", "会计日期", "借方发生额", "贷方发生额", "对方账号", "对方户名", "对方行名", "摘要", "流水号")
+        if text.find(keyword) >= 0
+    ]
     return text[:min(positions)] if positions else text[:4000]
 
 
@@ -447,7 +457,7 @@ def parse_bocm_header_by_layout(raw_pages: list[dict[str, Any]]) -> dict[str, st
         if not text:
             continue
         y1 = float(box.get("y1") or 0)
-        if y1 > page_height * 0.40:
+        if y1 > page_height * 0.30:
             continue
         x0 = float(box.get("x0") or 0)
         x1 = float(box.get("x1") or x0)
@@ -457,7 +467,11 @@ def parse_bocm_header_by_layout(raw_pages: list[dict[str, Any]]) -> dict[str, st
         return {}
     values: dict[str, str] = {}
     for label in BOCM_HEADER_LABELS:
-        label_box = next((box for box in boxes if label in str(box.get("text") or "")), None)
+        label_box = next((
+            box for box in boxes
+            if label in str(box.get("text") or "")
+            and not any(marker in str(box.get("text") or "") for marker in ("对方", "收款", "付款", "交易"))
+        ), None)
         if not label_box:
             continue
         inline_match = re.search(rf"{re.escape(label)}\s*[:：]\s*(.+)", str(label_box.get("text") or ""))
@@ -470,6 +484,7 @@ def parse_bocm_header_by_layout(raw_pages: list[dict[str, Any]]) -> dict[str, st
         same_line_labels = [
             box for box in boxes
             if box is not label_box and any(other in str(box.get("text") or "") for other in BOCM_HEADER_LABELS)
+            and not any(marker in str(box.get("text") or "") for marker in ("对方", "收款", "付款", "交易"))
             and abs(float(box.get("yc") or 0) - float(label_box.get("yc") or 0)) <= 10
             and float(box.get("x0") or 0) > float(label_box.get("x0") or 0)
         ]
@@ -546,6 +561,18 @@ def parse_bocm_statement_header(raw_pages: list[dict[str, Any]], source: str) ->
     logger.info("[BOCMHeaderParser] activated=true")
     logger.info("[BOCMHeaderParser] header_text_preview=%s", _clean(header[:1000]))
     logger.info("[BOCMHeaderParser] layout_enabled=%s", str(bool(layout_values)).lower())
+    logger.info(
+        "[BOCMHeaderParser] label_value_pairs=%s",
+        {
+            "开户机构": result["opening_bank"],
+            "账号": result["account_no"],
+            "币种": result["currency"],
+            "年份": result["year"],
+            "月份": result["month"],
+            "页码": result["page_no"],
+            "户名": result["account_name"],
+        },
+    )
     logger.info("[BOCMHeaderParser] title=%s", result["title"] or "未识别")
     logger.info("[BOCMHeaderParser] opening_bank_raw=%s", opening_bank or "未识别")
     logger.info("[BOCMHeaderParser] opening_bank_clean=%s", result["opening_bank"] or "未识别")
@@ -2586,6 +2613,72 @@ def _apply_parse_quality(result: dict[str, Any], *, customer_profile_name: str =
         result["parse_quality_status"] = "partial"
 
 
+def validate_bank_account_header(result: dict[str, Any]) -> None:
+    if result.get("bank_format") != BANK_FORMAT_BOCM:
+        return
+    rejected: list[str] = []
+    account_name = clean_bocm_header_field(result.get("account_name"), field="account_name")
+    account_no = clean_bocm_header_field(result.get("account_no"), field="account_no")
+    opening_bank = clean_bocm_header_field(result.get("opening_bank"), field="opening_bank")
+    year = clean_bocm_header_field(result.get("statement_year"), field="year")
+    month = clean_bocm_header_field(result.get("statement_month"), field="month")
+    counterparty_names = {
+        re.sub(r"[\s\u3000]+", "", str(tx.get("对方单位") or tx.get("counterparty_name") or ""))
+        for tx in result.get("transactions") or []
+        if str(tx.get("对方单位") or tx.get("counterparty_name") or "").strip()
+    }
+    compact_name = re.sub(r"[\s\u3000]+", "", account_name)
+    ok_name, name_reason = validate_account_name(account_name)
+    looks_like_counterparty = False
+    if compact_name:
+        for counterparty in counterparty_names:
+            if not counterparty:
+                continue
+            if compact_name == counterparty:
+                looks_like_counterparty = True
+                break
+            if len(compact_name) <= 12 and (counterparty.startswith(compact_name) or compact_name.startswith(counterparty[:len(compact_name)])):
+                looks_like_counterparty = True
+                break
+    if not ok_name or looks_like_counterparty:
+        if account_name:
+            rejected.append(account_name)
+        account_name = ""
+        result.setdefault("manual_review_items", []).append("疑似将交易对手名称误识别为户名，已拦截，需人工复核本方户名。")
+        logger.info("[BOCMHeaderParser] rejected_account_name_candidates=%s", rejected)
+        logger.info("[BOCMHeaderParser] reject_reason=%s", "counterparty_name_pollution" if looks_like_counterparty else name_reason)
+    if account_no and not re.fullmatch(r"\d{8,32}", account_no):
+        account_no = ""
+    if opening_bank and not any(token in opening_bank for token in ("银行", "支行", "分行", "营业部", "开户机构")):
+        opening_bank = ""
+    if year:
+        current_year = date.today().year
+        if not (2000 <= int(year) <= current_year + 1):
+            year = ""
+    if month and not re.fullmatch(r"0[1-9]|1[0-2]", month):
+        month = ""
+    result["account_name"] = account_name
+    result["account_no"] = account_no
+    result["opening_bank"] = opening_bank
+    result["statement_year"] = year
+    result["statement_month"] = month
+    if not (result.get("period_start") and result.get("period_end")) and year and month:
+        result["period_start"] = f"{year}-{month}-01"
+        result["period_end"] = _month_end(int(year), int(month))
+        result["period_text"] = f"{result['period_start']} 至 {result['period_end']}"
+    if not (result.get("period_start") and result.get("period_end")):
+        dates = sorted({str(tx.get("交易时间") or "")[:10] for tx in result.get("transactions") or [] if parse_valid_date(str(tx.get("交易时间") or "")[:10])})
+        if dates:
+            result["period_start"] = dates[0]
+            result["period_end"] = dates[-1]
+            result["period_text"] = f"{dates[0]} 至 {dates[-1]}"
+    logger.info("[BOCMHeaderParser] final_account_name=%s", result.get("account_name") or "未识别")
+    logger.info("[BOCMHeaderParser] final_account_no=%s", result.get("account_no") or "未识别")
+    logger.info("[BOCMHeaderParser] final_opening_institution=%s", result.get("opening_bank") or "未识别")
+    logger.info("[BOCMHeaderParser] final_year=%s", result.get("statement_year") or "未识别")
+    logger.info("[BOCMHeaderParser] final_month=%s", result.get("statement_month") or "未识别")
+
+
 def _cell(value: Any) -> str:
     return _clean(value).replace("|", "\\|") or "—"
 
@@ -2672,7 +2765,18 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         "## 银行对账单", "", "- 资料类型：银行对账单",
         f"- 来源文件：{_cell(result.get('source_file'))}", "- 原件状态：可查看",
         f"- 提取状态：{result.get('extraction_status', '成功')}", "", "### 账户信息",
-        f"- 客户名称：{_display(result.get('account_name'))}", f"- 开户行：{_display(result.get('opening_bank'))}",
+    ]
+    if result.get("bank_format") == BANK_FORMAT_BOCM:
+        lines.extend([
+            f"- 户名：{_display(result.get('account_name'))}",
+            f"- 开户机构：{_display(result.get('opening_bank'))}",
+        ])
+    else:
+        lines.extend([
+            f"- 客户名称：{_display(result.get('account_name'))}",
+            f"- 开户行：{_display(result.get('opening_bank'))}",
+        ])
+    lines += [
         f"- 账号：{_display(result.get('account_no'))}", f"- 银行名称：{_display(result.get('bank_name'))}",
         f"- 对账单标题：{_display(result.get('statement_title'))}", f"- 币种：{_display(result.get('currency'))}",
         f"- 单位：{_display(result.get('unit'))}",
@@ -2913,6 +3017,8 @@ class BankStatementSkill(BaseExtractionSkill):
             result["raw_transaction_count"] = int(parse_diagnostics.get("candidate_transaction_rows") or len(transactions))
             result["ocr_anomaly_count"] = int(parse_diagnostics.get("invalid_candidate_rows") or 0)
             _apply_header_summary(result)
+        if bank_format == BANK_FORMAT_BOCM:
+            validate_bank_account_header(result)
         result["raw_text_blocks_count"] = int(parse_diagnostics.get("raw_text_blocks_count") or 0)
         result["candidate_transaction_rows"] = int(parse_diagnostics.get("candidate_transaction_rows") or len(transactions))
         result["ocr_abnormal_rows"] = int(result.get("ocr_anomaly_count") or 0)
@@ -2950,7 +3056,9 @@ class BankStatementSkill(BaseExtractionSkill):
         if any(tx["交易分类"] == "资金拆借" for tx in result["loan_related_transactions"]):
             result["risk_tips"].append("存在资金拆借相关交易，建议进一步核验借款主体和用途。")
         if not result["risk_tips"]: result["risk_tips"].append("未从已识别内容中发现需要特别提示的事项。")
+        existing_manual_review_items = list(result.get("manual_review_items") or [])
         result["manual_review_items"] = []
+        result["manual_review_items"].extend(existing_manual_review_items)
         result["manual_review_items"].extend(pending_manual_review_items)
         if result["amount_recognition_status"] != "完整识别": result["manual_review_items"].append("金额列缺失或金额识别不完整。")
         if transactions and sum(not tx.get("clean_counterparty_name") for tx in transactions) / len(transactions) >= 0.3: result["manual_review_items"].append("对方单位为空或被判定为无效值的交易较多。")

@@ -679,7 +679,7 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
     lines += [
         "",
         "### 账户清单",
-        "| 序号 | 银行名称 | 开户行 | 账号 | 户名 | 时间范围 | 文件数 | 交易笔数 |",
+        "| 序号 | 银行名称 | 开户机构 | 账号 | 户名 | 时间范围 | 文件数 | 交易笔数 |",
         "|---:|---|---|---|---|---|---:|---:|",
     ]
     accounts = data.get("bank_accounts") or []
