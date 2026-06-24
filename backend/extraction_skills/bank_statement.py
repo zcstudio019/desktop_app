@@ -68,6 +68,12 @@ BOCM_TABLE_HEADER_KEYWORDS = (
     "交易日期", "交易名称", "借方发生额", "贷方发生额", "余额", "对方账号", "对方户名",
     "对方行名", "摘要", "流水号",
 )
+BOCM_HEADER_LABELS = ("开户机构", "账号", "币种", "年份", "月份", "页码", "户名")
+BOCM_HEADER_BOUNDARIES = BOCM_HEADER_LABELS + ("序号", "会计日期", "交易日期", "交易名称")
+BOCM_INVALID_HEADER_VALUES = {
+    "", "页码", "页码：", "年份", "年份：", "月份", "月份：", "币种", "币种：",
+    "账号", "账号：", "开户机构", "开户机构：", "户名", "户名：", "序号", "会计日期", "交易日期",
+}
 GENERIC_BANK_NAMES = (
     "中国工商银行", "上海银行", "中国建设银行", "中国农业银行", "中国银行", "招商银行", "交通银行",
     "浦发银行", "中信银行", "民生银行", "平安银行", "兴业银行", "光大银行", "广发银行",
@@ -341,20 +347,175 @@ def _month_end(year: int, month: int) -> str:
     return f"{year:04d}-{month:02d}-{last:02d}"
 
 
+def clean_bocm_header_field(value: Any, *, field: str = "") -> str:
+    text = _normalize_company_spacing(_clean(value).replace("\u3000", " "))
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"^[：:]+", "", text).strip()
+    for label in BOCM_HEADER_LABELS:
+        text = re.sub(rf"^{re.escape(label)}[：:]?", "", text)
+    if text in BOCM_INVALID_HEADER_VALUES:
+        return ""
+    if any(keyword in text for keyword in ("序号", "会计日期", "交易日期", "交易名称")):
+        text = re.split(r"序号|会计日期|交易日期|交易名称", text, maxsplit=1)[0]
+    if field == "account_name":
+        if text in BOCM_INVALID_HEADER_VALUES or re.fullmatch(r"\d+-\d+", text or ""):
+            return ""
+        if any(keyword in text for keyword in ("页码", "年份", "月份", "币种", "开户机构", "账号：", "户名：")):
+            logger.info("[BOCMHeaderParser] rejected_account_name=%s", text)
+            logger.info("[BOCMHeaderParser] reject_reason=label_value_pollution")
+            return ""
+    if field == "opening_bank":
+        text = re.split(r"账号|户名|币种|年份|月份|页码", text, maxsplit=1)[0]
+    if field == "currency":
+        match = re.search(r"人民币|美元|欧元|港币|日元", text)
+        return match.group(0) if match else ""
+    if field == "year":
+        match = re.search(r"20\d{2}", text)
+        return match.group(0) if match else ""
+    if field == "month":
+        match = re.search(r"(?<!\d)(0?[1-9]|1[0-2])(?!\d)", text)
+        return f"{int(match.group(1)):02d}" if match else ""
+    if field == "account_no":
+        match = re.search(r"(?<!\d)(\d{8,32})(?!\d)", text)
+        return match.group(1) if match else ""
+    return text
+
+
+def _bocm_labeled_value(header: str, label: str, *, field: str = "") -> str:
+    boundary = "|".join(re.escape(item) for item in BOCM_HEADER_BOUNDARIES if item != label)
+    match = re.search(rf"{re.escape(label)}\s*[:：]?\s*(.*?)(?=\s*(?:{boundary})\s*[:：]?|\Z)", header, re.S)
+    if not match:
+        return ""
+    return clean_bocm_header_field(match.group(1), field=field)
+
+
+def _bocm_parse_label_value_lines(header: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    lines = [line.strip() for line in str(header or "").splitlines() if line.strip()]
+    pending: list[str] = []
+    label_expr = "|".join(re.escape(label) for label in BOCM_HEADER_LABELS)
+    for raw_line in lines:
+        line = _clean(raw_line)
+        if "交通银行上海市分行明细对账单" in line:
+            continue
+        labels = [match.group(1) for match in re.finditer(rf"({label_expr})\s*[:：]?", line)]
+        if labels:
+            for index, label in enumerate(labels):
+                next_label = labels[index + 1] if index + 1 < len(labels) else ""
+                pattern = rf"{re.escape(label)}\s*[:：]?\s*(.*?)(?=\s*{re.escape(next_label)}\s*[:：]?|\Z)" if next_label else rf"{re.escape(label)}\s*[:：]?\s*(.*)"
+                value_match = re.search(pattern, line)
+                value = clean_bocm_header_field(value_match.group(1) if value_match else "", field=_bocm_field_for_label(label))
+                if value:
+                    values[_bocm_field_for_label(label)] = value
+                else:
+                    pending.append(label)
+            continue
+        if pending:
+            tokens = [_clean(token) for token in re.split(r"\s{2,}|\t+| {1,}", line) if _clean(token)]
+            if len(tokens) < len(pending):
+                tokens = re.findall(r"交通银行[^ ]+支行|人民币|20\d{2}|0?[1-9]|1[0-2]|\d+-\d+|\d{8,32}|[\u4e00-\u9fff（）()A-Za-z]+有限公司", line)
+            for label, token in zip(pending, tokens):
+                field = _bocm_field_for_label(label)
+                value = clean_bocm_header_field(token, field=field)
+                if value:
+                    values[field] = value
+            pending = pending[len(tokens):] if len(tokens) < len(pending) else []
+    return values
+
+
+def _bocm_field_for_label(label: str) -> str:
+    return {
+        "开户机构": "opening_bank",
+        "账号": "account_no",
+        "币种": "currency",
+        "年份": "year",
+        "月份": "month",
+        "页码": "page_no",
+        "户名": "account_name",
+    }.get(label, label)
+
+
+def parse_bocm_header_by_layout(raw_pages: list[dict[str, Any]]) -> dict[str, str]:
+    first_page = next((item for item in sorted((page for page in raw_pages if isinstance(page, dict)), key=lambda item: int(item.get("page") or 0)) if item.get("text_boxes")), None)
+    if not first_page:
+        return {}
+    boxes = []
+    raw_boxes = first_page.get("text_boxes") or []
+    page_height = float(first_page.get("page_height") or max((float(box.get("y1") or 0) for box in raw_boxes), default=1))
+    for box in raw_boxes:
+        text = _clean(box.get("text"))
+        if not text:
+            continue
+        y1 = float(box.get("y1") or 0)
+        if y1 > page_height * 0.40:
+            continue
+        x0 = float(box.get("x0") or 0)
+        x1 = float(box.get("x1") or x0)
+        y0 = float(box.get("y0") or y1)
+        boxes.append({**box, "text": text, "x0": x0, "x1": x1, "y0": y0, "y1": y1, "yc": (y0 + y1) / 2})
+    if not boxes:
+        return {}
+    values: dict[str, str] = {}
+    for label in BOCM_HEADER_LABELS:
+        label_box = next((box for box in boxes if label in str(box.get("text") or "")), None)
+        if not label_box:
+            continue
+        inline_match = re.search(rf"{re.escape(label)}\s*[:：]\s*(.+)", str(label_box.get("text") or ""))
+        if inline_match:
+            field = _bocm_field_for_label(label)
+            inline_value = clean_bocm_header_field(inline_match.group(1), field=field)
+            if inline_value:
+                values[field] = inline_value
+                continue
+        same_line_labels = [
+            box for box in boxes
+            if box is not label_box and any(other in str(box.get("text") or "") for other in BOCM_HEADER_LABELS)
+            and abs(float(box.get("yc") or 0) - float(label_box.get("yc") or 0)) <= 10
+            and float(box.get("x0") or 0) > float(label_box.get("x0") or 0)
+        ]
+        right_limit = min((float(box.get("x0") or 0) for box in same_line_labels), default=float("inf"))
+        candidates = [
+            box for box in boxes
+            if box is not label_box
+            and float(box.get("x0") or 0) >= float(label_box.get("x1") or 0) - 2
+            and float(box.get("x0") or 0) < right_limit
+            and abs(float(box.get("yc") or 0) - float(label_box.get("yc") or 0)) <= 10
+            and not any(other in str(box.get("text") or "") for other in BOCM_HEADER_LABELS)
+        ]
+        if not candidates:
+            candidates = [
+                box for box in boxes
+                if box is not label_box
+                and float(box.get("y0") or 0) >= float(label_box.get("y1") or 0) - 2
+                and float(box.get("y0") or 0) <= float(label_box.get("y1") or 0) + 45
+                and abs(float(box.get("x0") or 0) - float(label_box.get("x0") or 0)) <= 80
+                and not any(other in str(box.get("text") or "") for other in BOCM_HEADER_LABELS)
+            ]
+        if candidates:
+            candidates.sort(key=lambda box: (abs(float(box.get("yc") or 0) - float(label_box.get("yc") or 0)), float(box.get("x0") or 0)))
+            field = _bocm_field_for_label(label)
+            value = clean_bocm_header_field(candidates[0].get("text"), field=field)
+            if value:
+                values[field] = value
+    return values
+
+
 def parse_bocm_statement_header(raw_pages: list[dict[str, Any]], source: str) -> dict[str, Any]:
     header = _bocm_header_text(raw_pages, source)
     full = "\n".join(str(item.get("text") or "")[:8000] for item in raw_pages[:2]) or str(source or "")[:12000]
     title = "交通银行上海市分行明细对账单" if "交通银行上海市分行明细对账单" in full else ("明细对账单" if "明细对账单" in full else "")
-    opening_bank = _find_labeled(header, ("开户机构",), ("账号", "户名", "年份", "月份", "币种"))
-    account_no_raw = _find_labeled(header, ("账号",), ("户名", "年份", "月份", "币种"))
-    account_match = re.search(r"(?<!\d)(\d{8,32})(?!\d)", account_no_raw)
-    account_no = account_match.group(1) if account_match else ""
-    account_name = _find_labeled(header, ("户名",), ("年份", "月份", "币种", "序号", "会计日期"))
-    year_text = _find_labeled(header, ("年份",), ("月份", "币种", "序号"))
-    month_text = _find_labeled(header, ("月份",), ("币种", "序号"))
-    currency = _find_labeled(header, ("币种",), ("序号", "会计日期")) or ("人民币" if "人民币" in header else "")
+    layout_values = parse_bocm_header_by_layout(raw_pages)
+    line_values = _bocm_parse_label_value_lines(header)
+    opening_bank = layout_values.get("opening_bank") or line_values.get("opening_bank") or _bocm_labeled_value(header, "开户机构", field="opening_bank")
+    account_no = layout_values.get("account_no") or line_values.get("account_no") or _bocm_labeled_value(header, "账号", field="account_no")
+    account_name_raw = layout_values.get("account_name") or line_values.get("account_name") or _bocm_labeled_value(header, "户名", field="account_name")
+    account_name = clean_bocm_header_field(account_name_raw, field="account_name")
+    year_text = layout_values.get("year") or line_values.get("year") or _bocm_labeled_value(header, "年份", field="year")
+    month_text = layout_values.get("month") or line_values.get("month") or _bocm_labeled_value(header, "月份", field="month")
+    currency = layout_values.get("currency") or line_values.get("currency") or _bocm_labeled_value(header, "币种", field="currency") or ("人民币" if "人民币" in header else "")
+    page_no = layout_values.get("page_no") or line_values.get("page_no") or _bocm_labeled_value(header, "页码", field="page_no")
     year_match = re.search(r"(20\d{2})", year_text or header)
-    month_match = re.search(r"(\d{1,2})", month_text)
+    month_match = re.search(r"(?<!\d)(0?[1-9]|1[0-2])(?!\d)", month_text)
     period_start = ""
     period_end = ""
     if year_match and month_match:
@@ -371,20 +532,30 @@ def parse_bocm_statement_header(raw_pages: list[dict[str, Any]], source: str) ->
     result = {
         "title": title,
         "bank_name": "交通银行" if title or "交通银行" in header[:500] else "",
-        "opening_bank": _clean(opening_bank),
+        "opening_bank": clean_bocm_header_field(opening_bank, field="opening_bank"),
         "account_no": account_no,
-        "account_name": _clean(account_name),
+        "account_name": account_name,
         "currency": currency,
+        "year": year_match.group(1) if year_match else "",
+        "month": f"{int(month_match.group(1)):02d}" if month_match else "",
+        "page_no": page_no,
         "period_start": period_start,
         "period_end": period_end,
         "header_preview": _clean(header[:1000]),
     }
-    logger.info("[BOCMStatementParser] activated=true")
-    logger.info("[BOCMStatementParser] title=%s", result["title"] or "未识别")
-    logger.info("[BOCMStatementParser] account_no=%s", result["account_no"] or "未识别")
-    logger.info("[BOCMStatementParser] account_name=%s", result["account_name"] or "未识别")
-    logger.info("[BOCMStatementParser] opening_bank=%s", result["opening_bank"] or "未识别")
-    logger.info("[BOCMStatementParser] currency=%s", result["currency"] or "未识别")
+    logger.info("[BOCMHeaderParser] activated=true")
+    logger.info("[BOCMHeaderParser] header_text_preview=%s", _clean(header[:1000]))
+    logger.info("[BOCMHeaderParser] layout_enabled=%s", str(bool(layout_values)).lower())
+    logger.info("[BOCMHeaderParser] title=%s", result["title"] or "未识别")
+    logger.info("[BOCMHeaderParser] opening_bank_raw=%s", opening_bank or "未识别")
+    logger.info("[BOCMHeaderParser] opening_bank_clean=%s", result["opening_bank"] or "未识别")
+    logger.info("[BOCMHeaderParser] account_no=%s", result["account_no"] or "未识别")
+    logger.info("[BOCMHeaderParser] account_name_raw=%s", account_name_raw or "未识别")
+    logger.info("[BOCMHeaderParser] account_name_clean=%s", result["account_name"] or "未识别")
+    logger.info("[BOCMHeaderParser] currency=%s", result["currency"] or "未识别")
+    logger.info("[BOCMHeaderParser] year=%s", result["year"] or "未识别")
+    logger.info("[BOCMHeaderParser] month=%s", result["month"] or "未识别")
+    logger.info("[BOCMHeaderParser] page_no=%s", result["page_no"] or "未识别")
     return result
 
 
@@ -2504,7 +2675,15 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         f"- 客户名称：{_display(result.get('account_name'))}", f"- 开户行：{_display(result.get('opening_bank'))}",
         f"- 账号：{_display(result.get('account_no'))}", f"- 银行名称：{_display(result.get('bank_name'))}",
         f"- 对账单标题：{_display(result.get('statement_title'))}", f"- 币种：{_display(result.get('currency'))}",
-        f"- 单位：{_display(result.get('unit'))}", f"- 时间范围：{_display(result.get('period_text'))}",
+        f"- 单位：{_display(result.get('unit'))}",
+    ]
+    if result.get("bank_format") == BANK_FORMAT_BOCM:
+        lines.extend([
+            f"- 年份：{_display(result.get('statement_year'))}",
+            f"- 月份：{_display(result.get('statement_month'))}",
+        ])
+    lines += [
+        f"- 时间范围：{_display(result.get('period_text'))}",
         f"- 页数：{result.get('page_count', 0)}页", f"- 金额识别状态：{_display(result.get('amount_recognition_status'))}",
     ]
     if result.get("bank_format") == BANK_FORMAT_SHANGHAI and (result.get("debit_total_amount") is not None or result.get("credit_total_amount") is not None or result.get("header_transaction_count")):
@@ -2709,6 +2888,9 @@ class BankStatementSkill(BaseExtractionSkill):
             "opening_bank": opening_bank,
             "currency": (bocm_header.get("currency") if bank_format == BANK_FORMAT_BOCM else "") or _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围", "时间范围")) or ("人民币" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI, BANK_FORMAT_BOCM} or "人民币" in source else ""),
             "unit": _find_labeled(source, ("单位",), ("本方账号开户行", "本方开户行", "开户行", "币种", "记账时间范围", "时间范围", "交易时间")) or ("元" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI, BANK_FORMAT_BOCM} or re.search(r"单位\s*[:：]?\s*元", source) else ""),
+            "statement_year": bocm_header.get("year") if bank_format == BANK_FORMAT_BOCM else "",
+            "statement_month": bocm_header.get("month") if bank_format == BANK_FORMAT_BOCM else "",
+            "statement_page_no": bocm_header.get("page_no") if bank_format == BANK_FORMAT_BOCM else "",
             "period_start": period_start, "period_end": period_end, "period_text": period_text,
             "page_count": len({int(item.get("page") or index) for index, item in enumerate(raw_pages, 1)}) or int(metadata.get("page_count") or 0),
             "transactions": transactions, "evidence": account_evidence + period_evidence + tx_evidence,

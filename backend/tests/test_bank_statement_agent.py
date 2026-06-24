@@ -494,6 +494,75 @@ def test_bocm_statement_native_text_fallback_parses_without_table_rows():
     assert data["transactions"][1]["金额"] == 206360.0
 
 
+def test_bocm_header_parser_handles_staggered_ocr_header_without_page_no_pollution():
+    header = ["序号", "会计日期", "交易日期", "交易名称", "凭证种类", "凭证号码", "借方发生额", "贷方发生额", "余额", "卡号", "交易地点", "对方账号", "对方户名", "对方行名", "摘要", "流水号"]
+    rows = [
+        header,
+        ["1", "20240520", "20240520", "单位国内汇款", "", "V001", "", "100.00", "146,075.81", "", "上海", "622200001", "上海汇付支付有限公司", "中国建设银行股份有限公司上海第五支行", "货款", "L001"],
+    ]
+    text = """交通银行上海市分行明细对账单
+开户机构： 账号：
+交通银行上海长宁支行 310066629013003064589
+币种： 年份： 月份： 页码：
+人民币 2024 05 1-1
+户名：
+上海乐芙兰电子商务有限公司
+序号 会计日期 交易日期 交易名称 凭证种类 凭证号码 借方发生额 贷方发生额 余额 卡号 交易地点 对方账号 对方户名 对方行名 摘要 流水号
+"""
+    content = build_structured_extraction(
+        text,
+        "bank_statement",
+        raw_pages=[{"page": 1, "text": text, "table_rows": rows, "source": "ocr"}],
+        filename="31006662901300306458920240520_2.pdf",
+    )
+    data = content["extracted_json"]
+    assert data["bank_format"] == "bocm_statement"
+    assert data["account_name"] == "上海乐芙兰电子商务有限公司"
+    assert data["opening_bank"] == "交通银行上海长宁支行"
+    assert data["account_no"] == "310066629013003064589"
+    assert data["statement_year"] == "2024"
+    assert data["statement_month"] == "05"
+    assert data["period_text"] == "2024-05-01 至 2024-05-31"
+    markdown = content["display_markdown"]
+    assert "客户名称：上海乐芙兰电子商务有限公司" in markdown
+    assert "客户名称：页码" not in markdown
+    assert "年份：2024" in markdown
+    assert "月份：05" in markdown
+
+
+def test_bocm_header_parser_uses_text_box_layout_values():
+    boxes = [
+        {"text": "交通银行上海市分行明细对账单", "x0": 200, "y0": 10, "x1": 420, "y1": 30},
+        {"text": "开户机构：", "x0": 20, "y0": 60, "x1": 90, "y1": 75},
+        {"text": "交通银行上海长宁支行", "x0": 100, "y0": 60, "x1": 250, "y1": 75},
+        {"text": "账号：", "x0": 20, "y0": 85, "x1": 70, "y1": 100},
+        {"text": "310066629013003064589", "x0": 100, "y0": 85, "x1": 260, "y1": 100},
+        {"text": "币种：", "x0": 310, "y0": 60, "x1": 360, "y1": 75},
+        {"text": "人民币", "x0": 370, "y0": 60, "x1": 420, "y1": 75},
+        {"text": "年份：", "x0": 310, "y0": 85, "x1": 360, "y1": 100},
+        {"text": "2024", "x0": 370, "y0": 85, "x1": 410, "y1": 100},
+        {"text": "月份：", "x0": 430, "y0": 85, "x1": 480, "y1": 100},
+        {"text": "05", "x0": 490, "y0": 85, "x1": 510, "y1": 100},
+        {"text": "页码：", "x0": 530, "y0": 85, "x1": 580, "y1": 100},
+        {"text": "1-1", "x0": 590, "y0": 85, "x1": 620, "y1": 100},
+        {"text": "户名：", "x0": 20, "y0": 115, "x1": 70, "y1": 130},
+        {"text": "上海乐芙兰电子商务有限公司", "x0": 100, "y0": 115, "x1": 300, "y1": 130},
+    ]
+    text = "交通银行上海市分行明细对账单\n序号 会计日期 交易日期 交易名称 借方发生额 贷方发生额 余额 对方账号 对方户名 对方行名 摘要 流水号"
+    content = build_structured_extraction(
+        text,
+        "bank_statement",
+        raw_pages=[{"page": 1, "text": text, "text_boxes": boxes, "page_height": 500, "table_rows": [], "source": "ocr"}],
+        filename="31006662901300306458920240520_2.pdf",
+    )
+    data = content["extracted_json"]
+    assert data["account_name"] == "上海乐芙兰电子商务有限公司"
+    assert data["opening_bank"] == "交通银行上海长宁支行"
+    assert data["account_no"] == "310066629013003064589"
+    assert data["statement_year"] == "2024"
+    assert data["statement_month"] == "05"
+
+
 def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
     pages = [{"page": 1, "text": "上海银行对账单\n客户名称：测试公司", "table_rows": [], "source": "ocr"}]
     content = build_structured_extraction(pages[0]["text"], "bank_statement", raw_pages=pages, filename="上海银行对账单202504-202603.pdf")
