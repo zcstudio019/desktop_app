@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -16,6 +17,7 @@ from backend.extraction_skills.bank_statement import (
 
 
 UNKNOWN = "未识别"
+logger = logging.getLogger(__name__)
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -338,6 +340,7 @@ def aggregate_customer_bank_statements(
     period_ends: list[str] = []
     amount_status_counter = Counter()
     accounts: dict[str, dict[str, Any]] = {}
+    monthly_file_groups: dict[str, dict[str, Any]] = {}
     raw_transactions: list[dict[str, Any]] = []
 
     for extraction in extractions:
@@ -413,6 +416,46 @@ def aggregate_customer_bank_statements(
         if end:
             period_ends.append(end)
         amount_status_counter[str(payload.get("amount_recognition_status") or UNKNOWN)] += 1
+        statement_month = ""
+        if payload.get("statement_year") and payload.get("statement_month"):
+            statement_month = f"{payload.get('statement_year')}-{payload.get('statement_month')}"
+        if not _valid_year_month(statement_month):
+            statement_month = _month(start) or _month(end) or ""
+        if not _valid_year_month(statement_month):
+            for tx in quality["valid_transactions"]:
+                statement_month = _month(_tx_value(tx, "trade_time", "transaction_time", "交易时间"))
+                if statement_month:
+                    break
+        if account_no and statement_month:
+            group_key = f"{bank_name}|{account_no}|{statement_month}"
+            group = monthly_file_groups.setdefault(group_key, {
+                "month": statement_month,
+                "bank_name": bank_name,
+                "account_no": account_no,
+                "account_name": valid_account_name or UNKNOWN,
+                "opening_bank": payload.get("opening_bank") or "",
+                "period_start": start,
+                "period_end": end,
+                "file_count": 0,
+                "transaction_count": 0,
+                "files": [],
+            })
+            group["file_count"] += 1
+            group["transaction_count"] += len(quality["valid_transactions"])
+            if start and (not group.get("period_start") or start < group["period_start"]):
+                group["period_start"] = start
+            if end and (not group.get("period_end") or end > group["period_end"]):
+                group["period_end"] = end
+            group["files"].append({
+                "source_file": source_file,
+                "period_start": start,
+                "period_end": end,
+                "transaction_count": len(quality["valid_transactions"]),
+                "status": "已纳入月度聚合",
+            })
+            logger.info("[BankStatementAggregator] monthly_group_key=%s", group_key)
+            logger.info("[BankStatementAggregator] monthly_group_file_count=%s", group["file_count"])
+            logger.info("[BankStatementAggregator] monthly_group_transaction_count=%s", group["transaction_count"])
 
         if account_no:
             account = accounts.setdefault(account_no, {
@@ -569,6 +612,10 @@ def aggregate_customer_bank_statements(
             {**{k: v for k, v in account.items() if k != "source_files"}, "source_files": sorted(account["source_files"]), "time_range": _account_time_range(account)}
             for account in accounts.values()
         ],
+        "monthly_file_groups": [
+            {**group, "time_range": _account_time_range(group)}
+            for group in sorted(monthly_file_groups.values(), key=lambda item: (item.get("month") or "", item.get("bank_name") or "", item.get("account_no") or ""))
+        ],
         "period_start": min(period_starts) if period_starts else "",
         "period_end": max(period_ends) if period_ends else "",
         "file_count": len(source_files),
@@ -611,6 +658,7 @@ def aggregate_customer_bank_statements(
         "aggregate_status": aggregate_status,
         "amount_statistics_available": amounts_available,
     }
+    logger.info("[BankStatementAggregator] recognized_account_count=%s", account_count)
     if result["file_count"] == 1:
         result["manual_review_items"].append("当前仅基于 1 个银行账户/1 份对账单进行聚合分析。")
     if not included_count:
@@ -689,6 +737,35 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
     else:
         lines = lines[:-2]
         lines.append("暂无已识别银行账户。")
+
+    monthly_groups = data.get("monthly_file_groups") or []
+    if monthly_groups:
+        lines += [
+            "",
+            "### 月度文件清单",
+            "| 月份 | 银行 | 账号 | 户名 | 来源文件数 | 时间范围 | 交易笔数 |",
+            "|---|---|---|---|---:|---|---:|",
+        ]
+        for group in monthly_groups:
+            lines.append(
+                f"| {group.get('month') or UNKNOWN} | {group.get('bank_name') or UNKNOWN} | {group.get('account_no') or UNKNOWN} | "
+                f"{group.get('account_name') or UNKNOWN} | {group.get('file_count', 0)} | {group.get('time_range') or UNKNOWN} | {group.get('transaction_count', 0)} |"
+            )
+        lines += [
+            "",
+            "### 来源文件",
+            "| 序号 | 来源文件 | 日期范围 | 交易笔数 | 状态 |",
+            "|---:|---|---|---:|---|",
+        ]
+        source_index = 1
+        for group in monthly_groups:
+            for file_item in group.get("files") or []:
+                file_range = _account_time_range(file_item)
+                lines.append(
+                    f"| {source_index} | {file_item.get('source_file') or '—'} | {file_range} | "
+                    f"{file_item.get('transaction_count', 0)} | {file_item.get('status') or '已纳入月度聚合'} |"
+                )
+                source_index += 1
 
     if unavailable:
         lines += [

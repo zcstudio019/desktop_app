@@ -442,8 +442,8 @@ def test_bocm_statement_is_not_misrouted_to_receipt_bundle_and_parses_header_tra
     assert data["account_no"] == "310066629013003064589"
     assert data["account_name"] == "上海乐芙兰电子商务有限公司"
     assert data["currency"] == "人民币"
-    assert data["period_start"] == "2024-05-01"
-    assert data["period_end"] == "2024-05-31"
+    assert data["period_start"] == "2024-05-13"
+    assert data["period_end"] == "2024-05-13"
     assert data["valid_transaction_count"] == 2
     assert data["transactions"][0]["收支方向"] == "出账"
     assert data["transactions"][0]["金额"] == 766.14
@@ -525,7 +525,7 @@ def test_bocm_header_parser_handles_staggered_ocr_header_without_page_no_polluti
     assert data["account_no"] == "310066629013003064589"
     assert data["statement_year"] == "2024"
     assert data["statement_month"] == "05"
-    assert data["period_text"] == "2024-05-01 至 2024-05-31"
+    assert data["period_text"] == "2024-05-20 至 2024-05-20"
     markdown = content["display_markdown"]
     assert "户名：上海乐芙兰电子商务有限公司" in markdown
     assert "客户名称：" not in markdown
@@ -565,6 +565,39 @@ def test_bocm_header_parser_uses_text_box_layout_values():
     assert data["account_no"] == "310066629013003064589"
     assert data["statement_year"] == "2024"
     assert data["statement_month"] == "05"
+
+
+def test_bocm_filename_account_and_customer_profile_fallback_rejects_numeric_account_name():
+    header = ["序号", "会计日期", "交易日期", "交易名称", "凭证种类", "凭证号码", "借方发生额", "贷方发生额", "余额", "卡号", "交易地点", "对方账号", "对方户名", "对方行名", "摘要", "流水号"]
+    rows = [
+        header,
+        ["1", "20240513", "20240513", "单位国内汇款", "", "V001", "", "100.00", "146,075.81", "", "上海", "622200001", "百威（中国）销售有限公司", "中国建设银行股份有限公司上海第五支行", "货款", "L001"],
+    ]
+    text = """交通银行上海市分行明细对账单
+开户机构：交通银行上海长宁支行
+户名：3
+币种：人民币
+年份：2024
+序号 会计日期 交易日期 交易名称 凭证种类 凭证号码 借方发生额 贷方发生额 余额 卡号 交易地点 对方账号 对方户名 对方行名 摘要 流水号
+"""
+    content = build_structured_extraction(
+        text,
+        "bank_statement",
+        raw_pages=[{"page": 1, "text": text, "table_rows": rows, "source": "pdf_layout"}],
+        filename="31006662901300306458920240513_1.pdf",
+        customer_name="上海乐芙兰电子商务有限公司",
+    )
+    data = content["extracted_json"]
+    assert data["account_no"] == "310066629013003064589"
+    assert data["account_no_source"] == "filename_fallback"
+    assert data["account_name"] == "上海乐芙兰电子商务有限公司"
+    assert data["account_name_source"] == "customer_profile_fallback"
+    assert data["statement_month"] == "05"
+    assert data["period_text"] == "2024-05-13 至 2024-05-13"
+    markdown = content["display_markdown"]
+    assert "户名：上海乐芙兰电子商务有限公司" in markdown
+    assert "户名：3" not in markdown
+    assert "重点交易明细" not in markdown
 
 
 def test_shanghai_bank_failure_diagnostic_does_not_render_empty_tables():
