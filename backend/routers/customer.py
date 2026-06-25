@@ -70,6 +70,7 @@ from backend.routers.chat_storage import _save_to_local_storage
 from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
 from backend.services.index_rebuild_service import IndexRebuildService
 from backend.services.job_display_config import build_job_result_summary, get_job_target_page, get_job_type_label
+from backend.services.bank_reconciliation_detail_display import sanitize_bank_reconciliation_detail_display
 from backend.services.shuimui_report_fetcher import (
     ERROR_MESSAGES as SHUIMUI_ERROR_MESSAGES,
     fetch_shuimui_report,
@@ -1801,6 +1802,11 @@ async def _get_customer_detail_local(
                     }
                     company_articles_added = True
                     continue
+                if doc_type == "bank_reconciliation_detail":
+                    cleaned = sanitize_bank_reconciliation_detail_display(extracted_data)
+                    if isinstance(cleaned, dict):
+                        all_fields["银行对账明细"] = cleaned
+                    continue
                 # 如果 extracted_data 已经是嵌套字典，直接使用
                 # 例如：{"报告基础信息": {"报告编号": "xxx", "报告时间": "xxx"}}
                 for key, value in extracted_data.items():
@@ -2463,6 +2469,7 @@ async def get_customer_extractions(
     for ext in extractions:
         ext_type = ext.get("extraction_type") or "未知类型"
         extracted_data = ext.get("extracted_data") or {}
+        extracted_data = sanitize_bank_reconciliation_detail_display(extracted_data)
         if ext_type == "company_articles":
             document = None
             doc_id = ext.get("doc_id") or ""
@@ -3002,6 +3009,34 @@ async def get_document_detail(
     extracted_data = latest_extraction.get("extracted_data") or {}
     if not isinstance(extracted_data, dict):
         extracted_data = {}
+    bank_cleaned = sanitize_bank_reconciliation_detail_display(extracted_data)
+    if isinstance(bank_cleaned, dict) and bank_cleaned is not extracted_data and bank_cleaned.get("doc_type") == "bank_reconciliation_detail":
+        report_markdown = str(bank_cleaned.get("display_markdown") or "")
+        return {
+            "document_id": document.get("doc_id") or "",
+            "doc_id": document.get("doc_id") or "",
+            "customer_id": document.get("customer_id") or "",
+            "customer_name": customer.get("name") or "",
+            "document_type": "bank_reconciliation_detail",
+            "source_file": document.get("file_name") or "",
+            "original_filename": document.get("file_name") or "",
+            "file_name": document.get("file_name") or "",
+            "file_type": "bank_reconciliation_detail",
+            "file_type_name": "银行对账明细",
+            "file_size": document.get("file_size") or 0,
+            "upload_time": document.get("upload_time") or "",
+            "created_at": latest_extraction.get("created_at") or document.get("upload_time") or "",
+            "updated_at": latest_extraction.get("created_at") or document.get("upload_time") or "",
+            "display_markdown": report_markdown,
+            "doc_type": "bank_reconciliation_detail",
+            "extracted_json": bank_cleaned,
+            "extraction": {"extracted_data": bank_cleaned, "extraction_type": "bank_reconciliation_detail"},
+            "latest_extraction": {"extracted_data": bank_cleaned, "extraction_type": "bank_reconciliation_detail"},
+            "latestExtraction": {"extracted_data": bank_cleaned, "extraction_type": "bank_reconciliation_detail"},
+            "original_available": original_available,
+            "original_status": original_status,
+            "store_original": definition.store_original if definition else True,
+        }
     extracted_json = extracted_data.get("extracted_json") or extracted_data.get("data") or extracted_data
     if not isinstance(extracted_json, dict):
         extracted_json = {}
