@@ -95,6 +95,37 @@ function firstPlainMarkdown(...values: unknown[]): string {
   return '';
 }
 
+function cleanupBankReconciliationMarkdown(markdown: string, records: JsonRecord[]): string {
+  const monthlyCounts: Record<string, string> = {};
+  for (const record of records) {
+    const monthly = asRecord(record.monthly);
+    for (const [month, item] of Object.entries(monthly)) {
+      const row = asRecord(item);
+      const count = row.count ?? row.transaction_count ?? row.transactionCount;
+      if (/^\d{4}-\d{2}$/.test(month) && count !== undefined && count !== null && count !== '') {
+        monthlyCounts[month] = String(count);
+      }
+    }
+  }
+  const forbiddenLine = /^\s*[-*]?\s*(title|type|document\s*type|doc\s*type|doc\s*type\s*name|data|markdown|display\s*markdown|report\s*markdown|structured\s*data|structured_data|display_markdown|report_markdown|transactions)\s*[:：]/i;
+  return markdown
+    .split(/\r?\n/)
+    .filter((line) => !forbiddenLine.test(line))
+    .map((line) => {
+      if (/^\|\s*\d{4}-\d{2}\s*\|/.test(line)) {
+        const month = line.match(/^\|\s*(\d{4}-\d{2})\s*\|/)?.[1] || '';
+        const closed = line.trim().endsWith('|') ? line.trim() : `${line.trim()} |`;
+        const cells = closed.split('|').slice(1, -1).map((cell) => cell.trim());
+        if (cells.length === 4) return `${closed} ${monthlyCounts[month] || '0'} |`;
+        return closed;
+      }
+      return line.replace(/[{}[\]]/g, '');
+    })
+    .join('\n')
+    .replace(/\b(null|None|undefined|true|false)\b/g, '')
+    .trim();
+}
+
 function dedupeShuimuiMarkdown(markdown: string): string {
   const text = markdown.trim();
   const marker = '## 水母报告';
@@ -308,8 +339,9 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
       dataRecord.markdown_result,
       dataRecord.markdownResult,
     );
+    const records = [detail, latestExtraction, latestExtractedData, extraction, extractedData, extractedJson, structuredJson, dataRecord];
     return {
-      content: markdown || '暂无可展示的银行对账明细结果',
+      content: markdown ? cleanupBankReconciliationMarkdown(markdown, records) : '暂无可展示的银行对账明细结果',
       source: markdown ? 'selectedDocument.bank_reconciliation_detail.display_markdown' : 'empty',
     };
   }

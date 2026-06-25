@@ -17,7 +17,7 @@ import { Search, Users, Clock, User, Filter, Download, RefreshCw, X, AlertCircle
 import { listCustomers, getCustomerDetail } from '../services/api';
 import { ApiError } from '../services/types';
 import type { CustomerListItem, CustomerDetail } from '../services/types';
-import { DataSectionCard, ArrayDataCard, isArrayOfObjects } from './DataDisplayComponents';
+import { DataSectionCard, ArrayDataCard, isArrayOfObjects, getBankReconciliationDisplayMarkdown } from './DataDisplayComponents';
 import EnterpriseBankStatementView, { looksLikeEnterpriseBankStatementData } from './documents/EnterpriseBankStatementView';
 
 interface CustomerListPageProps {
@@ -177,6 +177,17 @@ export function CustomerDetailFieldRenderer({
       <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>
           {markdown || '暂无公司章程解析结果'}
+        </ReactMarkdown>
+      </article>
+    );
+  }
+
+  const bankMarkdown = getBankReconciliationDisplayMarkdown(parsedValue);
+  if (bankMarkdown) {
+    return (
+      <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {bankMarkdown}
         </ReactMarkdown>
       </article>
     );

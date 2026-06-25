@@ -22,7 +22,7 @@ import {
 import { createChatJob, createCustomerRiskReportJob, deleteChatJob, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers } from '../services/api';
 import {
   formatTableValue, isNestedObject, isArrayOfObjects,
-  DataSectionCard, ArrayDataCard
+  DataSectionCard, ArrayDataCard, getBankReconciliationDisplayMarkdown
 } from './DataDisplayComponents';
 import AsyncJobCard from './common/AsyncJobCard';
 import SchemeMatchingResultCard from './common/SchemeMatchingResultCard';
@@ -675,7 +675,13 @@ const ExtractionResultCard: React.FC<ExtractionResultCardProps> = ({ files }) =>
                 </div>
               )}
               
-              {getCompanyArticlesMarkdown(file.content as Record<string, unknown>, file.documentType) ? (
+              {getBankReconciliationDisplayMarkdown({ ...file.content, document_type: file.documentType }) ? (
+                <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {getBankReconciliationDisplayMarkdown({ ...file.content, document_type: file.documentType }) || ''}
+                  </ReactMarkdown>
+                </article>
+              ) : getCompanyArticlesMarkdown(file.content as Record<string, unknown>, file.documentType) ? (
                 <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {getCompanyArticlesMarkdown(file.content as Record<string, unknown>, file.documentType)}

@@ -7,6 +7,8 @@
  */
 
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   FileText, User, Building2, CreditCard, Banknote, AlertCircle,
   FileCheck, Percent, Calendar, DollarSign, Building, BadgeCheck,
@@ -99,6 +101,35 @@ export function getSectionIcon(sectionName: string): React.ReactNode {
 // ============================================
 
 const HIDDEN_DISPLAY_KEYS = new Set([
+  'title',
+  'type',
+  'data',
+  'transactions',
+  'transactionid',
+  'transaction_id',
+  'counterpartyaccount',
+  'counterparty_account',
+  'counterpartybankno',
+  'counterparty_bank_no',
+  'rawrowno',
+  'raw_row_no',
+  'isselftransfer',
+  'is_self_transfer',
+  'isloanrelated',
+  'is_loan_related',
+  'isfee',
+  'is_fee',
+  'issalary',
+  'is_salary',
+  'istax',
+  'is_tax',
+  'isinterest',
+  'is_interest',
+  'isoperatinginflow',
+  'is_operating_inflow',
+  'isoperatingoutflow',
+  'is_operating_outflow',
+  'confidence',
   'doc_type',
   'doctype',
   'doc_type_name',
@@ -158,6 +189,108 @@ const HIDDEN_DISPLAY_KEYS = new Set([
   'extraction_version',
   'extractionversion',
 ]);
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return asRecord(parsed);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function collectDisplayRecords(value: unknown): Record<string, unknown>[] {
+  const root = asRecord(value);
+  if (!Object.keys(root).length) return [];
+  return [
+    root,
+    asRecord(root.content),
+    asRecord(root.result),
+    asRecord(root.extracted_json),
+    asRecord(root.extractedJson),
+    asRecord(root.extracted_data),
+    asRecord(root.extractedData),
+    asRecord(root.data),
+    asRecord(root.structured_data),
+    asRecord(root.structuredData),
+  ].filter((record) => Object.keys(record).length > 0);
+}
+
+function getDocTypeFromRecords(records: Record<string, unknown>[]): string {
+  return String(records.flatMap((record) => [
+    record.doc_type,
+    record.docType,
+    record.document_type,
+    record.documentType,
+    record.document_type_code,
+    record.documentTypeCode,
+    record.type,
+    record.extraction_type,
+  ]).find((value) => String(value || '').trim()) || '').trim();
+}
+
+function monthlyCountsFromRecords(records: Record<string, unknown>[]): Record<string, string> {
+  const counts: Record<string, string> = {};
+  records.forEach((record) => {
+    const monthly = asRecord(record.monthly);
+    Object.entries(monthly).forEach(([month, item]) => {
+      const row = asRecord(item);
+      const count = row.count ?? row.transaction_count ?? row.transactionCount;
+      if (String(month || '').match(/^\d{4}-\d{2}$/) && count !== undefined && count !== null && count !== '') {
+        counts[month] = String(count);
+      }
+    });
+  });
+  return counts;
+}
+
+export function cleanupBankReconciliationMarkdown(markdown: string, payload?: unknown): string {
+  const records = collectDisplayRecords(payload);
+  const monthCounts = monthlyCountsFromRecords(records);
+  const forbiddenLine = /^\s*[-*]?\s*(title|type|document\s*type|doc\s*type|doc\s*type\s*name|data|markdown|display\s*markdown|report\s*markdown|structured\s*data|structured_data|display_markdown|report_markdown|transactions)\s*[:：]/i;
+  return markdown
+    .split(/\r?\n/)
+    .filter((line) => !forbiddenLine.test(line))
+    .map((line) => {
+      if (/^\|\s*\d{4}-\d{2}\s*\|/.test(line)) {
+        const month = line.match(/^\|\s*(\d{4}-\d{2})\s*\|/)?.[1] || '';
+        const trimmed = line.trim();
+        const closed = trimmed.endsWith('|') ? trimmed : `${trimmed} |`;
+        const cells = closed.split('|').slice(1, -1).map((cell) => cell.trim());
+        if (cells.length === 4) return `${closed} ${monthCounts[month] || '0'} |`;
+        return closed;
+      }
+      return line.replace(/[{}[\]]/g, '');
+    })
+    .join('\n')
+    .replace(/\b(null|None|undefined|true|false)\b/g, '')
+    .trim();
+}
+
+export function getBankReconciliationDisplayMarkdown(value: unknown): string | null {
+  const records = collectDisplayRecords(value);
+  if (getDocTypeFromRecords(records) !== 'bank_reconciliation_detail') return null;
+  const markdownKeys = [
+    'display_markdown',
+    'displayMarkdown',
+    'markdown',
+    'report_markdown',
+    'reportMarkdown',
+    'markdown_result',
+    'markdownResult',
+  ];
+  for (const key of markdownKeys) {
+    for (const record of records) {
+      const markdown = typeof record[key] === 'string' ? String(record[key]).trim() : '';
+      if (markdown) return cleanupBankReconciliationMarkdown(markdown, value);
+    }
+  }
+  return '## 银行对账明细\n\n- 提取状态：成功\n- 展示结果：暂无可展示内容';
+}
 
 export function isHiddenDisplayKey(key: string): boolean {
   const normalized = String(key || '').replace(/[\s_-]+/g, '').toLowerCase();
@@ -222,6 +355,16 @@ interface DataTableProps {
 }
 
 export const DataTable: React.FC<DataTableProps> = ({ data, level = 0 }) => {
+  const bankMarkdown = getBankReconciliationDisplayMarkdown(data);
+  if (bankMarkdown) {
+    return (
+      <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {bankMarkdown}
+        </ReactMarkdown>
+      </article>
+    );
+  }
   const entries = Object.entries(data).filter(([key]) => !isHiddenDisplayKey(key));
 
   const simpleEntries = entries.filter(([, value]) => !isNestedObject(value) && !isArrayOfObjects(value));
@@ -272,6 +415,16 @@ interface DataSectionCardProps {
 }
 
 export const DataSectionCard: React.FC<DataSectionCardProps> = ({ title, data, level = 0 }) => {
+  const bankMarkdown = getBankReconciliationDisplayMarkdown(data);
+  if (bankMarkdown) {
+    return (
+      <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {bankMarkdown}
+        </ReactMarkdown>
+      </article>
+    );
+  }
   if (isHiddenDisplayKey(title)) return null;
   const visibleData = Object.fromEntries(Object.entries(data).filter(([key]) => !isHiddenDisplayKey(key)));
   if (Object.keys(visibleData).length === 0) return null;

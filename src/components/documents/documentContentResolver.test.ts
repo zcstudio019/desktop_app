@@ -182,4 +182,28 @@ describe('resolveDocumentContent', () => {
     expect(result.content).not.toContain('transactions');
     expect(result.content).not.toContain('{');
   });
+
+  it('repairs incomplete monthly rows for bank reconciliation detail markdown', () => {
+    const result = resolveDocumentContent({
+      document_type: 'bank_reconciliation_detail',
+      extracted_json: {
+        doc_type: 'bank_reconciliation_detail',
+        display_markdown: [
+          '## 银行对账明细',
+          '',
+          '### 月度资金变化',
+          '',
+          '| 月份 | 入账金额 | 出账金额 | 净流入 | 交易笔数 |',
+          '|---|---:|---:|---:|---:|',
+          '| 2025-07 | 6,170,000.00 | 6,535,275.33 | -365,275.33 ',
+        ].join('\n'),
+        monthly: {
+          '2025-07': { in: 6170000, out: 6535275.33, count: 17 },
+        },
+      },
+    });
+
+    expect(result.content).toContain('| 2025-07 | 6,170,000.00 | 6,535,275.33 | -365,275.33 | 17 |');
+    expect(result.content).not.toContain('{');
+  });
 });
