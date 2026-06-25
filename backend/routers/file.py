@@ -1529,6 +1529,12 @@ async def _extract_content_from_file(
 
 def _resolve_document_type_code(text_content: str, explicit_type: str | None, rows: list[dict], filename: str = "") -> str:
     normalized = normalize_document_type_code(explicit_type)
+    reconciliation_source = f"{filename}\n{text_content}"
+    if (
+        any(keyword in reconciliation_source for keyword in ("银行对账明细", "对账明细", "账户明细查询", "银行明细"))
+        or (any(keyword in reconciliation_source for keyword in ("工商银行", "上海银行")) and filename.lower().endswith((".xlsx", ".xls", ".csv")))
+    ) and normalized in {None, "bank_statement", "bank_statement_detail", "enterprise_flow", "enterprise_bank_statement"}:
+        return "bank_reconciliation_detail"
     receipt_source = f"{filename}\n{text_content}"
     receipt_like = (
         any(keyword in receipt_source for keyword in ("单位国内汇款", "电子回单", "网上银行电子回单", "银行回单", "汇款回单", "转账回单", "付款凭证", "收款凭证", "回单编号", "业务编号", "交易流水号", "汇款金额", "交易金额"))

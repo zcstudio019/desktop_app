@@ -87,6 +87,7 @@ FRONTEND_TO_BACKEND_TYPE.update(
         "special_license": "特别许可证",
         "company_articles": "公司章程",
         "bank_statement": "银行对账单",
+        "bank_reconciliation_detail": "银行对账明细",
         "bank_statement_detail": "银行对账明细",
     }
 )

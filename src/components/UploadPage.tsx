@@ -297,13 +297,13 @@ const FILE_TYPES: FileTypeConfig[] = [
     storeOriginal: true,
   },
   {
-    id: 'bank_statement_detail',
+    id: 'bank_reconciliation_detail',
     name: '银行对账明细',
-    formats: 'PDF / XLSX',
+    formats: 'XLSX / XLS / CSV',
     color: 'text-lime-700',
     bgColor: 'bg-lime-50',
     icon: Landmark,
-    acceptedExtensions: ['.pdf', '.xlsx', '.xls'],
+    acceptedExtensions: ['.xlsx', '.xls', '.csv'],
     storeOriginal: true,
   },
 ];
@@ -331,6 +331,7 @@ function getFileTypeDisplay(filename: string): string {
     '.docx': 'DOCX',
     '.xlsx': 'XLS', 
     '.xls': 'XLS', 
+    '.csv': 'CSV',
     '.jpg': 'JPG', 
     '.jpeg': 'JPG', 
     '.png': 'PNG' 
@@ -345,6 +346,7 @@ function getFileTypeColor(filename: string): string {
     '.docx': 'bg-violet-100 text-violet-600',
     '.xlsx': 'bg-emerald-100 text-emerald-600',
     '.xls': 'bg-emerald-100 text-emerald-600',
+    '.csv': 'bg-emerald-100 text-emerald-600',
     '.jpg': 'bg-amber-100 text-amber-600',
     '.jpeg': 'bg-amber-100 text-amber-600',
     '.png': 'bg-amber-100 text-amber-600',
@@ -756,7 +758,7 @@ function getKycPreviewContent(result: ExtractionResult): Record<string, unknown>
 }
 
 function getBankStatementMarkdown(result: ExtractionResult): string {
-  if (result.documentType !== 'bank_statement') return '';
+  if (!['bank_statement', 'bank_reconciliation_detail'].includes(result.documentType)) return '';
   const content = result.content || {};
   for (const key of ['display_markdown', 'report_markdown', 'markdown_summary', 'markdown', 'summary']) {
     const value = content[key];

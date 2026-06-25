@@ -41,6 +41,7 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
     "real_estate_cert",
     "bank_statement",
     "bank_receipt_bundle",
+    "bank_reconciliation_detail",
 }
 
 KYC_DOC_TYPES = {
@@ -109,6 +110,7 @@ ID_CARD_PATTERN = re.compile(r"([1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-
 UNIFIED_CODE_PATTERN = re.compile(r"\b([0-9A-Z]{18})\b")
 
 TYPE_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("bank_reconciliation_detail", ("银行对账明细", "对账明细", "账户明细查询", "账户明细", "银行明细", "交易流水号", "借贷标志", "转入金额", "转出金额")),
     ("bank_statement", ("中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")),
     ("financial_report", ("资产负债表", "利润表", "现金流量表", "财务报表报送", "财务报表")),
     ("business_license", ("营业执照", "统一社会信用代码", "法定代表人")),
@@ -138,6 +140,25 @@ STANDARD_BANK_STATEMENT_TABLE_KEYWORDS = (
     "交易日期", "交易时间", "记账日期", "会计日期", "余额", "借方发生额", "贷方发生额",
     "账户明细", "账户明细查询", "账户明细清单", "明细对账单", "对方账号", "对方户名", "对方行名", "流水号",
 )
+
+BANK_RECONCILIATION_DETAIL_KEYWORDS = (
+    "银行对账明细",
+    "对账明细",
+    "账户明细查询",
+    "账户明细",
+    "银行明细",
+    "工商银行",
+    "上海银行",
+)
+
+
+def _looks_like_bank_reconciliation_detail(text: str, filename: str = "") -> bool:
+    source = f"{filename}\n{text}"
+    if any(keyword in source for keyword in ("对账明细", "账户明细查询", "银行明细")):
+        return True
+    if any(keyword in source for keyword in ("工商银行", "上海银行")) and any(ext in filename.lower() for ext in (".xlsx", ".xls", ".csv")):
+        return True
+    return False
 
 
 def _looks_like_official_bank_statement(text: str, filename: str = "") -> bool:
@@ -186,6 +207,8 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
+    if _looks_like_bank_reconciliation_detail(text_content, filename) and normalized_explicit in {None, "bank_statement", "bank_statement_detail", "enterprise_flow", "enterprise_bank_statement"}:
+        return "bank_reconciliation_detail"
     if _looks_like_bank_receipt_bundle(text_content, filename) and normalized_explicit in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_receipt_bundle"
     if (
@@ -245,6 +268,13 @@ def build_structured_extraction(
         content = extract_company_articles(text_content, ai_service=ai_service)
     elif normalized_code == "bank_receipt_bundle":
         result = run_document_extraction_agent("bank_receipt_bundle", text_content, "", metadata={})
+        content = result.raw_agent_result or {
+            "extracted_json": result.extracted_json,
+            "markdown_summary": result.markdown_summary,
+            "display_markdown": result.markdown_summary,
+        }
+    elif normalized_code == "bank_reconciliation_detail":
+        result = run_document_extraction_agent("bank_reconciliation_detail", text_content, "", metadata={})
         content = result.raw_agent_result or {
             "extracted_json": result.extracted_json,
             "markdown_summary": result.markdown_summary,
@@ -3102,6 +3132,8 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
+    if _looks_like_bank_reconciliation_detail(text_content, filename) and normalized_explicit in {None, "bank_statement", "bank_statement_detail", "enterprise_flow", "enterprise_bank_statement"}:
+        return "bank_reconciliation_detail"
     if _looks_like_bank_receipt_bundle(text_content, filename) and normalized_explicit in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_receipt_bundle"
     if (
@@ -3161,6 +3193,13 @@ def build_structured_extraction(
         content = extract_company_articles(text_content, ai_service=ai_service)
     elif normalized_code == "bank_receipt_bundle":
         result = run_document_extraction_agent("bank_receipt_bundle", text_content, "", metadata={})
+        content = result.raw_agent_result or {
+            "extracted_json": result.extracted_json,
+            "markdown_summary": result.markdown_summary,
+            "display_markdown": result.markdown_summary,
+        }
+    elif normalized_code == "bank_reconciliation_detail":
+        result = run_document_extraction_agent("bank_reconciliation_detail", text_content, "", metadata={})
         content = result.raw_agent_result or {
             "extracted_json": result.extracted_json,
             "markdown_summary": result.markdown_summary,

@@ -265,7 +265,7 @@ const DOCUMENT_GROUPS = {
   },
   banking: {
     title: '银行资料',
-    types: ['account_license', 'bank_statement', 'bank_statement_detail'],
+    types: ['account_license', 'bank_statement', 'bank_reconciliation_detail', 'bank_statement_detail'],
   },
   personal: {
     title: '个人/家庭资料',
@@ -294,7 +294,7 @@ const DOCUMENT_COMPLETENESS_RULES = {
     title: '银行资料',
     description: '用于核对账户主体、账户状态与银行流水情况。',
     required: ['account_license'],
-    optional: ['bank_statement', 'bank_statement_detail'],
+    optional: ['bank_statement', 'bank_reconciliation_detail', 'bank_statement_detail'],
   },
   financial: {
     title: '财务资料',
@@ -362,13 +362,13 @@ const FIELD_SOURCE_RULES: FieldSourceRule[] = [
   {
     fieldKey: 'bank_name',
     label: '开户行',
-    sourceTypes: ['account_license', 'bank_statement'],
+    sourceTypes: ['account_license', 'bank_statement', 'bank_reconciliation_detail'],
     valueLabels: ['开户行', '开户银行', '银行名称', 'bank_name', 'bank_branch'],
   },
   {
     fieldKey: 'account_number',
     label: '账号',
-    sourceTypes: ['account_license', 'bank_statement'],
+    sourceTypes: ['account_license', 'bank_statement', 'bank_reconciliation_detail'],
     valueLabels: ['账号', '银行账号', '账户号码', 'account_number'],
   },
   {
@@ -410,7 +410,7 @@ const FIELD_SOURCE_RULES: FieldSourceRule[] = [
   {
     fieldKey: 'account_name',
     label: '户名 / 账户名称',
-    sourceTypes: ['account_license', 'bank_statement'],
+    sourceTypes: ['account_license', 'bank_statement', 'bank_reconciliation_detail'],
     valueLabels: ['户名', '账户名称', '账户名', '存款人名称', 'account_name'],
   },
   {
@@ -538,6 +538,7 @@ function getDocumentTypeDisplayNameByCode(fileType: string): string {
     special_license: '特殊许可证',
     account_license: '开户许可证',
     bank_statement: '银行对账单',
+    bank_reconciliation_detail: '银行对账明细',
     bank_statement_detail: '银行对账明细',
     id_card: '身份证',
     hukou: '户口本',

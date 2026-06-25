@@ -7,6 +7,7 @@ from backend.document_types import get_document_display_name, get_document_stora
 from backend.extraction_skills.enterprise_credit import build_enterprise_credit_content
 from backend.extraction_skills.personal_credit import build_personal_credit_report_content
 from backend.services.bank_receipt_bundle_agent import BankReceiptBundleAgentAdapter
+from backend.services.bank_reconciliation_detail_agent import BankReconciliationDetailAgentAdapter
 from backend.services.enterprise_bank_statement_agent.adapter import (
     EnterpriseBankStatementAgentAdapter as EnterpriseBankStatementAgentAdapterV2,
 )
@@ -159,6 +160,7 @@ _PROPERTY_CERT_AGENT = PropertyCertAgentAdapter()
 _COMPANY_ARTICLES_AGENT = CompanyArticlesAgentAdapter()
 _BANK_STATEMENT_AGENT = BankStatementAgentAdapter()
 _BANK_RECEIPT_BUNDLE_AGENT = BankReceiptBundleAgentAdapter()
+_BANK_RECONCILIATION_DETAIL_AGENT = BankReconciliationDetailAgentAdapter()
 
 DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "enterprise_credit_report": _ENTERPRISE_CREDIT_AGENT,
@@ -182,6 +184,7 @@ DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "real_estate_cert": _PROPERTY_CERT_AGENT,
     "bank_statement": _BANK_STATEMENT_AGENT,
     "bank_receipt_bundle": _BANK_RECEIPT_BUNDLE_AGENT,
+    "bank_reconciliation_detail": _BANK_RECONCILIATION_DETAIL_AGENT,
     "财务报表": _FINANCIAL_REPORT_AGENT,
     "财务数据": _FINANCIAL_REPORT_AGENT,
     "企业流水": _ENTERPRISE_BANK_STATEMENT_AGENT,
