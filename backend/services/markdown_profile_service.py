@@ -27,6 +27,7 @@ from backend.services.bank_statement_agent.aggregator import (
     aggregate_customer_bank_statements,
     render_customer_bank_flow_aggregate_markdown,
 )
+from backend.services.bank_reconciliation_detail_display import sanitize_bank_reconciliation_detail_display
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_report_agent.display_mapper import to_display_json as to_financial_report_display_json
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
@@ -184,6 +185,24 @@ STRUCTURED_FIELD_LABELS: dict[str, str] = {
 }
 
 HIDDEN_STRUCTURED_FIELDS = {
+    'title',
+    'type',
+    'data',
+    'structured_data',
+    'structuredData',
+    'raw_result',
+    'rawResult',
+    'fields',
+    'normalized_data',
+    'normalizedData',
+    'transactions',
+    'transaction_id',
+    'doc_type',
+    'document_type',
+    'document_type_code',
+    'doc_type_name',
+    'document_type_name',
+    'agent_type',
     'document_type_code',
     'document_type_name',
     'storage_label',
@@ -194,6 +213,22 @@ HIDDEN_STRUCTURED_FIELDS = {
     'raw_pages',
     'extracted_json',
     'markdown_summary',
+    'display_markdown',
+    'markdown',
+    'report_markdown',
+    'confidence',
+    'is_fee',
+    'is_tax',
+    'is_salary',
+    'is_interest',
+    'is_loan_related',
+    'is_self_transfer',
+    'is_operating_inflow',
+    'is_operating_outflow',
+    'counterparty_account',
+    'counterparty_bank_no',
+    'raw_row_no',
+    'voucher_no',
     'skill_name',
     'skill_version',
     'schema_version',
@@ -1885,6 +1920,27 @@ async def _build_single_document_section(
     raw_extraction_type = extraction.get('extraction_type') or '\u672a\u547d\u540d\u8d44\u6599'
     extraction_type = normalize_document_type_code(raw_extraction_type) or raw_extraction_type
     extracted_data = extraction.get('extracted_data') or {}
+    bank_cleaned = sanitize_bank_reconciliation_detail_display(
+        {**extracted_data, "doc_type": extraction_type} if isinstance(extracted_data, dict) else {"doc_type": extraction_type}
+    )
+    if isinstance(bank_cleaned, dict) and bank_cleaned.get("doc_type") == "bank_reconciliation_detail":
+        markdown = str(bank_cleaned.get("display_markdown") or "").strip()
+        logger.info(
+            "bank_reconciliation_detail display short-circuit hit customer_id=%s extraction_type=%s hasDisplayMarkdown=%s length=%s",
+            customer_id,
+            extraction_type,
+            bool(markdown),
+            len(markdown),
+        )
+        source_document = {
+            'doc_id': extraction.get('doc_id') or '',
+            'file_name': '',
+            'file_type': 'bank_reconciliation_detail',
+            'file_type_name': '银行对账明细',
+            'original_available': False,
+            'original_status': '未进入通用字段遍历，仅展示银行对账明细报告',
+        }
+        return (markdown or "## 银行对账明细\n\n- 展示状态：暂无可展示结果"), source_document
     type_name = get_document_display_name(extraction_type)
     document = None
     doc_id = extraction.get('doc_id')

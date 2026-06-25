@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 from backend.services.bank_reconciliation_detail_display import sanitize_bank_reconciliation_detail_display
+from backend.services.markdown_profile_service import _build_single_document_section
 
 
 def test_sanitize_bank_reconciliation_detail_display_removes_dirty_fields() -> None:
@@ -76,3 +79,61 @@ def test_sanitize_bank_reconciliation_detail_display_removes_dirty_fields() -> N
     ]
     for item in forbidden:
         assert item not in markdown
+
+
+def test_profile_markdown_formatter_short_circuits_bank_reconciliation_detail() -> None:
+    class Storage:
+        async def get_document(self, doc_id: str) -> dict:
+            return {"doc_id": doc_id, "file_name": "工商银行对账明细202504-202603.xlsx", "file_path": ""}
+
+    dirty_data = {
+        "doc_type": "bank_reconciliation_detail",
+        "display_markdown": "\n".join(
+            [
+                "## 银行对账明细",
+                "",
+                "- 资料类型：银行对账明细",
+                "",
+                "data：{\"display_markdown\":\"...\"}",
+                "structured data：{\"transactions\":[{\"is_fee\": true}]}",
+            ]
+        ),
+        "markdown": "markdown：## 银行对账明细...",
+        "report_markdown": "report markdown：## 银行对账明细...",
+        "structured_data": {
+            "doc_type": "bank_reconciliation_detail",
+            "transactions": [{"transaction_id": "1", "is_loan_related": False}],
+        },
+        "data": {"display_markdown": "## 银行对账明细\n\n- 资料类型：银行对账明细"},
+    }
+
+    section, _source = asyncio.run(
+        _build_single_document_section(
+            Storage(),
+            "customer_1",
+            {
+                "extraction_type": "bank_reconciliation_detail",
+                "doc_id": "doc_1",
+                "extracted_data": dirty_data,
+            },
+        )
+    )
+
+    assert section.count("## 银行对账明细") == 1
+    forbidden = [
+        "data：",
+        "display markdown",
+        "report markdown",
+        "structured data",
+        "transactions",
+        "transaction_id",
+        "is_fee",
+        "is_loan_related",
+        "true",
+        "false",
+        "{",
+        "}",
+        "[",
+    ]
+    for item in forbidden:
+        assert item not in section
