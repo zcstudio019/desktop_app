@@ -12,6 +12,7 @@ export type DocumentContentSource =
   | 'selectedDocument.extracted_json.markdown_report'
   | 'selectedDocument.structured_json.report_markdown'
   | 'selectedDocument.structured_json.markdown_report'
+  | 'selectedDocument.bank_reconciliation_detail.display_markdown'
   | 'generatedFinancialReportMarkdown'
   | 'selectedDocument.extracted_text'
   | 'selectedDocument.parsed_text'
@@ -80,6 +81,18 @@ function isShuimuiReportType(value: unknown): boolean {
 
 function isCompanyArticlesType(value: unknown): boolean {
   return String(value || '').trim() === 'company_articles';
+}
+
+function isBankReconciliationDetailType(value: unknown): boolean {
+  return String(value || '').trim() === 'bank_reconciliation_detail';
+}
+
+function firstPlainMarkdown(...values: unknown[]): string {
+  for (const value of values) {
+    const markdown = nonEmpty(value);
+    if (markdown) return markdown;
+  }
+  return '';
 }
 
 function dedupeShuimuiMarkdown(markdown: string): string {
@@ -264,6 +277,41 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
       structuredJson,
     );
     return { content: markdown || '暂无公司章程解析结果', source: markdown ? 'selectedDocument.extracted_json.display_markdown' : 'empty' };
+  }
+
+  if (isBankReconciliationDetailType(documentType)) {
+    const dataRecord = asRecord(detail.data ?? latestExtractedData.data ?? extractedData.data ?? extractedJson.data);
+    const markdown = firstPlainMarkdown(
+      detail.display_markdown,
+      detail.displayMarkdown,
+      detail.markdown_result,
+      detail.markdownResult,
+      detail.content,
+      latestExtraction.display_markdown,
+      latestExtraction.displayMarkdown,
+      latestExtraction.markdown_result,
+      latestExtraction.markdownResult,
+      latestExtractedData.display_markdown,
+      latestExtractedData.displayMarkdown,
+      latestExtractedData.markdown_result,
+      latestExtractedData.markdownResult,
+      extractedData.display_markdown,
+      extractedData.displayMarkdown,
+      extractedData.markdown_result,
+      extractedData.markdownResult,
+      extractedJson.display_markdown,
+      extractedJson.displayMarkdown,
+      extractedJson.markdown_result,
+      extractedJson.markdownResult,
+      dataRecord.display_markdown,
+      dataRecord.displayMarkdown,
+      dataRecord.markdown_result,
+      dataRecord.markdownResult,
+    );
+    return {
+      content: markdown || '暂无可展示的银行对账明细结果',
+      source: markdown ? 'selectedDocument.bank_reconciliation_detail.display_markdown' : 'empty',
+    };
   }
 
   const candidates: Array<[DocumentContentSource, string]> = [

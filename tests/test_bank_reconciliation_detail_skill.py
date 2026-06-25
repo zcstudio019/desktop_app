@@ -14,8 +14,8 @@ def _save_shanghai_sample(path: Path) -> None:
     ws.append(["账户明细查询"])
     ws.append(["记账日期:", "2025-04-01---2026-03-31"])
     ws.append(["选择账号:", "03005029359", "户名:", "上海意川建筑科技有限公司", "开户行:", "上海银行浦西支行营业部", "币种:", "人民币"])
-    ws.append(["总笔数:", 2, "借方总笔数:", 1, "借方总金额:", "200,000.00"])
-    ws.append(["贷方总笔数:", 1, "贷方总金额:", "1,000,000.00"])
+    ws.append(["总笔数", 2, "借方总笔数", 1, "借方总金额", "200,000.00"])
+    ws.append(["贷方总笔数", 1, "贷方总金额", "1,000,000.00"])
     ws.append(["交易流水号", "交易时间", "记账日期", "交易方向", "交易金额", "余额", "对手账号", "对手名称", "摘要", "交易用途", "备注"])
     ws.append(["S001", "2025-04-01 11:12:46", "2025-04-01", "出账", "200,000.00", "800,000.00", "6222", "靖江市桐梧贸易有限公司", "跨行转账", "临空项目材料款", ""])
     ws.append(["S002", "2025-04-07 09:00:00", "2025-04-07", "入账", "1,000,000.00", "1,800,000.00", "0300", "上海意川建筑科技有限公司", "往来款", "", ""])
@@ -33,7 +33,7 @@ def _save_icbc_sample(path: Path) -> None:
     wb.save(path)
 
 
-def test_bank_reconciliation_detail_aggregates_and_renders_markdown(tmp_path: Path) -> None:
+def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_path: Path) -> None:
     shanghai = tmp_path / "shanghai_bank_detail.xlsx"
     icbc = tmp_path / "icbc_bank_detail.xlsx"
     _save_shanghai_sample(shanghai)
@@ -41,8 +41,8 @@ def test_bank_reconciliation_detail_aggregates_and_renders_markdown(tmp_path: Pa
 
     result = parse_bank_reconciliation_files(
         [
-            {"file_path": str(shanghai), "file_name": "shanghai_bank_detail.xlsx"},
-            {"file_path": str(icbc), "file_name": "icbc_bank_detail.xlsx"},
+            {"file_path": str(shanghai), "file_name": "上海银行对账明细202504-202603.xlsx"},
+            {"file_path": str(icbc), "file_name": "工商银行对账明细202504-202603.xlsx"},
         ]
     )
 
@@ -55,10 +55,16 @@ def test_bank_reconciliation_detail_aggregates_and_renders_markdown(tmp_path: Pa
     assert summary["deduped_transaction_count"] == 4
     assert summary["date_start"] == "2025-04-01"
     assert summary["date_end"] == "2026-03-31"
-    assert "上海意川建筑科技有限公司" in markdown
-    assert "03005029359" in markdown
-    assert "上海银行浦西支行营业部" in markdown
-    assert "已清理占位值 17" in markdown
+    assert "## 银行对账明细" in markdown
+    assert "### 核心资金概览" in markdown
+    assert "### 经营判断" in markdown
+    assert "### 月度资金变化" in markdown
+    assert "### 主要入账来源" in markdown
+    assert "### 主要出账对象" in markdown
+    assert "### 风险提示" in markdown
+    assert "文件解析质量清单" not in markdown
+    assert "交易明细样例" not in markdown
+    assert "03005029359" not in markdown
     assert "| 17 |" not in markdown
     assert "raw_result" not in markdown
     assert "normalized_data" not in markdown

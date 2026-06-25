@@ -675,6 +675,138 @@ def _render_markdown(data: dict[str, Any]) -> str:
     return markdown
 
 
+def _render_compact_display_markdown(data: dict[str, Any]) -> str:
+    summary = data.get("summary") or {}
+    files = data.get("files") or []
+    transactions = data.get("transactions") or []
+    file_count = summary.get("file_count") or len(files)
+    source_file = _display(files[0].get("source_file")) if len(files) == 1 else f"{_fmt_count(file_count)} 份文件"
+    banks = sorted({_display(item.get("bank_name"), "") for item in files if _display(item.get("bank_name"), "")})
+    bank_name = banks[0] if len(banks) == 1 else ("多家银行" if banks else UNKNOWN)
+    status = "成功" if summary.get("deduped_transaction_count") else "失败"
+    in_amount = _money(summary.get("in_amount")) or Decimal("0")
+    out_amount = _money(summary.get("out_amount")) or Decimal("0")
+    operating_in = _money(summary.get("operating_in_amount")) or Decimal("0")
+    operating_out = _money(summary.get("operating_out_amount")) or Decimal("0")
+    net = in_amount - out_amount
+    op_net = operating_in - operating_out
+    base_amount = max(in_amount, out_amount, Decimal("1"))
+    self_transfers = [tx for tx in transactions if tx.get("is_self_transfer")]
+    loan_like = [tx for tx in transactions if tx.get("is_loan_related") or tx.get("is_interest")]
+    fee_like = [tx for tx in transactions if tx.get("is_fee")]
+    operating_out_rows = [tx for tx in transactions if tx.get("is_operating_outflow")]
+
+    lines: list[str] = [
+        "## 银行对账明细",
+        "",
+        f"- 资料类型：{DOC_TYPE_NAME}",
+        f"- 来源文件：{source_file}",
+        f"- 提取状态：{status}",
+        f"- 银行名称：{bank_name}",
+        f"- 覆盖时间：{_display(summary.get('date_start'))} 至 {_display(summary.get('date_end'))}",
+        f"- 交易笔数：{_fmt_count(summary.get('deduped_transaction_count'))} 笔",
+        f"- 金额识别：{_display(summary.get('amount_completeness'), UNKNOWN)}",
+        "",
+        "### 核心资金概览",
+        "",
+        "| 项目 | 金额/数量 |",
+        "|---|---:|",
+        f"| 入账总额 | {_fmt_money(in_amount)} |",
+        f"| 出账总额 | {_fmt_money(out_amount)} |",
+        f"| 净流入 | {_fmt_money(net)} |",
+        f"| 有效经营入账 | {_fmt_money(operating_in)} |",
+        f"| 有效经营出账 | {_fmt_money(operating_out)} |",
+        f"| 经营净流入 | {_fmt_money(op_net)} |",
+        "",
+        "### 经营判断",
+        "",
+    ]
+    if abs(net) <= base_amount * Decimal("0.02"):
+        lines.append("- 整体资金净流入较小，入账和出账基本持平。")
+    elif net > 0:
+        lines.append("- 整体资金呈净流入，需要结合交易对手和用途判断回款质量。")
+    else:
+        lines.append("- 整体资金呈净流出，需关注持续支出对现金流的压力。")
+    if op_net < 0:
+        lines.append("- 有效经营入账低于有效经营出账，经营现金流为负。")
+    elif op_net > 0:
+        lines.append("- 有效经营入账高于有效经营出账，经营现金流为正。")
+    else:
+        lines.append("- 有效经营入账与经营出账基本持平。")
+    if loan_like:
+        lines.append("- 入账或出账中存在贷款、利息相关交易，不能全部视为经营收入。")
+    if operating_out_rows:
+        lines.append("- 出账中存在材料款、劳务费、项目款等经营性支出。")
+    if self_transfers:
+        names = sorted({_display(tx.get("counterparty_name"), "") for tx in self_transfers if _display(tx.get("counterparty_name"), "")})
+        related_name = names[0] if names else "本方同名账户"
+        lines.append(f"- 与“{related_name}”相关往来金额较大，应识别为内部往来或非经营性往来，不应计入有效经营收入。")
+    if not loan_like and not operating_out_rows and not self_transfers:
+        lines.append("- 当前报告已剔除明显内部往来、贷款、手续费等非经营性交易后计算经营性资金表现。")
+
+    lines += [
+        "",
+        "### 月度资金变化",
+        "",
+        "| 月份 | 入账金额 | 出账金额 | 净流入 | 交易笔数 |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for month, item in (data.get("monthly") or {}).items():
+        net_month = item["in"] - item["out"]
+        lines.append(f"| {month} | {_fmt_money(item['in'])} | {_fmt_money(item['out'])} | {_fmt_money(net_month)} | {_fmt_count(item['count'])} |")
+    if not data.get("monthly"):
+        lines.append("| 未识别 | 0.00 | 0.00 | 0.00 | 0 |")
+
+    def judgment(name: str, item: dict[str, Any]) -> str:
+        if any(_display(tx.get("counterparty_name"), "") == name and tx.get("is_self_transfer") for tx in transactions):
+            return "内部往来/非经营"
+        if item.get("operating"):
+            return "部分经营性"
+        return "非经营性往来"
+
+    lines += [
+        "",
+        "### 主要入账来源",
+        "",
+        "| 排名 | 对方户名 | 入账金额 | 笔数 | 判断 |",
+        "|---|---|---:|---:|---|",
+    ]
+    for idx, (name, item) in enumerate(data.get("top_in") or [], start=1):
+        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item)} |")
+    if not data.get("top_in"):
+        lines.append("| - | 无 | 0.00 | 0 | 无 |")
+
+    lines += [
+        "",
+        "### 主要出账对象",
+        "",
+        "| 排名 | 对方户名 | 出账金额 | 笔数 | 判断 |",
+        "|---|---|---:|---:|---|",
+    ]
+    for idx, (name, item) in enumerate(data.get("top_out") or [], start=1):
+        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item)} |")
+    if not data.get("top_out"):
+        lines.append("| - | 无 | 0.00 | 0 | 无 |")
+
+    lines += ["", "### 风险提示", ""]
+    risks: list[str] = []
+    if abs(net) <= base_amount * Decimal("0.02"):
+        risks.append("入账和出账金额高度接近，真实经营沉淀资金较少。")
+    if op_net < 0:
+        risks.append("经营性现金流为负，需要结合发票、合同、应收账款进一步判断回款质量。")
+    if loan_like or fee_like:
+        risks.append("存在贷款、利息、手续费等非经营性交易，不能直接作为销售回款。")
+    if self_transfers:
+        risks.append("同名或关联方往来金额较大，需要在融资分析中单独剔除。")
+    if not risks:
+        risks.append("未识别到明显集中风险，仍建议结合合同、发票和回款周期复核。")
+    lines.extend(f"- {risk}" for risk in risks)
+    markdown = "\n".join(lines)
+    for forbidden in ("raw_result", "normalized_data", "fields:", "transactions:", "null", "undefined", "None", "{}", "[]", "| 17 |", "> 17 <"):
+        markdown = markdown.replace(forbidden, "")
+    return markdown
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, Decimal):
         return str(value)
@@ -715,7 +847,7 @@ def parse_bank_reconciliation_files(files: list[dict[str, str]]) -> dict[str, An
             warnings.append(f"{filename} 解析失败：{exc}")
     data = _aggregate(file_results)
     data["warnings"] = list(dict.fromkeys([*data.get("warnings", []), *warnings]))
-    data["display_markdown"] = _render_markdown(data)
+    data["display_markdown"] = _render_compact_display_markdown(data)
     data["markdown"] = data["display_markdown"]
     data["markdown_summary"] = data["display_markdown"]
     logger.info(
@@ -784,21 +916,13 @@ def build_bank_reconciliation_detail_content(
         "document_type_code": DOC_TYPE,
         "document_type_name": DOC_TYPE_NAME,
         "storage_label": DOC_TYPE_NAME,
-        "agent_type": AGENT_TYPE,
-        "skill_name": result.skill_name,
-        "skill_version": result.skill_version,
-        "schema_version": result.schema_version,
         "extraction_status": "success" if not result.errors else "failed",
         "extraction_error": "；".join(result.errors),
-        "confidence": result.confidence,
-        "warnings": result.warnings,
-        "errors": result.errors,
         "display_markdown": result.markdown_summary,
         "markdown": result.markdown_summary,
         "markdown_summary": result.markdown_summary,
         "report_markdown": result.markdown_summary,
-        "summary": result.markdown_summary,
-        "extracted_json": result.extracted_json,
-        "data": result.extracted_json,
+        "structured_data": result.extracted_json,
+        "data": {"display_markdown": result.markdown_summary},
     }
     return content

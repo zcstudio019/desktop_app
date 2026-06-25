@@ -146,4 +146,40 @@ describe('resolveDocumentContent', () => {
       '法定代表人：暂无',
     ].forEach((item) => expect(result.content.toLowerCase()).not.toContain(item.toLowerCase()));
   });
+
+  it('renders bank reconciliation detail from display markdown only', () => {
+    const result = resolveDocumentContent({
+      document_type: 'bank_reconciliation_detail',
+      extracted_json: {
+        doc_type: 'bank_reconciliation_detail',
+        display_markdown: '## 银行对账明细\n- 资料类型：银行对账明细\n\n### 核心资金概览',
+        structured_data: {
+          transactions: [{ amount: 17, is_fee: false }],
+          summary: { in_amount: 100 },
+        },
+        data: { transactions: [{ amount: 17 }] },
+      },
+    });
+
+    expect(result.source).toBe('selectedDocument.bank_reconciliation_detail.display_markdown');
+    expect(result.content).toContain('## 银行对账明细');
+    expect(result.content).not.toContain('transactions');
+    expect(result.content).not.toContain('{');
+    expect(result.content).not.toContain('}');
+  });
+
+  it('does not fall back to raw JSON for bank reconciliation detail', () => {
+    const result = resolveDocumentContent({
+      document_type: 'bank_reconciliation_detail',
+      extracted_json: {
+        doc_type: 'bank_reconciliation_detail',
+        transactions: [{ amount: 17 }],
+      },
+    });
+
+    expect(result.source).toBe('empty');
+    expect(result.content).toBe('暂无可展示的银行对账明细结果');
+    expect(result.content).not.toContain('transactions');
+    expect(result.content).not.toContain('{');
+  });
 });

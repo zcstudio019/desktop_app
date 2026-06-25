@@ -577,6 +577,30 @@ export function normalizeKycExtractionResult(source: unknown): Record<string, un
     latestExtraction.extractedData,
     root,
   );
+  const resolvedDocType = root.doc_type || payload.doc_type || root.docType || payload.docType || root.document_type || payload.document_type || root.documentType || payload.documentType || root.document_type_code || payload.document_type_code || root.documentTypeCode || payload.documentTypeCode || root.extraction_type || payload.extraction_type || '';
+  if (String(resolvedDocType) === 'bank_reconciliation_detail') {
+    const dataRecord = parseMaybeRecord(root.data || payload.data);
+    return {
+      title: root.title || payload.title || '银行对账明细',
+      doc_type: 'bank_reconciliation_detail',
+      doc_type_name: root.doc_type_name || payload.doc_type_name || root.document_type_name || payload.document_type_name || '银行对账明细',
+      extraction_status: root.extraction_status || payload.extraction_status || 'partial',
+      fields: {},
+      evidence: {},
+      missing_fields: [],
+      markdown: firstBusinessMarkdown(
+        root.display_markdown,
+        payload.display_markdown,
+        dataRecord.display_markdown,
+        root.markdown_result,
+        payload.markdown_result,
+        root.markdown,
+        payload.markdown,
+        root.markdown_summary,
+        payload.markdown_summary,
+      ),
+    };
+  }
   const fieldNames = Array.from(new Set([
     ...Object.keys(getFieldsRecord(payload)),
     ...Object.keys(getFieldsRecord(root)),
@@ -594,7 +618,7 @@ export function normalizeKycExtractionResult(source: unknown): Record<string, un
     ...payload,
     ...root,
     agent_type: root.agent_type || payload.agent_type || 'kyc_document_agent',
-    doc_type: root.doc_type || payload.doc_type || root.docType || payload.docType || root.document_type || payload.document_type || root.documentType || payload.documentType || root.document_type_code || payload.document_type_code || root.documentTypeCode || payload.documentTypeCode || root.extraction_type || payload.extraction_type || '',
+    doc_type: resolvedDocType,
     doc_type_name: root.doc_type_name || payload.doc_type_name || root.docTypeName || payload.docTypeName || root.document_type_name || payload.document_type_name || '',
     owner_type: root.owner_type || payload.owner_type || '',
     extraction_status: root.extraction_status || payload.extraction_status || 'partial',
