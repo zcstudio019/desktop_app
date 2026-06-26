@@ -138,6 +138,8 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert "代发专用账户" not in top_out_names
     assert result["top_in"][0][0] == "上海某项目有限公司"
     assert result["top_out"][0][0] == "靖江市桐梧贸易有限公司"
+    assert result["top_in"][0][1]["evidence"] == "工程款"
+    assert "临空项目材料款" in result["top_out"][0][1]["evidence"]
     assert "上海意川建筑科技有限公司" in markdown
     assert "张三" not in markdown
     assert "李四" not in markdown
@@ -148,6 +150,10 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert "已剔除内部/关联方往来" in markdown
     assert "### 主要经营入账来源" in markdown
     assert "### 主要经营出账对象" in markdown
+    assert "| 排名 | 对方户名 | 入账金额 | 笔数 | 判断 | 经营依据 |" in markdown
+    assert "| 排名 | 对方户名 | 出账金额 | 笔数 | 判断 | 经营依据 |" in markdown
+    assert "有效经营入账占原始入账比例" in markdown
+    assert "融资分析中不宜直接按原始流水总额判断还款能力" in markdown
     assert "### 月度经营资金变化" in markdown
     assert "| 2025-05 |" not in markdown
     assert "| 2025-06 |" not in markdown

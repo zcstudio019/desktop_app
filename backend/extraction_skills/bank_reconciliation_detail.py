@@ -221,6 +221,12 @@ def _fmt_money(value: Any) -> str:
     return f"{amount:,.2f}" if amount is not None else "0.00"
 
 
+def _fmt_percent(numerator: Decimal, denominator: Decimal) -> str:
+    if not denominator:
+        return "0.00%"
+    return f"{(numerator / denominator * Decimal('100')):.2f}%"
+
+
 def _fmt_count(value: Any) -> str:
     try:
         return f"{int(value):,}"
@@ -336,6 +342,19 @@ def _is_top_eligible_operating_tx(tx: dict[str, Any], direction: str) -> bool:
     if direction == "out" and any(tx.get(flag) for flag in ("is_salary", "is_tax")):
         return False
     return not _is_unknown_counterparty(tx.get("counterparty_name"))
+
+
+def _operating_evidence(tx: dict[str, Any], direction: str) -> str:
+    keywords = OPERATING_IN_KEYWORDS if direction == "in" else OPERATING_OUT_KEYWORDS
+    candidates = [_text(tx.get(key)) for key in ("purpose", "summary", "remark")]
+    for candidate in candidates:
+        if candidate and _contains_any(candidate, keywords):
+            return candidate[:20]
+    joined = " ".join(candidates)
+    for keyword in keywords:
+        if keyword in joined:
+            return keyword
+    return ""
 
 
 def _bank_from_filename(filename: str) -> str:
@@ -868,6 +887,28 @@ def _account_key(account: dict[str, Any]) -> str:
     return "|".join([str(account.get("bank_name") or ""), str(account.get("account_no") or ""), str(account.get("source_file") or ""), str(account.get("sheet_name") or "")])
 
 
+def _finalize_top_counter(counter: dict[str, dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+    finalized: list[tuple[str, dict[str, Any]]] = []
+    for name, item in counter.items():
+        evidence_map = item.get("evidence") or {}
+        evidence_items = sorted(evidence_map.items(), key=lambda pair: pair[1], reverse=True)
+        evidence = "、".join(str(key)[:20] for key, _ in evidence_items[:3] if key)
+        if not evidence:
+            continue
+        finalized.append(
+            (
+                name,
+                {
+                    "amount": item.get("amount") or Decimal("0"),
+                    "count": item.get("count") or 0,
+                    "operating": item.get("operating") or 0,
+                    "evidence": evidence,
+                },
+            )
+        )
+    return sorted(finalized, key=lambda item: item[1]["amount"], reverse=True)[:10]
+
+
 def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, str] | None = None) -> dict[str, Any]:
     all_excluded_parties = dict(excluded_parties or {})
     own_display_names: list[str] = []
@@ -901,8 +942,8 @@ def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, 
     accounts = list(account_map.values())
     start, end = _period(transactions, accounts)
     monthly: dict[str, dict[str, Any]] = defaultdict(lambda: {"in": Decimal("0"), "out": Decimal("0"), "op_in": Decimal("0"), "op_out": Decimal("0"), "count": 0, "op_count": 0})
-    in_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0})
-    out_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0})
+    in_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0, "evidence": defaultdict(lambda: Decimal("0"))})
+    out_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0, "evidence": defaultdict(lambda: Decimal("0"))})
     for tx in transactions:
         month = str(tx.get("accounting_date") or "")[:7] or UNKNOWN
         amount = _money(tx.get("amount")) or Decimal("0")
@@ -913,20 +954,28 @@ def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, 
                 monthly[month]["op_in"] += amount
                 monthly[month]["op_count"] += 1
             if _is_top_eligible_operating_tx(tx, "in"):
+                evidence = _operating_evidence(tx, "in")
+                if not evidence:
+                    continue
                 item = in_counter[_display(tx.get("counterparty_name"))]
                 item["amount"] += amount
                 item["count"] += 1
                 item["operating"] += 1
+                item["evidence"][evidence] += amount
         elif tx.get("direction") == "out":
             monthly[month]["out"] += amount
             if tx.get("is_operating_outflow"):
                 monthly[month]["op_out"] += amount
                 monthly[month]["op_count"] += 1
             if _is_top_eligible_operating_tx(tx, "out"):
+                evidence = _operating_evidence(tx, "out")
+                if not evidence:
+                    continue
                 item = out_counter[_display(tx.get("counterparty_name"))]
                 item["amount"] += amount
                 item["count"] += 1
                 item["operating"] += 1
+                item["evidence"][evidence] += amount
     return {
         "doc_type": DOC_TYPE,
         "doc_type_name": DOC_TYPE_NAME,
@@ -993,8 +1042,8 @@ def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, 
             "aggregation_status": "可用" if transactions else "不可用",
         },
         "monthly": dict(sorted(monthly.items())),
-        "top_in": sorted(in_counter.items(), key=lambda item: item[1]["amount"], reverse=True)[:10],
-        "top_out": sorted(out_counter.items(), key=lambda item: item[1]["amount"], reverse=True)[:10],
+        "top_in": _finalize_top_counter(in_counter),
+        "top_out": _finalize_top_counter(out_counter),
         "transactions": transactions,
         "warnings": list(dict.fromkeys(w for r in file_results for w in r.warnings)),
     }
@@ -1134,6 +1183,8 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     operating_out = _money(summary.get("operating_out_amount")) or Decimal("0")
     net = in_amount - out_amount
     op_net = operating_in - operating_out
+    operating_in_ratio = (operating_in / in_amount) if in_amount else Decimal("0")
+    operating_out_ratio = (operating_out / out_amount) if out_amount else Decimal("0")
     non_operating_in = in_amount - operating_in
     non_operating_out = out_amount - operating_out
     base_amount = max(in_amount, out_amount, Decimal("1"))
@@ -1172,22 +1223,28 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         f"| 有效经营入账 | {_fmt_money(operating_in)} |",
         f"| 有效经营出账 | {_fmt_money(operating_out)} |",
         f"| 经营净流入 | {_fmt_money(op_net)} |",
+        f"| 有效经营入账占原始入账比例 | {_fmt_percent(operating_in, in_amount)} |",
+        f"| 有效经营出账占原始出账比例 | {_fmt_percent(operating_out, out_amount)} |",
         "",
         "### 经营判断",
         "",
     ]
-    if abs(net) <= base_amount * Decimal("0.02"):
-        lines.append("- 整体资金净流入较小，入账和出账基本持平。")
+    if abs(net) / base_amount < Decimal("0.03"):
+        lines.append("- 原始入账与出账基本持平，账面资金沉淀较少。")
     elif net > 0:
         lines.append("- 整体资金呈净流入，需要结合交易对手和用途判断回款质量。")
     else:
         lines.append("- 整体资金呈净流出，需关注持续支出对现金流的压力。")
     if op_net < 0:
-        lines.append("- 有效经营入账低于有效经营出账，经营现金流为负。")
+        lines.append(f"- 剔除内部/关联方、贷款融资、手续费、未识别等非经营交易后，经营净流入为 {_fmt_money(op_net)}，经营性现金流为负。")
     elif op_net > 0:
-        lines.append("- 有效经营入账高于有效经营出账，经营现金流为正。")
+        lines.append(f"- 剔除非经营交易后，经营净流入为 {_fmt_money(op_net)}，说明经营回款对经营支出有一定覆盖。")
     else:
         lines.append("- 有效经营入账与经营出账基本持平。")
+    if operating_in < operating_out:
+        lines.append("- 有效经营入账低于有效经营出账，需要关注真实回款能力和经营支出压力。")
+    elif operating_in > operating_out:
+        lines.append("- 有效经营入账高于有效经营出账，经营性现金流表现相对较好。")
     if loan_like:
         lines.append("- 入账或出账中存在贷款、利息相关交易，不能全部视为经营收入。")
     if operating_out_rows:
@@ -1237,25 +1294,25 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         "",
         "### 主要经营入账来源",
         "",
-        "| 排名 | 对方户名 | 入账金额 | 笔数 | 判断 |",
-        "|---|---|---:|---:|---|",
+        "| 排名 | 对方户名 | 入账金额 | 笔数 | 判断 | 经营依据 |",
+        "|---|---|---:|---:|---|---|",
     ]
     for idx, (name, item) in enumerate(data.get("top_in") or [], start=1):
-        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item, 'in')} |")
+        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item, 'in')} | {_display(item.get('evidence'), '无')} |")
     if not data.get("top_in"):
-        lines.append("| - | 无 | 0.00 | 0 | 无 |")
+        lines.append("| - | 无 | 0.00 | 0 | 无 | 无 |")
 
     lines += [
         "",
         "### 主要经营出账对象",
         "",
-        "| 排名 | 对方户名 | 出账金额 | 笔数 | 判断 |",
-        "|---|---|---:|---:|---|",
+        "| 排名 | 对方户名 | 出账金额 | 笔数 | 判断 | 经营依据 |",
+        "|---|---|---:|---:|---|---|",
     ]
     for idx, (name, item) in enumerate(data.get("top_out") or [], start=1):
-        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item, 'out')} |")
+        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item, 'out')} | {_display(item.get('evidence'), '无')} |")
     if not data.get("top_out"):
-        lines.append("| - | 无 | 0.00 | 0 | 无 |")
+        lines.append("| - | 无 | 0.00 | 0 | 无 | 无 |")
 
     lines += ["", "### 风险提示", ""]
     risks: list[str] = []
@@ -1263,10 +1320,14 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         risks.append("入账和出账金额高度接近，真实经营沉淀资金较少。")
     if op_net < 0:
         risks.append("经营性现金流为负，需要结合发票、合同、应收账款进一步判断回款质量。")
+        risks.append("剔除非经营交易后经营净流入为负，融资分析中不宜直接按原始流水总额判断还款能力。")
     if loan_like or fee_like:
         risks.append("存在贷款、利息、手续费等非经营性交易，不能直接作为销售回款。")
     if excluded_related_rows:
         risks.append("已识别内部/关联方往来，需要在融资分析中单独剔除，不作为经营回款或经营采购支出。")
+    if operating_in_ratio < Decimal("0.5") and in_amount:
+        risks.append("有效经营入账占原始入账比例低于 50%，可采信经营回款占比偏低。")
+        risks.append("有效经营入账占原始入账比例较低，说明原始入账中存在较多内部往来、融资或非经营资金，需要结合发票和合同核验真实销售回款。")
     if not risks:
         risks.append("未识别到明显集中风险，仍建议结合合同、发票和回款周期复核。")
     lines.extend(f"- {risk}" for risk in risks)
