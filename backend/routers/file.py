@@ -369,6 +369,7 @@ def _build_file_process_job_request_snapshot(
     username: str,
     original_filename: str,
     file_size: int,
+    saved_path: str = "",
 ) -> dict[str, Any]:
     return {
         "jobType": FILE_PROCESS_JOB_TYPE,
@@ -376,11 +377,16 @@ def _build_file_process_job_request_snapshot(
         "customerName": customer_name,
         "documentType": document_type,
         "fileName": original_filename,
+        "filePath": saved_path,
         "fileSize": file_size,
         "username": username,
         "files": [
             {
                 "fileName": original_filename,
+                "filename": original_filename,
+                "path": saved_path,
+                "filePath": saved_path,
+                "file_path": saved_path,
                 "size": file_size,
                 "documentType": document_type,
             }
@@ -1949,11 +1955,13 @@ async def _run_file_process_job(
             or await _get_customer_name_by_id(requested_customer_id)
         )
     logger.info(
-        "[File Job Payload] job_id=%s customerId=%s customerName=%s documentType=%s",
+        "[File Job Payload] job_id=%s customerId=%s customerName=%s documentType=%s tempFilePath=%s originalFilename=%s",
         job_id,
         requested_customer_id,
         requested_customer_name,
         explicit_document_type,
+        temp_file_path,
+        original_filename,
     )
     current_user_payload = {
         "username": str(execution_payload.get("username") or "").strip(),
@@ -1966,6 +1974,14 @@ async def _run_file_process_job(
     temp_path = Path(temp_file_path)
     if not temp_path.exists():
         raise FileNotFoundError(f"temp upload file not found: {temp_file_path}")
+    logger.info(
+        "[File Job Payload] file_ready job_id=%s original_filename=%s temp_path=%s file_ext=%s file_size=%s",
+        job_id,
+        original_filename,
+        temp_file_path,
+        temp_path.suffix.lower(),
+        temp_path.stat().st_size,
+    )
 
     await _update_file_process_job(
         job_id,
@@ -2289,6 +2305,15 @@ async def create_file_process_job(
     log_step("file_save_start")
     temp_file_path = _persist_upload_job_temp_file(job_id, filename or "uploaded_file", file_bytes)
     log_step("file_save_done")
+    logger.info(
+        "[File Upload Saved] original_filename=%s saved_path=%s file_ext=%s file_size=%s detected_doc_type=%s customer_id=%s",
+        filename,
+        temp_file_path,
+        Path(filename or "").suffix.lower(),
+        file_size,
+        requested_document_type,
+        normalized_customer_id,
+    )
     log_step("create_document_start")
     log_step("create_document_done")
     request_payload = _build_file_process_job_request_snapshot(
@@ -2298,6 +2323,7 @@ async def create_file_process_job(
         username=username,
         original_filename=filename or "uploaded_file",
         file_size=file_size,
+        saved_path=str(temp_file_path),
     )
     execution_payload = _build_file_process_job_execution_payload(
         job_id=job_id,
@@ -2309,6 +2335,15 @@ async def create_file_process_job(
         username=username,
         role=role,
         file_size=file_size,
+    )
+    logger.info(
+        "[File Job Create] job_id=%s doc_type=%s file_count=%s file_names=%s file_paths=%s request_json=%s",
+        job_id,
+        requested_document_type,
+        1,
+        [filename or "uploaded_file"],
+        [str(temp_file_path)],
+        request_payload,
     )
 
     try:

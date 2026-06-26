@@ -158,3 +158,14 @@ def test_shanghai_bank_reconciliation_detail_detects_b_column_header_and_meta(tm
     assert "- 提取状态：成功" in markdown
     assert "- 银行名称：上海银行" in markdown
     assert "- 交易笔数：2 笔" in markdown
+
+
+def test_bank_reconciliation_detail_empty_files_returns_actionable_failure() -> None:
+    result = parse_bank_reconciliation_files([])
+
+    markdown = result["display_markdown"]
+    assert result["extraction_status"] == "failed"
+    assert result["failure_reason"] == "未收到可解析的银行对账明细文件"
+    assert "失败原因：未收到可解析的银行对账明细文件" in markdown
+    assert "来源文件：0 份文件" not in markdown
+    assert "交易笔数：0 笔" not in markdown

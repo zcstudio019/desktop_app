@@ -47,10 +47,16 @@ def run_document_extraction_agent(
         return _fallback_result(normalized_type, raw_text, filename)
 
     logger.info(
-        "[DocumentAgentOrchestrator] selected_agent=%s document_type=%s filename=%s",
+        "[DocumentAgentOrchestrator] selected_agent=%s document_type=%s filename=%s incoming_file_count=%s incoming_file_paths=%s",
         agent.agent_name,
         normalized_type,
         filename,
+        len((metadata or {}).get("files") or ([{"file_path": (metadata or {}).get("file_path")}] if (metadata or {}).get("file_path") else [])),
+        [
+            str(item.get("file_path") or item.get("path") or item.get("filePath") or "")
+            for item in ((metadata or {}).get("files") or [])
+            if isinstance(item, dict)
+        ] or ([str((metadata or {}).get("file_path") or "")] if (metadata or {}).get("file_path") else []),
     )
     try:
         result = agent.extract(

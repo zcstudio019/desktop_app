@@ -9491,20 +9491,31 @@ def build_structured_extraction(
             )
 
     if normalized_code in DOCUMENT_AGENT_DISPATCH_TYPES or (normalized_code == "personal_flow" and bool(rows)):
+        dispatch_metadata = {
+            "customer_name": customer_name,
+            "raw_pages": raw_pages,
+            "rows": rows,
+            "table_rows": rows if normalized_code == "financial_report" else [],
+            "file_path": file_path,
+            "document_type": normalized_code,
+            "historical_financial_reports": historical_financial_reports or [],
+        }
+        if normalized_code == "bank_reconciliation_detail" and file_path:
+            dispatch_metadata["files"] = [{"file_path": file_path, "file_name": filename}]
+        logger.info(
+            "[DocumentAgentDispatch] doc_type=%s selected_agent=%s incoming_file_count=%s incoming_file_paths=%s filename=%s",
+            normalized_code,
+            normalized_code,
+            len(dispatch_metadata.get("files") or ([{"file_path": file_path}] if file_path else [])),
+            [str(item.get("file_path") or "") for item in (dispatch_metadata.get("files") or [])] or ([file_path] if file_path else []),
+            filename,
+        )
         agent_result = run_document_extraction_agent(
             document_type=normalized_code,
             raw_text=str(text_content or ""),
             filename=filename,
             customer_id=customer_id,
-            metadata={
-                "customer_name": customer_name,
-                "raw_pages": raw_pages,
-                "rows": rows,
-                "table_rows": rows if normalized_code == "financial_report" else [],
-                "file_path": file_path,
-                "document_type": normalized_code,
-                "historical_financial_reports": historical_financial_reports or [],
-            },
+            metadata=dispatch_metadata,
         )
         if (
             normalized_code == "bank_statement"

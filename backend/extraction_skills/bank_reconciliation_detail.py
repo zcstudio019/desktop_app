@@ -319,6 +319,13 @@ def _read_workbook(file_path: str, filename: str) -> list[tuple[str, list[list[A
     if suffix in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
         wb = load_workbook(path, read_only=True, data_only=True)
         try:
+            logger.info(
+                "[BankReconciliationDetail] workbook_opened filename=%s path=%s active_sheet=%s sheets=%s",
+                filename,
+                file_path,
+                wb.active.title if wb.active else "",
+                wb.sheetnames,
+            )
             return [(ws.title, [[cell for cell in row] for row in ws.iter_rows(values_only=True)]) for ws in wb.worksheets]
         finally:
             wb.close()
@@ -1089,16 +1096,97 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _failure_result(reason: str, suggestion: str = "请检查上传文件是否成功保存，或检查调度层是否将文件路径传入银行对账明细 Agent。") -> dict[str, Any]:
+    markdown = "\n".join(
+        [
+            "## 银行对账明细",
+            "",
+            f"- 资料类型：{DOC_TYPE_NAME}",
+            "- 提取状态：失败",
+            f"- 失败原因：{reason}",
+            f"- 处理建议：{suggestion}",
+        ]
+    )
+    return {
+        "doc_type": DOC_TYPE,
+        "doc_type_name": DOC_TYPE_NAME,
+        "document_type": DOC_TYPE,
+        "document_type_code": DOC_TYPE,
+        "document_type_name": DOC_TYPE_NAME,
+        "agent_type": AGENT_TYPE,
+        "skill_name": SKILL_NAME,
+        "schema_version": SCHEMA_VERSION,
+        "extraction_status": "failed",
+        "failure_reason": reason,
+        "warnings": [reason],
+        "files": [],
+        "accounts": [],
+        "summary": {
+            "file_count": 0,
+            "account_count": 0,
+            "raw_transaction_count": 0,
+            "deduped_transaction_count": 0,
+            "duplicate_transaction_count": 0,
+            "amount_completeness": "未识别",
+            "aggregation_status": "不可用",
+        },
+        "monthly": {},
+        "top_in": [],
+        "top_out": [],
+        "transactions": [],
+        "display_markdown": markdown,
+        "markdown": markdown,
+        "markdown_summary": markdown,
+        "report_markdown": markdown,
+    }
+
+
+def _normalize_input_files(files: Any) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    if not isinstance(files, list):
+        return normalized
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        file_path = str(item.get("file_path") or item.get("path") or item.get("filePath") or "").strip()
+        file_name = str(item.get("file_name") or item.get("filename") or item.get("fileName") or Path(file_path).name).strip()
+        if file_path or file_name:
+            normalized.append({"file_path": file_path, "file_name": file_name})
+    return normalized
+
+
 def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     file_results: list[FileParseResult] = []
     warnings: list[str] = []
     excluded_parties: dict[str, str] = {}
     meta = metadata or {}
     _collect_excluded_parties_from_source(meta, excluded_parties)
+    files = _normalize_input_files(files)
     logger.info("[BankReconciliationDetail] received_files=%s", len(files or []))
+    if not files:
+        logger.error("[BankReconciliationDetail] failed reason=no_files_received metadata_keys=%s", sorted(meta.keys()))
+        return _failure_result("未收到可解析的银行对账明细文件")
     for item in files:
         file_path = item.get("file_path") or ""
         filename = item.get("file_name") or Path(file_path).name
+        path_obj = Path(file_path)
+        logger.info(
+            "[BankReconciliationDetail] file_start filename=%s file_path=%s exists=%s suffix=%s",
+            filename,
+            file_path,
+            path_obj.exists() if file_path else False,
+            path_obj.suffix.lower() if file_path else "",
+        )
+        if not file_path:
+            reason = f"{filename or '上传文件'} 未提供文件路径"
+            logger.error("[BankReconciliationDetail] failed reason=file_path_missing filename=%s", filename)
+            warnings.append(reason)
+            continue
+        if not path_obj.exists():
+            reason = f"xlsx 文件路径不存在：{file_path}"
+            logger.error("[BankReconciliationDetail] failed reason=file_path_not_exists filename=%s path=%s", filename, file_path)
+            warnings.append(reason)
+            continue
         _collect_excluded_parties_from_source(item, excluded_parties)
         try:
             sheets = _read_workbook(file_path, filename)
@@ -1130,6 +1218,13 @@ def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[
         except Exception as exc:
             logger.exception("[BankReconciliationDetail] parse_failed file=%s", filename)
             warnings.append(f"{filename} 解析失败：{exc}")
+    if not file_results:
+        reason = warnings[0] if warnings else "未找到交易表头或未读取到有效交易明细"
+        logger.error("[BankReconciliationDetail] failed parsed_files=0 reason=%s warnings=%s", reason, warnings)
+        data = _failure_result(reason, "请检查文件是否为上海银行/工商银行对账明细，或查看日志中的 sheet、表头定位和文件路径信息。")
+        data["warnings"] = list(dict.fromkeys([*data.get("warnings", []), *warnings]))
+        return _json_safe(data)
+
     data = _aggregate(file_results, excluded_parties=excluded_parties)
     data["warnings"] = list(dict.fromkeys([*data.get("warnings", []), *warnings]))
     data["display_markdown"] = _render_compact_display_markdown(data)
@@ -1151,12 +1246,19 @@ class BankReconciliationDetailSkill(BaseExtractionSkill):
     skill_version = "v1"
 
     def extract(self, input_data: ExtractionInput) -> ExtractionResult:
-        files = input_data.metadata.get("files") if isinstance(input_data.metadata.get("files"), list) else None
+        files = _normalize_input_files(input_data.metadata.get("files")) if isinstance(input_data.metadata.get("files"), list) else []
         if not files:
-            files = [{"file_path": input_data.file_path, "file_name": input_data.file_name}]
+            if input_data.file_path:
+                files = [{"file_path": input_data.file_path, "file_name": input_data.file_name}]
+        logger.info(
+            "[BankReconciliationDetailSkill] start received_file_count=%s received_file_paths=%s source_file_names=%s",
+            len(files),
+            [item.get("file_path") for item in files],
+            [item.get("file_name") for item in files],
+        )
         data = parse_bank_reconciliation_files(files, metadata=input_data.metadata)
         markdown = data.get("display_markdown") or ""
-        success = bool((data.get("summary") or {}).get("deduped_transaction_count"))
+        success = data.get("extraction_status") != "failed" and bool((data.get("summary") or {}).get("deduped_transaction_count"))
         return ExtractionResult(
             document_type=DOC_TYPE,
             schema_version=SCHEMA_VERSION,
@@ -1164,7 +1266,7 @@ class BankReconciliationDetailSkill(BaseExtractionSkill):
             markdown_summary=markdown,
             confidence=0.92 if success else 0.2,
             warnings=list(data.get("warnings") or []),
-            errors=[] if success else ["未识别到有效银行对账明细"],
+            errors=[] if success else [str(data.get("failure_reason") or "未识别到有效银行对账明细")],
             skill_name=SKILL_NAME,
             skill_version=self.skill_version,
         )
