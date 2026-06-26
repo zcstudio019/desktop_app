@@ -68,6 +68,110 @@ def _normalize_party_name(value: Any) -> str:
     return re.sub(r"[\s\r\n\t]+", "", text)
 
 
+SELF_PARTY_KEYS = {
+    "customer_name",
+    "customerName",
+    "company_name",
+    "companyName",
+    "name",
+    "account_name",
+    "accountName",
+    "account_holder",
+    "accountHolder",
+    "客户名称",
+    "企业名称",
+    "公司名称",
+    "户名",
+}
+CUSTOMER_CONTAINER_KEYS = {"customer", "customer_info", "customerInfo", "customer_profile", "customerProfile", "客户档案", "客户信息"}
+LEGAL_REP_KEYS = {"legal_representative", "legalRepresentative", "legal_representative_name", "legalRepresentativeName", "legal_person", "legalPerson", "legal_person_name", "legalPersonName", "法人", "法人姓名", "法定代表人", "法定代表人姓名"}
+SHAREHOLDER_KEYS = {"shareholder", "shareholder_name", "shareholderName", "shareholder_names", "shareholderNames", "shareholders", "股东", "股东姓名", "股东名称", "股东信息", "股东列表"}
+RELATED_PARTY_KEYS = {
+    "actual_controller",
+    "actualController",
+    "actual_controller_name",
+    "actualControllerName",
+    "controller",
+    "controller_name",
+    "controllerName",
+    "beneficial_owner",
+    "beneficialOwner",
+    "beneficial_owner_name",
+    "beneficialOwnerName",
+    "ultimate_beneficial_owner",
+    "ultimateBeneficialOwner",
+    "ultimate_beneficial_owner_name",
+    "ultimateBeneficialOwnerName",
+    "spouse",
+    "related_party",
+    "relatedParty",
+    "related_parties",
+    "relatedParties",
+    "related_party_names",
+    "relatedPartyNames",
+    "实控人",
+    "实际控制人",
+    "受益人",
+    "最终受益人",
+    "配偶",
+    "关联方",
+    "关联方名称",
+    "关联方信息",
+}
+PARTY_NAME_KEYS = {"name", "company_name", "companyName", "person_name", "personName", "shareholder_name", "shareholderName", "姓名", "名称", "企业名称", "公司名称", "股东名称"}
+
+
+def _add_excluded_party(excluded_parties: dict[str, str], value: Any, reason: str) -> None:
+    name = _normalize_party_name(value)
+    if name:
+        excluded_parties.setdefault(name, reason)
+
+
+def _collect_party_names(value: Any, reason: str, excluded_parties: dict[str, str]) -> None:
+    if value is None:
+        return
+    if isinstance(value, (str, int, float, Decimal)):
+        _add_excluded_party(excluded_parties, value, reason)
+        return
+    if isinstance(value, dict):
+        matched = False
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in PARTY_NAME_KEYS:
+                _add_excluded_party(excluded_parties, item, reason)
+                matched = True
+            elif isinstance(item, (dict, list, tuple, set)):
+                _collect_party_names(item, reason, excluded_parties)
+        if not matched and len(value) == 1:
+            _collect_party_names(next(iter(value.values())), reason, excluded_parties)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _collect_party_names(item, reason, excluded_parties)
+
+
+def _collect_excluded_parties_from_source(source: Any, excluded_parties: dict[str, str]) -> None:
+    if not isinstance(source, dict):
+        return
+    for key, value in source.items():
+        key_text = str(key)
+        if key_text in SELF_PARTY_KEYS:
+            _collect_party_names(value, "本方同名划转", excluded_parties)
+        elif key_text in CUSTOMER_CONTAINER_KEYS:
+            _collect_party_names(value, "本方同名划转", excluded_parties)
+        elif key_text in LEGAL_REP_KEYS:
+            _collect_party_names(value, "法定代表人往来", excluded_parties)
+        elif key_text in SHAREHOLDER_KEYS:
+            _collect_party_names(value, "股东往来", excluded_parties)
+        elif key_text in RELATED_PARTY_KEYS:
+            _collect_party_names(value, "关联方往来", excluded_parties)
+        elif isinstance(value, dict):
+            _collect_excluded_parties_from_source(value, excluded_parties)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                _collect_excluded_parties_from_source(item, excluded_parties)
+
+
 def _is_placeholder(value: Any) -> bool:
     return str(value).strip() in PLACEHOLDER_VALUES
 
@@ -334,27 +438,34 @@ def _row_get(row: list[Any], mapping: dict[str, int], key: str) -> Any:
     return row[idx] if idx is not None and idx < len(row) else None
 
 
-def _classify(tx: dict[str, Any], own_names: set[str]) -> None:
+def _classify(tx: dict[str, Any], excluded_parties: dict[str, str]) -> None:
     joined = " ".join(_text(tx.get(key)) for key in ("counterparty_name", "summary", "purpose", "remark"))
     own_name = _normalize_party_name(tx.get("account_name"))
     counterparty = _normalize_party_name(tx.get("counterparty_name"))
-    tx["is_self_transfer"] = bool(counterparty and (counterparty == own_name or counterparty in own_names))
+    excluded_reason = excluded_parties.get(counterparty, "") if counterparty else ""
+    if counterparty and own_name and counterparty == own_name:
+        excluded_reason = "本方同名划转"
+    tx["is_excluded_related_party"] = bool(excluded_reason)
+    tx["excluded_reason"] = excluded_reason
+    tx["related_party_type"] = excluded_reason.replace("往来", "") if excluded_reason and excluded_reason != "本方同名划转" else ("本方同名账户" if excluded_reason else "")
+    tx["is_self_transfer"] = excluded_reason == "本方同名划转"
+    tx["is_related_party_transfer"] = bool(excluded_reason)
     tx["is_loan_related"] = _contains_any(joined, LOAN_KEYWORDS)
     tx["is_fee"] = _contains_any(joined, FEE_KEYWORDS)
     tx["is_salary"] = _contains_any(joined, SALARY_KEYWORDS)
     tx["is_tax"] = _contains_any(joined, TAX_KEYWORDS)
     tx["is_interest"] = _contains_any(joined, INTEREST_KEYWORDS)
     is_deposit = _contains_any(joined, DEPOSIT_KEYWORDS)
-    if tx["is_self_transfer"]:
-        tx["category"] = "本方同名划转"
+    if tx["is_excluded_related_party"]:
+        tx["category"] = "内部/关联方往来"
     elif tx["is_loan_related"]:
         tx["category"] = "贷款相关"
-    elif tx["is_fee"]:
-        tx["category"] = "费用类支出"
-    elif tx["is_salary"]:
-        tx["category"] = "人工成本/代发"
     elif tx["is_tax"]:
         tx["category"] = "税费/社保"
+    elif tx["is_salary"]:
+        tx["category"] = "人工成本/代发"
+    elif tx["is_fee"] or tx["is_interest"]:
+        tx["category"] = "费用类支出"
     elif is_deposit:
         tx["category"] = "押金/保证金/退款"
     elif tx.get("direction") == "in" and tx.get("counterparty_name") and _contains_any(joined, OPERATING_IN_KEYWORDS) and not tx["is_interest"]:
@@ -365,7 +476,7 @@ def _classify(tx: dict[str, Any], own_names: set[str]) -> None:
         tx["category"] = "非经营性往来"
     tx["is_operating_inflow"] = tx["category"] == "经营性入账"
     tx["is_operating_outflow"] = tx["category"] == "经营性出账"
-    tx["confidence"] = "high" if tx["category"] in {"经营性入账", "经营性出账", "本方同名划转", "贷款相关"} else "medium"
+    tx["confidence"] = "high" if tx["category"] in {"经营性入账", "经营性出账", "内部/关联方往来", "贷款相关"} else "medium"
 
 
 def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> FileParseResult | None:
@@ -377,7 +488,8 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
     account, raw_summary = _parse_meta(rows, sheet_name, source_file, bank_name)
     placeholder_cleaned = 0
     transactions: list[dict[str, Any]] = []
-    own_names = {_normalize_party_name(account.account_name)} if account.account_name else set()
+    excluded_parties: dict[str, str] = {}
+    _add_excluded_party(excluded_parties, account.account_name, "本方同名划转")
     empty_streak = 0
     for row_no, row in enumerate(rows[header_idx + 1 :], start=header_idx + 2):
         if not any(_text(cell) for cell in row):
@@ -429,7 +541,7 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
             "raw_row_no": row_no,
             "warning": "" if final_amount is not None else "金额未识别",
         }
-        _classify(tx, own_names)
+        _classify(tx, excluded_parties)
         transactions.append(tx)
     dates = sorted(tx["accounting_date"] for tx in transactions if tx.get("accounting_date"))
     if dates:
@@ -500,15 +612,15 @@ def _account_key(account: dict[str, Any]) -> str:
     return "|".join([str(account.get("bank_name") or ""), str(account.get("account_no") or ""), str(account.get("source_file") or ""), str(account.get("sheet_name") or "")])
 
 
-def _aggregate(file_results: list[FileParseResult], own_party_names: set[str] | None = None) -> dict[str, Any]:
-    all_own_names = {name for name in (own_party_names or set()) if name}
+def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, str] | None = None) -> dict[str, Any]:
+    all_excluded_parties = dict(excluded_parties or {})
     for result in file_results:
         normalized_name = _normalize_party_name(result.account.account_name)
         if normalized_name:
-            all_own_names.add(normalized_name)
+            all_excluded_parties.setdefault(normalized_name, "本方同名划转")
     raw_transactions = [tx for result in file_results for tx in result.transactions]
     for tx in raw_transactions:
-        _classify(tx, all_own_names)
+        _classify(tx, all_excluded_parties)
     transactions, duplicate_count = _dedupe(raw_transactions)
     account_map: dict[str, dict[str, Any]] = {}
     for result in file_results:
@@ -523,8 +635,8 @@ def _aggregate(file_results: list[FileParseResult], own_party_names: set[str] | 
     accounts = list(account_map.values())
     start, end = _period(transactions, accounts)
     monthly: dict[str, dict[str, Any]] = defaultdict(lambda: {"in": Decimal("0"), "out": Decimal("0"), "op_in": Decimal("0"), "op_out": Decimal("0"), "count": 0})
-    in_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0, "self_transfer": 0})
-    out_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0, "self_transfer": 0})
+    in_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0})
+    out_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0})
     for tx in transactions:
         month = str(tx.get("accounting_date") or "")[:7] or UNKNOWN
         amount = _money(tx.get("amount")) or Decimal("0")
@@ -533,20 +645,20 @@ def _aggregate(file_results: list[FileParseResult], own_party_names: set[str] | 
             monthly[month]["in"] += amount
             if tx.get("is_operating_inflow"):
                 monthly[month]["op_in"] += amount
-            item = in_counter[_display(tx.get("counterparty_name"))]
-            item["amount"] += amount
-            item["count"] += 1
-            item["operating"] += 1 if tx.get("is_operating_inflow") else 0
-            item["self_transfer"] += 1 if tx.get("is_self_transfer") else 0
+            if not (tx.get("is_excluded_related_party") or tx.get("is_self_transfer") or tx.get("is_related_party_transfer")):
+                item = in_counter[_display(tx.get("counterparty_name"))]
+                item["amount"] += amount
+                item["count"] += 1
+                item["operating"] += 1 if tx.get("is_operating_inflow") else 0
         elif tx.get("direction") == "out":
             monthly[month]["out"] += amount
             if tx.get("is_operating_outflow"):
                 monthly[month]["op_out"] += amount
-            item = out_counter[_display(tx.get("counterparty_name"))]
-            item["amount"] += amount
-            item["count"] += 1
-            item["operating"] += 1 if tx.get("is_operating_outflow") else 0
-            item["self_transfer"] += 1 if tx.get("is_self_transfer") else 0
+            if not (tx.get("is_excluded_related_party") or tx.get("is_self_transfer") or tx.get("is_related_party_transfer")):
+                item = out_counter[_display(tx.get("counterparty_name"))]
+                item["amount"] += amount
+                item["count"] += 1
+                item["operating"] += 1 if tx.get("is_operating_outflow") else 0
     return {
         "doc_type": DOC_TYPE,
         "doc_type_name": DOC_TYPE_NAME,
@@ -589,6 +701,11 @@ def _aggregate(file_results: list[FileParseResult], own_party_names: set[str] | 
             "self_transfer_out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out" and tx.get("is_self_transfer")),
             "in_amount_excluding_self_transfer": _sum(transactions, lambda tx: tx.get("direction") == "in" and not tx.get("is_self_transfer")),
             "out_amount_excluding_self_transfer": _sum(transactions, lambda tx: tx.get("direction") == "out" and not tx.get("is_self_transfer")),
+            "excluded_related_transaction_count": sum(1 for tx in transactions if tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer")),
+            "excluded_related_in_amount": _sum(transactions, lambda tx: tx.get("direction") == "in" and (tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer"))),
+            "excluded_related_out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out" and (tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer"))),
+            "in_amount_excluding_excluded_related": _sum(transactions, lambda tx: tx.get("direction") == "in" and not (tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer"))),
+            "out_amount_excluding_excluded_related": _sum(transactions, lambda tx: tx.get("direction") == "out" and not (tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer"))),
             "operating_in_amount": _sum(transactions, lambda tx: tx.get("is_operating_inflow")),
             "operating_out_amount": _sum(transactions, lambda tx: tx.get("is_operating_outflow")),
             "amount_completeness": "完整" if transactions and all(tx.get("amount") is not None for tx in transactions) else "部分缺失" if transactions else "未识别",
@@ -713,16 +830,17 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     status = "成功" if summary.get("deduped_transaction_count") else "失败"
     in_amount = _money(summary.get("in_amount")) or Decimal("0")
     out_amount = _money(summary.get("out_amount")) or Decimal("0")
-    self_transfer_in = _money(summary.get("self_transfer_in_amount")) or Decimal("0")
-    self_transfer_out = _money(summary.get("self_transfer_out_amount")) or Decimal("0")
-    in_excluding_self = _money(summary.get("in_amount_excluding_self_transfer")) or (in_amount - self_transfer_in)
-    out_excluding_self = _money(summary.get("out_amount_excluding_self_transfer")) or (out_amount - self_transfer_out)
+    excluded_related_in = _money(summary.get("excluded_related_in_amount")) or _money(summary.get("self_transfer_in_amount")) or Decimal("0")
+    excluded_related_out = _money(summary.get("excluded_related_out_amount")) or _money(summary.get("self_transfer_out_amount")) or Decimal("0")
+    in_excluding_related = _money(summary.get("in_amount_excluding_excluded_related")) or (in_amount - excluded_related_in)
+    out_excluding_related = _money(summary.get("out_amount_excluding_excluded_related")) or (out_amount - excluded_related_out)
+    excluded_related_count = int(summary.get("excluded_related_transaction_count") or 0)
     operating_in = _money(summary.get("operating_in_amount")) or Decimal("0")
     operating_out = _money(summary.get("operating_out_amount")) or Decimal("0")
     net = in_amount - out_amount
     op_net = operating_in - operating_out
     base_amount = max(in_amount, out_amount, Decimal("1"))
-    self_transfers = [tx for tx in transactions if tx.get("is_self_transfer")]
+    excluded_related_rows = [tx for tx in transactions if tx.get("is_excluded_related_party") or tx.get("is_self_transfer") or tx.get("is_related_party_transfer")]
     loan_like = [tx for tx in transactions if tx.get("is_loan_related") or tx.get("is_interest")]
     fee_like = [tx for tx in transactions if tx.get("is_fee")]
     operating_out_rows = [tx for tx in transactions if tx.get("is_operating_outflow")]
@@ -744,11 +862,10 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         "|---|---:|",
         f"| 原始入账总额 | {_fmt_money(in_amount)} |",
         f"| 原始出账总额 | {_fmt_money(out_amount)} |",
-        f"| 本方同名划转入账 | {_fmt_money(self_transfer_in)} |",
-        f"| 本方同名划转出账 | {_fmt_money(self_transfer_out)} |",
-        f"| 剔除同名划转后入账 | {_fmt_money(in_excluding_self)} |",
-        f"| 剔除同名划转后出账 | {_fmt_money(out_excluding_self)} |",
-        f"| 净流入 | {_fmt_money(net)} |",
+        f"| 已剔除内部/关联方入账 | {_fmt_money(excluded_related_in)} |",
+        f"| 已剔除内部/关联方出账 | {_fmt_money(excluded_related_out)} |",
+        f"| 剔除后入账 | {_fmt_money(in_excluding_related)} |",
+        f"| 剔除后出账 | {_fmt_money(out_excluding_related)} |",
         f"| 有效经营入账 | {_fmt_money(operating_in)} |",
         f"| 有效经营出账 | {_fmt_money(operating_out)} |",
         f"| 经营净流入 | {_fmt_money(op_net)} |",
@@ -772,15 +889,22 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         lines.append("- 入账或出账中存在贷款、利息相关交易，不能全部视为经营收入。")
     if operating_out_rows:
         lines.append("- 出账中存在材料款、劳务费、项目款等经营性支出。")
-    if self_transfers:
-        names = sorted({_display(tx.get("counterparty_name"), "") for tx in self_transfers if _display(tx.get("counterparty_name"), "")})
-        related_name = names[0] if names else "本方同名账户"
-        lines.append("- 已识别本方同名划转，相关入账和出账已从经营性现金流中剔除。")
-        lines.append("- 同名账户之间的资金往来只能反映内部资金调拨，不能作为销售回款或经营采购支出。")
-        lines.append("- 剔除同名划转后，再判断企业真实经营回款和经营支出。")
-        lines.append(f"- 与“{related_name}”相关往来金额较大，已按本方同名划转处理。")
-    if not loan_like and not operating_out_rows and not self_transfers:
+    if excluded_related_rows:
+        lines.append("- 已识别内部/关联方往来，相关入账和出账已从经营性现金流中剔除。")
+        lines.append("- 内部或关联方之间的资金往来只能反映内部资金调拨，不能作为销售回款或经营采购支出。")
+        lines.append("- 剔除内部/关联方往来后，再判断企业真实经营回款和经营支出。")
+    if not loan_like and not operating_out_rows and not excluded_related_rows:
         lines.append("- 当前报告已剔除明显内部往来、贷款、手续费等非经营性交易后计算经营性资金表现。")
+
+    if excluded_related_rows:
+        lines += [
+            "",
+            "### 剔除说明",
+            "",
+            f"- 已剔除内部/关联方往来 {_fmt_count(excluded_related_count or len(excluded_related_rows))} 笔，涉及金额 {_fmt_money(excluded_related_in + excluded_related_out)}。",
+            "- 剔除对象包括本方同名账户、法定代表人、股东及已识别关联方。",
+            "- 上述交易不纳入有效经营入账、有效经营出账和经营净流入。",
+        ]
 
     lines += [
         "",
@@ -796,8 +920,6 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         lines.append("| 未识别 | 0.00 | 0.00 | 0.00 | 0 |")
 
     def judgment(name: str, item: dict[str, Any], direction: str) -> str:
-        if any(_display(tx.get("counterparty_name"), "") == name and tx.get("is_self_transfer") for tx in transactions):
-            return "本方同名划转，已剔除经营收入" if direction == "in" else "本方同名划转，已剔除经营支出"
         if item.get("operating"):
             return "部分经营性"
         return "非经营性往来"
@@ -834,8 +956,8 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         risks.append("经营性现金流为负，需要结合发票、合同、应收账款进一步判断回款质量。")
     if loan_like or fee_like:
         risks.append("存在贷款、利息、手续费等非经营性交易，不能直接作为销售回款。")
-    if self_transfers:
-        risks.append("同名或关联方往来金额较大，需要在融资分析中单独剔除。")
+    if excluded_related_rows:
+        risks.append("已识别内部/关联方往来，需要在融资分析中单独剔除，不作为经营回款或经营采购支出。")
     if not risks:
         risks.append("未识别到明显集中风险，仍建议结合合同、发票和回款周期复核。")
     lines.extend(f"- {risk}" for risk in risks)
@@ -862,19 +984,13 @@ def _json_safe(value: Any) -> Any:
 def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     file_results: list[FileParseResult] = []
     warnings: list[str] = []
-    own_party_names: set[str] = set()
+    excluded_parties: dict[str, str] = {}
     meta = metadata or {}
-    for key in ("customer_name", "customerName", "company_name", "companyName", "name"):
-        normalized_name = _normalize_party_name(meta.get(key))
-        if normalized_name:
-            own_party_names.add(normalized_name)
+    _collect_excluded_parties_from_source(meta, excluded_parties)
     for item in files:
         file_path = item.get("file_path") or ""
         filename = item.get("file_name") or Path(file_path).name
-        for key in ("customer_name", "customerName", "company_name", "companyName", "name"):
-            normalized_name = _normalize_party_name(item.get(key))
-            if normalized_name:
-                own_party_names.add(normalized_name)
+        _collect_excluded_parties_from_source(item, excluded_parties)
         try:
             for sheet_name, rows in _read_workbook(file_path, filename):
                 parsed = _parse_sheet(rows, sheet_name, filename)
@@ -893,7 +1009,7 @@ def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[
         except Exception as exc:
             logger.exception("[BankReconciliationDetail] parse_failed file=%s", filename)
             warnings.append(f"{filename} 解析失败：{exc}")
-    data = _aggregate(file_results, own_party_names=own_party_names)
+    data = _aggregate(file_results, excluded_parties=excluded_parties)
     data["warnings"] = list(dict.fromkeys([*data.get("warnings", []), *warnings]))
     data["display_markdown"] = _render_compact_display_markdown(data)
     data["markdown"] = data["display_markdown"]

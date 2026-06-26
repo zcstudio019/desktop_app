@@ -31,6 +31,8 @@ def _save_icbc_sample(path: Path) -> None:
     ws.append(["I001", "123", "2025-04-27 10:00:00", "贷", "上海某项目有限公司", "17", "1,000.00", "17", "工程款", "17", "17"])
     ws.append(["I002", "456", "2026-03-24 10:00:00", "借", "上海材料有限公司", "17", "17", "500.00", "17", "采购款", "17"])
     ws.append(["I003", "789", "2025-05-01 10:00:00", "贷", "上海意川建筑科技有限公司", "17", "2,000.00", "17", "工程款", "17", "17"])
+    ws.append(["I004", "111", "2025-06-01 10:00:00", "贷", "张三", "17", "3,000.00", "17", "工程款", "17", "17"])
+    ws.append(["I005", "222", "2025-06-02 10:00:00", "借", "李四", "17", "17", "4,000.00", "材料款", "17", "17"])
     wb.save(path)
 
 
@@ -44,7 +46,12 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
         [
             {"file_path": str(shanghai), "file_name": "上海银行对账明细202504-202603.xlsx"},
             {"file_path": str(icbc), "file_name": "工商银行对账明细202504-202603.xlsx"},
-        ]
+        ],
+        metadata={
+            "customer_name": "上海意川建筑科技有限公司",
+            "legal_representative": "张三",
+            "shareholders": [{"name": "李四"}],
+        },
     )
 
     summary = result["summary"]
@@ -52,8 +59,8 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
 
     assert result["doc_type"] == "bank_reconciliation_detail"
     assert summary["file_count"] == 2
-    assert summary["raw_transaction_count"] == 5
-    assert summary["deduped_transaction_count"] == 5
+    assert summary["raw_transaction_count"] == 7
+    assert summary["deduped_transaction_count"] == 7
     assert summary["date_start"] == "2025-04-01"
     assert summary["date_end"] == "2026-03-31"
     assert "## 银行对账明细" in markdown
@@ -76,8 +83,32 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     ]
     assert len(self_transfer_txs) == 2
     assert all(tx["is_self_transfer"] for tx in self_transfer_txs)
-    assert all(tx["category"] == "本方同名划转" for tx in self_transfer_txs)
+    assert all(tx["category"] == "内部/关联方往来" for tx in self_transfer_txs)
     assert all(not tx["is_operating_inflow"] and not tx["is_operating_outflow"] for tx in self_transfer_txs)
     assert summary["self_transfer_in_amount"] == "1002000.00"
-    assert summary["in_amount_excluding_self_transfer"] == "1000.00"
-    assert "本方同名划转，已剔除经营收入" in markdown
+    assert summary["in_amount_excluding_self_transfer"] == "4000.00"
+    legal_rep_txs = [tx for tx in result["transactions"] if tx.get("counterparty_name") == "张三"]
+    shareholder_txs = [tx for tx in result["transactions"] if tx.get("counterparty_name") == "李四"]
+    assert legal_rep_txs[0]["is_excluded_related_party"]
+    assert legal_rep_txs[0]["is_related_party_transfer"]
+    assert legal_rep_txs[0]["excluded_reason"] == "法定代表人往来"
+    assert shareholder_txs[0]["is_excluded_related_party"]
+    assert shareholder_txs[0]["is_related_party_transfer"]
+    assert shareholder_txs[0]["excluded_reason"] == "股东往来"
+    assert not legal_rep_txs[0]["is_operating_inflow"]
+    assert not shareholder_txs[0]["is_operating_outflow"]
+    assert summary["excluded_related_transaction_count"] == 4
+    assert summary["excluded_related_in_amount"] == "1005000.00"
+    assert summary["excluded_related_out_amount"] == "4000.00"
+    assert summary["in_amount_excluding_excluded_related"] == "1000.00"
+    assert summary["out_amount_excluding_excluded_related"] == "200500.00"
+    top_in_names = [name for name, _ in result["top_in"]]
+    top_out_names = [name for name, _ in result["top_out"]]
+    assert "上海意川建筑科技有限公司" not in top_in_names
+    assert "张三" not in top_in_names
+    assert "李四" not in top_out_names
+    assert "上海意川建筑科技有限公司" not in markdown
+    assert "张三" not in markdown
+    assert "李四" not in markdown
+    assert "### 剔除说明" in markdown
+    assert "已剔除内部/关联方入账" in markdown
