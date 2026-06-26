@@ -11,14 +11,14 @@ def _save_shanghai_sample(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "testReport"
-    ws.append(["账户明细查询"])
-    ws.append(["记账日期:", "2025-04-01---2026-03-31"])
-    ws.append(["选择账号:", "03005029359", "户名:", "上海意川建筑科技有限公司", "开户行:", "上海银行浦西支行营业部", "币种:", "人民币"])
-    ws.append(["总笔数", 2, "借方总笔数", 1, "借方总金额", "200,000.00"])
-    ws.append(["贷方总笔数", 1, "贷方总金额", "1,000,000.00"])
-    ws.append(["交易流水号", "交易时间", "记账日期", "交易方向", "交易金额", "余额", "对手账号", "对手名称", "摘要", "交易用途", "备注"])
-    ws.append(["S001", "2025-04-01 11:12:46", "2025-04-01", "出账", "200,000.00", "800,000.00", "6222", "靖江市桐梧贸易有限公司", "跨行转账", "临空项目材料款", ""])
-    ws.append(["S002", "2025-04-07 09:00:00", "2025-04-07", "入账", "1,000,000.00", "1,800,000.00", "0300", "上海意川建筑科技有限公司", "往来款", "", ""])
+    ws.append([None, "账户明细查询"])
+    ws.append([None, "记账日期:", "2025-04-01---2026-03-31"])
+    ws.append([None, "选择账号:", "03005029359", "上海意川建筑科技有限公司", "开户行:", "上海银行浦西支行营业部", None, "币种:", "人民币"])
+    ws.append([None, "总笔数:", 2, None, "借方总笔数:", 1, None, "借方总金额:", "200,000.00"])
+    ws.append([None, None, None, None, "贷方总笔数:", 1, None, "贷方总金额:", "1,000,000.00"])
+    ws.append([None, "交易流水号", "交易时间", "记账日期", "交易方向", "交易金额", "余额", "对手账号", "对手名称", "摘要", "交易用途", "备注"])
+    ws.append([None, "S001", "2025-04-01 11:12:46", "2025-04-01", "出账", "200,000.00", "800,000.00", "6222", "靖江市桐梧贸易有限公司", "跨行转账", "临空项目材料款", ""])
+    ws.append([None, "S002", "2025-04-07 09:00:00", "2025-04-07", "入账", "1,000,000.00", "1,800,000.00", "0300", "上海意川建筑科技有限公司", "往来款", "", ""])
     wb.save(path)
 
 
@@ -63,6 +63,19 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert summary["deduped_transaction_count"] == 7
     assert summary["date_start"] == "2025-04-01"
     assert summary["date_end"] == "2026-03-31"
+    shanghai_file = result["files"][0]
+    shanghai_account = result["accounts"][0]
+    assert shanghai_file["bank_name"] == "上海银行"
+    assert shanghai_file["header_row_no"] == 6
+    assert shanghai_file["header_col_start"] == 2
+    assert shanghai_file["raw_summary"]["raw_transaction_count"] == 2
+    assert shanghai_file["raw_summary"]["debit_count"] == 1
+    assert shanghai_file["raw_summary"]["credit_count"] == 1
+    assert shanghai_file["raw_summary"]["debit_amount"] == "200000.00"
+    assert shanghai_file["raw_summary"]["credit_amount"] == "1000000.00"
+    assert shanghai_account["account_no"] == "03005029359"
+    assert shanghai_account["account_name"] == "上海意川建筑科技有限公司"
+    assert shanghai_account["branch_name"] == "上海银行浦西支行营业部"
     assert "## 银行对账明细" in markdown
     assert "### 核心资金概览" in markdown
     assert "### 经营判断" in markdown
@@ -72,7 +85,8 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert "### 风险提示" in markdown
     assert "文件解析质量清单" not in markdown
     assert "交易明细样例" not in markdown
-    assert "03005029359" not in markdown
+    assert "03005029359" in markdown
+    assert "上海银行浦西支行营业部" in markdown
     assert "| 17 |" not in markdown
     assert "raw_result" not in markdown
     assert "normalized_data" not in markdown
@@ -107,8 +121,40 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert "上海意川建筑科技有限公司" not in top_in_names
     assert "张三" not in top_in_names
     assert "李四" not in top_out_names
-    assert "上海意川建筑科技有限公司" not in markdown
+    assert "上海意川建筑科技有限公司" in markdown
     assert "张三" not in markdown
     assert "李四" not in markdown
     assert "### 剔除说明" in markdown
     assert "已剔除内部/关联方入账" in markdown
+
+
+def test_shanghai_bank_reconciliation_detail_detects_b_column_header_and_meta(tmp_path: Path) -> None:
+    shanghai = tmp_path / "shanghai_bank_detail.xlsx"
+    _save_shanghai_sample(shanghai)
+
+    result = parse_bank_reconciliation_files(
+        [{"file_path": str(shanghai), "file_name": "上海银行对账明细202504-202603.xlsx"}]
+    )
+
+    summary = result["summary"]
+    markdown = result["display_markdown"]
+    parsed_file = result["files"][0]
+    account = result["accounts"][0]
+    assert summary["file_count"] == 1
+    assert summary["deduped_transaction_count"] == 2
+    assert result["extraction_status"] == "success"
+    assert parsed_file["bank_name"] == "上海银行"
+    assert parsed_file["header_row_no"] == 6
+    assert parsed_file["header_col_start"] == 2
+    assert parsed_file["raw_summary"]["raw_transaction_count"] == 2
+    assert parsed_file["raw_summary"]["debit_count"] == 1
+    assert parsed_file["raw_summary"]["credit_count"] == 1
+    assert parsed_file["raw_summary"]["debit_amount"] == "200000.00"
+    assert parsed_file["raw_summary"]["credit_amount"] == "1000000.00"
+    assert account["account_no"] == "03005029359"
+    assert account["account_name"] == "上海意川建筑科技有限公司"
+    assert account["branch_name"] == "上海银行浦西支行营业部"
+    assert "- 来源文件：上海银行对账明细202504-202603.xlsx" in markdown
+    assert "- 提取状态：成功" in markdown
+    assert "- 银行名称：上海银行" in markdown
+    assert "- 交易笔数：2 笔" in markdown

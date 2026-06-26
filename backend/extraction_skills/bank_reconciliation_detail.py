@@ -289,6 +289,7 @@ class FileParseResult:
     sheet_name: str
     bank_name: str
     header_row_no: int
+    header_col_start: int
     account: AccountInfo
     transactions: list[dict[str, Any]]
     raw_summary: dict[str, Any]
@@ -336,7 +337,26 @@ def _row_text(row: list[Any]) -> str:
     return " ".join(_text(cell) for cell in row if _text(cell))
 
 
-def _find_header(rows: list[list[Any]], bank_hint: str) -> tuple[int, dict[str, int], str]:
+def _detect_bank_format(rows: list[list[Any]], bank_hint: str, mapping: dict[str, int]) -> tuple[str, str]:
+    if bank_hint == "上海银行":
+        return "shanghai", "filename"
+    if bank_hint == "工商银行":
+        return "icbc", "filename"
+    scanned_cells = [_text(cell) for row in rows[:30] for cell in row[:30] if _text(cell)]
+    joined = " ".join(scanned_cells)
+    header_fields = set(mapping)
+    if "账户明细查询" in joined or "选择账号" in joined:
+        return "shanghai", "sheet_marker"
+    if "开户行" in joined and "上海银行" in joined:
+        return "shanghai", "branch_marker"
+    if {"transaction_id", "trade_time", "direction", "amount", "counterparty_name"} <= header_fields:
+        return "shanghai", "header_fields"
+    if {"voucher_no", "in_amount", "out_amount"} & header_fields:
+        return "icbc", "header_fields"
+    return ("shanghai", "amount_header") if "amount" in header_fields else ("generic", "unknown")
+
+
+def _find_header(rows: list[list[Any]], bank_hint: str) -> tuple[int, dict[str, int], str, int]:
     aliases = {
         "transaction_id": ("交易流水号",),
         "trade_time": ("交易时间",),
@@ -357,12 +377,28 @@ def _find_header(rows: list[list[Any]], bank_hint: str) -> tuple[int, dict[str, 
     best_idx = -1
     best_map: dict[str, int] = {}
     best_score = 0
+    shanghai_required = {
+        "交易流水号",
+        "交易时间",
+        "记账日期",
+        "交易方向",
+        "交易金额",
+        "余额",
+        "对手账号",
+        "对手名称",
+        "摘要",
+        "交易用途",
+        "备注",
+    }
     for idx, row in enumerate(rows[:50]):
         mapping: dict[str, int] = {}
-        for col, cell in enumerate(row):
+        shanghai_hits = 0
+        for col, cell in enumerate(row[:50]):
             header = _compact(cell)
             if not header:
                 continue
+            if any(_compact(name) == header or _compact(name) in header for name in shanghai_required):
+                shanghai_hits += 1
             for field, names in aliases.items():
                 if field in mapping:
                     continue
@@ -370,10 +406,15 @@ def _find_header(rows: list[list[Any]], bank_hint: str) -> tuple[int, dict[str, 
                     mapping[field] = col
         fields = set(mapping)
         score = len(fields) + (3 if "trade_time" in fields or "accounting_date" in fields else 0) + (3 if {"in_amount", "out_amount"} & fields or "amount" in fields else 0)
+        if shanghai_hits >= 5:
+            score += 20
         if score > best_score:
             best_idx, best_map, best_score = idx, mapping, score
-    bank_format = "icbc" if {"voucher_no", "in_amount", "out_amount"} & set(best_map) or bank_hint == "工商银行" else "shanghai" if "amount" in best_map else "generic"
-    return best_idx, best_map, bank_format
+    if best_score < 5:
+        return -1, {}, "generic", 0
+    bank_format, _ = _detect_bank_format(rows, bank_hint, best_map)
+    header_col_start = min(best_map.values()) + 1 if best_map else 0
+    return best_idx, best_map, bank_format, header_col_start
 
 
 def _value_after_label(row: list[Any], label: str) -> str:
@@ -394,6 +435,28 @@ def _value_after_label(row: list[Any], label: str) -> str:
     return ""
 
 
+def _find_label_index(row: list[Any], label: str) -> int:
+    compact_label = _compact(label).rstrip(":：")
+    for idx, cell in enumerate(row):
+        compact = _compact(cell).rstrip(":：")
+        if compact.startswith(compact_label):
+            return idx
+    return -1
+
+
+def _next_value_after_index(row: list[Any], start_idx: int, stop_labels: tuple[str, ...] = ()) -> str:
+    stop_compacts = tuple(_compact(label).rstrip(":：") for label in stop_labels)
+    for idx in range(start_idx + 1, len(row)):
+        value = _text(row[idx])
+        compact = _compact(value).rstrip(":：")
+        if not compact:
+            continue
+        if any(compact.startswith(label) for label in stop_compacts):
+            return ""
+        return value
+    return ""
+
+
 def _parse_meta(rows: list[list[Any]], sheet_name: str, source_file: str, bank_name: str) -> tuple[AccountInfo, dict[str, Any]]:
     account = AccountInfo(bank_name=bank_name or _bank_from_filename(source_file), source_file=source_file, sheet_name=sheet_name)
     summary: dict[str, Any] = {}
@@ -406,6 +469,11 @@ def _parse_meta(rows: list[list[Any]], sheet_name: str, source_file: str, bank_n
         selected = _value_after_label(row, "选择账号")
         if selected:
             account.account_no = re.sub(r"\D", "", selected) or account.account_no
+            selected_idx = _find_label_index(row, "选择账号")
+            if selected_idx >= 0 and not account.account_name:
+                possible_name = _next_value_after_index(row, selected_idx + 1, ("开户行", "币种"))
+                if possible_name and not re.fullmatch(r"\d+", possible_name):
+                    account.account_name = possible_name
         for label, field_name in (
             ("户名", "account_name"),
             ("开户行", "branch_name"),
@@ -481,8 +549,30 @@ def _classify(tx: dict[str, Any], excluded_parties: dict[str, str]) -> None:
 
 def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> FileParseResult | None:
     bank_hint = _bank_from_filename(source_file)
-    header_idx, mapping, bank_format = _find_header(rows, bank_hint)
+    max_cols = max((len(row) for row in rows), default=0)
+    header_idx, mapping, bank_format, header_col_start = _find_header(rows, bank_hint)
+    bank_format, bank_reason = _detect_bank_format(rows, bank_hint, mapping)
+    logger.info(
+        "[BankReconciliationDetail] scan file=%s sheet=%s range=%sx%s bank_hint=%s bank_format=%s bank_reason=%s header_row=%s header_col_start=%s mapping=%s",
+        source_file,
+        sheet_name,
+        len(rows),
+        max_cols,
+        bank_hint or UNKNOWN,
+        bank_format,
+        bank_reason,
+        header_idx + 1 if header_idx >= 0 else 0,
+        header_col_start,
+        mapping,
+    )
     if header_idx < 0 or not mapping:
+        logger.warning(
+            "[BankReconciliationDetail] parse_skip file=%s sheet=%s reason=header_not_found range=%sx%s",
+            source_file,
+            sheet_name,
+            len(rows),
+            max_cols,
+        )
         return None
     bank_name = bank_hint or ("上海银行" if bank_format == "shanghai" else "工商银行" if bank_format == "icbc" else UNKNOWN)
     account, raw_summary = _parse_meta(rows, sheet_name, source_file, bank_name)
@@ -549,11 +639,23 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
         account.date_end = account.date_end or dates[-1]
     if not raw_summary.get("raw_transaction_count"):
         raw_summary["raw_transaction_count"] = len(transactions)
+    logger.info(
+        "[BankReconciliationDetail] parsed file=%s sheet=%s bank=%s header_row=%s header_col_start=%s read_rows=%s success_transactions=%s amount_status=%s",
+        source_file,
+        sheet_name,
+        bank_name,
+        header_idx + 1,
+        header_col_start,
+        max(0, len(rows) - header_idx - 1),
+        len(transactions),
+        "完整" if transactions and all(tx.get("amount") is not None for tx in transactions) else "部分缺失" if transactions else "未识别",
+    )
     return FileParseResult(
         source_file=source_file,
         sheet_name=sheet_name,
         bank_name=bank_name,
         header_row_no=header_idx + 1,
+        header_col_start=header_col_start,
         account=account,
         transactions=transactions,
         raw_summary=raw_summary,
@@ -675,6 +777,7 @@ def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, 
                 "sheet_name": r.sheet_name,
                 "bank_name": r.bank_name,
                 "header_row_no": r.header_row_no,
+                "header_col_start": r.header_col_start,
                 "transaction_count": len(r.transactions),
                 "amount_status": "完整" if all(tx.get("amount") is not None for tx in r.transactions) else "部分缺失",
                 "date_start": r.account.date_start,
@@ -822,6 +925,8 @@ def _render_markdown(data: dict[str, Any]) -> str:
 def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     summary = data.get("summary") or {}
     files = data.get("files") or []
+    accounts = data.get("accounts") or []
+    primary_account = accounts[0] if accounts else {}
     transactions = data.get("transactions") or []
     file_count = summary.get("file_count") or len(files)
     source_file = _display(files[0].get("source_file")) if len(files) == 1 else f"{_fmt_count(file_count)} 份文件"
@@ -852,6 +957,9 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         f"- 来源文件：{source_file}",
         f"- 提取状态：{status}",
         f"- 银行名称：{bank_name}",
+        f"- 户名：{_display(primary_account.get('account_name'))}",
+        f"- 账号：{_display(primary_account.get('account_no'))}",
+        f"- 开户行：{_display(primary_account.get('branch_name'))}",
         f"- 覆盖时间：{_display(summary.get('date_start'))} 至 {_display(summary.get('date_end'))}",
         f"- 交易笔数：{_fmt_count(summary.get('deduped_transaction_count'))} 笔",
         f"- 金额识别：{_display(summary.get('amount_completeness'), UNKNOWN)}",
@@ -987,25 +1095,38 @@ def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[
     excluded_parties: dict[str, str] = {}
     meta = metadata or {}
     _collect_excluded_parties_from_source(meta, excluded_parties)
+    logger.info("[BankReconciliationDetail] received_files=%s", len(files or []))
     for item in files:
         file_path = item.get("file_path") or ""
         filename = item.get("file_name") or Path(file_path).name
         _collect_excluded_parties_from_source(item, excluded_parties)
         try:
-            for sheet_name, rows in _read_workbook(file_path, filename):
+            sheets = _read_workbook(file_path, filename)
+            logger.info(
+                "[BankReconciliationDetail] workbook file=%s path=%s sheets=%s",
+                filename,
+                file_path,
+                [(sheet_name, len(rows), max((len(row) for row in rows), default=0)) for sheet_name, rows in sheets],
+            )
+            matched_file = False
+            for sheet_name, rows in sheets:
                 parsed = _parse_sheet(rows, sheet_name, filename)
                 if parsed:
+                    matched_file = True
                     file_results.append(parsed)
                     logger.info(
-                        "[BankReconciliationDetail] file=%s sheet=%s bank=%s header_row=%s detail_rows=%s amount_status=%s placeholders=%s",
+                        "[BankReconciliationDetail] file=%s sheet=%s bank=%s header_row=%s header_col_start=%s detail_rows=%s amount_status=%s placeholders=%s",
                         filename,
                         sheet_name,
                         parsed.bank_name,
                         parsed.header_row_no,
+                        parsed.header_col_start,
                         len(parsed.transactions),
                         "完整" if all(tx.get("amount") is not None for tx in parsed.transactions) else "部分缺失",
                         parsed.placeholder_cleaned_count,
                     )
+            if not matched_file:
+                logger.warning("[BankReconciliationDetail] file_no_parsed_sheet file=%s path=%s", filename, file_path)
         except Exception as exc:
             logger.exception("[BankReconciliationDetail] parse_failed file=%s", filename)
             warnings.append(f"{filename} 解析失败：{exc}")
