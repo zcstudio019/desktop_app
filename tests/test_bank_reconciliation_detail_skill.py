@@ -147,7 +147,11 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert "远东宏信普惠融资租赁（天津）有限公司" not in markdown
     assert "代发专用账户" not in markdown
     assert "### 非经营性及噪音剔除说明" in markdown
-    assert "已剔除内部/关联方往来" in markdown
+    assert "内部/关联方往来" in markdown
+    assert "| 剔除类型 | 入账金额 | 出账金额 | 笔数 | 说明 |" in markdown
+    assert "| 其他非经营往来 |" in markdown
+    assert "剔除后入账" not in markdown
+    assert "剔除后出账" not in markdown
     assert "### 主要经营入账来源" in markdown
     assert "### 主要经营出账对象" in markdown
     assert "| 排名 | 对方户名 | 入账金额 | 笔数 | 判断 | 经营依据 |" in markdown

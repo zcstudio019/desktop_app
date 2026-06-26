@@ -349,12 +349,30 @@ def _operating_evidence(tx: dict[str, Any], direction: str) -> str:
     candidates = [_text(tx.get(key)) for key in ("purpose", "summary", "remark")]
     for candidate in candidates:
         if candidate and _contains_any(candidate, keywords):
-            return candidate[:20]
+            return _normalize_evidence_label(candidate, keywords)
     joined = " ".join(candidates)
     for keyword in keywords:
         if keyword in joined:
             return keyword
     return ""
+
+
+def _normalize_evidence_label(value: str, keywords: tuple[str, ...]) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    text = re.sub(r"20\d{2}年?", "", text)
+    text = re.sub(r"[（(][^）)]{0,30}[）)]", "", text)
+    text = re.sub(r"第?\d+批", "", text)
+    text = re.sub(r"\d+(?:[./-]\d+)*", "", text)
+    text = re.sub(r"[，,、；;:\s]+", "", text)
+    for keyword in sorted(keywords, key=len, reverse=True):
+        idx = text.find(keyword)
+        if idx >= 0:
+            start = max(0, idx - 8)
+            end = min(len(text), idx + len(keyword) + 4)
+            return text[start:end][:20]
+    return text[:20]
 
 
 def _bank_from_filename(filename: str) -> str:
@@ -1187,6 +1205,25 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     operating_out_ratio = (operating_out / out_amount) if out_amount else Decimal("0")
     non_operating_in = in_amount - operating_in
     non_operating_out = out_amount - operating_out
+    categorized_excluded_in = excluded_related_in + personal_in + loan_interest_in + salary_tax_fee_in + noise_in
+    categorized_excluded_out = excluded_related_out + personal_out + loan_interest_out + salary_tax_fee_out + noise_out
+    other_non_operating_in = non_operating_in - categorized_excluded_in
+    other_non_operating_out = non_operating_out - categorized_excluded_out
+    if abs(other_non_operating_in) < Decimal("0.01"):
+        other_non_operating_in = Decimal("0")
+    if abs(other_non_operating_out) < Decimal("0.01"):
+        other_non_operating_out = Decimal("0")
+    category_in_sum = categorized_excluded_in + other_non_operating_in
+    category_out_sum = categorized_excluded_out + other_non_operating_out
+    logger.info(
+        "bank_reconciliation excluded reconciliation: excluded_in_total=%s category_in_sum=%s diff_in=%s excluded_out_total=%s category_out_sum=%s diff_out=%s",
+        non_operating_in,
+        category_in_sum,
+        non_operating_in - category_in_sum,
+        non_operating_out,
+        category_out_sum,
+        non_operating_out - category_out_sum,
+    )
     base_amount = max(in_amount, out_amount, Decimal("1"))
     excluded_related_rows = [tx for tx in transactions if tx.get("is_excluded_related_party") or tx.get("is_self_transfer") or tx.get("is_related_party_transfer")]
     loan_like = [tx for tx in transactions if tx.get("is_loan_related") or tx.get("is_interest")]
@@ -1218,8 +1255,6 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         f"| 原始净流入 | {_fmt_money(net)} |",
         f"| 剔除非经营入账 | {_fmt_money(non_operating_in)} |",
         f"| 剔除非经营出账 | {_fmt_money(non_operating_out)} |",
-        f"| 剔除后入账 | {_fmt_money(operating_in)} |",
-        f"| 剔除后出账 | {_fmt_money(operating_out)} |",
         f"| 有效经营入账 | {_fmt_money(operating_in)} |",
         f"| 有效经营出账 | {_fmt_money(operating_out)} |",
         f"| 经营净流入 | {_fmt_money(op_net)} |",
@@ -1236,38 +1271,41 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     else:
         lines.append("- 整体资金呈净流出，需关注持续支出对现金流的压力。")
     if op_net < 0:
-        lines.append(f"- 剔除内部/关联方、贷款融资、手续费、未识别等非经营交易后，经营净流入为 {_fmt_money(op_net)}，经营性现金流为负。")
+        lines.append(f"- 剔除内部/关联方、贷款融资、手续费、未识别及其他非经营交易后，经营净流入为 {_fmt_money(op_net)}，经营性现金流为负。")
     elif op_net > 0:
         lines.append(f"- 剔除非经营交易后，经营净流入为 {_fmt_money(op_net)}，说明经营回款对经营支出有一定覆盖。")
     else:
         lines.append("- 有效经营入账与经营出账基本持平。")
+    ratio_level = "偏低" if operating_in_ratio < Decimal("0.5") else "相对较高"
+    lines.append(f"- 有效经营入账占原始入账比例为 {_fmt_percent(operating_in, in_amount)}，可采信经营回款占比{ratio_level}。")
     if operating_in < operating_out:
         lines.append("- 有效经营入账低于有效经营出账，需要关注真实回款能力和经营支出压力。")
     elif operating_in > operating_out:
         lines.append("- 有效经营入账高于有效经营出账，经营性现金流表现相对较好。")
-    if loan_like:
-        lines.append("- 入账或出账中存在贷款、利息相关交易，不能全部视为经营收入。")
-    if operating_out_rows:
-        lines.append("- 出账中存在材料款、劳务费、项目款等经营性支出。")
-    if excluded_related_rows:
-        lines.append("- 已识别内部/关联方往来，相关入账和出账已从经营性现金流中剔除。")
-        lines.append("- 内部或关联方之间的资金往来只能反映内部资金调拨，不能作为销售回款或经营采购支出。")
-        lines.append("- 剔除内部/关联方往来后，再判断企业真实经营回款和经营支出。")
-    lines.append("- 当前主要经营客户/供应商仅统计有明确经营摘要或用途的交易，已剔除往来款、个人往来、内部关联方、贷款融资、手续费、未识别对手方等非经营噪音。")
-    if not loan_like and not operating_out_rows and not excluded_related_rows:
-        lines.append("- 当前报告已剔除明显内部往来、贷款、手续费等非经营性交易后计算经营性资金表现。")
+    lines.append("- 当前主要经营客户/供应商仅统计有明确经营摘要或用途的交易。")
 
     if excluded_related_rows or personal_like or loan_like or fee_like or noise_like:
+        other_non_operating_count = sum(
+            1
+            for tx in transactions
+            if not tx.get("is_operating_inflow")
+            and not tx.get("is_operating_outflow")
+            and tx.get("category") in {"非经营性往来", "押金/保证金/退款"}
+        )
         lines += [
             "",
             "### 非经营性及噪音剔除说明",
             "",
-            f"- 已剔除内部/关联方往来：{_fmt_count(excluded_related_count or len(excluded_related_rows))} 笔，金额 {_fmt_money(excluded_related_in + excluded_related_out)}。",
-            f"- 已剔除个人往来：{_fmt_count(personal_count or len(personal_like))} 笔，金额 {_fmt_money(personal_in + personal_out)}。",
-            f"- 已剔除贷款/融资/利息类：{_fmt_count(loan_interest_count or len(loan_like))} 笔，金额 {_fmt_money(loan_interest_in + loan_interest_out)}。",
-            f"- 已剔除工资/代发/税费/手续费类：{_fmt_count(salary_tax_fee_count)} 笔，金额 {_fmt_money(salary_tax_fee_in + salary_tax_fee_out)}。",
-            f"- 已剔除未识别对手方及噪音账户：{_fmt_count(noise_count or len(noise_like))} 笔，金额 {_fmt_money(noise_in + noise_out)}。",
-            "- 上述交易不纳入有效经营入账、有效经营出账和经营净流入，默认不展示具体对手方名称。",
+            "| 剔除类型 | 入账金额 | 出账金额 | 笔数 | 说明 |",
+            "|---|---:|---:|---:|---|",
+            f"| 内部/关联方往来 | {_fmt_money(excluded_related_in)} | {_fmt_money(excluded_related_out)} | {_fmt_count(excluded_related_count or len(excluded_related_rows))} | 本方同名、法人、股东、关联方 |",
+            f"| 个人往来 | {_fmt_money(personal_in)} | {_fmt_money(personal_out)} | {_fmt_count(personal_count or len(personal_like))} | 非企业经营对手方 |",
+            f"| 贷款/融资/利息类 | {_fmt_money(loan_interest_in)} | {_fmt_money(loan_interest_out)} | {_fmt_count(loan_interest_count or len(loan_like))} | 放款、还款、融资租赁、利息 |",
+            f"| 工资/代发/税费/手续费类 | {_fmt_money(salary_tax_fee_in)} | {_fmt_money(salary_tax_fee_out)} | {_fmt_count(salary_tax_fee_count)} | 代发、税费、手续费等 |",
+            f"| 未识别及噪音账户 | {_fmt_money(noise_in)} | {_fmt_money(noise_out)} | {_fmt_count(noise_count or len(noise_like))} | 空户名、银行系统账户等 |",
+            f"| 其他非经营往来 | {_fmt_money(other_non_operating_in)} | {_fmt_money(other_non_operating_out)} | {_fmt_count(other_non_operating_count)} | 往来款、借还款、保证金、弱证据交易 |",
+            "",
+            "- 上述剔除分类合计应与核心资金概览中的“剔除非经营入账/出账”一致。",
         ]
 
     lines += [
@@ -1316,21 +1354,17 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
 
     lines += ["", "### 风险提示", ""]
     risks: list[str] = []
-    if abs(net) <= base_amount * Decimal("0.02"):
-        risks.append("入账和出账金额高度接近，真实经营沉淀资金较少。")
     if op_net < 0:
-        risks.append("经营性现金流为负，需要结合发票、合同、应收账款进一步判断回款质量。")
         risks.append("剔除非经营交易后经营净流入为负，融资分析中不宜直接按原始流水总额判断还款能力。")
-    if loan_like or fee_like:
-        risks.append("存在贷款、利息、手续费等非经营性交易，不能直接作为销售回款。")
-    if excluded_related_rows:
-        risks.append("已识别内部/关联方往来，需要在融资分析中单独剔除，不作为经营回款或经营采购支出。")
     if operating_in_ratio < Decimal("0.5") and in_amount:
         risks.append("有效经营入账占原始入账比例低于 50%，可采信经营回款占比偏低。")
-        risks.append("有效经营入账占原始入账比例较低，说明原始入账中存在较多内部往来、融资或非经营资金，需要结合发票和合同核验真实销售回款。")
+    if non_operating_in > 0:
+        risks.append("原始入账中存在较多内部往来、融资或非经营资金，需要结合发票、合同、应收账款核验真实销售回款。")
+    if excluded_related_rows:
+        risks.append("已识别内部/关联方往来，融资分析中应单独剔除，不作为经营回款或经营采购支出。")
     if not risks:
         risks.append("未识别到明显集中风险，仍建议结合合同、发票和回款周期复核。")
-    lines.extend(f"- {risk}" for risk in risks)
+    lines.extend(f"- {risk}" for risk in list(dict.fromkeys(risks)))
     markdown = "\n".join(lines)
     for forbidden in ("raw_result", "normalized_data", "fields:", "transactions:", "null", "undefined", "None", "{}", "[]", "| 17 |", "> 17 <"):
         markdown = markdown.replace(forbidden, "")
