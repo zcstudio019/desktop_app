@@ -212,6 +212,16 @@ def _fmt_count(value: Any) -> str:
         return "0"
 
 
+def _column_letter(index: int) -> str:
+    if index <= 0:
+        return ""
+    letters = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
 def _display(value: Any, default: str = UNKNOWN) -> str:
     text = _text(value)
     if not text or text in {"null", "None", "undefined", "{}", "[]"}:
@@ -317,18 +327,69 @@ def _read_workbook(file_path: str, filename: str) -> list[tuple[str, list[list[A
             rows.append(row)
         return [(Path(filename).stem or "CSV", rows)]
     if suffix in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
-        wb = load_workbook(path, read_only=True, data_only=True)
-        try:
-            logger.info(
-                "[BankReconciliationDetail] workbook_opened filename=%s path=%s active_sheet=%s sheets=%s",
-                filename,
-                file_path,
-                wb.active.title if wb.active else "",
-                wb.sheetnames,
-            )
-            return [(ws.title, [[cell for cell in row] for row in ws.iter_rows(values_only=True)]) for ws in wb.worksheets]
-        finally:
-            wb.close()
+        last_error: Exception | None = None
+        for read_only in (False, True):
+            try:
+                wb = load_workbook(path, read_only=read_only, data_only=True)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "[BankReconciliationDetail] workbook_open_failed filename=%s path=%s read_only=%s error=%s",
+                    filename,
+                    file_path,
+                    read_only,
+                    exc,
+                )
+                continue
+            try:
+                logger.info(
+                    "[BankReconciliationDetail] workbook_opened filename=%s path=%s read_only=%s active_sheet=%s sheets=%s",
+                    filename,
+                    file_path,
+                    read_only,
+                    wb.active.title if wb.active else "",
+                    wb.sheetnames,
+                )
+                sheets: list[tuple[str, list[list[Any]]]] = []
+                for ws in wb.worksheets:
+                    try:
+                        dimension = ws.calculate_dimension()
+                    except Exception as exc:
+                        dimension = f"calculate_dimension_failed:{exc}"
+                    logger.info(
+                        "[BankReconciliationDetail] sheet_dimension file=%s sheet=%s read_only=%s max_row=%s max_col=%s dimension=%s",
+                        file_path,
+                        ws.title,
+                        read_only,
+                        getattr(ws, "max_row", ""),
+                        getattr(ws, "max_column", ""),
+                        dimension,
+                    )
+                    if read_only and dimension == "A1:A1" and hasattr(ws, "reset_dimensions"):
+                        logger.warning(
+                            "[BankReconciliationDetail] worksheet dimension is A1:A1, reset_dimensions file=%s sheet=%s",
+                            file_path,
+                            ws.title,
+                        )
+                        ws.reset_dimensions()
+                        try:
+                            dimension = ws.calculate_dimension(force=True)
+                        except Exception as exc:
+                            dimension = f"force_calculate_dimension_failed:{exc}"
+                        logger.info(
+                            "[BankReconciliationDetail] sheet_dimension_after_reset file=%s sheet=%s max_row=%s max_col=%s dimension=%s",
+                            file_path,
+                            ws.title,
+                            getattr(ws, "max_row", ""),
+                            getattr(ws, "max_column", ""),
+                            dimension,
+                        )
+                    rows = [[cell for cell in row] for row in ws.iter_rows(values_only=True)]
+                    sheets.append((ws.title, rows))
+                return sheets
+            finally:
+                wb.close()
+        raise RuntimeError(f"workbook 读取失败：{last_error}") if last_error else RuntimeError("workbook 读取失败")
     if suffix == ".xls":
         try:
             import pandas as pd  # type: ignore
@@ -559,8 +620,9 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
     max_cols = max((len(row) for row in rows), default=0)
     header_idx, mapping, bank_format, header_col_start = _find_header(rows, bank_hint)
     bank_format, bank_reason = _detect_bank_format(rows, bank_hint, mapping)
+    field_map_for_log = {key: value + 1 for key, value in mapping.items()}
     logger.info(
-        "[BankReconciliationDetail] scan file=%s sheet=%s range=%sx%s bank_hint=%s bank_format=%s bank_reason=%s header_row=%s header_col_start=%s mapping=%s",
+        "[BankReconciliationDetail] scan file=%s sheet=%s range=%sx%s bank_hint=%s bank_format=%s bank_reason=%s header_row_no=%s header_col_start=%s header_col_start_letter=%s field_map=%s",
         source_file,
         sheet_name,
         len(rows),
@@ -570,7 +632,8 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
         bank_reason,
         header_idx + 1 if header_idx >= 0 else 0,
         header_col_start,
-        mapping,
+        _column_letter(header_col_start),
+        field_map_for_log,
     )
     if header_idx < 0 or not mapping:
         logger.warning(
@@ -647,12 +710,13 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
     if not raw_summary.get("raw_transaction_count"):
         raw_summary["raw_transaction_count"] = len(transactions)
     logger.info(
-        "[BankReconciliationDetail] parsed file=%s sheet=%s bank=%s header_row=%s header_col_start=%s read_rows=%s success_transactions=%s amount_status=%s",
+        "[BankReconciliationDetail] parsed file=%s sheet=%s bank=%s header_row_no=%s header_col_start=%s header_col_start_letter=%s read_rows=%s parsed_transaction_count=%s amount_status=%s",
         source_file,
         sheet_name,
         bank_name,
         header_idx + 1,
         header_col_start,
+        _column_letter(header_col_start),
         max(0, len(rows) - header_idx - 1),
         len(transactions),
         "完整" if transactions and all(tx.get("amount") is not None for tx in transactions) else "部分缺失" if transactions else "未识别",
@@ -1215,6 +1279,7 @@ def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[
                     )
             if not matched_file:
                 logger.warning("[BankReconciliationDetail] file_no_parsed_sheet file=%s path=%s", filename, file_path)
+                warnings.append(f"{filename} 表头扫描失败，已扫描工作表前 50 行 50 列，未找到银行对账明细交易表头")
         except Exception as exc:
             logger.exception("[BankReconciliationDetail] parse_failed file=%s", filename)
             warnings.append(f"{filename} 解析失败：{exc}")
