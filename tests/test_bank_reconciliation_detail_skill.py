@@ -80,6 +80,11 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert shanghai_account["account_no"] == "03005029359"
     assert shanghai_account["account_name"] == "上海意川建筑科技有限公司"
     assert shanghai_account["branch_name"] == "上海银行浦西支行营业部"
+    icbc_account = result["accounts"][1]
+    assert icbc_account["bank_name"] == "工商银行"
+    assert icbc_account["account_name"] == "上海意川建筑科技有限公司"
+    assert icbc_account["account_no"] == ""
+    assert icbc_account["branch_name"] == ""
     assert "## 银行对账明细" in markdown
     assert "### 核心资金概览" in markdown
     assert "### 经营判断" in markdown
@@ -140,9 +145,12 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert "远东宏信普惠融资租赁（天津）有限公司" not in markdown
     assert "代发专用账户" not in markdown
     assert "### 非经营性及噪音剔除说明" in markdown
-    assert "已剔除内部/关联方入账" in markdown
+    assert "已剔除内部/关联方往来" in markdown
     assert "### 主要经营入账来源" in markdown
     assert "### 主要经营出账对象" in markdown
+    assert "### 月度经营资金变化" in markdown
+    assert "| 2025-05 |" not in markdown
+    assert "| 2025-06 |" not in markdown
 
 
 def test_shanghai_bank_reconciliation_detail_detects_b_column_header_and_meta(tmp_path: Path) -> None:

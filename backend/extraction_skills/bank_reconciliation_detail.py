@@ -27,8 +27,8 @@ PLACEHOLDER_VALUES = {"17"}
 UNKNOWN = "未识别"
 
 OPERATING_IN_KEYWORDS = ("工程款", "项目款", "货款", "材料款", "服务费", "劳务款", "咨询费", "结算款", "回款", "合同款", "进度款", "施工款", "设计费", "监理费")
-OPERATING_OUT_KEYWORDS = ("材料款", "工程款", "项目款", "货款", "劳务费", "服务费", "采购款", "设备款", "租赁费", "安装费", "施工费", "分包款", "电缆款", "风管材料款", "灯具款")
-NON_OPERATING_KEYWORDS = ("借款", "还款", "退款", "保证金", "押金", "备用金", "代垫款", "内部款")
+OPERATING_OUT_KEYWORDS = ("材料款", "工程款", "项目款", "货款", "劳务费", "服务费", "采购款", "设备款", "安装费", "施工费", "分包款", "电缆款", "风管材料款", "灯具款", "防火包裹", "空调设备", "建材款")
+NON_OPERATING_KEYWORDS = ("借款", "还款", "退款", "保证金", "押金", "备用金", "代垫款", "临时款", "内部款")
 LOAN_KEYWORDS = ("融资租赁", "普惠融资", "贷款", "放款", "还款", "贷款利息", "利息支付", "对公贷款记账", "租赁", "担保", "小企业贷款", "小企业其他短期贷款利息收入")
 FEE_KEYWORDS = ("手续费", "短信业务服务费", "工本费", "年费", "证书收入", "证书工本费", "账户服务费", "普通卡年费", "跨行汇款手续费", "到账伴侣")
 SALARY_KEYWORDS = ("工资", "代发", "薪酬", "社保", "公积金")
@@ -870,10 +870,17 @@ def _account_key(account: dict[str, Any]) -> str:
 
 def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, str] | None = None) -> dict[str, Any]:
     all_excluded_parties = dict(excluded_parties or {})
+    own_display_names: list[str] = []
     for result in file_results:
         normalized_name = _normalize_party_name(result.account.account_name)
         if normalized_name:
             all_excluded_parties.setdefault(normalized_name, "本方同名划转")
+            if result.account.account_name not in own_display_names:
+                own_display_names.append(result.account.account_name)
+    for name, reason in all_excluded_parties.items():
+        if reason == "本方同名划转" and name and name not in own_display_names:
+            own_display_names.append(name)
+    inherited_account_name = own_display_names[0] if own_display_names else ""
     raw_transactions = [tx for result in file_results for tx in result.transactions]
     for tx in raw_transactions:
         _classify(tx, all_excluded_parties)
@@ -881,6 +888,9 @@ def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, 
     account_map: dict[str, dict[str, Any]] = {}
     for result in file_results:
         account = result.account.__dict__.copy()
+        if not account.get("account_name") and inherited_account_name:
+            account["account_name"] = inherited_account_name
+            account["account_confidence"] = "inherited"
         key = _account_key(account)
         account_map.setdefault(key, {**account, "raw_count": 0, "deduped_count": 0})
         account_map[key]["raw_count"] += len(result.transactions)
@@ -1124,6 +1134,8 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     operating_out = _money(summary.get("operating_out_amount")) or Decimal("0")
     net = in_amount - out_amount
     op_net = operating_in - operating_out
+    non_operating_in = in_amount - operating_in
+    non_operating_out = out_amount - operating_out
     base_amount = max(in_amount, out_amount, Decimal("1"))
     excluded_related_rows = [tx for tx in transactions if tx.get("is_excluded_related_party") or tx.get("is_self_transfer") or tx.get("is_related_party_transfer")]
     loan_like = [tx for tx in transactions if tx.get("is_loan_related") or tx.get("is_interest")]
@@ -1152,18 +1164,11 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         "|---|---:|",
         f"| 原始入账总额 | {_fmt_money(in_amount)} |",
         f"| 原始出账总额 | {_fmt_money(out_amount)} |",
-        f"| 已剔除内部/关联方入账 | {_fmt_money(excluded_related_in)} |",
-        f"| 已剔除内部/关联方出账 | {_fmt_money(excluded_related_out)} |",
-        f"| 已剔除个人往来入账 | {_fmt_money(personal_in)} |",
-        f"| 已剔除个人往来出账 | {_fmt_money(personal_out)} |",
-        f"| 已剔除贷款/融资/利息类入账 | {_fmt_money(loan_interest_in)} |",
-        f"| 已剔除贷款/融资/利息类出账 | {_fmt_money(loan_interest_out)} |",
-        f"| 已剔除工资/代发/税费/手续费类入账 | {_fmt_money(salary_tax_fee_in)} |",
-        f"| 已剔除工资/代发/税费/手续费类出账 | {_fmt_money(salary_tax_fee_out)} |",
-        f"| 已剔除未识别及噪音入账 | {_fmt_money(noise_in)} |",
-        f"| 已剔除未识别及噪音出账 | {_fmt_money(noise_out)} |",
-        f"| 剔除后入账 | {_fmt_money(in_excluding_related)} |",
-        f"| 剔除后出账 | {_fmt_money(out_excluding_related)} |",
+        f"| 原始净流入 | {_fmt_money(net)} |",
+        f"| 剔除非经营入账 | {_fmt_money(non_operating_in)} |",
+        f"| 剔除非经营出账 | {_fmt_money(non_operating_out)} |",
+        f"| 剔除后入账 | {_fmt_money(operating_in)} |",
+        f"| 剔除后出账 | {_fmt_money(operating_out)} |",
         f"| 有效经营入账 | {_fmt_money(operating_in)} |",
         f"| 有效经营出账 | {_fmt_money(operating_out)} |",
         f"| 经营净流入 | {_fmt_money(op_net)} |",
@@ -1191,6 +1196,7 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         lines.append("- 已识别内部/关联方往来，相关入账和出账已从经营性现金流中剔除。")
         lines.append("- 内部或关联方之间的资金往来只能反映内部资金调拨，不能作为销售回款或经营采购支出。")
         lines.append("- 剔除内部/关联方往来后，再判断企业真实经营回款和经营支出。")
+    lines.append("- 当前主要经营客户/供应商仅统计有明确经营摘要或用途的交易，已剔除往来款、个人往来、内部关联方、贷款融资、手续费、未识别对手方等非经营噪音。")
     if not loan_like and not operating_out_rows and not excluded_related_rows:
         lines.append("- 当前报告已剔除明显内部往来、贷款、手续费等非经营性交易后计算经营性资金表现。")
 
@@ -1214,10 +1220,14 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         "| 月份 | 有效经营入账 | 有效经营出账 | 经营净流入 | 经营交易笔数 |",
         "|---|---:|---:|---:|---:|",
     ]
+    rendered_operating_months = 0
     for month, item in (data.get("monthly") or {}).items():
+        if not item.get("op_in") and not item.get("op_out") and not item.get("op_count"):
+            continue
         net_month = item["op_in"] - item["op_out"]
         lines.append(f"| {month} | {_fmt_money(item['op_in'])} | {_fmt_money(item['op_out'])} | {_fmt_money(net_month)} | {_fmt_count(item.get('op_count'))} |")
-    if not data.get("monthly"):
+        rendered_operating_months += 1
+    if not rendered_operating_months:
         lines.append("| 未识别 | 0.00 | 0.00 | 0.00 | 0 |")
 
     def judgment(name: str, item: dict[str, Any], direction: str) -> str:
