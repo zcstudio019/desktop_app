@@ -52,6 +52,22 @@ def _compact(value: Any) -> str:
     return re.sub(r"\s+", "", _text(value))
 
 
+def _normalize_party_name(value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    text = (
+        text.replace("\u3000", "")
+        .replace("\ufeff", "")
+        .replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+        .replace("（", "(")
+        .replace("）", ")")
+    )
+    return re.sub(r"[\s\r\n\t]+", "", text)
+
+
 def _is_placeholder(value: Any) -> bool:
     return str(value).strip() in PLACEHOLDER_VALUES
 
@@ -320,8 +336,8 @@ def _row_get(row: list[Any], mapping: dict[str, int], key: str) -> Any:
 
 def _classify(tx: dict[str, Any], own_names: set[str]) -> None:
     joined = " ".join(_text(tx.get(key)) for key in ("counterparty_name", "summary", "purpose", "remark"))
-    own_name = _compact(tx.get("account_name"))
-    counterparty = _compact(tx.get("counterparty_name"))
+    own_name = _normalize_party_name(tx.get("account_name"))
+    counterparty = _normalize_party_name(tx.get("counterparty_name"))
     tx["is_self_transfer"] = bool(counterparty and (counterparty == own_name or counterparty in own_names))
     tx["is_loan_related"] = _contains_any(joined, LOAN_KEYWORDS)
     tx["is_fee"] = _contains_any(joined, FEE_KEYWORDS)
@@ -361,7 +377,7 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
     account, raw_summary = _parse_meta(rows, sheet_name, source_file, bank_name)
     placeholder_cleaned = 0
     transactions: list[dict[str, Any]] = []
-    own_names = {_compact(account.account_name)} if account.account_name else set()
+    own_names = {_normalize_party_name(account.account_name)} if account.account_name else set()
     empty_streak = 0
     for row_no, row in enumerate(rows[header_idx + 1 :], start=header_idx + 2):
         if not any(_text(cell) for cell in row):
@@ -484,8 +500,15 @@ def _account_key(account: dict[str, Any]) -> str:
     return "|".join([str(account.get("bank_name") or ""), str(account.get("account_no") or ""), str(account.get("source_file") or ""), str(account.get("sheet_name") or "")])
 
 
-def _aggregate(file_results: list[FileParseResult]) -> dict[str, Any]:
+def _aggregate(file_results: list[FileParseResult], own_party_names: set[str] | None = None) -> dict[str, Any]:
+    all_own_names = {name for name in (own_party_names or set()) if name}
+    for result in file_results:
+        normalized_name = _normalize_party_name(result.account.account_name)
+        if normalized_name:
+            all_own_names.add(normalized_name)
     raw_transactions = [tx for result in file_results for tx in result.transactions]
+    for tx in raw_transactions:
+        _classify(tx, all_own_names)
     transactions, duplicate_count = _dedupe(raw_transactions)
     account_map: dict[str, dict[str, Any]] = {}
     for result in file_results:
@@ -500,8 +523,8 @@ def _aggregate(file_results: list[FileParseResult]) -> dict[str, Any]:
     accounts = list(account_map.values())
     start, end = _period(transactions, accounts)
     monthly: dict[str, dict[str, Any]] = defaultdict(lambda: {"in": Decimal("0"), "out": Decimal("0"), "op_in": Decimal("0"), "op_out": Decimal("0"), "count": 0})
-    in_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0})
-    out_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0})
+    in_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0, "self_transfer": 0})
+    out_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0, "self_transfer": 0})
     for tx in transactions:
         month = str(tx.get("accounting_date") or "")[:7] or UNKNOWN
         amount = _money(tx.get("amount")) or Decimal("0")
@@ -514,6 +537,7 @@ def _aggregate(file_results: list[FileParseResult]) -> dict[str, Any]:
             item["amount"] += amount
             item["count"] += 1
             item["operating"] += 1 if tx.get("is_operating_inflow") else 0
+            item["self_transfer"] += 1 if tx.get("is_self_transfer") else 0
         elif tx.get("direction") == "out":
             monthly[month]["out"] += amount
             if tx.get("is_operating_outflow"):
@@ -522,6 +546,7 @@ def _aggregate(file_results: list[FileParseResult]) -> dict[str, Any]:
             item["amount"] += amount
             item["count"] += 1
             item["operating"] += 1 if tx.get("is_operating_outflow") else 0
+            item["self_transfer"] += 1 if tx.get("is_self_transfer") else 0
     return {
         "doc_type": DOC_TYPE,
         "doc_type_name": DOC_TYPE_NAME,
@@ -562,6 +587,8 @@ def _aggregate(file_results: list[FileParseResult]) -> dict[str, Any]:
             "out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out"),
             "self_transfer_in_amount": _sum(transactions, lambda tx: tx.get("direction") == "in" and tx.get("is_self_transfer")),
             "self_transfer_out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out" and tx.get("is_self_transfer")),
+            "in_amount_excluding_self_transfer": _sum(transactions, lambda tx: tx.get("direction") == "in" and not tx.get("is_self_transfer")),
+            "out_amount_excluding_self_transfer": _sum(transactions, lambda tx: tx.get("direction") == "out" and not tx.get("is_self_transfer")),
             "operating_in_amount": _sum(transactions, lambda tx: tx.get("is_operating_inflow")),
             "operating_out_amount": _sum(transactions, lambda tx: tx.get("is_operating_outflow")),
             "amount_completeness": "完整" if transactions and all(tx.get("amount") is not None for tx in transactions) else "部分缺失" if transactions else "未识别",
@@ -686,6 +713,10 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     status = "成功" if summary.get("deduped_transaction_count") else "失败"
     in_amount = _money(summary.get("in_amount")) or Decimal("0")
     out_amount = _money(summary.get("out_amount")) or Decimal("0")
+    self_transfer_in = _money(summary.get("self_transfer_in_amount")) or Decimal("0")
+    self_transfer_out = _money(summary.get("self_transfer_out_amount")) or Decimal("0")
+    in_excluding_self = _money(summary.get("in_amount_excluding_self_transfer")) or (in_amount - self_transfer_in)
+    out_excluding_self = _money(summary.get("out_amount_excluding_self_transfer")) or (out_amount - self_transfer_out)
     operating_in = _money(summary.get("operating_in_amount")) or Decimal("0")
     operating_out = _money(summary.get("operating_out_amount")) or Decimal("0")
     net = in_amount - out_amount
@@ -711,8 +742,12 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         "",
         "| 项目 | 金额/数量 |",
         "|---|---:|",
-        f"| 入账总额 | {_fmt_money(in_amount)} |",
-        f"| 出账总额 | {_fmt_money(out_amount)} |",
+        f"| 原始入账总额 | {_fmt_money(in_amount)} |",
+        f"| 原始出账总额 | {_fmt_money(out_amount)} |",
+        f"| 本方同名划转入账 | {_fmt_money(self_transfer_in)} |",
+        f"| 本方同名划转出账 | {_fmt_money(self_transfer_out)} |",
+        f"| 剔除同名划转后入账 | {_fmt_money(in_excluding_self)} |",
+        f"| 剔除同名划转后出账 | {_fmt_money(out_excluding_self)} |",
         f"| 净流入 | {_fmt_money(net)} |",
         f"| 有效经营入账 | {_fmt_money(operating_in)} |",
         f"| 有效经营出账 | {_fmt_money(operating_out)} |",
@@ -740,7 +775,10 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     if self_transfers:
         names = sorted({_display(tx.get("counterparty_name"), "") for tx in self_transfers if _display(tx.get("counterparty_name"), "")})
         related_name = names[0] if names else "本方同名账户"
-        lines.append(f"- 与“{related_name}”相关往来金额较大，应识别为内部往来或非经营性往来，不应计入有效经营收入。")
+        lines.append("- 已识别本方同名划转，相关入账和出账已从经营性现金流中剔除。")
+        lines.append("- 同名账户之间的资金往来只能反映内部资金调拨，不能作为销售回款或经营采购支出。")
+        lines.append("- 剔除同名划转后，再判断企业真实经营回款和经营支出。")
+        lines.append(f"- 与“{related_name}”相关往来金额较大，已按本方同名划转处理。")
     if not loan_like and not operating_out_rows and not self_transfers:
         lines.append("- 当前报告已剔除明显内部往来、贷款、手续费等非经营性交易后计算经营性资金表现。")
 
@@ -757,9 +795,9 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     if not data.get("monthly"):
         lines.append("| 未识别 | 0.00 | 0.00 | 0.00 | 0 |")
 
-    def judgment(name: str, item: dict[str, Any]) -> str:
+    def judgment(name: str, item: dict[str, Any], direction: str) -> str:
         if any(_display(tx.get("counterparty_name"), "") == name and tx.get("is_self_transfer") for tx in transactions):
-            return "内部往来/非经营"
+            return "本方同名划转，已剔除经营收入" if direction == "in" else "本方同名划转，已剔除经营支出"
         if item.get("operating"):
             return "部分经营性"
         return "非经营性往来"
@@ -772,7 +810,7 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         "|---|---|---:|---:|---|",
     ]
     for idx, (name, item) in enumerate(data.get("top_in") or [], start=1):
-        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item)} |")
+        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item, 'in')} |")
     if not data.get("top_in"):
         lines.append("| - | 无 | 0.00 | 0 | 无 |")
 
@@ -784,7 +822,7 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         "|---|---|---:|---:|---|",
     ]
     for idx, (name, item) in enumerate(data.get("top_out") or [], start=1):
-        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item)} |")
+        lines.append(f"| {idx} | {_display(name)} | {_fmt_money(item.get('amount'))} | {_fmt_count(item.get('count'))} | {judgment(name, item, 'out')} |")
     if not data.get("top_out"):
         lines.append("| - | 无 | 0.00 | 0 | 无 |")
 
@@ -821,12 +859,22 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def parse_bank_reconciliation_files(files: list[dict[str, str]]) -> dict[str, Any]:
+def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     file_results: list[FileParseResult] = []
     warnings: list[str] = []
+    own_party_names: set[str] = set()
+    meta = metadata or {}
+    for key in ("customer_name", "customerName", "company_name", "companyName", "name"):
+        normalized_name = _normalize_party_name(meta.get(key))
+        if normalized_name:
+            own_party_names.add(normalized_name)
     for item in files:
         file_path = item.get("file_path") or ""
         filename = item.get("file_name") or Path(file_path).name
+        for key in ("customer_name", "customerName", "company_name", "companyName", "name"):
+            normalized_name = _normalize_party_name(item.get(key))
+            if normalized_name:
+                own_party_names.add(normalized_name)
         try:
             for sheet_name, rows in _read_workbook(file_path, filename):
                 parsed = _parse_sheet(rows, sheet_name, filename)
@@ -845,7 +893,7 @@ def parse_bank_reconciliation_files(files: list[dict[str, str]]) -> dict[str, An
         except Exception as exc:
             logger.exception("[BankReconciliationDetail] parse_failed file=%s", filename)
             warnings.append(f"{filename} 解析失败：{exc}")
-    data = _aggregate(file_results)
+    data = _aggregate(file_results, own_party_names=own_party_names)
     data["warnings"] = list(dict.fromkeys([*data.get("warnings", []), *warnings]))
     data["display_markdown"] = _render_compact_display_markdown(data)
     data["markdown"] = data["display_markdown"]
@@ -869,7 +917,7 @@ class BankReconciliationDetailSkill(BaseExtractionSkill):
         files = input_data.metadata.get("files") if isinstance(input_data.metadata.get("files"), list) else None
         if not files:
             files = [{"file_path": input_data.file_path, "file_name": input_data.file_name}]
-        data = parse_bank_reconciliation_files(files)
+        data = parse_bank_reconciliation_files(files, metadata=input_data.metadata)
         markdown = data.get("display_markdown") or ""
         success = bool((data.get("summary") or {}).get("deduped_transaction_count"))
         return ExtractionResult(

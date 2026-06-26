@@ -30,6 +30,7 @@ def _save_icbc_sample(path: Path) -> None:
     ws.append(["凭证号", "对方账号", "交易时间", "借贷标志", "对方单位", "对方行号", "转入金额", "转出金额", "用途", "摘要", "附言"])
     ws.append(["I001", "123", "2025-04-27 10:00:00", "贷", "上海某项目有限公司", "17", "1,000.00", "17", "工程款", "17", "17"])
     ws.append(["I002", "456", "2026-03-24 10:00:00", "借", "上海材料有限公司", "17", "17", "500.00", "17", "采购款", "17"])
+    ws.append(["I003", "789", "2025-05-01 10:00:00", "贷", "上海意川建筑科技有限公司", "17", "2,000.00", "17", "工程款", "17", "17"])
     wb.save(path)
 
 
@@ -51,8 +52,8 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
 
     assert result["doc_type"] == "bank_reconciliation_detail"
     assert summary["file_count"] == 2
-    assert summary["raw_transaction_count"] == 4
-    assert summary["deduped_transaction_count"] == 4
+    assert summary["raw_transaction_count"] == 5
+    assert summary["deduped_transaction_count"] == 5
     assert summary["date_start"] == "2025-04-01"
     assert summary["date_end"] == "2026-03-31"
     assert "## 银行对账明细" in markdown
@@ -69,3 +70,14 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert "raw_result" not in markdown
     assert "normalized_data" not in markdown
     assert "transactions:" not in markdown
+    self_transfer_txs = [
+        tx for tx in result["transactions"]
+        if tx.get("counterparty_name") == "上海意川建筑科技有限公司"
+    ]
+    assert len(self_transfer_txs) == 2
+    assert all(tx["is_self_transfer"] for tx in self_transfer_txs)
+    assert all(tx["category"] == "本方同名划转" for tx in self_transfer_txs)
+    assert all(not tx["is_operating_inflow"] and not tx["is_operating_outflow"] for tx in self_transfer_txs)
+    assert summary["self_transfer_in_amount"] == "1002000.00"
+    assert summary["in_amount_excluding_self_transfer"] == "1000.00"
+    assert "本方同名划转，已剔除经营收入" in markdown
