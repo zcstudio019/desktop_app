@@ -19,6 +19,10 @@ def _save_shanghai_sample(path: Path) -> None:
     ws.append([None, "交易流水号", "交易时间", "记账日期", "交易方向", "交易金额", "余额", "对手账号", "对手名称", "摘要", "交易用途", "备注"])
     ws.append([None, "S001", "2025-04-01 11:12:46", "2025-04-01", "出账", "200,000.00", "800,000.00", "6222", "靖江市桐梧贸易有限公司", "跨行转账", "临空项目材料款", ""])
     ws.append([None, "S002", "2025-04-07 09:00:00", "2025-04-07", "入账", "1,000,000.00", "1,800,000.00", "0300", "上海意川建筑科技有限公司", "往来款", "", ""])
+    ws.append([None, "S003", "2025-04-08 09:00:00", "2025-04-08", "入账", "50,000.00", "1,850,000.00", "0301", "远东宏信普惠融资租赁（天津）有限公司", "放款", "融资租赁", ""])
+    ws.append([None, "S004", "2025-04-09 09:00:00", "2025-04-09", "入账", "10,000.00", "1,860,000.00", "0302", "吴卫利", "转账", "", ""])
+    ws.append([None, "S005", "2025-04-10 09:00:00", "2025-04-10", "出账", "3,000.00", "1,857,000.00", "0303", "代发专用账户", "代发", "工资", ""])
+    ws.append([None, "S006", "2025-04-11 09:00:00", "2025-04-11", "入账", "12,000.00", "1,869,000.00", "0304", "", "转账", "", ""])
     wb.save(path)
 
 
@@ -59,8 +63,8 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
 
     assert result["doc_type"] == "bank_reconciliation_detail"
     assert summary["file_count"] == 2
-    assert summary["raw_transaction_count"] == 7
-    assert summary["deduped_transaction_count"] == 7
+    assert summary["raw_transaction_count"] == 11
+    assert summary["deduped_transaction_count"] == 11
     assert summary["date_start"] == "2025-04-01"
     assert summary["date_end"] == "2026-03-31"
     shanghai_file = result["files"][0]
@@ -79,9 +83,9 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert "## 银行对账明细" in markdown
     assert "### 核心资金概览" in markdown
     assert "### 经营判断" in markdown
-    assert "### 月度资金变化" in markdown
-    assert "### 主要入账来源" in markdown
-    assert "### 主要出账对象" in markdown
+    assert "### 月度经营资金变化" in markdown
+    assert "### 主要经营入账来源" in markdown
+    assert "### 主要经营出账对象" in markdown
     assert "### 风险提示" in markdown
     assert "文件解析质量清单" not in markdown
     assert "交易明细样例" not in markdown
@@ -100,7 +104,7 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert all(tx["category"] == "内部/关联方往来" for tx in self_transfer_txs)
     assert all(not tx["is_operating_inflow"] and not tx["is_operating_outflow"] for tx in self_transfer_txs)
     assert summary["self_transfer_in_amount"] == "1002000.00"
-    assert summary["in_amount_excluding_self_transfer"] == "4000.00"
+    assert summary["in_amount_excluding_self_transfer"] == "76000.00"
     legal_rep_txs = [tx for tx in result["transactions"] if tx.get("counterparty_name") == "张三"]
     shareholder_txs = [tx for tx in result["transactions"] if tx.get("counterparty_name") == "李四"]
     assert legal_rep_txs[0]["is_excluded_related_party"]
@@ -114,18 +118,31 @@ def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_
     assert summary["excluded_related_transaction_count"] == 4
     assert summary["excluded_related_in_amount"] == "1005000.00"
     assert summary["excluded_related_out_amount"] == "4000.00"
-    assert summary["in_amount_excluding_excluded_related"] == "1000.00"
-    assert summary["out_amount_excluding_excluded_related"] == "200500.00"
+    assert summary["in_amount_excluding_excluded_related"] == "73000.00"
+    assert summary["out_amount_excluding_excluded_related"] == "203500.00"
+    assert summary["operating_in_amount"] == "1000.00"
+    assert summary["operating_out_amount"] == "200500.00"
     top_in_names = [name for name, _ in result["top_in"]]
     top_out_names = [name for name, _ in result["top_out"]]
     assert "上海意川建筑科技有限公司" not in top_in_names
     assert "张三" not in top_in_names
     assert "李四" not in top_out_names
+    assert "远东宏信普惠融资租赁（天津）有限公司" not in top_in_names
+    assert "吴卫利" not in top_in_names
+    assert "未识别" not in top_in_names
+    assert "代发专用账户" not in top_out_names
+    assert result["top_in"][0][0] == "上海某项目有限公司"
+    assert result["top_out"][0][0] == "靖江市桐梧贸易有限公司"
     assert "上海意川建筑科技有限公司" in markdown
     assert "张三" not in markdown
     assert "李四" not in markdown
-    assert "### 剔除说明" in markdown
+    assert "吴卫利" not in markdown
+    assert "远东宏信普惠融资租赁（天津）有限公司" not in markdown
+    assert "代发专用账户" not in markdown
+    assert "### 非经营性及噪音剔除说明" in markdown
     assert "已剔除内部/关联方入账" in markdown
+    assert "### 主要经营入账来源" in markdown
+    assert "### 主要经营出账对象" in markdown
 
 
 def test_shanghai_bank_reconciliation_detail_detects_b_column_header_and_meta(tmp_path: Path) -> None:
@@ -141,7 +158,7 @@ def test_shanghai_bank_reconciliation_detail_detects_b_column_header_and_meta(tm
     parsed_file = result["files"][0]
     account = result["accounts"][0]
     assert summary["file_count"] == 1
-    assert summary["deduped_transaction_count"] == 2
+    assert summary["deduped_transaction_count"] == 6
     assert result["extraction_status"] == "success"
     assert parsed_file["bank_name"] == "上海银行"
     assert parsed_file["header_row_no"] == 6
@@ -157,7 +174,7 @@ def test_shanghai_bank_reconciliation_detail_detects_b_column_header_and_meta(tm
     assert "- 来源文件：上海银行对账明细202504-202603.xlsx" in markdown
     assert "- 提取状态：成功" in markdown
     assert "- 银行名称：上海银行" in markdown
-    assert "- 交易笔数：2 笔" in markdown
+    assert "- 交易笔数：6 笔" in markdown
 
 
 def test_bank_reconciliation_detail_empty_files_returns_actionable_failure() -> None:

@@ -26,14 +26,30 @@ SCHEMA_VERSION = "bank_reconciliation_detail.agent.v1"
 PLACEHOLDER_VALUES = {"17"}
 UNKNOWN = "未识别"
 
-OPERATING_IN_KEYWORDS = ("货款", "工程款", "服务费", "项目款", "材料款", "劳务款", "咨询费", "结算款", "回款", "合同款", "进度款")
-OPERATING_OUT_KEYWORDS = ("材料款", "劳务费", "工程款", "项目款", "货款", "房租", "采购款", "咨询费", "服务费")
-LOAN_KEYWORDS = ("贷款", "放款", "还款", "贷款利息", "利息支付", "对公贷款记账")
-FEE_KEYWORDS = ("手续费", "服务费", "短信业务服务费", "工本费", "年费")
+OPERATING_IN_KEYWORDS = ("工程款", "项目款", "货款", "材料款", "服务费", "劳务款", "咨询费", "结算款", "回款", "合同款", "进度款", "施工款", "设计费", "监理费")
+OPERATING_OUT_KEYWORDS = ("材料款", "工程款", "项目款", "货款", "劳务费", "服务费", "采购款", "设备款", "租赁费", "安装费", "施工费", "分包款", "电缆款", "风管材料款", "灯具款")
+NON_OPERATING_KEYWORDS = ("借款", "还款", "退款", "保证金", "押金", "备用金", "代垫款", "内部款")
+LOAN_KEYWORDS = ("融资租赁", "普惠融资", "贷款", "放款", "还款", "贷款利息", "利息支付", "对公贷款记账", "租赁", "担保", "小企业贷款", "小企业其他短期贷款利息收入")
+FEE_KEYWORDS = ("手续费", "短信业务服务费", "工本费", "年费", "证书收入", "证书工本费", "账户服务费", "普通卡年费", "跨行汇款手续费", "到账伴侣")
 SALARY_KEYWORDS = ("工资", "代发", "薪酬", "社保", "公积金")
 TAX_KEYWORDS = ("税", "税款", "税务", "国库", "社保", "公积金")
 DEPOSIT_KEYWORDS = ("押金", "保证金", "退回")
 INTEREST_KEYWORDS = ("利息", "结息")
+UNKNOWN_COUNTERPARTY_NAMES = {"", "未识别", "未知", "空", "none", "null", "None", "NULL"}
+ORGANIZATION_KEYWORDS = ("公司", "银行", "账户", "中心", "集团", "有限", "合作社", "商行", "个体工商户", "厂", "店", "部", "局", "院", "所")
+NOISE_COUNTERPARTY_KEYWORDS = (
+    "代发专用账户",
+    "贷款利息收入",
+    "小企业其他短期贷款利息收入",
+    "对公工行证书收入",
+    "对公客户证书工本费收入",
+    "网银注册账户服务费",
+    "财智账户卡普通卡年费",
+    "跨行汇款手续费",
+    "手续费",
+    "利息",
+    "到账伴侣",
+)
 
 
 def _text(value: Any) -> str:
@@ -267,6 +283,59 @@ def _date_range(value: Any) -> tuple[str, str]:
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def _is_unknown_counterparty(value: Any) -> bool:
+    text = _display(value, "")
+    normalized = _normalize_party_name(text)
+    normalized_unknowns = {_normalize_party_name(item) for item in UNKNOWN_COUNTERPARTY_NAMES}
+    return not normalized or text in UNKNOWN_COUNTERPARTY_NAMES or normalized in normalized_unknowns
+
+
+def _is_personal_name(value: Any) -> bool:
+    text = _normalize_party_name(value)
+    if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", text):
+        return False
+    return not any(keyword in text for keyword in ORGANIZATION_KEYWORDS)
+
+
+def _is_noise_counterparty(value: Any, joined: str = "") -> bool:
+    text = _display(value, "")
+    if _is_unknown_counterparty(text):
+        return True
+    combined = f"{text} {joined}"
+    return _contains_any(combined, NOISE_COUNTERPARTY_KEYWORDS)
+
+
+def _is_organization_counterparty(value: Any) -> bool:
+    text = _display(value, "")
+    if _is_unknown_counterparty(text) or _is_personal_name(text):
+        return False
+    return bool(text) and not _is_noise_counterparty(text)
+
+
+def _is_top_eligible_operating_tx(tx: dict[str, Any], direction: str) -> bool:
+    if tx.get("direction") != direction:
+        return False
+    if direction == "in" and not tx.get("is_operating_inflow"):
+        return False
+    if direction == "out" and not tx.get("is_operating_outflow"):
+        return False
+    blocked_flags = (
+        "is_excluded_related_party",
+        "is_self_transfer",
+        "is_related_party_transfer",
+        "is_loan_related",
+        "is_fee",
+        "is_interest",
+        "is_noise",
+        "is_personal_counterparty",
+    )
+    if any(tx.get(flag) for flag in blocked_flags):
+        return False
+    if direction == "out" and any(tx.get(flag) for flag in ("is_salary", "is_tax")):
+        return False
+    return not _is_unknown_counterparty(tx.get("counterparty_name"))
 
 
 def _bank_from_filename(filename: str) -> str:
@@ -586,27 +655,41 @@ def _classify(tx: dict[str, Any], excluded_parties: dict[str, str]) -> None:
     tx["related_party_type"] = excluded_reason.replace("往来", "") if excluded_reason and excluded_reason != "本方同名划转" else ("本方同名账户" if excluded_reason else "")
     tx["is_self_transfer"] = excluded_reason == "本方同名划转"
     tx["is_related_party_transfer"] = bool(excluded_reason)
+    tx["is_noise"] = _is_noise_counterparty(tx.get("counterparty_name"), joined)
+    tx["is_personal_counterparty"] = _is_personal_name(tx.get("counterparty_name"))
     tx["is_loan_related"] = _contains_any(joined, LOAN_KEYWORDS)
     tx["is_fee"] = _contains_any(joined, FEE_KEYWORDS)
     tx["is_salary"] = _contains_any(joined, SALARY_KEYWORDS)
     tx["is_tax"] = _contains_any(joined, TAX_KEYWORDS)
     tx["is_interest"] = _contains_any(joined, INTEREST_KEYWORDS)
     is_deposit = _contains_any(joined, DEPOSIT_KEYWORDS)
-    if tx["is_excluded_related_party"]:
+    has_operating_in = _contains_any(joined, OPERATING_IN_KEYWORDS)
+    has_operating_out = _contains_any(joined, OPERATING_OUT_KEYWORDS)
+    has_non_operating = _contains_any(joined, NON_OPERATING_KEYWORDS)
+    is_org = _is_organization_counterparty(tx.get("counterparty_name"))
+    if _is_unknown_counterparty(tx.get("counterparty_name")):
+        tx["category"] = "未识别对手方"
+        tx["is_noise"] = True
+    elif tx["is_excluded_related_party"]:
         tx["category"] = "内部/关联方往来"
+        tx["is_noise"] = False
+    elif tx["is_personal_counterparty"]:
+        tx["category"] = "个人往来"
     elif tx["is_loan_related"]:
-        tx["category"] = "贷款相关"
+        tx["category"] = "融资/贷款相关"
     elif tx["is_tax"]:
         tx["category"] = "税费/社保"
     elif tx["is_salary"]:
         tx["category"] = "人工成本/代发"
     elif tx["is_fee"] or tx["is_interest"]:
-        tx["category"] = "费用类支出"
+        tx["category"] = "手续费/利息"
     elif is_deposit:
         tx["category"] = "押金/保证金/退款"
-    elif tx.get("direction") == "in" and tx.get("counterparty_name") and _contains_any(joined, OPERATING_IN_KEYWORDS) and not tx["is_interest"]:
+    elif tx["is_noise"]:
+        tx["category"] = "未识别对手方"
+    elif tx.get("direction") == "in" and is_org and has_operating_in and not has_non_operating:
         tx["category"] = "经营性入账"
-    elif tx.get("direction") == "out" and _contains_any(joined, OPERATING_OUT_KEYWORDS):
+    elif tx.get("direction") == "out" and is_org and has_operating_out and not has_non_operating:
         tx["category"] = "经营性出账"
     else:
         tx["category"] = "非经营性往来"
@@ -807,7 +890,7 @@ def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, 
             account_map[key]["deduped_count"] += 1
     accounts = list(account_map.values())
     start, end = _period(transactions, accounts)
-    monthly: dict[str, dict[str, Any]] = defaultdict(lambda: {"in": Decimal("0"), "out": Decimal("0"), "op_in": Decimal("0"), "op_out": Decimal("0"), "count": 0})
+    monthly: dict[str, dict[str, Any]] = defaultdict(lambda: {"in": Decimal("0"), "out": Decimal("0"), "op_in": Decimal("0"), "op_out": Decimal("0"), "count": 0, "op_count": 0})
     in_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0})
     out_counter: dict[str, dict[str, Any]] = defaultdict(lambda: {"amount": Decimal("0"), "count": 0, "operating": 0})
     for tx in transactions:
@@ -818,20 +901,22 @@ def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, 
             monthly[month]["in"] += amount
             if tx.get("is_operating_inflow"):
                 monthly[month]["op_in"] += amount
-            if not (tx.get("is_excluded_related_party") or tx.get("is_self_transfer") or tx.get("is_related_party_transfer")):
+                monthly[month]["op_count"] += 1
+            if _is_top_eligible_operating_tx(tx, "in"):
                 item = in_counter[_display(tx.get("counterparty_name"))]
                 item["amount"] += amount
                 item["count"] += 1
-                item["operating"] += 1 if tx.get("is_operating_inflow") else 0
+                item["operating"] += 1
         elif tx.get("direction") == "out":
             monthly[month]["out"] += amount
             if tx.get("is_operating_outflow"):
                 monthly[month]["op_out"] += amount
-            if not (tx.get("is_excluded_related_party") or tx.get("is_self_transfer") or tx.get("is_related_party_transfer")):
+                monthly[month]["op_count"] += 1
+            if _is_top_eligible_operating_tx(tx, "out"):
                 item = out_counter[_display(tx.get("counterparty_name"))]
                 item["amount"] += amount
                 item["count"] += 1
-                item["operating"] += 1 if tx.get("is_operating_outflow") else 0
+                item["operating"] += 1
     return {
         "doc_type": DOC_TYPE,
         "doc_type_name": DOC_TYPE_NAME,
@@ -880,6 +965,18 @@ def _aggregate(file_results: list[FileParseResult], excluded_parties: dict[str, 
             "excluded_related_out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out" and (tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer"))),
             "in_amount_excluding_excluded_related": _sum(transactions, lambda tx: tx.get("direction") == "in" and not (tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer"))),
             "out_amount_excluding_excluded_related": _sum(transactions, lambda tx: tx.get("direction") == "out" and not (tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer"))),
+            "personal_transaction_count": sum(1 for tx in transactions if tx.get("category") == "个人往来"),
+            "personal_in_amount": _sum(transactions, lambda tx: tx.get("direction") == "in" and tx.get("category") == "个人往来"),
+            "personal_out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out" and tx.get("category") == "个人往来"),
+            "loan_interest_transaction_count": sum(1 for tx in transactions if tx.get("category") == "融资/贷款相关" or (tx.get("category") == "手续费/利息" and tx.get("is_interest") and not tx.get("is_fee"))),
+            "loan_interest_in_amount": _sum(transactions, lambda tx: tx.get("direction") == "in" and (tx.get("category") == "融资/贷款相关" or (tx.get("category") == "手续费/利息" and tx.get("is_interest") and not tx.get("is_fee")))),
+            "loan_interest_out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out" and (tx.get("category") == "融资/贷款相关" or (tx.get("category") == "手续费/利息" and tx.get("is_interest") and not tx.get("is_fee")))),
+            "salary_tax_fee_transaction_count": sum(1 for tx in transactions if tx.get("category") in {"税费/社保", "人工成本/代发"} or (tx.get("category") == "手续费/利息" and tx.get("is_fee"))),
+            "salary_tax_fee_in_amount": _sum(transactions, lambda tx: tx.get("direction") == "in" and (tx.get("category") in {"税费/社保", "人工成本/代发"} or (tx.get("category") == "手续费/利息" and tx.get("is_fee")))),
+            "salary_tax_fee_out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out" and (tx.get("category") in {"税费/社保", "人工成本/代发"} or (tx.get("category") == "手续费/利息" and tx.get("is_fee")))),
+            "noise_transaction_count": sum(1 for tx in transactions if tx.get("category") == "未识别对手方"),
+            "noise_in_amount": _sum(transactions, lambda tx: tx.get("direction") == "in" and tx.get("category") == "未识别对手方"),
+            "noise_out_amount": _sum(transactions, lambda tx: tx.get("direction") == "out" and tx.get("category") == "未识别对手方"),
             "operating_in_amount": _sum(transactions, lambda tx: tx.get("is_operating_inflow")),
             "operating_out_amount": _sum(transactions, lambda tx: tx.get("is_operating_outflow")),
             "amount_completeness": "完整" if transactions and all(tx.get("amount") is not None for tx in transactions) else "部分缺失" if transactions else "未识别",
@@ -1008,9 +1105,21 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     out_amount = _money(summary.get("out_amount")) or Decimal("0")
     excluded_related_in = _money(summary.get("excluded_related_in_amount")) or _money(summary.get("self_transfer_in_amount")) or Decimal("0")
     excluded_related_out = _money(summary.get("excluded_related_out_amount")) or _money(summary.get("self_transfer_out_amount")) or Decimal("0")
-    in_excluding_related = _money(summary.get("in_amount_excluding_excluded_related")) or (in_amount - excluded_related_in)
-    out_excluding_related = _money(summary.get("out_amount_excluding_excluded_related")) or (out_amount - excluded_related_out)
+    personal_in = _money(summary.get("personal_in_amount")) or Decimal("0")
+    personal_out = _money(summary.get("personal_out_amount")) or Decimal("0")
+    loan_interest_in = _money(summary.get("loan_interest_in_amount")) or Decimal("0")
+    loan_interest_out = _money(summary.get("loan_interest_out_amount")) or Decimal("0")
+    salary_tax_fee_in = _money(summary.get("salary_tax_fee_in_amount")) or Decimal("0")
+    salary_tax_fee_out = _money(summary.get("salary_tax_fee_out_amount")) or Decimal("0")
+    noise_in = _money(summary.get("noise_in_amount")) or Decimal("0")
+    noise_out = _money(summary.get("noise_out_amount")) or Decimal("0")
+    in_excluding_related = in_amount - excluded_related_in - personal_in - loan_interest_in - noise_in
+    out_excluding_related = out_amount - excluded_related_out - personal_out - loan_interest_out - salary_tax_fee_out - noise_out
     excluded_related_count = int(summary.get("excluded_related_transaction_count") or 0)
+    personal_count = int(summary.get("personal_transaction_count") or 0)
+    loan_interest_count = int(summary.get("loan_interest_transaction_count") or 0)
+    salary_tax_fee_count = int(summary.get("salary_tax_fee_transaction_count") or 0)
+    noise_count = int(summary.get("noise_transaction_count") or 0)
     operating_in = _money(summary.get("operating_in_amount")) or Decimal("0")
     operating_out = _money(summary.get("operating_out_amount")) or Decimal("0")
     net = in_amount - out_amount
@@ -1019,6 +1128,8 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     excluded_related_rows = [tx for tx in transactions if tx.get("is_excluded_related_party") or tx.get("is_self_transfer") or tx.get("is_related_party_transfer")]
     loan_like = [tx for tx in transactions if tx.get("is_loan_related") or tx.get("is_interest")]
     fee_like = [tx for tx in transactions if tx.get("is_fee")]
+    personal_like = [tx for tx in transactions if tx.get("is_personal_counterparty") and not (tx.get("is_excluded_related_party") or tx.get("is_related_party_transfer"))]
+    noise_like = [tx for tx in transactions if tx.get("is_noise")]
     operating_out_rows = [tx for tx in transactions if tx.get("is_operating_outflow")]
 
     lines: list[str] = [
@@ -1043,6 +1154,14 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
         f"| 原始出账总额 | {_fmt_money(out_amount)} |",
         f"| 已剔除内部/关联方入账 | {_fmt_money(excluded_related_in)} |",
         f"| 已剔除内部/关联方出账 | {_fmt_money(excluded_related_out)} |",
+        f"| 已剔除个人往来入账 | {_fmt_money(personal_in)} |",
+        f"| 已剔除个人往来出账 | {_fmt_money(personal_out)} |",
+        f"| 已剔除贷款/融资/利息类入账 | {_fmt_money(loan_interest_in)} |",
+        f"| 已剔除贷款/融资/利息类出账 | {_fmt_money(loan_interest_out)} |",
+        f"| 已剔除工资/代发/税费/手续费类入账 | {_fmt_money(salary_tax_fee_in)} |",
+        f"| 已剔除工资/代发/税费/手续费类出账 | {_fmt_money(salary_tax_fee_out)} |",
+        f"| 已剔除未识别及噪音入账 | {_fmt_money(noise_in)} |",
+        f"| 已剔除未识别及噪音出账 | {_fmt_money(noise_out)} |",
         f"| 剔除后入账 | {_fmt_money(in_excluding_related)} |",
         f"| 剔除后出账 | {_fmt_money(out_excluding_related)} |",
         f"| 有效经营入账 | {_fmt_money(operating_in)} |",
@@ -1075,37 +1194,38 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
     if not loan_like and not operating_out_rows and not excluded_related_rows:
         lines.append("- 当前报告已剔除明显内部往来、贷款、手续费等非经营性交易后计算经营性资金表现。")
 
-    if excluded_related_rows:
+    if excluded_related_rows or personal_like or loan_like or fee_like or noise_like:
         lines += [
             "",
-            "### 剔除说明",
+            "### 非经营性及噪音剔除说明",
             "",
-            f"- 已剔除内部/关联方往来 {_fmt_count(excluded_related_count or len(excluded_related_rows))} 笔，涉及金额 {_fmt_money(excluded_related_in + excluded_related_out)}。",
-            "- 剔除对象包括本方同名账户、法定代表人、股东及已识别关联方。",
-            "- 上述交易不纳入有效经营入账、有效经营出账和经营净流入。",
+            f"- 已剔除内部/关联方往来：{_fmt_count(excluded_related_count or len(excluded_related_rows))} 笔，金额 {_fmt_money(excluded_related_in + excluded_related_out)}。",
+            f"- 已剔除个人往来：{_fmt_count(personal_count or len(personal_like))} 笔，金额 {_fmt_money(personal_in + personal_out)}。",
+            f"- 已剔除贷款/融资/利息类：{_fmt_count(loan_interest_count or len(loan_like))} 笔，金额 {_fmt_money(loan_interest_in + loan_interest_out)}。",
+            f"- 已剔除工资/代发/税费/手续费类：{_fmt_count(salary_tax_fee_count)} 笔，金额 {_fmt_money(salary_tax_fee_in + salary_tax_fee_out)}。",
+            f"- 已剔除未识别对手方及噪音账户：{_fmt_count(noise_count or len(noise_like))} 笔，金额 {_fmt_money(noise_in + noise_out)}。",
+            "- 上述交易不纳入有效经营入账、有效经营出账和经营净流入，默认不展示具体对手方名称。",
         ]
 
     lines += [
         "",
-        "### 月度资金变化",
+        "### 月度经营资金变化",
         "",
-        "| 月份 | 入账金额 | 出账金额 | 净流入 | 交易笔数 |",
+        "| 月份 | 有效经营入账 | 有效经营出账 | 经营净流入 | 经营交易笔数 |",
         "|---|---:|---:|---:|---:|",
     ]
     for month, item in (data.get("monthly") or {}).items():
-        net_month = item["in"] - item["out"]
-        lines.append(f"| {month} | {_fmt_money(item['in'])} | {_fmt_money(item['out'])} | {_fmt_money(net_month)} | {_fmt_count(item['count'])} |")
+        net_month = item["op_in"] - item["op_out"]
+        lines.append(f"| {month} | {_fmt_money(item['op_in'])} | {_fmt_money(item['op_out'])} | {_fmt_money(net_month)} | {_fmt_count(item.get('op_count'))} |")
     if not data.get("monthly"):
         lines.append("| 未识别 | 0.00 | 0.00 | 0.00 | 0 |")
 
     def judgment(name: str, item: dict[str, Any], direction: str) -> str:
-        if item.get("operating"):
-            return "部分经营性"
-        return "非经营性往来"
+        return "经营性入账" if direction == "in" else "经营性出账"
 
     lines += [
         "",
-        "### 主要入账来源",
+        "### 主要经营入账来源",
         "",
         "| 排名 | 对方户名 | 入账金额 | 笔数 | 判断 |",
         "|---|---|---:|---:|---|",
@@ -1117,7 +1237,7 @@ def _render_compact_display_markdown(data: dict[str, Any]) -> str:
 
     lines += [
         "",
-        "### 主要出账对象",
+        "### 主要经营出账对象",
         "",
         "| 排名 | 对方户名 | 出账金额 | 笔数 | 判断 |",
         "|---|---|---:|---:|---|",
