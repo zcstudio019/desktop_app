@@ -288,35 +288,118 @@ def transaction_fingerprint(tx: dict[str, Any]) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
+
 def _unified_category(tx: dict[str, Any]) -> str:
     text = f"{tx.get('summary') or ''} {tx.get('purpose') or ''} {tx.get('counterparty_name') or ''}"
     direction = tx.get("direction")
+    counterparty_name = str(tx.get("counterparty_name") or "").strip()
+    bank_fee_keywords = (
+        "\u5bf9\u516c\u4e2d\u95f4\u4e1a\u52a1\u6536\u5165",
+        "\u7f51\u4e0a\u4f01\u4e1a\u94f6\u884c\u670d\u52a1\u8d39",
+        "\u7f51\u4e0a\u4f01\u4e1a\u94f6\u884c-\u7f51\u4e0a\u4f01\u4e1a\u94f6\u884c\u670d\u52a1\u8d39",
+        "\u624b\u7eed\u8d39",
+        "\u670d\u52a1\u8d39\u6536\u5165",
+        "\u94f6\u884c\u8d39\u7528",
+        "\u5de5\u672c\u8d39",
+        "\u7f51\u94f6\u8d39",
+        "\u77ed\u4fe1\u8d39",
+        "\u8d26\u6237\u7ba1\u7406\u8d39",
+        "\u7ed3\u7b97\u4e1a\u52a1\u6536\u5165",
+        "\u5176\u4ed6\u56fd\u5185\u7ed3\u7b97\u4e1a\u52a1\u6536\u5165",
+    )
+    reimbursement_keywords = (
+        "\u62a5\u9500",
+        "\u9910\u8d39",
+        "\u5dee\u65c5\u8d39",
+        "\u8bdd\u8d39",
+        "\u52a0\u6cb9\u8d39",
+        "\u505c\u8f66\u8d39",
+        "\u62db\u5f85\u8d39",
+        "\u4f4f\u5bbf\u8d39",
+        "\u4ea4\u901a\u8d39",
+        "\u4e1a\u52a1\u62db\u5f85\u8d39",
+        "\u805a\u9910",
+        "\u5feb\u9012\u8d39",
+        "\u529e\u516c\u8d39",
+        "\u56de\u5bb6",
+        "\u9910\u8865",
+        "\u4fee\u8f66\u8d39",
+        "\u4fdd\u517b\u7ef4\u4fee\u8d39",
+    )
+    operating_in_keywords = (
+        "\u5de5\u7a0b\u6b3e",
+        "\u9879\u76ee\u6b3e",
+        "\u8d27\u6b3e",
+        "\u6750\u6599\u6b3e",
+        "\u52b3\u52a1\u6b3e",
+        "\u670d\u52a1\u8d39",
+        "\u91c7\u8d2d\u6b3e",
+        "\u8bbe\u5907\u6b3e",
+        "\u5206\u5305\u6b3e",
+        "\u82d7\u6728\u6b3e",
+        "\u7eff\u5316\u52b3\u52a1",
+        "\u666f\u89c2",
+        "\u65bd\u5de5",
+        "\u9879\u76ee\u670d\u52a1\u8d39",
+        "\u6276\u6301\u8d44\u91d1",
+        "\u8fdb\u5ea6\u6b3e",
+        "\u56de\u6b3e",
+    )
+    operating_out_keywords = (
+        "\u5de5\u7a0b\u6b3e",
+        "\u9879\u76ee\u6b3e",
+        "\u8d27\u6b3e",
+        "\u6750\u6599\u6b3e",
+        "\u52b3\u52a1\u8d39",
+        "\u670d\u52a1\u8d39",
+        "\u91c7\u8d2d\u6b3e",
+        "\u8bbe\u5907\u6b3e",
+        "\u5206\u5305\u6b3e",
+        "\u82d7\u6728\u6b3e",
+        "\u7eff\u5316\u52b3\u52a1",
+        "\u666f\u89c2",
+        "\u65bd\u5de5",
+        "\u9879\u76ee\u670d\u52a1\u8d39",
+    )
     if tx.get("is_internal_account_transfer") or tx.get("is_self_transfer"):
-        return "内部账户划转"
+        return "\u5185\u90e8\u8d26\u6237\u5212\u8f6c"
     if tx.get("is_related_person_transfer"):
-        return "关联人转账"
-    if any(item in text for item in ("ETC", "车辆", "油卡")):
-        return "ETC/车辆费用"
-    if tx.get("is_bank_fee") or any(item in text for item in ("手续费", "短信费", "网银费", "电子银行")):
-        return "银行费用"
-    if tx.get("is_tax_payment") or any(item in text for item in ("缴税", "扣款（缴税）")):
-        return "税费"
-    if tx.get("is_salary_payment") or any(item in text for item in ("工资", "年终奖", "代发专用账户")):
-        return "工资代发"
-    if any(item in text for item in ("贷款发放",)):
-        return "贷款发放"
-    if tx.get("is_loan_related") or any(item in text for item in ("贷款归还", "还贷款", "融资还款", "融资租赁", "担保费")):
-        return "贷款归还"
-    if tx.get("is_interest_related") or "利息" in text:
-        return "利息收入" if direction == "入账" else "利息支出"
-    if any(item in text for item in ("往来款", "借款", "还借款", "归还借款")):
-        return "往来入账" if direction == "入账" else ("往来出账" if direction == "出账" else "资金拆借")
-    if any(item in text for item in ("工程款", "项目款", "材料款", "劳务款", "货款", "扶持资金", "工程款安装")):
-        return "经营入账" if direction == "入账" else ("经营出账" if direction == "出账" else "其他")
-    if any(item in text for item in ("电缆款", "桥架款", "风管", "灯具", "房租", "服务费", "咨询费", "快递费", "水费", "餐费", "报销")) and direction == "出账":
-        return "经营出账"
-    return str(tx.get("category") or "其他")
+        return "\u5173\u8054\u4eba\u8f6c\u8d26"
+    if any(item in text for item in bank_fee_keywords):
+        return "\u94f6\u884c\u8d39\u7528"
+    if _is_personal_counterparty(counterparty_name):
+        return "\u4e2a\u4eba\u62a5\u9500/\u4e2a\u4eba\u5f80\u6765"
+    if any(item in text for item in reimbursement_keywords):
+        return "\u8d39\u7528\u62a5\u9500"
+    if any(item in text for item in ("ETC", "\u8f66\u724c", "\u6cb9\u5361")):
+        return "ETC/\u8f66\u8f86\u8d39\u7528"
+    if tx.get("is_bank_fee") or any(item in text for item in ("\u624b\u7eed\u8d39", "\u77ed\u4fe1\u8d39", "\u7f51\u94f6\u8d39", "\u7535\u5b50\u94f6\u884c")):
+        return "\u94f6\u884c\u8d39\u7528"
+    if tx.get("is_tax_payment") or any(item in text for item in ("\u7f34\u7a0e", "\u6263\u6b3e\uff08\u7f34\u7a0e\uff09")):
+        return "\u7a0e\u8d39"
+    if tx.get("is_salary_payment") or any(item in text for item in ("\u5de5\u8d44", "\u4ee3\u53d1\u5956", "\u4ee3\u53d1\u4e13\u7528\u8d26\u6237")):
+        return "\u5de5\u8d44\u4ee3\u53d1"
+    if any(item in text for item in ("\u8d37\u6b3e\u53d1\u653e",)):
+        return "\u8d37\u6b3e\u53d1\u653e"
+    if tx.get("is_loan_related") or any(item in text for item in ("\u8d37\u6b3e\u5f52\u8fd8", "\u8fd8\u8d37\u6b3e", "\u878d\u8d44\u79df\u8d41", "\u8d37\u6b3e\u5229\u606f", "\u653e\u6b3e")):
+        return "\u8d37\u6b3e\u5f52\u8fd8"
+    if tx.get("is_interest_related") or "\u5229\u606f" in text:
+        return "\u5229\u606f\u6536\u5165" if direction == "\u5165\u8d26" else "\u5229\u606f\u652f\u51fa"
+    if any(item in text for item in ("\u4fdd\u8bc1\u91d1", "\u62bc\u91d1", "\u5907\u7528\u91d1", "\u5f52\u8fd8\u6b3e")):
+        return "\u8d44\u91d1\u5f80\u6765" if direction == "\u5165\u8d26" else ("\u8d44\u91d1\u652f\u51fa" if direction == "\u51fa\u8d26" else "\u8d44\u91d1\u5f80\u6765")
+    if direction == "\u5165\u8d26" and any(item in text for item in operating_in_keywords):
+        return "\u7ecf\u8425\u5165\u8d26"
+    if direction == "\u51fa\u8d26" and any(item in text for item in operating_out_keywords):
+        return "\u7ecf\u8425\u51fa\u8d26"
+    return str(tx.get("category") or "\u5176\u4ed6")
 
+
+def _is_personal_counterparty(name: Any) -> bool:
+    text = str(name or "").strip()
+    if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", text):
+        return False
+    organization_words = ("\u516c\u53f8", "\u94f6\u884c", "\u5546\u884c", "\u5408\u4f5c\u793e", "\u4e8b\u52a1\u6240", "\u4e2d\u5fc3", "\u96c6\u56e2", "\u6709\u9650", "\u4e2a\u4f53\u5de5\u5546\u6237")
+    return not any(word in text for word in organization_words)
 
 def _related_roles(customer_profile: dict[str, Any] | None, related_person_names: list[str] | None, related_person_roles: dict[str, str] | None) -> dict[str, dict[str, str]]:
     metadata = {"customer_profile": customer_profile or {}, "related_person_names": related_person_names or [], "related_person_roles": related_person_roles or {}}
@@ -556,7 +639,7 @@ def aggregate_customer_bank_statements(
                 "transaction_count": len(quality["valid_transactions"]),
                 "raw_transaction_count": len(quality["valid_transactions"]),
                 "valid_transaction_count": len(quality["valid_transactions"]),
-                "status": "?????????",
+                "status": "已纳入聚合",
             })
             logger.info("[BankStatementAggregator] monthly_group_file_count=%s", group["file_count"])
             logger.info("[BankStatementAggregator] monthly_group_transaction_count=%s", group["transaction_count"])
@@ -618,6 +701,12 @@ def aggregate_customer_bank_statements(
             tx["exclude_from_effective_flow"] = True
             tx["exclude_reason"] = "公司账户与法人/关联人之间转账，已从有效经营流水中剔除"
         tx["unified_category"] = _unified_category(tx)
+        if tx["unified_category"] in {"\u94f6\u884c\u8d39\u7528", "ETC/\u8f66\u8f86\u8d39\u7528", "\u8d39\u7528\u62a5\u9500", "\u4e2a\u4eba\u62a5\u9500/\u4e2a\u4eba\u5f80\u6765"}:
+            tx["exclude_from_effective_flow"] = True
+        if tx["unified_category"] == "\u94f6\u884c\u8d39\u7528":
+            tx["is_bank_fee"] = True
+        if tx["unified_category"] == "\u4e2a\u4eba\u62a5\u9500/\u4e2a\u4eba\u5f80\u6765":
+            tx["is_personal_counterparty"] = True
         if tx["unified_category"] in {"银行费用", "ETC/车辆费用"}:
             tx["is_bank_fee"] = True
             tx["exclude_from_effective_flow"] = True
@@ -982,7 +1071,7 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         for item in data.get("supplier_outflow_summary") or []:
             lines.append(f"| {item.get('rank')} | {item.get('name')} | {_money(item.get('amount'))} | {item.get('count')} | {item.get('ratio', 0):.2%} | {item.get('covered_months') or UNKNOWN} | {item.get('main_purpose') or '—'} |")
 
-        lines += ["", "### ??????????"]
+        lines += ["", "### 内部划转及关联人往来"]
         lines += [
             "| 类型 | 笔数 | 金额 | 说明 |",
             "|---|---:|---:|---|",

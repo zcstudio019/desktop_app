@@ -2766,6 +2766,7 @@ async def _build_document_sections(storage_service: Any, customer_id: str) -> tu
         and not _is_enterprise_credit_type(item.get('extraction_type'))
         and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in ENTERPRISE_FLOW_TYPES
         and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in PERSONAL_FLOW_TYPES
+        and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') not in {'bank_statement', 'bank_receipt_bundle'}
         and (normalize_document_type_code(item.get('extraction_type') or '') or item.get('extraction_type') or '') != 'financial_report'
     ]
 

@@ -3194,11 +3194,11 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         f"- 有效经营入账笔数：{result.get('effective_operating_inflow_count', 0)} 笔", "",
         "| 排名 | 入账方名称 | 入账笔数 | 可识别金额 | 主要用途/摘要 |", "|---:|---|---:|---:|---|",
     ]
-    for index, item in enumerate(result.get("effective_inflow_counterparties") or [], start=1):
+    for index, item in enumerate((result.get("effective_inflow_counterparties") or [])[:10], start=1):
         amount = _money(item.get("recognizable_amount")) if item.get("recognized_amount_count") else "未识别"
         lines.append(f"| {index} | {_cell(item.get('counterparty'))} | {item.get('count', 0)} | {amount} | {_cell(item.get('main_description'))} |")
     lines += ["", "### 有效经营入账明细", "| 序号 | 交易时间 | 入账方名称 | 用途 | 摘要 | 金额 |", "|---:|---|---|---|---|---:|"]
-    for index, tx in enumerate(result.get("effective_operating_inflow_transactions") or [], start=1):
+    for index, tx in enumerate((result.get("effective_operating_inflow_transactions") or [])[:10], start=1):
         lines.append(f"| {index} | {_cell(tx.get('交易时间'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_purpose'))} | {_cell(tx.get('clean_summary'))} | {_money(tx.get('金额'))} |")
     lines += [
         "", "### 有效经营出账方汇总",
@@ -3207,14 +3207,14 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
         f"- 有效经营出账笔数：{result.get('effective_operating_outflow_count', 0)} 笔", "",
         "| 排名 | 出账方名称 | 出账笔数 | 可识别金额 | 主要用途/摘要 |", "|---:|---|---:|---:|---|",
     ]
-    for index, item in enumerate(result.get("effective_outflow_counterparties") or [], start=1):
+    for index, item in enumerate((result.get("effective_outflow_counterparties") or [])[:10], start=1):
         amount = _money(item.get("recognizable_amount")) if item.get("recognized_amount_count") else "未识别"
         lines.append(f"| {index} | {_cell(item.get('counterparty'))} | {item.get('count', 0)} | {amount} | {_cell(item.get('main_description'))} |")
     lines += ["", "### 有效经营出账明细", "| 序号 | 交易时间 | 出账方名称 | 用途 | 摘要 | 金额 |", "|---:|---|---|---|---|---:|"]
-    for index, tx in enumerate(result.get("effective_operating_outflow_transactions") or [], start=1):
+    for index, tx in enumerate((result.get("effective_operating_outflow_transactions") or [])[:10], start=1):
         lines.append(f"| {index} | {_cell(tx.get('交易时间'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_purpose'))} | {_cell(tx.get('clean_summary'))} | {_money(tx.get('金额'))} |")
     lines += ["", "### 关联人及内部往来", "| 类型 | 交易时间 | 收支方向 | 对方名称 | 关联关系 | 摘要 | 用途 | 金额 | 剔除说明 |", "|---|---|---|---|---|---|---|---:|---|"]
-    for tx in result.get("related_internal_transactions") or []:
+    for tx in (result.get("related_internal_transactions") or [])[:20]:
         tx_type = "关联人转账" if tx.get("is_related_person_transfer") else "本方同名/关联账户"
         relation = tx.get("related_person_role") or ("本方同名或关联账户" if tx.get("is_self_transfer") else "—")
         lines.append(
@@ -3225,13 +3225,13 @@ def render_bank_statement_markdown(result: dict[str, Any]) -> str:
     for item in result.get("exclusion_summary") or []:
         lines.append(f"| {_cell(item.get('type'))} | {item.get('count', 0)} | {_cell(item.get('description'))} |")
     lines += ["", "### 贷款及融资相关交易", "| 交易时间 | 收支方向 | 对方单位 | 摘要 | 金额 | 说明 |", "|---|---|---|---|---:|---|"]
-    for tx in result.get("loan_related_transactions") or []:
+    for tx in (result.get("loan_related_transactions") or [])[:20]:
         lines.append(f"| {_cell(tx.get('交易时间'))} | {_cell(tx.get('收支方向'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_summary') or tx.get('clean_purpose'))} | {_money(tx.get('金额'))} | {_cell(tx.get('交易分类'))} |")
     lines += ["", "### 银行费用及利息", "| 交易时间 | 类型 | 收支方向 | 金额 | 摘要 |", "|---|---|---|---:|---|"]
-    for tx in result.get("fee_interest_transactions") or []:
+    for tx in (result.get("fee_interest_transactions") or [])[:20]:
         lines.append(f"| {_cell(tx.get('交易时间'))} | {_cell(tx.get('交易分类'))} | {_cell(tx.get('收支方向'))} | {_money(tx.get('金额'))} | {_cell(tx.get('clean_summary') or tx.get('clean_purpose') or tx.get('display_remark'))} |")
     lines += ["", "### 重点交易明细", "| 序号 | 交易时间 | 收支方向 | 对方单位 | 用途 | 摘要 | 金额 | 分类 | 是否剔除 |", "|---:|---|---|---|---|---|---:|---|---|"]
-    for index, tx in enumerate(result.get("focus_transactions") or [], start=1):
+    for index, tx in enumerate((result.get("focus_transactions") or [])[:20], start=1):
         exclusion = f"是，{tx.get('exclude_reason')}" if tx.get("exclude_from_effective_flow") else "否"
         lines.append(f"| {index} | {_cell(tx.get('交易时间'))} | {_cell(tx.get('收支方向'))} | {_cell(tx.get('clean_counterparty_name'))} | {_cell(tx.get('clean_purpose'))} | {_cell(tx.get('clean_summary'))} | {_money(tx.get('金额'))} | {_cell(tx.get('交易分类'))} | {_cell(exclusion)} |")
     lines += ["", "### 风险提示"] + [f"- {item}" for item in result.get("risk_tips") or []]
