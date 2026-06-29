@@ -299,11 +299,11 @@ const FILE_TYPES: FileTypeConfig[] = [
   {
     id: 'bank_reconciliation_detail',
     name: '银行对账明细',
-    formats: 'XLSX / XLS / CSV',
+    formats: 'XLSX / XLS / CSV / PDF',
     color: 'text-lime-700',
     bgColor: 'bg-lime-50',
     icon: Landmark,
-    acceptedExtensions: ['.xlsx', '.xls', '.csv'],
+    acceptedExtensions: ['.xlsx', '.xls', '.csv', '.pdf'],
     storeOriginal: true,
   },
 ];

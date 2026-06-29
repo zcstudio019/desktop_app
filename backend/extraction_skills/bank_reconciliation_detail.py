@@ -507,6 +507,326 @@ def _read_workbook(file_path: str, filename: str) -> list[tuple[str, list[list[A
     raise RuntimeError(f"不支持的文件格式：{suffix or '未知'}")
 
 
+PDF_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "date": ("交易时间", "交易日期", "记账日期", "入账日期", "发生日期", "日期"),
+    "direction": ("交易方向", "借贷标志", "借/贷", "收支", "借方/贷方", "收入/支出"),
+    "amount": ("交易金额", "发生额", "借方金额", "贷方金额", "转入金额", "转出金额", "收入金额", "支出金额"),
+    "balance": ("余额", "账户余额"),
+    "counterparty": ("对方户名", "对手名称", "对方单位", "对方名称", "对方账号", "对手账号"),
+    "summary": ("摘要", "用途", "交易用途", "附言", "备注"),
+}
+
+PDF_BANK_NAMES = (
+    "工商银行",
+    "上海银行",
+    "建设银行",
+    "农业银行",
+    "中国银行",
+    "招商银行",
+    "交通银行",
+    "浦发银行",
+    "民生银行",
+    "平安银行",
+    "网商银行",
+    "泰隆银行",
+)
+
+
+def _metadata_pages(metadata: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return []
+    pages = metadata.get("raw_pages") or metadata.get("pages") or []
+    return pages if isinstance(pages, list) else []
+
+
+def _pdf_page_text(page: dict[str, Any]) -> str:
+    parts = [str(page.get("text") or "")]
+    for row in page.get("table_rows") or []:
+        if isinstance(row, (list, tuple)):
+            line = " ".join(_text(cell) for cell in row if _text(cell))
+        else:
+            line = _text(row)
+        if line:
+            parts.append(line)
+    return "\n".join(part for part in parts if part)
+
+
+def _load_pdf_pages(file_path: str, metadata: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], int, bool, int, str]:
+    raw_pages = _metadata_pages(metadata)
+    native_pages: list[dict[str, Any]] = []
+    page_count = 0
+    fail_reason = ""
+    try:
+        import fitz  # type: ignore
+
+        with fitz.open(str(file_path)) as document:
+            page_count = len(document)
+            for page_no, page in enumerate(document, start=1):
+                native_pages.append({"page": page_no, "text": page.get_text("text") or "", "source": "pdf_native"})
+    except Exception as exc:
+        fail_reason = f"PDF 文件读取失败：{exc}"
+        if raw_pages:
+            logger.warning("[BankReconciliationDetail][PDF] native_read_failed_use_raw_pages file=%s error=%s", file_path, exc)
+        else:
+            logger.exception("[BankReconciliationDetail][PDF] read_failed file=%s", file_path)
+
+    native_text_length = sum(len(_pdf_page_text(page)) for page in native_pages)
+    raw_text_length = sum(len(_pdf_page_text(page)) for page in raw_pages)
+    if native_text_length >= 20:
+        return native_pages, page_count or len(native_pages), False, native_text_length, fail_reason
+    if raw_text_length >= 20:
+        logger.info(
+            "[BankReconciliationDetail][PDF] native_text_short_use_raw_pages file=%s native_len=%s raw_len=%s",
+            file_path,
+            native_text_length,
+            raw_text_length,
+        )
+        return raw_pages, page_count or len(raw_pages), True, raw_text_length, fail_reason
+    if fail_reason:
+        return [], page_count, False, native_text_length, fail_reason
+    return native_pages, page_count or len(native_pages), False, native_text_length, "PDF 未提取到文本，OCR 也未识别到有效内容"
+
+
+def _detect_pdf_bank_name(text: str, source_file: str) -> str:
+    bank = _bank_from_filename(source_file)
+    if bank:
+        return bank
+    for name in PDF_BANK_NAMES:
+        if name in text or name in source_file:
+            return name
+    return UNKNOWN
+
+
+def _pdf_value(text: str, labels: tuple[str, ...]) -> str:
+    for label in labels:
+        pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*([^\n\r]{{1,100}})")
+        match = pattern.search(text)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        value = re.split(r"\s+(?:户名|账户名称|客户名称|账号|账户|开户行|币种|银行名称)\s*[:：]?", value, maxsplit=1)[0]
+        return _text(value)
+    return ""
+
+
+def _parse_pdf_account(text: str, source_file: str, sheet_name: str, transactions: list[dict[str, Any]] | None = None) -> AccountInfo:
+    account = AccountInfo(bank_name=_detect_pdf_bank_name(text, source_file), source_file=source_file, sheet_name=sheet_name)
+    account.account_name = _pdf_value(text, ("户名", "账户名称", "客户名称"))
+    account.account_no = re.sub(r"\D", "", _pdf_value(text, ("账号", "账户号码", "账户", "银行账号"))) or ""
+    account.branch_name = _pdf_value(text, ("开户行", "开户网点"))
+    account.currency = _pdf_value(text, ("币种",)) or "人民币"
+    start, end = _date_range(text)
+    account.date_start = start
+    account.date_end = end
+    if transactions:
+        dates = sorted(tx.get("accounting_date") for tx in transactions if tx.get("accounting_date"))
+        if dates:
+            account.date_start = account.date_start or dates[0]
+            account.date_end = account.date_end or dates[-1]
+    return account
+
+
+def _pdf_header_hit_count(line: str) -> int:
+    compact = _compact(line)
+    hits = 0
+    for aliases in PDF_HEADER_ALIASES.values():
+        if any(_compact(alias) in compact for alias in aliases):
+            hits += 1
+    return hits
+
+
+def _detect_pdf_header(pages: list[dict[str, Any]]) -> tuple[bool, int, int, str]:
+    for page in pages:
+        page_no = int(page.get("page") or 0)
+        for line_no, line in enumerate(_pdf_page_text(page).splitlines(), start=1):
+            if _pdf_header_hit_count(line) >= 4:
+                return True, page_no, line_no, line
+    return False, 0, 0, ""
+
+
+def _strip_pdf_noise(text: str) -> str:
+    text = re.sub(r"(?:19|20)\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?", " ", text)
+    text = re.sub(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}", " ", text)
+    text = re.sub(r"\b\d{8,30}\b", " ", text)
+    for token in (
+        "交易时间",
+        "交易日期",
+        "记账日期",
+        "交易方向",
+        "借贷标志",
+        "交易金额",
+        "发生额",
+        "余额",
+        "账户余额",
+        "对方户名",
+        "对手名称",
+        "对方单位",
+        "对方名称",
+        "对方账号",
+        "对手账号",
+        "摘要",
+        "用途",
+        "交易用途",
+        "附言",
+        "备注",
+        "入账",
+        "出账",
+        "借方",
+        "贷方",
+        "收入",
+        "支出",
+        "借",
+        "贷",
+    ):
+        text = text.replace(token, " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_counterparty_from_pdf_line(line: str) -> tuple[str, str]:
+    cleaned = _strip_pdf_noise(line)
+    org_match = re.search(r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,80}(?:有限公司|有限责任公司|银行|公司|中心|集团|商行|合作社|个体工商户|厂|店|局|院|所))", cleaned)
+    if org_match:
+        name = _text(org_match.group(1))
+        return name, _text(cleaned.replace(name, " ", 1))
+    person_match = re.search(r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,4})(?![\u4e00-\u9fff])", cleaned)
+    if person_match:
+        name = _text(person_match.group(1))
+        return name, _text(cleaned.replace(name, " ", 1))
+    return "", _text(cleaned)
+
+
+def _parse_pdf_transaction_line(line: str, source_file: str, bank_name: str, account: AccountInfo, row_no: int) -> dict[str, Any] | None:
+    text = _text(line)
+    if not text or _pdf_header_hit_count(text) >= 4:
+        return None
+    trade_time = _date_text(text, with_time=True)
+    accounting_date = _date_text(text)
+    if not trade_time and not accounting_date:
+        return None
+    amount_matches = re.findall(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}", text)
+    if not amount_matches:
+        return None
+    direction = ""
+    if any(word in text for word in ("入账", "贷方", "收入", "转入")):
+        direction = "in"
+    if any(word in text for word in ("出账", "借方", "支出", "转出")):
+        direction = "out"
+    if not direction:
+        if re.search(r"(?<![\u4e00-\u9fff])贷(?![\u4e00-\u9fff])", text):
+            direction = "in"
+        elif re.search(r"(?<![\u4e00-\u9fff])借(?![\u4e00-\u9fff])", text):
+            direction = "out"
+    if not direction:
+        return None
+    amount = _money(amount_matches[0])
+    if amount is None:
+        return None
+    balance = _money(amount_matches[-1]) if len(amount_matches) >= 2 else None
+    counterparty_name, remainder = _extract_counterparty_from_pdf_line(text)
+    evidence_text = _text(remainder)
+    tx = {
+        "transaction_id": "",
+        "source_file": source_file,
+        "bank_name": bank_name,
+        "account_name": account.account_name,
+        "account_no": account.account_no,
+        "trade_time": trade_time or accounting_date,
+        "accounting_date": accounting_date or (trade_time[:10] if trade_time else ""),
+        "direction": direction,
+        "direction_name": "入账" if direction == "in" else "出账",
+        "amount": amount,
+        "balance": balance,
+        "counterparty_name": counterparty_name,
+        "counterparty_account": "",
+        "counterparty_bank_no": "",
+        "summary": evidence_text,
+        "purpose": evidence_text,
+        "remark": "",
+        "voucher_no": "",
+        "raw_row_no": row_no,
+        "warning": "",
+    }
+    return tx
+
+
+def parse_pdf_bank_reconciliation_detail(file_path: str, source_file: str, metadata: dict[str, Any] | None = None) -> tuple[FileParseResult | None, list[str]]:
+    warnings: list[str] = []
+    pages, page_count, used_ocr, text_length, load_reason = _load_pdf_pages(file_path, metadata)
+    text = "\n".join(_pdf_page_text(page) for page in pages)
+    bank_name = _detect_pdf_bank_name(text, source_file)
+    header_detected, header_page_no, header_line_no, header_line = _detect_pdf_header(pages)
+    logger.info(
+        "[BankReconciliationDetail][PDF] file_name=%s file_ext=.pdf pdf_page_count=%s text_extract_length=%s used_ocr=%s detected_bank_name=%s header_detected=%s header_page_no=%s header_line=%s",
+        source_file,
+        page_count,
+        text_length,
+        used_ocr,
+        bank_name,
+        header_detected,
+        header_page_no,
+        header_line,
+    )
+    if not pages or text_length < 20:
+        reason = load_reason or "PDF 未提取到文本，OCR 也未识别到有效内容"
+        logger.error("[BankReconciliationDetail][PDF] parse_failed file=%s reason=%s", source_file, reason)
+        return None, [f"{source_file} {reason}"]
+
+    account = _parse_pdf_account(text, source_file, "PDF")
+    transactions: list[dict[str, Any]] = []
+    row_no = 0
+    for page in pages:
+        for line in _pdf_page_text(page).splitlines():
+            row_no += 1
+            tx = _parse_pdf_transaction_line(line, source_file, bank_name, account, row_no)
+            if not tx:
+                continue
+            transactions.append(tx)
+
+    if transactions:
+        account = _parse_pdf_account(text, source_file, "PDF", transactions)
+        for tx in transactions:
+            tx["account_name"] = account.account_name
+            tx["account_no"] = account.account_no
+            _classify(tx, {})
+    if not transactions:
+        reason = "PDF 中未找到交易明细表头" if not header_detected else "找到表头但未读取到交易行"
+        logger.error("[BankReconciliationDetail][PDF] parse_failed file=%s reason=%s", source_file, reason)
+        return None, [f"{source_file} {reason}"]
+
+    if not any(tx.get("amount") is not None for tx in transactions):
+        reason = "金额字段无法识别"
+        logger.error("[BankReconciliationDetail][PDF] parse_failed file=%s reason=%s", source_file, reason)
+        return None, [f"{source_file} {reason}"]
+    if not any(tx.get("accounting_date") for tx in transactions):
+        reason = "日期字段无法识别"
+        logger.error("[BankReconciliationDetail][PDF] parse_failed file=%s reason=%s", source_file, reason)
+        return None, [f"{source_file} {reason}"]
+
+    raw_summary = {"raw_transaction_count": len(transactions)}
+    if used_ocr:
+        warnings.append("PDF 原生文本较少，已使用上传链路 OCR/页面文本")
+    if not header_detected:
+        warnings.append("PDF 未稳定识别交易表头，已按日期和金额行尝试提取")
+    logger.info(
+        "[BankReconciliationDetail][PDF] parse_status=success file=%s parsed_transaction_count=%s amount_status=%s fail_reason=",
+        source_file,
+        len(transactions),
+        "完整" if all(tx.get("amount") is not None for tx in transactions) else "部分缺失",
+    )
+    return FileParseResult(
+        source_file=source_file,
+        sheet_name="PDF",
+        bank_name=bank_name,
+        header_row_no=header_line_no if header_detected else 0,
+        header_col_start=1 if header_detected else 0,
+        account=account,
+        transactions=transactions,
+        raw_summary=raw_summary,
+        placeholder_cleaned_count=0,
+        warnings=warnings,
+    ), warnings
+
+
 def _row_text(row: list[Any]) -> str:
     return " ".join(_text(cell) for cell in row if _text(cell))
 
@@ -1430,8 +1750,8 @@ def _failure_result(reason: str, suggestion: str = "请检查上传文件是否�
     }
 
 
-def _normalize_input_files(files: Any) -> list[dict[str, str]]:
-    normalized: list[dict[str, str]] = []
+def _normalize_input_files(files: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
     if not isinstance(files, list):
         return normalized
     for item in files:
@@ -1440,11 +1760,15 @@ def _normalize_input_files(files: Any) -> list[dict[str, str]]:
         file_path = str(item.get("file_path") or item.get("path") or item.get("filePath") or "").strip()
         file_name = str(item.get("file_name") or item.get("filename") or item.get("fileName") or Path(file_path).name).strip()
         if file_path or file_name:
-            normalized.append({"file_path": file_path, "file_name": file_name})
+            normalized_item: dict[str, Any] = {"file_path": file_path, "file_name": file_name}
+            for key in ("raw_pages", "pages", "text", "content", "mime_type"):
+                if key in item:
+                    normalized_item[key] = item.get(key)
+            normalized.append(normalized_item)
     return normalized
 
 
-def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def parse_bank_reconciliation_files(files: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     file_results: list[FileParseResult] = []
     warnings: list[str] = []
     excluded_parties: dict[str, str] = {}
@@ -1472,12 +1796,27 @@ def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[
             warnings.append(reason)
             continue
         if not path_obj.exists():
-            reason = f"xlsx 文件路径不存在：{file_path}"
+            reason = f"文件路径不存在：{file_path}"
             logger.error("[BankReconciliationDetail] failed reason=file_path_not_exists filename=%s path=%s", filename, file_path)
             warnings.append(reason)
             continue
         _collect_excluded_parties_from_source(item, excluded_parties)
         try:
+            if path_obj.suffix.lower() == ".pdf":
+                pdf_meta = {**meta, **item}
+                parsed_pdf, pdf_warnings = parse_pdf_bank_reconciliation_detail(file_path, filename, pdf_meta)
+                warnings.extend(pdf_warnings)
+                if parsed_pdf:
+                    file_results.append(parsed_pdf)
+                    logger.info(
+                        "[BankReconciliationDetail] pdf_file_parsed file=%s bank=%s page_sheet=%s detail_rows=%s amount_status=%s",
+                        filename,
+                        parsed_pdf.bank_name,
+                        parsed_pdf.sheet_name,
+                        len(parsed_pdf.transactions),
+                        "完整" if all(tx.get("amount") is not None for tx in parsed_pdf.transactions) else "部分缺失",
+                    )
+                continue
             sheets = _read_workbook(file_path, filename)
             logger.info(
                 "[BankReconciliationDetail] workbook file=%s path=%s sheets=%s",
@@ -1531,7 +1870,7 @@ def parse_bank_reconciliation_files(files: list[dict[str, str]], metadata: dict[
 
 class BankReconciliationDetailSkill(BaseExtractionSkill):
     document_type = DOC_TYPE
-    supported_extensions = {".xlsx", ".xls", ".csv"}
+    supported_extensions = {".xlsx", ".xls", ".csv", ".pdf"}
     skill_name = SKILL_NAME
     skill_version = "v1"
 

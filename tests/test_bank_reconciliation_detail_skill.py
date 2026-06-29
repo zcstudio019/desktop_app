@@ -204,3 +204,48 @@ def test_bank_reconciliation_detail_empty_files_returns_actionable_failure() -> 
     assert "失败原因：未收到可解析的银行对账明细文件" in markdown
     assert "来源文件：0 份文件" not in markdown
     assert "交易笔数：0 笔" not in markdown
+
+
+def test_bank_reconciliation_detail_pdf_raw_pages_parses_and_renders(tmp_path: Path) -> None:
+    pdf = tmp_path / "上海银行对账明细202504-202603.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% bank reconciliation detail stub\n")
+    page_text = "\n".join(
+        [
+            "上海银行 账户明细查询",
+            "户名：上海意川建筑科技有限公司 账号：03005029359 开户行：上海银行浦西支行营业部 币种：人民币",
+            "交易日期 交易方向 交易金额 余额 对方户名 摘要 用途",
+            "2025-04-01 出账 200,000.00 800,000.00 靖江市桐梧贸易有限公司 跨行转账 临空项目材料款",
+            "2025-04-02 入账 100,000.00 900,000.00 上海某项目有限公司 回款 工程款",
+        ]
+    )
+
+    result = parse_bank_reconciliation_files(
+        [{"file_path": str(pdf), "file_name": "上海银行对账明细202504-202603.pdf"}],
+        metadata={"raw_pages": [{"page": 1, "text": page_text}]},
+    )
+
+    summary = result["summary"]
+    parsed_file = result["files"][0]
+    account = result["accounts"][0]
+    markdown = result["display_markdown"]
+
+    assert result["extraction_status"] == "success"
+    assert summary["file_count"] == 1
+    assert summary["deduped_transaction_count"] == 2
+    assert parsed_file["source_file"] == "上海银行对账明细202504-202603.pdf"
+    assert parsed_file["sheet_name"] == "PDF"
+    assert parsed_file["transaction_count"] == 2
+    assert parsed_file["header_row_no"] == 3
+    assert account["bank_name"] == "上海银行"
+    assert account["account_name"] == "上海意川建筑科技有限公司"
+    assert account["account_no"] == "03005029359"
+    assert account["branch_name"] == "上海银行浦西支行营业部"
+    assert summary["operating_in_amount"] == "100000.00"
+    assert summary["operating_out_amount"] == "200000.00"
+    assert "## 银行对账明细" in markdown
+    assert "- 来源文件：上海银行对账明细202504-202603.pdf" in markdown
+    assert "### 核心资金概览" in markdown
+    assert "### 主要经营入账来源" in markdown
+    assert "### 主要经营出账对象" in markdown
+    assert "JSON" not in markdown
+    assert "transactions:" not in markdown

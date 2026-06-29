@@ -110,7 +110,7 @@ ID_CARD_PATTERN = re.compile(r"([1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-
 UNIFIED_CODE_PATTERN = re.compile(r"\b([0-9A-Z]{18})\b")
 
 TYPE_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("bank_reconciliation_detail", ("银行对账明细", "对账明细", "账户明细查询", "账户明细", "银行明细", "交易流水号", "借贷标志", "转入金额", "转出金额")),
+    ("bank_reconciliation_detail", ("银行对账明细", "对账明细", "账户明细查询", "账户明细", "银行明细", "银行流水", "交易明细", "交易流水号", "借贷标志", "转入金额", "转出金额")),
     ("bank_statement", ("中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")),
     ("financial_report", ("资产负债表", "利润表", "现金流量表", "财务报表报送", "财务报表")),
     ("business_license", ("营业执照", "统一社会信用代码", "法定代表人")),
@@ -147,6 +147,8 @@ BANK_RECONCILIATION_DETAIL_KEYWORDS = (
     "账户明细查询",
     "账户明细",
     "银行明细",
+    "银行流水",
+    "交易明细",
     "工商银行",
     "上海银行",
 )
@@ -154,9 +156,9 @@ BANK_RECONCILIATION_DETAIL_KEYWORDS = (
 
 def _looks_like_bank_reconciliation_detail(text: str, filename: str = "") -> bool:
     source = f"{filename}\n{text}"
-    if any(keyword in source for keyword in ("对账明细", "账户明细查询", "银行明细")):
+    if any(keyword in source for keyword in ("对账明细", "账户明细查询", "账户明细", "银行明细", "银行流水", "交易明细")):
         return True
-    if any(keyword in source for keyword in ("工商银行", "上海银行")) and any(ext in filename.lower() for ext in (".xlsx", ".xls", ".csv")):
+    if any(keyword in source for keyword in ("工商银行", "上海银行")) and any(ext in filename.lower() for ext in (".xlsx", ".xls", ".csv", ".pdf")):
         return True
     return False
 

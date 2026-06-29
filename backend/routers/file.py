@@ -1537,8 +1537,8 @@ def _resolve_document_type_code(text_content: str, explicit_type: str | None, ro
     normalized = normalize_document_type_code(explicit_type)
     reconciliation_source = f"{filename}\n{text_content}"
     if (
-        any(keyword in reconciliation_source for keyword in ("银行对账明细", "对账明细", "账户明细查询", "银行明细"))
-        or (any(keyword in reconciliation_source for keyword in ("工商银行", "上海银行")) and filename.lower().endswith((".xlsx", ".xls", ".csv")))
+        any(keyword in reconciliation_source for keyword in ("银行对账明细", "对账明细", "账户明细查询", "账户明细", "银行明细", "银行流水", "交易明细"))
+        or (any(keyword in reconciliation_source for keyword in ("工商银行", "上海银行")) and filename.lower().endswith((".xlsx", ".xls", ".csv", ".pdf")))
     ) and normalized in {None, "bank_statement", "bank_statement_detail", "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_reconciliation_detail"
     receipt_source = f"{filename}\n{text_content}"

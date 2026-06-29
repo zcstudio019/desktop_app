@@ -33,6 +33,7 @@ class FileService:
             ".jpeg": "image",
             ".xlsx": "excel",
             ".xls": "excel",
+            ".csv": "excel",
             ".docx": "word",
             ".doc": "word",
         }
