@@ -510,10 +510,10 @@ def _read_workbook(file_path: str, filename: str) -> list[tuple[str, list[list[A
 PDF_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "date": ("交易时间", "交易日期", "记账日期", "入账日期", "发生日期", "日期"),
     "direction": ("交易方向", "借贷标志", "借/贷", "收支", "借方/贷方", "收入/支出"),
-    "amount": ("交易金额", "发生额", "借方金额", "贷方金额", "转入金额", "转出金额", "收入金额", "支出金额"),
+    "amount": ("交易金额", "发生额", "借方金额", "贷方金额", "转入金额", "转出金额", "收入金额", "支出金额", "收入", "支出"),
     "balance": ("余额", "账户余额"),
     "counterparty": ("对方户名", "对手名称", "对方单位", "对方名称", "对方账号", "对手账号"),
-    "summary": ("摘要", "用途", "交易用途", "附言", "备注"),
+    "summary": ("摘要|备注", "摘要", "用途", "交易用途", "附言", "备注", "交易对手信息"),
 }
 
 PDF_BANK_NAMES = (
@@ -529,6 +529,7 @@ PDF_BANK_NAMES = (
     "平安银行",
     "网商银行",
     "泰隆银行",
+    "齐鲁银行",
 )
 
 
@@ -563,6 +564,24 @@ def _load_pdf_pages(file_path: str, metadata: dict[str, Any] | None = None) -> t
             page_count = len(document)
             for page_no, page in enumerate(document, start=1):
                 native_pages.append({"page": page_no, "text": page.get_text("text") or "", "source": "pdf_native"})
+        try:
+            import pdfplumber  # type: ignore
+
+            with pdfplumber.open(str(file_path)) as pdf:
+                for page_no, page in enumerate(pdf.pages, start=1):
+                    if page_no > len(native_pages):
+                        native_pages.append({"page": page_no, "text": page.extract_text() or "", "source": "pdfplumber"})
+                    table_rows: list[list[str]] = []
+                    for table in page.extract_tables() or []:
+                        for row in table or []:
+                            cells = [str(cell or "").strip() for cell in row]
+                            if any(cells):
+                                table_rows.append(cells)
+                    if table_rows:
+                        native_pages[page_no - 1].setdefault("table_rows", [])
+                        native_pages[page_no - 1]["table_rows"].extend(table_rows)
+        except Exception as exc:  # pragma: no cover - pdfplumber is an optional enhancement
+            logger.info("[BankReconciliationDetail][PDF] pdfplumber_table_extract_skipped file=%s error=%s", file_path, exc)
     except Exception as exc:
         fail_reason = f"PDF 文件读取失败：{exc}"
         if raw_pages:
@@ -642,6 +661,288 @@ def _detect_pdf_header(pages: list[dict[str, Any]]) -> tuple[bool, int, int, str
             if _pdf_header_hit_count(line) >= 4:
                 return True, page_no, line_no, line
     return False, 0, 0, ""
+
+
+def _is_qilu_pdf_detail(text: str, source_file: str) -> bool:
+    source = f"{source_file}\n{text}"
+    if "齐鲁银行" in source:
+        return True
+    if "单位活期存款账户交易明细" in source:
+        return True
+    compact = _compact(source)
+    required = ("记账日期", "交易渠道", "收入", "支出", "账户余额", "摘要|备注", "交易对手信息")
+    return sum(1 for item in required if _compact(item) in compact) >= 5
+
+
+def _capture_pdf_label(text: str, labels: tuple[str, ...], *, max_len: int = 120) -> str:
+    stop = r"(?:账号|账户名称|开户机构|开户行|起止日期|交易方向|币种|收入金额合计|支出金额合计|第\d+/\d+页|共\d+条)"
+    for label in labels:
+        pattern = re.compile(rf"{re.escape(label)}\s*[:：]?\s*([^\n\r]{{1,{max_len}}})")
+        match = pattern.search(text)
+        if not match:
+            continue
+        value = re.split(rf"\s+{stop}\s*[:：]?", match.group(1), maxsplit=1)[0]
+        value = re.split(stop, value, maxsplit=1)[0]
+        return _text(value)
+    return ""
+
+
+def _qilu_pdf_account_and_summary(text: str, source_file: str, sheet_name: str) -> tuple[AccountInfo, dict[str, Any]]:
+    account = AccountInfo(bank_name="齐鲁银行", source_file=source_file, sheet_name=sheet_name)
+    account.account_no = re.sub(r"\D", "", _capture_pdf_label(text, ("账号",), max_len=40))
+    account.account_name = _capture_pdf_label(text, ("账户名称", "户名"), max_len=120)
+    account.branch_name = _capture_pdf_label(text, ("开户机构", "开户行"), max_len=120)
+    account.currency = _capture_pdf_label(text, ("币种",), max_len=20) or "人民币"
+    date_match = re.search(
+        r"起止日期\s*[:：]?\s*((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\s*[-—至]\s*((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})",
+        text,
+    )
+    if date_match:
+        account.date_start = _date_text(date_match.group(1))
+        account.date_end = _date_text(date_match.group(2))
+    raw_summary: dict[str, Any] = {}
+    count_match = re.search(r"共\s*(\d+)\s*条", text)
+    if count_match:
+        raw_summary["raw_transaction_count"] = _int(count_match.group(1))
+    for label, key in (("收入金额合计", "income_total"), ("支出金额合计", "out_total")):
+        match = re.search(rf"{label}\s*[:：]?\s*(-?(?:\d{{1,3}}(?:,\d{{3}})+|\d+)(?:\.\d+)?)", text)
+        if match:
+            raw_summary[key] = _money(match.group(1))
+    return account, raw_summary
+
+
+def _qilu_counterparty_from_text(text: str) -> dict[str, str]:
+    result = {"counterparty_account": "", "counterparty_name": "", "counterparty_bank_no": ""}
+    source = _text(text)
+    account_match = re.search(r"(?:对方账号|交易对手账号|账号)\s*[:：]?\s*([0-9]{6,32})", source)
+    if account_match:
+        result["counterparty_account"] = account_match.group(1)
+    name_match = re.search(r"(?:对方户名|对方名称|交易对手名称|户名)\s*[:：]?\s*([\u4e00-\u9fffA-Za-z0-9（）()·]{2,80})", source)
+    if name_match:
+        result["counterparty_name"] = _text(name_match.group(1))
+    bank_match = re.search(r"(?:对方开户行|对方行名|对方开户机构|清算行|开户行)\s*[:：]?\s*([\u4e00-\u9fffA-Za-z0-9（）()·]{2,120})", source)
+    if bank_match:
+        result["counterparty_bank_no"] = _text(bank_match.group(1))
+    if not result["counterparty_name"]:
+        org_match = re.search(r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,80}(?:有限公司|有限责任公司|银行|公司|中心|集团|商行|合作社|个体工商户|厂|店|局|院|所))", source)
+        if org_match:
+            result["counterparty_name"] = _text(org_match.group(1))
+    return result
+
+
+def _qilu_make_tx(
+    *,
+    source_file: str,
+    account: AccountInfo,
+    row_no: int,
+    accounting_date: str,
+    channel: str,
+    income: Decimal | None,
+    out_amount: Decimal | None,
+    balance: Decimal | None,
+    summary: str,
+    counterparty: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    income = income or Decimal("0")
+    out_amount = out_amount or Decimal("0")
+    if income > 0 and out_amount == 0:
+        direction = "in"
+        amount = income
+    elif out_amount > 0 and income == 0:
+        direction = "out"
+        amount = out_amount
+    else:
+        return None
+    counterparty = counterparty or {}
+    tx = {
+        "transaction_id": "",
+        "source_file": source_file,
+        "bank_name": "齐鲁银行",
+        "account_name": account.account_name,
+        "account_no": account.account_no,
+        "trade_time": accounting_date,
+        "accounting_date": accounting_date,
+        "direction": direction,
+        "direction_name": "入账" if direction == "in" else "出账",
+        "amount": amount,
+        "balance": balance,
+        "counterparty_name": counterparty.get("counterparty_name") or "",
+        "counterparty_account": counterparty.get("counterparty_account") or "",
+        "counterparty_bank_no": counterparty.get("counterparty_bank_no") or "",
+        "summary": _text(summary),
+        "purpose": _text(summary),
+        "remark": _text(channel),
+        "voucher_no": "",
+        "raw_row_no": row_no,
+        "warning": "",
+    }
+    _classify(tx, {})
+    return tx
+
+
+def _qilu_parse_table_row(row: list[Any], source_file: str, account: AccountInfo, row_no: int) -> dict[str, Any] | None:
+    cells = [_text(cell) for cell in row]
+    if not any(cells):
+        return None
+    date_idx = next((idx for idx, cell in enumerate(cells) if _date_text(cell)), -1)
+    if date_idx < 0:
+        return None
+    joined_cells = " ".join(cells)
+    if any(marker in joined_cells for marker in ("起止日期", "收入金额合计", "支出金额合计")):
+        return None
+    if re.search(r"第\s*\d+\s*/\s*\d+\s*页|共\s*\d+\s*条", joined_cells):
+        return None
+    accounting_date = _date_text(cells[date_idx])
+    channel = cells[date_idx + 1] if date_idx + 1 < len(cells) else ""
+    income = _money(cells[date_idx + 2]) if date_idx + 2 < len(cells) else None
+    out_amount = _money(cells[date_idx + 3]) if date_idx + 3 < len(cells) else None
+    balance = _money(cells[date_idx + 4]) if date_idx + 4 < len(cells) else None
+    summary = " ".join(cell for cell in cells[date_idx + 5 :] if cell)
+    counterparty = _qilu_counterparty_from_text(" ".join(cells))
+    return _qilu_make_tx(
+        source_file=source_file,
+        account=account,
+        row_no=row_no,
+        accounting_date=accounting_date,
+        channel=channel,
+        income=income,
+        out_amount=out_amount,
+        balance=balance,
+        summary=summary,
+        counterparty=counterparty,
+    )
+
+
+def _qilu_parse_text_line(line: str, source_file: str, account: AccountInfo, row_no: int) -> dict[str, Any] | None:
+    text = _text(line)
+    if not text or any(marker in text for marker in ("单位活期存款账户交易明细", "起止日期", "收入金额合计", "支出金额合计")):
+        return None
+    if re.search(r"第\s*\d+\s*/\s*\d+\s*页|共\s*\d+\s*条", text):
+        return None
+    accounting_date = _date_text(text)
+    if not accounting_date:
+        return None
+    money_values = [_money(item) for item in re.findall(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}", text)]
+    money_values = [item for item in money_values if item is not None]
+    if len(money_values) < 3:
+        return None
+    income, out_amount, balance = money_values[0], money_values[1], money_values[2]
+    cleaned = _strip_pdf_noise(text)
+    counterparty = _qilu_counterparty_from_text(cleaned)
+    summary = cleaned
+    return _qilu_make_tx(
+        source_file=source_file,
+        account=account,
+        row_no=row_no,
+        accounting_date=accounting_date,
+        channel="",
+        income=income,
+        out_amount=out_amount,
+        balance=balance,
+        summary=summary,
+        counterparty=counterparty,
+    )
+
+
+def _merge_qilu_counterparty(tx: dict[str, Any], text: str) -> None:
+    counterparty = _qilu_counterparty_from_text(text)
+    for key, value in counterparty.items():
+        if value and not tx.get(key):
+            tx[key] = value
+    _classify(tx, {})
+
+
+def _parse_qilu_pdf_bank_reconciliation_detail(
+    pages: list[dict[str, Any]],
+    text: str,
+    source_file: str,
+    page_count: int,
+    header_detected: bool,
+    header_line_no: int,
+) -> tuple[FileParseResult | None, list[str]]:
+    warnings: list[str] = []
+    account, raw_summary = _qilu_pdf_account_and_summary(text, source_file, "PDF")
+    transactions: list[dict[str, Any]] = []
+    last_tx: dict[str, Any] | None = None
+    row_no = 0
+    for page in pages:
+        for row in page.get("table_rows") or []:
+            if not isinstance(row, (list, tuple)):
+                continue
+            row_no += 1
+            tx = _qilu_parse_table_row(list(row), source_file, account, row_no)
+            if tx:
+                transactions.append(tx)
+                last_tx = tx
+            elif last_tx and "交易对手信息" in " ".join(_text(cell) for cell in row):
+                _merge_qilu_counterparty(last_tx, " ".join(_text(cell) for cell in row))
+        for line in str(page.get("text") or "").splitlines():
+            row_no += 1
+            if "交易对手信息" in line and last_tx:
+                _merge_qilu_counterparty(last_tx, line)
+                continue
+            tx = _qilu_parse_text_line(line, source_file, account, row_no)
+            if tx:
+                signature = (tx.get("accounting_date"), tx.get("direction"), _fmt_money(tx.get("amount")), _fmt_money(tx.get("balance")), tx.get("summary"))
+                if not any((old.get("accounting_date"), old.get("direction"), _fmt_money(old.get("amount")), _fmt_money(old.get("balance")), old.get("summary")) == signature for old in transactions):
+                    transactions.append(tx)
+                    last_tx = tx
+    if transactions:
+        dates = sorted(tx.get("accounting_date") for tx in transactions if tx.get("accounting_date"))
+        if dates:
+            account.date_start = account.date_start or dates[0]
+            account.date_end = account.date_end or dates[-1]
+    if not raw_summary.get("raw_transaction_count"):
+        raw_summary["raw_transaction_count"] = len(transactions)
+    income_header = _money(raw_summary.get("income_total"))
+    out_header = _money(raw_summary.get("out_total"))
+    income_sum = _sum(transactions, lambda tx: tx.get("direction") == "in")
+    out_sum = _sum(transactions, lambda tx: tx.get("direction") == "out")
+    reconcile_ok = True
+    if income_header is not None and abs(income_sum - income_header) > Decimal("0.01"):
+        reconcile_ok = False
+        warnings.append(f"收入金额合计与交易明细合计差异：页眉 {_fmt_money(income_header)}，明细 {_fmt_money(income_sum)}")
+    if out_header is not None and abs(out_sum - out_header) > Decimal("0.01"):
+        reconcile_ok = False
+        warnings.append(f"支出金额合计与交易明细合计差异：页眉 {_fmt_money(out_header)}，明细 {_fmt_money(out_sum)}")
+    expected_count = _int(raw_summary.get("raw_transaction_count"))
+    if expected_count and expected_count != len(transactions):
+        reconcile_ok = False
+        warnings.append(f"交易笔数与页眉不一致：页眉 {expected_count} 条，明细 {len(transactions)} 条")
+    logger.info(
+        "[BankReconciliationDetail][PDF][Qilu] file_name=%s page_count=%s detected_bank_name=%s detected_pdf_format=qilu_unit_current_account_detail account_no=%s account_name=%s branch_name=%s date_start=%s date_end=%s header_detected=%s parsed_transaction_count=%s expected_transaction_count=%s income_total_from_header=%s out_total_from_header=%s income_total_from_transactions=%s out_total_from_transactions=%s amount_reconcile_status=%s",
+        source_file,
+        page_count,
+        "齐鲁银行",
+        account.account_no,
+        account.account_name,
+        account.branch_name,
+        account.date_start,
+        account.date_end,
+        header_detected,
+        len(transactions),
+        expected_count or "",
+        _fmt_money(income_header),
+        _fmt_money(out_header),
+        _fmt_money(income_sum),
+        _fmt_money(out_sum),
+        "ok" if reconcile_ok else "mismatch",
+    )
+    if not transactions:
+        return None, [f"{source_file} 找到齐鲁银行交易明细格式，但未读取到交易行"]
+    return FileParseResult(
+        source_file=source_file,
+        sheet_name="PDF",
+        bank_name="齐鲁银行",
+        header_row_no=header_line_no if header_detected else 0,
+        header_col_start=1 if header_detected else 0,
+        account=account,
+        transactions=transactions,
+        raw_summary=raw_summary,
+        placeholder_cleaned_count=0,
+        status="成功" if reconcile_ok else "部分成功",
+        warnings=warnings,
+    ), warnings
 
 
 def _strip_pdf_noise(text: str) -> str:
@@ -770,6 +1071,19 @@ def parse_pdf_bank_reconciliation_detail(file_path: str, source_file: str, metad
         reason = load_reason or "PDF 未提取到文本，OCR 也未识别到有效内容"
         logger.error("[BankReconciliationDetail][PDF] parse_failed file=%s reason=%s", source_file, reason)
         return None, [f"{source_file} {reason}"]
+
+    if _is_qilu_pdf_detail(text, source_file):
+        parsed_qilu, qilu_warnings = _parse_qilu_pdf_bank_reconciliation_detail(
+            pages,
+            text,
+            source_file,
+            page_count,
+            header_detected,
+            header_line_no,
+        )
+        if parsed_qilu:
+            return parsed_qilu, qilu_warnings
+        return None, qilu_warnings
 
     account = _parse_pdf_account(text, source_file, "PDF")
     transactions: list[dict[str, Any]] = []
@@ -1850,7 +2164,7 @@ def parse_bank_reconciliation_files(files: list[dict[str, Any]], metadata: dict[
     if not file_results:
         reason = warnings[0] if warnings else "未找到交易表头或未读取到有效交易明细"
         logger.error("[BankReconciliationDetail] failed parsed_files=0 reason=%s warnings=%s", reason, warnings)
-        data = _failure_result(reason, "请检查文件是否为上海银行/工商银行对账明细，或查看日志中的 sheet、表头定位和文件路径信息。")
+        data = _failure_result(reason, "请检查文件是否为银行账户明细、交易流水、单位活期账户交易明细或银行对账明细。")
         data["warnings"] = list(dict.fromkeys([*data.get("warnings", []), *warnings]))
         return _json_safe(data)
 

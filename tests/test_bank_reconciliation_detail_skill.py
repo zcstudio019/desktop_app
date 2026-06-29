@@ -249,3 +249,66 @@ def test_bank_reconciliation_detail_pdf_raw_pages_parses_and_renders(tmp_path: P
     assert "### 主要经营出账对象" in markdown
     assert "JSON" not in markdown
     assert "transactions:" not in markdown
+
+
+def test_qilu_bank_reconciliation_detail_pdf_table_rows_parse(tmp_path: Path) -> None:
+    pdf = tmp_path / "202501-6齐鲁银行流水(1).pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% qilu bank reconciliation detail stub\n")
+    page_text = "\n".join(
+        [
+            "单位活期存款账户交易明细",
+            "齐鲁银行",
+            "开户机构：齐鲁银行股份有限公司德州开发区支行",
+            "账号：86617005101421011677",
+            "账户名称：艾绿工程建设（上海）有限公司",
+            "起止日期：2025/01/01-2025/06/30",
+            "交易方向：全部",
+            "币种：人民币",
+            "收入金额合计：1,000,000.00",
+            "支出金额合计：200,000.00",
+            "第1/1页，共2条",
+        ]
+    )
+    table_rows = [
+        ["序号", "记账日期", "交易渠道", "收入", "支出", "账户余额", "摘要|备注"],
+        ["1", "2025/06/30", "人民银行", "1,000,000.00", "0.00", "6,569,855.83", "汇款|杨庄河项目进度款"],
+        ["交易对手信息：", "29410078801400001148", "德州天衢文化旅游发展有限公司", "上海浦东发展银行股份有限公司德州分行"],
+        ["2", "2025/06/29", "网银", "0.00", "200,000.00", "5,569,855.83", "转账|项目材料款"],
+        ["交易对手信息：", "12345678901234567890", "山东材料有限公司", "齐鲁银行股份有限公司德州分行"],
+    ]
+
+    result = parse_bank_reconciliation_files(
+        [{"file_path": str(pdf), "file_name": "202501-6齐鲁银行流水(1).pdf"}],
+        metadata={"raw_pages": [{"page": 1, "text": page_text, "table_rows": table_rows}]},
+    )
+
+    summary = result["summary"]
+    parsed_file = result["files"][0]
+    account = result["accounts"][0]
+    markdown = result["display_markdown"]
+
+    assert result["extraction_status"] == "success"
+    assert summary["file_count"] == 1
+    assert summary["deduped_transaction_count"] == 2
+    assert summary["in_amount"] == "1000000.00"
+    assert summary["out_amount"] == "200000.00"
+    assert parsed_file["bank_name"] == "齐鲁银行"
+    assert parsed_file["raw_summary"]["raw_transaction_count"] == 2
+    assert parsed_file["raw_summary"]["income_total"] == "1000000.00"
+    assert parsed_file["raw_summary"]["out_total"] == "200000.00"
+    assert account["bank_name"] == "齐鲁银行"
+    assert account["account_no"] == "86617005101421011677"
+    assert account["account_name"] == "艾绿工程建设（上海）有限公司"
+    assert account["branch_name"] == "齐鲁银行股份有限公司德州开发区支行"
+    assert account["date_start"] == "2025-01-01"
+    assert account["date_end"] == "2025-06-30"
+    assert "## 银行对账明细" in markdown
+    assert "- 来源文件：202501-6齐鲁银行流水(1).pdf" in markdown
+    assert "- 银行名称：齐鲁银行" in markdown
+    assert "- 户名：艾绿工程建设（上海）有限公司" in markdown
+    assert "- 账号：86617005101421011677" in markdown
+    assert "- 开户行：齐鲁银行股份有限公司德州开发区支行" in markdown
+    assert "- 覆盖时间：2025-01-01 至 2025-06-30" in markdown
+    assert "- 交易笔数：2 笔" in markdown
+    assert "transactions:" not in markdown
+    assert "data：" not in markdown
