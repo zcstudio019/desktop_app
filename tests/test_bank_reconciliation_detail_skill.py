@@ -312,3 +312,63 @@ def test_qilu_bank_reconciliation_detail_pdf_table_rows_parse(tmp_path: Path) ->
     assert "- 交易笔数：2 笔" in markdown
     assert "transactions:" not in markdown
     assert "data：" not in markdown
+
+
+def test_qilu_bank_reconciliation_detail_pdf_fragmented_text_blocks_parse(tmp_path: Path) -> None:
+    pdf = tmp_path / "202501-6齐鲁银行流水(1).pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% qilu fragmented text stub\n")
+    page_text = "\n".join(
+        [
+            "单位活期存款账户交易明细",
+            "齐鲁银行",
+            "开户机构：齐鲁银行股份有限公司德州开发区支行",
+            "账号：86617005101421011677",
+            "账户名称：艾绿工程建设（上海）有限公司",
+            "起止日期：2025/01/01-2025/06/30",
+            "交易方向：全部",
+            "币种：人民币",
+            "收入金额合计：1,000,000.00",
+            "支出金额合计：4.50",
+            "第1/1页，共2条",
+            "1,000,000.00 0.00",
+            "29410078801400001148 德州天衢文化旅游发展有限公司 上海浦东发展银行股份有限公司德州分行",
+            "6,569,855.83",
+            "交易对手信息：",
+            "1",
+            "2025-06-30 人民银行 汇款|杨庄河项目进度款",
+            "0.00 4.50",
+            "99999999999999999999 其他国内结算业务收入 齐鲁银行股份有限公司德州开发区支行",
+            "6,569,851.33",
+            "交易对手信息：",
+            "3",
+            "2025-06-24 网上银行 支付手续费|支付手续费",
+        ]
+    )
+
+    result = parse_bank_reconciliation_files(
+        [{"file_path": str(pdf), "file_name": "202501-6齐鲁银行流水(1).pdf"}],
+        metadata={"raw_pages": [{"page": 1, "text": page_text}]},
+    )
+
+    summary = result["summary"]
+    transactions = result["transactions"]
+    first = transactions[0]
+    fee = transactions[1]
+
+    assert result["extraction_status"] == "success"
+    assert summary["deduped_transaction_count"] == 2
+    assert summary["in_amount"] == "1000000.00"
+    assert summary["out_amount"] == "4.50"
+    assert first["accounting_date"] == "2025-06-30"
+    assert first["direction"] == "in"
+    assert first["amount"] == "1000000.00"
+    assert first["balance"] == "6569855.83"
+    assert first["counterparty_account"] == "29410078801400001148"
+    assert first["counterparty_name"] == "德州天衢文化旅游发展有限公司"
+    assert first["counterparty_bank_no"] == "上海浦东发展银行股份有限公司德州分行"
+    assert first["summary"] == "汇款|杨庄河项目进度款"
+    assert fee["accounting_date"] == "2025-06-24"
+    assert fee["direction"] == "out"
+    assert fee["amount"] == "4.50"
+    assert fee["counterparty_name"] == "其他国内结算业务收入"
+    assert "手续费" in fee["category"]

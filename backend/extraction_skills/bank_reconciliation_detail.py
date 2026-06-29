@@ -844,6 +844,162 @@ def _qilu_parse_text_line(line: str, source_file: str, account: AccountInfo, row
     )
 
 
+QILU_AMOUNT_PATTERN = re.compile(r"[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})|[-+]?\d+(?:\.\d{2})")
+
+
+def _qilu_amounts(line: str) -> list[Decimal]:
+    amounts: list[Decimal] = []
+    for item in QILU_AMOUNT_PATTERN.findall(_text(line)):
+        amount = _money(item)
+        if amount is not None:
+            amounts.append(amount)
+    return amounts
+
+
+def _qilu_clean_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = _text(raw)
+        if not line:
+            continue
+        if re.fullmatch(r"(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}\s+\d{1,2}:\d{2}:\d{2}", line):
+            continue
+        if re.search(r"第\s*\d+\s*/\s*\d+\s*页|共\s*\d+\s*条", line):
+            continue
+        if any(marker in line for marker in ("单位活期存款账户交易明细", "开户机构", "账户名称", "起止日期", "收入金额合计", "支出金额合计", "交易方向：全部", "币种：")):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _qilu_is_counterparty_line(line: str) -> bool:
+    text = _text(line)
+    return bool(re.match(r"^[0-9A-Za-z]{6,}\s+", text))
+
+
+def _qilu_parse_counterparty_line(line: str) -> dict[str, str]:
+    result = {"counterparty_account": "", "counterparty_name": "", "counterparty_bank_no": ""}
+    text = _text(line)
+    match = re.match(r"^([0-9A-Za-z]{6,})\s+(.+)$", text)
+    if not match:
+        return _qilu_counterparty_from_text(text)
+    result["counterparty_account"] = match.group(1)
+    rest = _text(match.group(2))
+    parts = [part for part in re.split(r"\s+", rest) if part]
+    if len(parts) >= 2:
+        result["counterparty_name"] = parts[0]
+        result["counterparty_bank_no"] = " ".join(parts[1:])
+        return result
+    bank_keywords = ("银行", "信用社", "清算中心", "支行", "分行", "总行", "农商行", "农村商业银行")
+    bank_start = -1
+    for keyword in bank_keywords:
+        idx = rest.find(keyword)
+        if idx >= 0 and (bank_start < 0 or idx < bank_start):
+            bank_start = idx
+    if bank_start > 0:
+        company_end = rest.rfind(" ", 0, bank_start)
+        if company_end > 0:
+            result["counterparty_name"] = _text(rest[:company_end])
+            result["counterparty_bank_no"] = _text(rest[company_end + 1 :])
+        else:
+            org_match = re.match(r"(.+?(?:有限公司|有限责任公司|公司|中心|集团|商行|合作社|个体工商户|厂|店|局|院|所))(.+)$", rest)
+            if org_match:
+                result["counterparty_name"] = _text(org_match.group(1))
+                result["counterparty_bank_no"] = _text(org_match.group(2))
+    if not result["counterparty_name"]:
+        result["counterparty_name"] = rest
+    return result
+
+
+def _qilu_date_summary(line: str) -> tuple[str, str, str]:
+    text = _text(line)
+    match = re.match(r"^((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\s+(\S+)\s+(.+)$", text)
+    if not match:
+        return "", "", ""
+    return _date_text(match.group(1)), _text(match.group(2)), _text(match.group(3))
+
+
+def _qilu_parse_transaction_blocks_from_text(text: str, source_file: str, account: AccountInfo) -> list[dict[str, Any]]:
+    lines = _qilu_clean_lines(text)
+    marker_indexes = [idx for idx, line in enumerate(lines) if "交易对手信息" in line]
+    logger.info("qilu pdf text lines=%s", len(lines))
+    logger.info("qilu markers transaction_counterparty_info=%s", len(marker_indexes))
+    transactions: list[dict[str, Any]] = []
+    skipped_debug: list[tuple[int, str, list[str]]] = []
+    for marker_idx in marker_indexes:
+        before_start = max(0, marker_idx - 6)
+        before = lines[before_start:marker_idx]
+        after = lines[marker_idx + 1 : marker_idx + 7]
+        debug_block = before + [lines[marker_idx]] + after
+        balance: Decimal | None = None
+        counterparty: dict[str, str] = {}
+        income: Decimal | None = None
+        out_amount: Decimal | None = None
+        for line in reversed(before[-3:]):
+            amounts = _qilu_amounts(line)
+            if len(amounts) == 1:
+                balance = amounts[0]
+                break
+        counterparty_idx = -1
+        for local_idx, line in enumerate(before):
+            if _qilu_is_counterparty_line(line):
+                counterparty_idx = local_idx
+                counterparty = _qilu_parse_counterparty_line(line)
+        amount_search = before[:counterparty_idx] if counterparty_idx > 0 else before
+        for line in reversed(amount_search):
+            amounts = _qilu_amounts(line)
+            if len(amounts) == 2:
+                income, out_amount = amounts[0], amounts[1]
+                break
+        serial_no = ""
+        accounting_date = ""
+        channel = ""
+        summary = ""
+        for line in after[:3]:
+            if re.fullmatch(r"\d{1,4}", line):
+                serial_no = line
+                break
+        for line in after:
+            accounting_date, channel, summary = _qilu_date_summary(line)
+            if accounting_date:
+                break
+        reason = ""
+        if income is None or out_amount is None:
+            reason = "missing income/out amount line"
+        elif not accounting_date:
+            reason = "missing accounting date line"
+        elif (income <= 0 and out_amount <= 0) or (income > 0 and out_amount > 0):
+            reason = "invalid income/out amount"
+        if reason:
+            skipped_debug.append((marker_idx, reason, debug_block))
+            logger.warning("qilu skipped block at marker=%s reason=%s block=%s", marker_idx, reason, debug_block)
+            continue
+        tx = _qilu_make_tx(
+            source_file=source_file,
+            account=account,
+            row_no=_int(serial_no) or marker_idx + 1,
+            accounting_date=accounting_date,
+            channel=channel,
+            income=income,
+            out_amount=out_amount,
+            balance=balance,
+            summary=summary,
+            counterparty=counterparty,
+        )
+        if tx and (tx.get("counterparty_name") or tx.get("summary")) and (tx.get("balance") is not None or tx.get("counterparty_account")):
+            transactions.append(tx)
+        else:
+            skipped_debug.append((marker_idx, "incomplete transaction block", debug_block))
+            logger.warning("qilu skipped block at marker=%s reason=%s block=%s", marker_idx, "incomplete transaction block", debug_block)
+    income_sum = _sum(transactions, lambda tx: tx.get("direction") == "in")
+    out_sum = _sum(transactions, lambda tx: tx.get("direction") == "out")
+    logger.info("qilu parsed transaction count=%s", len(transactions))
+    logger.info("qilu parsed income total=%s out total=%s", income_sum, out_sum)
+    if not transactions and skipped_debug:
+        logger.warning("qilu first skipped blocks=%s", skipped_debug[:3])
+    return transactions
+
+
 def _merge_qilu_counterparty(tx: dict[str, Any], text: str) -> None:
     counterparty = _qilu_counterparty_from_text(text)
     for key, value in counterparty.items():
@@ -862,31 +1018,33 @@ def _parse_qilu_pdf_bank_reconciliation_detail(
 ) -> tuple[FileParseResult | None, list[str]]:
     warnings: list[str] = []
     account, raw_summary = _qilu_pdf_account_and_summary(text, source_file, "PDF")
-    transactions: list[dict[str, Any]] = []
+    raw_page_text = "\n".join(str(page.get("text") or "") for page in pages)
+    transactions: list[dict[str, Any]] = _qilu_parse_transaction_blocks_from_text(raw_page_text or text, source_file, account)
     last_tx: dict[str, Any] | None = None
     row_no = 0
-    for page in pages:
-        for row in page.get("table_rows") or []:
-            if not isinstance(row, (list, tuple)):
-                continue
-            row_no += 1
-            tx = _qilu_parse_table_row(list(row), source_file, account, row_no)
-            if tx:
-                transactions.append(tx)
-                last_tx = tx
-            elif last_tx and "交易对手信息" in " ".join(_text(cell) for cell in row):
-                _merge_qilu_counterparty(last_tx, " ".join(_text(cell) for cell in row))
-        for line in str(page.get("text") or "").splitlines():
-            row_no += 1
-            if "交易对手信息" in line and last_tx:
-                _merge_qilu_counterparty(last_tx, line)
-                continue
-            tx = _qilu_parse_text_line(line, source_file, account, row_no)
-            if tx:
-                signature = (tx.get("accounting_date"), tx.get("direction"), _fmt_money(tx.get("amount")), _fmt_money(tx.get("balance")), tx.get("summary"))
-                if not any((old.get("accounting_date"), old.get("direction"), _fmt_money(old.get("amount")), _fmt_money(old.get("balance")), old.get("summary")) == signature for old in transactions):
+    if not transactions:
+        for page in pages:
+            for row in page.get("table_rows") or []:
+                if not isinstance(row, (list, tuple)):
+                    continue
+                row_no += 1
+                tx = _qilu_parse_table_row(list(row), source_file, account, row_no)
+                if tx:
                     transactions.append(tx)
                     last_tx = tx
+                elif last_tx and "交易对手信息" in " ".join(_text(cell) for cell in row):
+                    _merge_qilu_counterparty(last_tx, " ".join(_text(cell) for cell in row))
+            for line in str(page.get("text") or "").splitlines():
+                row_no += 1
+                if "交易对手信息" in line and last_tx:
+                    _merge_qilu_counterparty(last_tx, line)
+                    continue
+                tx = _qilu_parse_text_line(line, source_file, account, row_no)
+                if tx:
+                    signature = (tx.get("accounting_date"), tx.get("direction"), _fmt_money(tx.get("amount")), _fmt_money(tx.get("balance")), tx.get("summary"))
+                    if not any((old.get("accounting_date"), old.get("direction"), _fmt_money(old.get("amount")), _fmt_money(old.get("balance")), old.get("summary")) == signature for old in transactions):
+                        transactions.append(tx)
+                        last_tx = tx
     if transactions:
         dates = sorted(tx.get("accounting_date") for tx in transactions if tx.get("accounting_date"))
         if dates:
