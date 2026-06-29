@@ -845,6 +845,28 @@ def _qilu_parse_text_line(line: str, source_file: str, account: AccountInfo, row
 
 
 QILU_AMOUNT_PATTERN = re.compile(r"[-+]?\d{1,3}(?:,\d{3})*(?:\.\d{2})|[-+]?\d+(?:\.\d{2})")
+QILU_BLOCK_AMOUNT = r"(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}"
+QILU_BANK_START_KEYWORDS = (
+    "中国工商银行",
+    "中国农业银行",
+    "中国银行",
+    "中国建设银行",
+    "交通银行",
+    "招商银行",
+    "中信银行",
+    "上海浦东发展银行",
+    "浦发银行",
+    "齐鲁银行",
+    "德州银行",
+    "郑州银行",
+    "北京银行",
+    "济宁银行",
+    "山东省农村信用社",
+    "天津农行支付系统处理中心",
+    "中国工商银行总行清算中心",
+    "中国农业银行资金清算中心",
+    "中国建设银行总行",
+)
 
 
 def _qilu_amounts(line: str) -> list[Decimal]:
@@ -856,9 +878,23 @@ def _qilu_amounts(line: str) -> list[Decimal]:
     return amounts
 
 
+def normalize_qilu_pdf_text(text: str) -> str:
+    lines: list[str] = []
+    for raw in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = _text(raw)
+        if not line:
+            continue
+        if re.fullmatch(r"(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}\s+\d{1,2}:\d{2}:\d{2}", line):
+            continue
+        line = line.replace("交易对手信息:", "交易对手信息：")
+        line = re.sub(r"\s+", " ", line).strip()
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _qilu_clean_lines(text: str) -> list[str]:
     lines: list[str] = []
-    for raw in str(text or "").splitlines():
+    for raw in normalize_qilu_pdf_text(text).splitlines():
         line = _text(raw)
         if not line:
             continue
@@ -875,6 +911,27 @@ def _qilu_clean_lines(text: str) -> list[str]:
 def _qilu_is_counterparty_line(line: str) -> bool:
     text = _text(line)
     return bool(re.match(r"^[0-9A-Za-z]{6,}\s+", text))
+
+
+def _qilu_split_counterparty_line(cp_line: str) -> tuple[str, str]:
+    text = _text(cp_line)
+    if not text:
+        return "", ""
+    best_idx = -1
+    for keyword in QILU_BANK_START_KEYWORDS:
+        idx = text.find(keyword)
+        if idx >= 0 and (best_idx < 0 or idx < best_idx):
+            best_idx = idx
+    if best_idx > 0:
+        return _text(text[:best_idx]), _text(text[best_idx:])
+    bank_keywords = ("银行", "信用社", "清算中心", "支行", "分行", "总行", "农村商业银行", "农商行", "支付系统处理中心")
+    for keyword in bank_keywords:
+        idx = text.find(keyword)
+        if idx > 0:
+            space_idx = text.rfind(" ", 0, idx)
+            if space_idx > 0:
+                return _text(text[:space_idx]), _text(text[space_idx + 1 :])
+    return text, ""
 
 
 def _qilu_parse_counterparty_line(line: str) -> dict[str, str]:
@@ -917,6 +974,59 @@ def _qilu_date_summary(line: str) -> tuple[str, str, str]:
     if not match:
         return "", "", ""
     return _date_text(match.group(1)), _text(match.group(2)), _text(match.group(3))
+
+
+def parse_qilu_transactions_by_regex(full_text: str, source_file: str, account: AccountInfo) -> list[dict[str, Any]]:
+    normalized = normalize_qilu_pdf_text(full_text)
+    lines = normalized.splitlines()
+    pattern = re.compile(
+        rf"(?P<income>{QILU_BLOCK_AMOUNT})\s+(?P<out>{QILU_BLOCK_AMOUNT})\s*\n"
+        rf"(?P<cp_account>[0-9A-Za-z]{{6,}})\s+(?P<cp_line>.+?)\n"
+        rf"(?P<balance>{QILU_BLOCK_AMOUNT})\s*\n"
+        rf"交易对手信息[:：]\s*\n"
+        rf"(?P<seq>\d{{1,5}})\s*\n"
+        rf"(?P<date>20\d{{2}}-\d{{2}}-\d{{2}})\s+(?P<channel>\S+)\s+(?P<summary>[^\n]+)",
+        re.MULTILINE,
+    )
+    transactions: list[dict[str, Any]] = []
+    for match in pattern.finditer(normalized):
+        income = _money(match.group("income")) or Decimal("0")
+        out_amount = _money(match.group("out")) or Decimal("0")
+        if income == 0 and out_amount == 0:
+            continue
+        counterparty_name, counterparty_bank_name = _qilu_split_counterparty_line(match.group("cp_line"))
+        tx = _qilu_make_tx(
+            source_file=source_file,
+            account=account,
+            row_no=_int(match.group("seq")) or len(transactions) + 1,
+            accounting_date=_date_text(match.group("date")),
+            channel=match.group("channel"),
+            income=income,
+            out_amount=out_amount,
+            balance=_money(match.group("balance")),
+            summary=match.group("summary"),
+            counterparty={
+                "counterparty_account": match.group("cp_account"),
+                "counterparty_name": counterparty_name,
+                "counterparty_bank_no": counterparty_bank_name,
+            },
+        )
+        if tx:
+            transactions.append(tx)
+    marker_count = normalized.count("交易对手信息")
+    date_line_count = sum(1 for line in lines if re.match(r"^20\d{2}-\d{2}-\d{2}\s+\S+\s+", line))
+    amount_pair_line_count = sum(1 for line in lines if len(_qilu_amounts(line)) == 2)
+    logger.info(
+        "qilu regex full_text_length=%s marker_count=%s date_line_count=%s amount_pair_line_count=%s parsed_transaction_count=%s",
+        len(normalized),
+        marker_count,
+        date_line_count,
+        amount_pair_line_count,
+        len(transactions),
+    )
+    if not transactions:
+        logger.warning("qilu regex parsed 0 transactions, first_lines=%s", "\n".join(lines[:120]))
+    return transactions
 
 
 def _qilu_parse_transaction_blocks_from_text(text: str, source_file: str, account: AccountInfo) -> list[dict[str, Any]]:
@@ -1019,7 +1129,9 @@ def _parse_qilu_pdf_bank_reconciliation_detail(
     warnings: list[str] = []
     account, raw_summary = _qilu_pdf_account_and_summary(text, source_file, "PDF")
     raw_page_text = "\n".join(str(page.get("text") or "") for page in pages)
-    transactions: list[dict[str, Any]] = _qilu_parse_transaction_blocks_from_text(raw_page_text or text, source_file, account)
+    transactions: list[dict[str, Any]] = parse_qilu_transactions_by_regex(raw_page_text or text, source_file, account)
+    if not transactions:
+        transactions = _qilu_parse_transaction_blocks_from_text(raw_page_text or text, source_file, account)
     last_tx: dict[str, Any] | None = None
     row_no = 0
     if not transactions:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from backend.extraction_skills.bank_reconciliation_detail import parse_bank_reconciliation_files
+from backend.extraction_skills.bank_reconciliation_detail import AccountInfo, parse_bank_reconciliation_files, parse_qilu_transactions_by_regex
 
 
 def _save_shanghai_sample(path: Path) -> None:
@@ -372,3 +372,29 @@ def test_qilu_bank_reconciliation_detail_pdf_fragmented_text_blocks_parse(tmp_pa
     assert fee["amount"] == "4.50"
     assert fee["counterparty_name"] == "其他国内结算业务收入"
     assert "手续费" in fee["category"]
+
+
+def test_parse_qilu_transactions_by_regex_minimal_block() -> None:
+    text = "\n".join(
+        [
+            "1,000,000.00 0.00",
+            "29410078801400001148 德州天衢文化旅游发展有限公司 上海浦东发展银行股份有限公司德州分行",
+            "6,569,855.83",
+            "交易对手信息：",
+            "1",
+            "2025-06-30 人民银行 汇款|杨庄河项目进度款",
+        ]
+    )
+    account = AccountInfo(bank_name="齐鲁银行", account_name="艾绿工程建设（上海）有限公司", account_no="86617005101421011677")
+
+    transactions = parse_qilu_transactions_by_regex(text, "202501-6齐鲁银行流水(1).pdf", account)
+
+    assert len(transactions) == 1
+    tx = transactions[0]
+    assert str(tx["amount"]) == "1000000.00"
+    assert tx["direction"] == "in"
+    assert tx["accounting_date"] == "2025-06-30"
+    assert tx["counterparty_account"] == "29410078801400001148"
+    assert tx["counterparty_name"] == "德州天衢文化旅游发展有限公司"
+    assert tx["counterparty_bank_no"] == "上海浦东发展银行股份有限公司德州分行"
+    assert tx["summary"] == "汇款|杨庄河项目进度款"
