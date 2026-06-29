@@ -327,7 +327,7 @@ def _description(tx: dict[str, Any]) -> str:
     return str(tx.get("purpose") or tx.get("summary") or "").strip()
 
 
-def _aggregate_counterparties(transactions: list[dict[str, Any]], total_amount: Decimal) -> list[dict[str, Any]]:
+def _aggregate_counterparties(transactions: list[dict[str, Any]], total_amount: Decimal, *, limit: int = 10) -> list[dict[str, Any]]:
     groups: dict[str, dict[str, Any]] = {}
     for tx in transactions:
         name = str(tx.get("counterparty_name") or "").strip()
@@ -344,7 +344,7 @@ def _aggregate_counterparties(transactions: list[dict[str, Any]], total_amount: 
             item["descriptions"][desc] += 1
     ranked = sorted(groups.values(), key=lambda item: (-item["amount"], -item["count"], item["name"]))
     result = []
-    for index, item in enumerate(ranked, start=1):
+    for index, item in enumerate(ranked[:limit], start=1):
         amount = item["amount"]
         result.append({
             "rank": index,
@@ -355,6 +355,45 @@ def _aggregate_counterparties(transactions: list[dict[str, Any]], total_amount: 
             "covered_months": _month_range_text(item.get("months") or set()),
             "main_purpose": "、".join(desc for desc, _ in item["descriptions"].most_common(3)),
         })
+    return result
+
+
+def _transaction_months(transactions: list[dict[str, Any]]) -> set[str]:
+    months = {
+        _month(_tx_value(tx, "trade_time", "transaction_time", "交易时间", "book_date", "记账日期"))
+        for tx in transactions
+    }
+    return {month for month in months if _valid_year_month(month)}
+
+
+def _months_from_date_range(start: str, end: str) -> set[str]:
+    start_month = _month(start)
+    end_month = _month(end)
+    return set(_months_between(start_month, end_month)) if start_month and end_month else set()
+
+
+def _internal_related_key(tx: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    return (
+        str(tx.get("trade_time") or tx.get("book_date") or ""),
+        str(tx.get("direction") or ""),
+        _norm_name(tx.get("counterparty_name")),
+        str(_money_value(tx.get("amount")) or ""),
+        str(tx.get("account_no") or ""),
+        str(tx.get("related_person_role") or tx.get("exclude_reason") or ""),
+    )
+
+
+def _dedup_internal_related_transactions(transactions: list[dict[str, Any]], *, limit: int | None = None) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    result: list[dict[str, Any]] = []
+    for tx in sorted(transactions, key=lambda item: (str(item.get("trade_time") or item.get("book_date") or ""), str(item.get("account_no") or ""), str(item.get("direction") or ""), str(item.get("amount") or ""))):
+        key = _internal_related_key(tx)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(tx)
+        if limit and len(result) >= limit:
+            break
     return result
 
 
@@ -484,22 +523,27 @@ def aggregate_customer_bank_statements(
                 statement_month = _month(_tx_value(tx, "trade_time", "transaction_time", "交易时间"))
                 if statement_month:
                     break
-        if account_no and statement_month:
-            group_key = f"{bank_name}|{account_no}|{statement_month}"
+        valid_tx_months = _transaction_months(quality["valid_transactions"])
+        coverage_months = valid_tx_months or _months_from_date_range(start, end) or ({statement_month} if _valid_year_month(statement_month) else set())
+        coverage_month_text = _month_range_text(coverage_months)
+        if account_no:
+            group_key = f"{bank_name}|{account_no}|{source_file}"
             group = monthly_file_groups.setdefault(group_key, {
-                "month": statement_month,
+                "month": coverage_month_text,
                 "bank_name": bank_name,
                 "account_no": account_no,
                 "account_name": valid_account_name or UNKNOWN,
                 "opening_bank": payload.get("opening_bank") or "",
                 "period_start": start,
                 "period_end": end,
+                "covered_month_count": len(coverage_months),
                 "file_count": 0,
                 "transaction_count": 0,
                 "files": [],
             })
             group["file_count"] += 1
             group["transaction_count"] += len(quality["valid_transactions"])
+            group["covered_month_count"] = max(int(group.get("covered_month_count") or 0), len(coverage_months))
             if start and (not group.get("period_start") or start < group["period_start"]):
                 group["period_start"] = start
             if end and (not group.get("period_end") or end > group["period_end"]):
@@ -508,12 +552,12 @@ def aggregate_customer_bank_statements(
                 "source_file": source_file,
                 "period_start": start,
                 "period_end": end,
+                "covered_months": coverage_month_text,
                 "transaction_count": len(quality["valid_transactions"]),
                 "raw_transaction_count": len(quality["valid_transactions"]),
                 "valid_transaction_count": len(quality["valid_transactions"]),
-                "status": f"已纳入 {statement_month} 月度聚合",
+                "status": "?????????",
             })
-            logger.info("[BankStatementAggregator] monthly_group_key=%s", group_key)
             logger.info("[BankStatementAggregator] monthly_group_file_count=%s", group["file_count"])
             logger.info("[BankStatementAggregator] monthly_group_transaction_count=%s", group["transaction_count"])
 
@@ -533,8 +577,7 @@ def aggregate_customer_bank_statements(
             })
             account["file_count"] += 1
             account["source_files"].add(source_file)
-            if statement_month:
-                account["months"].add(statement_month)
+            account["months"].update(coverage_months)
             account["transaction_count"] += len(quality["valid_transactions"])
             if start and (not account.get("period_start") or start < account["period_start"]):
                 account["period_start"] = start
@@ -625,11 +668,21 @@ def aggregate_customer_bank_statements(
         item["operating_net_inflow"] = item["effective_in_amount"] - item["effective_out_amount"]
         monthly_summary.append(item)
 
+    monthly_internal_transfer_amount = sum((_money_value(item.get("internal_transfer_amount")) or Decimal("0") for item in monthly_summary), Decimal("0"))
+
+    self_transfer_transactions = [tx for tx in transactions if tx.get("is_self_transfer")]
+    internal_account_transfer_transactions = [tx for tx in transactions if tx.get("is_internal_account_transfer") and not tx.get("is_self_transfer")]
+    related_person_transfer_transactions = [tx for tx in transactions if tx.get("is_related_person_transfer")]
+    internal_transfer_transactions = _dedup_internal_related_transactions(self_transfer_transactions + internal_account_transfer_transactions)
+    internal_related_display_transactions = _dedup_internal_related_transactions(
+        self_transfer_transactions + internal_account_transfer_transactions + related_person_transfer_transactions,
+        limit=20,
+    )
     excluded_types = {
         "重复交易": duplicates,
-        "本方同名划转": [tx for tx in transactions if tx.get("is_self_transfer")],
-        "客户名下账户互转": [tx for tx in transactions if tx.get("is_internal_account_transfer")],
-        "法人/关联人转账": [tx for tx in transactions if tx.get("is_related_person_transfer")],
+        "本方同名划转": self_transfer_transactions,
+        "客户名下账户互转": internal_account_transfer_transactions,
+        "法人/关联人转账": related_person_transfer_transactions,
         "银行费用": [tx for tx in transactions if tx.get("is_bank_fee")],
         "税费": [tx for tx in transactions if tx.get("is_tax_payment")],
         "工资代发": [tx for tx in transactions if tx.get("is_salary_payment")],
@@ -658,7 +711,7 @@ def aggregate_customer_bank_statements(
         item["file_count"] += int(group.get("file_count") or 0)
         item["transaction_count"] += int(group.get("transaction_count") or 0)
     source_file_summary = [source_groups[key] for key in sorted(source_groups)]
-    recognized_months = {str(group.get("month") or "") for group in monthly_file_groups.values() if _valid_year_month(group.get("month"))}
+    recognized_months = {str(item.get("month") or "") for item in monthly_summary if _valid_year_month(item.get("month"))}
     month_span = _months_between(min(recognized_months), max(recognized_months)) if recognized_months else []
     missing_months = [month for month in month_span if month not in recognized_months]
 
@@ -719,8 +772,8 @@ def aggregate_customer_bank_statements(
         "operating_net_inflow": (effective_in_amount - effective_out_amount) if amounts_available else None,
         "average_monthly_effective_in": (effective_in_amount / Decimal(months_count)) if amounts_available else None,
         "average_monthly_effective_out": (effective_out_amount / Decimal(months_count)) if amounts_available else None,
-        "internal_transfer_count": len(excluded_types["客户名下账户互转"]) + len(excluded_types["本方同名划转"]),
-        "internal_transfer_amount": excluded_summary[1]["amount"] + excluded_summary[2]["amount"] if amounts_available else None,
+        "internal_transfer_count": len(internal_transfer_transactions),
+        "internal_transfer_amount": monthly_internal_transfer_amount if amounts_available else None,
         "related_person_transfer_count": len(excluded_types["法人/关联人转账"]),
         "related_person_transfer_amount": excluded_summary[3]["amount"] if amounts_available else None,
         "loan_related_amount": excluded_summary[7]["amount"] if amounts_available else None,
@@ -735,7 +788,7 @@ def aggregate_customer_bank_statements(
         "risk_tips": [],
         "manual_review_items": [],
         "transactions": transactions,
-        "internal_related_transactions": excluded_types["本方同名划转"] + excluded_types["客户名下账户互转"] + excluded_types["法人/关联人转账"],
+        "internal_related_transactions": internal_related_display_transactions,
         "amount_complete_file_count": amount_status_counter.get("完整识别", 0),
         "amount_partial_file_count": amount_status_counter.get("部分识别", 0),
         "amount_unrecognized_file_count": len(source_files) - amount_status_counter.get("完整识别", 0) - amount_status_counter.get("部分识别", 0),
@@ -834,14 +887,14 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
     if monthly_groups:
         lines += [
             "",
-            "### 月度账户文件清单",
-            "| 月份 | 银行 | 账号 | 户名 | 来源文件数 | 时间范围 | 交易笔数 | 状态 |",
-            "|---|---|---|---|---:|---|---:|---|",
+            "### 账户文件覆盖清单",
+            "| 银行 | 账号 | 户名 | 来源文件数 | 覆盖时间范围 | 覆盖月份数 | 交易笔数 |",
+            "|---|---|---|---:|---|---:|---:|",
         ]
         for group in monthly_groups:
             lines.append(
-                f"| {group.get('month') or UNKNOWN} | {group.get('bank_name') or UNKNOWN} | {group.get('account_no') or UNKNOWN} | "
-                f"{group.get('account_name') or UNKNOWN} | {group.get('file_count', 0)} | {group.get('time_range') or UNKNOWN} | {group.get('transaction_count', 0)} | 已纳入聚合 |"
+                f"| {group.get('bank_name') or UNKNOWN} | {group.get('account_no') or UNKNOWN} | "
+                f"{group.get('account_name') or UNKNOWN} | {group.get('file_count', 0)} | {group.get('time_range') or UNKNOWN} | {group.get('covered_month_count', 0)} | {group.get('transaction_count', 0)} |"
             )
     source_summary = data.get("source_file_summary") or []
     if source_summary:
@@ -929,7 +982,17 @@ def render_customer_bank_flow_aggregate_markdown(data: dict[str, Any]) -> str:
         for item in data.get("supplier_outflow_summary") or []:
             lines.append(f"| {item.get('rank')} | {item.get('name')} | {_money(item.get('amount'))} | {item.get('count')} | {item.get('ratio', 0):.2%} | {item.get('covered_months') or UNKNOWN} | {item.get('main_purpose') or '—'} |")
 
-        lines += ["", "### 内部划转及关联人往来", "| 类型 | 交易时间 | 收支方向 | 对方名称 | 关系/原因 | 金额 | 来源账户 |", "|---|---|---|---|---|---:|---|"]
+        lines += ["", "### ??????????"]
+        lines += [
+            "| 类型 | 笔数 | 金额 | 说明 |",
+            "|---|---:|---:|---|",
+            f"| 内部账户划转 | {data.get('internal_transfer_count', 0)} | {_money(data.get('internal_transfer_amount'), unavailable=unavailable)} | 客户名下账户之间划转，已从有效经营流水中剔除 |",
+            f"| 关联人往来 | {data.get('related_person_transfer_count', 0)} | {_money(data.get('related_person_transfer_amount'), unavailable=unavailable)} | 法人、股东、高管等关联主体往来，已剔除 |",
+            "",
+            "#### 内部/关联往来明细样例（最多20条）",
+            "| 类型 | 交易时间 | 收支方向 | 对方名称 | 关系/原因 | 金额 | 来源账户 |",
+            "|---|---|---|---|---|---:|---|",
+        ]
         for tx in data.get("internal_related_transactions") or []:
             kind = "关联人转账" if tx.get("is_related_person_transfer") else "内部账户划转"
             reason = tx.get("related_person_role") or tx.get("exclude_reason") or "内部往来"
