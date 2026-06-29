@@ -40,6 +40,18 @@ def _save_icbc_sample(path: Path) -> None:
     wb.save(path)
 
 
+def _save_bocom_sample(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet0"
+    ws.append(["查询账号:", "310066690013008481336", "户  名:", "艾绿工程建设（上海）有限公司"])
+    ws.append(["交易时间", "借方发生额（支出）", "贷方发生额（收入）", "账户余额", "对方账号", "对方户名", "摘要"])
+    ws.append(["2025-04-03 18:41:23", "100.00", "0.00", "900.00", "111", "上海材料有限公司", "材料款"])
+    ws.append(["2025-09-30 10:00:00", "0.00", "300.00", "1,200.00", "222", "上海项目有限公司", "工程款"])
+    ws.append(["借方交易笔数", 1, "借方交易金额", "100.00", "贷方交易笔数", 1, "贷方交易金额", "300.00"])
+    wb.save(path)
+
+
 def test_bank_reconciliation_detail_aggregates_and_renders_compact_markdown(tmp_path: Path) -> None:
     shanghai = tmp_path / "shanghai_bank_detail.xlsx"
     icbc = tmp_path / "icbc_bank_detail.xlsx"
@@ -193,6 +205,38 @@ def test_shanghai_bank_reconciliation_detail_detects_b_column_header_and_meta(tm
     assert "- 提取状态：成功" in markdown
     assert "- 银行名称：上海银行" in markdown
     assert "- 交易笔数：6 笔" in markdown
+
+
+def test_bocom_xls_style_debit_credit_columns_parse_amounts(tmp_path: Path) -> None:
+    bocom = tmp_path / "bocom_detail.xlsx"
+    _save_bocom_sample(bocom)
+
+    result = parse_bank_reconciliation_files(
+        [{"file_path": str(bocom), "file_name": "交行202504-202509.xls"}]
+    )
+
+    summary = result["summary"]
+    parsed_file = result["files"][0]
+    account = result["accounts"][0]
+    markdown = result["display_markdown"]
+
+    assert result["extraction_status"] == "success"
+    assert parsed_file["bank_name"] == "交通银行"
+    assert parsed_file["transaction_count"] == 2
+    assert parsed_file["raw_summary"]["debit_count"] == 1
+    assert parsed_file["raw_summary"]["credit_count"] == 1
+    assert parsed_file["raw_summary"]["debit_amount"] == "100.00"
+    assert parsed_file["raw_summary"]["credit_amount"] == "300.00"
+    assert account["account_no"] == "310066690013008481336"
+    assert account["account_name"] == "艾绿工程建设（上海）有限公司"
+    assert summary["deduped_transaction_count"] == 2
+    assert summary["out_amount"] == "100.00"
+    assert summary["in_amount"] == "300.00"
+    assert summary["amount_completeness"] == "完整"
+    assert "- 银行名称：交通银行" in markdown
+    assert "- 账号：310066690013008481336" in markdown
+    assert "| 原始入账总额 | 300.00 |" in markdown
+    assert "| 原始出账总额 | 100.00 |" in markdown
 
 
 def test_bank_reconciliation_detail_empty_files_returns_actionable_failure() -> None:

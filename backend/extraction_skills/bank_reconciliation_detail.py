@@ -380,6 +380,8 @@ def _bank_from_filename(filename: str) -> str:
         return "工商银行"
     if "上海银行" in filename:
         return "上海银行"
+    if "交通银行" in filename or "交行" in filename:
+        return "交通银行"
     return ""
 
 
@@ -497,6 +499,31 @@ def _read_workbook(file_path: str, filename: str) -> list[tuple[str, list[list[A
                 wb.close()
         raise RuntimeError(f"workbook 读取失败：{last_error}") if last_error else RuntimeError("workbook 读取失败")
     if suffix == ".xls":
+        try:
+            import xlrd  # type: ignore
+
+            book = xlrd.open_workbook(str(path))
+            sheets: list[tuple[str, list[list[Any]]]] = []
+            for sheet in book.sheets():
+                rows: list[list[Any]] = []
+                for row_idx in range(sheet.nrows):
+                    values: list[Any] = []
+                    for col_idx in range(sheet.ncols):
+                        cell = sheet.cell(row_idx, col_idx)
+                        value: Any = cell.value
+                        if cell.ctype == xlrd.XL_CELL_DATE:
+                            try:
+                                value = xlrd.xldate.xldate_as_datetime(value, book.datemode)
+                            except Exception:
+                                pass
+                        values.append(value)
+                    rows.append(values)
+                sheets.append((str(sheet.name), rows))
+            return sheets
+        except ImportError:
+            logger.info("[BankReconciliationDetail] xlrd_not_available fallback=pandas file=%s", file_path)
+        except Exception as exc:
+            logger.warning("[BankReconciliationDetail] xlrd_read_failed fallback=pandas file=%s error=%s", file_path, exc)
         try:
             import pandas as pd  # type: ignore
 
@@ -1464,20 +1491,20 @@ def _detect_bank_format(rows: list[list[Any]], bank_hint: str, mapping: dict[str
 def _find_header(rows: list[list[Any]], bank_hint: str) -> tuple[int, dict[str, int], str, int]:
     aliases = {
         "transaction_id": ("交易流水号",),
-        "trade_time": ("交易时间",),
-        "accounting_date": ("记账日期",),
+        "trade_time": ("交易时间", "交易日期"),
+        "accounting_date": ("记账日期", "交易日期"),
         "direction": ("交易方向", "借贷标志"),
         "amount": ("交易金额",),
-        "balance": ("余额",),
+        "balance": ("账户余额", "余额"),
         "counterparty_account": ("对手账号", "对方账号"),
-        "counterparty_name": ("对手名称", "对方单位"),
+        "counterparty_name": ("对手名称", "对方户名", "对方名称", "对方单位"),
         "counterparty_bank_no": ("对方行号",),
         "summary": ("摘要",),
         "purpose": ("交易用途", "用途"),
         "remark": ("备注", "附言"),
         "voucher_no": ("凭证号",),
-        "in_amount": ("转入金额",),
-        "out_amount": ("转出金额",),
+        "in_amount": ("贷方发生额（收入）", "贷方发生额(收入)", "贷方发生额", "收入金额", "收入", "转入金额", "贷方金额"),
+        "out_amount": ("借方发生额（支出）", "借方发生额(支出)", "借方发生额", "支出金额", "支出", "转出金额", "借方金额"),
     }
     best_idx = -1
     best_map: dict[str, int] = {}
@@ -1562,11 +1589,51 @@ def _next_value_after_index(row: list[Any], start_idx: int, stop_labels: tuple[s
     return ""
 
 
+def _set_account_value_after_label(row: list[Any], account: AccountInfo, labels: tuple[str, ...], field_name: str, *, digits_only: bool = False) -> None:
+    if getattr(account, field_name):
+        return
+    for label in labels:
+        idx = _find_label_index(row, label)
+        if idx < 0:
+            continue
+        value = _next_value_after_index(row, idx)
+        if not value:
+            continue
+        if digits_only:
+            value = re.sub(r"\D", "", value)
+        if value:
+            setattr(account, field_name, value)
+            return
+
+
+def _is_summary_row(row: list[Any]) -> bool:
+    joined = _compact(_row_text(row))
+    return bool(joined) and any(keyword in joined for keyword in ("借方交易笔数", "借方交易金额", "贷方交易笔数", "贷方交易金额", "合计", "总计"))
+
+
+def _parse_summary_row(row: list[Any], summary: dict[str, Any]) -> None:
+    for idx, cell in enumerate(row):
+        label = _compact(cell)
+        if not label:
+            continue
+        value = _text(row[idx + 1]) if idx + 1 < len(row) else ""
+        if "借方交易笔数" in label and value:
+            summary["debit_count"] = _int(value)
+        elif "借方交易金额" in label and value:
+            summary["debit_amount"] = _money(value)
+        elif "贷方交易笔数" in label and value:
+            summary["credit_count"] = _int(value)
+        elif "贷方交易金额" in label and value:
+            summary["credit_amount"] = _money(value)
+
+
 def _parse_meta(rows: list[list[Any]], sheet_name: str, source_file: str, bank_name: str) -> tuple[AccountInfo, dict[str, Any]]:
     account = AccountInfo(bank_name=bank_name or _bank_from_filename(source_file), source_file=source_file, sheet_name=sheet_name)
     summary: dict[str, Any] = {}
     for row in rows[:10]:
         row_joined = _row_text(row)
+        _set_account_value_after_label(row, account, ("查询账号", "账号"), "account_no", digits_only=True)
+        _set_account_value_after_label(row, account, ("户名", "户  名", "账户名称"), "account_name")
         if "记账日期" in row_joined:
             start, end = _date_range(row_joined)
             account.date_start = account.date_start or start
@@ -1597,6 +1664,9 @@ def _parse_meta(rows: list[list[Any]], sheet_name: str, source_file: str, bank_n
             value = _value_after_label(row, label)
             if value:
                 summary[key] = _money(value) if "金额" in label else _int(value)
+    for row in rows[-5:]:
+        if _is_summary_row(row):
+            _parse_summary_row(row, summary)
     if not account.bank_name:
         account.bank_name = _bank_from_filename(source_file) or UNKNOWN
     if not account.currency:
@@ -1708,6 +1778,8 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
             if empty_streak >= 8:
                 break
             continue
+        if _is_summary_row(row):
+            continue
         empty_streak = 0
         placeholder_cleaned += sum(1 for cell in row if _is_placeholder(cell))
         trade_time = _date_text(_row_get(row, mapping, "trade_time"), with_time=True)
@@ -1723,10 +1795,12 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
             direction = "in"
         elif direction_raw in {"借", "借方"} or "出账" in direction_raw or "借方" in direction_raw:
             direction = "out"
-        elif in_amount is not None:
+        elif in_amount is not None and in_amount > 0:
             direction = "in"
-        elif out_amount is not None:
+        elif out_amount is not None and out_amount > 0:
             direction = "out"
+        if not direction and amount is None and (in_amount is not None or out_amount is not None):
+            continue
         final_amount = amount if amount is not None else (in_amount if direction == "in" else out_amount)
         if final_amount is None and not trade_time and not accounting_date:
             continue
@@ -1772,6 +1846,40 @@ def _parse_sheet(rows: list[list[Any]], sheet_name: str, source_file: str) -> Fi
         len(transactions),
         "完整" if transactions and all(tx.get("amount") is not None for tx in transactions) else "部分缺失" if transactions else "未识别",
     )
+    if bank_name == "交通银行":
+        debit_total = _sum(transactions, lambda tx: tx.get("direction") == "out")
+        credit_total = _sum(transactions, lambda tx: tx.get("direction") == "in")
+        debit_summary = _money(raw_summary.get("debit_amount"))
+        credit_summary = _money(raw_summary.get("credit_amount"))
+        reconcile_ok = (
+            (debit_summary is None or abs(debit_total - debit_summary) <= Decimal("0.01"))
+            and (credit_summary is None or abs(credit_total - credit_summary) <= Decimal("0.01"))
+        )
+        logger.info(
+            "[BankReconciliationDetail][BOCOM] file_name=%s sheet_name=%s detected_bank_name=%s account_no=%s account_name=%s header_row_no=%s field_map=%s debit_col=%s credit_col=%s balance_col=%s parsed_transaction_count=%s debit_total_from_transactions=%s credit_total_from_transactions=%s debit_total_from_summary_row=%s credit_total_from_summary_row=%s amount_reconcile_status=%s",
+            source_file,
+            sheet_name,
+            bank_name,
+            account.account_no,
+            account.account_name,
+            header_idx + 1,
+            field_map_for_log,
+            (mapping.get("out_amount") or -1) + 1 if mapping.get("out_amount") is not None else "",
+            (mapping.get("in_amount") or -1) + 1 if mapping.get("in_amount") is not None else "",
+            (mapping.get("balance") or -1) + 1 if mapping.get("balance") is not None else "",
+            len(transactions),
+            _fmt_money(debit_total),
+            _fmt_money(credit_total),
+            _fmt_money(debit_summary),
+            _fmt_money(credit_summary),
+            "ok" if reconcile_ok else "mismatch",
+        )
+        if not debit_total and not credit_total:
+            logger.warning(
+                "[BankReconciliationDetail][BOCOM] zero_amount_debug header=%s first_rows=%s",
+                rows[header_idx] if 0 <= header_idx < len(rows) else [],
+                rows[header_idx + 1 : header_idx + 6],
+            )
     return FileParseResult(
         source_file=source_file,
         sheet_name=sheet_name,
