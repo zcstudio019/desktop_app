@@ -2205,6 +2205,294 @@ def parse_icbc_statement(raw_pages: list[dict[str, Any]], text: str) -> tuple[li
     }
 
 
+def _cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return str(value).strip()
+
+
+def _normalize_header_cell(value: Any) -> str:
+    return re.sub(r"[\s\u3000]+", "", _cell_text(value))
+
+
+def _parse_excel_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    text = _cell_text(value)
+    digits = re.sub(r"\D", "", text)
+    if len(digits) >= 8:
+        try:
+            return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8])).strftime("%Y-%m-%d")
+        except ValueError:
+            return ""
+    parsed = parse_valid_date(text)
+    return parsed.isoformat() if parsed else ""
+
+
+def _parse_excel_time(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%H:%M:%S")
+    text = _cell_text(value)
+    match = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", text)
+    if not match:
+        return ""
+    return f"{int(match.group(1)):02d}:{int(match.group(2)):02d}:{int(match.group(3) or 0):02d}"
+
+
+def _row_label_values(rows: list[list[Any]], max_rows: int = 12) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for row in rows[:max_rows]:
+        for index, cell in enumerate(row):
+            label = _normalize_header_cell(cell)
+            if not label:
+                continue
+            next_value = row[index + 1] if index + 1 < len(row) else ""
+            values[label] = next_value
+    return values
+
+
+def _icbc_account_field_map(cells: list[Any]) -> dict[str, int]:
+    aliases = {
+        "account_no": ("账号",),
+        "account_name": ("账号名称",),
+        "currency": ("币种",),
+        "trade_date": ("交易日",),
+        "trade_time": ("交易时间",),
+        "transaction_type": ("交易类型",),
+        "debit_amount": ("借方金额",),
+        "credit_amount": ("贷方金额",),
+        "balance": ("余额",),
+        "summary": ("摘要",),
+        "purpose": ("用途",),
+        "business_name": ("业务名称",),
+        "business_summary": ("业务摘要",),
+        "other_summary": ("其它摘要", "其他摘要"),
+        "extended_summary": ("扩展摘要",),
+        "counterparty_name": ("收(付)方名称", "收（付）方名称"),
+        "counterparty_account": ("收(付)方账号", "收（付）方账号"),
+        "counterparty_bank_no": ("收(付)方开户行行号", "收（付）方开户行行号"),
+        "counterparty_bank": ("收(付)方开户行名", "收（付）方开户行名"),
+        "counterparty_bank_address": ("收(付)方开户行地址", "收（付）方开户行地址"),
+        "serial_no": ("流水号",),
+    }
+    result: dict[str, int] = {}
+    for index, cell in enumerate(cells):
+        text = _normalize_header_cell(cell)
+        if not text:
+            continue
+        for field, names in aliases.items():
+            if field not in result and any(name in text for name in names):
+                result[field] = index
+                break
+    return result
+
+
+def _get_mapped(row: list[Any], mapping: dict[str, int], field: str) -> Any:
+    index = mapping.get(field)
+    return row[index] if index is not None and index < len(row) else ""
+
+
+def _parse_icbc_account_statement_excel(file_path: str, file_name: str = "") -> dict[str, Any] | None:
+    path = Path(str(file_path or ""))
+    if not path.is_file() or path.suffix.lower() != ".xlsx":
+        return None
+    try:
+        from openpyxl import load_workbook  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        logger.warning("icbc account statement openpyxl unavailable file=%s error=%s", file_name or path.name, exc)
+        return None
+    try:
+        wb = load_workbook(str(path), read_only=False, data_only=True)
+    except Exception as exc:
+        logger.warning("icbc account statement workbook read failed file=%s error=%s", file_name or path.name, exc)
+        return None
+    for ws in wb.worksheets:
+        rows = [[cell for cell in row] for row in ws.iter_rows(values_only=True)]
+        if not rows:
+            continue
+        labels = _row_label_values(rows)
+        file_type = _cell_text(labels.get("文件类型")).upper()
+        title = _cell_text(labels.get("标题"))
+        has_account_meta = bool(labels.get("银行账号") and labels.get("账号名称") and labels.get("查询开始日期") and labels.get("查询结束日期"))
+        header_row_no = 0
+        field_map: dict[str, int] = {}
+        for row_no, row in enumerate(rows[:30], start=1):
+            candidate = _icbc_account_field_map(row)
+            required = {"account_no", "account_name", "trade_date", "trade_time", "debit_amount", "credit_amount", "balance", "summary", "counterparty_name", "counterparty_account"}
+            if len(required & set(candidate)) >= 8:
+                header_row_no = row_no
+                field_map = candidate
+                break
+        detected = (title == "对账单" and file_type == "ACCOUNT" and has_account_meta) or bool(header_row_no and {"debit_amount", "credit_amount"} <= set(field_map))
+        if not detected:
+            continue
+
+        account_no = _cell_text(labels.get("银行账号"))
+        account_name = _cell_text(labels.get("账号名称"))
+        currency = _cell_text(labels.get("账户币种")) or "人民币"
+        branch_region = _cell_text(labels.get("开户行地区"))
+        period_start = _parse_excel_date(labels.get("查询开始日期"))
+        period_end = _parse_excel_date(labels.get("查询结束日期"))
+        expected_count = int(_decimal(labels.get("记录条数")) or 0)
+        debit_total_expected = _decimal(labels.get("累计借金额"))
+        credit_total_expected = _decimal(labels.get("累计贷金额"))
+        debit_count_expected = int(_decimal(labels.get("累计借总笔数")) or 0)
+        credit_count_expected = int(_decimal(labels.get("累计贷总笔数")) or 0)
+        opening_balance = _decimal(labels.get("对账单期初余额"))
+        ending_balance = _decimal(labels.get("对账单余额"))
+
+        transactions: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        debit_total_actual = Decimal("0")
+        credit_total_actual = Decimal("0")
+        for raw_row_no, row in enumerate(rows[header_row_no:], start=header_row_no + 1):
+            first_cell = _normalize_header_cell(row[0] if row else "")
+            if first_cell in {"借方交易笔数", "借方交易金额", "贷方交易笔数", "贷方交易金额", "合计", "总计"}:
+                continue
+            trade_date = _parse_excel_date(_get_mapped(row, field_map, "trade_date"))
+            trade_clock = _parse_excel_time(_get_mapped(row, field_map, "trade_time"))
+            if not trade_date:
+                if any(_cell_text(item) for item in row):
+                    rejected.append({"row": raw_row_no, "reason": "missing_trade_date", "values": [_cell_text(item) for item in row[:12]]})
+                continue
+            debit = _decimal(_get_mapped(row, field_map, "debit_amount"))
+            credit = _decimal(_get_mapped(row, field_map, "credit_amount"))
+            debit = debit if debit is not None and debit != 0 else None
+            credit = credit if credit is not None and credit != 0 else None
+            if debit is None and credit is None:
+                rejected.append({"row": raw_row_no, "reason": "missing_amount", "values": [_cell_text(item) for item in row[:12]]})
+                continue
+            row_account_no = _cell_text(_get_mapped(row, field_map, "account_no")) or account_no
+            row_account_name = _cell_text(_get_mapped(row, field_map, "account_name")) or account_name
+            if not (row_account_no or row_account_name):
+                rejected.append({"row": raw_row_no, "reason": "missing_account", "values": [_cell_text(item) for item in row[:12]]})
+                continue
+            amount = debit or credit
+            direction = "出账" if debit is not None else "入账"
+            debit_credit = "借" if debit is not None else "贷"
+            if debit is not None:
+                debit_total_actual += debit
+            if credit is not None:
+                credit_total_actual += credit
+            tx = _new_tx(1)
+            tx["序号"] = len(transactions) + 1
+            tx["凭证号"] = _cell_text(_get_mapped(row, field_map, "serial_no"))
+            tx["对方账号"] = _cell_text(_get_mapped(row, field_map, "counterparty_account"))
+            tx["对方单位"] = _cell_text(_get_mapped(row, field_map, "counterparty_name"))
+            tx["对方行号"] = _cell_text(_get_mapped(row, field_map, "counterparty_bank_no") or _get_mapped(row, field_map, "counterparty_bank"))
+            tx["交易时间"] = f"{trade_date} {trade_clock or '00:00:00'}"
+            tx["借贷标志"] = debit_credit
+            tx["收支方向"] = direction
+            tx["用途"] = _cell_text(_get_mapped(row, field_map, "purpose") or _get_mapped(row, field_map, "business_name"))
+            tx["摘要"] = _cell_text(_get_mapped(row, field_map, "summary") or _get_mapped(row, field_map, "business_summary"))
+            tx["备注"] = "；".join(filter(None, [
+                _cell_text(_get_mapped(row, field_map, "other_summary")),
+                _cell_text(_get_mapped(row, field_map, "extended_summary")),
+                _cell_text(_get_mapped(row, field_map, "transaction_type")),
+            ]))
+            tx["金额"] = amount
+            tx["余额"] = _decimal(_get_mapped(row, field_map, "balance"))
+            tx["金额来源"] = "借方金额" if debit is not None else "贷方金额"
+            tx["交易分类"] = classify_transaction(tx)
+            tx["account_no"] = row_account_no
+            tx["account_name"] = row_account_name
+            tx["currency"] = _cell_text(_get_mapped(row, field_map, "currency")) or currency
+            tx["accounting_date"] = trade_date
+            tx["trade_date"] = trade_date
+            tx["transaction_time"] = tx["交易时间"]
+            tx["debit_amount"] = debit
+            tx["credit_amount"] = credit
+            tx["counterparty_account"] = tx["对方账号"]
+            tx["counterparty_name"] = tx["对方单位"]
+            tx["counterparty_bank"] = tx["对方行号"]
+            tx["serial_no"] = tx["凭证号"]
+            tx["raw_row_no"] = raw_row_no
+            tx["is_valid_transaction"] = True
+            transactions.append(tx)
+
+        debit_diff = (debit_total_actual - debit_total_expected) if debit_total_expected is not None else Decimal("0")
+        credit_diff = (credit_total_actual - credit_total_expected) if credit_total_expected is not None else Decimal("0")
+        amount_reconcile_status = (
+            "完整"
+            if (
+                expected_count == len(transactions)
+                and debit_total_expected is not None
+                and credit_total_expected is not None
+                and abs(debit_diff) <= Decimal("0.01")
+                and abs(credit_diff) <= Decimal("0.01")
+            )
+            else "部分缺失"
+        )
+        diagnostics = {
+            "parser_path": "icbc_account_statement_excel",
+            "table_headers_detected": [_cell_text(cell) for cell in rows[header_row_no - 1]] if header_row_no else [],
+            "candidate_transaction_rows": len(transactions) + len(rejected),
+            "invalid_candidate_rows": len(rejected),
+            "raw_text_blocks_count": len(rows),
+            "header_row_no": header_row_no,
+            "data_start_row": header_row_no + 1 if header_row_no else 0,
+            "field_map": field_map,
+            "expected_count": expected_count,
+            "debit_count_expected": debit_count_expected,
+            "credit_count_expected": credit_count_expected,
+            "debit_total_expected": debit_total_expected,
+            "credit_total_expected": credit_total_expected,
+            "debit_total_actual": debit_total_actual,
+            "credit_total_actual": credit_total_actual,
+            "amount_reconcile_status": amount_reconcile_status,
+            "opening_balance": opening_balance,
+            "ending_balance": ending_balance,
+            "rejected_rows_preview": rejected[:5],
+            "first_rows_preview": [[_cell_text(item) for item in row[:12]] for row in rows[:15]],
+            "first_transactions_preview": [[_cell_text(item) for item in row[:12]] for row in rows[header_row_no:header_row_no + 5]] if header_row_no else [],
+            "header_summary": {
+                "transaction_count": expected_count,
+                "debit_count": debit_count_expected,
+                "credit_count": credit_count_expected,
+                "debit_total_amount": debit_total_expected,
+                "credit_total_amount": credit_total_expected,
+                "period_start": period_start,
+                "period_end": period_end,
+                "currency": currency,
+            },
+        }
+        logger.info(
+            "icbc account statement detected file_name=%s sheet_name=%s header_row_no=%s account_no=%s account_name=%s date_start=%s date_end=%s expected_count=%s parsed_count=%s debit_total_expected=%s debit_total_actual=%s credit_total_expected=%s credit_total_actual=%s amount_reconcile_status=%s",
+            file_name or path.name, ws.title, header_row_no, account_no, account_name, period_start, period_end,
+            expected_count, len(transactions), debit_total_expected, debit_total_actual, credit_total_expected, credit_total_actual, amount_reconcile_status,
+        )
+        if not transactions:
+            logger.warning(
+                "icbc account statement parsed 0 file_name=%s first_rows=%s header_row_no=%s field_map=%s first_transaction_rows=%s",
+                file_name or path.name, diagnostics["first_rows_preview"], header_row_no, field_map, diagnostics["first_transactions_preview"],
+            )
+        return {
+            "account_info": {
+                "account_no": account_no,
+                "account_name": account_name,
+                "opening_bank": branch_region,
+                "header_preview": "工商银行 ACCOUNT 对账单",
+                "bank_format": BANK_FORMAT_ICBC,
+            },
+            "period_start": period_start,
+            "period_end": period_end,
+            "transactions": transactions,
+            "evidence": [{"field": "工商银行ACCOUNT对账单", "page": 1, "source": "excel", "value": f"{ws.title}!A1:AJ{len(rows)}"}],
+            "diagnostics": diagnostics,
+            "currency": currency,
+            "bank_name": "中国工商银行",
+            "title": "对账单",
+            "sheet_name": ws.title,
+        }
+    return None
+
+
 def parse_generic_bank_statement(raw_pages: list[dict[str, Any]], text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, dict[str, Any]]:
     transactions, evidence, amount_column = _transactions_from_pages(raw_pages, text)
     return transactions, evidence, amount_column, {
@@ -2980,14 +3268,27 @@ class BankStatementSkill(BaseExtractionSkill):
             len(source), _clean(source[:500]), "中国工商银行账户明细清单" in source,
             bool(re.search(r"(?:本方)?账号\s*[:：]", source)), bool(re.search(r"时间范围\s*[:：]", source)),
         )
+        native_icbc_account = _parse_icbc_account_statement_excel(input_data.file_path, input_data.file_name)
         bank_format = detect_bank_format(text, page_text)
+        if native_icbc_account:
+            bank_format = BANK_FORMAT_ICBC
         statement_subtype = detect_statement_subtype(bank_format, source)
+        if native_icbc_account:
+            statement_subtype = "account_statement"
         logger.info("[BankStatementSkill] detected_bank_format=%s", bank_format)
-        account_info, account_evidence = _extract_account_info(raw_pages, source, bank_format, input_data.file_name)
+        if native_icbc_account:
+            account_info = native_icbc_account["account_info"]
+            account_evidence = native_icbc_account["evidence"]
+        else:
+            account_info, account_evidence = _extract_account_info(raw_pages, source, bank_format, input_data.file_name)
         logger.info("[BankStatementSkill] account_info_candidates=%s", account_info)
         if bank_format == BANK_FORMAT_SHANGHAI:
             logger.info("[ShanghaiBankAdapter] first_page_header_text=%s", account_info.get("header_preview") or "未识别")
         period_evidence, period_start, period_end = _periods(raw_pages, source, input_data.file_name)
+        if native_icbc_account:
+            period_start = native_icbc_account.get("period_start") or period_start
+            period_end = native_icbc_account.get("period_end") or period_end
+            period_evidence = native_icbc_account["evidence"]
         bocm_header = parse_bocm_statement_header(raw_pages, source, input_data.file_name) if bank_format == BANK_FORMAT_BOCM else {}
         if bank_format == BANK_FORMAT_BOCM:
             period_start = bocm_header.get("period_start") or period_start
@@ -2995,7 +3296,12 @@ class BankStatementSkill(BaseExtractionSkill):
         logger.info("[BankStatementSkill] period_candidates=%s", period_evidence)
         selected_period_source = str(period_evidence[0].get("source") or "unknown") if period_evidence else "missing"
         logger.info("[BankStatementSkill] selected_period=%s~%s source=%s", period_start or "未识别", period_end or "未识别", selected_period_source)
-        if bank_format == BANK_FORMAT_SHANGHAI:
+        if native_icbc_account:
+            transactions = native_icbc_account["transactions"]
+            tx_evidence = native_icbc_account["evidence"]
+            explicit_amount_column = True
+            parse_diagnostics = native_icbc_account["diagnostics"]
+        elif bank_format == BANK_FORMAT_SHANGHAI:
             transactions, tx_evidence, explicit_amount_column, parse_diagnostics = parse_shanghai_bank_statement(
                 raw_pages, period_start, period_end, account_info.get("account_no") or "", text,
             )
@@ -3009,8 +3315,8 @@ class BankStatementSkill(BaseExtractionSkill):
         logger.info("[BankStatementSkill] candidate_transaction_rows=%s", parse_diagnostics.get("candidate_transaction_rows", 0))
         logger.info("[BankStatementSkill] invalid_candidate_rows=%s", parse_diagnostics.get("invalid_candidate_rows", 0))
         if bank_format == BANK_FORMAT_ICBC:
-            title = "中国工商银行账户明细清单" if "中国工商银行账户明细清单" in source else _find_labeled(source, ("对账单标题", "标题"))
-            bank_name = "中国工商银行"
+            title = native_icbc_account.get("title") if native_icbc_account else ("中国工商银行账户明细清单" if "中国工商银行账户明细清单" in source else _find_labeled(source, ("对账单标题", "标题")))
+            bank_name = native_icbc_account.get("bank_name") if native_icbc_account else "中国工商银行"
         elif bank_format == BANK_FORMAT_SHANGHAI:
             title = next((item for item in ("账户明细查询", "上海银行对账单", "上海银行账户明细", "上海银行交易明细") if item in source), "银行对账单")
             bank_name = "上海银行"
@@ -3043,7 +3349,7 @@ class BankStatementSkill(BaseExtractionSkill):
             "account_no": account_no,
             "account_name": account_name_clean,
             "opening_bank": opening_bank,
-            "currency": (bocm_header.get("currency") if bank_format == BANK_FORMAT_BOCM else "") or _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围", "时间范围")) or ("人民币" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI, BANK_FORMAT_BOCM} or "人民币" in source else ""),
+            "currency": (native_icbc_account.get("currency") if native_icbc_account else "") or (bocm_header.get("currency") if bank_format == BANK_FORMAT_BOCM else "") or _find_labeled(source, ("币种",), ("单位", "本方账号开户行", "记账时间范围", "时间范围")) or ("人民币" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI, BANK_FORMAT_BOCM} or "人民币" in source else ""),
             "unit": _find_labeled(source, ("单位",), ("本方账号开户行", "本方开户行", "开户行", "币种", "记账时间范围", "时间范围", "交易时间")) or ("元" if bank_format in {BANK_FORMAT_ICBC, BANK_FORMAT_SHANGHAI, BANK_FORMAT_BOCM} or re.search(r"单位\s*[:：]?\s*元", source) else ""),
             "statement_year": bocm_header.get("year") if bank_format == BANK_FORMAT_BOCM else "",
             "statement_month": bocm_header.get("month") if bank_format == BANK_FORMAT_BOCM else "",
@@ -3082,6 +3388,17 @@ class BankStatementSkill(BaseExtractionSkill):
             result["raw_transaction_count"] = int(parse_diagnostics.get("candidate_transaction_rows") or len(transactions))
             result["ocr_anomaly_count"] = int(parse_diagnostics.get("invalid_candidate_rows") or 0)
             _apply_header_summary(result)
+        if native_icbc_account:
+            header = parse_diagnostics.get("header_summary") or {}
+            result["raw_transaction_count"] = int(header.get("transaction_count") or len(transactions))
+            result["header_transaction_count"] = int(header.get("transaction_count") or len(transactions))
+            result["parsed_transaction_count"] = len(transactions)
+            result["debit_count"] = int(header.get("debit_count") or result.get("debit_count") or 0)
+            result["credit_count"] = int(header.get("credit_count") or result.get("credit_count") or 0)
+            result["debit_total_amount"] = header.get("debit_total_amount")
+            result["credit_total_amount"] = header.get("credit_total_amount")
+            result["amount_recognition_status"] = "完整识别" if parse_diagnostics.get("amount_reconcile_status") == "完整" else "部分识别"
+            result["statement_subtype"] = "account_statement"
         if bank_format == BANK_FORMAT_BOCM:
             validate_bank_account_header(result)
             if not result.get("account_name") and customer_profile_name:
