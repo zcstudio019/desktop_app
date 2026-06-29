@@ -398,3 +398,51 @@ def test_parse_qilu_transactions_by_regex_minimal_block() -> None:
     assert tx["counterparty_name"] == "德州天衢文化旅游发展有限公司"
     assert tx["counterparty_bank_no"] == "上海浦东发展银行股份有限公司德州分行"
     assert tx["summary"] == "汇款|杨庄河项目进度款"
+
+
+def test_qilu_bank_reconciliation_detail_split_header_account_info(tmp_path: Path) -> None:
+    pdf = tmp_path / "202501-6齐鲁银行流水(1).pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% qilu split header stub\n")
+    page_text = "\n".join(
+        [
+            "单位活期存款账户交易明细",
+            "齐鲁银行",
+            "开户机构: 齐鲁银行股份有限公司德州开发区支行",
+            "账号:",
+            "账户名称:",
+            "起止日期:",
+            "86617005101421011677",
+            "艾绿工程建设（上海）有限公司",
+            "2025/01/01-2025/06/30",
+            "交易方向：全部",
+            "币种：人民币",
+            "收入金额合计：1,000,000.00",
+            "支出金额合计：0.00",
+            "第1/1页，共1条",
+            "1,000,000.00 0.00",
+            "29410078801400001148 德州天衢文化旅游发展有限公司 上海浦东发展银行股份有限公司德州分行",
+            "6,569,855.83",
+            "交易对手信息：",
+            "1",
+            "2025-06-30 人民银行 汇款|杨庄河项目进度款",
+        ]
+    )
+
+    result = parse_bank_reconciliation_files(
+        [{"file_path": str(pdf), "file_name": "202501-6齐鲁银行流水(1).pdf"}],
+        metadata={"raw_pages": [{"page": 1, "text": page_text}]},
+    )
+
+    account = result["accounts"][0]
+    summary = result["summary"]
+    markdown = result["display_markdown"]
+
+    assert account["account_no"] == "86617005101421011677"
+    assert account["account_name"] == "艾绿工程建设（上海）有限公司"
+    assert account["branch_name"] == "齐鲁银行股份有限公司德州开发区支行"
+    assert account["date_start"] == "2025-01-01"
+    assert account["date_end"] == "2025-06-30"
+    assert summary["date_start"] == "2025-01-01"
+    assert summary["date_end"] == "2025-06-30"
+    assert "- 账号：86617005101421011677" in markdown
+    assert "- 覆盖时间：2025-01-01 至 2025-06-30" in markdown

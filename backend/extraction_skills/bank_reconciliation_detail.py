@@ -693,13 +693,40 @@ def _qilu_pdf_account_and_summary(text: str, source_file: str, sheet_name: str) 
     account.account_name = _capture_pdf_label(text, ("账户名称", "户名"), max_len=120)
     account.branch_name = _capture_pdf_label(text, ("开户机构", "开户行"), max_len=120)
     account.currency = _capture_pdf_label(text, ("币种",), max_len=20) or "人民币"
+    header_lines = normalize_qilu_pdf_text(text).splitlines()[:80]
+    for idx in range(max(0, len(header_lines) - 5)):
+        current = _compact(header_lines[idx]).rstrip(":：")
+        second = _compact(header_lines[idx + 1]).rstrip(":：")
+        third = _compact(header_lines[idx + 2]).rstrip(":：")
+        if current == _compact("账号") and second == _compact("账户名称") and third == _compact("起止日期"):
+            values = [_text(line) for line in header_lines[idx + 3 : idx + 12] if _text(line)]
+            logger.info("qilu header lines around account labels=%s", header_lines[idx : idx + 8])
+            if len(values) >= 3:
+                account_no, account_name, date_range = values[0], values[1], values[2]
+                if re.fullmatch(r"\d{8,30}", account_no):
+                    account.account_no = account_no
+                if any(keyword in account_name for keyword in ("公司", "有限公司", "工程", "建设", "商行", "个体工商户", "合作社")):
+                    account.account_name = account_name
+                start, end = _date_range(date_range)
+                if start and end:
+                    account.date_start = start
+                    account.date_end = end
+                logger.info(
+                    "qilu account_no=%s account_name=%s date_range=%s",
+                    account.account_no,
+                    account.account_name,
+                    date_range,
+                )
+            break
     date_match = re.search(
         r"起止日期\s*[:：]?\s*((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})\s*[-—至]\s*((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})",
         text,
     )
-    if date_match:
+    if date_match and not (account.date_start and account.date_end):
         account.date_start = _date_text(date_match.group(1))
         account.date_end = _date_text(date_match.group(2))
+    if not account.account_no:
+        logger.info("qilu account_no not recognized header_first_lines=%s", header_lines[:30])
     raw_summary: dict[str, Any] = {}
     count_match = re.search(r"共\s*(\d+)\s*条", text)
     if count_match:
