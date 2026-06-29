@@ -2298,6 +2298,61 @@ def _get_mapped(row: list[Any], mapping: dict[str, int], field: str) -> Any:
     return row[index] if index is not None and index < len(row) else ""
 
 
+
+def _detect_account_statement_bank_name(
+    *,
+    rows: list[list[Any]],
+    labels: dict[str, Any],
+    file_name: str,
+    title: str,
+    file_type: str,
+) -> tuple[str, dict[str, Any]]:
+    text_parts: list[str] = [str(file_name or "")]
+    for row in rows[:12]:
+        text_parts.extend(_cell_text(cell) for cell in row if _cell_text(cell))
+    source = "\n".join(text_parts)
+    source_upper = source.upper()
+    bank_code = _cell_text(labels.get("银行码"))
+    evidence: dict[str, Any] = {
+        "bank_code": bank_code,
+        "note": "银行码不作为银行名称强判断",
+    }
+    explicit_rules = [
+        ("招商银行", "招商银行"),
+        ("CHINA MERCHANTS BANK", "招商银行"),
+        ("中国工商银行", "中国工商银行"),
+        ("工商银行", "中国工商银行"),
+        ("中国建设银行", "中国建设银行"),
+        ("建设银行", "中国建设银行"),
+        ("上海银行", "上海银行"),
+        ("交通银行", "交通银行"),
+        ("交行", "交通银行"),
+        ("中国农业银行", "中国农业银行"),
+        ("农业银行", "中国农业银行"),
+        ("中国银行", "中国银行"),
+    ]
+    for marker, bank_name in explicit_rules:
+        haystack = source_upper if marker.isascii() else source
+        needle = marker.upper() if marker.isascii() else marker
+        if needle in haystack:
+            evidence.update({"bank_name": bank_name, "source": "content_or_filename", "matched_text": marker})
+            return bank_name, evidence
+    account_template = title == "对账单" and file_type == "ACCOUNT"
+    cmb_template_markers = all(
+        labels.get(label)
+        for label in ("账号名称", "银行账号", "账户币种", "查询开始日期", "查询结束日期", "累计借金额", "累计贷金额")
+    )
+    has_icbc_evidence = any(marker in source for marker in ("中国工商银行", "工商银行", "工行"))
+    if account_template and cmb_template_markers and bank_code == "5456" and not has_icbc_evidence:
+        evidence.update({
+            "bank_name": "招商银行",
+            "source": "excel_logo_or_template",
+            "matched_text": "招商银行 / CHINA MERCHANTS BANK 模板特征",
+        })
+        return "招商银行", evidence
+    evidence.update({"bank_name": "", "source": "unrecognized", "matched_text": ""})
+    return "", evidence
+
 def _parse_icbc_account_statement_excel(file_path: str, file_name: str = "") -> dict[str, Any] | None:
     path = Path(str(file_path or ""))
     if not path.is_file() or path.suffix.lower() != ".xlsx":
@@ -2346,6 +2401,15 @@ def _parse_icbc_account_statement_excel(file_path: str, file_name: str = "") -> 
         credit_count_expected = int(_decimal(labels.get("累计贷总笔数")) or 0)
         opening_balance = _decimal(labels.get("对账单期初余额"))
         ending_balance = _decimal(labels.get("对账单余额"))
+        bank_name_detected, bank_detect_evidence = _detect_account_statement_bank_name(
+            rows=rows,
+            labels=labels,
+            file_name=file_name or path.name,
+            title=title,
+            file_type=file_type,
+        )
+        if not bank_name_detected:
+            bank_name_detected = "未识别"
 
         transactions: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
@@ -2451,6 +2515,7 @@ def _parse_icbc_account_statement_excel(file_path: str, file_name: str = "") -> 
             "rejected_rows_preview": rejected[:5],
             "first_rows_preview": [[_cell_text(item) for item in row[:12]] for row in rows[:15]],
             "first_transactions_preview": [[_cell_text(item) for item in row[:12]] for row in rows[header_row_no:header_row_no + 5]] if header_row_no else [],
+            "bank_detect_evidence": bank_detect_evidence,
             "header_summary": {
                 "transaction_count": expected_count,
                 "debit_count": debit_count_expected,
@@ -2463,8 +2528,8 @@ def _parse_icbc_account_statement_excel(file_path: str, file_name: str = "") -> 
             },
         }
         logger.info(
-            "icbc account statement detected file_name=%s sheet_name=%s header_row_no=%s account_no=%s account_name=%s date_start=%s date_end=%s expected_count=%s parsed_count=%s debit_total_expected=%s debit_total_actual=%s credit_total_expected=%s credit_total_actual=%s amount_reconcile_status=%s",
-            file_name or path.name, ws.title, header_row_no, account_no, account_name, period_start, period_end,
+            "account statement detected file_name=%s sheet_name=%s bank_name=%s bank_detect_evidence=%s header_row_no=%s account_no=%s account_name=%s date_start=%s date_end=%s expected_count=%s parsed_count=%s debit_total_expected=%s debit_total_actual=%s credit_total_expected=%s credit_total_actual=%s amount_reconcile_status=%s",
+            file_name or path.name, ws.title, bank_name_detected, bank_detect_evidence, header_row_no, account_no, account_name, period_start, period_end,
             expected_count, len(transactions), debit_total_expected, debit_total_actual, credit_total_expected, credit_total_actual, amount_reconcile_status,
         )
         if not transactions:
@@ -2477,16 +2542,16 @@ def _parse_icbc_account_statement_excel(file_path: str, file_name: str = "") -> 
                 "account_no": account_no,
                 "account_name": account_name,
                 "opening_bank": branch_region,
-                "header_preview": "工商银行 ACCOUNT 对账单",
+                "header_preview": f"{bank_name_detected} ACCOUNT 对账单",
                 "bank_format": BANK_FORMAT_ICBC,
             },
             "period_start": period_start,
             "period_end": period_end,
             "transactions": transactions,
-            "evidence": [{"field": "工商银行ACCOUNT对账单", "page": 1, "source": "excel", "value": f"{ws.title}!A1:AJ{len(rows)}"}],
+            "evidence": [{"field": f"{bank_name_detected}ACCOUNT对账单", "page": 1, "source": "excel", "value": f"{ws.title}!A1:AJ{len(rows)}"}],
             "diagnostics": diagnostics,
             "currency": currency,
-            "bank_name": "中国工商银行",
+            "bank_name": bank_name_detected,
             "title": "对账单",
             "sheet_name": ws.title,
         }
