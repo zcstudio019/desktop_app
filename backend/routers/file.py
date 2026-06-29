@@ -1535,11 +1535,39 @@ async def _extract_content_from_file(
 
 def _resolve_document_type_code(text_content: str, explicit_type: str | None, rows: list[dict], filename: str = "") -> str:
     normalized = normalize_document_type_code(explicit_type)
+    if normalized:
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            normalized,
+            "bank_reconciliation_detail_agent" if normalized == "bank_reconciliation_detail" else "bank_statement_agent" if normalized == "bank_statement" else "",
+            "user_selected_doc_type",
+        )
+        return normalized
     reconciliation_source = f"{filename}\n{text_content}"
+    bank_statement_patterns = ("交易查询", "银行流水", "账户流水", "账户明细查询", "企业网银交易查询", "交易记录", "对账单", "活期账户交易明细", "单位活期存款账户交易明细")
+    if re.search(r"共\s*\d+\s*笔", reconciliation_source) or any(keyword in reconciliation_source for keyword in bank_statement_patterns):
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            "bank_statement",
+            "bank_statement_agent",
+            "filename_contains_交易查询_or_共N笔",
+        )
+        return "bank_statement"
     if (
-        any(keyword in reconciliation_source for keyword in ("银行对账明细", "对账明细", "账户明细查询", "账户明细", "银行明细", "银行流水", "交易明细"))
-        or (any(keyword in reconciliation_source for keyword in ("工商银行", "上海银行")) and filename.lower().endswith((".xlsx", ".xls", ".csv", ".pdf")))
-    ) and normalized in {None, "bank_statement", "bank_statement_detail", "enterprise_flow", "enterprise_bank_statement"}:
+        any(keyword in reconciliation_source for keyword in ("银行对账明细", "对账明细", "账户对账明细", "回单明细", "对账明细表", "银行明细表", "明细对账"))
+    ):
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            "bank_reconciliation_detail",
+            "bank_reconciliation_detail_agent",
+            "strong_bank_reconciliation_detail_keyword",
+        )
         return "bank_reconciliation_detail"
     receipt_source = f"{filename}\n{text_content}"
     receipt_like = (
@@ -1564,8 +1592,6 @@ def _resolve_document_type_code(text_content: str, explicit_type: str | None, ro
         keyword.lower() in f"{filename}\n{text_content}".lower()
         for keyword in ("中国工商银行账户明细清单", "交通银行上海市分行明细对账单", "明细对账单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")
     )
-    if normalized and not (official_bank_statement and normalized in {"enterprise_flow", "enterprise_bank_statement"}):
-        return normalized
     try:
         return detect_document_type_code(text_content, explicit_type, rows=rows, filename=filename, ai_service=ai_service)
     except AIServiceError as exc:

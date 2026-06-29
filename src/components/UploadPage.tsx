@@ -289,11 +289,11 @@ const FILE_TYPES: FileTypeConfig[] = [
   {
     id: 'bank_statement',
     name: '银行对账单',
-    formats: 'PDF / XLSX',
+    formats: 'PDF / XLSX / XLS / CSV',
     color: 'text-emerald-700',
     bgColor: 'bg-emerald-50',
     icon: Landmark,
-    acceptedExtensions: ['.pdf', '.xlsx', '.xls'],
+    acceptedExtensions: ['.pdf', '.xlsx', '.xls', '.csv'],
     storeOriginal: true,
   },
   {

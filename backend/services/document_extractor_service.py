@@ -110,8 +110,8 @@ ID_CARD_PATTERN = re.compile(r"([1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-
 UNIFIED_CODE_PATTERN = re.compile(r"\b([0-9A-Z]{18})\b")
 
 TYPE_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("bank_reconciliation_detail", ("银行对账明细", "对账明细", "账户明细查询", "账户明细", "银行明细", "银行流水", "交易明细", "交易流水号", "借贷标志", "转入金额", "转出金额")),
-    ("bank_statement", ("中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement")),
+    ("bank_reconciliation_detail", ("银行对账明细", "对账明细", "账户对账明细", "回单明细", "对账明细表", "银行明细表", "明细对账")),
+    ("bank_statement", ("交易查询", "银行流水", "账户流水", "账户明细查询", "企业网银交易查询", "交易记录", "中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "单位活期存款账户交易明细", "活期账户交易明细", "bank statement")),
     ("financial_report", ("资产负债表", "利润表", "现金流量表", "财务报表报送", "财务报表")),
     ("business_license", ("营业执照", "统一社会信用代码", "法定代表人")),
     ("account_license", ("开户许可证", "开户银行", "核准号")),
@@ -144,23 +144,46 @@ STANDARD_BANK_STATEMENT_TABLE_KEYWORDS = (
 BANK_RECONCILIATION_DETAIL_KEYWORDS = (
     "银行对账明细",
     "对账明细",
-    "账户明细查询",
-    "账户明细",
-    "银行明细",
+    "账户对账明细",
+    "回单明细",
+    "对账明细表",
+    "银行明细表",
+    "明细对账",
+)
+
+BANK_STATEMENT_STRONG_KEYWORDS = (
+    "交易查询",
     "银行流水",
-    "交易明细",
-    "工商银行",
-    "上海银行",
+    "账户流水",
+    "账户明细查询",
+    "企业网银交易查询",
+    "交易记录",
+    "对账单",
+    "活期账户交易明细",
+    "单位活期存款账户交易明细",
 )
 
 
 def _looks_like_bank_reconciliation_detail(text: str, filename: str = "") -> bool:
     source = f"{filename}\n{text}"
-    if any(keyword in source for keyword in ("对账明细", "账户明细查询", "账户明细", "银行明细", "银行流水", "交易明细")):
-        return True
-    if any(keyword in source for keyword in ("工商银行", "上海银行")) and any(ext in filename.lower() for ext in (".xlsx", ".xls", ".csv", ".pdf")):
-        return True
-    return False
+    return any(keyword in source for keyword in BANK_RECONCILIATION_DETAIL_KEYWORDS)
+
+
+def _looks_like_bank_statement_strong(text: str, filename: str = "") -> tuple[bool, str]:
+    source = f"{filename}\n{text}"
+    name = str(filename or "")
+    if re.search(r"共\s*\d+\s*笔", source):
+        return True, "filename_or_text_contains_共N笔"
+    for keyword in BANK_STATEMENT_STRONG_KEYWORDS:
+        if keyword in source:
+            return True, f"contains_{keyword}"
+    if (
+        "人民币" in name
+        and re.search(r"(?:19|20)\d{6}\s*[-_—至]\s*(?:19|20)\d{6}", name)
+        and re.search(r"\d{8,30}", name)
+    ):
+        return True, "filename_bank_export_pattern"
+    return False, ""
 
 
 def _looks_like_official_bank_statement(text: str, filename: str = "") -> bool:
@@ -209,7 +232,36 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
-    if _looks_like_bank_reconciliation_detail(text_content, filename) and normalized_explicit in {None, "bank_statement", "bank_statement_detail", "enterprise_flow", "enterprise_bank_statement"}:
+    if normalized_explicit:
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            normalized_explicit,
+            "bank_reconciliation_detail_agent" if normalized_explicit == "bank_reconciliation_detail" else "bank_statement_agent" if normalized_explicit == "bank_statement" else "",
+            "user_selected_doc_type",
+        )
+        return normalized_explicit
+    statement_hit, statement_rule = _looks_like_bank_statement_strong(text_content, filename)
+    if statement_hit:
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            "bank_statement",
+            "bank_statement_agent",
+            statement_rule,
+        )
+        return "bank_statement"
+    if _looks_like_bank_reconciliation_detail(text_content, filename):
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            "bank_reconciliation_detail",
+            "bank_reconciliation_detail_agent",
+            "strong_bank_reconciliation_detail_keyword",
+        )
         return "bank_reconciliation_detail"
     if _looks_like_bank_receipt_bundle(text_content, filename) and normalized_explicit in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_receipt_bundle"
@@ -219,9 +271,6 @@ def detect_document_type_code(
         or "明细对账单" in str(text_content or "")
     ) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_statement"
-    if normalized_explicit:
-        return normalized_explicit
-
     rows = rows or []
     header_names = " ".join(key for row in rows[:5] for key in row.keys())
     bank_header_type = _detect_bank_type_from_headers(header_names)
@@ -3134,7 +3183,36 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
-    if _looks_like_bank_reconciliation_detail(text_content, filename) and normalized_explicit in {None, "bank_statement", "bank_statement_detail", "enterprise_flow", "enterprise_bank_statement"}:
+    if normalized_explicit:
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            normalized_explicit,
+            "bank_reconciliation_detail_agent" if normalized_explicit == "bank_reconciliation_detail" else "bank_statement_agent" if normalized_explicit == "bank_statement" else "",
+            "user_selected_doc_type",
+        )
+        return normalized_explicit
+    statement_hit, statement_rule = _looks_like_bank_statement_strong(text_content, filename)
+    if statement_hit:
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            "bank_statement",
+            "bank_statement_agent",
+            statement_rule,
+        )
+        return "bank_statement"
+    if _looks_like_bank_reconciliation_detail(text_content, filename):
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            "bank_reconciliation_detail",
+            "bank_reconciliation_detail_agent",
+            "strong_bank_reconciliation_detail_keyword",
+        )
         return "bank_reconciliation_detail"
     if _looks_like_bank_receipt_bundle(text_content, filename) and normalized_explicit in {None, "bank_statement", "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_receipt_bundle"
@@ -3144,9 +3222,6 @@ def detect_document_type_code(
         or "明细对账单" in str(text_content or "")
     ) and normalized_explicit in {None, "enterprise_flow", "enterprise_bank_statement"}:
         return "bank_statement"
-    if normalized_explicit:
-        return normalized_explicit
-
     rows = rows or []
     header_names = " ".join(key for row in rows[:5] for key in row.keys())
     bank_header_type = _detect_bank_type_from_headers(header_names)
