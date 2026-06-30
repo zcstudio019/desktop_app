@@ -703,7 +703,13 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
                     )}
                   </div>
 
-                  {Object.keys(selectedDetail.fields).length > 0 ? (
+                  {getContractDisplayMarkdown(selectedDetail.fields) ? (
+                    <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {getContractDisplayMarkdown(selectedDetail.fields) || '合同解析结果暂不可用，请重新解析或人工复核。'}
+                      </ReactMarkdown>
+                    </article>
+                  ) : Object.keys(selectedDetail.fields).length > 0 ? (
                     <div className="space-y-4">
                       {Object.entries(selectedDetail.fields).map(([sectionName, sectionValue]) => {
                         return (

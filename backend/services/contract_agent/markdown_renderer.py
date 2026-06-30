@@ -140,16 +140,26 @@ def sanitize_contract_markdown(markdown: str) -> str:
 
 
 def final_sanitize_contract_markdown(markdown: str) -> str:
+    text = str(markdown or "")
+    standalone_header = re.search(r"(?m)^## 合同\s*$", text)
+    header_index = standalone_header.start() if standalone_header else text.find("## 合同")
+    if header_index >= 0:
+        text = text[header_index:]
+    for marker in ("\n- evidence：", "\nevidence：", "\n- evidence:", "\nevidence:"):
+        evidence_index = text.lower().find(marker.lower())
+        if evidence_index >= 0:
+            text = text[:evidence_index].rstrip()
+            break
     forbidden = re.compile(
-        r"^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw_result|structured_data|metadata|evidence|confidence|source_page|raw_text|\"value\"|\"source_page\"|\"confidence\")\s*[:\uff1a]",
+        r"^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw_result|raw_json|structured_data|metadata|evidence|confidence|source_page|raw_text|\"value\"|\"source_page\"|\"confidence\"|\"raw_text\")\s*[:\uff1a]",
         re.I,
     )
     lines: list[str] = []
     skipping_json = False
     brace_depth = 0
-    for raw_line in str(markdown or "").splitlines():
+    for raw_line in text.splitlines():
         line = raw_line.rstrip()
-        json_evidence_line = re.search(r'"(?:project_name|source_page|confidence|raw_text|value)"\s*:', line)
+        json_evidence_line = re.search(r'"(?:signing_date|project_name|source_page|confidence|raw_text|value)"\s*:', line)
         if forbidden.search(line) or json_evidence_line:
             skipping_json = "{" in line and "}" not in line
             brace_depth = line.count("{") - line.count("}")
@@ -160,8 +170,9 @@ def final_sanitize_contract_markdown(markdown: str) -> str:
                 skipping_json = False
             continue
         lines.append(line)
-    start = next((index for index, line in enumerate(lines) if line.strip() in {"## 合同", "## 鍚堝悓"}), 0)
-    return "\n".join(lines[start:]).replace("\n\n\n", "\n\n").strip()
+    start = next((index for index, line in enumerate(lines) if line.strip() in {"## 合同", "## 鍚堝悓"}), -1)
+    content = lines[start:] if start >= 0 else ["## 合同", *lines]
+    return "\n".join(content).replace("\n\n\n", "\n\n").strip()
 
 
 def render_contract_markdown(result: ContractResult) -> str:

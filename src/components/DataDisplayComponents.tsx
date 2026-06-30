@@ -214,18 +214,26 @@ function asRecord(value: unknown): Record<string, unknown> {
 function collectDisplayRecords(value: unknown): Record<string, unknown>[] {
   const root = asRecord(value);
   if (!Object.keys(root).length) return [];
-  return [
-    root,
-    asRecord(root.content),
-    asRecord(root.result),
-    asRecord(root.extracted_json),
-    asRecord(root.extractedJson),
-    asRecord(root.extracted_data),
-    asRecord(root.extractedData),
-    asRecord(root.data),
-    asRecord(root.structured_data),
-    asRecord(root.structuredData),
-  ].filter((record) => Object.keys(record).length > 0);
+  const nestedKeys = [
+    'content', 'result', 'parsed_result', 'parsedResult', 'raw_result', 'rawResult',
+    'extracted_json', 'extractedJson', 'extracted_data', 'extractedData', 'data',
+    'structured_data', 'structuredData', 'latest_extraction', 'latestExtraction',
+  ];
+  const records: Record<string, unknown>[] = [];
+  const queue: Array<{ record: Record<string, unknown>; depth: number }> = [{ record: root, depth: 0 }];
+  const seen = new Set<Record<string, unknown>>();
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || seen.has(current.record)) continue;
+    seen.add(current.record);
+    records.push(current.record);
+    if (current.depth >= 4) continue;
+    nestedKeys.forEach((key) => {
+      const nested = asRecord(current.record[key]);
+      if (Object.keys(nested).length) queue.push({ record: nested, depth: current.depth + 1 });
+    });
+  }
+  return records;
 }
 
 function getDocTypeFromRecords(records: Record<string, unknown>[]): string {
@@ -314,11 +322,21 @@ export function getBankReconciliationDisplayMarkdown(value: unknown): string | n
 
 
 function cleanupContractMarkdownStrict(markdown: string): string {
+  let source = String(markdown || '');
+  const standaloneHeaderIndex = source.search(/^## \u5408\u540c\s*$/m);
+  const headerIndex = standaloneHeaderIndex >= 0 ? standaloneHeaderIndex : source.indexOf('## \u5408\u540c');
+  if (headerIndex >= 0) source = source.slice(headerIndex);
+  const evidenceMarkers = ['\n- evidence：', '\nevidence：', '\n- evidence:', '\nevidence:'];
+  const evidenceIndex = evidenceMarkers
+    .map((marker) => source.toLowerCase().indexOf(marker.toLowerCase()))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  if (evidenceIndex !== undefined) source = source.slice(0, evidenceIndex).trimEnd();
   const forbiddenLine = /^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw[_\s-]*json|json[_\s-]*result|extracted[_\s-]*data|structured[_\s-]*data|metadata|evidence|dict|array|confidence|source_page|source\s*page|raw_text)\s*[:\uff1a]/i;
   const lines: string[] = [];
   let skippingJson = false;
   let braceDepth = 0;
-  for (const rawLine of String(markdown || '').split(/\r?\n/)) {
+  for (const rawLine of source.split(/\r?\n/)) {
     const line = rawLine.trimEnd();
     const jsonEvidenceLine = /^\s*["']?(project_name|source_page|confidence|raw_text|value)["']?\s*:/.test(line.trim());
     if (forbiddenLine.test(line) || jsonEvidenceLine) {
@@ -335,7 +353,7 @@ function cleanupContractMarkdownStrict(markdown: string): string {
     lines.push(line);
   }
   const start = lines.findIndex((line) => line.trim() === '## \u5408\u540c');
-  const cleaned = (start >= 0 ? lines.slice(start) : lines)
+  const cleaned = (start >= 0 ? lines.slice(start) : ['## \u5408\u540c', ...lines])
     .join('\n')
     .replace(/\b(None|null|undefined)\b/g, '\u672a\u8bc6\u522b')
     .trim();
@@ -360,7 +378,7 @@ export function getContractDisplayMarkdown(value: unknown): string | null {
       if (markdown) return cleanupContractMarkdownStrict(markdown);
     }
   }
-  return '## 合同\n\n- 提取状态：失败\n- 解析质量提示：暂无可展示的合同解析结果';
+  return '合同解析结果暂不可用，请重新解析或人工复核。';
 }
 
 export function isHiddenDisplayKey(key: string): boolean {

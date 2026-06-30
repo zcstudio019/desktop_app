@@ -206,4 +206,32 @@ describe('resolveDocumentContent', () => {
     expect(result.content).toContain('| 2025-07 | 6,170,000.00 | 6,535,275.33 | -365,275.33 | 17 |');
     expect(result.content).not.toContain('{');
   });
+
+  it('short-circuits nested contract results to sanitized markdown only', () => {
+    const result = resolveDocumentContent({
+      parsed_result: {
+        owner_type: 'company',
+        contract_category: 'construction_subcontract',
+        agent_type: 'contract_agent',
+        markdown_result: [
+          '- owner type：company',
+          '- contract category：construction_subcontract',
+          '- markdown result：## 合同',
+          '## 合同',
+          '- 资料类型：合同',
+          '- 合同类型：建设工程专业分包合同',
+          '- evidence：{',
+          '  "signing_date": {"value": "2022年10月1日", "source_page": 7}',
+          '}',
+        ].join('\n'),
+        evidence: { signing_date: { value: '2022年10月1日' } },
+      },
+    });
+
+    expect(result.source).toBe('selectedDocument.contract.display_markdown');
+    expect(result.content.startsWith('## 合同')).toBe(true);
+    expect(result.content).toContain('合同类型：建设工程专业分包合同');
+    ['owner type', 'contract category', 'markdown result', 'evidence', 'source_page', '2022年10月1日']
+      .forEach((item) => expect(result.content.toLowerCase()).not.toContain(item.toLowerCase()));
+  });
 });

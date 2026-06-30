@@ -319,6 +319,7 @@ export function renderFinancialReportMarkdownFromStructuredData(structuredValue:
 
 export function resolveDocumentContent(detailValue: unknown): DocumentContentResolution {
   const detail = asRecord(detailValue);
+  const parsedResult = asRecord(detail.parsed_result ?? detail.parsedResult ?? detail.result);
   const extraction = asRecord(detail.extraction);
   const latestExtraction = asRecord(detail.latest_extraction ?? detail.latestExtraction);
   const extractedData = asRecord(extraction.extracted_data);
@@ -357,7 +358,7 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
     ?? structuredJson.doc_type
     ?? ''
   );
-  const contractRecords = [detail, latestExtraction, latestExtractedData, extraction, extractedData, extractedJson, structuredJson];
+  const contractRecords = [detail, parsedResult, latestExtraction, latestExtractedData, extraction, extractedData, extractedJson, structuredJson];
   const isContractDocument = isContractType(documentType) || contractRecords.some(isContractRecord);
 
   if (isCompanyArticlesType(documentType)) {
@@ -417,6 +418,11 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
       detail.display_markdown,
       detail.displayMarkdown,
       detail.report_markdown,
+      parsedResult.markdown_result,
+      parsedResult.markdownResult,
+      parsedResult.display_markdown,
+      parsedResult.displayMarkdown,
+      parsedResult.markdown,
       latestExtraction.markdown_result,
       latestExtraction.markdownResult,
       latestExtractedData.markdown_result,
@@ -437,7 +443,7 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
       dataRecord.displayMarkdown,
     );
     return {
-      content: markdown ? cleanupContractMarkdownStrict(markdown) : '暂无合同解析结果',
+      content: markdown ? cleanupContractMarkdownStrict(markdown) : '合同解析结果暂不可用，请重新解析或人工复核。',
       source: markdown ? 'selectedDocument.contract.display_markdown' : 'empty',
     };
   }

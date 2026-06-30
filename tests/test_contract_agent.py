@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from backend.document_types import get_document_display_name, normalize_document_type_code
 from backend.services.contract_agent import ContractAgent, ContractSkill, is_contract_like
+from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
 from backend.services.document_agents.registry import DOCUMENT_AGENT_REGISTRY, get_document_agent
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
@@ -169,8 +170,70 @@ def test_contract_002_toc_pollution_and_display_regression() -> None:
     assert "| 甲方/承包人/发包人 | 上海建工集团股份有限公司 | 91310000631189305E | 未识别 | 未识别 | 未识别 |" in markdown
     assert "电话 |" in markdown
     assert "03005029359 |" not in markdown
-    assert "收款账户：开户银行：建行上海第二支行；账号：03005029359" in markdown
+    assert "收款账户：未识别" in markdown
     assert "签字人：未识别" in markdown
     assert "税率：9%" in markdown
     assert "税额：未识别" in markdown
     assert "金额校验：大写金额疑似不完整，需人工复核" in markdown
+
+
+def test_contract_002_rejects_start_date_and_unowned_account() -> None:
+    page_one = """
+机电安装工程专业分包合同（南区）
+工程名称：临空12号地块国际商务花园四期项目（除桩基）
+承包人：上海建工集团股份有限公司
+统一社会信用代码：91310000631189305E
+分包人：上海意川建筑科技有限公司
+统一社会信用代码：91310118MA1JP7UB2B
+合同价款：人民币 188,491,296.13 元
+签订地点：本合同在上海市长宁区签订
+计划开工日期：2022年10月1日
+合同工期：638天
+安全文明施工费（含税）：大写：零元（￥0元）
+账号：31001502500055390033
+"""
+    signature_page = """
+承包人盖章 分包人盖章
+本合同一式_捌_份，均具有同等法律效力，承包人执_肆_份，分包人执肆_份
+"""
+    result = ContractAgent().run({
+        "text": f"{page_one}\n{signature_page}",
+        "raw_pages": [{"page": 1, "text": page_one}, {"page": 10, "text": signature_page}],
+        "filename": "合同002.pdf",
+    })
+    markdown = result.display_markdown
+    assert "签订日期：2022年10月1日" not in markdown
+    assert markdown.count("签订日期：未识别") == 2
+    assert "合同份数：本合同一式捌份，均具有同等法律效力，承包人执肆份，分包人执肆份" in markdown
+    assert "收款账户：未识别" in markdown
+    assert "31001502500055390033" not in markdown
+    assert "安全文明施工：安全文明施工费为 0 元" in markdown
+    assert "关键字段完整度：部分完整" in markdown
+    assert "收款账户归属需人工复核" in markdown
+
+
+def test_construction_payment_account_prefers_party_b_context() -> None:
+    text = CONSTRUCTION_TEXT + """
+分包人：上海机电安装有限公司
+开户银行：中国建设银行上海第二支行
+账号：03005029359
+"""
+    result = ContractAgent().run({
+        "text": text,
+        "raw_pages": [{"page": 1, "text": text}],
+        "filename": "合同001.pdf",
+    })
+    assert "收款账户：开户银行：中国建设银行上海第二支行；账号：03005029359" in result.display_markdown
+
+
+def test_contract_markdown_final_sanitizer_removes_outer_fields_and_evidence() -> None:
+    dirty = """- owner type：company
+- markdown result：## 合同
+## 合同
+- 资料类型：合同
+- evidence：{
+  "signing_date": {"value": "2022年10月1日", "source_page": 7}
+}
+"""
+    cleaned = final_sanitize_contract_markdown(dirty)
+    assert cleaned == "## 合同\n- 资料类型：合同"
