@@ -13,6 +13,7 @@ from backend.services.enterprise_bank_statement_agent.adapter import (
 )
 from backend.services.bank_statement_agent import BankStatementAgentAdapter
 from backend.services.company_articles_agent.adapter import CompanyArticlesAgentAdapter
+from backend.services.contract_agent.adapter import ContractAgentAdapter
 from backend.services.financial_report_agent.adapter import FinancialReportAgentAdapter
 from backend.services.personal_bank_statement_agent.adapter import PersonalBankStatementAgentAdapter
 from backend.services.property_cert_agent import PropertyCertAgent
@@ -158,6 +159,7 @@ _PERSONAL_BANK_STATEMENT_AGENT = PersonalBankStatementAgentAdapter()
 _FINANCIAL_REPORT_AGENT = FinancialReportAgentAdapter()
 _PROPERTY_CERT_AGENT = PropertyCertAgentAdapter()
 _COMPANY_ARTICLES_AGENT = CompanyArticlesAgentAdapter()
+_CONTRACT_AGENT = ContractAgentAdapter()
 _BANK_STATEMENT_AGENT = BankStatementAgentAdapter()
 _BANK_RECEIPT_BUNDLE_AGENT = BankReceiptBundleAgentAdapter()
 _BANK_RECONCILIATION_DETAIL_AGENT = BankReconciliationDetailAgentAdapter()
@@ -180,6 +182,8 @@ DOCUMENT_AGENT_REGISTRY: dict[str, BaseDocumentAgent] = {
     "financial_report": _FINANCIAL_REPORT_AGENT,
     "financial_data": _FINANCIAL_REPORT_AGENT,
     "company_articles": _COMPANY_ARTICLES_AGENT,
+    "contract": _CONTRACT_AGENT,
+    "合同": _CONTRACT_AGENT,
     "property_cert": _PROPERTY_CERT_AGENT,
     "real_estate_cert": _PROPERTY_CERT_AGENT,
     "bank_statement": _BANK_STATEMENT_AGENT,

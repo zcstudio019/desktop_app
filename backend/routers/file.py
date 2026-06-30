@@ -34,6 +34,7 @@ from backend.routers.chat_storage import _save_to_local_storage
 from backend.services import get_storage_service, supports_structured_storage
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
 from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
+from backend.services.contract_agent import is_contract_like
 from backend.services.id_card_ocr_preprocess_service import (
     ID_CARD_LOW_QUALITY_MESSAGE,
     ocr_id_card_with_variants,
@@ -507,6 +508,27 @@ def _should_use_marriage_certificate_ocr(explicit_document_type: str | None, fil
     return normalized in MARRIAGE_CERTIFICATE_PROCESS_TYPES or _filename_suggests_marriage_certificate(filename)
 
 
+def _filename_suggests_contract(filename: str) -> bool:
+    normalized = str(filename or "").lower()
+    return any(
+        keyword.lower() in normalized
+        for keyword in (
+            "合同",
+            "contract",
+            "专业分包",
+            "物资采购",
+            "材料采购",
+            "咨询服务",
+            "bim",
+        )
+    )
+
+
+def _should_use_contract_ocr(explicit_document_type: str | None, filename: str, text: str = "") -> bool:
+    normalized = normalize_document_type_code(explicit_document_type) or str(explicit_document_type or "").strip()
+    return normalized == "contract" or _filename_suggests_contract(filename) or is_contract_like(text or "", filename=filename)
+
+
 def _should_use_id_card_ocr(explicit_document_type: str | None, filename: str) -> bool:
     normalized = normalize_document_type_code(explicit_document_type) or str(explicit_document_type or "").strip()
     return normalized in {"id_card", "shareholder_id_card"} or _filename_suggests_id_card(filename)
@@ -728,6 +750,95 @@ def _ocr_pdf_selected_pages(file_bytes: bytes, page_indices: list[int], *, log_p
             logger.warning("%s failed page=%s filename=%s error=%s", log_prefix, page_number, filename, exc)
 
     return "\n\n".join(ocr_results)
+
+
+CONTRACT_KEY_PAGE_KEYWORDS = (
+    "合同价款",
+    "合同金额",
+    "合同总金额",
+    "暂定金额",
+    "付款方式",
+    "支付",
+    "结算",
+    "合同工期",
+    "工期",
+    "工程范围",
+    "采购清单",
+    "货物名称",
+    "服务范围",
+    "甲方",
+    "乙方",
+    "承包人",
+    "分包人",
+    "发包人",
+    "供方",
+    "需方",
+    "签订日期",
+    "签订地点",
+    "盖章",
+    "附件",
+)
+
+
+def _contract_selected_page_indices(native_pages: list[dict[str, Any]], total_pages: int) -> list[int]:
+    indices: set[int] = set()
+    for page_no in range(1, min(total_pages, 5) + 1):
+        indices.add(page_no - 1)
+    for page_no in range(max(1, total_pages - 4), total_pages + 1):
+        indices.add(page_no - 1)
+    for item in native_pages or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            page_no = int(item.get("page") or item.get("page_index") or 0)
+        except (TypeError, ValueError):
+            page_no = 0
+        text = str(item.get("text") or "")
+        if page_no and any(keyword in text for keyword in CONTRACT_KEY_PAGE_KEYWORDS):
+            indices.add(page_no - 1)
+        if page_no and any(keyword in text for keyword in ("目录", "目 录")):
+            indices.add(page_no - 1)
+    return sorted(index for index in indices if 0 <= index < total_pages)
+
+
+def _ocr_contract_pdf_pages(
+    file_bytes: bytes,
+    filename: str,
+    *,
+    native_pages: list[dict[str, Any]] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    images = file_service.pdf_to_images(file_bytes, dpi=220)
+    if not images:
+        raise HTTPException(status_code=400, detail=PDF_TO_IMAGE_FAILED_MESSAGE)
+    page_indices = _contract_selected_page_indices(native_pages or [], len(images))
+    raw_pages_by_no: dict[int, dict[str, Any]] = {}
+    for page in native_pages or []:
+        if not isinstance(page, dict):
+            continue
+        try:
+            page_no = int(page.get("page") or page.get("page_index") or 0)
+        except (TypeError, ValueError):
+            continue
+        if page_no:
+            raw_pages_by_no[page_no] = {**page, "page": page_no, "source": page.get("source") or "pdf_text"}
+    for page_index in page_indices:
+        page_no = page_index + 1
+        try:
+            compressed = file_service.compress_image(images[page_index])
+            page_text = ocr_service.recognize_image(compressed).strip()
+        except OCRServiceError as exc:
+            logger.warning("[ContractOCR] page OCR failed filename=%s page=%s error=%s", filename, page_no, exc)
+            page_text = OCR_PAGE_FAILED_PLACEHOLDER
+        existing = str((raw_pages_by_no.get(page_no) or {}).get("text") or "").strip()
+        merged = "\n".join(part for part in (existing, page_text) if part).strip()
+        raw_pages_by_no[page_no] = {
+            "page": page_no,
+            "text": merged or OCR_PAGE_FAILED_PLACEHOLDER,
+            "source": "contract_selective_ocr",
+            "ocr_strategy": "front_toc_keyword_signature_attachment_pages",
+        }
+    raw_pages = [raw_pages_by_no[key] for key in sorted(raw_pages_by_no)]
+    return _build_raw_text_from_pages(raw_pages), raw_pages
 
 
 def _crop_image_region(image_bytes: bytes, box: tuple[int, int, int, int]) -> bytes:
@@ -1453,12 +1564,22 @@ async def _extract_content_from_file(
                 logger.info("PDF text extraction invalid for %s, falling back to OCR", filename)
                 if progress_callback:
                     await progress_callback("正在 OCR 识别")
-                if _filename_suggests_property_cert(filename):
+                if _should_use_contract_ocr(explicit_document_type, filename, text_content):
+                    text_content, raw_pages = _ocr_contract_pdf_pages(file_bytes, filename, native_pages=raw_pages)
+                elif _filename_suggests_property_cert(filename):
                     text_content, raw_pages = _ocr_pdf_pages_with_property_rotation(file_bytes, filename)
                 elif marriage_hint:
                     text_content, raw_pages = _ocr_pdf_pages_with_marriage_rotation(file_bytes, filename)
                 else:
                     text_content, raw_pages = _ocr_pdf_pages(file_bytes)
+            elif _should_use_contract_ocr(explicit_document_type, filename, text_content):
+                logger.info("[ContractOCR] supplement selected pages filename=%s", filename)
+                if progress_callback:
+                    await progress_callback("正在定位合同关键页")
+                try:
+                    text_content, raw_pages = _ocr_contract_pdf_pages(file_bytes, filename, native_pages=raw_pages)
+                except Exception as exc:
+                    logger.warning("[ContractOCR] selected OCR supplement failed filename=%s error=%s", filename, exc)
             elif _filename_suggests_property_cert(filename) and is_low_chinese_quality(text_content):
                 logger.info("PDF text Chinese quality low for property certificate %s, trying rotated OCR", filename)
                 if progress_callback:

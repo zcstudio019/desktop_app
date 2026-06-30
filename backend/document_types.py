@@ -226,6 +226,13 @@ DOCUMENT_TYPE_DEFINITIONS: tuple[DocumentTypeDefinition, ...] = (
 )
 
 DOCUMENT_TYPES_BY_CODE = {item.code: item for item in DOCUMENT_TYPE_DEFINITIONS}
+DOCUMENT_TYPES_BY_CODE["contract"] = DocumentTypeDefinition(
+    code="contract",
+    name="合同",
+    storage_label="合同",
+    formats=("pdf", "docx", "image"),
+    aliases=("合同", "建设工程专业分包合同", "机电安装专业分包合同", "物资采购合同", "材料采购合同", "BIM深化咨询服务合同", "咨询服务合同", "contract"),
+)
 
 DOCUMENT_TYPE_CANONICAL_ALIASES = {
     "bank_statement": "bank_statement",
@@ -270,6 +277,14 @@ DOCUMENT_TYPE_CANONICAL_ALIASES = {
     "企业信用报告": "enterprise_credit_report",
     "企业征信提取": "enterprise_credit_report",
     "enterprise_flow": "enterprise_flow",
+    "contract": "contract",
+    "合同": "contract",
+    "建设工程专业分包合同": "contract",
+    "机电安装专业分包合同": "contract",
+    "物资采购合同": "contract",
+    "材料采购合同": "contract",
+    "BIM深化咨询服务合同": "contract",
+    "咨询服务合同": "contract",
     "company_articles": "company_articles",
     "articles": "company_articles",
     "articles of association": "company_articles",
@@ -375,6 +390,7 @@ def should_append_same_type_document(value: str | None) -> bool:
         "shuimui_report",
         "financial_report",
         "company_articles",
+        "contract",
         "property_cert",
         "real_estate_cert",
         "collateral",

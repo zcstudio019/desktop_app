@@ -13,6 +13,7 @@ export type DocumentContentSource =
   | 'selectedDocument.structured_json.report_markdown'
   | 'selectedDocument.structured_json.markdown_report'
   | 'selectedDocument.bank_reconciliation_detail.display_markdown'
+  | 'selectedDocument.contract.display_markdown'
   | 'generatedFinancialReportMarkdown'
   | 'selectedDocument.extracted_text'
   | 'selectedDocument.parsed_text'
@@ -87,6 +88,10 @@ function isBankReconciliationDetailType(value: unknown): boolean {
   return String(value || '').trim() === 'bank_reconciliation_detail';
 }
 
+function isContractType(value: unknown): boolean {
+  return String(value || '').trim() === 'contract';
+}
+
 function firstPlainMarkdown(...values: unknown[]): string {
   for (const value of values) {
     const markdown = nonEmpty(value);
@@ -123,6 +128,16 @@ function cleanupBankReconciliationMarkdown(markdown: string, records: JsonRecord
     })
     .join('\n')
     .replace(/\b(null|None|undefined|true|false)\b/g, '')
+    .trim();
+}
+
+function cleanupContractMarkdown(markdown: string): string {
+  const forbiddenLine = /^\s*[-*]?\s*(fields|raw[_\s-]*json|json[_\s-]*result|extracted[_\s-]*data|structured[_\s-]*data|metadata|evidence|dict|array|doc\s*type|doc_type|agent_type)\s*[:：]/i;
+  return markdown
+    .split(/\r?\n/)
+    .filter((line) => !forbiddenLine.test(line))
+    .join('\n')
+    .replace(/\b(None|null|undefined)\b/g, '未识别')
     .trim();
 }
 
@@ -343,6 +358,39 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
     return {
       content: markdown ? cleanupBankReconciliationMarkdown(markdown, records) : '暂无可展示的银行对账明细结果',
       source: markdown ? 'selectedDocument.bank_reconciliation_detail.display_markdown' : 'empty',
+    };
+  }
+
+  if (isContractType(documentType)) {
+    const dataRecord = asRecord(detail.data ?? latestExtractedData.data ?? extractedData.data ?? extractedJson.data);
+    const markdown = firstPlainMarkdown(
+      detail.markdown_result,
+      detail.markdownResult,
+      detail.display_markdown,
+      detail.displayMarkdown,
+      detail.report_markdown,
+      latestExtraction.markdown_result,
+      latestExtraction.markdownResult,
+      latestExtractedData.markdown_result,
+      latestExtractedData.markdownResult,
+      latestExtractedData.display_markdown,
+      latestExtractedData.displayMarkdown,
+      extractedData.markdown_result,
+      extractedData.markdownResult,
+      extractedData.display_markdown,
+      extractedData.displayMarkdown,
+      extractedJson.markdown_result,
+      extractedJson.markdownResult,
+      extractedJson.display_markdown,
+      extractedJson.displayMarkdown,
+      dataRecord.markdown_result,
+      dataRecord.markdownResult,
+      dataRecord.display_markdown,
+      dataRecord.displayMarkdown,
+    );
+    return {
+      content: markdown ? cleanupContractMarkdown(markdown) : '暂无合同解析结果',
+      source: markdown ? 'selectedDocument.contract.display_markdown' : 'empty',
     };
   }
 

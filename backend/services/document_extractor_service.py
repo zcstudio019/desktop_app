@@ -20,6 +20,7 @@ from backend.extraction_skills.enterprise_credit import build_enterprise_credit_
 from backend.services.document_agents import run_document_extraction_agent
 from backend.services.extraction_utils import normalize_amount, normalize_text, only_digits
 from backend.services.company_articles_agent import detect_company_articles
+from backend.services.contract_agent import is_contract_like
 from backend.services.kyc_document_agent import KycDocumentAgent
 from backend.services.kyc_document_agent.classifier import classify as classify_kyc_document, normalize_declared_doc_type
 from backend.services.kyc_document_agent.schema import DOC_TYPE_NAMES
@@ -37,6 +38,7 @@ DOCUMENT_AGENT_DISPATCH_TYPES = {
     "enterprise_bank_statement",
     "financial_report",
     "company_articles",
+    "contract",
     "property_cert",
     "real_estate_cert",
     "bank_statement",
@@ -242,6 +244,16 @@ def detect_document_type_code(
             "user_selected_doc_type",
         )
         return normalized_explicit
+    if is_contract_like(text_content or "", filename=filename):
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            "contract",
+            "contract_agent",
+            "filename_or_contract_keywords",
+        )
+        return "contract"
     statement_hit, statement_rule = _looks_like_bank_statement_strong(text_content, filename)
     if statement_hit:
         logger.info(
@@ -3193,6 +3205,16 @@ def detect_document_type_code(
             "user_selected_doc_type",
         )
         return normalized_explicit
+    if is_contract_like(text_content or "", filename=filename):
+        logger.info(
+            "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
+            filename,
+            explicit_type,
+            "contract",
+            "contract_agent",
+            "filename_or_contract_keywords",
+        )
+        return "contract"
     statement_hit, statement_rule = _looks_like_bank_statement_strong(text_content, filename)
     if statement_hit:
         logger.info(

@@ -292,6 +292,37 @@ export function getBankReconciliationDisplayMarkdown(value: unknown): string | n
   return '## 银行对账明细\n\n- 提取状态：成功\n- 展示结果：暂无可展示内容';
 }
 
+function cleanupContractMarkdown(markdown: string): string {
+  const forbiddenLine = /^\s*[-*]?\s*(fields|raw[_\s-]*json|json[_\s-]*result|extracted[_\s-]*data|structured[_\s-]*data|metadata|evidence|dict|array|doc\s*type|doc_type|agent_type)\s*[:：]/i;
+  return markdown
+    .split(/\r?\n/)
+    .filter((line) => !forbiddenLine.test(line))
+    .join('\n')
+    .replace(/\b(None|null|undefined)\b/g, '未识别')
+    .trim();
+}
+
+export function getContractDisplayMarkdown(value: unknown): string | null {
+  const records = collectDisplayRecords(value);
+  if (getDocTypeFromRecords(records) !== 'contract') return null;
+  const markdownKeys = [
+    'markdown_result',
+    'markdownResult',
+    'display_markdown',
+    'displayMarkdown',
+    'markdown',
+    'report_markdown',
+    'reportMarkdown',
+  ];
+  for (const key of markdownKeys) {
+    for (const record of records) {
+      const markdown = typeof record[key] === 'string' ? String(record[key]).trim() : '';
+      if (markdown) return cleanupContractMarkdown(markdown);
+    }
+  }
+  return '## 合同\n\n- 提取状态：失败\n- 解析质量提示：暂无可展示的合同解析结果';
+}
+
 export function isHiddenDisplayKey(key: string): boolean {
   const normalized = String(key || '').replace(/[\s_-]+/g, '').toLowerCase();
   return HIDDEN_DISPLAY_KEYS.has(key) || HIDDEN_DISPLAY_KEYS.has(normalized);
@@ -355,6 +386,16 @@ interface DataTableProps {
 }
 
 export const DataTable: React.FC<DataTableProps> = ({ data, level = 0 }) => {
+  const contractMarkdown = getContractDisplayMarkdown(data);
+  if (contractMarkdown) {
+    return (
+      <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {contractMarkdown}
+        </ReactMarkdown>
+      </article>
+    );
+  }
   const bankMarkdown = getBankReconciliationDisplayMarkdown(data);
   if (bankMarkdown) {
     return (
@@ -415,6 +456,16 @@ interface DataSectionCardProps {
 }
 
 export const DataSectionCard: React.FC<DataSectionCardProps> = ({ title, data, level = 0 }) => {
+  const contractMarkdown = getContractDisplayMarkdown(data);
+  if (contractMarkdown) {
+    return (
+      <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {contractMarkdown}
+        </ReactMarkdown>
+      </article>
+    );
+  }
   const bankMarkdown = getBankReconciliationDisplayMarkdown(data);
   if (bankMarkdown) {
     return (
