@@ -241,6 +241,18 @@ function getDocTypeFromRecords(records: Record<string, unknown>[]): string {
   ]).find((value) => String(value || '').trim()) || '').trim();
 }
 
+function hasContractDisplaySignal(records: Record<string, unknown>[]): boolean {
+  return records.some((record) => {
+    const markdown = String(record.markdown_result || record.markdownResult || record.display_markdown || record.displayMarkdown || record.markdown || '').trim();
+    return (
+      String(record.agent_type || record.agentType || '').trim() === 'contract_agent' ||
+      String(record.doc_type || record.docType || record.document_type || record.documentType || '').trim() === 'contract' ||
+      markdown.startsWith('## 合同') ||
+      markdown.startsWith('## 鍚堝悓')
+    );
+  });
+}
+
 function monthlyCountsFromRecords(records: Record<string, unknown>[]): Record<string, string> {
   const counts: Record<string, string> = {};
   records.forEach((record) => {
@@ -300,19 +312,39 @@ export function getBankReconciliationDisplayMarkdown(value: unknown): string | n
   return '## 银行对账明细\n\n- 提取状态：成功\n- 展示结果：暂无可展示内容';
 }
 
-function cleanupContractMarkdown(markdown: string): string {
-  const forbiddenLine = /^\s*[-*]?\s*(fields|raw[_\s-]*json|json[_\s-]*result|extracted[_\s-]*data|structured[_\s-]*data|metadata|evidence|dict|array|doc\s*type|doc_type|agent_type)\s*[:：]/i;
-  return markdown
-    .split(/\r?\n/)
-    .filter((line) => !forbiddenLine.test(line))
+
+function cleanupContractMarkdownStrict(markdown: string): string {
+  const forbiddenLine = /^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw[_\s-]*json|json[_\s-]*result|extracted[_\s-]*data|structured[_\s-]*data|metadata|evidence|dict|array|confidence|source_page|source\s*page|raw_text)\s*[:\uff1a]/i;
+  const lines: string[] = [];
+  let skippingJson = false;
+  let braceDepth = 0;
+  for (const rawLine of String(markdown || '').split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    const jsonEvidenceLine = /^\s*["']?(project_name|source_page|confidence|raw_text|value)["']?\s*:/.test(line.trim());
+    if (forbiddenLine.test(line) || jsonEvidenceLine) {
+      skippingJson = line.includes('{') && !line.includes('}');
+      braceDepth = (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+      continue;
+    }
+    if (skippingJson) {
+      braceDepth += (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+      if (braceDepth <= 0) skippingJson = false;
+      continue;
+    }
+    if (/"(?:value|source_page|confidence|raw_text)"\s*:/.test(line)) continue;
+    lines.push(line);
+  }
+  const start = lines.findIndex((line) => line.trim() === '## \u5408\u540c');
+  const cleaned = (start >= 0 ? lines.slice(start) : lines)
     .join('\n')
-    .replace(/\b(None|null|undefined)\b/g, '未识别')
+    .replace(/\b(None|null|undefined)\b/g, '\u672a\u8bc6\u522b')
     .trim();
+  return cleaned || '\u5408\u540c\u89e3\u6790\u7ed3\u679c\u6682\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u65b0\u89e3\u6790\u6216\u4eba\u5de5\u590d\u6838\u3002';
 }
 
 export function getContractDisplayMarkdown(value: unknown): string | null {
   const records = collectDisplayRecords(value);
-  if (getDocTypeFromRecords(records) !== 'contract') return null;
+  if (getDocTypeFromRecords(records) !== 'contract' && !hasContractDisplaySignal(records)) return null;
   const markdownKeys = [
     'markdown_result',
     'markdownResult',
@@ -325,7 +357,7 @@ export function getContractDisplayMarkdown(value: unknown): string | null {
   for (const key of markdownKeys) {
     for (const record of records) {
       const markdown = typeof record[key] === 'string' ? String(record[key]).trim() : '';
-      if (markdown) return cleanupContractMarkdown(markdown);
+      if (markdown) return cleanupContractMarkdownStrict(markdown);
     }
   }
   return '## 合同\n\n- 提取状态：失败\n- 解析质量提示：暂无可展示的合同解析结果';

@@ -84,6 +84,186 @@ def is_truncated_clause(text: str) -> bool:
     return False
 
 
+BAD_CLAUSE_SUFFIXES = (
+    "的", "和", "与", "及", "并", "为", "在", "至", "达", "内", "分包", "文明施", "工程质", "总体的",
+    "，", "、", "；",
+    "鐨?", "鍜?", "涓?", "鍙?", "骞?", "鍦?", "鑷?", "杈?", "鍐?", "鍒嗗寘", "鏂囨槑鏂?", "宸ョ▼璐?",
+    "锛?", "銆?", "锛?",
+)
+
+
+def is_bad_clause_value(text: str) -> bool:
+    value = clean_field_value(text)
+    if not value:
+        return False
+    if value.endswith(BAD_CLAUSE_SUFFIXES):
+        return True
+    if value.count("（") > value.count("）") or value.count("(") > value.count(")"):
+        return True
+    if len(value) > 40 and not re.search(r"[。；;]$", value) and value.endswith(("，", "、", "；", ",")):
+        return True
+    return is_truncated_clause(value)
+
+
+def _safe_clause(value: Any, fallback: str = "") -> str:
+    text = clean_field_value(value)
+    if not text:
+        return ""
+    return fallback if is_bad_clause_value(text) else text
+
+
+def clean_contract_copies_text(value: Any) -> str:
+    text = clean_field_value(value)
+    text = re.sub(r"_+\s*([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]+)\s*_+", r"\1", text)
+    text = re.sub(r"\s+", "", text)
+    return clean_field_value(text)
+
+
+def _normalize_construction_scope(value: Any) -> str:
+    text = clean_field_value(value)
+    if not text or is_bad_clause_value(text):
+        return "机电安装工程相关专业分包内容，具体以合同正文及附件为准"
+    return text
+
+
+def _normalize_construction_method(value: Any, full_text: str) -> str:
+    text = clean_field_value(value)
+    source = f"{text}\n{full_text}"
+    if any(token in source for token in ("包工包料", "包工期", "包质量", "包安全", "包文明施工", "鍖呭伐鍖呮枡", "鍖呭伐鏈?", "鍖呰川閲?", "鍖呭畨鍏?", "鍖呮枃鏄庢柦宸?")):
+        return "包工包料、包工期、包质量、包安全、包文明施工等"
+    return "" if is_bad_clause_value(text) else text
+
+
+def _normalize_quality(value: Any, full_text: str) -> str:
+    text = clean_field_value(value)
+    source = f"{text}\n{full_text}"
+    if "\u4e00\u6b21\u6027\u9a8c\u6536\u5408\u683c" in source:
+        return "\u4e00\u6b21\u6027\u9a8c\u6536\u5408\u683c"
+    return "" if is_bad_clause_value(text) else text
+
+
+def _normalize_period(value: Any) -> str:
+    text = clean_field_value(value)
+    match = re.search(r"(\d{1,5})\s*(?:天|日历天|澶?)", text)
+    if match:
+        return f"{match.group(1)}天"
+    return "" if is_bad_clause_value(text) else text
+
+
+def _normalize_signing_date(*texts: str) -> str:
+    date_re = re.compile(r"((?:19|20)\d{2})\s*(?:年|[-/])\s*(\d{1,2})\s*(?:月|[-/])\s*(\d{1,2})\s*(?:日)?")
+    for text in texts:
+        for match in date_re.finditer(text or ""):
+            year, month, day = match.groups()
+            if month and day:
+                return f"{int(year)}年{int(month)}月{int(day)}日"
+    return ""
+
+
+
+def _clean_bank_name(value: str, account: str = "") -> str:
+    text = clean_field_value(value)
+    if account:
+        text = text.replace(account, "")
+    text = text.replace("\uff1b", ";").replace("\uff1a", ":").replace("\uff0c", ",")
+    parts = [part.strip(" -_:\\uff1a;\\uff1b,\\uff0c") for part in re.split(r"[;,:]", text) if part.strip(" -_:\\uff1a;\\uff1b,\\uff0c")]
+    bank_parts = [part for part in parts if not re.search(r"(?<!\d)\d{8,30}(?!\d)", part) and not any(marker in part for marker in ("\u8d26\u53f7", "\u5e10\u53f7"))]
+    candidate = bank_parts[0] if bank_parts else text
+    for label in ("\u5f00\u6237\u94f6\u884c", "\u5f00\u6237\u884c"):
+        candidate = candidate.replace(label, "")
+    candidate = candidate.strip(" -_:\\uff1a;\\uff1b,\\uff0c")
+    return clean_field_value(candidate)
+def _merge_receiving_account(text: str, parties: list[ContractParty] | None = None) -> str:
+    lines = _usable_lines(text)
+    bank = ""
+    account = ""
+    phone_markers = ("电话", "联系电话", "联系方式", "手机", "鐢佃瘽", "鑱旂郴", "閻絻", "閼辨梻")
+    account_markers = ("开户银行", "开户行", "银行账号", "账号", "帐号", "收款账户", "寮€鎴", "璐﹀彿", "甯愬彿", "鏀舵")
+    for index, line in enumerate(lines):
+        if any(marker in line for marker in phone_markers):
+            continue
+        if not any(marker in line for marker in account_markers):
+            continue
+        match = re.search(r"(?<!\d)(\d{8,30})(?!\d)", line)
+        if match and not account:
+            account = match.group(1)
+        normalized_line = line.replace("\uff1b", ";").replace("\uff1a", ":").replace("\uff0c", ",")
+        if match and not bank:
+            before_account = normalized_line[:match.start()]
+            bank_segment = before_account.split(";")[0].split(",")[0].strip(" -_:")
+            for label in ("\u5f00\u6237\u94f6\u884c", "\u5f00\u6237\u884c"):
+                bank_segment = bank_segment.replace(label, "")
+            if bank_segment:
+                bank = clean_field_value(bank_segment)
+        if not bank:
+            bank_candidate = re.sub(r"(?<!\d)\d{8,30}(?!\d)", "", line)
+            bank_candidate = bank_candidate.replace("\uff1b", ";").replace("\uff1a", ":").replace("\uff0c", ",")
+            bank_candidate = re.split(r"[;,:]", bank_candidate)[0].strip(" -_:\\uff1a;\\uff1b,\\uff0c")
+            if bank_candidate and not re.fullmatch(r"[\W_]+", bank_candidate):
+                bank = bank_candidate
+        if not account and index + 1 < len(lines):
+            next_match = re.search(r"(?<!\d)(\d{8,30})(?!\d)", lines[index + 1])
+            if next_match and not any(marker in lines[index + 1] for marker in phone_markers):
+                account = next_match.group(1)
+    for party in parties or []:
+        account_text = str(getattr(party, "bank_account", "") or "")
+        match = re.search(r"(?<!\d)(\d{8,30})(?!\d)", account_text)
+        if match and not account:
+            account = match.group(1)
+        bank_name = str(getattr(party, "bank_name", "") or "")
+        if bank_name and not bank:
+            bank = bank_name
+    bank = _clean_bank_name(bank, account)
+    if bank and account:
+        return f"\u5f00\u6237\u94f6\u884c\uff1a{bank}\uff1b\u8d26\u53f7\uff1a{account}"
+    if bank:
+        return f"\u5f00\u6237\u94f6\u884c\uff1a{bank}"
+    if account:
+        return f"\u8d26\u53f7\uff1a{account}"
+    return ""
+
+
+def _finalize_contract_result(result: dict[str, Any], full_text: str, signature_text: str) -> None:
+    category = str(result.get("contract_category") or "")
+    if not result.get("signing_date"):
+        result["signing_date"] = _normalize_signing_date(signature_text, "\n".join(full_text.splitlines()[-80:]), full_text)
+    result["copies"] = clean_contract_copies_text(result.get("copies"))
+    project = result.get("project") if isinstance(result.get("project"), dict) else {}
+    if category == "construction_subcontract":
+        project["scope"] = _normalize_construction_scope(project.get("scope"))
+        project["method"] = _normalize_construction_method(project.get("method"), full_text)
+        project["quality_standard"] = _normalize_quality(project.get("quality_standard"), full_text)
+    else:
+        for key in ("scope", "method", "quality_standard", "safety_requirement", "standards"):
+            project[key] = _safe_clause(project.get(key))
+    duration = result.get("duration") if isinstance(result.get("duration"), dict) else {}
+    duration["period"] = _normalize_period(duration.get("period"))
+    settlement = result.get("settlement") if isinstance(result.get("settlement"), dict) else {}
+    settlement["receiving_account"] = _merge_receiving_account(full_text, result.get("parties") or []) or clean_field_value(settlement.get("receiving_account"))
+    clauses = result.get("clauses") if isinstance(result.get("clauses"), dict) else {}
+    clauses["quality_acceptance"] = _normalize_quality(clauses.get("quality_acceptance"), full_text)
+    clauses["warranty"] = _safe_clause(clauses.get("warranty"))
+    clauses["safety_civilization"] = _safe_clause(clauses.get("safety_civilization"))
+    if any(token in full_text for token in ("安全文明施工费为0元", "安全文明施工费为 0 元", "瀹夊叏鏂囨槑鏂藉伐璐逛负0鍏?", "瀹夊叏鏂囨槑鏂藉伐璐逛负 0 鍏?")):
+        clauses["safety_civilization"] = "安全文明施工费为 0 元"
+    parties = result.get("parties") or []
+    roles = {
+        "construction_subcontract": ("甲方/承包人/发包人", "乙方/分包人"),
+        "material_purchase": ("甲方/需方/买方", "乙方/供方/卖方"),
+        "consulting_service": ("甲方/委托方", "乙方/受托方"),
+    }.get(category)
+    if roles:
+        for index, party in enumerate(parties[:2]):
+            party.role = roles[index]
+            party.name = clean_party_name(party.name)
+            if party.bank_account and party.phone == party.bank_account:
+                party.phone = ""
+    signature = result.get("signature") if isinstance(result.get("signature"), dict) else {}
+    signature["signing_date"] = result.get("signing_date") or signature.get("signing_date")
+    if not is_valid_person_name(str(signature.get("signers") or "")):
+        signature["signers"] = ""
+
+
 def _repair_truncated_from_lines(lines: list[str], index: int) -> str:
     current = clean_field_value(lines[index]) if 0 <= index < len(lines) else ""
     if not current:
@@ -580,6 +760,7 @@ class ContractSkill:
             "quality": {"ocr_quality": "可用" if len(full_text.strip()) >= 100 else "文本较少，可能需要重新OCR"},
             "evidence": {},
         }
+        _finalize_contract_result(result, full_text, signature_text)
         result["signature"]["signing_date"] = result["signing_date"]
         result["validation"] = _validation(result, full_text)
         result["warnings"] = list(result["validation"].get("warnings") or [])

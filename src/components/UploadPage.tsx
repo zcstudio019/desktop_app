@@ -35,6 +35,7 @@ import { useApp, type ExtractionResult, type UploadQueueItem } from '../context/
 import { ApiError, classifyError, ErrorType, type ChatJobStatusResponse, type CustomerListItem, type KycExtractionResult as KycExtractionResultType } from '../services/types';
 import KycExtractionResult, { isKycExtractionResult } from './KycExtractionResult';
 import ProcessFeedbackCard from './common/ProcessFeedbackCard';
+import { getContractDisplayMarkdown } from './DataDisplayComponents';
 
 // ============================================
 // Type Definitions
@@ -1588,7 +1589,7 @@ const UploadPage: React.FC = () => {
   ]);
 
   const viewResult = useCallback((result: ExtractionResult) => {
-    if (isKycExtractionResult(getKycPreviewContent(result)) || getBankStatementMarkdown(result)) {
+    if (isKycExtractionResult(getKycPreviewContent(result)) || getBankStatementMarkdown(result) || getContractDisplayMarkdown(result)) {
       setPreviewResult(result);
       return;
     }
@@ -2023,6 +2024,27 @@ const UploadPage: React.FC = () => {
             <div className="max-h-[calc(90vh-72px)] overflow-auto p-5">
               <article className="prose prose-slate max-w-none overflow-x-auto [&_table]:block [&_table]:w-max [&_table]:min-w-full [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{getBankStatementMarkdown(previewResult)}</ReactMarkdown>
+              </article>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {previewResult && getContractDisplayMarkdown(previewResult) ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+          <div className="max-h-[90vh] w-full max-w-6xl overflow-hidden rounded-lg bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <div className="text-base font-semibold text-slate-900">合同解析结果</div>
+                <div className="mt-0.5 text-xs text-slate-500">合同</div>
+              </div>
+              <button onClick={() => setPreviewResult(null)} className="rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="关闭">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[calc(90vh-72px)] overflow-auto p-5">
+              <article className="prose prose-slate max-w-none overflow-x-auto [&_table]:block [&_table]:w-max [&_table]:min-w-full">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{getContractDisplayMarkdown(previewResult) || '合同解析结果暂不可用，请重新解析或人工复核。'}</ReactMarkdown>
               </article>
             </div>
           </div>

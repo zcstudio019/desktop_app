@@ -92,6 +92,32 @@ function isContractType(value: unknown): boolean {
   return String(value || '').trim() === 'contract';
 }
 
+function isContractAgentType(value: unknown): boolean {
+  return String(value || '').trim() === 'contract_agent';
+}
+
+function isContractMarkdown(value: unknown): boolean {
+  return nonEmpty(value).startsWith('## \u5408\u540c');
+}
+
+function isContractRecord(record: JsonRecord): boolean {
+  return Boolean(
+    isContractType(record.doc_type) ||
+    isContractType(record.docType) ||
+    isContractType(record.document_type) ||
+    isContractType(record.documentType) ||
+    isContractType(record.document_type_code) ||
+    isContractType(record.documentTypeCode) ||
+    isContractAgentType(record.agent_type) ||
+    isContractAgentType(record.agentType) ||
+    isContractMarkdown(record.markdown_result) ||
+    isContractMarkdown(record.markdownResult) ||
+    isContractMarkdown(record.display_markdown) ||
+    isContractMarkdown(record.displayMarkdown) ||
+    isContractMarkdown(record.markdown)
+  );
+}
+
 function firstPlainMarkdown(...values: unknown[]): string {
   for (const value of values) {
     const markdown = nonEmpty(value);
@@ -131,14 +157,34 @@ function cleanupBankReconciliationMarkdown(markdown: string, records: JsonRecord
     .trim();
 }
 
-function cleanupContractMarkdown(markdown: string): string {
-  const forbiddenLine = /^\s*[-*]?\s*(fields|raw[_\s-]*json|json[_\s-]*result|extracted[_\s-]*data|structured[_\s-]*data|metadata|evidence|dict|array|doc\s*type|doc_type|agent_type)\s*[:：]/i;
-  return markdown
-    .split(/\r?\n/)
-    .filter((line) => !forbiddenLine.test(line))
+
+function cleanupContractMarkdownStrict(markdown: string): string {
+  const forbiddenLine = /^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw[_\s-]*json|json[_\s-]*result|extracted[_\s-]*data|structured[_\s-]*data|metadata|evidence|dict|array|confidence|source_page|source\s*page|raw_text)\s*[:\uff1a]/i;
+  const lines: string[] = [];
+  let skippingJson = false;
+  let braceDepth = 0;
+  for (const rawLine of String(markdown || '').split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    const jsonEvidenceLine = /^\s*["']?(project_name|source_page|confidence|raw_text|value)["']?\s*:/.test(line.trim());
+    if (forbiddenLine.test(line) || jsonEvidenceLine) {
+      skippingJson = line.includes('{') && !line.includes('}');
+      braceDepth = (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+      continue;
+    }
+    if (skippingJson) {
+      braceDepth += (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+      if (braceDepth <= 0) skippingJson = false;
+      continue;
+    }
+    if (/"(?:value|source_page|confidence|raw_text)"\s*:/.test(line)) continue;
+    lines.push(line);
+  }
+  const start = lines.findIndex((line) => line.trim() === '## \u5408\u540c');
+  const cleaned = (start >= 0 ? lines.slice(start) : lines)
     .join('\n')
-    .replace(/\b(None|null|undefined)\b/g, '未识别')
+    .replace(/\b(None|null|undefined)\b/g, '\u672a\u8bc6\u522b')
     .trim();
+  return cleaned || '\u5408\u540c\u89e3\u6790\u7ed3\u679c\u6682\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u65b0\u89e3\u6790\u6216\u4eba\u5de5\u590d\u6838\u3002';
 }
 
 function dedupeShuimuiMarkdown(markdown: string): string {
@@ -311,6 +357,8 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
     ?? structuredJson.doc_type
     ?? ''
   );
+  const contractRecords = [detail, latestExtraction, latestExtractedData, extraction, extractedData, extractedJson, structuredJson];
+  const isContractDocument = isContractType(documentType) || contractRecords.some(isContractRecord);
 
   if (isCompanyArticlesType(documentType)) {
     const markdown = firstMarkdownFromRecord(
@@ -361,7 +409,7 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
     };
   }
 
-  if (isContractType(documentType)) {
+  if (isContractDocument) {
     const dataRecord = asRecord(detail.data ?? latestExtractedData.data ?? extractedData.data ?? extractedJson.data);
     const markdown = firstPlainMarkdown(
       detail.markdown_result,
@@ -389,7 +437,7 @@ export function resolveDocumentContent(detailValue: unknown): DocumentContentRes
       dataRecord.displayMarkdown,
     );
     return {
-      content: markdown ? cleanupContractMarkdown(markdown) : '暂无合同解析结果',
+      content: markdown ? cleanupContractMarkdownStrict(markdown) : '暂无合同解析结果',
       source: markdown ? 'selectedDocument.contract.display_markdown' : 'empty',
     };
   }

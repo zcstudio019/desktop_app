@@ -139,6 +139,31 @@ def sanitize_contract_markdown(markdown: str) -> str:
     return "\n".join(lines).replace("\n\n\n", "\n\n").strip()
 
 
+def final_sanitize_contract_markdown(markdown: str) -> str:
+    forbidden = re.compile(
+        r"^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw_result|structured_data|metadata|evidence|confidence|source_page|raw_text|\"value\"|\"source_page\"|\"confidence\")\s*[:\uff1a]",
+        re.I,
+    )
+    lines: list[str] = []
+    skipping_json = False
+    brace_depth = 0
+    for raw_line in str(markdown or "").splitlines():
+        line = raw_line.rstrip()
+        json_evidence_line = re.search(r'"(?:project_name|source_page|confidence|raw_text|value)"\s*:', line)
+        if forbidden.search(line) or json_evidence_line:
+            skipping_json = "{" in line and "}" not in line
+            brace_depth = line.count("{") - line.count("}")
+            continue
+        if skipping_json:
+            brace_depth += line.count("{") - line.count("}")
+            if brace_depth <= 0:
+                skipping_json = False
+            continue
+        lines.append(line)
+    start = next((index for index, line in enumerate(lines) if line.strip() in {"## 合同", "## 鍚堝悓"}), 0)
+    return "\n".join(lines[start:]).replace("\n\n\n", "\n\n").strip()
+
+
 def render_contract_markdown(result: ContractResult) -> str:
     amount = result.amount or {}
     project = result.project or {}
@@ -237,4 +262,4 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 关键字段完整度：{value(completeness)}",
         f"- 需人工复核事项：{value(review_items)}",
     ]).replace("\n\n\n", "\n\n").strip()
-    return sanitize_contract_markdown(markdown)
+    return final_sanitize_contract_markdown(sanitize_contract_markdown(markdown))
