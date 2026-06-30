@@ -140,12 +140,14 @@ def _normalize_construction_scope(value: Any) -> str:
     text = clean_field_value(value)
     if not text or is_bad_clause_value(text):
         return "机电安装工程相关专业分包内容，具体以合同正文及附件为准"
-    return text
+    return _ensure_chinese_period(text)
 
 
 def _normalize_construction_method(value: Any, full_text: str) -> str:
     text = clean_field_value(value)
     source = f"{text}\n{full_text}"
+    if text and "包工包料" in text and "包维修保修" in text:
+        return _normalize_agreement_method(text)
     if any(token in source for token in ("包工包料", "包工期", "包质量", "包安全", "包文明施工", "鍖呭伐鍖呮枡", "鍖呭伐鏈?", "鍖呰川閲?", "鍖呭畨鍏?", "鍖呮枃鏄庢柦宸?")):
         return "包工包料、包工期、包质量、包安全、包文明施工等"
     return "" if is_bad_clause_value(text) else text
@@ -154,6 +156,9 @@ def _normalize_construction_method(value: Any, full_text: str) -> str:
 def _normalize_quality(value: Any, full_text: str) -> str:
     text = clean_field_value(value)
     source = f"{text}\n{full_text}"
+    agreement_quality = _normalize_agreement_quality(text, full_text)
+    if agreement_quality:
+        return agreement_quality
     if "\u4e00\u6b21\u6027\u9a8c\u6536\u5408\u683c" in source:
         return "\u4e00\u6b21\u6027\u9a8c\u6536\u5408\u683c"
     return "" if is_bad_clause_value(text) else text
@@ -299,7 +304,7 @@ def extract_payment_account(
         candidates.append({"bank": bank, "account": account, "owner": owner, "explicit": "1" if explicit_receiving else ""})
 
     if category == "construction_subcontract":
-        selected = next((item for item in candidates if item["owner"] == "party_b"), None)
+        selected = next((item for item in candidates if item["owner"] == "party_b" and item["bank"] and item["account"]), None)
         if selected is None:
             selected = next((item for item in candidates if item["explicit"] and item["owner"] != "party_a"), None)
     else:
@@ -351,7 +356,7 @@ def _finalize_contract_result(
         full_text,
     ))
     if has_zero_safety_fee or any(token in full_text for token in ("安全文明施工费为0元", "安全文明施工费为 0 元", "瀹夊叏鏂囨槑鏂藉伐璐逛负0鍏?", "瀹夊叏鏂囨槑鏂藉伐璐逛负 0 鍏?")):
-        clauses["safety_civilization"] = "安全文明施工费为 0 元"
+        clauses["safety_civilization"] = "安全文明施工费为 0 元。"
     parties = result.get("parties") or []
     roles = {
         "construction_subcontract": ("甲方/承包人/发包人", "乙方/分包人"),
@@ -562,7 +567,7 @@ def _effective_condition_from_clause(clause: str) -> str:
 AGREEMENT_FIELD_LABELS = (
     "总包工程名称", "分包工程名称", "工程名称", "分包工程地点", "工程地点",
     "分包工程承包范围和内容", "分包范围", "承包范围", "承包方式", "计划开工日期",
-    "计划竣工日期", "合同工期", "工期", "质量标准", "签订地点", "合同份数",
+    "计划竣工日期", "计划完工日期", "合同工期", "工期", "质量标准", "签订地点", "合同份数",
 )
 
 
@@ -584,6 +589,7 @@ def extract_labeled_multiline_value(
             if raw_line.find(matched_label) > 12:
                 continue
             remainder = raw_line.split(matched_label, 1)[1].lstrip(" ：:、")
+            remainder = _truncate_at_following_label(remainder, matched_label)
             values = [remainder] if remainder else []
             for next_line in raw_lines[index + 1:index + 1 + max_lines]:
                 if is_toc_line(next_line):
@@ -600,6 +606,61 @@ def extract_labeled_multiline_value(
             value_text = re.sub(r"\s+", "", "".join(values)).strip(" ：:;；")
             if value_text:
                 return value_text[:max_chars]
+    return ""
+
+
+def _truncate_at_following_label(value: str, current_label: str = "") -> str:
+    text = str(value or "")
+    stops = [label for label in AGREEMENT_FIELD_LABELS if label and label != current_label]
+    positions: list[int] = []
+    for label in stops:
+        match = re.search(rf"(?:^|[。；;，,\s])\s*{re.escape(label)}\s*[:：]", text)
+        if match and match.start() > 0:
+            positions.append(match.start())
+    if positions:
+        text = text[:min(positions)]
+    return text.strip(" ：:;；，,。")
+
+
+def _ensure_chinese_period(value: Any) -> str:
+    text = clean_field_value(value)
+    if not text:
+        return ""
+    return text if text.endswith(("。", "！", "？")) else f"{text}。"
+
+
+def _normalize_agreement_scope(value: Any) -> str:
+    text = clean_field_value(value)
+    if not text:
+        return ""
+    text = re.sub(r"支架、?等", "支架等", text)
+    text = re.sub(r"等一切与机电安装相关的工作。?$", "等一切与机电安装相关的工作", text)
+    return _ensure_chinese_period(text)
+
+
+def _normalize_agreement_method(value: Any) -> str:
+    text = clean_field_value(value)
+    if not text:
+        return ""
+    if text.endswith("。"):
+        text = text[:-1]
+    if "施工专业分包方式" not in text and "包工包料" in text:
+        text = f"{text}的施工专业分包方式"
+    return _ensure_chinese_period(text)
+
+
+def _normalize_agreement_quality(value: Any, full_text: str) -> str:
+    text = clean_field_value(value)
+    if "分包工程质量标准" in text and "一次性验收合格" in text:
+        return _ensure_chinese_period(text)
+    pattern = re.search(
+        r"(符合总包合同约定的分包工程质量标准[^。\n]{0,120}?一次性验收合格[^。\n]{0,160}?上海市文明工地标准)",
+        full_text,
+    )
+    if pattern:
+        return _ensure_chinese_period(pattern.group(1))
+    if "一次性验收合格" in text and "有不同规定" not in text:
+        return _ensure_chinese_period(text)
     return ""
 
 
@@ -631,17 +692,19 @@ def _extract_agreement_amounts(ocr_pages: list[dict[str, Any]], amount: dict[str
     if anchor < 0:
         anchor = compact.find("签约合同价含税")
     amount_segment = compact[anchor:anchor + 500] if anchor >= 0 else ""
-    included = _money_near_label(compact, ("签约合同价暂定为含税", "签约合同价含税", "含税签约合同价"), 160)
+    included = _money_near_label(compact, ("签约合同价暂定为含税", "签约合同价含税", "含税签约合同价", "合同价暂定为含税"), 220)
     upper_candidates = re.findall(r"[零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整正]{6,100}", amount_segment)
     upper = max(upper_candidates, key=len) if upper_candidates else ""
-    excluded = _money_near_label(compact, ("不含增值税签约合同价", "不含税签约合同价", "不含税合同价"), 160)
+    excluded = _money_near_label(compact, ("不含增值税签约合同价", "不含税签约合同价", "不含税合同价"), 220)
     tax_amount = ""
     tax_line_match = re.search(r"(?:增值税税额|税额)[^\n]{0,120}", text)
     if tax_line_match and not re.search(r"[=＝×*]", tax_line_match.group(0)):
         tax_amount = _format_money_value(tax_line_match.group(0))
     safety_fee = _money_near_label(compact, ("安全文明施工费",), 120)
     tax_match = re.search(r"(?:增值税)?税率[:：]?\s*(\d+(?:\.\d+)?%)", compact)
-    price_form_match = re.search(r"合同价格形式[:：]?([^。；\n]{2,30})", text)
+    price_form_match = re.search(r"合同价格形式[:：]?\s*([^。；\n]{2,30})", text)
+    if not price_form_match:
+        price_form_match = re.search(r"合同价格形式[:：]?\s*([^。；]{2,30})", compact)
 
     if included:
         amount["contract_amount"] = f"人民币 {included}"
@@ -698,13 +761,18 @@ def _party_signature_block(
         if not any(marker in page_text for marker in ("盖章", "签章", "法定代表人", "纳税人性质")):
             continue
         lines = [line.strip() for line in page_text.splitlines() if line.strip()]
-        indexes = [
-            index for index, line in enumerate(lines)
-            if party_name in line and ("盖章" in line or "纳税人性质" in page_text)
-        ]
+        indexes = [index for index, line in enumerate(lines) if party_name and party_name in line and "盖章" in line]
+        if not indexes and "纳税人性质" in page_text:
+            indexes = [index for index, line in enumerate(lines) if party_name and party_name in line]
+        if not indexes:
+            role_markers = ("承包人", "发包人", "甲方") if "上海建工" in party_name else ("分包人", "乙方")
+            indexes = [
+                index for index, line in enumerate(lines)
+                if any(marker in line and "盖章" in line for marker in role_markers)
+            ]
         if not indexes:
             continue
-        index = indexes[-1]
+        index = indexes[0]
         block_lines: list[str] = []
         for line in lines[index:index + 20]:
             if other_party_name and other_party_name in line and block_lines:
@@ -719,22 +787,37 @@ def _party_signature_block(
 def _extract_signature_party_details(ocr_pages: list[dict[str, Any]], result: dict[str, Any]) -> None:
     parties = result.get("parties") or []
     verified_party_b_account = False
+    full_text = "\n".join(str(page.get("text") or "") for page in ocr_pages if isinstance(page, dict))
     for index, party in enumerate(parties[:2]):
         other_name = parties[1 - index].name if len(parties) > 1 else ""
         block = _party_signature_block(ocr_pages, party.name, other_name)
+        if not block:
+            role = "分包人" if index == 1 else "承包人"
+            other_role = "承包人" if index == 1 else "分包人"
+            marker = party.name or role
+            position = full_text.find(marker)
+            if position < 0:
+                position = full_text.find(role)
+            if position >= 0:
+                end_position = full_text.find(other_role, position + 1)
+                if end_position < 0 or end_position <= position:
+                    end_position = position + 500
+                candidate_block = full_text[position:end_position]
+                if "纳税人性质" in candidate_block or "盖章" in candidate_block.splitlines()[0]:
+                    block = candidate_block
         if not block:
             continue
         address = _after_label(block, ("地址", "住所"), max_len=160)
         bank_name = _after_label(block, ("开户银行", "开户行"), max_len=100)
         account_line = _line_with(block, ("银行账号", "账号", "帐号"))
         account_match = re.search(r"(?<!\d)(\d{8,30})(?!\d)", account_line)
-        if address:
+        if address and not re.search(r"(账号|开户|邮政编码|统一社会信用代码)", address):
             party.address = clean_field_value(address)
         if bank_name:
             party.bank_name = clean_field_value(bank_name)
         if account_match:
             party.bank_account = account_match.group(1)
-            if index == 1:
+            if index == 1 and bank_name:
                 verified_party_b_account = True
     if len(parties) > 1 and verified_party_b_account:
         bank = clean_field_value(parties[1].bank_name)
@@ -753,6 +836,7 @@ def extract_agreement_and_signature_fields(
     duration = result.setdefault("duration", {})
     clauses = result.setdefault("clauses", {})
     signature = result.setdefault("signature", {})
+    full_text = "\n".join(str(page.get("text") or "") for page in ocr_pages if isinstance(page, dict))
 
     total_project = extract_labeled_multiline_value(ocr_pages, ("总包工程名称",))
     subcontract_project = extract_labeled_multiline_value(ocr_pages, ("分包工程名称",))
@@ -761,7 +845,7 @@ def extract_agreement_and_signature_fields(
     method = extract_labeled_multiline_value(ocr_pages, ("承包方式",))
     quality = extract_labeled_multiline_value(ocr_pages, ("质量标准",), max_lines=6)
     start = extract_labeled_multiline_value(ocr_pages, ("计划开工日期",), max_lines=2)
-    end = extract_labeled_multiline_value(ocr_pages, ("计划竣工日期",), max_lines=2)
+    end = extract_labeled_multiline_value(ocr_pages, ("计划竣工日期", "计划完工日期"), max_lines=2)
     period = extract_labeled_multiline_value(ocr_pages, ("合同工期", "工期"), max_lines=2)
 
     if total_project:
@@ -773,12 +857,14 @@ def extract_agreement_and_signature_fields(
         project["location"] = location
         duration["delivery_place"] = location
     if scope:
-        project["scope"] = scope
+        project["scope"] = _normalize_agreement_scope(scope)
     if method:
-        project["method"] = method
+        project["method"] = _normalize_agreement_method(method)
     if quality:
-        project["quality_standard"] = quality
-        clauses["quality_acceptance"] = quality
+        normalized_quality = _normalize_agreement_quality(quality, full_text)
+        if normalized_quality:
+            project["quality_standard"] = normalized_quality
+            clauses["quality_acceptance"] = normalized_quality
     if start:
         duration["start_date"] = start
     if end:
@@ -798,7 +884,6 @@ def extract_agreement_and_signature_fields(
             result["title"] = title_line
             break
 
-    full_text = "\n".join(str(page.get("text") or "") for page in ocr_pages if isinstance(page, dict))
     partial_date = re.search(r"本合同于\s*((?:19|20)\d{2})\s*年\s*(\d{1,2})\s*月[ \t_＿]*日?\s*签订", full_text)
     if partial_date and not re.search(rf"{partial_date.group(1)}\s*年\s*{partial_date.group(2)}\s*月\s*\d{{1,2}}\s*日", partial_date.group(0)):
         result["signing_date"] = f"{int(partial_date.group(1))}年{int(partial_date.group(2))}月（具体日期未填写，需人工复核）"
@@ -808,14 +893,14 @@ def extract_agreement_and_signature_fields(
         result["signing_place"] = clean_field_value(place_match.group(1))
 
     effective_match = re.search(
-        r"本合同自双方加盖公章或合同专用章并经法定代表人或其委托代理人签字（章）后生效",
+        r"本合同自\s*双方加盖公章或合同专用章\s*并经法定代表人或其委托代理人签字\s*[（(]章[）)]\s*后生效",
         full_text,
     )
     if effective_match:
         result["effective_condition"] = "双方加盖公章或合同专用章，并经法定代表人或其委托代理人签字（章）后生效"
-    if re.search(r"承包人[^\n]{0,20}盖章", full_text):
+    if re.search(r"承包人[^\n]{0,40}盖章", full_text):
         signature["party_a_stamp"] = "有"
-    if re.search(r"分包人[^\n]{0,20}盖章", full_text):
+    if re.search(r"分包人[^\n]{0,40}盖章", full_text):
         signature["party_b_stamp"] = "有"
 
     if re.search(r"不进行转包及违法分包", full_text):
@@ -1024,14 +1109,16 @@ def _near_block(text: str, labels: tuple[str, ...], window: int = 900) -> str:
 
 
 def _party_name(text: str, labels: tuple[str, ...]) -> str:
+    candidates: list[str] = []
     for label in labels:
         for pattern in (rf"{re.escape(label)}\s*[:：]\s*([^\n\r]+)", rf"{re.escape(label)}\s*[（(][^）)]*[）)]\s*[:：]?\s*([^\n\r]+)"):
-            match = re.search(pattern, text)
-            if match:
+            for match in re.finditer(pattern, text):
                 candidate = clean_party_name(match.group(1))
-                if candidate and not re.search(r"(地址|账号|电话|联系人|开户)", candidate):
-                    return candidate[:80]
-    return ""
+                if not candidate or re.search(r"(地址|账号|电话|联系人|开户|书面通知|执[壹贰叁肆伍陆柒捌玖一二三四五六七八九十])", candidate):
+                    continue
+                candidates.append(candidate[:80])
+    preferred = next((item for item in candidates if re.search(r"(公司|集团|有限|股份|事务所|中心|厂)$", item)), "")
+    return preferred or (candidates[0] if candidates else "")
 
 
 def _context_phone(block: str) -> str:
@@ -1094,7 +1181,9 @@ def _extract_parties(text: str) -> list[ContractParty]:
 
 def _duration(text: str, category: str) -> dict[str, Any]:
     start = _after_label(text, ("计划开工日期", "开工日期", "服务开始时间", "开始日期", "交货时间"))
-    end = _after_label(text, ("计划竣工日期", "竣工日期", "服务结束时间", "结束日期"))
+    start = _truncate_at_following_label(start, "计划开工日期")
+    end = _after_label(text, ("计划竣工日期", "计划完工日期", "竣工日期", "完工日期", "服务结束时间", "结束日期"))
+    end = _truncate_at_following_label(end, "计划竣工日期")
     period = _after_label(text, ("合同工期", "服务期限", "合同期限", "工期总日历天数"))
     return {
         "start_date": start,
@@ -1271,7 +1360,8 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         warnings.append("识别到身份证号码，展示时已脱敏，请人工确认附件用途")
     amount_check = (result.get("amount") or {}).get("amount_check")
     if amount_check and "复核" in amount_check:
-        warnings.append(amount_check)
+        if "大写金额疑似不完整" in amount_check or "金额信息不完整" in amount_check:
+            warnings.append(amount_check)
     if not result.get("signing_date"):
         warnings.append("签订日期未识别")
     elif "具体日期未填写" in str(result.get("signing_date") or ""):
@@ -1308,7 +1398,7 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         if completeness == "完整":
             completeness = "部分完整"
         for warning in (
-            "付款条款正文缺失", "结算条款正文缺失", "违约责任正文缺失", "争议解决正文缺失",
+            "付款条款正文缺失", "结算条款正文缺失", "发票条款正文缺失", "违约责任正文缺失", "争议解决正文缺失",
         ):
             if warning not in warnings:
                 warnings.append(warning)
