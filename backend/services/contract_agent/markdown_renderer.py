@@ -141,10 +141,11 @@ def sanitize_contract_markdown(markdown: str) -> str:
 
 def final_sanitize_contract_markdown(markdown: str) -> str:
     text = str(markdown or "")
-    standalone_header = re.search(r"(?m)^## 合同\s*$", text)
-    header_index = standalone_header.start() if standalone_header else text.find("## 合同")
+    wrapped_header = re.search(r"(?im)^\s*[-*]?\s*markdown(?:\s|_)*result\s*[:：]\s*(## 合同)", text)
+    header_index = wrapped_header.start(1) if wrapped_header else text.find("## 合同")
     if header_index >= 0:
         text = text[header_index:]
+    text = re.sub(r"(?m)(^## 合同\s*$)(?:\s*\n## 合同\s*$)+", r"\1", text)
     for marker in ("\n- evidence：", "\nevidence：", "\n- evidence:", "\nevidence:"):
         evidence_index = text.lower().find(marker.lower())
         if evidence_index >= 0:
@@ -173,6 +174,25 @@ def final_sanitize_contract_markdown(markdown: str) -> str:
     start = next((index for index, line in enumerate(lines) if line.strip() in {"## 合同", "## 鍚堝悓"}), -1)
     content = lines[start:] if start >= 0 else ["## 合同", *lines]
     return "\n".join(content).replace("\n\n\n", "\n\n").strip()
+
+
+def sanitize_contract_result_payload(payload: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
+    data = dict(payload or {})
+    is_contract = force or str(data.get("doc_type") or data.get("document_type_code") or "") == "contract"
+    is_contract = is_contract or str(data.get("agent_type") or "") == "contract_agent"
+    if not is_contract:
+        return data
+    markdown = next((
+        str(data.get(key) or "")
+        for key in ("markdown_result", "display_markdown", "result_markdown", "report_markdown", "markdown", "markdown_summary")
+        if str(data.get(key) or "").strip()
+    ), "")
+    cleaned = final_sanitize_contract_markdown(markdown)
+    data["markdown_result"] = cleaned
+    for key in ("display_markdown", "report_markdown", "markdown", "markdown_summary"):
+        if key in data or cleaned:
+            data[key] = cleaned
+    return data
 
 
 def render_contract_markdown(result: ContractResult) -> str:

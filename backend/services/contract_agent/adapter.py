@@ -6,6 +6,7 @@ from backend.services.document_agents.base import BaseDocumentAgent
 from backend.services.document_agents.result import DocumentAgentResult
 
 from .agent import ContractAgent
+from .markdown_renderer import sanitize_contract_result_payload
 from .schema import DOC_TYPE, SCHEMA_VERSION
 
 
@@ -33,14 +34,14 @@ class ContractAgentAdapter(BaseDocumentAgent):
                 "source": str(metadata.get("source") or "upload"),
             }
         )
-        content = result.to_dict()
+        content = sanitize_contract_result_payload(result.to_dict(), force=True)
         return DocumentAgentResult(
             document_type=DOC_TYPE,
             agent_name=self.agent_name,
             schema_version=self.schema_version,
             confidence=0.88 if result.extraction_status == "success" else 0.72,
             extracted_json=content,
-            markdown_summary=result.markdown,
+            markdown_summary=str(content.get("markdown_result") or ""),
             evidence=result.evidence,
             warnings=list(result.warnings),
             debug={"skill_name": "contract_skill", "normalized_document_type": DOC_TYPE},

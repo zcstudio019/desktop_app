@@ -36,6 +36,7 @@ from backend.services.company_articles_agent.normalizer import finalize_company_
 from backend.services.company_articles_agent.schema import SCHEMA_VERSION as COMPANY_ARTICLES_SCHEMA_VERSION
 from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
 from backend.services.company_articles_agent.validator import validate_company_articles
+from backend.services.contract_agent.markdown_renderer import sanitize_contract_result_payload
 from backend.services.kyc_document_agent.renderer import get_display_fields, render_markdown as render_kyc_markdown
 from backend.services.kyc_profile_sync_service import score_kyc_property_cert_extraction
 from backend.services.property_cert_agent.normalizer import normalize_property_cert_fields
@@ -1965,6 +1966,23 @@ async def _build_single_document_section(
         'original_status': original_status,
         'original_available': bool(store_original and file_path),
     }
+    if isinstance(extracted_data, dict) and (
+        extraction_type == 'contract'
+        or str(extracted_data.get('doc_type') or '') == 'contract'
+        or str(extracted_data.get('agent_type') or '') == 'contract_agent'
+    ):
+        contract_payload = sanitize_contract_result_payload(extracted_data, force=True)
+        markdown = str(contract_payload.get('markdown_result') or '').strip()
+        source_document['source_type'] = 'contract'
+        source_document['source_type_name'] = '合同'
+        logger.info(
+            '[ContractDisplay] profile short-circuit customer_id=%s doc_id=%s payload_keys=%s markdown_len=%s',
+            customer_id,
+            doc_id,
+            sorted(contract_payload.keys()),
+            len(markdown),
+        )
+        return markdown or '合同解析结果暂不可用，请重新解析或人工复核。', source_document
     if isinstance(extracted_data, dict) and _is_kyc_profile_payload(extracted_data, extraction_type):
         doc_type = str(extracted_data.get('doc_type') or extraction_type or '')
         source_document['source_type'] = doc_type or extraction_type

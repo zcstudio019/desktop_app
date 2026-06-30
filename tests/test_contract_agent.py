@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import tempfile
+from pathlib import Path
+
 from backend.document_types import get_document_display_name, normalize_document_type_code
 from backend.services.contract_agent import ContractAgent, ContractSkill, is_contract_like
-from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown
+from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown, sanitize_contract_result_payload
+from backend.services.local_storage_service import LocalStorageService
+from backend.services.markdown_profile_service import _build_single_document_section
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
 from backend.services.document_agents.registry import DOCUMENT_AGENT_REGISTRY, get_document_agent
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
@@ -237,3 +243,97 @@ def test_contract_markdown_final_sanitizer_removes_outer_fields_and_evidence() -
 """
     cleaned = final_sanitize_contract_markdown(dirty)
     assert cleaned == "## 合同\n- 资料类型：合同"
+
+
+def _dirty_contract_payload() -> dict:
+    return {
+        "doc_type": "contract",
+        "agent_type": "contract_agent",
+        "owner_type": "company",
+        "contract_category": "construction_subcontract",
+        "contract_category_name": "建设工程专业分包合同",
+        "markdown_result": """- owner type：company
+- markdown result：## 合同
+- 资料类型：合同
+- 合同类型：建设工程专业分包合同
+
+### 合同基本信息
+- 合同名称：机电安装工程专业分包合同（南区）
+
+### 合同主体
+| 角色 | 名称 |
+| --- | --- |
+| 甲方 | 上海建工集团股份有限公司 |
+
+### 解析质量提示
+- 关键字段完整度：部分完整
+- evidence：{"project_name":{"value":"测试项目","source_page":1,"confidence":0.7}}
+""",
+        "evidence": {"project_name": {"value": "测试项目", "source_page": 1, "confidence": 0.7}},
+        "structured_data": {"project_name": "测试项目"},
+    }
+
+
+def _assert_contract_markdown_is_display_only(markdown: str) -> None:
+    assert markdown.startswith("## 合同")
+    for forbidden in (
+        "owner type", "contract category", "contract category name", "markdown result",
+        "evidence", "source_page", "confidence", '"value"', "raw_text",
+    ):
+        assert forbidden not in markdown.lower()
+    for required in ("资料类型：合同", "合同类型：建设工程专业分包合同", "合同基本信息", "合同主体"):
+        assert required in markdown
+
+
+def test_contract_profile_export_short_circuits_generic_field_rendering() -> None:
+    class Storage:
+        async def get_document(self, _doc_id: str) -> dict:
+            return {"file_name": "合同002.pdf", "file_path": "D:/stored/合同002.pdf"}
+
+    markdown, source = asyncio.run(_build_single_document_section(
+        Storage(),
+        "customer-contract-002",
+        {"extraction_type": "contract", "doc_id": "doc-contract-002", "extracted_data": _dirty_contract_payload()},
+    ))
+    _assert_contract_markdown_is_display_only(markdown)
+    assert source["source_type"] == "contract"
+
+
+def test_contract_storage_sanitizes_markdown_before_database_write() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        storage = LocalStorageService(str(Path(directory) / "contract-save.db"))
+        asyncio.run(storage.create_customer({"customer_id": "customer-contract-002", "name": "测试企业"}))
+        asyncio.run(storage.save_document({
+            "doc_id": "doc-contract-002",
+            "customer_id": "customer-contract-002",
+            "file_name": "合同002.pdf",
+            "file_path": "D:/stored/合同002.pdf",
+            "file_type": "contract",
+        }))
+        asyncio.run(storage.save_extraction({
+            "extraction_id": "extraction-contract-002",
+            "doc_id": "doc-contract-002",
+            "customer_id": "customer-contract-002",
+            "extraction_type": "contract",
+            "extracted_data": _dirty_contract_payload(),
+        }))
+        saved = asyncio.run(storage.get_extractions_by_doc("doc-contract-002"))[0]["extracted_data"]
+        _assert_contract_markdown_is_display_only(saved["markdown_result"])
+        assert saved["evidence"]["project_name"]["source_page"] == 1
+
+
+def test_contract_payload_sanitizer_keeps_evidence_separate() -> None:
+    payload = sanitize_contract_result_payload(_dirty_contract_payload(), force=True)
+    _assert_contract_markdown_is_display_only(payload["markdown_result"])
+    assert payload["evidence"]["project_name"]["confidence"] == 0.7
+
+
+def test_customer_detail_api_has_contract_short_circuit_before_generic_fields() -> None:
+    source = Path("backend/routers/customer.py").read_text(encoding="utf-8")
+    contract_branch = source.index('all_fields["合同"] = {')
+    generic_loop = source.index("for key, value in extracted_data.items()", contract_branch)
+    assert contract_branch < generic_loop
+    branch_source = source[contract_branch:generic_loop]
+    assert '"markdown_result": contract_payload.get("markdown_result") or ""' in branch_source
+    assert '"evidence"' not in branch_source
+    assert '"structured_data"' not in branch_source

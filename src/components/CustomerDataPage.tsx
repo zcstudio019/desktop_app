@@ -37,6 +37,7 @@ import EnterpriseBankStatementView, {
 import PersonalBankStatementView from './documents/PersonalBankStatementView';
 import FinancialReportView from './documents/FinancialReportView';
 import { hasFinancialReportStructuredData } from './documents/financialReportRightPanelBuilder';
+import { sanitizeContractSectionsInProfile } from './DataDisplayComponents';
 import CustomerFinancingDiagnosticReportPanel from './CustomerFinancingDiagnosticReportPanel';
 import FinancingKycDiagnosticPanel from './FinancingKycDiagnosticPanel';
 import KycCompletenessPanel from './KycCompletenessPanel';
@@ -2411,7 +2412,8 @@ function sanitizeKycPropertyMarkdownSections(markdown: string): string {
 }
 
 function sanitizeProfileMarkdown(markdown: string): string {
-  const kycSanitizedMarkdown = sanitizeKycPropertyMarkdownSections(markdown);
+  const contractSanitizedMarkdown = sanitizeContractSectionsInProfile(markdown);
+  const kycSanitizedMarkdown = sanitizeKycPropertyMarkdownSections(contractSanitizedMarkdown);
   const invalidLegalPersonValues = [
     '姓名或者名称',
     '姓名或名称',

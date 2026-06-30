@@ -88,6 +88,7 @@ from backend.services.financial_report_agent.display_mapper import to_display_js
 from backend.services.financial_report_agent.markdown_renderer import render_financial_report_markdown
 from backend.services.company_articles_agent.markdown_renderer import render_company_articles_markdown
 from backend.services.company_articles_agent.normalizer import finalize_company_articles_shareholders, normalize_company_articles
+from backend.services.contract_agent.markdown_renderer import sanitize_contract_result_payload
 from backend.services.company_articles_agent.schema import SCHEMA_VERSION as COMPANY_ARTICLES_SCHEMA_VERSION
 from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
 from backend.services.company_articles_agent.validator import validate_company_articles
@@ -1807,6 +1808,20 @@ async def _get_customer_detail_local(
                     if isinstance(cleaned, dict):
                         all_fields["银行对账明细"] = cleaned
                     continue
+                if doc_type == "contract" or str(extracted_data.get("agent_type") or "") == "contract_agent":
+                    contract_payload = sanitize_contract_result_payload(extracted_data, force=True)
+                    all_fields["合同"] = {
+                        "doc_type": "contract",
+                        "agent_type": "contract_agent",
+                        "markdown_result": contract_payload.get("markdown_result") or "",
+                    }
+                    logger.info(
+                        "[ContractDisplay] customer detail short-circuit record_id=%s response_keys=%s contract_keys=%s",
+                        record_id,
+                        sorted(all_fields.keys()),
+                        sorted(all_fields["合同"].keys()),
+                    )
+                    continue
                 # 如果 extracted_data 已经是嵌套字典，直接使用
                 # 例如：{"报告基础信息": {"报告编号": "xxx", "报告时间": "xxx"}}
                 for key, value in extracted_data.items():
@@ -2470,6 +2485,8 @@ async def get_customer_extractions(
         ext_type = ext.get("extraction_type") or "未知类型"
         extracted_data = ext.get("extracted_data") or {}
         extracted_data = sanitize_bank_reconciliation_detail_display(extracted_data)
+        if ext_type == "contract" and isinstance(extracted_data, dict):
+            extracted_data = sanitize_contract_result_payload(extracted_data, force=True)
         if ext_type == "company_articles":
             document = None
             doc_id = ext.get("doc_id") or ""
@@ -3009,6 +3026,10 @@ async def get_document_detail(
     extracted_data = latest_extraction.get("extracted_data") or {}
     if not isinstance(extracted_data, dict):
         extracted_data = {}
+    document_type = normalize_document_type_code(document.get("file_type") or "") or str(document.get("file_type") or "")
+    if document_type == "contract" or str(extracted_data.get("agent_type") or "") == "contract_agent":
+        extracted_data = sanitize_contract_result_payload(extracted_data, force=True)
+        latest_extraction = {**latest_extraction, "extracted_data": extracted_data}
     bank_cleaned = sanitize_bank_reconciliation_detail_display(extracted_data)
     if isinstance(bank_cleaned, dict) and bank_cleaned is not extracted_data and bank_cleaned.get("doc_type") == "bank_reconciliation_detail":
         report_markdown = str(bank_cleaned.get("display_markdown") or "")
@@ -3047,9 +3068,10 @@ async def get_document_detail(
     )
     if not isinstance(structured_json, dict):
         structured_json = {}
-    document_type = normalize_document_type_code(document.get("file_type") or "") or str(document.get("file_type") or "")
     report_markdown = str(
-        extracted_data.get("report_markdown")
+        extracted_data.get("markdown_result")
+        or extracted_data.get("display_markdown")
+        or extracted_data.get("report_markdown")
         or extracted_data.get("markdown_report")
         or extracted_data.get("markdown_summary")
         or extracted_json.get("report_markdown")
@@ -3062,6 +3084,8 @@ async def get_document_detail(
         report_markdown = render_financial_report_markdown(display_json)
     elif document_type == "company_articles":
         report_markdown = _company_articles_display_markdown_from_payload(extracted_data)
+    elif document_type == "contract":
+        report_markdown = str(sanitize_contract_result_payload(extracted_data, force=True).get("markdown_result") or "")
     _log_debug_markdown_source(
         endpoint="GET /api/documents/{doc_id}",
         customer_id=str(document.get("customer_id") or ""),
@@ -3085,8 +3109,9 @@ async def get_document_detail(
         "updated_at": latest_extraction.get("created_at") or document.get("upload_time") or "",
         "report_markdown": report_markdown,
         "reportMarkdown": report_markdown,
-        "display_markdown": report_markdown if document_type == "company_articles" else "",
-        "markdown": report_markdown if document_type == "company_articles" else "",
+        "display_markdown": report_markdown if document_type in {"company_articles", "contract"} else "",
+        "markdown": report_markdown if document_type in {"company_articles", "contract"} else "",
+        "markdown_result": report_markdown if document_type == "contract" else "",
         "doc_type": document_type,
         "extraction_version": COMPANY_ARTICLES_SCHEMA_VERSION if document_type == "company_articles" else "",
         "extraction": latest_extraction,

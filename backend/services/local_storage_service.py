@@ -902,6 +902,10 @@ class LocalStorageService:
         payload = dict(extraction_data)
         payload['extraction_type'] = normalize_document_type_code(payload.get('extraction_type') or '') or payload.get('extraction_type')
         payload['extracted_data'] = sanitize_kyc_extracted_data(payload.get('extracted_data', {}))
+        if payload.get('extraction_type') == 'contract' and isinstance(payload.get('extracted_data'), dict):
+            from backend.services.contract_agent.markdown_renderer import sanitize_contract_result_payload
+
+            payload['extracted_data'] = sanitize_contract_result_payload(payload['extracted_data'], force=True)
         extracted_payload_for_log = payload.get('extracted_data') if isinstance(payload.get('extracted_data'), dict) else {}
         fields_for_log = extracted_payload_for_log.get('fields') if isinstance(extracted_payload_for_log.get('fields'), dict) else {}
         markdown_for_log = str(

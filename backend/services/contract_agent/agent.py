@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .markdown_renderer import render_contract_markdown
+from .markdown_renderer import render_contract_markdown, sanitize_contract_result_payload
 from .schema import DOC_TYPE, DOC_TYPE_NAME, SCHEMA_VERSION, ContractResult
 from .skill import ContractSkill, is_contract_like
 
@@ -59,10 +59,11 @@ def run_contract_agent(payload: dict[str, Any] | str) -> dict[str, Any]:
     if isinstance(payload, str):
         payload = {"text": payload, "metadata": {}}
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    return ContractAgent().run(
+    result = ContractAgent().run(
         {
             "text": payload.get("text") or payload.get("raw_text") or "",
             "raw_pages": payload.get("raw_pages") or payload.get("pages") or metadata.get("raw_pages") or [],
             "filename": metadata.get("filename") or payload.get("filename") or "",
         }
     ).to_dict()
+    return sanitize_contract_result_payload(result, force=True)

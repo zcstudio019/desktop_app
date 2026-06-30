@@ -321,32 +321,39 @@ export function getBankReconciliationDisplayMarkdown(value: unknown): string | n
 }
 
 
-function cleanupContractMarkdownStrict(markdown: string): string {
+export function sanitizeContractMarkdownForDisplay(markdown: string): string {
   let source = String(markdown || '');
-  const standaloneHeaderIndex = source.search(/^## \u5408\u540c\s*$/m);
-  const headerIndex = standaloneHeaderIndex >= 0 ? standaloneHeaderIndex : source.indexOf('## \u5408\u540c');
+  const wrappedHeader = /^\s*[-*]?\s*markdown(?:\s|_)*result\s*[:\uff1a]\s*(## \u5408\u540c)/im.exec(source);
+  const headerIndex = wrappedHeader?.index !== undefined
+    ? wrappedHeader.index + wrappedHeader[0].indexOf(wrappedHeader[1])
+    : source.indexOf('## \u5408\u540c');
   if (headerIndex >= 0) source = source.slice(headerIndex);
-  const evidenceMarkers = ['\n- evidence：', '\nevidence：', '\n- evidence:', '\nevidence:'];
-  const evidenceIndex = evidenceMarkers
-    .map((marker) => source.toLowerCase().indexOf(marker.toLowerCase()))
-    .filter((index) => index >= 0)
-    .sort((a, b) => a - b)[0];
-  if (evidenceIndex !== undefined) source = source.slice(0, evidenceIndex).trimEnd();
+  source = source.replace(/(^## \u5408\u540c\s*$)(?:\s*\n## \u5408\u540c\s*$)+/gm, '$1');
+  const qualityIndex = source.indexOf('### \u89e3\u6790\u8d28\u91cf\u63d0\u793a');
+  if (qualityIndex >= 0) {
+    const tail = source.slice(qualityIndex);
+    const evidenceMarkers = ['\n- evidence：', '\nevidence：', '\n- evidence:', '\nevidence:', '\n```json', '\n{'];
+    const evidenceIndex = evidenceMarkers
+      .map((marker) => tail.toLowerCase().indexOf(marker.toLowerCase()))
+      .filter((index) => index >= 0)
+      .sort((a, b) => a - b)[0];
+    if (evidenceIndex !== undefined) source = source.slice(0, qualityIndex + evidenceIndex).trimEnd();
+  }
   const forbiddenLine = /^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw[_\s-]*json|json[_\s-]*result|extracted[_\s-]*data|structured[_\s-]*data|metadata|evidence|dict|array|confidence|source_page|source\s*page|raw_text)\s*[:\uff1a]/i;
   const lines: string[] = [];
   let skippingJson = false;
   let braceDepth = 0;
   for (const rawLine of source.split(/\r?\n/)) {
     const line = rawLine.trimEnd();
+    if (skippingJson) {
+      braceDepth += (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+      if (braceDepth <= 0) skippingJson = false;
+      continue;
+    }
     const jsonEvidenceLine = /^\s*["']?(project_name|source_page|confidence|raw_text|value)["']?\s*:/.test(line.trim());
     if (forbiddenLine.test(line) || jsonEvidenceLine) {
       skippingJson = line.includes('{') && !line.includes('}');
       braceDepth = (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
-      continue;
-    }
-    if (skippingJson) {
-      braceDepth += (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
-      if (braceDepth <= 0) skippingJson = false;
       continue;
     }
     if (/"(?:value|source_page|confidence|raw_text)"\s*:/.test(line)) continue;
@@ -358,6 +365,25 @@ function cleanupContractMarkdownStrict(markdown: string): string {
     .replace(/\b(None|null|undefined)\b/g, '\u672a\u8bc6\u522b')
     .trim();
   return cleaned || '\u5408\u540c\u89e3\u6790\u7ed3\u679c\u6682\u4e0d\u53ef\u7528\uff0c\u8bf7\u91cd\u65b0\u89e3\u6790\u6216\u4eba\u5de5\u590d\u6838\u3002';
+}
+
+export function sanitizeContractSectionsInProfile(markdown: string): string {
+  const marker = '## \u5408\u540c';
+  let cursor = 0;
+  let output = '';
+  while (cursor < markdown.length) {
+    const start = markdown.indexOf(marker, cursor);
+    if (start < 0) {
+      output += markdown.slice(cursor);
+      break;
+    }
+    output += markdown.slice(cursor, start);
+    const nextSection = markdown.indexOf('\n## ', start + marker.length);
+    const end = nextSection >= 0 ? nextSection : markdown.length;
+    output += sanitizeContractMarkdownForDisplay(markdown.slice(start, end));
+    cursor = end;
+  }
+  return output || markdown;
 }
 
 export function getContractDisplayMarkdown(value: unknown): string | null {
@@ -375,7 +401,7 @@ export function getContractDisplayMarkdown(value: unknown): string | null {
   for (const key of markdownKeys) {
     for (const record of records) {
       const markdown = typeof record[key] === 'string' ? String(record[key]).trim() : '';
-      if (markdown) return cleanupContractMarkdownStrict(markdown);
+      if (markdown) return sanitizeContractMarkdownForDisplay(markdown);
     }
   }
   return '合同解析结果暂不可用，请重新解析或人工复核。';

@@ -75,7 +75,9 @@ class ContractResult:
         return data
 
     def to_dict(self) -> dict[str, Any]:
-        markdown = self.display_markdown or self.markdown
+        from .markdown_renderer import final_sanitize_contract_markdown
+
+        markdown = final_sanitize_contract_markdown(self.display_markdown or self.markdown)
         return {
             "doc_type": self.doc_type,
             "doc_type_name": self.doc_type_name,
