@@ -17,6 +17,23 @@ PAYMENT_KEYWORDS = ("支付", "付款", "进度款", "预付款", "结算款", "
 ITEM_HEADER_KEYWORDS = ("序号", "名称", "材料名称", "货物名称", "服务内容", "型号规格", "规格", "单位", "数量", "单价", "含税单价", "合价", "金额", "含税合价")
 SIGNER_CONTEXT = ("法定代表人", "授权代表", "委托代理人", "签字", "签章", "经办人")
 
+PAYMENT_CLAUSE_KEYWORDS = (
+    "付款方式", "支付方式", "工程款支付", "进度款", "预付款", "结算款", "质保金", "支付至",
+    "付款条件", "收到发票后", "验收合格后",
+)
+SETTLEMENT_CLAUSE_KEYWORDS = ("结算方式", "结算申请", "结算审核", "结算支付", "最终结算", "竣工结算")
+INVOICE_CLAUSE_KEYWORDS = ("增值税专用发票", "增值税普通发票", "合法有效发票", "发票", "开票")
+WARRANTY_CLAUSE_KEYWORDS = ("质量保证金", "质保金", "缺陷责任期", "保修期", "质量保修", "保修")
+BREACH_CLAUSE_KEYWORDS = ("违约责任", "违约金", "违约", "逾期", "赔偿")
+DISPUTE_CLAUSE_KEYWORDS = ("争议解决", "管辖法院", "人民法院", "仲裁", "诉讼", "协商解决")
+NO_SUBCONTRACT_CLAUSE_KEYWORDS = ("禁止转包", "违法分包", "不得转包", "不得违法分包", "分包人不得")
+EFFECTIVE_CLAUSE_KEYWORDS = ("合同生效", "本合同自", "签字盖章后生效", "双方盖章后生效", "双方签字盖章")
+ATTACHMENT_CLAUSE_KEYWORDS = ("合同附件", "附件一", "附件二", "工程量清单", "报价清单", "专用条款", "通用条款", "附件")
+
+CLAUSE_HEADING_RE = re.compile(
+    r"^\s*(?:[一二三四五六七八九十百]+、|第[一二三四五六七八九十百\d]+条|\d+(?:\.\d+)+\s*|\d+[.、]\s*)"
+)
+
 DATE_RE = re.compile(r"((?:19|20)\d{2}\s*[年./-]\s*\d{1,2}\s*[月./-]\s*\d{1,2}\s*(?:日)?)")
 LOOSE_DATE_RE = re.compile(r"((?:19|20)\d{2}\D{0,3}\d{1,2}\D{0,3}\d{1,2}\D{0,2})")
 USCC_RE = re.compile(r"\b([0-9A-Z]{18})\b")
@@ -412,6 +429,141 @@ def _line_with(text: str, keywords: tuple[str, ...]) -> str:
     return ""
 
 
+def clean_clause_text(lines: list[str] | str, max_chars: int = 300) -> str:
+    source_lines = lines if isinstance(lines, list) else str(lines or "").splitlines()
+    cleaned_lines: list[str] = []
+    for line in source_lines:
+        raw = str(line or "").strip()
+        if not raw or is_toc_line(raw) or raw.startswith("--- 第"):
+            continue
+        cleaned = clean_field_value(raw)
+        if cleaned:
+            cleaned_lines.append(cleaned)
+    text = re.sub(r"\s+", " ", " ".join(cleaned_lines)).strip(" ：:;；，,")
+    if not text or is_toc_line(text):
+        return ""
+    body = CLAUSE_HEADING_RE.sub("", text, count=1).strip(" ：:;；，,")
+    if len(body) < 12 or is_bad_clause_value(body):
+        return ""
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip(" ，,；;") + "……"
+    return text
+
+
+def _is_toc_page(text: str) -> bool:
+    raw_lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    toc_lines = sum(1 for line in raw_lines if is_toc_line(line))
+    return "目录" in "".join(raw_lines[:8]) and toc_lines >= 2
+
+
+def extract_clause_by_keywords(
+    ocr_pages: list[dict[str, Any]],
+    keywords: tuple[str, ...],
+    max_chars: int = 300,
+) -> str:
+    for page in ocr_pages or []:
+        page_text = str(page.get("text") or "") if isinstance(page, dict) else ""
+        if not page_text or _is_toc_page(page_text):
+            continue
+        raw_lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+        for index, raw_line in enumerate(raw_lines):
+            if is_toc_line(raw_line) or not any(keyword in raw_line for keyword in keywords):
+                continue
+            first_line = clean_field_value(raw_line)
+            if not first_line and CLAUSE_HEADING_RE.match(raw_line):
+                first_line = re.sub(r"\s+", " ", raw_line).strip()
+            if not first_line:
+                continue
+            collected = [first_line]
+            appended_body_lines = 0
+            for next_line in raw_lines[index + 1:index + 9]:
+                if is_toc_line(next_line):
+                    continue
+                cleaned_next = clean_field_value(next_line)
+                if not cleaned_next:
+                    continue
+                if CLAUSE_HEADING_RE.match(cleaned_next):
+                    break
+                collected.append(cleaned_next)
+                appended_body_lines += 1
+                merged = " ".join(collected)
+                if appended_body_lines >= 3 and re.search(r"[。；;]$", merged):
+                    break
+            clause = clean_clause_text(collected, max_chars=max_chars)
+            if clause:
+                return clause
+    return ""
+
+
+def _needs_second_pass(value: Any) -> bool:
+    text = clean_field_value(value)
+    return not text or is_toc_line(text) or is_bad_clause_value(text)
+
+
+def _effective_condition_from_clause(clause: str) -> str:
+    match = re.search(
+        r"(本合同(?:自|经)[^。；]{0,60}?(?:签字盖章|盖章|签署)[^。；]{0,20}?生效)",
+        clause,
+    )
+    if match:
+        return clean_field_value(match.group(1))
+    match = re.search(r"((?:双方|甲乙双方)[^。；]{0,40}?(?:签字盖章|盖章)后生效)", clause)
+    return clean_field_value(match.group(1)) if match else ""
+
+
+def second_pass_extract_contract_clauses(
+    ocr_pages: list[dict[str, Any]],
+    contract_category: str,
+    existing_structured_data: dict[str, Any],
+) -> dict[str, Any]:
+    result = existing_structured_data
+    settlement = result.setdefault("settlement", {})
+    clauses = result.setdefault("clauses", {})
+    signature = result.setdefault("signature", {})
+
+    payment_clause = extract_clause_by_keywords(ocr_pages, PAYMENT_CLAUSE_KEYWORDS)
+    settlement_clause = extract_clause_by_keywords(ocr_pages, SETTLEMENT_CLAUSE_KEYWORDS)
+    invoice_clause = extract_clause_by_keywords(ocr_pages, INVOICE_CLAUSE_KEYWORDS)
+    warranty_clause = extract_clause_by_keywords(ocr_pages, WARRANTY_CLAUSE_KEYWORDS)
+    breach_clause = extract_clause_by_keywords(ocr_pages, BREACH_CLAUSE_KEYWORDS)
+    dispute_clause = extract_clause_by_keywords(ocr_pages, DISPUTE_CLAUSE_KEYWORDS)
+    no_subcontract_clause = extract_clause_by_keywords(ocr_pages, NO_SUBCONTRACT_CLAUSE_KEYWORDS)
+    effective_clause = extract_clause_by_keywords(ocr_pages, EFFECTIVE_CLAUSE_KEYWORDS)
+    attachment_clause = extract_clause_by_keywords(ocr_pages, ATTACHMENT_CLAUSE_KEYWORDS)
+
+    if _needs_second_pass(settlement.get("payment_method")) and payment_clause:
+        settlement["payment_method"] = "按合同约定的工程款支付节点执行，具体以正文条款为准"
+    if _needs_second_pass(settlement.get("settlement_method")) and settlement_clause:
+        settlement["settlement_method"] = "按合同结算申请、审核及结算支付条款执行"
+    if _needs_second_pass(settlement.get("invoice_requirement")) and invoice_clause:
+        settlement["invoice_requirement"] = "按合同发票条款执行"
+
+    if _needs_second_pass(settlement.get("receiving_account")):
+        full_text = "\n".join(str(page.get("text") or "") for page in ocr_pages if isinstance(page, dict))
+        settlement["receiving_account"] = extract_payment_account(
+            result.get("parties") or [], full_text, contract_category
+        )
+
+    if _needs_second_pass(clauses.get("warranty")) and warranty_clause:
+        clauses["warranty"] = "按合同质量保证金、缺陷责任期及保修期条款执行"
+    if _needs_second_pass(clauses.get("breach_liability")) and breach_clause:
+        clauses["breach_liability"] = "按合同违约责任条款执行"
+    if _needs_second_pass(clauses.get("dispute_resolution")) and dispute_clause:
+        clauses["dispute_resolution"] = "按合同争议解决条款执行"
+    if _needs_second_pass(clauses.get("no_subcontract")) and no_subcontract_clause:
+        clauses["no_subcontract"] = (
+            "分包人不得转包或违法分包"
+            if "分包人不得" in no_subcontract_clause
+            else "按合同禁止转包及违法分包条款执行"
+        )
+
+    if _needs_second_pass(result.get("effective_condition")) and effective_clause:
+        result["effective_condition"] = _effective_condition_from_clause(effective_clause)
+    if attachment_clause and any(marker in attachment_clause for marker in ATTACHMENT_CLAUSE_KEYWORDS[:-1]):
+        signature["attachments"] = "识别到合同附件，具体以合同附件页为准"
+    return result
+
+
 def _category(text: str, filename: str = "") -> str:
     source = f"{filename}\n{text}"
     if any(token in source for token in ("建设工程专业分包合同", "机电安装工程专业分包合同", "机电安装专业分包合同", "分包工程")) or ("承包人" in source and "分包人" in source):
@@ -774,10 +926,10 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         warnings.append(amount_check)
     if not result.get("signing_date"):
         warnings.append("签订日期未识别")
-    if not result.get("payment_nodes"):
-        warnings.append("付款条款需人工复核")
-
     settlement = result.get("settlement") or {}
+    payment_recognized = bool(result.get("payment_nodes") or settlement.get("payment_method"))
+    if not payment_recognized:
+        warnings.append("付款条款需人工复核")
     if not settlement.get("receiving_account"):
         warnings.append("收款账户归属需人工复核")
     amount = result.get("amount") or {}
@@ -795,7 +947,7 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         bool(result.get("signing_place")),
         bool(result.get("copies")),
         bool(duration.get("period") or (duration.get("start_date") and duration.get("end_date"))),
-        bool(result.get("payment_nodes")),
+        payment_recognized,
         bool(settlement.get("receiving_account")),
         bool(signature.get("signature_page") or signature.get("party_a_stamp") == "疑似有" or signature.get("party_b_stamp") == "疑似有"),
     ]
@@ -841,6 +993,7 @@ class ContractSkill:
             "duration": _duration(full_text, category),
             "payment_nodes": _payment_nodes(full_text),
             "settlement": {
+                "payment_method": "",
                 "settlement_method": _line_with(full_text, ("结算方式", "结算款")),
                 "invoice_requirement": _line_with(full_text, ("发票", "增值税专用发票", "开票")),
                 "receiving_account": _receiving_account(full_text),
@@ -871,6 +1024,7 @@ class ContractSkill:
             "evidence": {},
         }
         _finalize_contract_result(result, full_text, signature_text, page_items)
+        second_pass_extract_contract_clauses(page_items, category, result)
         result["signature"]["signing_date"] = result["signing_date"]
         result["validation"] = _validation(result, full_text)
         result["warnings"] = list(result["validation"].get("warnings") or [])

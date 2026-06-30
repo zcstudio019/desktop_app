@@ -7,6 +7,8 @@ from pathlib import Path
 from backend.document_types import get_document_display_name, normalize_document_type_code
 from backend.services.contract_agent import ContractAgent, ContractSkill, is_contract_like
 from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown, sanitize_contract_result_payload
+from backend.services.contract_agent.markdown_renderer import format_extract_status
+from backend.services.contract_agent.skill import extract_clause_by_keywords, second_pass_extract_contract_clauses
 from backend.services.local_storage_service import LocalStorageService
 from backend.services.markdown_profile_service import _build_single_document_section
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
@@ -181,6 +183,8 @@ def test_contract_002_toc_pollution_and_display_regression() -> None:
     assert "税率：9%" in markdown
     assert "税额：未识别" in markdown
     assert "金额校验：大写金额疑似不完整，需人工复核" in markdown
+    assert "提取状态：部分成功" in markdown
+    assert "提取状态：partial" not in markdown
 
 
 def test_contract_002_rejects_start_date_and_unowned_account() -> None:
@@ -337,3 +341,126 @@ def test_customer_detail_api_has_contract_short_circuit_before_generic_fields() 
     assert '"markdown_result": contract_payload.get("markdown_result") or ""' in branch_source
     assert '"evidence"' not in branch_source
     assert '"structured_data"' not in branch_source
+
+
+def test_contract_extract_status_is_localized() -> None:
+    assert format_extract_status("success") == "成功"
+    assert format_extract_status("partial") == "部分成功"
+    assert format_extract_status("failed") == "失败"
+    assert format_extract_status("pending") == "解析中"
+    assert format_extract_status("unknown") == "未识别"
+    assert format_extract_status("") == "未识别"
+
+
+def test_second_pass_ignores_toc_only_clause_hits() -> None:
+    toc_page = {
+        "page": 2,
+        "text": """目录
+12.3工程款支付................-40-
+16.结算........................-46-
+18.违约........................-49-
+22.争议解决....................-58-
+十二、合同生效................-10-
+""",
+    }
+    assert extract_clause_by_keywords([toc_page], ("工程款支付", "进度款")) == ""
+    structured = {
+        "parties": [],
+        "settlement": {"payment_method": "", "settlement_method": "", "invoice_requirement": "", "receiving_account": ""},
+        "clauses": {"warranty": "", "breach_liability": "", "dispute_resolution": "", "no_subcontract": ""},
+        "signature": {"attachments": ""},
+        "effective_condition": "",
+    }
+    second_pass_extract_contract_clauses([toc_page], "construction_subcontract", structured)
+    assert structured["settlement"]["payment_method"] == ""
+    assert structured["settlement"]["settlement_method"] == ""
+    assert structured["clauses"]["breach_liability"] == ""
+    assert structured["clauses"]["dispute_resolution"] == ""
+    assert structured["effective_condition"] == ""
+
+
+def test_second_pass_supplements_only_body_backed_clauses() -> None:
+    body_pages = [{
+        "page": 40,
+        "text": """12.3 工程款支付
+分包人按月提交已完工程量，承包人审核后支付进度款。
+工程验收合格并完成结算后，按合同约定支付结算款。
+分包人应在付款前提供合法有效的增值税专用发票。
+16. 竣工结算
+分包人提交结算申请，承包人完成结算审核后办理最终结算支付。
+18. 违约责任
+任何一方违反合同约定，应承担违约责任并赔偿对方损失。
+19. 质量保修
+质量保证金、缺陷责任期及保修期按照本合同约定执行。
+20. 禁止转包
+分包人不得转包或违法分包本工程。
+22. 争议解决
+双方应先协商解决，协商不成的，向项目所在地人民法院提起诉讼。
+24. 合同生效
+本合同自双方签字盖章之日起生效。
+附件一 工程量清单
+附件内容及工程量以合同附件页记载为准。
+""",
+    }]
+    structured = {
+        "parties": [],
+        "settlement": {"payment_method": "", "settlement_method": "", "invoice_requirement": "", "receiving_account": ""},
+        "clauses": {"warranty": "", "breach_liability": "", "dispute_resolution": "", "no_subcontract": ""},
+        "signature": {"attachments": ""},
+        "effective_condition": "",
+    }
+    second_pass_extract_contract_clauses(body_pages, "construction_subcontract", structured)
+    assert structured["settlement"]["payment_method"] == "按合同约定的工程款支付节点执行，具体以正文条款为准"
+    assert structured["settlement"]["settlement_method"] == "按合同结算申请、审核及结算支付条款执行"
+    assert structured["settlement"]["invoice_requirement"] == "按合同发票条款执行"
+    assert structured["settlement"]["receiving_account"] == ""
+    assert structured["clauses"]["warranty"] == "按合同质量保证金、缺陷责任期及保修期条款执行"
+    assert structured["clauses"]["breach_liability"] == "按合同违约责任条款执行"
+    assert structured["clauses"]["dispute_resolution"] == "按合同争议解决条款执行"
+    assert structured["clauses"]["no_subcontract"] == "分包人不得转包或违法分包"
+    assert structured["effective_condition"] == "本合同自双方签字盖章之日起生效"
+    assert structured["signature"]["attachments"] == "识别到合同附件，具体以合同附件页为准"
+
+
+def test_contract_agent_renders_second_pass_clause_summaries() -> None:
+    base_text = """建设工程专业分包合同
+工程名称：测试机电安装工程
+承包人：上海测试总承包有限公司
+分包人：上海测试机电有限公司
+合同价款：人民币 1,000,000.00 元
+"""
+    clause_text = """12.3 工程款支付
+分包人按月提交已完工程量，承包人审核后办理工程款支付。
+16. 竣工结算
+分包人提交结算申请，承包人完成结算审核后办理最终结算支付。
+17. 发票
+分包人应在付款前提供合法有效的增值税专用发票。
+18. 违约责任
+任何一方违反合同约定，应承担违约责任并赔偿对方损失。
+19. 质量保修
+质量保证金、缺陷责任期及保修期按照本合同约定执行。
+20. 禁止转包
+分包人不得转包或违法分包本工程。
+22. 争议解决
+双方应先协商解决，协商不成的，向项目所在地人民法院提起诉讼。
+24. 合同生效
+本合同自双方签字盖章之日起生效。
+附件一 工程量清单
+附件内容及工程量以合同附件页记载为准。
+"""
+    result = ContractAgent().run({
+        "text": f"{base_text}\n{clause_text}",
+        "raw_pages": [{"page": 1, "text": base_text}, {"page": 40, "text": clause_text}],
+        "filename": "正文条款合同.pdf",
+    })
+    markdown = result.display_markdown
+    assert "付款方式：按合同约定的工程款支付节点执行，具体以正文条款为准" in markdown
+    assert "结算方式：按合同结算申请、审核及结算支付条款执行" in markdown
+    assert "发票要求：未识别" not in markdown
+    assert "保修/质保：未识别" not in markdown
+    assert "违约责任：未识别" not in markdown
+    assert "争议解决：未识别" not in markdown
+    assert "禁止转包/分包：未识别" not in markdown
+    assert "合同生效条件：本合同自双方签字盖章之日起生效" in markdown
+    assert "附件情况：识别到合同附件，具体以合同附件页为准" in markdown
+    assert "收款账户：未识别" in markdown

@@ -22,6 +22,17 @@ def value(value: Any) -> str:
     return text
 
 
+def format_extract_status(status: str) -> str:
+    status_map = {
+        "success": "成功",
+        "partial": "部分成功",
+        "failed": "失败",
+        "pending": "解析中",
+    }
+    normalized = str(status or "").strip().lower()
+    return status_map.get(normalized, "未识别")
+
+
 def evidence_suffix(result: ContractResult, key: str) -> str:
     evidence = result.evidence.get(key) if isinstance(result.evidence, dict) else None
     if not isinstance(evidence, dict):
@@ -66,7 +77,7 @@ def _payment_section(result: ContractResult, settlement: dict[str, Any]) -> list
             "",
         ])
     else:
-        lines.append(f"- 付款方式：{MISSING}")
+        lines.append(f"- 付款方式：{value(settlement.get('payment_method'))}")
     lines.extend([
         f"- 结算方式：{value(settlement.get('settlement_method'))}",
         f"- 发票要求：{value(settlement.get('invoice_requirement'))}",
@@ -215,7 +226,7 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 合同类型：{value(result.contract_category_name)}",
         f"- 来源文件：{value(result.source_file)}",
         f"- 原件状态：{value(result.original_status)}",
-        f"- 提取状态：{value(result.extraction_status)}",
+        f"- 提取状态：{format_extract_status(result.extraction_status)}",
         "",
         "### 合同基本信息",
         "",
