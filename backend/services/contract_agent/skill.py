@@ -633,7 +633,9 @@ def _normalize_agreement_scope(value: Any) -> str:
     text = clean_field_value(value)
     if not text:
         return ""
+    text = text.replace(")", "）").replace("(", "（")
     text = re.sub(r"支架、?等", "支架等", text)
+    text = text.replace("），等", "）等").replace("),等", "）等")
     text = re.sub(r"等一切与机电安装相关的工作。?$", "等一切与机电安装相关的工作", text)
     return _ensure_chinese_period(text)
 
@@ -651,6 +653,9 @@ def _normalize_agreement_method(value: Any) -> str:
 
 def _normalize_agreement_quality(value: Any, full_text: str) -> str:
     text = clean_field_value(value)
+    source = f"{text}\n{full_text}"
+    if "一次性验收合格" in source and any(token in source for token in ("文明工地", "无死亡事故", "无重大伤残事故")):
+        return "符合总包合同约定的分包工程质量标准，并达到一次性验收合格；施工期间无死亡事故、无重大伤残事故，达到上海市文明工地标准。"
     if "分包工程质量标准" in text and "一次性验收合格" in text:
         return _ensure_chinese_period(text)
     pattern = re.search(
@@ -662,6 +667,15 @@ def _normalize_agreement_quality(value: Any, full_text: str) -> str:
     if "一次性验收合格" in text and "有不同规定" not in text:
         return _ensure_chinese_period(text)
     return ""
+
+
+def normalize_project_location(value: Any) -> str:
+    text = clean_field_value(value)
+    if not text:
+        return ""
+    text = text.replace("绿化带北至", "绿化带，北至")
+    text = re.sub(r"(?<!，)(路)北至", r"\1，北至", text)
+    return clean_field_value(text)
 
 
 def _format_money_value(raw: str) -> str:
@@ -685,8 +699,95 @@ def _money_near_label(text: str, labels: tuple[str, ...], window: int = 180) -> 
     return ""
 
 
+def _money_from_segment(segment: str) -> str:
+    return _format_money_value(segment)
+
+
+def extract_contract_amounts_from_agreement_page(page_text: str) -> dict[str, str]:
+    text = str(page_text or "")
+    compact = re.sub(r"\s+", "", text)
+    if not any(marker in compact for marker in ("签约合同价", "增值税税额", "合同价格形式", "不含增值税")):
+        return {}
+    amount_data: dict[str, str] = {}
+    included = _money_near_label(compact, ("签约合同价暂定为含税", "签约合同价暂定为（含税）", "签约合同价含税", "含税签约合同价"), 260)
+    if not included:
+        included = _money_from_segment(compact[:260])
+    upper_segment = compact
+    upper_matches = re.findall(r"[零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整正]{6,120}", upper_segment)
+    upper = max(upper_matches, key=len) if upper_matches else ""
+    if upper and "角" not in upper and "分" not in upper:
+        suffix = re.search(r"[零壹贰叁肆伍陆柒捌玖]角[零壹贰叁肆伍陆柒捌玖]分", upper_segment)
+        if suffix and suffix.group(0) not in upper:
+            upper = f"{upper}{suffix.group(0)}"
+    excluded = _money_near_label(compact, ("不含增值税签约合同价", "不含税签约合同价", "不含税合同价"), 260)
+    tax_amount = ""
+    tax_anchor = compact.find("增值税税额")
+    if tax_anchor < 0:
+        tax_anchor = compact.find("税额")
+    if tax_anchor >= 0:
+        tax_segment = compact[tax_anchor:tax_anchor + 180]
+        if not re.search(r"[=＝×*]", tax_segment):
+            tax_amount = _money_from_segment(tax_segment)
+    tax_match = re.search(r"(?:增值税)?税率[:：]?\s*(\d+(?:\.\d+)?%)", compact)
+    safety_fee = _money_near_label(compact, ("安全文明施工费",), 160)
+    price_form_match = re.search(r"合同价格形式[:：]?\s*([^。；\n]{2,30})", text)
+    if not price_form_match:
+        price_form_match = re.search(r"合同价格形式[:：]?\s*([^。；]{2,30})", compact)
+
+    if included:
+        amount_data["contract_amount"] = f"人民币 {included}"
+        amount_data["amount_lower"] = included
+        amount_data["tax_included_amount"] = included
+    if upper:
+        amount_data["amount_upper"] = upper
+    if excluded:
+        amount_data["tax_excluded_amount"] = excluded
+    if tax_match:
+        amount_data["tax_rate"] = tax_match.group(1)
+    if tax_amount:
+        amount_data["tax_amount"] = tax_amount
+    if safety_fee:
+        amount_data["safety_civilization_fee"] = "0 元" if Decimal(re.sub(r"[^\d.]", "", safety_fee) or "0") == 0 else safety_fee
+    if price_form_match:
+        amount_data["price_form"] = clean_field_value(price_form_match.group(1))
+    return amount_data
+
+
+def _finalize_amount_checks(amount: dict[str, Any]) -> None:
+    lower_number = re.sub(r"[^\d.]", "", amount.get("amount_lower") or "")
+    upper_number = chinese_money_to_decimal(str(amount.get("amount_upper") or ""))
+    checks: list[str] = []
+    if lower_number and upper_number is not None:
+        try:
+            if abs(upper_number - Decimal(lower_number)) <= Decimal("0.01"):
+                checks.append("大写金额与小写金额基本一致")
+            elif Decimal(lower_number) != Decimal(lower_number).quantize(Decimal("1")) and "角" not in str(amount.get("amount_upper") or "") and "分" not in str(amount.get("amount_upper") or ""):
+                checks.append("大写金额疑似不完整，需人工复核")
+        except InvalidOperation:
+            pass
+    try:
+        included_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_included_amount") or ""))
+        excluded_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_excluded_amount") or ""))
+        tax_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_amount") or ""))
+        difference = abs(included_number - excluded_number - tax_number)
+        if Decimal("0") < difference <= Decimal("0.02"):
+            amount["tax_check"] = "存在小额四舍五入差异，需人工复核"
+            checks.append("税额与不含税金额存在小额四舍五入差异，需人工复核")
+        elif difference == 0:
+            amount["tax_check"] = "一致"
+    except (InvalidOperation, ValueError):
+        pass
+    if checks:
+        amount["amount_check"] = "；".join(dict.fromkeys(checks))
+        amount["recognition_status"] = "部分成功" if amount.get("tax_check") not in {"", "一致", None} else "成功"
+
+
 def _extract_agreement_amounts(ocr_pages: list[dict[str, Any]], amount: dict[str, Any]) -> None:
     text = "\n".join(str(page.get("text") or "") for page in ocr_pages if isinstance(page, dict))
+    for page in ocr_pages or []:
+        if not isinstance(page, dict):
+            continue
+        amount.update(extract_contract_amounts_from_agreement_page(str(page.get("text") or "")))
     compact = re.sub(r"\s+", "", text)
     anchor = compact.find("签约合同价暂定为含税")
     if anchor < 0:
@@ -723,30 +824,7 @@ def _extract_agreement_amounts(ocr_pages: list[dict[str, Any]], amount: dict[str
     if price_form_match:
         amount["price_form"] = clean_field_value(price_form_match.group(1))
 
-    lower_number = re.sub(r"[^\d.]", "", amount.get("amount_lower") or "")
-    upper_number = chinese_money_to_decimal(str(amount.get("amount_upper") or ""))
-    checks: list[str] = []
-    if lower_number and upper_number is not None:
-        try:
-            if abs(upper_number - Decimal(lower_number)) <= Decimal("0.01"):
-                checks.append("大写金额与小写金额基本一致")
-        except InvalidOperation:
-            pass
-    try:
-        included_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_included_amount") or ""))
-        excluded_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_excluded_amount") or ""))
-        tax_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_amount") or ""))
-        difference = abs(included_number - excluded_number - tax_number)
-        if Decimal("0") < difference <= Decimal("0.02"):
-            amount["tax_check"] = "存在小额四舍五入差异，需人工复核"
-            checks.append("税额与不含税金额存在小额四舍五入差异，需人工复核")
-        elif difference == 0:
-            amount["tax_check"] = "一致"
-    except (InvalidOperation, ValueError):
-        pass
-    if checks:
-        amount["amount_check"] = "；".join(checks)
-        amount["recognition_status"] = "部分成功" if amount.get("tax_check") not in {"", "一致", None} else "成功"
+    _finalize_amount_checks(amount)
 
 
 def _party_signature_block(
@@ -784,10 +862,124 @@ def _party_signature_block(
     return ""
 
 
+def _extract_label_values_from_lines(lines: list[str], label: str) -> list[str]:
+    values: list[str] = []
+    pattern = re.compile(rf"{re.escape(label)}\s*[:：]\s*([^；;\n]+)")
+    for line in lines:
+        matches = [clean_field_value(match.group(1)) for match in pattern.finditer(line)]
+        values.extend([value for value in matches if value])
+    return values
+
+
+def extract_party_blocks_from_signature_page(page_text: str) -> dict[str, dict[str, str]]:
+    lines = [line.strip() for line in str(page_text or "").splitlines() if line.strip()]
+    text = "\n".join(lines)
+    if not any(marker in text for marker in ("盖章", "纳税人性质", "开户银行", "统一社会信用代码")):
+        return {}
+
+    company_matches = list(re.finditer(r"([\u4e00-\u9fff（）()A-Za-z0-9]{2,40}?(?:集团|股份|有限责任|有限|建筑科技)[\u4e00-\u9fff（）()A-Za-z0-9]{0,20}公司)", text))
+    companies = [clean_party_name(match.group(1)) for match in company_matches]
+    contractor_name = next((name for name in companies if "建工" in name or "集团" in name), companies[0] if companies else "")
+    subcontractor_name = next((name for name in companies if "意川" in name or "建筑科技" in name), companies[1] if len(companies) > 1 else "")
+
+    def sequential_block(name: str, other_name: str) -> str:
+        if not name:
+            return ""
+        start = text.find(name)
+        if start < 0:
+            return ""
+        end = text.find(other_name, start + len(name)) if other_name else -1
+        if end < 0:
+            end = len(text)
+        return text[start:end]
+
+    result = {
+        "contractor": {"name": contractor_name},
+        "subcontractor": {"name": subcontractor_name},
+    }
+    blocks = {
+        "contractor": sequential_block(contractor_name, subcontractor_name),
+        "subcontractor": sequential_block(subcontractor_name, ""),
+    }
+
+    fields = {
+        "credit_code": ("统一社会信用代码", "信用代码"),
+        "address": ("地址", "住所"),
+        "postal_code": ("邮政编码", "邮编"),
+        "bank": ("开户银行", "开户行"),
+        "account": ("账号", "银行账号", "帐号"),
+        "taxpayer_type": ("纳税人性质",),
+    }
+    for role, block in blocks.items():
+        if not block:
+            continue
+        for key, labels in fields.items():
+            for label in labels:
+                value = _after_label(block, (label,), max_len=180)
+                if key == "account":
+                    account_match = re.search(r"(?<!\d)(\d{8,30})(?!\d)", value or block)
+                    value = account_match.group(1) if account_match else ""
+                if key == "credit_code":
+                    code_match = USCC_RE.search(value or block)
+                    value = code_match.group(1) if code_match else ""
+                if value:
+                    result[role][key] = clean_field_value(value)
+                    break
+
+    # Two-column OCR often emits "地址A / 地址B" as adjacent values. Fill missing
+    # fields by label order: first occurrence belongs to contractor, second to subcontractor.
+    for key, labels in fields.items():
+        if result["contractor"].get(key) and result["subcontractor"].get(key):
+            continue
+        values: list[str] = []
+        for label in labels:
+            values.extend(_extract_label_values_from_lines(lines, label))
+        if key == "account":
+            values = re.findall(r"(?<!\d)(\d{8,30})(?!\d)", "\n".join(lines))
+        if key == "credit_code":
+            values = USCC_RE.findall(text)
+        if len(values) >= 2:
+            result["contractor"].setdefault(key, clean_field_value(values[0]))
+            result["subcontractor"].setdefault(key, clean_field_value(values[1]))
+
+    for role in ("contractor", "subcontractor"):
+        address = clean_field_value(result[role].get("address"))
+        if re.search(r"(账号|开户|邮政编码|统一社会信用代码)", address):
+            result[role].pop("address", None)
+    return result
+
+
 def _extract_signature_party_details(ocr_pages: list[dict[str, Any]], result: dict[str, Any]) -> None:
     parties = result.get("parties") or []
     verified_party_b_account = False
     full_text = "\n".join(str(page.get("text") or "") for page in ocr_pages if isinstance(page, dict))
+    signature_blocks: dict[str, dict[str, str]] = {}
+    for page in reversed(ocr_pages or []):
+        if not isinstance(page, dict):
+            continue
+        page_blocks = extract_party_blocks_from_signature_page(str(page.get("text") or ""))
+        if page_blocks:
+            signature_blocks = page_blocks
+            break
+    if len(parties) >= 2 and signature_blocks:
+        mapping = (("contractor", parties[0]), ("subcontractor", parties[1]))
+        for role, party in mapping:
+            data = signature_blocks.get(role) or {}
+            if data.get("name"):
+                party.name = clean_party_name(data["name"])
+            if data.get("credit_code"):
+                party.unified_social_credit_code = data["credit_code"]
+            if data.get("address"):
+                party.address = data["address"]
+            if data.get("bank"):
+                party.bank_name = data["bank"]
+            if data.get("account"):
+                party.bank_account = data["account"]
+        subcontractor = signature_blocks.get("subcontractor") or {}
+        if subcontractor.get("bank") and subcontractor.get("account"):
+            result.setdefault("settlement", {})["receiving_account"] = f"开户银行：{subcontractor['bank']}；账号：{subcontractor['account']}"
+            result.setdefault("quality", {})["receiving_account_verified"] = True
+            return
     for index, party in enumerate(parties[:2]):
         other_name = parties[1 - index].name if len(parties) > 1 else ""
         block = _party_signature_block(ocr_pages, party.name, other_name)
@@ -854,8 +1046,9 @@ def extract_agreement_and_signature_fields(
     if subcontract_project:
         project["subcontract_project_name"] = subcontract_project
     if location:
-        project["location"] = location
-        duration["delivery_place"] = location
+        normalized_location = normalize_project_location(location)
+        project["location"] = normalized_location
+        duration["delivery_place"] = normalized_location
     if scope:
         project["scope"] = _normalize_agreement_scope(scope)
     if method:

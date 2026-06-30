@@ -542,10 +542,15 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "合同份数：本合同一式捌份，均具有同等法律效力，承包人执肆份，分包人执肆份" in markdown
     assert "东大名路666号" in markdown
     assert "上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室" in markdown
+    assert "| 乙方/分包人 | 上海意川建筑科技有限公司 | 91310118MA1JP7UB2B | 未识别 | 未识别 | 未识别 | 东大名路666号 |" not in markdown
+    assert "| 乙方/分包人 | 上海意川建筑科技有限公司 | 91310118MA1JP7UB2B | 未识别 | 未识别 | 未识别 | 上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室 |" in markdown
     assert "工程或服务地点：长宁区基地东至协和路，西至广顺北路，南至北翟路绿化带，北至通协路" in markdown
+    assert "绿化带北至通协路" not in markdown
     assert "防火封堵及抗震支架（地下室除电缆按末端设备服务功能区域或号房划分外，其余按物理位置划分）等机电安装工程施工及相关图纸深化、相关方案编制、评审等一切与机电安装相关的工作。" in markdown
     assert "包工程整体协调配合管理、包监测检测、包验收、包竣工验收备案、包维修保修的施工专业分包方式。" in markdown
     assert "质量标准：符合总包合同约定的分包工程质量标准，并达到一次性验收合格；施工期间无死亡事故、无重大伤残事故，达到上海市文明工地标准" in markdown
+    assert "质量标准：分包工程质量：应符合总包合同约定的分包工程的质量标准，并同时达到工程质量符合一次性验收合格。安全文明标准：施工期间无死亡事故，无重大伤残事故，达。" not in markdown
+    assert "质量标准：" in markdown and "达。\n" not in markdown
     assert "合同金额：人民币 188,491,296.13 元" in markdown
     assert "大写金额：壹亿捌仟捌佰肆拾玖万壹仟贰佰玖拾陆元壹角叁分" in markdown
     assert "不含税金额：172,927,794.60 元" in markdown
@@ -563,6 +568,7 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "结算方式：未识别（当前PDF未包含结算正文条款）" in markdown
     assert "发票要求：未识别（当前PDF未包含发票正文条款）" in markdown
     assert "收款账户：开户银行：上海银行股份有限公司浦西支行；账号：03005029359" in markdown
+    assert "收款账户：未识别" not in markdown
     assert "大写金额疑似不完整" not in markdown
     assert "收款账户归属需人工复核" not in markdown
     assert "保修/质保：分包人承诺在缺陷责任期及保修期内承担相应工程维修责任。" in markdown
