@@ -22,7 +22,7 @@ import {
 import { createChatJob, createCustomerRiskReportJob, deleteChatJob, getChatJobStatus, listChatJobs, sendChat, clearCustomerCache, customerRagChat, getCustomerRiskReportHistory, listCustomers } from '../services/api';
 import {
   formatTableValue, isNestedObject, isArrayOfObjects,
-  DataSectionCard, ArrayDataCard, getBankReconciliationDisplayMarkdown
+  DataSectionCard, ArrayDataCard, getBankReconciliationDisplayMarkdown, getContractDisplayMarkdown
 } from './DataDisplayComponents';
 import AsyncJobCard from './common/AsyncJobCard';
 import SchemeMatchingResultCard from './common/SchemeMatchingResultCard';
@@ -679,6 +679,12 @@ const ExtractionResultCard: React.FC<ExtractionResultCardProps> = ({ files }) =>
                 <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {getBankReconciliationDisplayMarkdown({ ...file.content, document_type: file.documentType }) || ''}
+                  </ReactMarkdown>
+                </article>
+              ) : getContractDisplayMarkdown({ ...file.content, document_type: file.documentType }) ? (
+                <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {getContractDisplayMarkdown({ ...file.content, document_type: file.documentType }) || '合同解析结果暂不可用，请重新解析或人工复核。'}
                   </ReactMarkdown>
                 </article>
               ) : getCompanyArticlesMarkdown(file.content as Record<string, unknown>, file.documentType) ? (

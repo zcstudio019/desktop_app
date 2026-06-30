@@ -64,6 +64,39 @@ def clean_field_value(value: Any) -> str:
     return text
 
 
+def clean_party_name(value: Any) -> str:
+    text = clean_field_value(value)
+    text = re.sub(r"[（(]\s*以下简称\s*(?:甲方|乙方|承包人|分包人|供方|需方|发包人|买方|卖方)\s*[）)]", "", text)
+    text = re.sub(r"以下简称\s*(?:甲方|乙方|承包人|分包人|供方|需方|发包人|买方|卖方)", "", text)
+    return clean_field_value(text)
+
+
+def is_truncated_clause(text: str) -> bool:
+    value = clean_field_value(text)
+    if not value:
+        return False
+    if value.endswith(("的", "和", "与", "及", "并", "为", "在", "至", "分包", "工程质", "文明施")):
+        return True
+    if len(value) < 20 and not re.search(r"[。；;、，,）)]$", value):
+        return True
+    if value.count("（") > value.count("）") or value.count("(") > value.count(")"):
+        return True
+    return False
+
+
+def _repair_truncated_from_lines(lines: list[str], index: int) -> str:
+    current = clean_field_value(lines[index]) if 0 <= index < len(lines) else ""
+    if not current:
+        return ""
+    if not is_truncated_clause(current):
+        return current
+    if index + 1 < len(lines):
+        merged = clean_field_value(f"{current}{lines[index + 1]}")
+        if merged and not is_truncated_clause(merged):
+            return merged
+    return ""
+
+
 def _pages(text: str, pages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     result = []
     for idx, page in enumerate(pages or [], start=1):
@@ -103,9 +136,10 @@ def _after_label(text: str, labels: tuple[str, ...], max_len: int = 120) -> str:
 
 
 def _line_with(text: str, keywords: tuple[str, ...]) -> str:
-    for line in _usable_lines(text):
+    lines = _usable_lines(text)
+    for index, line in enumerate(lines):
         if any(keyword in line for keyword in keywords):
-            return line
+            return _repair_truncated_from_lines(lines, index)
     return ""
 
 
@@ -229,7 +263,7 @@ def _party_name(text: str, labels: tuple[str, ...]) -> str:
         for pattern in (rf"{re.escape(label)}\s*[:：]\s*([^\n\r]+)", rf"{re.escape(label)}\s*[（(][^）)]*[）)]\s*[:：]?\s*([^\n\r]+)"):
             match = re.search(pattern, text)
             if match:
-                candidate = clean_field_value(match.group(1))
+                candidate = clean_party_name(match.group(1))
                 if candidate and not re.search(r"(地址|账号|电话|联系人|开户)", candidate):
                     return candidate[:80]
     return ""
@@ -251,6 +285,20 @@ def _context_bank_account(block: str) -> str:
     for line in _usable_lines(block):
         if any(label in line for label in ("账号", "银行账号", "开户银行", "开户行", "收款账户")) and not any(label in line for label in ("电话", "联系方式", "手机")):
             return line
+    return ""
+
+
+def _receiving_account(text: str) -> str:
+    lines = _usable_lines(text)
+    for index, line in enumerate(lines):
+        if not any(label in line for label in ("收款账户", "开户银行", "开户行", "银行账号", "账号")):
+            continue
+        if any(label in line for label in ("电话", "联系电话", "联系方式", "手机")):
+            continue
+        account_line = line
+        if "账号" not in account_line and index + 1 < len(lines) and "账号" in lines[index + 1]:
+            account_line = f"{account_line}；{lines[index + 1]}"
+        return clean_field_value(account_line)
     return ""
 
 
@@ -297,11 +345,8 @@ def _duration(text: str, category: str) -> dict[str, Any]:
 
 def _payment_nodes(text: str) -> list[dict[str, Any]]:
     nodes = []
-    context_keywords = tuple(keyword for keyword in PAYMENT_KEYWORDS if keyword != "%")
     for line in _usable_lines(text):
-        if not any(token in line for token in context_keywords):
-            continue
-        if not (re.search(r"\d+(?:\.\d+)?%", line) or "支付" in line or "付款" in line):
+        if not is_real_payment_clause(line):
             continue
         amount_match = re.search(r"\d+(?:\.\d+)?%|[0-9][0-9,]*(?:\.[0-9]{1,2})?\s*元", line)
         nodes.append({
@@ -313,6 +358,33 @@ def _payment_nodes(text: str) -> list[dict[str, Any]]:
         if len(nodes) >= 10:
             break
     return nodes
+
+
+def is_real_payment_clause(text: str) -> bool:
+    line = clean_field_value(text)
+    if not line or is_toc_line(line):
+        return False
+    if re.fullmatch(r"\d+(?:\.\d+)*[、.]?.{0,24}", line):
+        return False
+    payment_context = ("付款", "支付", "进度款", "预付款", "结算款", "质保金", "保修金", "发票")
+    if not any(keyword in line for keyword in payment_context):
+        return False
+    strong_markers = (
+        r"\d+(?:\.\d+)?%",
+        r"\d+(?:,\d{3})*(?:\.\d+)?元",
+        "合同价款的",
+        "验收合格后",
+        "结算完成后",
+        "收到发票后",
+        "每月",
+        "预付款",
+        "进度款",
+        "结算款",
+        "质保金",
+    )
+    if any(re.search(marker, line) if marker.startswith("\\") else marker in line for marker in strong_markers):
+        return True
+    return False
 
 
 def is_real_item_table(row: str, header_context: str = "") -> bool:
@@ -406,9 +478,19 @@ def _signers(pages: list[dict[str, Any]]) -> str:
         if len(line) > 80:
             continue
         name = re.search(r"(?:法定代表人|授权代表|委托代理人|经办人|签字|签章)\s*[:：]?\s*([\u4e00-\u9fff]{2,4})", line)
-        if name:
+        if name and is_valid_person_name(name.group(1)):
             return name.group(1)
     return ""
+
+
+def is_valid_person_name(name: str) -> bool:
+    value = clean_field_value(name)
+    if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", value):
+        return False
+    forbidden = ("或", "其", "委托", "单位", "公司", "签章", "代表", "法定", "日期", "地址")
+    if any(token in value for token in forbidden):
+        return False
+    return value not in {"或其委托", "法定代表人", "委托代理人"}
 
 
 def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
@@ -471,7 +553,7 @@ class ContractSkill:
             "settlement": {
                 "settlement_method": _line_with(full_text, ("结算方式", "结算款")),
                 "invoice_requirement": _line_with(full_text, ("发票", "增值税专用发票", "开票")),
-                "receiving_account": _line_with(full_text, ("收款账户", "开户银行", "银行账号")),
+                "receiving_account": _receiving_account(full_text),
             },
             "line_items": line_items,
             "line_item_summary": line_summary,

@@ -112,6 +112,33 @@ def _line_item_section(result: ContractResult) -> list[str]:
     return lines
 
 
+FORBIDDEN_MARKDOWN_LINE_RE = re.compile(
+    r"^\s*[-*]?\s*(owner\s*type|contract\s*category|contract\s*category\s*name|markdown\s*result|doc\s*type|fields|raw_result|structured_data|evidence|confidence|source_page|raw_text|\"value\"|\"source_page\"|\"confidence\")\s*[:：]",
+    re.I,
+)
+
+
+def sanitize_contract_markdown(markdown: str) -> str:
+    lines: list[str] = []
+    skipping_json_block = False
+    brace_depth = 0
+    for raw_line in str(markdown or "").splitlines():
+        line = raw_line.rstrip()
+        if FORBIDDEN_MARKDOWN_LINE_RE.search(line):
+            skipping_json_block = "{" in line and "}" not in line
+            brace_depth = line.count("{") - line.count("}")
+            continue
+        if skipping_json_block:
+            brace_depth += line.count("{") - line.count("}")
+            if brace_depth <= 0:
+                skipping_json_block = False
+            continue
+        if re.search(r'"(?:value|source_page|confidence|raw_text)"\s*:', line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).replace("\n\n\n", "\n\n").strip()
+
+
 def render_contract_markdown(result: ContractResult) -> str:
     amount = result.amount or {}
     project = result.project or {}
@@ -125,7 +152,7 @@ def render_contract_markdown(result: ContractResult) -> str:
     review_items = "；".join(str(item) for item in warnings if item) or "无"
     completeness = validation.get("completeness") or quality.get("field_completeness") or MISSING
 
-    return "\n".join([
+    markdown = "\n".join([
         "## 合同",
         "",
         "- 资料类型：合同",
@@ -210,3 +237,4 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 关键字段完整度：{value(completeness)}",
         f"- 需人工复核事项：{value(review_items)}",
     ]).replace("\n\n\n", "\n\n").strip()
+    return sanitize_contract_markdown(markdown)

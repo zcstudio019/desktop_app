@@ -17,7 +17,7 @@ import { Search, Users, Clock, User, Filter, Download, RefreshCw, X, AlertCircle
 import { listCustomers, getCustomerDetail } from '../services/api';
 import { ApiError } from '../services/types';
 import type { CustomerListItem, CustomerDetail } from '../services/types';
-import { DataSectionCard, ArrayDataCard, isArrayOfObjects, getBankReconciliationDisplayMarkdown } from './DataDisplayComponents';
+import { DataSectionCard, ArrayDataCard, isArrayOfObjects, getBankReconciliationDisplayMarkdown, getContractDisplayMarkdown } from './DataDisplayComponents';
 import EnterpriseBankStatementView, { looksLikeEnterpriseBankStatementData } from './documents/EnterpriseBankStatementView';
 
 interface CustomerListPageProps {
@@ -188,6 +188,17 @@ export function CustomerDetailFieldRenderer({
       <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>
           {bankMarkdown}
+        </ReactMarkdown>
+      </article>
+    );
+  }
+
+  const contractMarkdown = getContractDisplayMarkdown(parsedValue);
+  if (contractMarkdown) {
+    return (
+      <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {contractMarkdown || '合同解析结果暂不可用，请重新解析或人工复核。'}
         </ReactMarkdown>
       </article>
     );
