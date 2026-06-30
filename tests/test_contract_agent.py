@@ -59,6 +59,31 @@ BIM深化咨询服务合同
 签订日期：2025年1月1日
 """
 
+CONTRACT_002_POLLUTED_TEXT = """
+机电安装工程专业分包合同（南区）
+工程名称：临空12号地块国际商务花园四期项目（除桩基）
+承包人：上海建工集团股份有限公司
+统一社会信用代码：91310000631189305E
+分包人：上海意川建筑科技有限公司
+统一社会信用代码：91310118MA1JP7UB2B
+目录
+一、分包工程概况.........................-7-
+三、质量标准.........................-7-
+十二、合同生效...............................-10-
+十三、合同份数.......................-10-
+12.合同价格、计量与支付.....................-39-
+2.2承包人项目经理.........................-17-
+合同价款：人民币 188,491,296.13 元 大写金额：壹亿捌仟捌佰肆拾玖万壹仟贰佰玖拾陆元
+增值税税额=不含税价×9%
+税率：9%
+工程地点：长宁区基地东至协和路，西至广顺北路，南至北翟路绿化带
+承包方式：包工包料、包工期、包质量、包安全、包文明施工
+开户银行：建行上海第二支行；账号：03005029359
+一类内容的文件，应以最新签署的为准
+签订日期：2024年6月30日
+承包人盖章 分包人盖章
+"""
+
 
 def test_contract_registry_and_aliases() -> None:
     assert "contract" in DOCUMENT_AGENT_REGISTRY
@@ -117,3 +142,35 @@ def test_contract_agent_masks_id_card_in_markdown() -> None:
     result = ContractAgent().run({"text": text, "raw_pages": [{"page": 2, "text": text}], "filename": "合同.pdf"})
     assert "330203199001012199" not in result.display_markdown
     assert "3302********9" in result.display_markdown
+
+
+def test_contract_002_toc_pollution_and_display_regression() -> None:
+    result = ContractAgent().run({
+        "text": CONTRACT_002_POLLUTED_TEXT,
+        "raw_pages": [
+            {"page": 1, "text": CONTRACT_002_POLLUTED_TEXT},
+            {"page": 10, "text": "签订日期：2024年6月30日\n承包人盖章 分包人盖章"},
+        ],
+        "filename": "合同002：临空12号地块国际商务花园四期项目（除桩基）-机电安装工程（南区）.pdf",
+    })
+    markdown = result.display_markdown
+    assert "owner type" not in markdown.lower()
+    assert "contract category" not in markdown.lower()
+    assert "markdown result" not in markdown.lower()
+    assert "evidence" not in markdown.lower()
+    assert "................" not in markdown
+    assert "12.合同价格、计量与支付" not in markdown
+    assert "2.2承包人项目经理" not in markdown
+    assert "签订地点：未识别" in markdown
+    assert "合同生效条件：未识别" in markdown
+    assert "合同份数：未识别" in markdown
+    assert "清单明细：未识别到独立清单明细" in markdown
+    assert "| 节点 | 触发条件 | 支付比例/金额 | 备注 |" not in markdown
+    assert "| 甲方/承包人/发包人 | 上海建工集团股份有限公司 | 91310000631189305E | 未识别 | 未识别 | 未识别 |" in markdown
+    assert "电话 |" in markdown
+    assert "03005029359 |" not in markdown
+    assert "收款账户：开户银行：建行上海第二支行；账号：03005029359" in markdown
+    assert "签字人：未识别" in markdown
+    assert "税率：9%" in markdown
+    assert "税额：未识别" in markdown
+    assert "金额校验：大写金额疑似不完整，需人工复核" in markdown

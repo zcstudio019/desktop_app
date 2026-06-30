@@ -12,8 +12,7 @@ ID_CARD_RE = re.compile(r"(?<!\d)([1-9]\d{5})(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0
 
 def mask_sensitive_text(value: Any) -> str:
     text = str(value or "").strip()
-    text = ID_CARD_RE.sub(lambda m: f"{m.group(1)[:4]}********{m.group(2)}", text)
-    return text
+    return ID_CARD_RE.sub(lambda m: f"{m.group(1)[:4]}********{m.group(2)}", text)
 
 
 def value(value: Any) -> str:
@@ -28,13 +27,89 @@ def evidence_suffix(result: ContractResult, key: str) -> str:
     if not isinstance(evidence, dict):
         return ""
     page = evidence.get("source_page")
-    if not page:
-        return ""
-    return f"（来源页：第 {page} 页）"
+    return f"（来源页：第 {page} 页）" if page else ""
 
 
 def _row(cells: list[Any]) -> str:
     return "| " + " | ".join(value(cell).replace("\n", " ") for cell in cells) + " |"
+
+
+def _party_rows(result: ContractResult) -> list[str]:
+    parties = result.parties[:2]
+    while len(parties) < 2:
+        parties.append(type(result.parties[0])() if result.parties else None)  # type: ignore[arg-type]
+    rows = []
+    for party in parties:
+        rows.append(_row([
+            getattr(party, "role", ""),
+            getattr(party, "name", ""),
+            getattr(party, "unified_social_credit_code", ""),
+            getattr(party, "legal_representative", ""),
+            getattr(party, "contact", ""),
+            getattr(party, "phone", ""),
+            getattr(party, "address", ""),
+        ]))
+    return rows
+
+
+def _payment_section(result: ContractResult, settlement: dict[str, Any]) -> list[str]:
+    lines = ["### 付款与结算", ""]
+    payment_nodes = [item for item in (result.payment_nodes or []) if isinstance(item, dict)]
+    if payment_nodes:
+        lines.extend([
+            "| 节点 | 触发条件 | 支付比例/金额 | 备注 |",
+            "| --- | --- | --- | --- |",
+            *[
+                _row([item.get("node"), item.get("condition"), item.get("amount_or_ratio"), item.get("remark")])
+                for item in payment_nodes[:20]
+            ],
+            "",
+        ])
+    else:
+        lines.append(f"- 付款方式：{MISSING}")
+    lines.extend([
+        f"- 结算方式：{value(settlement.get('settlement_method'))}",
+        f"- 发票要求：{value(settlement.get('invoice_requirement'))}",
+        f"- 收款账户：{value(settlement.get('receiving_account'))}",
+    ])
+    return lines
+
+
+def _line_item_section(result: ContractResult) -> list[str]:
+    items = [item for item in (result.line_items or []) if isinstance(item, dict)]
+    summary = result.line_item_summary if isinstance(result.line_item_summary, dict) else {}
+    lines = ["### 清单明细", ""]
+    if not items:
+        lines.extend([
+            f"- 清单明细：{value(summary.get('message') or '未识别到独立清单明细')}",
+            f"- 清单识别状态：{value(summary.get('recognition_status'))}",
+        ])
+        return lines
+    item_count = len(items)
+    lines.extend([
+        "| 序号 | 名称/服务内容 | 型号规格 | 单位 | 数量 | 单价 | 合价 | 备注 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        *[
+            _row([
+                item.get("index"),
+                item.get("name") or item.get("service_content"),
+                item.get("spec"),
+                item.get("unit"),
+                item.get("quantity"),
+                item.get("unit_price"),
+                item.get("total_price") or item.get("amount"),
+                item.get("remark"),
+            ])
+            for item in items[:20]
+        ],
+    ])
+    if item_count > 20:
+        lines.append(f"- 清单展示：共识别 {item_count} 条，页面仅展示前 20 条，可展开查看全部。")
+    lines.extend([
+        f"- 合计金额：{value(summary.get('total_amount'))}",
+        f"- 清单识别状态：{value(summary.get('recognition_status'))}",
+    ])
+    return lines
 
 
 def render_contract_markdown(result: ContractResult) -> str:
@@ -46,47 +121,6 @@ def render_contract_markdown(result: ContractResult) -> str:
     signature = result.signature or {}
     quality = result.quality or {}
     validation = result.validation or {}
-    parties = result.parties[:2]
-    while len(parties) < 2:
-        parties.append(type(result.parties[0])() if result.parties else None)  # type: ignore[arg-type]
-
-    party_rows = []
-    for party in parties:
-        party_rows.append(_row([
-            getattr(party, "role", ""),
-            getattr(party, "name", ""),
-            getattr(party, "unified_social_credit_code", ""),
-            getattr(party, "legal_representative", ""),
-            getattr(party, "contact", ""),
-            getattr(party, "phone", ""),
-            getattr(party, "address", ""),
-        ]))
-
-    payment_rows = [
-        _row([item.get("node"), item.get("condition"), item.get("amount_or_ratio"), item.get("remark")])
-        for item in (result.payment_nodes or [])[:20]
-        if isinstance(item, dict)
-    ] or [_row(["", "", "", ""])]
-
-    item_count = len(result.line_items or [])
-    item_rows = [
-        _row([
-            item.get("index"),
-            item.get("name") or item.get("service_content"),
-            item.get("spec"),
-            item.get("unit"),
-            item.get("quantity"),
-            item.get("unit_price"),
-            item.get("total_price") or item.get("amount"),
-            item.get("remark"),
-        ])
-        for item in (result.line_items or [])[:20]
-        if isinstance(item, dict)
-    ] or [_row(["", "", "", "", "", "", "", ""])]
-    item_notice = ""
-    if item_count > 20:
-        item_notice = f"\n\n- 清单展示：共识别 {item_count} 条，页面仅展示前 20 条，可展开查看全部。"
-
     warnings = result.warnings or validation.get("warnings") or []
     review_items = "；".join(str(item) for item in warnings if item) or "无"
     completeness = validation.get("completeness") or quality.get("field_completeness") or MISSING
@@ -115,7 +149,7 @@ def render_contract_markdown(result: ContractResult) -> str:
         "",
         "| 角色 | 名称 | 统一社会信用代码 | 法定代表人/授权代表 | 联系人 | 电话 | 地址 |",
         "| --- | --- | --- | --- | --- | --- | --- |",
-        *party_rows,
+        *_party_rows(result),
         "",
         "### 项目/服务内容",
         "",
@@ -146,24 +180,9 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 交付方式：{value(duration.get('delivery_method'))}",
         f"- 验收期限：{value(duration.get('acceptance_period'))}",
         "",
-        "### 付款与结算",
+        *_payment_section(result, settlement),
         "",
-        "| 节点 | 触发条件 | 支付比例/金额 | 备注 |",
-        "| --- | --- | --- | --- |",
-        *payment_rows,
-        "",
-        f"- 结算方式：{value(settlement.get('settlement_method'))}",
-        f"- 发票要求：{value(settlement.get('invoice_requirement'))}",
-        f"- 收款账户：{value(settlement.get('receiving_account'))}",
-        "",
-        "### 清单明细",
-        "",
-        "| 序号 | 名称/服务内容 | 型号规格 | 单位 | 数量 | 单价 | 合价 | 备注 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
-        *item_rows,
-        item_notice,
-        f"- 合计金额：{value(result.line_item_summary.get('total_amount') if isinstance(result.line_item_summary, dict) else '')}",
-        f"- 清单识别状态：{value(result.line_item_summary.get('recognition_status') if isinstance(result.line_item_summary, dict) else '')}",
+        *_line_item_section(result),
         "",
         "### 重要条款摘要",
         "",
