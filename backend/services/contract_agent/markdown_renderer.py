@@ -262,6 +262,8 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 不含税金额：{value(amount.get('tax_excluded_amount'))}",
         f"- 税率：{value(amount.get('tax_rate'))}",
         f"- 税额：{value(amount.get('tax_amount'))}",
+        f"- 安全文明施工费：{value(amount.get('safety_civilization_fee'))}",
+        f"- 合同价格形式：{value(amount.get('price_form'))}",
         f"- 金额校验：{value(amount.get('amount_check'))}",
         f"- 金额识别状态：{value(amount.get('recognition_status'))}",
         "",
@@ -302,6 +304,7 @@ def render_contract_markdown(result: ContractResult) -> str:
         "",
         f"- OCR质量：{value(quality.get('ocr_quality'))}",
         f"- 关键字段完整度：{value(completeness)}",
+        f"- 文件完整性：{value(quality.get('body_missing_note'))}",
         f"- 需人工复核事项：{value(review_items)}",
     ]).replace("\n\n\n", "\n\n").strip()
     return final_sanitize_contract_markdown(sanitize_contract_markdown(markdown))
