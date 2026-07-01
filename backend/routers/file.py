@@ -123,6 +123,8 @@ HAS_ASYNC_JOB_STORAGE = all(
     for method_name in ("create_async_job", "get_async_job", "update_async_job", "get_async_job_execution_payload", "mark_async_job_dispatched")
 )
 _ACTIVE_FILE_PROCESS_JOB_TASKS: set[asyncio.Task[None]] = set()
+_ACTIVE_INDEX_REBUILD_TASKS: set[asyncio.Task[None]] = set()
+_INDEX_REBUILD_DISPATCHED_DOCUMENT_IDS: set[str] = set()
 _UPLOAD_JOB_TEMP_ROOT = Path(__file__).parent.parent.parent / "data" / "upload_job_files"
 FILE_PROCESS_JOB_TYPE = "file_process"
 CONTRACT_EXTRACT_JOB_TYPE = "contract_extract"
@@ -2277,7 +2279,8 @@ async def _run_file_process_job(
         customer_auto_created = not requested_customer_id and not existing_customer_before_save and bool(final_customer_id)
         post_save_warning = ""
 
-        if final_customer_id:
+        contract_result_job = process_result.documentType == "contract" or is_contract_job
+        if final_customer_id and not contract_result_job:
             await _update_file_process_progress(job_id, "正在刷新资料汇总")
             await regenerate_customer_profile(storage_service, final_customer_id)
             await _update_file_process_progress(job_id, "正在重建检索索引")
@@ -2304,7 +2307,7 @@ async def _run_file_process_job(
             "originalAvailable": original_available,
             "original_available": original_available,
         }
-        if process_result.documentType == "contract" or is_contract_job:
+        if contract_result_job:
             contract_content = _normalize_contract_content_for_async(process_result.content if isinstance(process_result.content, dict) else {})
             parse_status = _contract_parse_status(contract_content)
             result_payload.update(
@@ -2315,28 +2318,61 @@ async def _run_file_process_job(
                     "parse_mode": "async",
                     "parse_status": parse_status,
                     "markdown_result": contract_content.get("markdown_result") or "",
+                    "indexing_status": "queued" if final_customer_id else "skipped",
+                    "indexing_message": "检索索引正在后台刷新，不影响查看解析结果" if final_customer_id else "未识别客户，跳过检索索引刷新",
                 }
             )
             result_payload["content"] = contract_content
         partial_failed = process_result.content.get("extraction_status") == "partial_failed"
-        contract_partial = (process_result.documentType == "contract" or is_contract_job) and result_payload.get("parse_status") in {"partial", "processing"}
+        if contract_result_job:
+            logger.info(
+                "[File Job] parse completed before index rebuild job_id=%s document_id=%s customer_id=%s",
+                job_id,
+                document_id or "",
+                final_customer_id,
+            )
         await _update_file_process_job(
             job_id,
             status="success",
             customer_id=final_customer_id,
             progress_message=(
-                "合同解析完成，部分字段需人工复核"
-                if contract_partial
+                "合同解析完成，检索索引后台刷新中"
+                if contract_result_job
                 else "上传已保存，结构化提取部分失败"
                 if partial_failed
-                else "合同解析完成"
-                if process_result.documentType == "contract" or is_contract_job
                 else "处理完成"
             ),
             result_json=result_payload,
             error_message="",
             finished_at=_utc_now_iso(),
         )
+        if contract_result_job and final_customer_id:
+            queued, index_task_ref = await _dispatch_customer_index_rebuild(
+                final_customer_id,
+                reason="document_saved",
+                source_document_id=str(document_id or ""),
+            )
+            if queued:
+                result_payload["indexing_status"] = "queued"
+                result_payload["indexing_task_id"] = index_task_ref
+                result_payload["indexing_message"] = "检索索引正在后台刷新，不影响查看解析结果"
+            else:
+                result_payload["indexing_status"] = "failed"
+                result_payload["indexing_error"] = index_task_ref
+                result_payload["indexing_message"] = "检索索引刷新任务派发失败，可稍后重建"
+            await _update_file_process_job(
+                job_id,
+                status="success",
+                result_json=result_payload,
+                error_message="",
+            )
+            logger.info(
+                "[File Job] completed without waiting index rebuild job_id=%s document_id=%s customer_id=%s indexing_status=%s",
+                job_id,
+                document_id or "",
+                final_customer_id,
+                result_payload.get("indexing_status") or "",
+            )
         logger.info(
             "[File Job] completed job_id=%s document_id=%s document_type=%s agent_type=%s status=success error_message=",
             job_id,
@@ -2456,6 +2492,109 @@ async def _dispatch_file_process_job(
     )
     _launch_file_process_job(job_id)
     return True, "", "in_process"
+
+
+async def _run_index_rebuild_background(
+    customer_id: str,
+    reason: str,
+    source_document_id: str = "",
+) -> None:
+    try:
+        logger.info(
+            "[Index Rebuild] in-process start customer_id=%s reason=%s source_document_id=%s",
+            customer_id,
+            reason,
+            source_document_id,
+        )
+        await regenerate_customer_profile(storage_service, customer_id)
+        result = await index_rebuild_service.rebuild_customer_index(storage_service, customer_id, reason)
+        await profile_sync_service.mark_customer_applications_stale(storage_service, customer_id)
+        logger.info(
+            "[Index Rebuild] in-process finish customer_id=%s reason=%s source_document_id=%s success=%s chunk_count=%s",
+            customer_id,
+            reason,
+            source_document_id,
+            result.get("success"),
+            result.get("chunk_count") or 0,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[Index Rebuild] in-process failed customer_id=%s reason=%s source_document_id=%s error=%s",
+            customer_id,
+            reason,
+            source_document_id,
+            exc,
+        )
+
+
+async def _dispatch_customer_index_rebuild(
+    customer_id: str,
+    reason: str = "document_saved",
+    source_document_id: str = "",
+) -> tuple[bool, str]:
+    customer_id = str(customer_id or "").strip()
+    source_document_id = str(source_document_id or "").strip()
+    if not customer_id:
+        return False, "missing_customer_id"
+    if source_document_id and source_document_id in _INDEX_REBUILD_DISPATCHED_DOCUMENT_IDS:
+        logger.info(
+            "[Index Rebuild] skip duplicate async customer_id=%s source_document_id=%s",
+            customer_id,
+            source_document_id,
+        )
+        return True, "duplicate_skipped"
+    if source_document_id:
+        _INDEX_REBUILD_DISPATCHED_DOCUMENT_IDS.add(source_document_id)
+
+    if TASK_QUEUE_ENABLED:
+        from backend.celery_app import HEAVY_QUEUE_NAME, INDEX_REBUILD_TASK_NAME, celery_app
+
+        def _send_task() -> Any:
+            return celery_app.send_task(
+                INDEX_REBUILD_TASK_NAME,
+                args=[customer_id, reason, source_document_id],
+                queue=HEAVY_QUEUE_NAME,
+                retry=False,
+            )
+
+        try:
+            async_result = await asyncio.wait_for(
+                asyncio.to_thread(_send_task),
+                timeout=FILE_PROCESS_ENQUEUE_TIMEOUT_SECONDS,
+            )
+            logger.info(
+                "[Index Rebuild] queued async customer_id=%s source_document_id=%s celery_task_id=%s",
+                customer_id,
+                source_document_id,
+                async_result.id,
+            )
+            return True, str(async_result.id)
+        except Exception as exc:
+            logger.exception(
+                "[Index Rebuild] queue failed customer_id=%s source_document_id=%s error=%s",
+                customer_id,
+                source_document_id,
+                exc,
+            )
+            return False, str(exc)
+
+    task = asyncio.create_task(_run_index_rebuild_background(customer_id, reason, source_document_id))
+    _ACTIVE_INDEX_REBUILD_TASKS.add(task)
+
+    def _cleanup(done_task: asyncio.Task[None]) -> None:
+        _ACTIVE_INDEX_REBUILD_TASKS.discard(done_task)
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("[Index Rebuild] background task crashed customer_id=%s", customer_id)
+
+    task.add_done_callback(_cleanup)
+    logger.info(
+        "[Index Rebuild] queued in-process customer_id=%s source_document_id=%s",
+        customer_id,
+        source_document_id,
+    )
+    return True, "in_process"
 
 
 @router.post("/process", response_model=FileProcessResponse)

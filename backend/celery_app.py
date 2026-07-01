@@ -26,6 +26,7 @@ CELERY_TASK_MODULES = (
     "backend.tasks.risk_tasks",
     "backend.tasks.scheme_tasks",
     "backend.tasks.application_tasks",
+    "backend.tasks.index_rebuild_tasks",
 )
 CHAT_EXTRACT_TASK_NAME = "backend.tasks.chat_tasks.run_chat_extract_job"
 FILE_PROCESS_TASK_NAME = "backend.tasks.file_process_tasks.run_file_process_job"
@@ -33,6 +34,7 @@ URL_EXTRACT_TASK_NAME = "backend.tasks.url_extract_tasks.run_url_extract_job"
 RISK_REPORT_TASK_NAME = "backend.tasks.risk_tasks.run_risk_report_job"
 SCHEME_MATCH_TASK_NAME = "backend.tasks.scheme_tasks.run_scheme_match_job"
 APPLICATION_GENERATE_TASK_NAME = "backend.tasks.application_tasks.run_application_generate_job"
+INDEX_REBUILD_TASK_NAME = "backend.tasks.index_rebuild_tasks.rebuild_customer_index_task"
 CHAT_QUEUE_NAME = "chat"
 HEAVY_QUEUE_NAME = "heavy"
 EXPECTED_TASK_NAMES = (
@@ -42,6 +44,7 @@ EXPECTED_TASK_NAMES = (
     RISK_REPORT_TASK_NAME,
     SCHEME_MATCH_TASK_NAME,
     APPLICATION_GENERATE_TASK_NAME,
+    INDEX_REBUILD_TASK_NAME,
 )
 LEGACY_CHAT_EXTRACT_TASK_NAMES = (
     "backend.tasks.chat.run_chat_extract_job",
@@ -125,6 +128,7 @@ else:
             RISK_REPORT_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
             SCHEME_MATCH_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
             APPLICATION_GENERATE_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
+            INDEX_REBUILD_TASK_NAME: {"queue": HEAVY_QUEUE_NAME},
         },
     )
 
@@ -163,6 +167,7 @@ def log_celery_bootstrap() -> None:
         RISK_REPORT_TASK_NAME: HEAVY_QUEUE_NAME,
         SCHEME_MATCH_TASK_NAME: HEAVY_QUEUE_NAME,
         APPLICATION_GENERATE_TASK_NAME: HEAVY_QUEUE_NAME,
+        INDEX_REBUILD_TASK_NAME: HEAVY_QUEUE_NAME,
     }
     logger.info(
         "[Celery Bootstrap] pid=%s queue_enabled=%s broker=%s backend=%s task_queues=%s expected_tasks=%s expected_registered=%s legacy_registered=%s registered_tasks=%s max_retries=%s retry_backoff=%s retry_jitter=%s soft_time_limit=%s time_limit=%s stale_timeout_seconds=%s",
