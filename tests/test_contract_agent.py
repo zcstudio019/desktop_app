@@ -663,9 +663,35 @@ def test_contract_amount_fallback_derives_tax_values_with_review_note() -> None:
     assert "税率：9%" in markdown
     assert "不含税金额：172,927,794.61 元（根据含税金额和税率推算，需人工复核）" in markdown
     assert "税额：15,563,501.52 元（根据含税金额和税率推算，需人工复核）" in markdown
-    assert "金额校验：大写金额与小写金额基本一致；不含税金额和税额为系统推算值，需人工复核" in markdown
+    assert "金额校验：大写金额与小写金额基本一致；不含税金额和税额根据含税金额及税率推算，需人工复核" in markdown
     assert "不含税金额和税额为系统推算值需复核" in markdown
     assert "金额识别状态：部分成功" in markdown
+
+
+def test_contract_amount_derives_tax_from_ocr_excluded_amount() -> None:
+    page8 = """签约合同价暂定为含税：人民币188,491,296.13元
+大写：壹亿捌仟捌佰肆拾玖万壹仟贰佰玖拾陆元壹角叁分
+不含增值税签约合同价：人民币172927794.60元
+增值税税率：9%
+安全文明施工费（含税）：大写：零元（￥0元）
+"""
+    pages = [{"page": 8, "text": page8}]
+
+    result = ContractAgent().run({
+        "text": page8,
+        "raw_pages": pages,
+        "filename": "合同002：临空12号地块国际商务花园四期项目（除桩基）-机电安装工程（南区） (1).pdf",
+    })
+    markdown = result.display_markdown
+    amount = result.structured_data_dict()["amount"]
+
+    assert amount["tax_excluded_amount_source"] == "ocr"
+    assert amount["tax_amount_source"] == "calculated"
+    assert "不含税金额：172,927,794.60 元" in markdown
+    assert "不含税金额：172,927,794.60 元（根据含税金额和税率推算，需人工复核）" not in markdown
+    assert "税额：15,563,501.53 元（根据含税金额和不含税金额推算，需人工复核）" in markdown
+    assert "金额校验：大写金额与小写金额基本一致；税额根据含税金额和不含税金额推算，需人工复核" in markdown
+    assert "税额为系统推算值需复核" in markdown
 
 
 def test_signature_page_two_columns_uses_coordinates_and_rejects_credit_code_as_account() -> None:

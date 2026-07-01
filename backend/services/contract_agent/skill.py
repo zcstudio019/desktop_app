@@ -859,7 +859,7 @@ def _decimal_from_amount_value(value: Any) -> Decimal | None:
         return None
 
 
-def _derive_tax_amounts_from_included_and_rate(amount: dict[str, Any]) -> bool:
+def _derive_tax_amounts(amount: dict[str, Any]) -> bool:
     if amount.get("tax_excluded_amount") and not amount.get("tax_excluded_amount_source"):
         amount["tax_excluded_amount_source"] = "ocr"
     if amount.get("tax_amount") and not amount.get("tax_amount_source"):
@@ -869,9 +869,20 @@ def _derive_tax_amounts_from_included_and_rate(amount: dict[str, Any]) -> bool:
     if amount.get("tax_excluded_amount") and amount.get("tax_amount"):
         return False
     included = _decimal_from_amount_value(amount.get("tax_included_amount") or amount.get("amount_lower"))
+    if included is None:
+        return False
+    excluded_value = _decimal_from_amount_value(amount.get("tax_excluded_amount"))
+    if excluded_value is not None and not amount.get("tax_amount"):
+        tax = (included - excluded_value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        amount["tax_amount"] = f"{_format_decimal_money(tax)}（根据含税金额和不含税金额推算，需人工复核）"
+        amount["tax_amount_inferred"] = True
+        amount["tax_amount_source"] = "calculated"
+        amount["tax_amount_calculation_basis"] = "included_minus_excluded"
+        return True
+
     rate_text = str(amount.get("tax_rate") or "")
     rate_match = re.search(r"(\d+(?:\.\d+)?)%", rate_text)
-    if included is None or not rate_match:
+    if not rate_match:
         return False
     try:
         rate = Decimal(rate_match.group(1)) / Decimal("100")
@@ -879,15 +890,16 @@ def _derive_tax_amounts_from_included_and_rate(amount: dict[str, Any]) -> bool:
         tax = (included - excluded).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ZeroDivisionError):
         return False
-    suffix = "（根据含税金额和税率推算，需人工复核）"
     if not amount.get("tax_excluded_amount"):
-        amount["tax_excluded_amount"] = f"{_format_decimal_money(excluded)}{suffix}"
+        amount["tax_excluded_amount"] = f"{_format_decimal_money(excluded)}（根据含税金额和税率推算，需人工复核）"
         amount["tax_excluded_amount_inferred"] = True
         amount["tax_excluded_amount_source"] = "calculated"
+        amount["tax_excluded_amount_calculation_basis"] = "included_and_rate"
     if not amount.get("tax_amount"):
-        amount["tax_amount"] = f"{_format_decimal_money(tax)}{suffix}"
+        amount["tax_amount"] = f"{_format_decimal_money(tax)}（根据含税金额和税率推算，需人工复核）"
         amount["tax_amount_inferred"] = True
         amount["tax_amount_source"] = "calculated"
+        amount["tax_amount_calculation_basis"] = "included_and_rate"
     return bool(amount.get("tax_excluded_amount_inferred") or amount.get("tax_amount_inferred"))
 
 
@@ -1068,7 +1080,12 @@ def _finalize_amount_checks(amount: dict[str, Any]) -> None:
     if calculated_fields:
         amount["tax_check"] = "推算值，需人工复核"
         if len(calculated_fields) == 2:
-            checks.append("不含税金额和税额为系统推算值，需人工复核")
+            checks.append("不含税金额和税额根据含税金额及税率推算，需人工复核")
+        elif amount.get("tax_amount_source") == "calculated":
+            if amount.get("tax_amount_calculation_basis") == "included_minus_excluded":
+                checks.append("税额根据含税金额和不含税金额推算，需人工复核")
+            else:
+                checks.append("税额包含系统推算值，需人工复核")
         else:
             checks.append(f"{calculated_fields[0]}包含系统推算值，需人工复核")
     else:
@@ -1154,7 +1171,7 @@ def _extract_agreement_amounts(ocr_pages: list[dict[str, Any]], amount: dict[str
         amount["tax_excluded_amount_source"] = "ocr"
 
     amount.update(extract_contract_tax_amounts_from_amount_page(ocr_pages))
-    _derive_tax_amounts_from_included_and_rate(amount)
+    _derive_tax_amounts(amount)
     _finalize_amount_checks(amount)
 
 
@@ -2278,9 +2295,14 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         warnings.append("不含税金额包含系统推算值需复核")
     if (
         "税额包含系统推算值" in amount_check
-        and not any("税额包含系统推算值" in warning for warning in warnings)
+        and not any("税额为系统推算值" in warning for warning in warnings)
     ):
-        warnings.append("税额包含系统推算值需复核")
+        warnings.append("税额为系统推算值需复核")
+    if (
+        "税额根据含税金额和不含税金额推算" in amount_check
+        and not any("税额为系统推算值" in warning for warning in warnings)
+    ):
+        warnings.append("税额为系统推算值需复核")
     if (
         (result.get("amount") or {}).get("price_form_source") == "low_confidence"
         and not any("合同价格形式需人工复核" in warning for warning in warnings)
