@@ -11,6 +11,7 @@ from backend.services.contract_agent.markdown_renderer import format_extract_sta
 from backend.services.contract_agent.skill import (
     extract_clause_by_keywords,
     extract_contract_party_blocks,
+    extract_contract_tax_amounts_from_amount_page,
     extract_signature_page_two_columns,
     is_valid_bank_account,
     second_pass_extract_contract_clauses,
@@ -562,6 +563,7 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "合同价格形式：固定总价" in markdown
     assert "大写金额与小写金额基本一致" in markdown
     assert "税额与不含税金额存在小额四舍五入差异，需人工复核" in markdown
+    assert "税额或不含税金额未识别" not in markdown
     assert "开始日期：2022年10月1日，具体开工日期以承包人书面通知为准" in markdown
     assert "开始日期：2022年10月1日，具体开工日期以承包人书面通知为准。计划完工日期" not in markdown
     assert "结束日期：2024年6月30日" in markdown
@@ -575,6 +577,7 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "收款账户：未识别" not in markdown
     assert "大写金额疑似不完整" not in markdown
     assert "收款账户归属需人工复核" not in markdown
+    assert "税额与不含税金额存在小额四舍五入差异需复核" in markdown
     assert "保修/质保：分包人承诺在缺陷责任期及保修期内承担相应工程维修责任。" in markdown
     assert "违约责任：未识别（当前PDF未包含违约责任正文条款）" in markdown
     assert "争议解决：未识别（当前PDF未包含争议解决正文条款）" in markdown
@@ -583,6 +586,28 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "按合同约定的" not in markdown
     assert "按合同违约责任条款执行" not in markdown
     assert "清单明细：未识别到独立清单明细" in markdown
+
+
+def test_contract_tax_amount_page_extracts_ocr_spaced_values() -> None:
+    pages = [
+        {
+            "page": 8,
+            "text": """签约合同价暂定为（含税）：人民币 188,491,296.13 元
+不 含 增 值 税 签 约 合 同 价 ：人民币 172 927 794 . 60 元
+增值税税额=不含税价×9%
+增 值 税 税 率 为 9 %
+增 值 税 税 额 ：人民币 15 563 501.52 元
+价 格 形 式 ：固定总价
+""",
+        }
+    ]
+
+    amount_data = extract_contract_tax_amounts_from_amount_page(pages)
+
+    assert amount_data["tax_excluded_amount"] == "172,927,794.60 元"
+    assert amount_data["tax_rate"] == "9%"
+    assert amount_data["tax_amount"] == "15,563,501.52 元"
+    assert amount_data["price_form"] == "固定总价"
 
 
 def test_signature_page_two_columns_uses_coordinates_and_rejects_credit_code_as_account() -> None:

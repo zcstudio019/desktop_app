@@ -682,11 +682,13 @@ def normalize_project_location(value: Any) -> str:
 
 
 def _format_money_value(raw: str) -> str:
-    match = re.search(r"(?<!\d)(\d[\d,]*(?:\.\d+)?)(?!\d)", str(raw or ""))
+    text = str(raw or "").replace("，", ",").replace("．", ".")
+    match = re.search(r"(?<!\d)(\d[\d,\s]*(?:\s*\.\s*\d{1,2})?)(?!\d)", text)
     if not match:
         return ""
+    normalized = re.sub(r"\s+", "", match.group(1)).replace(",", "")
     try:
-        return f"{Decimal(match.group(1).replace(',', '')):,.2f} 元"
+        return f"{Decimal(normalized):,.2f} 元"
     except InvalidOperation:
         return ""
 
@@ -704,6 +706,123 @@ def _money_near_label(text: str, labels: tuple[str, ...], window: int = 180) -> 
 
 def _money_from_segment(segment: str) -> str:
     return _format_money_value(segment)
+
+
+def _iter_contract_amount_page_texts(ocr_pages: list[dict[str, Any]]) -> list[str]:
+    keywords = (
+        "签约合同价",
+        "含税",
+        "不含增值税",
+        "不含税",
+        "增值税税额",
+        "税额",
+        "税率",
+        "合同价格形式",
+        "固定总价",
+    )
+    page_texts: list[str] = []
+    for page in ocr_pages or []:
+        if not isinstance(page, dict):
+            continue
+        page_text = str(page.get("text") or "")
+        compact = re.sub(r"\s+", "", page_text)
+        if any(keyword in compact for keyword in keywords):
+            page_texts.append(page_text)
+    return page_texts
+
+
+def _money_after_amount_labels(text: str, labels: tuple[str, ...], window: int = 180) -> str:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    for label in labels:
+        for label_match in re.finditer(re.escape(label), compact):
+            segment = compact[label_match.start():label_match.start() + window]
+            value = _format_money_value(segment)
+            if value:
+                return value
+    return ""
+
+
+def _extract_tax_amount_from_amount_text(text: str) -> str:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    label_pattern = r"(?:增值税税额|税额|增值税金额)"
+    for tax_match_amount in re.finditer(
+        label_pattern + r"[^0-9元圆]{0,60}([0-9][0-9,]*(?:[.．][0-9]{1,2})?)\s*(?:元|圆)?",
+        compact,
+    ):
+        segment = tax_match_amount.group(0)
+        if re.search(r"[=＝×*]", segment):
+            continue
+        value = _format_money_value(tax_match_amount.group(1))
+        if value:
+            return value
+    for label in ("增值税税额", "税额", "增值税金额"):
+        position = compact.find(label)
+        if position < 0:
+            continue
+        segment = compact[position:position + 220]
+        if re.search(r"^[^:：]*[=＝×*]", segment):
+            continue
+        value = _format_money_value(segment)
+        if value:
+            return value
+    return ""
+
+
+def _extract_tax_rate_from_amount_text(text: str) -> str:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    for tax_rate_match in re.finditer(r"(?:增值税)?税率(?:为|[:：])?[^0-9%]{0,12}(\d+(?:\.\d+)?%)", compact):
+        return tax_rate_match.group(1)
+    return ""
+
+
+def _extract_price_form_from_amount_text(text: str) -> str:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    for price_form in ("固定总价", "固定单价", "可调价格"):
+        label_position = compact.find("合同价格形式")
+        if label_position >= 0 and price_form in compact[label_position:label_position + 80]:
+            return price_form
+        label_position = compact.find("价格形式")
+        if label_position >= 0 and price_form in compact[label_position:label_position + 80]:
+            return price_form
+    return ""
+
+
+def extract_contract_tax_amounts_from_amount_page(ocr_pages: list[dict[str, Any]]) -> dict[str, str]:
+    amount_data: dict[str, str] = {}
+    page_texts = _iter_contract_amount_page_texts(ocr_pages)
+    if not page_texts:
+        return amount_data
+
+    candidates = page_texts + ["\n".join(page_texts)]
+    excluded_labels = (
+        "不含增值税签约合同价",
+        "不含税签约合同价",
+        "不含增值税合同价",
+        "不含税合同价",
+        "不含增值税金额",
+        "不含税金额",
+        "不含增值税价",
+        "不含税价",
+    )
+    for candidate in candidates:
+        if not amount_data.get("tax_excluded_amount"):
+            excluded = _money_after_amount_labels(candidate, excluded_labels, 240)
+            if excluded:
+                amount_data["tax_excluded_amount"] = excluded
+        if not amount_data.get("tax_rate"):
+            tax_rate = _extract_tax_rate_from_amount_text(candidate)
+            if tax_rate:
+                amount_data["tax_rate"] = tax_rate
+        if not amount_data.get("tax_amount"):
+            tax_amount = _extract_tax_amount_from_amount_text(candidate)
+            if tax_amount:
+                amount_data["tax_amount"] = tax_amount
+        if not amount_data.get("price_form"):
+            price_form = _extract_price_form_from_amount_text(candidate)
+            if price_form:
+                amount_data["price_form"] = price_form
+
+    return amount_data
 
 
 def extract_contract_amounts_from_agreement_page(page_text: str) -> dict[str, str]:
@@ -848,6 +967,7 @@ def _extract_agreement_amounts(ocr_pages: list[dict[str, Any]], amount: dict[str
     if price_form_match:
         amount["price_form"] = clean_field_value(price_form_match.group(1))
 
+    amount.update(extract_contract_tax_amounts_from_amount_page(ocr_pages))
     _finalize_amount_checks(amount)
 
 
