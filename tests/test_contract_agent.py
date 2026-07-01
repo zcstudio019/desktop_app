@@ -6,7 +6,11 @@ from pathlib import Path
 
 from backend.document_types import get_document_display_name, normalize_document_type_code
 from backend.services.contract_agent import ContractAgent, ContractSkill, is_contract_like
-from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown, sanitize_contract_result_payload
+from backend.services.contract_agent.markdown_renderer import (
+    final_sanitize_contract_markdown,
+    normalize_contract_markdown_headings,
+    sanitize_contract_result_payload,
+)
 from backend.services.contract_agent.markdown_renderer import format_extract_status
 from backend.services.contract_agent.skill import (
     extract_clause_by_keywords,
@@ -258,6 +262,71 @@ def test_contract_markdown_final_sanitizer_removes_outer_fields_and_evidence() -
 """
     cleaned = final_sanitize_contract_markdown(dirty)
     assert cleaned == "## 合同\n- 资料类型：合同"
+
+
+def test_contract_markdown_normalizes_broken_headings() -> None:
+    dirty = """## 合同
+
+### 合同
+基本信息
+
+### 合同
+主体
+
+### 项目/服务
+内容
+
+### 合同
+金额
+
+### 工期/交付/服务
+期限
+
+### 付款与
+结算
+
+### 清单
+明细
+
+### 重要条款
+摘要
+
+### 签
+章信息
+
+### 解析质量
+提示
+"""
+
+    cleaned = final_sanitize_contract_markdown(dirty)
+
+    assert normalize_contract_markdown_headings("### 签\n章信息") == "### 签章信息"
+    for broken in (
+        "### 合同\n基本信息",
+        "### 合同\n主体",
+        "### 项目/服务\n内容",
+        "### 合同\n金额",
+        "### 工期/交付/服务\n期限",
+        "### 付款与\n结算",
+        "### 清单\n明细",
+        "### 重要条款\n摘要",
+        "### 签\n章信息",
+        "### 解析质量\n提示",
+    ):
+        assert broken not in cleaned
+    for heading in (
+        "### 合同基本信息",
+        "### 合同主体",
+        "### 项目/服务内容",
+        "### 合同金额",
+        "### 工期/交付/服务期限",
+        "### 付款与结算",
+        "### 清单明细",
+        "### 重要条款摘要",
+        "### 签章信息",
+        "### 解析质量提示",
+    ):
+        assert heading in cleaned
 
 
 def _dirty_contract_payload() -> dict:
@@ -540,6 +609,20 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     })
     markdown = result.display_markdown
     amount_data = result.structured_data_dict()["amount"]
+    assert "### 签\n章信息" not in markdown
+    assert "### 签章信息" in markdown
+    for broken_heading in (
+        "### 合同\n基本信息",
+        "### 合同\n主体",
+        "### 项目/服务\n内容",
+        "### 合同\n金额",
+        "### 工期/交付/服务\n期限",
+        "### 付款与\n结算",
+        "### 清单\n明细",
+        "### 重要条款\n摘要",
+        "### 解析质量\n提示",
+    ):
+        assert broken_heading not in markdown
     assert amount_data["tax_excluded_amount_source"] == "ocr"
     assert amount_data["tax_amount_source"] == "ocr"
     assert amount_data["price_form_source"] == "ocr"

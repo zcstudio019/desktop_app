@@ -150,6 +150,29 @@ def sanitize_contract_markdown(markdown: str) -> str:
     return "\n".join(lines).replace("\n\n\n", "\n\n").strip()
 
 
+def normalize_contract_markdown_headings(markdown: str) -> str:
+    text = str(markdown or "")
+    heading_pairs = {
+        "合同\n基本信息": "合同基本信息",
+        "合同\n主体": "合同主体",
+        "项目/服务\n内容": "项目/服务内容",
+        "合同\n金额": "合同金额",
+        "工期/交付/服务\n期限": "工期/交付/服务期限",
+        "付款与\n结算": "付款与结算",
+        "清单\n明细": "清单明细",
+        "重要条款\n摘要": "重要条款摘要",
+        "签\n章信息": "签章信息",
+        "解析质量\n提示": "解析质量提示",
+    }
+    for broken, normalized in heading_pairs.items():
+        text = re.sub(
+            rf"(?m)^###\s*{re.escape(broken)}\s*$",
+            f"### {normalized}",
+            text,
+        )
+    return text
+
+
 def final_sanitize_contract_markdown(markdown: str) -> str:
     text = str(markdown or "")
     wrapped_header = re.search(r"(?im)^\s*[-*]?\s*markdown(?:\s|_)*result\s*[:：]\s*(## 合同)", text)
@@ -184,7 +207,8 @@ def final_sanitize_contract_markdown(markdown: str) -> str:
         lines.append(line)
     start = next((index for index, line in enumerate(lines) if line.strip() in {"## 合同", "## 鍚堝悓"}), -1)
     content = lines[start:] if start >= 0 else ["## 合同", *lines]
-    return "\n".join(content).replace("\n\n\n", "\n\n").strip()
+    cleaned = "\n".join(content).replace("\n\n\n", "\n\n").strip()
+    return normalize_contract_markdown_headings(cleaned)
 
 
 def sanitize_contract_result_payload(payload: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
