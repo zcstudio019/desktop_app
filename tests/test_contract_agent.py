@@ -8,7 +8,7 @@ from backend.document_types import get_document_display_name, normalize_document
 from backend.services.contract_agent import ContractAgent, ContractSkill, is_contract_like
 from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown, sanitize_contract_result_payload
 from backend.services.contract_agent.markdown_renderer import format_extract_status
-from backend.services.contract_agent.skill import extract_clause_by_keywords, second_pass_extract_contract_clauses
+from backend.services.contract_agent.skill import extract_clause_by_keywords, extract_signature_page_two_columns, second_pass_extract_contract_clauses
 from backend.services.local_storage_service import LocalStorageService
 from backend.services.markdown_profile_service import _build_single_document_section
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
@@ -504,20 +504,14 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
 本合同于2022年10月__日签订
 本合同在上海市长宁区签订
 """
-    page10 = """承包人（盖章）：上海建工集团股份有限公司
-地址：东大名路666号
-邮政编码：200080
-统一社会信用代码：91310000631189305E
-开户银行：建行上海第二支行
-账号：31001502500055390033
-纳税人性质：一般纳税人
-分包人（盖章）：上海意川建筑科技有限公司
-地址：上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室
-邮政编码：201600
-统一社会信用代码：91310118MA1JP7UB2B
-开户银行：上海银行股份有限公司浦西支行
-账号：03005029359
-纳税人性质：一般纳税人
+    page10 = """承包人（盖章）：上海建工集团股份有限公司    分包人（盖章）：上海意川建筑科技有限公司
+地址：东大名路666号    地址：上海市松江区佘山镇沈砖公路3129弄1
+号1幢3楼A区213室
+邮政编码：200080    邮政编码：201600
+统一社会信用代码：91310000631189305E    统一社会信用代码：91310118MA1JP7UB2B
+开户银行：建行上海第二支行    开户银行：上海银行股份有限公司浦西支行
+账号：31001502500055390033    账号：03005029359
+纳税人性质：一般纳税人    纳税人性质：一般纳税人
 本合同自双方加盖公章或合同专用章并经法定代表人或其委托代理人签字（章）后生效。
 本合同一式_捌_份，均具有同等法律效力，承包人执_肆_份，分包人执肆_份
 """
@@ -541,6 +535,8 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "合同生效条件：双方加盖公章或合同专用章，并经法定代表人或其委托代理人签字（章）后生效" in markdown
     assert "合同份数：本合同一式捌份，均具有同等法律效力，承包人执肆份，分包人执肆份" in markdown
     assert "东大名路666号" in markdown
+    assert "| 甲方/承包人/发包人 | 上海建工集团股份有限公司 | 91310000631189305E | 未识别 | 未识别 | 未识别 | 东大名路666号 |" in markdown
+    assert "| 甲方/承包人/发包人 | 上海银行股份有限公司" not in markdown
     assert "上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室" in markdown
     assert "| 乙方/分包人 | 上海意川建筑科技有限公司 | 91310118MA1JP7UB2B | 未识别 | 未识别 | 未识别 | 东大名路666号 |" not in markdown
     assert "| 乙方/分包人 | 上海意川建筑科技有限公司 | 91310118MA1JP7UB2B | 未识别 | 未识别 | 未识别 | 上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室 |" in markdown
@@ -568,6 +564,8 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "结算方式：未识别（当前PDF未包含结算正文条款）" in markdown
     assert "发票要求：未识别（当前PDF未包含发票正文条款）" in markdown
     assert "收款账户：开户银行：上海银行股份有限公司浦西支行；账号：03005029359" in markdown
+    assert "收款账户：开户银行：上海银行股份有限公司浦西支行；账号：91310118" not in markdown
+    assert "收款账户：开户银行：上海银行股份有限公司浦西支行；账号：91310118MA1JP7UB2B" not in markdown
     assert "收款账户：未识别" not in markdown
     assert "大写金额疑似不完整" not in markdown
     assert "收款账户归属需人工复核" not in markdown
@@ -579,3 +577,30 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "按合同约定的" not in markdown
     assert "按合同违约责任条款执行" not in markdown
     assert "清单明细：未识别到独立清单明细" in markdown
+
+
+def test_signature_page_two_columns_uses_coordinates_and_rejects_credit_code_as_account() -> None:
+    page = {
+        "width": 1000,
+        "lines": [
+            {"text": "承包人（盖章）：上海建工集团股份有限公司", "x_center": 240, "y": 10},
+            {"text": "分包人（盖章）：上海意川建筑科技有限公司", "x_center": 740, "y": 10},
+            {"text": "地址：东大名路666号", "x_center": 240, "y": 30},
+            {"text": "地址：上海市松江区佘山镇沈砖公路3129弄1", "x_center": 740, "y": 30},
+            {"text": "号1幢3楼A区213室", "x_center": 740, "y": 42},
+            {"text": "统一社会信用代码：91310000631189305E", "x_center": 240, "y": 55},
+            {"text": "统一社会信用代码：91310118MA1JP7UB2B", "x_center": 740, "y": 55},
+            {"text": "开户银行：建行上海第二支行", "x_center": 240, "y": 75},
+            {"text": "开户银行：上海银行股份有限公司浦西支行", "x_center": 740, "y": 75},
+            {"text": "账号：31001502500055390033", "x_center": 240, "y": 95},
+            {"text": "账号：03005029359", "x_center": 740, "y": 95},
+        ],
+    }
+    blocks = extract_signature_page_two_columns(page)
+    assert blocks["contractor"]["name"] == "上海建工集团股份有限公司"
+    assert "银行" not in blocks["contractor"]["name"]
+    assert blocks["contractor"]["address"] == "东大名路666号"
+    assert blocks["subcontractor"]["address"] == "上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室"
+    assert blocks["subcontractor"]["bank"] == "上海银行股份有限公司浦西支行"
+    assert blocks["subcontractor"]["account"] == "03005029359"
+    assert blocks["subcontractor"]["account"] not in {"91310118", "91310118MA1JP7UB2B"}

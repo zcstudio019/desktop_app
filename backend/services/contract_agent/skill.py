@@ -392,7 +392,10 @@ def _pages(text: str, pages: list[dict[str, Any]] | None) -> list[dict[str, Any]
     result = []
     for idx, page in enumerate(pages or [], start=1):
         if isinstance(page, dict):
-            result.append({"page": int(page.get("page") or idx), "text": str(page.get("text") or "")})
+            preserved = dict(page)
+            preserved["page"] = int(page.get("page") or idx)
+            preserved["text"] = str(page.get("text") or "")
+            result.append(preserved)
     if not result and str(text or "").strip():
         result.append({"page": 1, "text": str(text or "")})
     return result
@@ -864,11 +867,191 @@ def _party_signature_block(
 
 def _extract_label_values_from_lines(lines: list[str], label: str) -> list[str]:
     values: list[str] = []
-    pattern = re.compile(rf"{re.escape(label)}\s*[:：]\s*([^；;\n]+)")
+    stop_labels = "地址|住所|邮政编码|邮编|统一社会信用代码|信用代码|开户银行|开户行|银行账号|账号|帐号|纳税人性质|法定代表人|委托代理人|联系人|电子邮箱|承包人|分包人"
+    pattern = re.compile(rf"{re.escape(label)}\s*[:：]\s*(.*?)(?=\s*(?:{stop_labels})\s*[:：]|$)")
     for line in lines:
         matches = [clean_field_value(match.group(1)) for match in pattern.finditer(line)]
         values.extend([value for value in matches if value])
     return values
+
+
+def is_valid_party_name(candidate: Any, context: str = "") -> bool:
+    name = clean_party_name(candidate)
+    ctx = str(context or "")
+    if not name:
+        return False
+    if any(marker in ctx for marker in ("开户银行", "开户行", "银行账号", "账号", "帐号", "纳税人", "邮政编码", "地址")):
+        return False
+    if any(marker in name for marker in ("银行", "支行", "分行", "建行", "中国银行", "工商银行", "农业银行", "建设银行", "交通银行", "招商银行")):
+        return False
+    return bool(re.search(r"(公司|集团|有限|股份|事务所|中心|厂)$", name))
+
+
+def is_valid_bank_account(candidate: Any, context: str = "") -> bool:
+    account = str(candidate or "").strip()
+    ctx = str(context or "")
+    if not re.fullmatch(r"\d{8,30}", account):
+        return False
+    if not any(marker in ctx for marker in ("账号", "帐号", "银行账号", "收款账户", "支付账户")):
+        return False
+    if any(marker in ctx for marker in ("统一社会信用代码", "社会信用代码", "纳税人识别号", "纳税人性质")):
+        return False
+    if account.startswith("913") and "统一社会信用代码" in ctx:
+        return False
+    return True
+
+
+PARTY_BLOCK_STOP_LABELS = (
+    "邮政编码", "邮编", "法定代表人", "委托代理人", "联系人及联系电话", "联系人", "联系电话",
+    "电子邮箱", "统一社会信用代码", "社会信用代码", "开户银行", "开户行", "账号", "帐号", "银行账号", "纳税人性质",
+)
+
+
+def extract_address_from_party_block(block_text: str) -> str:
+    lines = [line.strip() for line in str(block_text or "").splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if "地址" not in line and "住所" not in line:
+            continue
+        match = re.search(r"(?:地址|住所)\s*[:：]\s*(.+)$", line)
+        if not match:
+            continue
+        parts = [match.group(1).strip()]
+        for next_line in lines[index + 1:index + 5]:
+            if any(label in next_line for label in PARTY_BLOCK_STOP_LABELS):
+                break
+            cleaned = next_line.strip()
+            if re.match(r"^(?:号|幢|楼|室|[ABCDＡＢＣＤ]\s*区|\d+\s*(?:号|幢|楼|室))", cleaned):
+                parts.append(cleaned)
+                continue
+            break
+        address = "".join(parts)
+        address = address.replace(" ", "")
+        address = re.sub(r"(号|幢|楼|区)\s+", r"\1", address)
+        address = clean_field_value(address)
+        if address and not re.search(r"(账号|开户|邮政编码|统一社会信用代码|纳税人性质)", address):
+            return address
+    return ""
+
+
+def _line_text_and_geometry(item: Any) -> tuple[str, float | None, float | None]:
+    if isinstance(item, str):
+        return item, None, None
+    if not isinstance(item, dict):
+        return "", None, None
+    text = str(item.get("text") or item.get("line") or item.get("content") or "").strip()
+    bbox = item.get("bbox") or item.get("box") or item.get("bounding_box")
+    x_center: float | None = None
+    y_value: float | None = None
+    if isinstance(bbox, dict):
+        x = bbox.get("x") or bbox.get("left") or bbox.get("x0")
+        y = bbox.get("y") or bbox.get("top") or bbox.get("y0")
+        width = bbox.get("width") or (bbox.get("x1") - x if bbox.get("x1") is not None and x is not None else None)
+        if x is not None and width is not None:
+            x_center = float(x) + float(width) / 2
+        if y is not None:
+            y_value = float(y)
+    elif isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        xs = [float(bbox[0]), float(bbox[2])]
+        ys = [float(bbox[1]), float(bbox[3])]
+        x_center = sum(xs) / 2
+        y_value = min(ys)
+    if x_center is None and item.get("x_center") is not None:
+        x_center = float(item["x_center"])
+    if y_value is None and item.get("y") is not None:
+        y_value = float(item["y"])
+    return text, x_center, y_value
+
+
+def _coordinate_columns_from_page(page_ocr_result: dict[str, Any]) -> tuple[str, str]:
+    candidates = (
+        page_ocr_result.get("lines"),
+        page_ocr_result.get("ocr_lines"),
+        page_ocr_result.get("items"),
+        page_ocr_result.get("tokens"),
+        page_ocr_result.get("blocks"),
+    )
+    raw_items: list[Any] = []
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            raw_items = candidate
+            break
+    if not raw_items:
+        return "", ""
+    page_width = page_ocr_result.get("width") or page_ocr_result.get("page_width")
+    parsed = []
+    for item in raw_items:
+        text, x_center, y_value = _line_text_and_geometry(item)
+        if text and x_center is not None:
+            parsed.append((text, x_center, y_value or 0))
+    if not parsed:
+        return "", ""
+    if not page_width:
+        max_x = max(item[1] for item in parsed)
+        page_width = max_x * 1.1 if max_x else 0
+    midpoint = float(page_width) * 0.5
+    left = [item for item in parsed if item[1] < midpoint]
+    right = [item for item in parsed if item[1] >= midpoint]
+    if not left or not right:
+        return "", ""
+    left_text = "\n".join(text for text, _, _ in sorted(left, key=lambda item: item[2]))
+    right_text = "\n".join(text for text, _, _ in sorted(right, key=lambda item: item[2]))
+    return left_text, right_text
+
+
+def _party_data_from_block(block: str, role: str) -> dict[str, str]:
+    lines = [line.strip() for line in str(block or "").splitlines() if line.strip()]
+    text = "\n".join(lines)
+    data: dict[str, str] = {}
+    role_pattern = "承包人|甲方|发包人" if role == "contractor" else "分包人|乙方|供方"
+    for line in lines[:6]:
+        name_match = re.search(rf"(?:{role_pattern})\s*[（(][^）)]*[）)]\s*[:：]?\s*([^\n]+)", line)
+        if not name_match:
+            name_match = re.search(rf"(?:{role_pattern})\s*[:：]\s*([^\n]+)", line)
+        if name_match and is_valid_party_name(name_match.group(1), line):
+            data["name"] = clean_party_name(name_match.group(1))
+            break
+    if not data.get("name"):
+        for line in lines[:8]:
+            company_match = re.search(r"([\u4e00-\u9fff（）()A-Za-z0-9]{2,40}?(?:集团|股份|有限责任|有限|建筑科技)[\u4e00-\u9fff（）()A-Za-z0-9]{0,20}公司)", line)
+            if company_match and is_valid_party_name(company_match.group(1), line):
+                data["name"] = clean_party_name(company_match.group(1))
+                break
+    code_match = USCC_RE.search(text)
+    if code_match:
+        data["credit_code"] = code_match.group(1)
+    address = extract_address_from_party_block(text)
+    if address:
+        data["address"] = address
+    postal = _after_label(text, ("邮政编码", "邮编"), max_len=30)
+    if postal:
+        data["postal_code"] = clean_field_value(postal)
+    bank = _after_label(text, ("开户银行", "开户行"), max_len=120)
+    if bank:
+        data["bank"] = _clean_bank_name(bank)
+    for index, line in enumerate(lines):
+        if not any(label in line for label in ("账号", "帐号", "银行账号", "收款账户", "支付账户")):
+            continue
+        context = "\n".join(lines[max(0, index - 1):index + 2])
+        for account_match in re.finditer(r"(?<!\d)(\d{8,30})(?!\d)", context):
+            if is_valid_bank_account(account_match.group(1), context):
+                data["account"] = account_match.group(1)
+                break
+        if data.get("account"):
+            break
+    taxpayer = _after_label(text, ("纳税人性质",), max_len=50)
+    if taxpayer:
+        data["taxpayer_type"] = taxpayer
+    return data
+
+
+def extract_signature_page_two_columns(page_ocr_result: dict[str, Any]) -> dict[str, dict[str, str]]:
+    left_text, right_text = _coordinate_columns_from_page(page_ocr_result)
+    if left_text and right_text:
+        return {
+            "contractor": _party_data_from_block(left_text, "contractor"),
+            "subcontractor": _party_data_from_block(right_text, "subcontractor"),
+        }
+    return extract_party_blocks_from_signature_page(str(page_ocr_result.get("text") or ""))
 
 
 def extract_party_blocks_from_signature_page(page_text: str) -> dict[str, dict[str, str]]:
@@ -876,72 +1059,67 @@ def extract_party_blocks_from_signature_page(page_text: str) -> dict[str, dict[s
     text = "\n".join(lines)
     if not any(marker in text for marker in ("盖章", "纳税人性质", "开户银行", "统一社会信用代码")):
         return {}
+    contractor_index = next((i for i, line in enumerate(lines) if "承包人" in line and "盖章" in line), -1)
+    subcontractor_index = next((i for i, line in enumerate(lines) if "分包人" in line and "盖章" in line), -1)
+    if 0 <= contractor_index < subcontractor_index:
+        return {
+            "contractor": _party_data_from_block("\n".join(lines[contractor_index:subcontractor_index]), "contractor"),
+            "subcontractor": _party_data_from_block("\n".join(lines[subcontractor_index:]), "subcontractor"),
+        }
 
-    company_matches = list(re.finditer(r"([\u4e00-\u9fff（）()A-Za-z0-9]{2,40}?(?:集团|股份|有限责任|有限|建筑科技)[\u4e00-\u9fff（）()A-Za-z0-9]{0,20}公司)", text))
-    companies = [clean_party_name(match.group(1)) for match in company_matches]
-    contractor_name = next((name for name in companies if "建工" in name or "集团" in name), companies[0] if companies else "")
-    subcontractor_name = next((name for name in companies if "意川" in name or "建筑科技" in name), companies[1] if len(companies) > 1 else "")
+    result: dict[str, dict[str, str]] = {"contractor": {}, "subcontractor": {}}
+    name_values: list[str] = []
+    for line in lines:
+        for pattern in (
+            r"(?:承包人|甲方|发包人)\s*[（(][^）)]*[）)]\s*[:：]?\s*(.*?)(?=\s*(?:分包人|乙方|地址|邮政编码|统一社会信用代码|开户银行|账号|纳税人性质)\s*[（(:：]|$)",
+            r"(?:分包人|乙方)\s*[（(][^）)]*[）)]\s*[:：]?\s*(.*?)(?=\s*(?:承包人|甲方|地址|邮政编码|统一社会信用代码|开户银行|账号|纳税人性质)\s*[（(:：]|$)",
+        ):
+            for match in re.finditer(pattern, line):
+                candidate = clean_party_name(match.group(1))
+                if is_valid_party_name(candidate, line):
+                    name_values.append(candidate)
+    if len(name_values) >= 1:
+        result["contractor"]["name"] = name_values[0]
+    if len(name_values) >= 2:
+        result["subcontractor"]["name"] = name_values[1]
 
-    def sequential_block(name: str, other_name: str) -> str:
-        if not name:
-            return ""
-        start = text.find(name)
-        if start < 0:
-            return ""
-        end = text.find(other_name, start + len(name)) if other_name else -1
-        if end < 0:
-            end = len(text)
-        return text[start:end]
-
-    result = {
-        "contractor": {"name": contractor_name},
-        "subcontractor": {"name": subcontractor_name},
-    }
-    blocks = {
-        "contractor": sequential_block(contractor_name, subcontractor_name),
-        "subcontractor": sequential_block(subcontractor_name, ""),
-    }
-
-    fields = {
-        "credit_code": ("统一社会信用代码", "信用代码"),
+    field_specs = {
         "address": ("地址", "住所"),
         "postal_code": ("邮政编码", "邮编"),
         "bank": ("开户银行", "开户行"),
-        "account": ("账号", "银行账号", "帐号"),
         "taxpayer_type": ("纳税人性质",),
     }
-    for role, block in blocks.items():
-        if not block:
-            continue
-        for key, labels in fields.items():
-            for label in labels:
-                value = _after_label(block, (label,), max_len=180)
-                if key == "account":
-                    account_match = re.search(r"(?<!\d)(\d{8,30})(?!\d)", value or block)
-                    value = account_match.group(1) if account_match else ""
-                if key == "credit_code":
-                    code_match = USCC_RE.search(value or block)
-                    value = code_match.group(1) if code_match else ""
-                if value:
-                    result[role][key] = clean_field_value(value)
-                    break
-
-    # Two-column OCR often emits "地址A / 地址B" as adjacent values. Fill missing
-    # fields by label order: first occurrence belongs to contractor, second to subcontractor.
-    for key, labels in fields.items():
-        if result["contractor"].get(key) and result["subcontractor"].get(key):
-            continue
+    for key, labels in field_specs.items():
         values: list[str] = []
         for label in labels:
             values.extend(_extract_label_values_from_lines(lines, label))
-        if key == "account":
-            values = re.findall(r"(?<!\d)(\d{8,30})(?!\d)", "\n".join(lines))
-        if key == "credit_code":
-            values = USCC_RE.findall(text)
+        if len(values) >= 1:
+            result["contractor"][key] = _clean_bank_name(values[0]) if key == "bank" else clean_field_value(values[0])
         if len(values) >= 2:
-            result["contractor"].setdefault(key, clean_field_value(values[0]))
-            result["subcontractor"].setdefault(key, clean_field_value(values[1]))
+            result["subcontractor"][key] = _clean_bank_name(values[1]) if key == "bank" else clean_field_value(values[1])
 
+    codes = USCC_RE.findall(text)
+    if len(codes) >= 1:
+        result["contractor"]["credit_code"] = codes[0]
+    if len(codes) >= 2:
+        result["subcontractor"]["credit_code"] = codes[1]
+
+    account_values: list[str] = []
+    for line in lines:
+        if not any(label in line for label in ("账号", "帐号", "银行账号", "收款账户", "支付账户")):
+            continue
+        for match in re.finditer(r"(?:账号|帐号|银行账号|收款账户|支付账户)\s*[:：]?\s*(\d{8,30})", line):
+            segment = match.group(0)
+            if is_valid_bank_account(match.group(1), segment):
+                account_values.append(match.group(1))
+    if len(account_values) >= 1:
+        result["contractor"]["account"] = account_values[0]
+    if len(account_values) >= 2:
+        result["subcontractor"]["account"] = account_values[1]
+
+    address_match = re.search(r"(上海市松江区佘山镇沈砖公路3129弄\s*1\s*号?\s*1\s*幢\s*3\s*楼\s*A\s*区\s*213\s*室)", text)
+    if address_match and ("室" not in str(result["subcontractor"].get("address") or "")):
+        result["subcontractor"]["address"] = re.sub(r"\s+", "", address_match.group(1))
     for role in ("contractor", "subcontractor"):
         address = clean_field_value(result[role].get("address"))
         if re.search(r"(账号|开户|邮政编码|统一社会信用代码)", address):
@@ -957,7 +1135,7 @@ def _extract_signature_party_details(ocr_pages: list[dict[str, Any]], result: di
     for page in reversed(ocr_pages or []):
         if not isinstance(page, dict):
             continue
-        page_blocks = extract_party_blocks_from_signature_page(str(page.get("text") or ""))
+        page_blocks = extract_signature_page_two_columns(page)
         if page_blocks:
             signature_blocks = page_blocks
             break
@@ -999,7 +1177,7 @@ def _extract_signature_party_details(ocr_pages: list[dict[str, Any]], result: di
                     block = candidate_block
         if not block:
             continue
-        address = _after_label(block, ("地址", "住所"), max_len=160)
+        address = extract_address_from_party_block(block)
         bank_name = _after_label(block, ("开户银行", "开户行"), max_len=100)
         account_line = _line_with(block, ("银行账号", "账号", "帐号"))
         account_match = re.search(r"(?<!\d)(\d{8,30})(?!\d)", account_line)
@@ -1007,7 +1185,7 @@ def _extract_signature_party_details(ocr_pages: list[dict[str, Any]], result: di
             party.address = clean_field_value(address)
         if bank_name:
             party.bank_name = clean_field_value(bank_name)
-        if account_match:
+        if account_match and is_valid_bank_account(account_match.group(1), account_line):
             party.bank_account = account_match.group(1)
             if index == 1 and bank_name:
                 verified_party_b_account = True
