@@ -8,7 +8,13 @@ from backend.document_types import get_document_display_name, normalize_document
 from backend.services.contract_agent import ContractAgent, ContractSkill, is_contract_like
 from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown, sanitize_contract_result_payload
 from backend.services.contract_agent.markdown_renderer import format_extract_status
-from backend.services.contract_agent.skill import extract_clause_by_keywords, extract_signature_page_two_columns, second_pass_extract_contract_clauses
+from backend.services.contract_agent.skill import (
+    extract_clause_by_keywords,
+    extract_contract_party_blocks,
+    extract_signature_page_two_columns,
+    is_valid_bank_account,
+    second_pass_extract_contract_clauses,
+)
 from backend.services.local_storage_service import LocalStorageService
 from backend.services.markdown_profile_service import _build_single_document_section
 from backend.services.document_agents.orchestrator import run_document_extraction_agent
@@ -604,3 +610,29 @@ def test_signature_page_two_columns_uses_coordinates_and_rejects_credit_code_as_
     assert blocks["subcontractor"]["bank"] == "上海银行股份有限公司浦西支行"
     assert blocks["subcontractor"]["account"] == "03005029359"
     assert blocks["subcontractor"]["account"] not in {"91310118", "91310118MA1JP7UB2B"}
+
+
+def test_signature_page_mixed_text_does_not_leak_contractor_fields_to_subcontractor() -> None:
+    page_text = """承包人（盖章）：上海建工集团股份有限公司    分包人（盖章）：上海意川建筑科技有限公司
+地址：东大名路666号    地址：上海市松江区佘山镇沈砖公路3129弄1
+号1幢3楼A区213室
+统一社会信用代码：91310000631189305E    统一社会信用代码：91310118MA1JP7UB2B
+开户银行：建行上海第二支行    开户银行：上海银行股份有限公司浦西支行
+账号：31001502500055390033    账号：03005029359
+纳税人性质：一般纳税人    纳税人性质：一般纳税人
+"""
+    blocks = extract_contract_party_blocks([{"page": 10, "text": page_text}], "construction_subcontract")
+
+    assert blocks["contractor"]["name"] == "上海建工集团股份有限公司"
+    assert blocks["contractor"]["name"] != "上海银行股份有限公司"
+    assert blocks["contractor"]["credit_code"] == "91310000631189305E"
+    assert blocks["contractor"]["address"] == "东大名路666号"
+    assert blocks["subcontractor"]["name"] == "上海意川建筑科技有限公司"
+    assert blocks["subcontractor"]["credit_code"] == "91310118MA1JP7UB2B"
+    assert blocks["subcontractor"]["credit_code"] != "91310000631189305E"
+    assert "松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室" in blocks["subcontractor"]["address"]
+    assert blocks["subcontractor"]["address"] != "东大名路666号"
+    assert blocks["subcontractor"]["bank"] == "上海银行股份有限公司浦西支行"
+    assert blocks["subcontractor"]["account"] == "03005029359"
+    assert blocks["subcontractor"]["account"] not in {"91310118", "91310118MA1JP7UB2B", "31001502500055390033"}
+    assert not is_valid_bank_account("91310118MA1JP7UB2B", "统一社会信用代码：91310118MA1JP7UB2B")
