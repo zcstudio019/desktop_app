@@ -520,6 +520,11 @@ export interface ChatJobCreateResponse {
   message?: string;
   enqueue_success?: boolean;
   error_message?: string;
+  job_type?: string;
+  doc_type?: string;
+  doc_type_name?: string;
+  parse_mode?: 'async' | string;
+  parse_status?: 'pending' | 'processing' | 'success' | 'partial' | 'failed' | string;
 }
 
 export interface ChatIntentAsyncJob {

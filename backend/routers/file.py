@@ -35,6 +35,7 @@ from backend.services import get_storage_service, supports_structured_storage
 from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
 from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
 from backend.services.contract_agent import is_contract_like
+from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown, sanitize_contract_result_payload
 from backend.services.id_card_ocr_preprocess_service import (
     ID_CARD_LOW_QUALITY_MESSAGE,
     ocr_id_card_with_variants,
@@ -124,6 +125,8 @@ HAS_ASYNC_JOB_STORAGE = all(
 _ACTIVE_FILE_PROCESS_JOB_TASKS: set[asyncio.Task[None]] = set()
 _UPLOAD_JOB_TEMP_ROOT = Path(__file__).parent.parent.parent / "data" / "upload_job_files"
 FILE_PROCESS_JOB_TYPE = "file_process"
+CONTRACT_EXTRACT_JOB_TYPE = "contract_extract"
+FILE_PROCESS_JOB_TYPES = {FILE_PROCESS_JOB_TYPE, CONTRACT_EXTRACT_JOB_TYPE}
 FILE_PROCESS_ENQUEUE_TIMEOUT_SECONDS = 3.0
 
 NO_FILENAME_MESSAGE = "未提供文件名。"
@@ -364,6 +367,7 @@ def _cleanup_upload_job_temp_dir(job_id: str) -> None:
 
 def _build_file_process_job_request_snapshot(
     *,
+    job_type: str = FILE_PROCESS_JOB_TYPE,
     document_type: str,
     customer_id: str,
     customer_name: str,
@@ -373,10 +377,14 @@ def _build_file_process_job_request_snapshot(
     saved_path: str = "",
 ) -> dict[str, Any]:
     return {
-        "jobType": FILE_PROCESS_JOB_TYPE,
+        "jobType": job_type,
         "customerId": customer_id,
         "customerName": customer_name,
         "documentType": document_type,
+        "docType": "contract" if job_type == CONTRACT_EXTRACT_JOB_TYPE else document_type,
+        "docTypeName": "合同" if job_type == CONTRACT_EXTRACT_JOB_TYPE else "",
+        "parseMode": "async" if job_type == CONTRACT_EXTRACT_JOB_TYPE else "async",
+        "parseStatus": "processing" if job_type == CONTRACT_EXTRACT_JOB_TYPE else "",
         "fileName": original_filename,
         "filePath": saved_path,
         "fileSize": file_size,
@@ -399,6 +407,7 @@ def _build_file_process_job_request_snapshot(
 def _build_file_process_job_execution_payload(
     *,
     job_id: str,
+    job_type: str = FILE_PROCESS_JOB_TYPE,
     temp_file_path: str,
     original_filename: str,
     document_type: str,
@@ -410,7 +419,7 @@ def _build_file_process_job_execution_payload(
 ) -> dict[str, Any]:
     return {
         "jobId": job_id,
-        "jobType": FILE_PROCESS_JOB_TYPE,
+        "jobType": job_type,
         "tempFilePath": temp_file_path,
         "originalFilename": original_filename,
         "documentType": document_type,
@@ -527,6 +536,50 @@ def _filename_suggests_contract(filename: str) -> bool:
 def _should_use_contract_ocr(explicit_document_type: str | None, filename: str, text: str = "") -> bool:
     normalized = normalize_document_type_code(explicit_document_type) or str(explicit_document_type or "").strip()
     return normalized == "contract" or _filename_suggests_contract(filename) or is_contract_like(text or "", filename=filename)
+
+
+def _is_contract_upload_hint(document_type: str | None, filename: str) -> bool:
+    normalized = normalize_document_type_code(document_type) or str(document_type or "").strip().lower()
+    return normalized == "contract" or _filename_suggests_contract(filename)
+
+
+def _contract_parse_status(content: dict[str, Any]) -> str:
+    status = str(
+        content.get("parse_status")
+        or content.get("extraction_status")
+        or content.get("status")
+        or ""
+    ).strip().lower()
+    if status in {"success", "partial", "failed", "pending", "processing"}:
+        return status
+    if str(content.get("markdown_result") or content.get("display_markdown") or "").strip():
+        return "partial"
+    return "failed"
+
+
+def _normalize_contract_content_for_async(content: dict[str, Any]) -> dict[str, Any]:
+    normalized = sanitize_contract_result_payload(content, force=True)
+    markdown = final_sanitize_contract_markdown(
+        str(
+            normalized.get("markdown_result")
+            or normalized.get("display_markdown")
+            or normalized.get("markdown")
+            or ""
+        )
+    )
+    parse_status = _contract_parse_status(normalized)
+    normalized.update(
+        {
+            "doc_type": "contract",
+            "doc_type_name": "合同",
+            "document_type_code": "contract",
+            "agent_type": "contract_agent",
+            "parse_status": parse_status,
+            "markdown_result": markdown,
+            "display_markdown": markdown,
+        }
+    )
+    return normalized
 
 
 def _should_use_id_card_ocr(explicit_document_type: str | None, filename: str) -> bool:
@@ -1887,6 +1940,8 @@ async def _process_file_bytes(
         document_type_code,
         get_document_display_name(document_type_code),
     )
+    if document_type_code == "contract" and progress_callback:
+        await progress_callback("正在提取合同主体和金额")
     if document_type_code in {"id_card", "shareholder_id_card"} and not any(
         isinstance(page, dict) and page.get("source") == "id_card_ocr_variants"
         for page in raw_pages
@@ -2094,6 +2149,8 @@ async def _run_file_process_job(
     temp_file_path = str(execution_payload.get("tempFilePath") or "").strip()
     original_filename = str(execution_payload.get("originalFilename") or "").strip()
     explicit_document_type = str(execution_payload.get("documentType") or "").strip()
+    job_type = str(execution_payload.get("jobType") or FILE_PROCESS_JOB_TYPE).strip() or FILE_PROCESS_JOB_TYPE
+    is_contract_job = job_type == CONTRACT_EXTRACT_JOB_TYPE or _is_contract_upload_hint(explicit_document_type, original_filename)
     requested_customer_name = str(execution_payload.get("customerName") or "").strip()
     requested_customer_id = str(execution_payload.get("customerId") or "").strip()
     if requested_customer_id and not requested_customer_name:
@@ -2133,13 +2190,15 @@ async def _run_file_process_job(
     await _update_file_process_job(
         job_id,
         status="running",
-        progress_message="文件已接收，等待处理",
+        progress_message="合同解析任务已启动" if is_contract_job else "文件已接收，等待处理",
         started_at=_utc_now_iso(),
         error_message="",
     )
 
     try:
         file_bytes = temp_path.read_bytes()
+        if is_contract_job:
+            await _update_file_process_progress(job_id, "文件读取完成，正在识别合同关键页")
         file_type = file_service.get_file_type(original_filename)
         if file_type == "unknown":
             raise HTTPException(status_code=400, detail=UNSUPPORTED_FILE_FORMAT_MESSAGE)
@@ -2154,9 +2213,27 @@ async def _run_file_process_job(
             customer_name=requested_customer_name,
             file_path=str(temp_path),
             historical_financial_reports=historical_financial_reports,
-            progress_callback=lambda message: _update_file_process_progress(job_id, message),
+            progress_callback=(
+                lambda message: _update_file_process_progress(
+                    job_id,
+                    (
+                        "正在 OCR 识别合同关键页"
+                        if "OCR" in str(message)
+                        else "正在提取合同主体和金额"
+                        if "结构化" in str(message)
+                        else "正在识别合同关键页"
+                        if "定位合同关键页" in str(message)
+                        else str(message)
+                    ),
+                )
+            ) if is_contract_job else (lambda message: _update_file_process_progress(job_id, message)),
         )
         content_payload = process_result.content if isinstance(process_result.content, dict) else {}
+        if is_contract_job or process_result.documentType == "contract" or str(content_payload.get("doc_type") or "") == "contract":
+            await _update_file_process_progress(job_id, "正在生成合同 Markdown")
+            content_payload = _normalize_contract_content_for_async(content_payload)
+            process_result.content = content_payload
+            process_result.documentType = "contract"
         agent_type = str(content_payload.get("agent_type") or content_payload.get("agentType") or "")
         logger.info(
             "[File Job] extraction finished job_id=%s document_id=%s document_type=%s agent_type=%s status=extracted error_message=",
@@ -2177,7 +2254,7 @@ async def _run_file_process_job(
 
         existing_customer_before_save = bool(requested_customer_id) or await _customer_exists_by_name(final_customer_name)
 
-        await _update_file_process_progress(job_id, "正在保存资料")
+        await _update_file_process_progress(job_id, "正在保存合同解析结果" if is_contract_job else "正在保存资料")
         save_result = await _save_to_local_storage(
             original_filename or f"{process_result.documentType}.json",
             process_result.documentType,
@@ -2227,12 +2304,35 @@ async def _run_file_process_job(
             "originalAvailable": original_available,
             "original_available": original_available,
         }
+        if process_result.documentType == "contract" or is_contract_job:
+            contract_content = _normalize_contract_content_for_async(process_result.content if isinstance(process_result.content, dict) else {})
+            parse_status = _contract_parse_status(contract_content)
+            result_payload.update(
+                {
+                    "doc_type": "contract",
+                    "doc_type_name": "合同",
+                    "agent_type": "contract_agent",
+                    "parse_mode": "async",
+                    "parse_status": parse_status,
+                    "markdown_result": contract_content.get("markdown_result") or "",
+                }
+            )
+            result_payload["content"] = contract_content
         partial_failed = process_result.content.get("extraction_status") == "partial_failed"
+        contract_partial = (process_result.documentType == "contract" or is_contract_job) and result_payload.get("parse_status") in {"partial", "processing"}
         await _update_file_process_job(
             job_id,
             status="success",
             customer_id=final_customer_id,
-            progress_message="上传已保存，结构化提取部分失败" if partial_failed else "处理完成",
+            progress_message=(
+                "合同解析完成，部分字段需人工复核"
+                if contract_partial
+                else "上传已保存，结构化提取部分失败"
+                if partial_failed
+                else "合同解析完成"
+                if process_result.documentType == "contract" or is_contract_job
+                else "处理完成"
+            ),
             result_json=result_payload,
             error_message="",
             finished_at=_utc_now_iso(),
@@ -2257,8 +2357,8 @@ async def _run_file_process_job(
         await _update_file_process_job(
             job_id,
             status="failed",
-            progress_message="处理失败",
-            error_message=str(exc) or "文件处理任务执行失败",
+            progress_message="合同解析失败" if is_contract_job else "处理失败",
+            error_message=(f"合同解析失败：{str(exc)}" if is_contract_job else (str(exc) or "文件处理任务执行失败")),
             finished_at=_utc_now_iso(),
         )
         raise
@@ -2449,6 +2549,8 @@ async def create_file_process_job(
     job_id = uuid.uuid4().hex
     username = current_user.get("username") or "anonymous"
     role = current_user.get("role") or ""
+    is_contract_job = _is_contract_upload_hint(requested_document_type, filename)
+    job_type = CONTRACT_EXTRACT_JOB_TYPE if is_contract_job else FILE_PROCESS_JOB_TYPE
     log_step("file_save_start")
     temp_file_path = _persist_upload_job_temp_file(job_id, filename or "uploaded_file", file_bytes)
     log_step("file_save_done")
@@ -2464,6 +2566,7 @@ async def create_file_process_job(
     log_step("create_document_start")
     log_step("create_document_done")
     request_payload = _build_file_process_job_request_snapshot(
+        job_type=job_type,
         document_type=requested_document_type,
         customer_id=normalized_customer_id,
         customer_name=normalized_customer_name,
@@ -2474,6 +2577,7 @@ async def create_file_process_job(
     )
     execution_payload = _build_file_process_job_execution_payload(
         job_id=job_id,
+        job_type=job_type,
         temp_file_path=str(temp_file_path),
         original_filename=filename or "uploaded_file",
         document_type=requested_document_type,
@@ -2498,11 +2602,11 @@ async def create_file_process_job(
         await job_storage_service.create_async_job(
             {
                 "job_id": job_id,
-                "job_type": FILE_PROCESS_JOB_TYPE,
+                "job_type": job_type,
                 "customer_id": normalized_customer_id[:64],
                 "username": username,
                 "status": "pending",
-                "progress_message": "文件已接收，等待处理",
+                "progress_message": "合同解析任务已创建，等待后台解析" if is_contract_job else "文件已接收，等待处理",
                 "request_json": request_payload,
                 "execution_payload_json": execution_payload,
             }
@@ -2583,8 +2687,21 @@ async def create_file_process_job(
     return JSONResponse(content={
         "job_id": job_id,
         "status": "pending" if enqueue_success else "failed",
-        "message": "文件已上传，正在后台处理" if enqueue_success else "文件已上传，但后台任务派发失败，请查看任务状态",
+        "message": (
+            "合同解析任务已创建，正在后台解析"
+            if is_contract_job and enqueue_success
+            else "文件已上传，正在后台处理"
+            if enqueue_success
+            else "文件已上传，但后台任务派发失败，请查看任务状态"
+        ),
         "enqueue_success": enqueue_success,
+        **({
+            "doc_type": "contract",
+            "doc_type_name": "合同",
+            "parse_mode": "async",
+            "parse_status": "processing" if enqueue_success else "failed",
+            "job_type": CONTRACT_EXTRACT_JOB_TYPE,
+        } if is_contract_job else {}),
     })
 
 
@@ -2600,7 +2717,7 @@ async def get_file_process_job(
     current_user: dict = Depends(get_current_user),
 ) -> ChatJobStatusResponse:
     job = await job_storage_service.get_async_job(job_id)
-    if not job or (job.get("job_type") or "") != FILE_PROCESS_JOB_TYPE:
+    if not job or (job.get("job_type") or "") not in FILE_PROCESS_JOB_TYPES:
         raise HTTPException(status_code=404, detail="未找到该上传处理任务")
 
     username = current_user.get("username") or "anonymous"

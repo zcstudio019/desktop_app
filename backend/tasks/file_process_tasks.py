@@ -56,17 +56,24 @@ def run_file_process_job_task(self: FileProcessTask, job_id: str) -> dict[str, s
         )
 
         final_job = sync_get_async_job(job_id) or {}
+        final_result_json = final_job.get("result_json") if isinstance(final_job.get("result_json"), dict) else {}
+        final_job_type = str(final_job.get("job_type") or "")
+        final_progress_message = (
+            final_job.get("progress_message")
+            if final_job_type == "contract_extract" and final_job.get("progress_message")
+            else "处理完成"
+        )
         sync_update_async_job(
             job_id,
             {
                 "status": "success",
-                "progress_message": "处理完成",
-                "result_json": final_job.get("result_json") if isinstance(final_job.get("result_json"), dict) else {},
+                "progress_message": final_progress_message,
+                "result_json": final_result_json,
                 "error_message": "",
                 "finished_at": final_job.get("finished_at") or utc_now_iso(),
             },
         )
-        result_json = final_job.get("result_json") if isinstance(final_job.get("result_json"), dict) else {}
+        result_json = final_result_json
         content = result_json.get("content") if isinstance(result_json.get("content"), dict) else {}
         logger.info(
             "[Celery File Process Job] job status updated to success job_id=%s document_id=%s document_type=%s agent_type=%s status=success error_message=",

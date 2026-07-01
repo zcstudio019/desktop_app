@@ -2,6 +2,7 @@ import type { ChatJobStatusResponse, ChatJobSummaryResponse } from '../services/
 
 export type SupportedJobType =
   | 'file_process'
+  | 'contract_extract'
   | 'chat_extract'
   | 'risk_report'
   | 'scheme_match'
@@ -70,6 +71,25 @@ export const JOB_DISPLAY_CONFIG: Record<SupportedJobType, JobDisplayConfig> = {
     supportsViewResult: true,
     supportsDirectNavigate: false,
     successActionLabel: '查看处理结果',
+  },
+  contract_extract: {
+    jobType: 'contract_extract',
+    jobTypeLabel: '合同解析',
+    targetPage: 'upload',
+    defaultStatusText: {
+      pending: '合同解析任务已创建',
+      running: '合同解析中',
+      retrying: '合同解析暂时受阻，系统正在自动重试',
+      success: '合同解析完成',
+      failed: '合同解析失败',
+      timeout: '合同解析超时',
+      interrupted: '合同解析可能已中断',
+    },
+    resultSummary: (_result, customerName) => `${(customerName || '').trim() || '当前客户'}的合同解析已完成。`,
+    supportsContinueView: true,
+    supportsViewResult: true,
+    supportsDirectNavigate: false,
+    successActionLabel: '查看合同解析结果',
   },
   chat_extract: {
     jobType: 'chat_extract',

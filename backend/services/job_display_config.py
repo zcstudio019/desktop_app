@@ -34,6 +34,21 @@ JOB_DISPLAY_CONFIG: dict[str, dict[str, Any]] = {
         "supportsViewResult": True,
         "supportsDirectNavigate": False,
     },
+    "contract_extract": {
+        "jobType": "contract_extract",
+        "jobTypeLabel": "合同解析",
+        "targetPage": "upload",
+        "defaultStatusText": {
+            "pending": "合同解析任务已创建",
+            "running": "合同解析中",
+            "retrying": "合同解析暂时受阻，系统正在自动重试",
+            "success": "合同解析完成",
+            "failed": "合同解析失败",
+        },
+        "supportsContinueView": True,
+        "supportsViewResult": True,
+        "supportsDirectNavigate": False,
+    },
     "chat_extract": {
         "jobType": "chat_extract",
         "jobTypeLabel": "资料提取",
@@ -161,5 +176,9 @@ def build_job_result_summary(
 
     if job_type == "application_generate":
         return f"{customer_label}的申请表已生成。"
+
+    if job_type == "contract_extract":
+        parse_status = str(result_payload.get("parse_status") or "").strip()
+        return f"{customer_label}的合同解析已完成。" if parse_status != "failed" else f"{customer_label}的合同解析失败。"
 
     return "任务已完成。"

@@ -691,11 +691,15 @@ function getProgressFromJobStatus(status: ChatJobStatusResponse, currentProgress
   if (status.status === 'pending') return 10;
   if (message.includes('文件上传中') || message.includes('文件正在上传并创建处理任务')) return 20;
   if (message.includes('文件已接收')) return 20;
+  if (message.includes('合同解析任务已启动') || message.includes('合同解析任务已创建')) return 20;
   if (message.includes('正在解析文件')) return 30;
+  if (message.includes('合同关键页')) return 40;
   if (/ocr/i.test(message) || message.includes('OCR')) return 40;
   if (message.includes('正在结构化提取') || message.includes('提取') || message.includes('AI')) return 65;
+  if (message.includes('正在生成合同 Markdown')) return 90;
   if (
     message.includes('正在保存资料') ||
+    message.includes('正在保存合同解析结果') ||
     message.includes('入库') ||
     message.includes('正在刷新资料汇总') ||
     message.includes('正在重建检索索引') ||

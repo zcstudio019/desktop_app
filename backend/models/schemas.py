@@ -380,6 +380,14 @@ class ChatJobCreateResponse(BaseModel):
 
     jobId: str = Field(..., description="Async job ID")
     status: str = Field(default="pending", description="Initial job status")
+    message: str | None = Field(default=None, description="Initial progress message")
+    job_type: str | None = Field(default=None, description="Async job type")
+    doc_type: str | None = Field(default=None, description="Detected document type")
+    doc_type_name: str | None = Field(default=None, description="Localized document type name")
+    parse_mode: str | None = Field(default=None, description="sync/async parse mode")
+    parse_status: str | None = Field(default=None, description="Document parse status")
+    enqueue_success: bool | None = Field(default=None, description="Whether the worker task was enqueued")
+    error_message: str | None = Field(default=None, description="Task creation failure reason")
 
 
 class ChatJobStatusResponse(BaseModel):
