@@ -539,6 +539,10 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
         "filename": "合同002：临空12号地块国际商务花园四期项目（除桩基）-机电安装工程（南区） (1).pdf",
     })
     markdown = result.display_markdown
+    amount_data = result.structured_data_dict()["amount"]
+    assert amount_data["tax_excluded_amount_source"] == "ocr"
+    assert amount_data["tax_amount_source"] == "ocr"
+    assert amount_data["price_form_source"] == "ocr"
     assert "提取状态：部分成功" in markdown
     assert "文件完整性：当前PDF疑似仅包含合同协议书、目录及签章页，通用/专用条款正文未包含在本文件中" in markdown
     assert "签订日期：2022年10月（具体日期未填写，需人工复核）" in markdown
@@ -563,6 +567,7 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "不含税金额：172,927,794.60 元" in markdown
     assert "税率：9%" in markdown
     assert "税额：15,563,501.52 元" in markdown
+    assert "税额：15,563,501.52 元（根据含税金额和税率推算，需人工复核）" not in markdown
     assert "安全文明施工费：0 元" in markdown
     assert "合同价格形式：固定总价" in markdown
     assert "大写金额与小写金额基本一致" in markdown
@@ -582,6 +587,7 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "大写金额疑似不完整" not in markdown
     assert "收款账户归属需人工复核" not in markdown
     assert "税额与不含税金额存在小额四舍五入差异需复核" in markdown
+    assert "不含税金额和税额为系统推算值需复核" not in markdown
     assert "保修/质保：分包人承诺在缺陷责任期及保修期内承担相应工程维修责任。" in markdown
     assert "违约责任：未识别（当前PDF未包含违约责任正文条款）" in markdown
     assert "争议解决：未识别（当前PDF未包含争议解决正文条款）" in markdown
@@ -609,9 +615,12 @@ def test_contract_tax_amount_page_extracts_ocr_spaced_values() -> None:
     amount_data = extract_contract_tax_amounts_from_amount_page(pages)
 
     assert amount_data["tax_excluded_amount"] == "172,927,794.60 元"
+    assert amount_data["tax_excluded_amount_source"] == "ocr"
     assert amount_data["tax_rate"] == "9%"
     assert amount_data["tax_amount"] == "15,563,501.52 元"
+    assert amount_data["tax_amount_source"] == "ocr"
     assert amount_data["price_form"] == "固定总价"
+    assert amount_data["price_form_source"] == "ocr"
 
 
 def test_contract_amount_helpers_normalize_and_extract_tax_fields() -> None:
@@ -629,6 +638,8 @@ def test_contract_amount_helpers_normalize_and_extract_tax_fields() -> None:
     assert extract_tax_excluded_amount(amount_text) == "172,927,794.60 元"
     assert extract_tax_amount(amount_text) == "15,563,501.52 元"
     assert extract_price_form(amount_text) == "固定总价"
+    assert extract_price_form("固定单价。其他说明。合同价格形式：固定总价。") == "固定总价"
+    assert extract_price_form("固定单价。其他说明。") == ""
 
 
 def test_contract_amount_fallback_derives_tax_values_with_review_note() -> None:
@@ -645,11 +656,14 @@ def test_contract_amount_fallback_derives_tax_values_with_review_note() -> None:
         "filename": "合同002：临空12号地块国际商务花园四期项目（除桩基）-机电安装工程（南区） (1).pdf",
     })
     markdown = result.display_markdown
+    amount = result.structured_data_dict()["amount"]
 
+    assert amount["tax_excluded_amount_source"] == "calculated"
+    assert amount["tax_amount_source"] == "calculated"
     assert "税率：9%" in markdown
     assert "不含税金额：172,927,794.61 元（根据含税金额和税率推算，需人工复核）" in markdown
     assert "税额：15,563,501.52 元（根据含税金额和税率推算，需人工复核）" in markdown
-    assert "金额校验：大写金额与小写金额基本一致；不含税金额和税额根据含税金额及税率推算，需人工复核" in markdown
+    assert "金额校验：大写金额与小写金额基本一致；不含税金额和税额为系统推算值，需人工复核" in markdown
     assert "不含税金额和税额为系统推算值需复核" in markdown
     assert "金额识别状态：部分成功" in markdown
 

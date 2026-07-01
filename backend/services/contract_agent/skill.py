@@ -831,15 +831,17 @@ def _extract_tax_rate_from_amount_text(text: str) -> str:
 
 def extract_price_form(amount_page_text: str) -> str:
     compact = normalize_amount_page_text(amount_page_text)
-    for price_form in ("固定总价", "固定单价", "可调价格"):
-        label_position = compact.find("合同价格形式")
-        if label_position >= 0 and price_form in compact[label_position:label_position + 80]:
-            return price_form
-        label_position = compact.find("价格形式")
-        if label_position >= 0 and price_form in compact[label_position:label_position + 80]:
-            return price_form
-        if price_form in compact and any(label in compact for label in ("合同价格形式", "价格形式")):
-            return price_form
+    label_positions = [
+        position
+        for label in ("合同价格形式", "价格形式")
+        for position in [compact.find(label)]
+        if position >= 0
+    ]
+    for position in sorted(set(label_positions)):
+        window = compact[position:position + 80]
+        for price_form in ("固定总价", "固定单价", "总价合同", "单价合同", "可调价格"):
+            if price_form in window:
+                return "固定总价" if price_form == "总价合同" else ("固定单价" if price_form == "单价合同" else price_form)
     return ""
 
 
@@ -858,6 +860,12 @@ def _decimal_from_amount_value(value: Any) -> Decimal | None:
 
 
 def _derive_tax_amounts_from_included_and_rate(amount: dict[str, Any]) -> bool:
+    if amount.get("tax_excluded_amount") and not amount.get("tax_excluded_amount_source"):
+        amount["tax_excluded_amount_source"] = "ocr"
+    if amount.get("tax_amount") and not amount.get("tax_amount_source"):
+        amount["tax_amount_source"] = "ocr"
+    if amount.get("price_form") and not amount.get("price_form_source"):
+        amount["price_form_source"] = "ocr"
     if amount.get("tax_excluded_amount") and amount.get("tax_amount"):
         return False
     included = _decimal_from_amount_value(amount.get("tax_included_amount") or amount.get("amount_lower"))
@@ -875,10 +883,21 @@ def _derive_tax_amounts_from_included_and_rate(amount: dict[str, Any]) -> bool:
     if not amount.get("tax_excluded_amount"):
         amount["tax_excluded_amount"] = f"{_format_decimal_money(excluded)}{suffix}"
         amount["tax_excluded_amount_inferred"] = True
+        amount["tax_excluded_amount_source"] = "calculated"
     if not amount.get("tax_amount"):
         amount["tax_amount"] = f"{_format_decimal_money(tax)}{suffix}"
         amount["tax_amount_inferred"] = True
+        amount["tax_amount_source"] = "calculated"
     return bool(amount.get("tax_excluded_amount_inferred") or amount.get("tax_amount_inferred"))
+
+
+def _ensure_amount_source_defaults(amount: dict[str, Any]) -> None:
+    for field in ("tax_excluded_amount", "tax_amount", "price_form"):
+        source_key = f"{field}_source"
+        if amount.get(field) and not amount.get(source_key):
+            amount[source_key] = "ocr"
+        elif not amount.get(field) and not amount.get(source_key):
+            amount[source_key] = "missing"
 
 
 def _log_contract_amount_debug(
@@ -906,6 +925,19 @@ def _log_contract_amount_debug(
         [price_form for price_form in ("固定总价", "固定单价", "总价合同", "单价合同") if price_form in normalized_window],
         extracted,
     )
+    price_window = ""
+    for label in ("合同价格形式", "价格形式"):
+        position = normalized_window.find(label)
+        if position >= 0:
+            price_window = normalized_window[position:position + 120]
+            break
+    logger.info("[ContractPriceFormDebug] page=%s raw_window=%s", page_number, price_window)
+    logger.info(
+        "[ContractPriceFormDebug] candidates=%s selected=%s source=%s",
+        [price_form for price_form in ("固定总价", "固定单价", "总价合同", "单价合同", "可调价格") if price_form in price_window],
+        extracted.get("price_form") or "",
+        extracted.get("price_form_source") or ("ocr" if extracted.get("price_form") else "missing"),
+    )
 
 
 def extract_contract_tax_amounts_from_amount_page(ocr_pages: list[dict[str, Any]]) -> dict[str, str]:
@@ -929,6 +961,7 @@ def extract_contract_tax_amounts_from_amount_page(ocr_pages: list[dict[str, Any]
             excluded = extract_tax_excluded_amount(candidate)
             if excluded:
                 amount_data["tax_excluded_amount"] = excluded
+                amount_data["tax_excluded_amount_source"] = "ocr"
         if not amount_data.get("tax_rate"):
             tax_rate = _extract_tax_rate_from_amount_text(candidate)
             if tax_rate:
@@ -937,10 +970,12 @@ def extract_contract_tax_amounts_from_amount_page(ocr_pages: list[dict[str, Any]
             tax_amount = extract_tax_amount(candidate)
             if tax_amount:
                 amount_data["tax_amount"] = tax_amount
+                amount_data["tax_amount_source"] = "ocr"
         if not amount_data.get("price_form"):
             price_form = extract_price_form(candidate)
             if price_form:
                 amount_data["price_form"] = price_form
+                amount_data["price_form_source"] = "ocr"
 
     for page, _, normalized, matched_keywords in amount_pages:
         _log_contract_amount_debug(page, normalized, matched_keywords, amount_data)
@@ -996,14 +1031,21 @@ def extract_contract_amounts_from_agreement_page(page_text: str) -> dict[str, st
         amount_data["tax_rate"] = tax_match.group(1)
     if tax_amount:
         amount_data["tax_amount"] = tax_amount
+        amount_data["tax_amount_source"] = "ocr"
     if safety_fee:
         amount_data["safety_civilization_fee"] = "0 元" if Decimal(re.sub(r"[^\d.]", "", safety_fee) or "0") == 0 else safety_fee
     if price_form_match:
-        amount_data["price_form"] = clean_field_value(price_form_match.group(1))
+        parsed_price_form = extract_price_form(text)
+        if parsed_price_form:
+            amount_data["price_form"] = parsed_price_form
+            amount_data["price_form_source"] = "ocr"
+    if excluded:
+        amount_data["tax_excluded_amount_source"] = "ocr"
     return amount_data
 
 
 def _finalize_amount_checks(amount: dict[str, Any]) -> None:
+    _ensure_amount_source_defaults(amount)
     lower_number = re.sub(r"[^\d.]", "", amount.get("amount_lower") or "")
     upper_number = chinese_money_to_decimal(str(amount.get("amount_upper") or ""))
     checks: list[str] = []
@@ -1015,10 +1057,20 @@ def _finalize_amount_checks(amount: dict[str, Any]) -> None:
                 checks.append("大写金额疑似不完整，需人工复核")
         except InvalidOperation:
             pass
-    tax_is_inferred = bool(amount.get("tax_excluded_amount_inferred") or amount.get("tax_amount_inferred"))
-    if tax_is_inferred:
+    calculated_fields = [
+        label
+        for key, label in (
+            ("tax_excluded_amount_source", "不含税金额"),
+            ("tax_amount_source", "税额"),
+        )
+        if amount.get(key) == "calculated"
+    ]
+    if calculated_fields:
         amount["tax_check"] = "推算值，需人工复核"
-        checks.append("不含税金额和税额根据含税金额及税率推算，需人工复核")
+        if len(calculated_fields) == 2:
+            checks.append("不含税金额和税额为系统推算值，需人工复核")
+        else:
+            checks.append(f"{calculated_fields[0]}包含系统推算值，需人工复核")
     else:
         try:
             included_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_included_amount") or ""))
@@ -1088,12 +1140,18 @@ def _extract_agreement_amounts(ocr_pages: list[dict[str, Any]], amount: dict[str
         amount["tax_excluded_amount"] = excluded
     if tax_amount:
         amount["tax_amount"] = tax_amount
+        amount["tax_amount_source"] = "ocr"
     if tax_match:
         amount["tax_rate"] = tax_match.group(1)
     if safety_fee:
         amount["safety_civilization_fee"] = "0 元" if Decimal(re.sub(r"[^\d.]", "", safety_fee) or "0") == 0 else safety_fee
     if price_form_match:
-        amount["price_form"] = clean_field_value(price_form_match.group(1))
+        parsed_price_form = extract_price_form(text)
+        if parsed_price_form:
+            amount["price_form"] = parsed_price_form
+            amount["price_form_source"] = "ocr"
+    if excluded:
+        amount["tax_excluded_amount_source"] = "ocr"
 
     amount.update(extract_contract_tax_amounts_from_amount_page(ocr_pages))
     _derive_tax_amounts_from_included_and_rate(amount)
@@ -2208,6 +2266,26 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         and not any("不含税金额和税额为系统推算值" in warning for warning in warnings)
     ):
         warnings.append("不含税金额和税额为系统推算值需复核")
+    if (
+        "不含税金额和税额为系统推算值" in amount_check
+        and not any("不含税金额和税额为系统推算值" in warning for warning in warnings)
+    ):
+        warnings.append("不含税金额和税额为系统推算值需复核")
+    if (
+        "不含税金额包含系统推算值" in amount_check
+        and not any("不含税金额包含系统推算值" in warning for warning in warnings)
+    ):
+        warnings.append("不含税金额包含系统推算值需复核")
+    if (
+        "税额包含系统推算值" in amount_check
+        and not any("税额包含系统推算值" in warning for warning in warnings)
+    ):
+        warnings.append("税额包含系统推算值需复核")
+    if (
+        (result.get("amount") or {}).get("price_form_source") == "low_confidence"
+        and not any("合同价格形式需人工复核" in warning for warning in warnings)
+    ):
+        warnings.append("合同价格形式需人工复核")
     if (
         "税额或不含税金额未识别" in amount_check
         and not any("税额或不含税金额未识别" in warning for warning in warnings)
