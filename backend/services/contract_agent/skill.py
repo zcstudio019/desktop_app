@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from .schema import CONTRACT_CATEGORY_NAMES, ContractParty
 
+
+logger = logging.getLogger(__name__)
 
 CONTRACT_KEYWORDS = (
     "建设工程专业分包合同", "机电安装专业分包合同", "机电安装工程专业分包合同", "物资采购合同", "材料采购合同",
@@ -708,75 +711,126 @@ def _money_from_segment(segment: str) -> str:
     return _format_money_value(segment)
 
 
+AMOUNT_PAGE_KEYWORDS = (
+    "签约合同价",
+    "含税",
+    "不含增值税",
+    "不含税",
+    "增值税税额",
+    "增值税额",
+    "税额",
+    "税率",
+    "合同价格形式",
+    "价格形式",
+    "固定总价",
+)
+
+
+def normalize_amount_page_text(text: str) -> str:
+    raw_lines = [line.strip() for line in str(text or "").replace("，", ",").replace("．", ".").splitlines()]
+    raw_lines = [line for line in raw_lines if line]
+    merged_lines: list[str] = []
+    continuation_labels = ("不含增值税", "不含税", "增值税税额", "增值税额", "税额", "合同价格形式", "价格形式")
+    stop_labels = ("签约合同价", "安全文明施工费", "合同文件构成", "计划", "质量标准")
+    for line in raw_lines:
+        compact_line = re.sub(r"\s+", "", line)
+        should_merge = False
+        if merged_lines:
+            previous = re.sub(r"\s+", "", merged_lines[-1])
+            current_starts_with_value = bool(re.match(r"^(?:人民币)?\d", compact_line))
+            should_merge = any(label in previous for label in continuation_labels) and current_starts_with_value
+            should_merge = should_merge and not any(label in compact_line for label in stop_labels)
+        if should_merge:
+            merged_lines[-1] = f"{merged_lines[-1]} {line}"
+        else:
+            merged_lines.append(line)
+    normalized = "\n".join(merged_lines)
+    normalized = re.sub(r"(?<=\d)\s+(?=\d)", "", normalized)
+    normalized = re.sub(r"(?<=\d)\s*([.,])\s*(?=\d)", r"\1", normalized)
+    normalized = re.sub(r"\s+", "", normalized)
+    return normalized
+
+
 def _iter_contract_amount_page_texts(ocr_pages: list[dict[str, Any]]) -> list[str]:
-    keywords = (
-        "签约合同价",
-        "含税",
-        "不含增值税",
-        "不含税",
-        "增值税税额",
-        "税额",
-        "税率",
-        "合同价格形式",
-        "固定总价",
-    )
     page_texts: list[str] = []
     for page in ocr_pages or []:
         if not isinstance(page, dict):
             continue
         page_text = str(page.get("text") or "")
-        compact = re.sub(r"\s+", "", page_text)
-        if any(keyword in compact for keyword in keywords):
+        compact = normalize_amount_page_text(page_text)
+        if any(keyword in compact for keyword in AMOUNT_PAGE_KEYWORDS):
             page_texts.append(page_text)
     return page_texts
 
 
-def _money_after_amount_labels(text: str, labels: tuple[str, ...], window: int = 180) -> str:
-    compact = re.sub(r"\s+", "", str(text or ""))
+def _money_candidates_after_amount_labels(text: str, labels: tuple[str, ...], window: int = 180) -> list[str]:
+    compact = normalize_amount_page_text(text)
+    values: list[str] = []
     for label in labels:
         for label_match in re.finditer(re.escape(label), compact):
             segment = compact[label_match.start():label_match.start() + window]
-            value = _format_money_value(segment)
-            if value:
-                return value
-    return ""
+            for money_match in re.finditer(r"(?<!\d)(\d[\d,]*(?:\.\d{1,2})?)(?!\d)\s*(元|圆)?", segment):
+                if money_match.end() < len(segment) and segment[money_match.end():money_match.end() + 1] == "%":
+                    continue
+                digits = re.sub(r"\D", "", money_match.group(1))
+                if not money_match.group(2) and len(digits) < 6:
+                    continue
+                value = _format_money_value(money_match.group(0))
+                if value and value not in values:
+                    values.append(value)
+    return values
 
 
-def _extract_tax_amount_from_amount_text(text: str) -> str:
-    compact = re.sub(r"\s+", "", str(text or ""))
-    label_pattern = r"(?:增值税税额|税额|增值税金额)"
-    for tax_match_amount in re.finditer(
-        label_pattern + r"[^0-9元圆]{0,60}([0-9][0-9,]*(?:[.．][0-9]{1,2})?)\s*(?:元|圆)?",
-        compact,
-    ):
-        segment = tax_match_amount.group(0)
-        if re.search(r"[=＝×*]", segment):
-            continue
-        value = _format_money_value(tax_match_amount.group(1))
-        if value:
-            return value
-    for label in ("增值税税额", "税额", "增值税金额"):
-        position = compact.find(label)
-        if position < 0:
-            continue
-        segment = compact[position:position + 220]
-        if re.search(r"^[^:：]*[=＝×*]", segment):
-            continue
-        value = _format_money_value(segment)
-        if value:
-            return value
+def _money_after_amount_labels(text: str, labels: tuple[str, ...], window: int = 180) -> str:
+    candidates = _money_candidates_after_amount_labels(text, labels, window)
+    return candidates[0] if candidates else ""
+
+
+def extract_tax_excluded_amount(amount_page_text: str) -> str:
+    return _money_after_amount_labels(
+        amount_page_text,
+        (
+            "不含增值税签约合同价",
+            "不含税签约合同价",
+            "不含增值税合同价",
+            "不含税合同价",
+            "不含增值税金额",
+            "不含税金额",
+            "不含增值税价",
+            "不含税价",
+            "不含增值税",
+            "不含税",
+        ),
+        120,
+    )
+
+
+def extract_tax_amount(amount_page_text: str) -> str:
+    compact = normalize_amount_page_text(amount_page_text)
+    labels = ("增值税税额", "增值税额", "增值税金额", "税额")
+    for label in labels:
+        for label_match in re.finditer(re.escape(label), compact):
+            segment = compact[label_match.start():label_match.start() + 120]
+            for money_match in re.finditer(r"(?<!\d)(\d[\d,]*(?:\.\d{1,2})?)(?!\d)\s*(元|圆)?", segment):
+                if money_match.end() < len(segment) and segment[money_match.end():money_match.end() + 1] == "%":
+                    continue
+                if re.search(r"[=＝×*]", segment[:money_match.start()]):
+                    continue
+                value = _format_money_value(money_match.group(0))
+                if value and value != "0.00 元":
+                    return value
     return ""
 
 
 def _extract_tax_rate_from_amount_text(text: str) -> str:
-    compact = re.sub(r"\s+", "", str(text or ""))
+    compact = normalize_amount_page_text(text)
     for tax_rate_match in re.finditer(r"(?:增值税)?税率(?:为|[:：])?[^0-9%]{0,12}(\d+(?:\.\d+)?%)", compact):
         return tax_rate_match.group(1)
     return ""
 
 
-def _extract_price_form_from_amount_text(text: str) -> str:
-    compact = re.sub(r"\s+", "", str(text or ""))
+def extract_price_form(amount_page_text: str) -> str:
+    compact = normalize_amount_page_text(amount_page_text)
     for price_form in ("固定总价", "固定单价", "可调价格"):
         label_position = compact.find("合同价格形式")
         if label_position >= 0 and price_form in compact[label_position:label_position + 80]:
@@ -784,29 +838,95 @@ def _extract_price_form_from_amount_text(text: str) -> str:
         label_position = compact.find("价格形式")
         if label_position >= 0 and price_form in compact[label_position:label_position + 80]:
             return price_form
+        if price_form in compact and any(label in compact for label in ("合同价格形式", "价格形式")):
+            return price_form
     return ""
+
+
+def _format_decimal_money(value: Decimal) -> str:
+    return f"{value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,.2f} 元"
+
+
+def _decimal_from_amount_value(value: Any) -> Decimal | None:
+    number_text = re.sub(r"[^\d.]", "", str(value or ""))
+    if not number_text:
+        return None
+    try:
+        return Decimal(number_text)
+    except InvalidOperation:
+        return None
+
+
+def _derive_tax_amounts_from_included_and_rate(amount: dict[str, Any]) -> bool:
+    if amount.get("tax_excluded_amount") and amount.get("tax_amount"):
+        return False
+    included = _decimal_from_amount_value(amount.get("tax_included_amount") or amount.get("amount_lower"))
+    rate_text = str(amount.get("tax_rate") or "")
+    rate_match = re.search(r"(\d+(?:\.\d+)?)%", rate_text)
+    if included is None or not rate_match:
+        return False
+    try:
+        rate = Decimal(rate_match.group(1)) / Decimal("100")
+        excluded = (included / (Decimal("1") + rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        tax = (included - excluded).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ZeroDivisionError):
+        return False
+    suffix = "（根据含税金额和税率推算，需人工复核）"
+    if not amount.get("tax_excluded_amount"):
+        amount["tax_excluded_amount"] = f"{_format_decimal_money(excluded)}{suffix}"
+        amount["tax_excluded_amount_inferred"] = True
+    if not amount.get("tax_amount"):
+        amount["tax_amount"] = f"{_format_decimal_money(tax)}{suffix}"
+        amount["tax_amount_inferred"] = True
+    return bool(amount.get("tax_excluded_amount_inferred") or amount.get("tax_amount_inferred"))
+
+
+def _log_contract_amount_debug(
+    page: dict[str, Any],
+    normalized_window: str,
+    matched_keywords: list[str],
+    extracted: dict[str, str],
+) -> None:
+    page_number = page.get("page") or page.get("page_number") or page.get("page_index") or "unknown"
+    raw_lines = [line.strip() for line in str(page.get("text") or "").splitlines() if line.strip()]
+    logger.info(
+        "[ContractAmountDebug] page=%s matched_keywords=%s",
+        page_number,
+        ",".join(matched_keywords),
+    )
+    logger.info(
+        "[ContractAmountDebug] raw_lines=\n%s",
+        "\n".join(f"{index + 1}: {line}" for index, line in enumerate(raw_lines)),
+    )
+    logger.info("[ContractAmountDebug] normalized_window=%s", normalized_window[:1000])
+    logger.info(
+        "[ContractAmountDebug] tax_excluded_amount_candidates=%s tax_amount_candidates=%s price_form_candidates=%s selected=%s",
+        _money_candidates_after_amount_labels(normalized_window, ("不含增值税", "不含税", "不含增值税金额", "不含税金额"), 160),
+        _money_candidates_after_amount_labels(normalized_window, ("增值税税额", "增值税额", "增值税金额", "税额"), 160),
+        [price_form for price_form in ("固定总价", "固定单价", "总价合同", "单价合同") if price_form in normalized_window],
+        extracted,
+    )
 
 
 def extract_contract_tax_amounts_from_amount_page(ocr_pages: list[dict[str, Any]]) -> dict[str, str]:
     amount_data: dict[str, str] = {}
-    page_texts = _iter_contract_amount_page_texts(ocr_pages)
-    if not page_texts:
+    amount_pages = []
+    for page in ocr_pages or []:
+        if not isinstance(page, dict):
+            continue
+        page_text = str(page.get("text") or "")
+        normalized = normalize_amount_page_text(page_text)
+        matched_keywords = [keyword for keyword in AMOUNT_PAGE_KEYWORDS if keyword in normalized]
+        if matched_keywords:
+            amount_pages.append((page, page_text, normalized, matched_keywords))
+    if not amount_pages:
         return amount_data
 
-    candidates = page_texts + ["\n".join(page_texts)]
-    excluded_labels = (
-        "不含增值税签约合同价",
-        "不含税签约合同价",
-        "不含增值税合同价",
-        "不含税合同价",
-        "不含增值税金额",
-        "不含税金额",
-        "不含增值税价",
-        "不含税价",
-    )
+    candidates = [page_text for _, page_text, _, _ in amount_pages]
+    candidates.append("\n".join(candidates))
     for candidate in candidates:
         if not amount_data.get("tax_excluded_amount"):
-            excluded = _money_after_amount_labels(candidate, excluded_labels, 240)
+            excluded = extract_tax_excluded_amount(candidate)
             if excluded:
                 amount_data["tax_excluded_amount"] = excluded
         if not amount_data.get("tax_rate"):
@@ -814,13 +934,16 @@ def extract_contract_tax_amounts_from_amount_page(ocr_pages: list[dict[str, Any]
             if tax_rate:
                 amount_data["tax_rate"] = tax_rate
         if not amount_data.get("tax_amount"):
-            tax_amount = _extract_tax_amount_from_amount_text(candidate)
+            tax_amount = extract_tax_amount(candidate)
             if tax_amount:
                 amount_data["tax_amount"] = tax_amount
         if not amount_data.get("price_form"):
-            price_form = _extract_price_form_from_amount_text(candidate)
+            price_form = extract_price_form(candidate)
             if price_form:
                 amount_data["price_form"] = price_form
+
+    for page, _, normalized, matched_keywords in amount_pages:
+        _log_contract_amount_debug(page, normalized, matched_keywords, amount_data)
 
     return amount_data
 
@@ -892,18 +1015,23 @@ def _finalize_amount_checks(amount: dict[str, Any]) -> None:
                 checks.append("大写金额疑似不完整，需人工复核")
         except InvalidOperation:
             pass
-    try:
-        included_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_included_amount") or ""))
-        excluded_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_excluded_amount") or ""))
-        tax_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_amount") or ""))
-        difference = abs(included_number - excluded_number - tax_number)
-        if Decimal("0") < difference <= Decimal("0.02"):
-            amount["tax_check"] = "存在小额四舍五入差异，需人工复核"
-            checks.append("税额与不含税金额存在小额四舍五入差异，需人工复核")
-        elif difference == 0:
-            amount["tax_check"] = "一致"
-    except (InvalidOperation, ValueError):
-        pass
+    tax_is_inferred = bool(amount.get("tax_excluded_amount_inferred") or amount.get("tax_amount_inferred"))
+    if tax_is_inferred:
+        amount["tax_check"] = "推算值，需人工复核"
+        checks.append("不含税金额和税额根据含税金额及税率推算，需人工复核")
+    else:
+        try:
+            included_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_included_amount") or ""))
+            excluded_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_excluded_amount") or ""))
+            tax_number = Decimal(re.sub(r"[^\d.]", "", amount.get("tax_amount") or ""))
+            difference = abs(included_number - excluded_number - tax_number)
+            if Decimal("0") < difference <= Decimal("0.02"):
+                amount["tax_check"] = "存在小额四舍五入差异，需人工复核"
+                checks.append("税额与不含税金额存在小额四舍五入差异，需人工复核")
+            elif difference == 0:
+                amount["tax_check"] = "一致"
+        except (InvalidOperation, ValueError):
+            pass
     missing_tax_parts = not amount.get("tax_excluded_amount") or not amount.get("tax_amount") or not amount.get("tax_rate")
     if lower_number and amount.get("amount_upper") and missing_tax_parts:
         checks.append("税额或不含税金额未识别，需人工复核")
@@ -968,6 +1096,7 @@ def _extract_agreement_amounts(ocr_pages: list[dict[str, Any]], amount: dict[str
         amount["price_form"] = clean_field_value(price_form_match.group(1))
 
     amount.update(extract_contract_tax_amounts_from_amount_page(ocr_pages))
+    _derive_tax_amounts_from_included_and_rate(amount)
     _finalize_amount_checks(amount)
 
 
@@ -2074,6 +2203,16 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         and not any("税额与不含税金额存在小额四舍五入差异" in warning for warning in warnings)
     ):
         warnings.append("税额与不含税金额存在小额四舍五入差异需复核")
+    if (
+        "不含税金额和税额根据含税金额及税率推算" in amount_check
+        and not any("不含税金额和税额为系统推算值" in warning for warning in warnings)
+    ):
+        warnings.append("不含税金额和税额为系统推算值需复核")
+    if (
+        "税额或不含税金额未识别" in amount_check
+        and not any("税额或不含税金额未识别" in warning for warning in warnings)
+    ):
+        warnings.append("税额或不含税金额未识别需复核")
     return {"is_valid": not warnings, "warnings": warnings, "completeness": completeness}
 
 

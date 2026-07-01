@@ -11,9 +11,13 @@ from backend.services.contract_agent.markdown_renderer import format_extract_sta
 from backend.services.contract_agent.skill import (
     extract_clause_by_keywords,
     extract_contract_party_blocks,
+    extract_price_form,
+    extract_tax_amount,
+    extract_tax_excluded_amount,
     extract_contract_tax_amounts_from_amount_page,
     extract_signature_page_two_columns,
     is_valid_bank_account,
+    normalize_amount_page_text,
     second_pass_extract_contract_clauses,
 )
 from backend.services.local_storage_service import LocalStorageService
@@ -608,6 +612,46 @@ def test_contract_tax_amount_page_extracts_ocr_spaced_values() -> None:
     assert amount_data["tax_rate"] == "9%"
     assert amount_data["tax_amount"] == "15,563,501.52 元"
     assert amount_data["price_form"] == "固定总价"
+
+
+def test_contract_amount_helpers_normalize_and_extract_tax_fields() -> None:
+    amount_text = """不 含 增 值 税 签 约 合 同 价
+人民币 172 927 794 . 60 元
+增值税税额=不含税价×9%
+增 值 税 税 额
+人民币 15 563 501.52 元
+合同 价格 形式 ：固定总价
+"""
+
+    normalized = normalize_amount_page_text(amount_text)
+
+    assert "172927794.60" in normalized
+    assert extract_tax_excluded_amount(amount_text) == "172,927,794.60 元"
+    assert extract_tax_amount(amount_text) == "15,563,501.52 元"
+    assert extract_price_form(amount_text) == "固定总价"
+
+
+def test_contract_amount_fallback_derives_tax_values_with_review_note() -> None:
+    page8 = """签约合同价暂定为含税：人民币188,491,296.13元
+大写：壹亿捌仟捌佰肆拾玖万壹仟贰佰玖拾陆元壹角叁分
+增值税税率：9%
+安全文明施工费（含税）：大写：零元（￥0元）
+"""
+    pages = [{"page": 8, "text": page8}]
+
+    result = ContractAgent().run({
+        "text": page8,
+        "raw_pages": pages,
+        "filename": "合同002：临空12号地块国际商务花园四期项目（除桩基）-机电安装工程（南区） (1).pdf",
+    })
+    markdown = result.display_markdown
+
+    assert "税率：9%" in markdown
+    assert "不含税金额：172,927,794.61 元（根据含税金额和税率推算，需人工复核）" in markdown
+    assert "税额：15,563,501.52 元（根据含税金额和税率推算，需人工复核）" in markdown
+    assert "金额校验：大写金额与小写金额基本一致；不含税金额和税额根据含税金额及税率推算，需人工复核" in markdown
+    assert "不含税金额和税额为系统推算值需复核" in markdown
+    assert "金额识别状态：部分成功" in markdown
 
 
 def test_signature_page_two_columns_uses_coordinates_and_rejects_credit_code_as_account() -> None:
