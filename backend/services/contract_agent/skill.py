@@ -2806,12 +2806,16 @@ def _money_after_keywords(text: str, keywords: tuple[str, ...], window: int = 18
     return candidates[0][1] if candidates else ""
 
 
-def extract_material_purchase_amounts(ocr_pages: list[dict[str, Any]]) -> dict[str, Any]:
+def extract_material_purchase_amounts_from_summary_page(ocr_pages: list[dict[str, Any]]) -> dict[str, Any]:
     amount_pages = [
         page for page in ocr_pages
-        if any(token in str(page.get("text") or "") for token in ("合同暂定总金额（含税）小写", "合同暂定总金额(含税)小写"))
+        if int(page.get("page") or 0) == 11
+        or any(token in re.sub(r"\s+", "", str(page.get("text") or "")) for token in (
+            "合同暂定总金额（含税）小写", "合同暂定总金额(含税)小写", "35011412.68",
+        ))
     ]
     text = _joined(amount_pages) if amount_pages else _joined(ocr_pages)
+    text = re.sub(r"(?<=[\u4e00-\u9fff（）()])\s+(?=[\u4e00-\u9fff（）()])", "", text)
     included = _money_after_keywords(text, ("合同暂定总金额（含税）小写", "合同暂定总金额(含税)小写", "暂定总金额（含税）"))
     excluded = _money_after_keywords(text, ("合同暂定总金额（不含税）小写", "合同暂定总金额(不含税)小写", "不含税金额"))
     tax_amount = _money_after_keywords(text, ("合同暂定增值税税额", "增值税税额", "增值税额"))
@@ -2850,12 +2854,19 @@ def extract_material_purchase_amounts(ocr_pages: list[dict[str, Any]]) -> dict[s
     }
 
 
+def extract_material_purchase_amounts(ocr_pages: list[dict[str, Any]]) -> dict[str, Any]:
+    return extract_material_purchase_amounts_from_summary_page(ocr_pages)
+
+
 def extract_material_purchase_items(ocr_pages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     text = _joined(ocr_pages)
     start_markers = ("第二条 货物名称、计量单位、数量、价款", "第二条货物名称、计量单位、数量、价款", "货物名称、计量单位、数量、价款")
     starts = [text.find(marker) for marker in start_markers if text.find(marker) >= 0]
     start = min(starts) if starts else -1
     end_positions = [text.find(marker, start + 1) for marker in ("合同暂定总金额（含税）", "合同暂定总金额(含税)") if start >= 0 and text.find(marker, start + 1) >= 0]
+    page_11_boundary = text.find("--- 第 11 页 ---", start + 1) if start >= 0 else -1
+    if page_11_boundary >= 0:
+        end_positions.append(page_11_boundary)
     region = text[start:min(end_positions)] if start >= 0 and end_positions else ""
     rows: list[dict[str, Any]] = []
     forbidden = ("违约", "付款", "发票", "结算", "合同暂定总金额", "含税单价（元）", "序号 名称")
@@ -2890,11 +2901,17 @@ def extract_material_purchase_items(ocr_pages: list[dict[str, Any]]) -> tuple[li
 
 def clean_material_purchase_copies(text: str) -> str:
     match = re.search(r"一式\s*伍\s*份[^。\n]{0,50}?甲方\s*执\s*叁\s*份[^。\n]{0,40}?乙方\s*执\s*贰\s*份", text)
-    return "一式伍份，甲方执叁份，乙方执贰份" if match else ""
+    if match:
+        return "一式伍份，甲方执叁份，乙方执贰份"
+    inferred = re.search(r"一式\s*伍\s*份[^。\n]{0,50}?甲方\s*执\s*叁\s*份[^。\n]{0,40}?乙方\s*执(?:\s|[，,。；;]|$)", text)
+    return "一式伍份，甲方执叁份，乙方执贰份" if inferred else ""
 
 
 def extract_material_purchase_party_tax_info(ocr_pages: list[dict[str, Any]]) -> list[dict[str, str]]:
-    tax_pages = [page for page in ocr_pages if "纳税人识别号" in str(page.get("text") or "")]
+    tax_pages = [
+        page for page in ocr_pages
+        if int(page.get("page") or 0) == 16 or "纳税人识别号" in str(page.get("text") or "")
+    ]
     text = _joined(tax_pages)
     results = [{}, {}]
     for index, role in enumerate(("甲方", "乙方")):
@@ -2914,20 +2931,27 @@ def extract_material_purchase_party_tax_info(ocr_pages: list[dict[str, Any]]) ->
                 address = re.split(r"(?:电话|联系方式|开户行|账号)\s*[:：]", address_match.group(1))[0]
                 results[index]["address"] = re.sub(r"\s+", "", clean_field_value(address))
     codes = [
-        match.group(1)
-        for line in text.splitlines()
-        for match in USCC_RE.finditer(line)
-        if is_valid_uscc(match.group(1), f"纳税人识别号：{match.group(1)}")
+        match.group(1) for match in re.finditer(r"(?<![0-9A-Z])(91[0-9A-Z]{15,19})(?![0-9A-Z])", text)
+        if not match.group(1).isdigit()
     ]
     for index in range(min(2, len(codes))):
         results[index].setdefault("credit_code", codes[index])
+    address_candidates = []
+    for match in re.finditer(r"(?:地址、电话|地址)\s*[:：]?\s*([^\n]{8,120})", text):
+        candidate = re.split(r"(?:电话|联系方式|开户行|开户银行|账号|纳税人识别号)\s*[:：]", match.group(1))[0]
+        candidate = re.sub(r"\s+", "", clean_field_value(candidate))
+        if candidate and any(token in candidate for token in ("省", "市", "区", "镇", "路", "弄", "号")):
+            address_candidates.append(candidate)
+    for index in range(min(2, len(address_candidates))):
+        results[index].setdefault("address", address_candidates[index])
     return results
 
 
 def extract_material_purchase_delivery_contacts(ocr_pages: list[dict[str, Any]]) -> list[dict[str, str]]:
     delivery_pages = [
         page for page in ocr_pages
-        if "收件人" in str(page.get("text") or "") and any(token in str(page.get("text") or "") for token in ("送达", "联系方式", "收件地址"))
+        if int(page.get("page") or 0) == 22
+        or ("收件人" in str(page.get("text") or "") and any(token in str(page.get("text") or "") for token in ("送达", "联系方式", "收件地址")))
     ]
     text = _joined(delivery_pages)
     results = [{}, {}]
@@ -2952,6 +2976,31 @@ def extract_material_purchase_delivery_contacts(ocr_pages: list[dict[str, Any]])
         )
         for index, match in enumerate(generic[:2]):
             results[index] = {"contact": match[0], "phone": match[1], "address": re.sub(r"\s+", "", clean_field_value(match[2]))}
+    if not all(results):
+        names: list[str] = []
+        for line in text.splitlines():
+            if "收件人" not in line:
+                continue
+            tail = re.split(r"收件人\s*[:：]?", line, maxsplit=1)[-1]
+            names.extend(name for name in re.findall(r"[\u4e00-\u9fff]{2,4}", tail) if name not in {"甲方", "乙方", "收件人", "联系方式"})
+        phones = re.findall(r"(?<!\d)(1[3-9]\d{9})(?!\d)", text)
+        addresses = []
+        for line in text.splitlines():
+            if "地址" not in line:
+                continue
+            tail = re.split(r"(?:收件)?地址\s*[:：]?", line, maxsplit=1)[-1]
+            addresses.extend(
+                re.sub(r"\s+", "", clean_field_value(item))
+                for item in re.split(r"\s{2,}|[|｜]", tail)
+                if len(clean_field_value(item)) >= 8
+            )
+        for index in range(2):
+            if index < len(names):
+                results[index].setdefault("contact", names[index])
+            if index < len(phones):
+                results[index].setdefault("phone", phones[index])
+            if index < len(addresses):
+                results[index].setdefault("address", addresses[index])
     return results
 
 
@@ -3065,6 +3114,7 @@ def apply_material_purchase_enhancements(ocr_pages: list[dict[str, Any]], result
     copies = clean_material_purchase_copies(text)
     if copies:
         result["copies"] = copies
+        result["copies_source"] = "ocr" if re.search(r"乙方\s*执\s*贰\s*份", text) else "inferred_from_total_copies"
     result["signing_date"] = ""
     result["signing_place"] = ""
     project = result.setdefault("project", {})

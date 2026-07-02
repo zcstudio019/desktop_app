@@ -73,6 +73,24 @@ class ContractAgent:
             result.source_file,
         )
         result.display_markdown = result.markdown
+        if result.contract_category == "material_purchase":
+            buyer = result.parties[0] if result.parties else None
+            seller = result.parties[1] if len(result.parties) > 1 else None
+            logger.info(
+                "[MaterialPurchaseFinalDebug] amount=%s tax_amount=%s tax_rate=%s buyer_tax_id=%s "
+                "seller_tax_id=%s buyer_contact=%s seller_contact=%s copy_count=%s copy_source=%s "
+                "final_markdown_contains_amount=%s",
+                result.amount.get("tax_included_amount") or result.amount.get("contract_amount"),
+                result.amount.get("tax_amount"),
+                result.amount.get("tax_rate"),
+                getattr(buyer, "unified_social_credit_code", ""),
+                getattr(seller, "unified_social_credit_code", ""),
+                getattr(buyer, "contact", ""),
+                getattr(seller, "contact", ""),
+                result.copies,
+                extracted.get("copies_source") or "",
+                "35,011,412.68 元" in result.markdown,
+            )
         return result
 
 

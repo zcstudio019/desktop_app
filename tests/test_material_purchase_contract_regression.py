@@ -30,9 +30,11 @@ def _pages() -> list[dict[str, str | int]]:
 乙方应提供送货清单、产品合格证、质量保证书、检测报告等资料。
 """
     pages[10]["text"] = """货物清单汇总 11/28
-合同暂定总金额（含税）小写：35011412.68
-合同暂定总金额（含税）大写：叁仟伍佰零壹万壹仟肆佰壹拾贰元陆角捌分
-合同暂定增值税税额（税率13%）小写：4027861.64
+合 同 暂 定 总 金 额（含 税）小 写：
+35011412.68
+合 同 暂 定 总 金 额（含 税）大 写：叁仟伍佰零壹万壹仟肆佰壹拾贰元陆角捌分
+合同暂定增值税税额（税率13%）小写：
+4027861.64
 合同暂定总金额（不含税）小写：30983551.04
 """
     pages[11]["text"] = """收货及供货约定 12/28
@@ -40,8 +42,9 @@ def _pages() -> list[dict[str, str | int]]:
 乙方联系人：张经理 联系电话：0510-88889999
 """
     pages[15]["text"] = """税务及增值税约定 16/28
-甲方：上海意川建筑科技有限公司 纳税人识别号：91310118MA1JP7UB2B 地址、电话：上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室
-乙方：江苏吉达电缆有限公司 纳税人识别号：91320282MA1MGPT52
+名称 上海意川建筑科技有限公司 江苏吉达电缆有限公司
+纳税人识别号 91310118MA1JP7UB2B 91320282MA1MGPT52
+地址、电话：上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室
 乙方应按付款金额向甲方开具合法有效的增值税专用发票，税率13%。
 发票应符合合同税务及增值税约定。
 """
@@ -59,11 +62,12 @@ def _pages() -> list[dict[str, str | int]]:
 质保期内出现质量问题，乙方承担更换、修理及相关责任。
 """
     pages[21]["text"] = """送达及联系信息 22/28
-甲方 收件人：徐志良 联系方式：13805854808 地址：上海市长宁区通协路与金轮路交叉口上海建工项目部
-乙方 收件人：顾新华 联系方式：18901533109 地址：江苏省无锡市宜兴市杨巷镇兴园路6号
+收件人 徐志良 顾新华
+联系方式 13805854808 18901533109
+地址 上海市长宁区通协路与金轮路交叉口上海建工项目部 | 江苏省无锡市宜兴市杨巷镇兴园路6号
 附件一：货物采购清单
 附件一：货物采购清单
-本合同自双方签字并盖章后生效，一式伍份，甲方执叁份，乙方执贰份。
+2、本合同自双方签字并盖章后生效，一式伍份，甲方执叁份，乙方执
 """
     pages[22]["text"] = """合同签章页 23/28
 甲方（盖章）：上海意川建筑科技有限公司
@@ -104,6 +108,8 @@ def test_material_purchase_structured_fields() -> None:
     assert data["parties"][0]["unified_social_credit_code"] == "91310118MA1JP7UB2B"
     assert data["parties"][0]["contact"] == "徐志良"
     assert data["parties"][0]["phone"] == "13805854808"
+    assert "联系方" not in data["parties"][0]["contact"]
+    assert data["parties"][0]["phone"] != "18901533109"
     assert data["parties"][0]["address"] == "上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室"
     assert data["parties"][1]["unified_social_credit_code"] == "91320282MA1MGPT52"
     assert data["parties"][1]["contact"] == "顾新华"
@@ -111,6 +117,7 @@ def test_material_purchase_structured_fields() -> None:
     assert data["parties"][1]["address"] == "江苏省无锡市宜兴市杨巷镇兴园路6号"
     assert data["signature"]["signers"] == ""
     assert data["signature"]["signature_page"] == "第23页"
+    assert "传真、邮件、电话或微信" in data["duration"]["delivery_method"]
     assert "页脚显示共28页但当前PDF仅23页" in data["quality"]["body_missing_note"]
 
 
