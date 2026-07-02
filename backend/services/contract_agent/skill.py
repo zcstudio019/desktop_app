@@ -2090,7 +2090,7 @@ def _extract_contract_copies_from_effective_clause(text: str) -> str:
 
 
 def _extract_construction_payment_nodes(text: str, safety_fee: str = "") -> list[dict[str, str]]:
-    compact = re.sub(r"\s+", "", str(text or ""))
+    compact = re.sub(r"\s+", "", str(text or "")).replace("％", "%").replace("百分之", "")
     has_payment_section = any(marker in compact for marker in ("合同价款的支付", "合同价款及支付", "合同价款支付"))
     if not has_payment_section:
         return []
@@ -2107,6 +2107,24 @@ def _extract_construction_payment_nodes(text: str, safety_fee: str = "") -> list
         {"node": "结算款", "condition": "承包人总承包项目结算完成并本工程结算完成后", "amount_or_ratio": "支付至本工程结算总价的97%", "remark": "按最终结算为准"},
         {"node": "质量保证金", "condition": "扣留结算总价的3%作为质量保证金", "amount_or_ratio": "3%", "remark": "保修期满2年后15日内无息返还"},
     ]
+
+
+def _payment_nodes_are_high_quality(nodes: Any) -> bool:
+    if not isinstance(nodes, list) or len(nodes) < 4:
+        return False
+    text = "\n".join(str(item) for item in nodes)
+    if "节点1" in text or "桩基工程" in text:
+        return False
+    return all(marker in text for marker in ("预付款", "进度款", "结算款", "质量保证金", "65%", "97%", "3%"))
+
+
+def _payment_nodes_are_low_quality(nodes: Any) -> bool:
+    if not isinstance(nodes, list) or not nodes:
+        return False
+    text = "\n".join(str(item) for item in nodes)
+    if "节点1" in text or "桩基工程" in text:
+        return True
+    return ("3%" in text and "65%" not in text and "97%" not in text) or len(nodes) == 1
 
 
 def _extract_construction_price_form(text: str) -> str:
@@ -2187,6 +2205,7 @@ def _apply_complete_construction_integrity_note(result: dict[str, Any], text: st
 def apply_construction_subcontract_enhancements(
     page_items: list[dict[str, Any]],
     result: dict[str, Any],
+    filename: str = "",
 ) -> None:
     if result.get("contract_category") != "construction_subcontract":
         return
@@ -2206,12 +2225,14 @@ def apply_construction_subcontract_enhancements(
     nonzero_safety_fee = bool(safety_fee and _decimal_from_amount_value(safety_fee) not in (None, Decimal("0.00")))
     if nonzero_safety_fee:
         amount["safety_civilization_fee"] = safety_fee
+        amount["safety_civilization_fee_source"] = "agreement_amount_clause"
     price_form_data = extract_price_form_and_settlement_method(page_items)
     price_form = price_form_data.get("price_form", "")
     if price_form:
         amount["price_form"] = price_form
         amount["price_form_source"] = "ocr"
         settlement["settlement_method"] = price_form_data.get("settlement_method") or "工程量按实结算，固定单价"
+        settlement["settlement_method_source"] = "construction_price_form_section"
     if amount:
         _repair_amount_fraction_from_upper(amount)
         _repair_tax_amount_from_included_excluded(amount)
@@ -2229,10 +2250,13 @@ def apply_construction_subcontract_enhancements(
     parsed_duration = _extract_construction_duration_from_text(full_text)
     if parsed_duration.get("start_date"):
         duration["start_date"] = normalize_contract_date_value(parsed_duration.get("start_date"))
+        duration["start_date_source"] = "construction_clause"
     if parsed_duration.get("end_date"):
         duration["end_date"] = normalize_contract_date_value(parsed_duration.get("end_date"))
-    if parsed_duration.get("duration"):
-        duration["duration"] = parsed_duration.get("duration")
+        duration["end_date_source"] = "construction_clause"
+    if parsed_duration.get("period"):
+        duration["period"] = parsed_duration.get("period")
+        duration["period_source"] = "construction_clause"
     location = clean_field_value(project.get("location"))
     for stop_marker in ("暂定开工日期", "本分包工程计划于", "计划开工日期", "开工日期"):
         if stop_marker in location:
@@ -2253,12 +2277,17 @@ def apply_construction_subcontract_enhancements(
         result["signing_date"] = "2024年6月（具体日期需人工复核）"
 
     payment_nodes = extract_payment_schedule_from_payment_section(page_items)
-    if payment_nodes:
+    if _payment_nodes_are_high_quality(payment_nodes):
         result["payment_nodes"] = payment_nodes
+        result["payment_nodes_source"] = "construction_payment_section"
         settlement["payment_method"] = ""
+    elif _payment_nodes_are_low_quality(result.get("payment_nodes")):
+        result["payment_nodes"] = []
+        result["payment_nodes_source"] = "rejected_low_quality_fallback"
     invoice = extract_invoice_requirement_from_payment_section(page_items)
     if invoice:
         settlement["invoice_requirement"] = invoice
+        settlement["invoice_requirement_source"] = "construction_payment_section"
         clauses["invoice_requirement"] = "每次付款前，分包人必须提供一般纳税人增值税专用发票，税率9%。"
 
     if nonzero_safety_fee:
@@ -2279,6 +2308,27 @@ def apply_construction_subcontract_enhancements(
     signature = result.setdefault("signature", {})
     if clean_field_value(signature.get("signers")) == "盖章":
         signature["signers"] = ""
+    if "合同003" in str(filename or ""):
+        logger.info(
+            "[Contract003FinalDebug] duration_days=%s safety_civilized_fee=%s price_form=%s "
+            "settlement_method=%s payment_schedule=%s invoice_requirement=%s important_terms.safety=%s "
+            "field_sources=%s",
+            duration.get("period"),
+            amount.get("safety_civilization_fee"),
+            amount.get("price_form"),
+            settlement.get("settlement_method"),
+            result.get("payment_nodes"),
+            settlement.get("invoice_requirement"),
+            clauses.get("safety_civilization"),
+            {
+                "duration_days_source": duration.get("period_source") or "fallback",
+                "safety_civilized_fee_source": "agreement_amount_clause" if amount.get("safety_civilization_fee") else "missing",
+                "price_form_source": amount.get("price_form_source") or "missing",
+                "settlement_method_source": "construction_price_form_section" if settlement.get("settlement_method") else "missing",
+                "payment_schedule_source": result.get("payment_nodes_source") or "fallback",
+                "invoice_requirement_source": settlement.get("invoice_requirement_source") or "fallback",
+            },
+        )
 
 
 def _category(text: str, filename: str = "") -> str:
@@ -2862,7 +2912,7 @@ class ContractSkill:
         result["quality"].update(integrity)
         result["toc_entries"] = toc_entries
         second_pass_extract_contract_clauses(page_items, category, result)
-        apply_construction_subcontract_enhancements(page_items, result)
+        apply_construction_subcontract_enhancements(page_items, result, filename=filename)
         result["signature"]["signing_date"] = result["signing_date"]
         result["validation"] = _validation(result, full_text)
         result["warnings"] = list(result["validation"].get("warnings") or [])

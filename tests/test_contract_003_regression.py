@@ -101,6 +101,7 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
     assert duration["start_date"] == "2024年6月26日"
     assert duration["end_date"] == "2025年11月23日"
     assert duration["period"] == "516天"
+    assert duration["period"] != "3天"
     assert data["project"]["location"] == "青浦区徐泾镇张广泾南侧01-49地块"
 
     assert amount["contract_amount"] == "人民币 60,305,209.07 元"
@@ -128,10 +129,14 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
 
     payment_nodes = data["payment_nodes"]
     assert [node["node"] for node in payment_nodes] == ["预付款", "安全文明措施费", "进度款", "结算款", "质量保证金"]
+    assert all("节点1" not in str(node) for node in payment_nodes)
     assert all("桩基工程" not in str(node) for node in payment_nodes)
     assert "65%" in markdown
     assert "97%" in markdown
     assert "3%" in markdown
+    assert "安全文明施工费：1,809,156.27 元（除税金额）" in markdown
+    assert "合同价格形式：固定单价" in markdown
+    assert "结算方式：工程量按实结算，固定单价" in markdown
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
     assert "税率9%" in data["settlement"]["invoice_requirement"]
     assert data["settlement"]["receiving_account"] == "开户银行：上海银行浦西支行；账号：03005029359"
