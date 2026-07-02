@@ -182,10 +182,16 @@ def test_material_purchase_complete_baseline_and_forbidden_regressions() -> None
     clauses = data["clauses"]
     warnings = data["validation"]["warnings"]
 
+    assert data["doc_type"] == "contract"
+    assert data["doc_type_name"] == "合同"
     assert data["contract_category_name"] == "物资采购合同"
+    assert data["extraction_status"] == "partial"
     assert data["title"] == "电缆采购合同"
     assert data["project_name"] == "临空12号地块国际商务花园四期项目（除桩基）机电安装工程"
     assert data["contract_no"] == "YC202410003-L048"
+    assert data["signing_date"] == ""
+    assert data["signing_place"] == ""
+    assert data["page_count"] == 23
     assert data["effective_condition"] == "本合同自双方签字并盖章后生效"
     assert data["copies"] == "一式伍份，甲方执叁份，乙方执贰份"
 
@@ -203,12 +209,14 @@ def test_material_purchase_complete_baseline_and_forbidden_regressions() -> None
 
     assert amount["contract_amount"] == "人民币 35,011,412.68 元"
     assert "叁仟伍佰零壹万壹仟肆佰壹拾贰元陆角捌分" in amount["amount_upper"]
+    assert amount["amount_lower"] == "35,011,412.68 元"
     assert amount["tax_included_amount"] == "35,011,412.68 元"
     assert amount["tax_excluded_amount"] == "30,983,551.04 元"
     assert amount["tax_rate"] == "13%"
     assert amount["tax_amount"] == "4,027,861.64 元"
     assert amount["safety_civilization_fee"] == "不适用"
     assert amount["price_form"] == "暂定总价，按实际供货数量及合同单价结算"
+    assert "含税金额、不含税金额与税额基本一致" in amount["amount_check"]
     assert amount["recognition_status"] == "成功"
 
     assert duration["period"] == "按甲方订货通知及项目实际供货进度执行"
@@ -222,11 +230,23 @@ def test_material_purchase_complete_baseline_and_forbidden_regressions() -> None
     assert "税率13%" in settlement["invoice_requirement"]
     assert settlement["receiving_account"] == ""
     assert data["line_item_summary"]["total_amount"] == "35,011,412.68 元"
+    assert data["line_item_summary"]["message"] == "已识别货物清单区域，完整明细建议按原件复核"
     assert "部分成功" in data["line_item_summary"]["recognition_status"]
     assert "期限为2年" in clauses["warranty"]
+    assert "国家、行业、地方质量技术标准" in clauses["quality_acceptance"]
+    assert "增值税专用发票，税率13%" in clauses["invoice_requirement"]
     assert clauses["no_subcontract"] == "不适用"
     assert clauses["safety_civilization"] == "不适用"
+    assert "供货、包装、运输、卸货、成品保护" in clauses["other"]
+    assert data["signature"]["party_a_stamp"] == "有"
+    assert data["signature"]["party_b_stamp"] == "有"
+    assert data["signature"]["signers"] == ""
     assert data["signature"]["signature_page"] == "第23页"
+    assert data["signature"]["signing_date"] == ""
+    assert "页脚显示共28页但当前PDF仅23页" in data["signature"]["attachments"]
+    assert data["quality"]["ocr_quality"] == "可用"
+    assert data["validation"]["completeness"] == "部分完整"
+    assert "物资采购合同正文、货物清单、税务及发票条款、付款条款、违约条款和签章页" in data["quality"]["body_missing_note"]
     assert "页脚显示共28页但当前PDF仅23页" in data["quality"]["body_missing_note"]
     for warning in ("签订日期未识别", "收款账户未识别", "完整清单建议按原件复核"):
         assert warning in warnings
@@ -240,6 +260,13 @@ def test_material_purchase_complete_baseline_and_forbidden_regressions() -> None
     assert "- 收款账户：未识别" in markdown
     assert "文件完整性：未识别" not in markdown
     assert "签字人：均对甲方" not in markdown
+    assert "乙方/供方/卖方 | 江苏吉达电缆有限公司 | 91320282MA1MGPT52 | 未识别 | 未识别" not in markdown
+    assert "乙方/供方/卖方 | 江苏吉达电缆有限公司 | 91320282MA1MGPT52 | 未识别 | 顾新华 | 未识别" not in markdown
     assert buyer["phone"] != "18901533109"
     assert all(item["name"] not in {"序号", "含税单价", "付款条款", "违约条款"} for item in data["line_items"])
     assert all("违约金" not in str(node) for node in data["payment_nodes"])
+    lower_markdown = markdown.lower()
+    for forbidden in ("owner type", "contract category", "evidence", "raw_text", "source_page", "confidence", "markdown result"):
+        assert forbidden not in lower_markdown
+    assert '"value"' not in markdown
+    assert "structured_data" not in markdown
