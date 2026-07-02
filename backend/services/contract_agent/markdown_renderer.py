@@ -114,6 +114,7 @@ def _line_item_section(result: ContractResult) -> list[str]:
     if not items:
         lines.extend([
             f"- 清单明细：{value(summary.get('message') or '未识别到独立清单明细')}",
+            *([f"- 合计金额：{value(summary.get('total_amount'))}"] if summary.get("total_amount") else []),
             f"- 清单识别状态：{value(summary.get('recognition_status'))}",
         ])
         return lines

@@ -2795,24 +2795,34 @@ def _money_after_keywords(text: str, keywords: tuple[str, ...], window: int = 18
     for keyword in keywords:
         for match in re.finditer(re.escape(keyword), text):
             fragment = text[match.end():match.end() + window]
-            amount = re.search(r"(?:人民币)?\s*([0-9][0-9,\s]*(?:\.\d{1,2})?)\s*(?:元|圆)", fragment)
-            if amount:
-                candidates.append((match.start(), _format_purchase_money(amount.group(1))))
+            for amount in re.finditer(r"(?:人民币)?\s*([0-9][0-9, ]*(?:\.\d{1,2})?)\s*(?:元|圆)?", fragment):
+                formatted = _format_purchase_money(amount.group(1))
+                if not formatted:
+                    continue
+                numeric = Decimal(formatted.replace(",", "").replace(" 元", ""))
+                if numeric >= Decimal("1000"):
+                    candidates.append((match.start(), formatted))
+                    break
     return candidates[0][1] if candidates else ""
 
 
 def extract_material_purchase_amounts(ocr_pages: list[dict[str, Any]]) -> dict[str, Any]:
-    text = _joined(ocr_pages)
+    amount_pages = [
+        page for page in ocr_pages
+        if any(token in str(page.get("text") or "") for token in ("合同暂定总金额（含税）小写", "合同暂定总金额(含税)小写"))
+    ]
+    text = _joined(amount_pages) if amount_pages else _joined(ocr_pages)
     included = _money_after_keywords(text, ("合同暂定总金额（含税）小写", "合同暂定总金额(含税)小写", "暂定总金额（含税）"))
     excluded = _money_after_keywords(text, ("合同暂定总金额（不含税）小写", "合同暂定总金额(不含税)小写", "不含税金额"))
     tax_amount = _money_after_keywords(text, ("合同暂定增值税税额", "增值税税额", "增值税额"))
     rate_match = re.search(r"(?:增值税税额[^\n]{0,50}?税率|税率)\s*[（(：:]?\s*(\d+(?:\.\d+)?%)", text)
     upper_match = re.search(
         r"(?:合同暂定总金额（含税）大写|合同暂定总金额\(含税\)大写|含税金额大写)\s*[:：]?\s*"
-        r"([零壹贰叁肆伍陆柒捌玖拾佰仟万亿元圆角分整正]{8,80})",
+        r"([零壹贰叁肆伍陆柒捌玖拾佰仟万亿元圆角分整正\s]{8,100})",
         text,
     )
-    upper = clean_field_value(upper_match.group(1)) if upper_match else ""
+    upper = re.sub(r"\s+", "", upper_match.group(1)) if upper_match else ""
+    upper = clean_field_value(upper)
     recognized = all((included, excluded, tax_amount, rate_match))
     check = "金额信息不完整，需人工复核"
     if recognized:
@@ -2866,13 +2876,83 @@ def extract_material_purchase_items(ocr_pages: list[dict[str, Any]]) -> tuple[li
             "total_price": match.group(7), "remark": clean_field_value(match.group(8) or ""),
         })
     amounts = extract_material_purchase_amounts(ocr_pages)
-    status = "部分成功（已识别清单及合计金额，完整明细建议按原件复核）" if rows else "需人工复核"
+    has_total = bool(amounts.get("tax_included_amount"))
+    status = "部分成功（已识别清单及合计金额，完整明细建议按原件复核）" if rows else (
+        "部分成功（已识别清单合计金额，完整明细建议按原件复核）" if has_total else "需人工复核"
+    )
     return rows, {
         "total_count": len(rows),
         "total_amount": amounts.get("tax_included_amount") or "",
         "recognition_status": status,
-        "message": "" if rows else "未稳定识别到清单明细，建议按原件复核",
+        "message": "" if rows else ("已识别货物清单区域，完整明细建议按原件复核" if has_total else "未稳定识别到清单明细，建议按原件复核"),
     }
+
+
+def clean_material_purchase_copies(text: str) -> str:
+    match = re.search(r"一式\s*伍\s*份[^。\n]{0,50}?甲方\s*执\s*叁\s*份[^。\n]{0,40}?乙方\s*执\s*贰\s*份", text)
+    return "一式伍份，甲方执叁份，乙方执贰份" if match else ""
+
+
+def extract_material_purchase_party_tax_info(ocr_pages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    tax_pages = [page for page in ocr_pages if "纳税人识别号" in str(page.get("text") or "")]
+    text = _joined(tax_pages)
+    results = [{}, {}]
+    for index, role in enumerate(("甲方", "乙方")):
+        line_match = re.search(rf"{role}[^\n]*?(?:名称\s*[:：])?\s*([^\n]*?(?:有限公司|股份有限公司))[^\n]*", text)
+        if line_match:
+            line = line_match.group(0)
+            name_match = re.search(r"([\u4e00-\u9fff]{2,40}(?:有限公司|股份有限公司))", line)
+            code_match = re.search(r"(?:纳税人识别号|统一社会信用代码)\s*[:：]\s*([0-9A-Z]{15,20})", line)
+            if name_match:
+                results[index]["name"] = name_match.group(1)
+            if code_match:
+                tax_id = code_match.group(1)
+                if tax_id.startswith("91") and not tax_id.isdigit():
+                    results[index]["credit_code"] = tax_id
+            address_match = re.search(r"(?:地址、电话|地址)\s*[:：]\s*([^\n]+)", line)
+            if address_match:
+                address = re.split(r"(?:电话|联系方式|开户行|账号)\s*[:：]", address_match.group(1))[0]
+                results[index]["address"] = re.sub(r"\s+", "", clean_field_value(address))
+    codes = [
+        match.group(1)
+        for line in text.splitlines()
+        for match in USCC_RE.finditer(line)
+        if is_valid_uscc(match.group(1), f"纳税人识别号：{match.group(1)}")
+    ]
+    for index in range(min(2, len(codes))):
+        results[index].setdefault("credit_code", codes[index])
+    return results
+
+
+def extract_material_purchase_delivery_contacts(ocr_pages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    delivery_pages = [
+        page for page in ocr_pages
+        if "收件人" in str(page.get("text") or "") and any(token in str(page.get("text") or "") for token in ("送达", "联系方式", "收件地址"))
+    ]
+    text = _joined(delivery_pages)
+    results = [{}, {}]
+    explicit_pattern = re.compile(
+        r"(甲方|乙方)[\s\S]{0,80}?收件人\s*[:：]\s*([\u4e00-\u9fff]{2,6})[\s\S]{0,100}?"
+        r"(?:联系方式|联系电话|电话)\s*[:：]\s*(1[3-9]\d{9})[\s\S]{0,140}?"
+        r"(?:地址|收件地址)\s*[:：]\s*([^\n]+)"
+    )
+    for match in explicit_pattern.finditer(text):
+        index = 0 if match.group(1) == "甲方" else 1
+        results[index] = {
+            "contact": match.group(2),
+            "phone": match.group(3),
+            "address": re.sub(r"\s+", "", clean_field_value(match.group(4))),
+        }
+    if not any(results):
+        generic = re.findall(
+            r"收件人\s*[:：]\s*([\u4e00-\u9fff]{2,6})[\s\S]{0,80}?"
+            r"(?:联系方式|联系电话|电话)\s*[:：]\s*(1[3-9]\d{9})[\s\S]{0,120}?"
+            r"(?:地址|收件地址)\s*[:：]\s*([^\n]+)",
+            text,
+        )
+        for index, match in enumerate(generic[:2]):
+            results[index] = {"contact": match[0], "phone": match[1], "address": re.sub(r"\s+", "", clean_field_value(match[2]))}
+    return results
 
 
 def extract_material_purchase_delivery_terms(ocr_pages: list[dict[str, Any]]) -> dict[str, str]:
@@ -2953,6 +3033,8 @@ def apply_material_purchase_enhancements(ocr_pages: list[dict[str, Any]], result
     result["title"] = "电缆采购合同" if "电缆" in text else (result.get("title") or "物资采购合同")
     result["contract_no"] = _after_label(text, ("合同编号", "合同号", "编号"))
     parties = result.get("parties") or []
+    tax_info = extract_material_purchase_party_tax_info(ocr_pages)
+    delivery_contacts = extract_material_purchase_delivery_contacts(ocr_pages)
     for index, party in enumerate(parties[:2]):
         role_label = "甲方" if index == 0 else "乙方"
         contact_match = re.search(
@@ -2966,12 +3048,23 @@ def apply_material_purchase_enhancements(ocr_pages: list[dict[str, Any]], result
         address_match = re.search(rf"{role_label}(?:收件)?地址\s*[:：]\s*([^\n]{{5,100}})", text)
         if address_match and not any(token in address_match.group(1) for token in ("账号", "电话", "纳税人识别号")):
             party.address = clean_field_value(address_match.group(1))
+        if index < len(tax_info):
+            info = tax_info[index]
+            party.name = info.get("name") or party.name
+            party.unified_social_credit_code = info.get("credit_code") or party.unified_social_credit_code
+            party.address = info.get("address") or party.address
+        if index < len(delivery_contacts):
+            contact_info = delivery_contacts[index]
+            party.contact = contact_info.get("contact") or party.contact
+            party.phone = contact_info.get("phone") or party.phone
+            if index == 1:
+                party.address = contact_info.get("address") or party.address
     effective = re.search(r"本合同自双方签字并盖章后生效", text)
     if effective:
         result["effective_condition"] = effective.group(0)
-    copies = re.search(r"一式伍份[^。\n]{0,40}?甲方执叁份[^。\n]{0,30}?乙方执贰份", text)
+    copies = clean_material_purchase_copies(text)
     if copies:
-        result["copies"] = "一式伍份，甲方执叁份，乙方执贰份"
+        result["copies"] = copies
     result["signing_date"] = ""
     result["signing_place"] = ""
     project = result.setdefault("project", {})
