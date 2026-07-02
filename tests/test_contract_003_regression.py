@@ -24,6 +24,7 @@ def _contract_003_pages() -> list[dict[str, str | int]]:
 """
     pages[2]["text"] = """合同的生效
 本协议经立协议双方签字、盖章有效，一式陆份，承包人执叁份，分包人执叁份。
+OCR误识别噪声：签订日期：2020年6月9日
 签订日期：2024年6月__日
 签订地点：上海
 """
@@ -55,9 +56,9 @@ def _contract_003_pages() -> list[dict[str, str | int]]:
     pages[33]["text"] = """合同总价明细表
 汇总表
 序号 项目 金额
-1 除税预算造价 55,325,879.87 元
-2 税金9% 4,979,329.20 元
-3 合计 60,305,209.07 元
+1 除税预算造价 55325879.87 元
+2 税金9% 4979329.2 元
+3 合计 60305209.07 元
 """
     return pages
 
@@ -82,6 +83,9 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
     assert data["contract_category"] == "construction_subcontract"
     assert data["contract_category_name"] == "建设工程专业分包合同"
     assert data["extraction_status"] == "partial"
+    assert data["signing_date"] == "2024年6月（具体日期需人工复核）"
+    assert data["signing_date"] != "2020年6月9日"
+    assert "签字、盖章后有效" in data["effective_condition"]
     assert data["copies"] == "一式陆份，承包人执叁份，分包人执叁份"
     assert "工资专用账户" not in data["copies"]
 
@@ -91,6 +95,7 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
     assert parties[1]["name"] == "上海意川建筑科技有限公司"
     assert parties[1]["unified_social_credit_code"] == ""
     assert parties[1]["unified_social_credit_code"] != "216200100107958688"
+    assert parties[1]["phone"] == "021-69611755"
     assert parties[1]["bank_account"] == "03005029359"
 
     assert duration["start_date"] == "2024年6月26日"
@@ -131,6 +136,9 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     assert "文件结构较完整" in markdown
     assert "关键字段完整度：部分完整" in markdown
     assert "签字人：盖章" not in markdown
+    assert "2020年6月9日" not in markdown
+    assert "算时一并扣除" not in markdown
+    assert "1.5工程承包方式" not in markdown
 
 
 def test_contract_003_forbidden_regressions() -> None:
@@ -144,5 +152,7 @@ def test_contract_003_forbidden_regressions() -> None:
         "合同份数：方开设的工资专用账户",
         "合同工期/服务期限：3天",
         "签字人：盖章",
+        "合同金额：人民币 60,305,209.00 元",
+        "税额：4,979,329.00 元",
     ):
         assert forbidden not in markdown

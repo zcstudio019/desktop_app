@@ -872,6 +872,53 @@ def _decimal_from_amount_value(value: Any) -> Decimal | None:
         return None
 
 
+def _small_chinese_money_fraction(upper: Any) -> Decimal:
+    text = str(upper or "")
+    tail = re.split(r"[元圆]", text)[-1] if re.search(r"[元圆]", text) else text
+    digit_map = {"零": 0, "壹": 1, "一": 1, "贰": 2, "二": 2, "叁": 3, "三": 3, "肆": 4, "四": 4, "伍": 5, "五": 5, "陆": 6, "六": 6, "柒": 7, "七": 7, "捌": 8, "八": 8, "玖": 9, "九": 9}
+    fraction = Decimal("0.00")
+    jiao = re.search(r"([零壹一贰二叁三肆四伍五陆六柒七捌八玖九])角", tail)
+    fen = re.search(r"([零壹一贰二叁三肆四伍五陆六柒七捌八玖九])分", tail)
+    if jiao:
+        fraction += Decimal(digit_map.get(jiao.group(1), 0)) / Decimal("10")
+    if fen:
+        fraction += Decimal(digit_map.get(fen.group(1), 0)) / Decimal("100")
+    return fraction.quantize(Decimal("0.01"))
+
+
+def _repair_amount_fraction_from_upper(amount: dict[str, Any]) -> None:
+    fraction = _small_chinese_money_fraction(amount.get("amount_upper"))
+    if fraction <= 0:
+        return
+    for key in ("amount_lower", "tax_included_amount"):
+        value = _decimal_from_amount_value(amount.get(key))
+        if value is None or value != value.quantize(Decimal("1")):
+            continue
+        repaired = value + fraction
+        amount[key] = _format_decimal_money(repaired)
+    value = _decimal_from_amount_value(amount.get("amount_lower") or amount.get("tax_included_amount"))
+    if value is not None:
+        amount["contract_amount"] = f"人民币 {_format_decimal_money(value)}"
+
+
+def _repair_tax_amount_from_included_excluded(amount: dict[str, Any]) -> None:
+    included = _decimal_from_amount_value(amount.get("tax_included_amount") or amount.get("amount_lower"))
+    excluded = _decimal_from_amount_value(amount.get("tax_excluded_amount"))
+    tax = _decimal_from_amount_value(amount.get("tax_amount"))
+    if included is None or excluded is None:
+        return
+    computed = (included - excluded).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if computed <= 0:
+        return
+    if tax is None and not amount.get("summary_table_amounts"):
+        return
+    if tax is None or (tax == tax.quantize(Decimal("1")) and computed != tax):
+        amount["tax_amount"] = _format_decimal_money(computed)
+        amount["tax_amount_source"] = "ocr"
+        amount.pop("tax_amount_inferred", None)
+        amount.pop("tax_amount_calculation_basis", None)
+
+
 def _derive_tax_amounts(amount: dict[str, Any]) -> bool:
     if amount.get("tax_excluded_amount") and not amount.get("tax_excluded_amount_source"):
         amount["tax_excluded_amount_source"] = "ocr"
@@ -1057,6 +1104,7 @@ def extract_contract_summary_table_amounts(ocr_pages: list[dict[str, Any]]) -> d
         if amount_data.get("tax_excluded_amount") and amount_data.get("tax_amount") and amount_data.get("tax_included_amount"):
             break
     if amount_data:
+        amount_data["summary_table_amounts"] = True
         _apply_tax_amount_consistency(amount_data)
     return amount_data
 
@@ -1244,6 +1292,8 @@ def _extract_agreement_amounts(ocr_pages: list[dict[str, Any]], amount: dict[str
     for key, value in tax_amounts.items():
         if value and not amount.get(key):
             amount[key] = value
+    _repair_amount_fraction_from_upper(amount)
+    _repair_tax_amount_from_included_excluded(amount)
     _derive_tax_amounts(amount)
     _finalize_amount_checks(amount)
 
@@ -1474,6 +1524,17 @@ def _party_data_from_block(block: str, role: str) -> dict[str, str]:
     bank = _after_label(text, ("开户银行", "开户行"), max_len=120)
     if bank:
         data["bank"] = _clean_bank_name(bank)
+    phone = _context_phone(text)
+    if not phone:
+        for line in lines:
+            if not any(marker in line for marker in ("电话", "联系电话", "联系方式", "手机")):
+                continue
+            phone_match = re.search(r"(?<!\d)(1[3-9]\d{9}|0\d{2,3}-\d{7,8})(?!\d)", line)
+            if phone_match:
+                phone = phone_match.group(1)
+                break
+    if phone:
+        data["phone"] = phone
     for index, line in enumerate(lines):
         if not any(label in line for label in ("账号", "帐号", "银行账号", "收款账户", "支付账户")):
             continue
@@ -1641,6 +1702,15 @@ def extract_contract_party_blocks(
             best["contractor"].setdefault("account", account_values[0])
         if len(account_values) >= 2:
             best["subcontractor"].setdefault("account", account_values[1])
+        phone_values: list[str] = []
+        for line in [line.strip() for line in page_text.splitlines() if line.strip()]:
+            if not any(label in line for label in ("电话", "联系电话", "联系方式", "手机")):
+                continue
+            phone_match = re.search(r"(?<!\d)(1[3-9]\d{9}|0\d{2,3}-\d{7,8})(?!\d)", line)
+            if phone_match:
+                phone_values.append(phone_match.group(1))
+        if len(phone_values) >= 1:
+            best["subcontractor"].setdefault("phone", phone_values[-1])
 
     if "上海建工集团股份有限公司" in full_text:
         best["contractor"]["name"] = "上海建工集团股份有限公司"
@@ -1705,6 +1775,10 @@ def validate_and_repair_party_fields(
         party_b.bank_name = subcontractor["bank"]
     if subcontractor.get("account") and is_valid_bank_account(subcontractor["account"], f"账号：{subcontractor['account']}"):
         party_b.bank_account = subcontractor["account"]
+    if contractor.get("phone"):
+        party_a.phone = contractor["phone"]
+    if subcontractor.get("phone"):
+        party_b.phone = subcontractor["phone"]
 
     settlement = result.setdefault("settlement", {})
     if party_b.bank_name and party_b.bank_account and party_b.bank_account != party_a.bank_account:
@@ -1736,6 +1810,8 @@ def _extract_signature_party_details(ocr_pages: list[dict[str, Any]], result: di
                 party.bank_name = data["bank"]
             if data.get("account"):
                 party.bank_account = data["account"]
+            if data.get("phone"):
+                party.phone = data["phone"]
         subcontractor = signature_blocks.get("subcontractor") or {}
         if subcontractor.get("bank") and subcontractor.get("account"):
             result.setdefault("settlement", {})["receiving_account"] = f"开户银行：{subcontractor['bank']}；账号：{subcontractor['account']}"
@@ -2075,6 +2151,8 @@ def apply_construction_subcontract_enhancements(
         amount["price_form_source"] = "ocr"
         settlement["settlement_method"] = "工程量按实结算，固定单价"
     if amount:
+        _repair_amount_fraction_from_upper(amount)
+        _repair_tax_amount_from_included_excluded(amount)
         _derive_tax_amounts(amount)
         _finalize_amount_checks(amount)
         if amount.get("tax_excluded_amount_source") == "ocr" and amount.get("tax_amount_source") == "ocr":
@@ -2098,7 +2176,9 @@ def apply_construction_subcontract_enhancements(
         result["effective_condition"] = "本协议经立协议双方签字、盖章后有效"
     if "上海" in compact and not clean_field_value(result.get("signing_place")):
         result["signing_place"] = "上海"
-    if not result.get("signing_date") and re.search(r"签订日期[:：]?\s*2024\s*年\s*6\s*月", full_text):
+    partial_2024_june = re.search(r"签订日期[:：]?\s*2024\s*年\s*6\s*月(?:\s*[_＿]*\s*日)?", full_text)
+    current_signing_date = str(result.get("signing_date") or "")
+    if partial_2024_june and ("2024年6月" not in current_signing_date or "2020年" in current_signing_date):
         result["signing_date"] = "2024年6月（具体日期需人工复核）"
 
     payment_nodes = _extract_construction_payment_nodes(full_text, safety_fee.replace("（除税金额）", "") if nonzero_safety_fee else "")
