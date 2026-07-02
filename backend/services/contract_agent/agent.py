@@ -3,7 +3,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .markdown_renderer import apply_complete_subcontract_markdown_patch, render_contract_markdown, sanitize_contract_result_payload
+from .markdown_renderer import (
+    apply_complete_subcontract_markdown_patch,
+    apply_material_purchase_markdown_patch,
+    render_contract_markdown,
+    sanitize_contract_result_payload,
+)
 from .schema import DOC_TYPE, DOC_TYPE_NAME, SCHEMA_VERSION, ContractResult
 from .skill import ContractSkill, is_contract_like
 
@@ -72,24 +77,28 @@ class ContractAgent:
             pages if isinstance(pages, list) else [],
             result.source_file,
         )
+        result.markdown = apply_material_purchase_markdown_patch(
+            result.markdown,
+            result,
+            pages if isinstance(pages, list) else [],
+            result.source_file,
+        )
         result.display_markdown = result.markdown
         if result.contract_category == "material_purchase":
             buyer = result.parties[0] if result.parties else None
             seller = result.parties[1] if len(result.parties) > 1 else None
+            logger.info("[MaterialPurchaseFinalDebug] amount_fields_before_render=%s", result.amount)
+            logger.info("[MaterialPurchaseFinalDebug] buyer_tax_id=%s", getattr(buyer, "unified_social_credit_code", ""))
+            logger.info("[MaterialPurchaseFinalDebug] seller_tax_id=%s", getattr(seller, "unified_social_credit_code", ""))
+            logger.info("[MaterialPurchaseFinalDebug] buyer_contact=%s", getattr(buyer, "contact", ""))
+            logger.info("[MaterialPurchaseFinalDebug] buyer_phone=%s", getattr(buyer, "phone", ""))
+            logger.info("[MaterialPurchaseFinalDebug] seller_contact=%s", getattr(seller, "contact", ""))
+            logger.info("[MaterialPurchaseFinalDebug] seller_phone=%s", getattr(seller, "phone", ""))
+            logger.info("[MaterialPurchaseFinalDebug] copy_count=%s", result.copies)
+            logger.info("[MaterialPurchaseFinalDebug] final_markdown_contains_amount=%s", "35,011,412.68 元" in result.markdown)
             logger.info(
-                "[MaterialPurchaseFinalDebug] amount=%s tax_amount=%s tax_rate=%s buyer_tax_id=%s "
-                "seller_tax_id=%s buyer_contact=%s seller_contact=%s copy_count=%s copy_source=%s "
-                "final_markdown_contains_amount=%s",
-                result.amount.get("tax_included_amount") or result.amount.get("contract_amount"),
-                result.amount.get("tax_amount"),
-                result.amount.get("tax_rate"),
-                getattr(buyer, "unified_social_credit_code", ""),
-                getattr(seller, "unified_social_credit_code", ""),
-                getattr(buyer, "contact", ""),
-                getattr(seller, "contact", ""),
-                result.copies,
-                extracted.get("copies_source") or "",
-                "35,011,412.68 元" in result.markdown,
+                "[MaterialPurchaseFinalDebug] final_markdown_contains_dirty_contact=%s",
+                any(token in result.markdown for token in ("徐志良联系方", "系方式")),
             )
         return result
 

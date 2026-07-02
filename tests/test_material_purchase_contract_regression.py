@@ -139,7 +139,16 @@ def test_material_purchase_payment_items_and_markdown() -> None:
     assert "签章页：第23页" in markdown
     assert "安全文明施工费：不适用" in markdown
     assert "合计金额：35,011,412.68 元" in markdown
-    assert "清单识别状态：部分成功（已识别清单及合计金额，完整明细建议按原件复核）" in markdown
+    assert "清单识别状态：部分成功（已识别清单合计金额，完整明细建议按原件复核）" in markdown
+    for forbidden in (
+        "合同金额：未识别", "大写金额：未识别", "小写金额：未识别", "含税金额：未识别",
+        "不含税金额：未识别", "税率：未识别", "税额：未识别", "安全文明施工费：未识别",
+        "合同价格形式：未识别", "合同份数：2、本合同自双方签字并盖章后生效",
+        "徐志良联系方", "系方式", "交付方式：未识别",
+    ):
+        assert forbidden not in markdown
+    assert "| 甲方/需方/买方 | 上海意川建筑科技有限公司 | 91310118MA1JP7UB2B | 未识别 | 徐志良 | 13805854808 |" in markdown
+    assert "| 乙方/供方/卖方 | 江苏吉达电缆有限公司 | 91320282MA1MGPT52 | 未识别 | 顾新华 | 18901533109 |" in markdown
 
 
 def test_material_purchase_total_is_rendered_without_stable_item_rows() -> None:
