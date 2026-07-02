@@ -36,6 +36,13 @@ def format_extract_status(status: str) -> str:
     return status_map.get(normalized, "未识别")
 
 
+def format_review_item(item: Any) -> str:
+    text = str(item or "")
+    if text == "付款条款需人工复核":
+        return "付款节点已提取，建议按原件复核"
+    return text
+
+
 def evidence_suffix(result: ContractResult, key: str) -> str:
     evidence = result.evidence.get(key) if isinstance(result.evidence, dict) else None
     if not isinstance(evidence, dict):
@@ -387,7 +394,7 @@ def render_contract_markdown(result: ContractResult) -> str:
     quality = result.quality or {}
     validation = result.validation or {}
     warnings = result.warnings or validation.get("warnings") or []
-    review_items = "；".join(str(item) for item in warnings if item) or "无"
+    review_items = "；".join(format_review_item(item) for item in warnings if item) or "无"
     completeness = validation.get("completeness") or quality.get("field_completeness") or MISSING
 
     markdown = "\n".join([

@@ -2735,10 +2735,17 @@ def _line_items(text: str, category: str) -> tuple[list[dict[str, Any]], dict[st
 
 
 def _signature_page(pages: list[dict[str, Any]]) -> str:
+    def is_real_signature_page(text: str) -> bool:
+        if "签章页" in text:
+            return True
+        has_signature_action = any(token in text for token in ("（盖章", "(盖章", "盖章）", "盖章)", "公章", "合同专用章"))
+        has_party_anchor = any(token in text for token in ("承包人", "分包人", "发包人", "甲方", "乙方", "供方", "需方"))
+        return has_signature_action and has_party_anchor
+
     page_numbers: list[int] = []
     for page in pages:
         text = str(page.get("text") or "")
-        if any(token in text for token in ("签字", "盖章", "公章", "合同专用章", "签订日期")):
+        if is_real_signature_page(text):
             try:
                 page_numbers.append(int(page.get("page") or 0))
             except (TypeError, ValueError):
@@ -2748,7 +2755,7 @@ def _signature_page(pages: list[dict[str, Any]]) -> str:
         return "、".join(f"第{page}页" for page in page_numbers)
     for page in reversed(pages):
         text = str(page.get("text") or "")
-        if any(token in text for token in ("签字", "盖章", "公章", "合同专用章", "签订日期")):
+        if is_real_signature_page(text):
             return f"第 {page.get('page')} 页"
     return ""
 

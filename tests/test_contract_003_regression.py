@@ -80,22 +80,30 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
     amount = data["amount"]
     duration = data["duration"]
 
+    assert data["doc_type"] == "contract"
+    assert data["doc_type_name"] == "合同"
     assert data["contract_category"] == "construction_subcontract"
     assert data["contract_category_name"] == "建设工程专业分包合同"
     assert data["extraction_status"] == "partial"
+    assert data["title"] == "机电安装工程专业分包合同"
+    assert data["project_name"] == "青浦区徐泾镇张广泾南侧01-49地块项目一期机电安装工程"
     assert data["signing_date"] == "2024年6月（具体日期需人工复核）"
     assert data["signing_date"] != "2020年6月9日"
-    assert "签字、盖章后有效" in data["effective_condition"]
+    assert data["signing_place"] == "上海"
+    assert data["page_count"] == 34
+    assert data["effective_condition"] == "本协议经立协议双方签字、盖章后有效"
     assert data["copies"] == "一式陆份，承包人执叁份，分包人执叁份"
     assert "工资专用账户" not in data["copies"]
 
     assert parties[0]["name"] == "上海华建工程建设咨询有限公司"
     assert parties[0]["unified_social_credit_code"] == ""
     assert parties[0]["unified_social_credit_code"] != "216200100110778688"
+    assert parties[0]["address"] == "上海徐汇区龙吴路888号"
     assert parties[1]["name"] == "上海意川建筑科技有限公司"
     assert parties[1]["unified_social_credit_code"] == ""
     assert parties[1]["unified_social_credit_code"] != "216200100107958688"
     assert parties[1]["phone"] == "021-69611755"
+    assert parties[1]["address"] == "上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室"
     assert parties[1]["bank_account"] == "03005029359"
 
     assert duration["start_date"] == "2024年6月26日"
@@ -105,6 +113,8 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
     assert data["project"]["location"] == "青浦区徐泾镇张广泾南侧01-49地块"
 
     assert amount["contract_amount"] == "人民币 60,305,209.07 元"
+    assert "陆仟零叁拾万伍仟贰佰零玖元零柒分" in amount["amount_upper"]
+    assert amount["amount_lower"] == "60,305,209.07 元"
     assert amount["tax_included_amount"] == "60,305,209.07 元"
     assert amount["tax_excluded_amount"] == "55,325,879.87 元"
     assert amount["tax_rate"] == "9%"
@@ -116,7 +126,12 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
     assert data["settlement"]["settlement_method"] == "工程量按实结算，固定单价"
 
     assert data["signature"]["signers"] == ""
+    assert data["signature"]["signature_page"] == "第4页、第22页、第25页、第27页、第29页、第31页、第33页"
+    assert "第1页" not in data["signature"]["signature_page"]
+    assert "第3页" not in data["signature"]["signature_page"]
     assert data["validation"]["completeness"] == "部分完整"
+    assert data["quality"]["ocr_quality"] == "可用"
+    assert "签订日期具体日期需人工复核" in data["validation"]["warnings"]
     assert "统一社会信用代码未识别" in data["validation"]["warnings"]
     assert "争议解决方式需人工复核" in data["validation"]["warnings"]
     assert data["quality"]["body_missing_note"] == "当前PDF包含合同协议书、合同条款、附件、签章页及合同总价明细表，文件结构较完整"
@@ -151,8 +166,17 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
     assert "税率9%" in data["settlement"]["invoice_requirement"]
     assert data["settlement"]["receiving_account"] == "开户银行：上海银行浦西支行；账号：03005029359"
+    assert "扣留结算总价的3%作为质量保证金" in markdown_result
+    assert "保修期满2年后15日内无息返还" in markdown_result
+    assert "增值税专用发票，税率9%" in markdown_result
+    assert "安全文明措施费除税金额为1,809,156.27元" in markdown_result
+    assert "签章页：第4页、第22页、第25页、第27页、第29页、第31页、第33页" in markdown_result
     assert "文件结构较完整" in markdown
     assert "关键字段完整度：部分完整" in markdown
+    assert "签订日期具体日期需人工复核" in markdown_result
+    assert "统一社会信用代码未识别" in markdown_result
+    assert "争议解决方式需人工复核" in markdown_result
+    assert "付款条款需人工复核" not in markdown_result
     assert "签字人：盖章" not in markdown
     assert "2020年6月9日" not in markdown
     assert "算时一并扣除" not in markdown
