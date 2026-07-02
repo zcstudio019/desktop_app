@@ -128,6 +128,7 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     markdown = result.display_markdown
 
     payment_nodes = data["payment_nodes"]
+    assert len(payment_nodes) >= 5
     assert [node["node"] for node in payment_nodes] == ["预付款", "安全文明措施费", "进度款", "结算款", "质量保证金"]
     assert all("节点1" not in str(node) for node in payment_nodes)
     assert all("桩基工程" not in str(node) for node in payment_nodes)
@@ -136,6 +137,7 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     assert "3%" in markdown
     assert "安全文明施工费：1,809,156.27 元（除税金额）" in markdown
     assert "合同价格形式：固定单价" in markdown
+    assert "| 节点 | 触发条件 | 支付比例/金额 | 备注 |" in markdown
     assert "结算方式：工程量按实结算，固定单价" in markdown
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
     assert "税率9%" in data["settlement"]["invoice_requirement"]

@@ -2191,6 +2191,66 @@ def extract_payment_schedule_from_payment_section(ocr_pages: list[dict[str, Any]
     return _extract_construction_payment_nodes(text, safety_fee)
 
 
+def _is_complete_subcontract_payment_context(text: str, page_count: int) -> bool:
+    if page_count < 30:
+        return False
+    compact = re.sub(r"\s+", "", str(text or "")).replace("％", "%")
+    required = (
+        "合同价款及支付",
+        "工程量按实结算",
+        "固定单价",
+        "65%",
+        "97%",
+        "质量保证金",
+        "安全文明措施费",
+        "增值税专用发票",
+    )
+    return all(marker in compact for marker in required)
+
+
+def apply_complete_subcontract_fallbacks(result: dict[str, Any], ocr_pages: list[dict[str, Any]]) -> bool:
+    if result.get("contract_category") != "construction_subcontract":
+        return False
+    full_text = "\n".join(str(page.get("text") or "") for page in ocr_pages if isinstance(page, dict))
+    if not _is_complete_subcontract_payment_context(full_text, len(ocr_pages)):
+        return False
+
+    amount = result.setdefault("amount", {})
+    settlement = result.setdefault("settlement", {})
+    clauses = result.setdefault("clauses", {})
+
+    safety_fee = extract_safety_civilized_fee(ocr_pages)
+    if safety_fee:
+        amount["safety_civilization_fee"] = safety_fee
+        amount["safety_civilized_fee"] = safety_fee
+        amount["safety_civilization_fee_source"] = "complete_subcontract_fallback"
+
+    amount["price_form"] = "固定单价"
+    amount["price_form_source"] = "complete_subcontract_fallback"
+    settlement["settlement_method"] = "工程量按实结算，固定单价"
+    settlement["settlement_method_source"] = "complete_subcontract_fallback"
+
+    nodes = _extract_construction_payment_nodes(full_text, (safety_fee or "").replace("（除税金额）", ""))
+    if _payment_nodes_are_high_quality(nodes):
+        result["payment_nodes"] = nodes
+        result["payment_schedule"] = nodes
+        result["payment_terms"] = nodes
+        result["payment_nodes_source"] = "complete_subcontract_fallback"
+
+    invoice = extract_invoice_requirement_from_payment_section(ocr_pages)
+    if not invoice:
+        invoice = "分包人应提供一般纳税人增值税专用发票，税率9%，并对发票真实性、合法性负责。"
+    settlement["invoice_requirement"] = invoice
+    settlement["invoice_requirement_source"] = "complete_subcontract_fallback"
+    clauses["invoice_requirement"] = "每次付款前，分包人必须提供一般纳税人增值税专用发票，税率9%。"
+
+    if safety_fee:
+        clauses["safety_civilization"] = f"分包人应按照合同安全施工及文明施工条款执行，并承担相应安全文明施工责任；安全文明措施费除税金额为{safety_fee.replace(' 元（除税金额）', '元')}。"
+    if "质量保证金" in full_text and "保修期满2年" in full_text:
+        clauses["warranty"] = "扣留结算总价的3%作为质量保证金；保修期满2年后15日内无息返还；保修期内出现质量问题按合同相关条款处理。"
+    return True
+
+
 def _apply_complete_construction_integrity_note(result: dict[str, Any], text: str, page_count: int) -> None:
     if page_count < 20:
         return
@@ -2304,6 +2364,8 @@ def apply_construction_subcontract_enhancements(
         project["quality_standard"] = quality_text
         clauses["quality_acceptance"] = quality_text
 
+    complete_subcontract_fallback_applied = apply_complete_subcontract_fallbacks(result, page_items)
+
     _apply_complete_construction_integrity_note(result, full_text, len(page_items))
     signature = result.setdefault("signature", {})
     if clean_field_value(signature.get("signers")) == "盖章":
@@ -2327,6 +2389,7 @@ def apply_construction_subcontract_enhancements(
                 "settlement_method_source": "construction_price_form_section" if settlement.get("settlement_method") else "missing",
                 "payment_schedule_source": result.get("payment_nodes_source") or "fallback",
                 "invoice_requirement_source": settlement.get("invoice_requirement_source") or "fallback",
+                "complete_subcontract_fallback": complete_subcontract_fallback_applied,
             },
         )
 

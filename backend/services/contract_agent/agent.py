@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .markdown_renderer import render_contract_markdown, sanitize_contract_result_payload
 from .schema import DOC_TYPE, DOC_TYPE_NAME, SCHEMA_VERSION, ContractResult
 from .skill import ContractSkill, is_contract_like
+
+
+logger = logging.getLogger(__name__)
 
 
 class ContractAgent:
@@ -50,6 +54,18 @@ class ContractAgent:
             evidence=extracted.get("evidence") or {},
             warnings=extracted.get("warnings") or [],
         )
+        if "合同003" in result.source_file:
+            logger.info(
+                "[Contract003RenderInput] safety_civilized_fee=%s price_form=%s settlement_method=%s "
+                "payment_schedule=%s invoice_requirement=%s important_terms_invoice=%s important_terms_safety=%s",
+                result.amount.get("safety_civilization_fee"),
+                result.amount.get("price_form"),
+                result.settlement.get("settlement_method"),
+                result.payment_nodes,
+                result.settlement.get("invoice_requirement"),
+                result.clauses.get("invoice_requirement"),
+                result.clauses.get("safety_civilization"),
+            )
         result.markdown = render_contract_markdown(result)
         result.display_markdown = result.markdown
         return result
