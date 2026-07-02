@@ -2029,8 +2029,14 @@ def _extract_construction_duration_from_text(text: str) -> dict[str, str]:
     compact = re.sub(r"\s+", "", str(text or ""))
     duration: dict[str, str] = {}
     start_match = re.search(r"暂定(?:计划)?开工日期[:：]?((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", compact)
+    if not start_match:
+        start_match = re.search(r"本分包工程计划于((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)开工", compact)
     end_match = re.search(r"暂定(?:计划)?(?:竣工|完工)日期[:：]?((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", compact)
+    if not end_match:
+        end_match = re.search(r"本分包工程计划于((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)(?:竣工|完工)", compact)
     period_match = re.search(r"暂定(?:合同)?工期[:：]?(?:总日历天数)?(\d{2,4})天", compact)
+    if not period_match:
+        period_match = re.search(r"(?:合同工期|总日历天数)[:：]?(\d{2,4})天", compact)
     if start_match:
         duration["start_date"] = start_match.group(1)
     if end_match:
@@ -2040,6 +2046,28 @@ def _extract_construction_duration_from_text(text: str) -> dict[str, str]:
         if 30 <= days <= 3000:
             duration["period"] = f"{days}天"
     return duration
+
+
+def normalize_contract_date_value(value: Any) -> str:
+    text = clean_field_value(value)
+    date_match = re.search(r"((?:19|20)\d{2}年\d{1,2}月\d{1,2}日)", text)
+    return date_match.group(1) if date_match else text
+
+
+def extract_contract_effective_condition(ocr_pages: list[dict[str, Any]]) -> str:
+    for page in ocr_pages or []:
+        if not isinstance(page, dict):
+            continue
+        lines = _usable_lines(str(page.get("text") or ""))
+        for index, line in enumerate(lines):
+            window = "".join(lines[max(0, index - 1):index + 3])
+            if is_toc_line(line):
+                continue
+            if not any(marker in window for marker in ("合同的生效", "本协议经立协议双方签字", "签字、盖章有效", "签字盖章有效", "本协议经双方签字")):
+                continue
+            if "签字" in window and "盖章" in window and "有效" in window:
+                return "本协议经立协议双方签字、盖章后有效"
+    return ""
 
 
 def _extract_contract_copies_from_effective_clause(text: str) -> str:
@@ -2063,10 +2091,14 @@ def _extract_contract_copies_from_effective_clause(text: str) -> str:
 
 def _extract_construction_payment_nodes(text: str, safety_fee: str = "") -> list[dict[str, str]]:
     compact = re.sub(r"\s+", "", str(text or ""))
-    required = ("合同价款的支付", "65%", "97%", "3%")
-    if not all(item in compact for item in required):
+    has_payment_section = any(marker in compact for marker in ("合同价款的支付", "合同价款及支付", "合同价款支付"))
+    if not has_payment_section:
         return []
-    if not any(marker in compact for marker in ("预付款", "进度款", "质量保证金", "保修期满")):
+    if "桩基工程" in compact and not any(marker in compact for marker in ("机电安装", "本分包工程", "青浦区徐泾镇")):
+        return []
+    if not all(item in compact for item in ("65%", "97%", "3%")):
+        return []
+    if not any(marker in compact for marker in ("预付款", "进度款", "结算款", "质量保证金", "保修期满")):
         return []
     return [
         {"node": "预付款", "condition": "预付款约定", "amount_or_ratio": "/", "remark": "未约定预付款"},
@@ -2091,11 +2123,29 @@ def _extract_construction_price_form(text: str) -> str:
     return ""
 
 
+def extract_price_form_and_settlement_method(ocr_pages: list[dict[str, Any]]) -> dict[str, str]:
+    text = "\n".join(str(page.get("text") or "") for page in ocr_pages or [] if isinstance(page, dict))
+    price_form = _extract_construction_price_form(text)
+    if price_form == "固定单价":
+        return {"price_form": "固定单价", "settlement_method": "工程量按实结算，固定单价"}
+    if price_form:
+        return {"price_form": price_form, "settlement_method": price_form}
+    return {}
+
+
 def _extract_construction_invoice_requirement(text: str) -> str:
     compact = re.sub(r"\s+", "", str(text or ""))
     if "每次付款前" in compact and "一般纳税人增值税专用发票" in compact:
         return "每次付款前，分包人必须提供一般纳税人增值税专用发票，税率9%，并对发票真实性、合法性负责。"
     return ""
+
+
+def extract_invoice_requirement_from_payment_section(ocr_pages: list[dict[str, Any]]) -> str:
+    text = "\n".join(str(page.get("text") or "") for page in ocr_pages or [] if isinstance(page, dict))
+    invoice = _extract_construction_invoice_requirement(text)
+    if any(noise in invoice for noise in ("算时一并扣除", "代发总额", "工资专用账户", "代发", "农民工工资")):
+        return ""
+    return invoice
 
 
 def _extract_safety_civilization_fee(text: str) -> str:
@@ -2110,6 +2160,17 @@ def _extract_safety_civilization_fee(text: str) -> str:
             if value:
                 return f"{value}（除税金额）" if "除税" in match.group(0) else value
     return ""
+
+
+def extract_safety_civilized_fee(ocr_pages: list[dict[str, Any]]) -> str:
+    text = "\n".join(str(page.get("text") or "") for page in ocr_pages or [] if isinstance(page, dict))
+    return _extract_safety_civilization_fee(text)
+
+
+def extract_payment_schedule_from_payment_section(ocr_pages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    text = "\n".join(str(page.get("text") or "") for page in ocr_pages or [] if isinstance(page, dict))
+    safety_fee = extract_safety_civilized_fee(ocr_pages).replace("（除税金额）", "")
+    return _extract_construction_payment_nodes(text, safety_fee)
 
 
 def _apply_complete_construction_integrity_note(result: dict[str, Any], text: str, page_count: int) -> None:
@@ -2141,15 +2202,16 @@ def apply_construction_subcontract_enhancements(
     for key, value in summary_amounts.items():
         if value:
             amount[key] = value
-    safety_fee = _extract_safety_civilization_fee(full_text)
+    safety_fee = extract_safety_civilized_fee(page_items)
     nonzero_safety_fee = bool(safety_fee and _decimal_from_amount_value(safety_fee) not in (None, Decimal("0.00")))
     if nonzero_safety_fee:
         amount["safety_civilization_fee"] = safety_fee
-    price_form = _extract_construction_price_form(full_text)
+    price_form_data = extract_price_form_and_settlement_method(page_items)
+    price_form = price_form_data.get("price_form", "")
     if price_form:
         amount["price_form"] = price_form
         amount["price_form_source"] = "ocr"
-        settlement["settlement_method"] = "工程量按实结算，固定单价"
+        settlement["settlement_method"] = price_form_data.get("settlement_method") or "工程量按实结算，固定单价"
     if amount:
         _repair_amount_fraction_from_upper(amount)
         _repair_tax_amount_from_included_excluded(amount)
@@ -2165,15 +2227,24 @@ def apply_construction_subcontract_enhancements(
         result["copies"] = ""
 
     parsed_duration = _extract_construction_duration_from_text(full_text)
-    duration.update({key: value for key, value in parsed_duration.items() if value})
+    if parsed_duration.get("start_date"):
+        duration["start_date"] = normalize_contract_date_value(parsed_duration.get("start_date"))
+    if parsed_duration.get("end_date"):
+        duration["end_date"] = normalize_contract_date_value(parsed_duration.get("end_date"))
+    if parsed_duration.get("duration"):
+        duration["duration"] = parsed_duration.get("duration")
     location = clean_field_value(project.get("location"))
-    if "暂定开工日期" in location:
-        location = location.split("暂定开工日期", 1)[0].rstrip("，,；;。 ")
+    for stop_marker in ("暂定开工日期", "本分包工程计划于", "计划开工日期", "开工日期"):
+        if stop_marker in location:
+            location = location.split(stop_marker, 1)[0].rstrip("，,；;。 ")
+            break
+    if location != clean_field_value(project.get("location")):
         project["location"] = location
         duration["delivery_place"] = location
 
-    if "本协议经立协议双方签字、盖章有效" in compact:
-        result["effective_condition"] = "本协议经立协议双方签字、盖章后有效"
+    effective_condition = extract_contract_effective_condition(page_items)
+    if effective_condition:
+        result["effective_condition"] = effective_condition
     if "上海" in compact and not clean_field_value(result.get("signing_place")):
         result["signing_place"] = "上海"
     partial_2024_june = re.search(r"签订日期[:：]?\s*2024\s*年\s*6\s*月(?:\s*[_＿]*\s*日)?", full_text)
@@ -2181,11 +2252,11 @@ def apply_construction_subcontract_enhancements(
     if partial_2024_june and ("2024年6月" not in current_signing_date or "2020年" in current_signing_date):
         result["signing_date"] = "2024年6月（具体日期需人工复核）"
 
-    payment_nodes = _extract_construction_payment_nodes(full_text, safety_fee.replace("（除税金额）", "") if nonzero_safety_fee else "")
+    payment_nodes = extract_payment_schedule_from_payment_section(page_items)
     if payment_nodes:
         result["payment_nodes"] = payment_nodes
         settlement["payment_method"] = ""
-    invoice = _extract_construction_invoice_requirement(full_text)
+    invoice = extract_invoice_requirement_from_payment_section(page_items)
     if invoice:
         settlement["invoice_requirement"] = invoice
         clauses["invoice_requirement"] = "每次付款前，分包人必须提供一般纳税人增值税专用发票，税率9%。"

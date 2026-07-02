@@ -14,8 +14,8 @@ def _contract_003_pages() -> list[dict[str, str | int]]:
 分包人：上海意川建筑科技有限公司
 工程名称：青浦区徐泾镇张广泾南侧01-49地块项目一期机电安装工程
 工程地点：青浦区徐泾镇张广泾南侧01-49地块
-暂定开工日期：2024年6月26日
-暂定竣工日期：2025年11月23日
+本分包工程计划于2024年6月26日开工
+本分包工程计划于2025年11月23日竣工
 暂定合同工期：总日历天数516天
 合同价款：人民币 60,305,209.07 元
 大写金额：陆仟零叁拾万伍仟贰佰零玖元零柒分
@@ -112,6 +112,7 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
     assert amount["price_form"] == "固定单价"
     assert amount["amount_check"] == "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致"
     assert amount["recognition_status"] == "成功"
+    assert data["settlement"]["settlement_method"] == "工程量按实结算，固定单价"
 
     assert data["signature"]["signers"] == ""
     assert data["validation"]["completeness"] == "部分完整"
@@ -127,6 +128,7 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
 
     payment_nodes = data["payment_nodes"]
     assert [node["node"] for node in payment_nodes] == ["预付款", "安全文明措施费", "进度款", "结算款", "质量保证金"]
+    assert all("桩基工程" not in str(node) for node in payment_nodes)
     assert "65%" in markdown
     assert "97%" in markdown
     assert "3%" in markdown
@@ -139,6 +141,8 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     assert "2020年6月9日" not in markdown
     assert "算时一并扣除" not in markdown
     assert "1.5工程承包方式" not in markdown
+    assert "算时一并扣除" not in markdown
+    assert "代发总额" not in markdown
 
 
 def test_contract_003_forbidden_regressions() -> None:
