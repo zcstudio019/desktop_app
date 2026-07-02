@@ -170,3 +170,76 @@ def test_material_purchase_total_is_rendered_without_stable_item_rows() -> None:
     assert "清单明细：已识别货物清单区域，完整明细建议按原件复核" in result.display_markdown
     assert "合计金额：35,011,412.68 元" in result.display_markdown
     assert "清单识别状态：部分成功（已识别清单合计金额，完整明细建议按原件复核）" in result.display_markdown
+
+
+def test_material_purchase_complete_baseline_and_forbidden_regressions() -> None:
+    result = _run()
+    data = result.structured_data_dict()
+    markdown = result.display_markdown
+    amount = data["amount"]
+    duration = data["duration"]
+    settlement = data["settlement"]
+    clauses = data["clauses"]
+    warnings = data["validation"]["warnings"]
+
+    assert data["contract_category_name"] == "物资采购合同"
+    assert data["title"] == "电缆采购合同"
+    assert data["project_name"] == "临空12号地块国际商务花园四期项目（除桩基）机电安装工程"
+    assert data["contract_no"] == "YC202410003-L048"
+    assert data["effective_condition"] == "本合同自双方签字并盖章后生效"
+    assert data["copies"] == "一式伍份，甲方执叁份，乙方执贰份"
+
+    buyer, seller = data["parties"][:2]
+    assert buyer["name"] == "上海意川建筑科技有限公司"
+    assert buyer["unified_social_credit_code"] == "91310118MA1JP7UB2B"
+    assert buyer["contact"] == "徐志良"
+    assert buyer["phone"] == "13805854808"
+    assert buyer["address"] == "上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室"
+    assert seller["name"] == "江苏吉达电缆有限公司"
+    assert seller["unified_social_credit_code"] == "91320282MA1MGPT52"
+    assert seller["contact"] == "顾新华"
+    assert seller["phone"] == "18901533109"
+    assert seller["address"] == "江苏省无锡市宜兴市杨巷镇兴园路6号"
+
+    assert amount["contract_amount"] == "人民币 35,011,412.68 元"
+    assert "叁仟伍佰零壹万壹仟肆佰壹拾贰元陆角捌分" in amount["amount_upper"]
+    assert amount["tax_included_amount"] == "35,011,412.68 元"
+    assert amount["tax_excluded_amount"] == "30,983,551.04 元"
+    assert amount["tax_rate"] == "13%"
+    assert amount["tax_amount"] == "4,027,861.64 元"
+    assert amount["safety_civilization_fee"] == "不适用"
+    assert amount["price_form"] == "暂定总价，按实际供货数量及合同单价结算"
+    assert amount["recognition_status"] == "成功"
+
+    assert duration["period"] == "按甲方订货通知及项目实际供货进度执行"
+    assert duration["delivery_place"] == "临空12号地块国际商务花园四期项目现场"
+    assert duration["delivery_method"] == "乙方根据甲方传真、邮件、电话或微信等指示分批交货"
+    assert duration["acceptance_period"] == "货到现场后按合同验收标准及方法进行验收"
+    assert [node["node"] for node in data["payment_nodes"]] == ["预付款", "到货款", "货到60天付款", "货到90天付款"]
+    assert [node["amount_or_ratio"] for node in data["payment_nodes"]] == ["该批订货单金额的20%", "50%", "20%", "10%"]
+    assert settlement["settlement_method"] == "按订货批次及进度对账结算，最终以双方确认的结算单为准。"
+    assert "增值税专用发票" in settlement["invoice_requirement"]
+    assert "税率13%" in settlement["invoice_requirement"]
+    assert settlement["receiving_account"] == ""
+    assert data["line_item_summary"]["total_amount"] == "35,011,412.68 元"
+    assert "部分成功" in data["line_item_summary"]["recognition_status"]
+    assert "期限为2年" in clauses["warranty"]
+    assert clauses["no_subcontract"] == "不适用"
+    assert clauses["safety_civilization"] == "不适用"
+    assert data["signature"]["signature_page"] == "第23页"
+    assert "页脚显示共28页但当前PDF仅23页" in data["quality"]["body_missing_note"]
+    for warning in ("签订日期未识别", "收款账户未识别", "完整清单建议按原件复核"):
+        assert warning in warnings
+    assert any("疑似缺少后续附件页" in warning for warning in warnings)
+
+    top = "\n".join([
+        "## 合同", "", "- 资料类型：合同", "- 合同类型：物资采购合同",
+        f"- 来源文件：{FILENAME}", "- 原件状态：可查看", "- 提取状态：部分成功",
+    ])
+    assert markdown.startswith(top)
+    assert "- 收款账户：未识别" in markdown
+    assert "文件完整性：未识别" not in markdown
+    assert "签字人：均对甲方" not in markdown
+    assert buyer["phone"] != "18901533109"
+    assert all(item["name"] not in {"序号", "含税单价", "付款条款", "违约条款"} for item in data["line_items"])
+    assert all("违约金" not in str(node) for node in data["payment_nodes"])
