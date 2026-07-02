@@ -125,10 +125,13 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
 def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     result = _run_contract_003()
     data = result.structured_data_dict()
+    payload = result.to_dict()
     markdown = result.display_markdown
+    markdown_result = payload["markdown_result"]
 
     payment_nodes = data["payment_nodes"]
     assert len(payment_nodes) >= 5
+    assert len(data["settlement"]["payment_schedule"]) >= 5
     assert [node["node"] for node in payment_nodes] == ["预付款", "安全文明措施费", "进度款", "结算款", "质量保证金"]
     assert all("节点1" not in str(node) for node in payment_nodes)
     assert all("桩基工程" not in str(node) for node in payment_nodes)
@@ -136,9 +139,15 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     assert "97%" in markdown
     assert "3%" in markdown
     assert "安全文明施工费：1,809,156.27 元（除税金额）" in markdown
+    assert "安全文明施工费：1,809,156.27 元（除税金额）" in markdown_result
     assert "合同价格形式：固定单价" in markdown
+    assert "合同价格形式：固定单价" in markdown_result
     assert "| 节点 | 触发条件 | 支付比例/金额 | 备注 |" in markdown
+    assert "| 预付款 |" in markdown_result
+    assert "| 安全文明措施费 |" in markdown_result
     assert "结算方式：工程量按实结算，固定单价" in markdown
+    assert "结算方式：工程量按实结算，固定单价" in markdown_result
+    assert "发票要求：每次付款前，分包人必须提供一般纳税人增值税专用发票，税率9%，并对发票真实性、合法性负责。" in markdown_result
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
     assert "税率9%" in data["settlement"]["invoice_requirement"]
     assert data["settlement"]["receiving_account"] == "开户银行：上海银行浦西支行；账号：03005029359"
@@ -147,7 +156,13 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     assert "签字人：盖章" not in markdown
     assert "2020年6月9日" not in markdown
     assert "算时一并扣除" not in markdown
+    assert "算时一并扣除" not in markdown_result
+    assert "甲方对此代发总额" not in markdown_result
     assert "1.5工程承包方式" not in markdown
+    assert "付款方式：未识别" not in markdown_result
+    assert "结算方式：未识别" not in markdown_result
+    assert "安全文明施工费：未识别" not in markdown_result
+    assert "合同价格形式：未识别" not in markdown_result
     assert "算时一并扣除" not in markdown
     assert "代发总额" not in markdown
 

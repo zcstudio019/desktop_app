@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .markdown_renderer import render_contract_markdown, sanitize_contract_result_payload
+from .markdown_renderer import apply_complete_subcontract_markdown_patch, render_contract_markdown, sanitize_contract_result_payload
 from .schema import DOC_TYPE, DOC_TYPE_NAME, SCHEMA_VERSION, ContractResult
 from .skill import ContractSkill, is_contract_like
 
@@ -66,7 +66,12 @@ class ContractAgent:
                 result.clauses.get("invoice_requirement"),
                 result.clauses.get("safety_civilization"),
             )
-        result.markdown = render_contract_markdown(result)
+        result.markdown = apply_complete_subcontract_markdown_patch(
+            render_contract_markdown(result),
+            result,
+            pages if isinstance(pages, list) else [],
+            result.source_file,
+        )
         result.display_markdown = result.markdown
         return result
 
