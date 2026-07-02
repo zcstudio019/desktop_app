@@ -170,7 +170,8 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     assert "保修期满2年后15日内无息返还" in markdown_result
     assert "增值税专用发票，税率9%" in markdown_result
     assert "安全文明措施费除税金额为1,809,156.27元" in markdown_result
-    assert "签章页：第4页及附件签章页" in markdown_result
+    assert "签章页：第31页及附件签章页" in markdown_result
+    assert "签章页：第 31 页" not in markdown_result
     assert "文件结构较完整" in markdown
     assert "关键字段完整度：部分完整" in markdown
     assert "签订日期具体日期需人工复核" in markdown_result

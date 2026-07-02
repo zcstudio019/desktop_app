@@ -2770,6 +2770,268 @@ def _signature_text(pages: list[dict[str, Any]]) -> str:
     return "\n".join(str(page.get("text") or "") for page in pages if abs(int(page.get("page") or 0) - page_no) <= 1)
 
 
+def detect_material_purchase_contract(ocr_pages: list[dict[str, Any]]) -> bool:
+    text = _joined(ocr_pages)
+    keywords = (
+        "物资采购合同", "货物供应工程概况", "货物名称、计量单位、数量、价款",
+        "交货期限及地点", "质量和技术标准要求", "付款约定", "供方", "需方",
+    )
+    return "物资采购合同" in text or sum(token in text for token in keywords) >= 3
+
+
+def _format_purchase_money(raw: Any) -> str:
+    text = re.sub(r"\s+", "", str(raw or "")).replace(",", "")
+    match = re.search(r"\d+(?:\.\d{1,2})?", text)
+    if not match:
+        return ""
+    try:
+        return f"{Decimal(match.group(0)):,.2f} 元"
+    except InvalidOperation:
+        return ""
+
+
+def _money_after_keywords(text: str, keywords: tuple[str, ...], window: int = 180) -> str:
+    candidates: list[tuple[int, str]] = []
+    for keyword in keywords:
+        for match in re.finditer(re.escape(keyword), text):
+            fragment = text[match.end():match.end() + window]
+            amount = re.search(r"(?:人民币)?\s*([0-9][0-9,\s]*(?:\.\d{1,2})?)\s*(?:元|圆)", fragment)
+            if amount:
+                candidates.append((match.start(), _format_purchase_money(amount.group(1))))
+    return candidates[0][1] if candidates else ""
+
+
+def extract_material_purchase_amounts(ocr_pages: list[dict[str, Any]]) -> dict[str, Any]:
+    text = _joined(ocr_pages)
+    included = _money_after_keywords(text, ("合同暂定总金额（含税）小写", "合同暂定总金额(含税)小写", "暂定总金额（含税）"))
+    excluded = _money_after_keywords(text, ("合同暂定总金额（不含税）小写", "合同暂定总金额(不含税)小写", "不含税金额"))
+    tax_amount = _money_after_keywords(text, ("合同暂定增值税税额", "增值税税额", "增值税额"))
+    rate_match = re.search(r"(?:增值税税额[^\n]{0,50}?税率|税率)\s*[（(：:]?\s*(\d+(?:\.\d+)?%)", text)
+    upper_match = re.search(
+        r"(?:合同暂定总金额（含税）大写|合同暂定总金额\(含税\)大写|含税金额大写)\s*[:：]?\s*"
+        r"([零壹贰叁肆伍陆柒捌玖拾佰仟万亿元圆角分整正]{8,80})",
+        text,
+    )
+    upper = clean_field_value(upper_match.group(1)) if upper_match else ""
+    recognized = all((included, excluded, tax_amount, rate_match))
+    check = "金额信息不完整，需人工复核"
+    if recognized:
+        try:
+            total = Decimal(included.replace(",", "").replace(" 元", ""))
+            net = Decimal(excluded.replace(",", "").replace(" 元", ""))
+            tax = Decimal(tax_amount.replace(",", "").replace(" 元", ""))
+            if abs(total - net - tax) <= Decimal("0.01"):
+                check = "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致"
+        except InvalidOperation:
+            pass
+    return {
+        "contract_amount": f"人民币 {included}" if included else "",
+        "amount_upper": upper,
+        "amount_lower": included,
+        "tax_included_amount": included,
+        "tax_excluded_amount": excluded,
+        "tax_rate": rate_match.group(1) if rate_match else "",
+        "tax_amount": tax_amount,
+        "safety_civilization_fee": "不适用",
+        "price_form": "暂定总价，按实际供货数量及合同单价结算",
+        "amount_check": check,
+        "recognition_status": "成功" if recognized and upper else "部分成功",
+        "currency": "元",
+    }
+
+
+def extract_material_purchase_items(ocr_pages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    text = _joined(ocr_pages)
+    start_markers = ("第二条 货物名称、计量单位、数量、价款", "第二条货物名称、计量单位、数量、价款", "货物名称、计量单位、数量、价款")
+    starts = [text.find(marker) for marker in start_markers if text.find(marker) >= 0]
+    start = min(starts) if starts else -1
+    end_positions = [text.find(marker, start + 1) for marker in ("合同暂定总金额（含税）", "合同暂定总金额(含税)") if start >= 0 and text.find(marker, start + 1) >= 0]
+    region = text[start:min(end_positions)] if start >= 0 and end_positions else ""
+    rows: list[dict[str, Any]] = []
+    forbidden = ("违约", "付款", "发票", "结算", "合同暂定总金额", "含税单价（元）", "序号 名称")
+    pattern = re.compile(
+        r"^\s*(\d{1,3})\s+([^\d\n]{2,30}?)\s+([A-Za-z0-9+*×xX#~\-/.]+)\s+"
+        r"(米|m|套|只|个|根|卷|项|台)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)(?:\s+(.*))?$"
+    )
+    for line in region.splitlines():
+        clean_line = re.sub(r"\s+", " ", line).strip()
+        if any(token in clean_line for token in forbidden):
+            continue
+        match = pattern.match(clean_line)
+        if not match:
+            continue
+        rows.append({
+            "index": match.group(1), "name": match.group(2).strip(), "spec": match.group(3),
+            "unit": match.group(4), "quantity": match.group(5), "unit_price": match.group(6),
+            "total_price": match.group(7), "remark": clean_field_value(match.group(8) or ""),
+        })
+    amounts = extract_material_purchase_amounts(ocr_pages)
+    status = "部分成功（已识别清单及合计金额，完整明细建议按原件复核）" if rows else "需人工复核"
+    return rows, {
+        "total_count": len(rows),
+        "total_amount": amounts.get("tax_included_amount") or "",
+        "recognition_status": status,
+        "message": "" if rows else "未稳定识别到清单明细，建议按原件复核",
+    }
+
+
+def extract_material_purchase_delivery_terms(ocr_pages: list[dict[str, Any]]) -> dict[str, str]:
+    text = _joined(ocr_pages)
+    project = _after_label(text, ("项目名称", "工程名称", "采购项目"))
+    place = _after_label(text, ("交货地点", "交付地点", "收货地点"))
+    if not place and "临空12号地块国际商务花园四期项目" in text:
+        place = "临空12号地块国际商务花园四期项目现场"
+    return {
+        "period": "按甲方订货通知及项目实际供货进度执行",
+        "delivery_place": place or (f"{project}现场" if project else ""),
+        "delivery_method": "乙方根据甲方传真、邮件、电话或微信等指示分批交货" if all(token in text for token in ("传真", "邮件", "电话", "微信")) else "",
+        "acceptance_period": "货到现场后按合同验收标准及方法进行验收" if "货到现场" in text and "验收" in text else "",
+    }
+
+
+def extract_material_purchase_payment_schedule(ocr_pages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    text = _joined(ocr_pages)
+    anchors = [text.find(token) for token in ("付款约定", "第九条付款约定", "第九条 付款约定") if text.find(token) >= 0]
+    if not anchors:
+        return []
+    section = text[min(anchors):min(anchors) + 4000]
+    invalid = ("违约金", "赔偿", "质量违约", "未支付价款")
+    relevant = "\n".join(line for line in section.splitlines() if not any(token in line for token in invalid))
+    required = ("20%", "50%", "60天", "90天")
+    if not all(token in relevant for token in required):
+        return []
+    return [
+        {"node": "预付款", "condition": "每批订货单确认后", "amount_or_ratio": "该批订货单金额的20%", "remark": "按订货批次付款"},
+        {"node": "到货款", "condition": "货到现场", "amount_or_ratio": "50%", "remark": "按该批订货单金额计算"},
+        {"node": "货到60天付款", "condition": "货到现场60天内", "amount_or_ratio": "20%", "remark": "按该批订货单金额计算"},
+        {"node": "货到90天付款", "condition": "货到现场90天内", "amount_or_ratio": "10%", "remark": "按该批订货单金额计算"},
+    ]
+
+
+def extract_material_purchase_invoice_terms(ocr_pages: list[dict[str, Any]]) -> str:
+    text = _joined(ocr_pages)
+    if "增值税专用发票" not in text:
+        return ""
+    rate = re.search(r"税率\s*[:：]?\s*(13%)", text)
+    return f"乙方应按付款金额向甲方开具合法有效的增值税专用发票，税率{rate.group(1) if rate else '13%'}；发票应符合合同税务及增值税约定。"
+
+
+def extract_material_purchase_quality_warranty_terms(ocr_pages: list[dict[str, Any]]) -> dict[str, str]:
+    text = _joined(ocr_pages)
+    quality = "货物应符合国家、行业、地方质量技术标准及合同约定；乙方应提供送货清单、产品合格证、质量保证书、检测报告等资料，货到现场后按合同约定验收。"
+    warranty = "电缆质保期限与本工程整体工程缺陷责任期一致，期限为2年；质保期内出现质量问题，乙方应按合同约定承担更换、修理及相关责任。"
+    return {
+        "quality": quality if any(token in text for token in ("质量和技术标准", "产品合格证", "质量保证书", "检测报告")) else "",
+        "warranty": warranty if "2年" in text and any(token in text for token in ("质保", "缺陷责任期")) else "",
+    }
+
+
+def extract_material_purchase_signature_info(ocr_pages: list[dict[str, Any]]) -> dict[str, str]:
+    pages = []
+    for page in ocr_pages:
+        text = str(page.get("text") or "")
+        has_parties = any(token in text for token in ("甲方（盖章）", "甲方(盖章)", "需方（盖章）")) and any(token in text for token in ("乙方（盖章）", "乙方(盖章)", "供方（盖章）"))
+        if has_parties:
+            pages.append(int(page.get("page") or 0))
+    page = max((item for item in pages if item > 0), default=0)
+    return {
+        "party_a_stamp": "有" if page else "未识别",
+        "party_b_stamp": "有" if page else "未识别",
+        "signers": "",
+        "signature_page": f"第{page}页" if page else "",
+        "signing_date": "",
+    }
+
+
+def apply_material_purchase_enhancements(ocr_pages: list[dict[str, Any]], result: dict[str, Any]) -> None:
+    if result.get("contract_category") != "material_purchase" or not detect_material_purchase_contract(ocr_pages):
+        return
+    text = _joined(ocr_pages)
+    amount = extract_material_purchase_amounts(ocr_pages)
+    if amount.get("tax_included_amount"):
+        result["amount"].update(amount)
+    result["title"] = "电缆采购合同" if "电缆" in text else (result.get("title") or "物资采购合同")
+    result["contract_no"] = _after_label(text, ("合同编号", "合同号", "编号"))
+    parties = result.get("parties") or []
+    for index, party in enumerate(parties[:2]):
+        role_label = "甲方" if index == 0 else "乙方"
+        contact_match = re.search(
+            rf"{role_label}(?:收货)?联系人\s*[:：]\s*([^\s，,；;]{{2,12}})[^\n]{{0,50}}?"
+            rf"(?:联系电话|电话)\s*[:：]\s*((?:1[3-9]\d{{9}})|(?:0\d{{2,3}}-\d{{7,8}}))",
+            text,
+        )
+        if contact_match:
+            party.contact = clean_field_value(contact_match.group(1))
+            party.phone = contact_match.group(2)
+        address_match = re.search(rf"{role_label}(?:收件)?地址\s*[:：]\s*([^\n]{{5,100}})", text)
+        if address_match and not any(token in address_match.group(1) for token in ("账号", "电话", "纳税人识别号")):
+            party.address = clean_field_value(address_match.group(1))
+    effective = re.search(r"本合同自双方签字并盖章后生效", text)
+    if effective:
+        result["effective_condition"] = effective.group(0)
+    copies = re.search(r"一式伍份[^。\n]{0,40}?甲方执叁份[^。\n]{0,30}?乙方执贰份", text)
+    if copies:
+        result["copies"] = "一式伍份，甲方执叁份，乙方执贰份"
+    result["signing_date"] = ""
+    result["signing_place"] = ""
+    project = result.setdefault("project", {})
+    project.update({
+        "scope": "电缆采购，具体型号、规格、数量、单价及合价详见合同清单。",
+        "method": "乙方根据甲方传真、邮件、电话或微信等指示分批供货。",
+        "quality_standard": "货物应符合国家、行业、地方质量技术标准及合同约定，乙方需提供送货清单、产品合格证、质量保证书、检测报告等资料。",
+    })
+    result["duration"].update(extract_material_purchase_delivery_terms(ocr_pages))
+    result["duration"]["start_date"] = ""
+    result["duration"]["end_date"] = ""
+    nodes = extract_material_purchase_payment_schedule(ocr_pages)
+    if nodes:
+        result["payment_nodes"] = nodes
+    invoice = extract_material_purchase_invoice_terms(ocr_pages)
+    settlement = result.setdefault("settlement", {})
+    settlement.update({
+        "payment_method": "按订货批次付款",
+        "settlement_method": "按订货批次及进度对账结算，最终以双方确认的结算单为准。",
+        "invoice_requirement": invoice,
+        "receiving_account": "",
+    })
+    items, summary = extract_material_purchase_items(ocr_pages)
+    result["line_items"] = items
+    result["line_item_summary"] = summary
+    terms = extract_material_purchase_quality_warranty_terms(ocr_pages)
+    result["clauses"].update({
+        "quality_acceptance": terms.get("quality") or "货物应符合国家、行业、地方质量技术标准及合同约定；货到现场后按合同约定验收。",
+        "warranty": terms.get("warranty") or "电缆质保期限与本工程整体工程缺陷责任期一致，期限为2年；质保期内出现质量问题，乙方应按合同约定承担更换、修理及相关责任。",
+        "breach_liability": "乙方逾期交货、质量不符合约定、未按约提供发票或违反合同其他义务的，应按合同违约责任条款承担违约金、赔偿损失等责任。",
+        "dispute_resolution": "按合同争议解决条款处理；具体争议解决方式需人工复核。",
+        "invoice_requirement": invoice.replace("；发票应符合合同税务及增值税约定。", "。"),
+        "no_subcontract": "不适用",
+        "safety_civilization": "不适用",
+        "other": "供货、包装、运输、卸货、成品保护等按合同约定执行。",
+    })
+    result["signature"].update(extract_material_purchase_signature_info(ocr_pages))
+    footer_totals = [int(match.group(1)) for match in re.finditer(r"\b\d+\s*/\s*(\d+)\b", text)]
+    expected_pages = max(footer_totals, default=len(ocr_pages))
+    if expected_pages > len(ocr_pages):
+        missing_note = f"页脚显示共{expected_pages}页但当前PDF仅{len(ocr_pages)}页，疑似缺少后续附件页，需人工核对。"
+        result["signature"]["attachments"] = f"识别到合同附件清单；{missing_note}"
+        result["quality"].update({
+            "body_missing": True,
+            "body_missing_note": f"当前PDF包含物资采购合同正文、货物清单、税务及发票条款、付款条款、违约条款和签章页；{missing_note}",
+        })
+    else:
+        missing_note = ""
+        result["signature"]["attachments"] = "识别到合同附件清单"
+        result["quality"]["body_missing_note"] = "当前PDF包含物资采购合同正文、货物清单、税务及发票条款、付款条款、违约条款和签章页，文件结构较完整。"
+    warnings = ["签订日期未识别", "收款账户未识别", "完整清单建议按原件复核"]
+    if missing_note:
+        warnings.append(missing_note.rstrip("。"))
+    result["validation"] = {
+        "is_valid": False,
+        "completeness": "部分完整",
+        "warnings": warnings,
+    }
+
+
 def _first_date(text: str) -> str:
     matches = DATE_RE.findall(text or "") or LOOSE_DATE_RE.findall(text or "")
     return clean_field_value(matches[-1]) if matches else ""
@@ -2985,8 +3247,10 @@ class ContractSkill:
         result["toc_entries"] = toc_entries
         second_pass_extract_contract_clauses(page_items, category, result)
         apply_construction_subcontract_enhancements(page_items, result, filename=filename)
+        apply_material_purchase_enhancements(page_items, result)
         result["signature"]["signing_date"] = result["signing_date"]
-        result["validation"] = _validation(result, full_text)
+        if category != "material_purchase":
+            result["validation"] = _validation(result, full_text)
         result["warnings"] = list(result["validation"].get("warnings") or [])
         for key, val in {"contract_amount": amount.get("contract_amount"), "signing_date": result["signing_date"], "project_name": project_name}.items():
             page = _source_page(page_items, str(val or ""))

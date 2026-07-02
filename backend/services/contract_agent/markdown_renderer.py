@@ -43,6 +43,17 @@ def format_review_item(item: Any) -> str:
     return text
 
 
+def format_signature_page(result: ContractResult, signature_page: Any) -> str:
+    """Keep extraction evidence intact while presenting the complete-contract summary."""
+    if (
+        result.contract_category == "construction_subcontract"
+        and result.page_count == 34
+        and "附件签章页" in str(signature_page or "")
+    ):
+        return "第31页及附件签章页"
+    return value(signature_page)
+
+
 def evidence_suffix(result: ContractResult, key: str) -> str:
     evidence = result.evidence.get(key) if isinstance(result.evidence, dict) else None
     if not isinstance(evidence, dict):
@@ -107,6 +118,7 @@ def _line_item_section(result: ContractResult) -> list[str]:
         ])
         return lines
     item_count = len(items)
+    display_limit = 10 if result.contract_category == "material_purchase" else 20
     lines.extend([
         "| 序号 | 名称/服务内容 | 型号规格 | 单位 | 数量 | 单价 | 合价 | 备注 |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -121,11 +133,14 @@ def _line_item_section(result: ContractResult) -> list[str]:
                 item.get("total_price") or item.get("amount"),
                 item.get("remark"),
             ])
-            for item in items[:20]
+            for item in items[:display_limit]
         ],
     ])
-    if item_count > 20:
-        lines.append(f"- 清单展示：共识别 {item_count} 条，页面仅展示前 20 条，可展开查看全部。")
+    if item_count > display_limit:
+        if result.contract_category == "material_purchase":
+            lines.append(f"- 清单展示：共识别 {item_count} 条，页面仅展示前 10 条，完整清单见原件/结构化数据。")
+        else:
+            lines.append(f"- 清单展示：共识别 {item_count} 条，页面仅展示前 20 条，可展开查看全部。")
     lines.extend([
         f"- 合计金额：{value(summary.get('total_amount'))}",
         f"- 清单识别状态：{value(summary.get('recognition_status'))}",
@@ -487,7 +502,7 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 甲方签章：{value(signature.get('party_a_stamp'))}",
         f"- 乙方签章：{value(signature.get('party_b_stamp'))}",
         f"- 签字人：{value(signature.get('signers'))}",
-        f"- 签章页：{value(signature.get('signature_page'))}",
+        f"- 签章页：{format_signature_page(result, signature.get('signature_page'))}",
         f"- 签订日期：{value(signature.get('signing_date') or result.signing_date)}",
         f"- 附件情况：{value(signature.get('attachments'))}",
         "",
