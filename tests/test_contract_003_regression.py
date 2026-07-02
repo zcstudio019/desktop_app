@@ -126,7 +126,7 @@ def test_contract_003_construction_subcontract_structured_fields() -> None:
     assert data["settlement"]["settlement_method"] == "工程量按实结算，固定单价"
 
     assert data["signature"]["signers"] == ""
-    assert data["signature"]["signature_page"] == "第4页、第22页、第25页、第27页、第29页、第31页、第33页"
+    assert data["signature"]["signature_page"] == "第4页及附件签章页"
     assert "第1页" not in data["signature"]["signature_page"]
     assert "第3页" not in data["signature"]["signature_page"]
     assert data["validation"]["completeness"] == "部分完整"
@@ -170,12 +170,13 @@ def test_contract_003_payment_invoice_and_markdown_regression() -> None:
     assert "保修期满2年后15日内无息返还" in markdown_result
     assert "增值税专用发票，税率9%" in markdown_result
     assert "安全文明措施费除税金额为1,809,156.27元" in markdown_result
-    assert "签章页：第4页、第22页、第25页、第27页、第29页、第31页、第33页" in markdown_result
+    assert "签章页：第4页及附件签章页" in markdown_result
     assert "文件结构较完整" in markdown
     assert "关键字段完整度：部分完整" in markdown
     assert "签订日期具体日期需人工复核" in markdown_result
     assert "统一社会信用代码未识别" in markdown_result
     assert "争议解决方式需人工复核" in markdown_result
+    assert "付款节点已提取，建议按原件复核" in markdown_result
     assert "付款条款需人工复核" not in markdown_result
     assert "签字人：盖章" not in markdown
     assert "2020年6月9日" not in markdown

@@ -2751,6 +2751,8 @@ def _signature_page(pages: list[dict[str, Any]]) -> str:
             except (TypeError, ValueError):
                 continue
     page_numbers = sorted({page for page in page_numbers if page > 0})
+    if len(page_numbers) >= 3:
+        return f"第{page_numbers[0]}页及附件签章页"
     if len(page_numbers) > 1:
         return "、".join(f"第{page}页" for page in page_numbers)
     for page in reversed(pages):

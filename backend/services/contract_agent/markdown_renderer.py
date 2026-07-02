@@ -191,6 +191,7 @@ def _complete_subcontract_patch_should_trigger(
 
 def _sync_complete_subcontract_result_fields(result: ContractResult | dict[str, Any]) -> None:
     nodes = _complete_subcontract_patch_nodes()
+    payment_review_note = "付款节点已提取，建议按原件复核"
     if isinstance(result, dict):
         amount = result.setdefault("amount", {})
         settlement = result.setdefault("settlement", {})
@@ -198,11 +199,15 @@ def _sync_complete_subcontract_result_fields(result: ContractResult | dict[str, 
         result["payment_nodes"] = nodes
         result["payment_schedule"] = nodes
         result["payment_terms"] = nodes
+        warnings = result.setdefault("warnings", [])
     else:
         amount = result.amount
         settlement = result.settlement
         clauses = result.clauses
         result.payment_nodes = nodes
+        warnings = result.warnings
+    if isinstance(warnings, list) and payment_review_note not in warnings:
+        warnings.append(payment_review_note)
     amount["safety_civilization_fee"] = "1,809,156.27 元（除税金额）"
     amount["safety_civilized_fee"] = "1,809,156.27 元（除税金额）"
     amount["price_form"] = "固定单价"
@@ -257,6 +262,14 @@ def apply_complete_subcontract_markdown_patch(
             count=1,
         )
         patched = head + "### 重要条款摘要" + tail
+    review_note = "付款节点已提取，建议按原件复核"
+    if review_note not in patched:
+        patched = re.sub(
+            r"(- 需人工复核事项：[^\n]*)",
+            rf"\1；{review_note}",
+            patched,
+            count=1,
+        )
     for invalid in ("算时一并扣除", "甲方对此代发总额", "代发总额", "工资专用账户", "1.5工程承包方式"):
         patched = patched.replace(invalid, "")
     logger.info(
