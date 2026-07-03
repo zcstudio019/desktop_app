@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from backend.upload_limits import get_upload_size_limit_mb
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from starlette.requests import ClientDisconnect
@@ -138,7 +139,6 @@ FILE_PROCESS_ENQUEUE_TIMEOUT_SECONDS = 3.0
 NO_FILENAME_MESSAGE = "未提供文件名。"
 FILE_READ_FAILED_MESSAGE = "文件读取失败，请重新上传后再试。"
 EMPTY_FILE_MESSAGE = "上传文件为空，请重新选择文件。"
-FILE_TOO_LARGE_MESSAGE = "上传文件过大，请压缩后重试。"
 UNSUPPORTED_FILE_FORMAT_MESSAGE = "文件格式不支持，仅支持 PDF、DOCX、XLSX、PNG、JPG、JPEG。"
 UNSUPPORTED_FILE_TYPE_MESSAGE = "文件类型不支持，请重新上传后再试。"
 OCR_FAILED_MESSAGE = "文件识别失败，请检查文件清晰度后重试。"
@@ -438,7 +438,7 @@ def _build_file_process_job_execution_payload(
     }
 
 
-async def _validate_and_read_file(file: UploadFile) -> tuple[bytes, str]:
+async def _validate_and_read_file(file: UploadFile, document_type: str | None = None) -> tuple[bytes, str]:
     if not file.filename:
         raise HTTPException(status_code=400, detail=NO_FILENAME_MESSAGE)
 
@@ -451,8 +451,13 @@ async def _validate_and_read_file(file: UploadFile) -> tuple[bytes, str]:
     if not file_bytes:
         raise HTTPException(status_code=400, detail=EMPTY_FILE_MESSAGE)
 
-    if not file_service.validate_file_size(file_bytes):
-        raise HTTPException(status_code=400, detail=FILE_TOO_LARGE_MESSAGE)
+    max_mb = get_upload_size_limit_mb(document_type, file.filename or "")
+    if not file_service.validate_file_size(file_bytes, max_mb=max_mb):
+        actual_mb = len(file_bytes) / (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大：{actual_mb:.1f}MB。当前资料类型单个文件最大支持 {max_mb}MB",
+        )
 
     file_type = file_service.get_file_type(file.filename)
     if file_type == "unknown":
@@ -2620,7 +2625,7 @@ async def process_file(
         current_user["username"],
     )
 
-    file_bytes, file_type = await _validate_and_read_file(file)
+    file_bytes, file_type = await _validate_and_read_file(file, documentType)
     return await _process_file_bytes(
         file_bytes,
         file_type,
@@ -2680,7 +2685,7 @@ async def create_file_process_job(
     filename = file.filename or ""
     log_step("form_read_done")
 
-    file_bytes, _ = await _validate_and_read_file(file)
+    file_bytes, _ = await _validate_and_read_file(file, requested_document_type)
     file_size = len(file_bytes)
     if normalized_customer_id and not normalized_customer_name:
         normalized_customer_name = _derive_customer_name_from_customer_id(normalized_customer_id)

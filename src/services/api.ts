@@ -168,7 +168,8 @@ export async function createFileProcessJob(
     customerId?: string | null;
     customerName?: string | null;
   },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onUploadProgress?: (percent: number) => void,
 ): Promise<ChatJobCreateResponse> {
   const formData = new FormData();
   formData.append('file', file);
@@ -208,38 +209,26 @@ export async function createFileProcessJob(
   ) {
     console.error('[UploadJob] unexpected create request url', requestUrl);
   }
-  const timeoutController = new AbortController();
-  let requestTimedOut = false;
-  const timeoutId = window.setTimeout(() => {
-    requestTimedOut = true;
-    timeoutController.abort('timeout');
-  }, FILE_JOB_CREATE_TIMEOUT_MS);
-  const abortListener = () => timeoutController.abort('abort');
-  signal?.addEventListener('abort', abortListener, { once: true });
-  requestInit.signal = timeoutController.signal;
-  let response: Response;
-  try {
-    response = await fetch(requestUrl, requestInit);
-  } catch (error) {
-    console.error('[UploadJob] create fetch failed', {
-      url: requestUrl,
-      method: requestInit.method,
-      formDataKeys,
-      customerId: options?.customerId || '',
-      customerName: options?.customerName || '',
-      documentType: options?.documentType || '',
-      filename: file.name,
-      error,
-    });
-    if (requestTimedOut) {
-      throw new Error('文件上传超时，请检查网络或稍后重试');
-    }
-    throw new Error('上传任务请求未到达后端或后端未响应，请检查 Nginx/接口日志。');
-  } finally {
-    window.clearTimeout(timeoutId);
-    signal?.removeEventListener('abort', abortListener);
-  }
-  const responseText = await response.text();
+  const uploadResponse = await new Promise<{ status: number; statusText: string; responseText: string }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', requestUrl);
+    xhr.timeout = FILE_JOB_CREATE_TIMEOUT_MS;
+    Object.entries(authHeaders).forEach(([key, value]) => xhr.setRequestHeader(key, value));
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onUploadProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      }
+    };
+    xhr.onload = () => resolve({ status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText });
+    xhr.onerror = () => reject(new Error('上传任务请求未到达后端或后端未响应，请检查 Nginx/接口日志。'));
+    xhr.ontimeout = () => reject(new Error('文件上传超时，请检查网络或稍后重试'));
+    xhr.onabort = () => reject(new DOMException('Upload aborted', 'AbortError'));
+    const abortListener = () => xhr.abort();
+    signal?.addEventListener('abort', abortListener, { once: true });
+    xhr.onloadend = () => signal?.removeEventListener('abort', abortListener);
+    xhr.send(formData);
+  });
+  const responseText = uploadResponse.responseText;
   let parsedBody: unknown = null;
   try {
     parsedBody = responseText ? JSON.parse(responseText) : null;
@@ -247,19 +236,19 @@ export async function createFileProcessJob(
     parsedBody = null;
   }
   const logPayload = {
-    status: response.status,
-    ok: response.ok,
+    status: uploadResponse.status,
+    ok: uploadResponse.status >= 200 && uploadResponse.status < 300,
     body: parsedBody ?? responseText,
   };
-  if (response.ok) {
+  if (logPayload.ok) {
     console.debug('[UploadJob] create response', logPayload);
   } else {
     console.error('[UploadJob] create failed response', logPayload);
   }
-  if (!response.ok) {
+  if (!logPayload.ok) {
     const errorBody = parsedBody && typeof parsedBody === 'object' ? parsedBody as Record<string, unknown> : {};
-    const message = String(errorBody.error_message || errorBody.detail || errorBody.message || response.statusText || '上传任务创建失败');
-    throw new ApiError(response.status, message, parsedBody ?? responseText);
+    const message = String(errorBody.error_message || errorBody.detail || errorBody.message || uploadResponse.statusText || '上传任务创建失败');
+    throw new ApiError(uploadResponse.status, message, parsedBody ?? responseText);
   }
   const created = (parsedBody || {}) as ChatJobCreateResponse;
   const jobId = normalizeJobId(created);

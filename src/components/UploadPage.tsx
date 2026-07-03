@@ -308,7 +308,27 @@ const FILE_TYPES: FileTypeConfig[] = [
     storeOriginal: true,
   },
 ];
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MB = 1024 * 1024;
+const FILE_SIZE_LIMITS: Record<string, number> = {
+  contract: 200 * MB,
+  enterprise_flow: 200 * MB,
+  personal_flow: 200 * MB,
+  bank_statement: 200 * MB,
+  bank_reconciliation_detail: 200 * MB,
+  enterprise_credit: 100 * MB,
+  personal_credit: 100 * MB,
+  enterprise_credit_report: 100 * MB,
+  personal_credit_report: 100 * MB,
+  default: 50 * MB,
+};
+
+function getFileSizeLimit(documentType: string): number {
+  return FILE_SIZE_LIMITS[documentType] || FILE_SIZE_LIMITS.default;
+}
+
+function getFileSizeLimitLabel(documentType: string): string {
+  return `${getFileSizeLimit(documentType) / MB}MB`;
+}
 
 // ============================================
 // Utility Functions
@@ -434,13 +454,17 @@ function deriveCustomerNameFromId(customerId: string | null | undefined): string
   return customerId.replace(/^(enterprise_|personal_)/, '').trim();
 }
 
-function validateFile(file: File, acceptedExtensions: string[]): { valid: boolean; error?: string } {
+function validateFile(file: File, acceptedExtensions: string[], documentType: string): { valid: boolean; error?: string } {
   const ext = getFileExtension(file.name);
   if (!acceptedExtensions.includes(ext)) {
     return { valid: false, error: `当前资料类型不支持 ${ext} 文件` };
   }
-  if (file.size > MAX_FILE_SIZE) {
-    return { valid: false, error: `文件过大: ${formatFileSize(file.size)}。最大支持 50MB` };
+  const sizeLimit = getFileSizeLimit(documentType);
+  if (file.size > sizeLimit) {
+    return {
+      valid: false,
+      error: `文件过大：${formatFileSize(file.size)}。${getDocumentTypeDisplayName(documentType)}单个文件最大支持 ${getFileSizeLimitLabel(documentType)}`,
+    };
   }
   return { valid: true };
 }
@@ -1107,6 +1131,17 @@ const UploadPage: React.FC = () => {
           customerName: selectedCustomerName || undefined,
         },
         signal,
+        (uploadPercent) => {
+          setUploadQueue((prev) => prev.map((q) =>
+            q.id === item.id
+              ? {
+                  ...q,
+                  progress: Math.max(q.progress, Math.min(19, 10 + Math.round(uploadPercent * 0.09))),
+                  progressMessage: `文件上传中 ${uploadPercent}%`,
+                }
+              : q,
+          ));
+        },
       );
       setUploadQueue((prev) => prev.map((q) => 
         q.id === item.id
@@ -1305,7 +1340,7 @@ const UploadPage: React.FC = () => {
     const newItems: QueueItem[] = [];
     const nextBatchId = generateId();
     for (const file of fileArray) {
-      const validation = validateFile(file, selectedFileTypeConfig.acceptedExtensions);
+      const validation = validateFile(file, selectedFileTypeConfig.acceptedExtensions, selectedDocumentType);
       if (!validation.valid) {
         newItems.push({
           id: generateId(),
@@ -1872,7 +1907,7 @@ const UploadPage: React.FC = () => {
           {isDragOver ? '松开鼠标上传文件' : '拖拽文件到此处，或点击上传'}
         </div>
         <div className="text-gray-400 text-sm">
-          当前支持 {selectedFileTypeConfig.formats}，单个文件最大 50MB
+          当前支持 {selectedFileTypeConfig.formats}，单个文件最大 {getFileSizeLimitLabel(selectedDocumentType)}
         </div>
       </div>
 

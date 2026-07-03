@@ -124,7 +124,7 @@ redis-cli -h 127.0.0.1 -p 6379 ping
 - `root /opt/loan-assistant/app/dist`
 - `/api/` 反代到 `127.0.0.1:8000`
 - 轮询接口不需要特别高的超时，因为长任务已迁到 Celery
-- `client_max_body_size 50m`
+- `client_max_body_size 210m`（应用层按资料类型限制：合同/流水 200MB、征信 100MB、其他 50MB）
 
 验证：
 
