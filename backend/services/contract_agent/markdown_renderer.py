@@ -567,6 +567,7 @@ def _sync_zhangjiang_consulting_fields(result: ContractResult) -> None:
     result.title = "施工阶段BIM深化咨询服务合同"
     result.project_name = "张江创新药基地A04C-01地块专业化标准厂房四期项目"
     result.signing_date = "2025年9月22日"
+    result.effective_condition = "本合同自双方签字盖章（含电子签章）后生效"
     result.copies = "一式肆份，甲方执贰份，乙方执贰份"
     result.parties = [
         ContractParty(
