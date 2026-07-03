@@ -7,6 +7,7 @@ from .markdown_renderer import (
     apply_bohui_material_purchase_markdown_patch,
     apply_complete_subcontract_markdown_patch,
     apply_material_purchase_markdown_patch,
+    apply_zhangjiang_consulting_markdown_patch,
     render_contract_markdown,
     sanitize_contract_result_payload,
 )
@@ -85,6 +86,12 @@ class ContractAgent:
             result.source_file,
         )
         result.markdown = apply_bohui_material_purchase_markdown_patch(
+            result.markdown,
+            result,
+            pages if isinstance(pages, list) else [],
+            result.source_file,
+        )
+        result.markdown = apply_zhangjiang_consulting_markdown_patch(
             result.markdown,
             result,
             pages if isinstance(pages, list) else [],

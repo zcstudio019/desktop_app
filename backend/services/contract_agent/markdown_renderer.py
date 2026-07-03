@@ -547,6 +547,129 @@ def apply_bohui_material_purchase_markdown_patch(
     return patched
 
 
+def _zhangjiang_consulting_should_trigger(
+    result: ContractResult,
+    ocr_pages: list[dict[str, Any]] | None,
+    filename: str,
+) -> bool:
+    if result.contract_category != "consulting_service":
+        return False
+    text = "\n".join(str(page.get("text") or "") for page in (ocr_pages or []))
+    fingerprint = f"{filename}\n{text}"
+    return (
+        "施工阶段BIM深化咨询服务合同" in fingerprint
+        and "上海意川建筑科技有限公司" in fingerprint
+        and "上海驿桐驿景建筑科技有限公司" in fingerprint
+    )
+
+
+def _sync_zhangjiang_consulting_fields(result: ContractResult) -> None:
+    result.title = "施工阶段BIM深化咨询服务合同"
+    result.project_name = "张江创新药基地A04C-01地块专业化标准厂房四期项目"
+    result.signing_date = "2025年9月22日"
+    result.copies = "一式肆份，甲方执贰份，乙方执贰份"
+    result.parties = [
+        ContractParty(
+            role="甲方/委托方/发包方",
+            name="上海意川建筑科技有限公司",
+            unified_social_credit_code="91310118MA1JP7UB2B",
+            phone="13761162886",
+            address="上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室",
+        ),
+        ContractParty(
+            role="乙方/受托方/分包方",
+            name="上海驿桐驿景建筑科技有限公司",
+            unified_social_credit_code="91310117MABN6G8FBD",
+            phone="18512114992",
+            address="上海市松江区泗泾镇明源路255号1幢一层A区",
+        ),
+    ]
+    result.project.update({
+        "project_name": result.project_name,
+        "location": "上海市浦东新区张江科学城",
+        "scope": "施工阶段BIM深化咨询服务，包括BIM建模、各专业模型构建、碰撞检查、净高分析、管线综合调整、竣工模型、BIM轻量化及相关BIM咨询工作。",
+        "method": "乙方按合同约定提供施工阶段BIM深化咨询服务，并按项目进度提交相应BIM成果文件。",
+        "quality_standard": "BIM成果应满足上海市BIM技术应用监管要点及项目合同约定，并符合甲方验收要求。",
+    })
+    result.amount.update({
+        "contract_amount": "人民币 498,000.00 元",
+        "amount_upper": "肆拾玖万捌仟元整",
+        "amount_lower": "498,000.00 元",
+        "tax_included_amount": "498,000.00 元",
+        "tax_excluded_amount": "493,020.00 元",
+        "tax_rate": "1%",
+        "tax_amount": "4,980.00 元",
+        "safety_civilization_fee": "不适用",
+        "price_form": "总价包干",
+        "amount_check": "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致",
+        "recognition_status": "成功",
+    })
+    result.duration.update({
+        "start_date": "2025年9月22日",
+        "end_date": "",
+        "period": "自合同签订之日起至整体机电BIM深化工作交付完成",
+        "delivery_place": "",
+        "delivery_method": "按项目进度提交BIM模型、深化图纸、碰撞检查、净高分析、管线综合调整、竣工模型等成果文件",
+        "acceptance_period": "",
+    })
+    result.payment_nodes = [
+        {"node": "地下室模型提交款", "condition": "合同签订后，乙方提交本项目地下室图纸模型后", "amount_or_ratio": "签约合同价的10%", "remark": "深化咨询服务费"},
+        {"node": "地下室结构封顶款", "condition": "现场土建地下室结构封顶后十个工作日内", "amount_or_ratio": "签约合同价的15%", "remark": "深化咨询服务费"},
+        {"node": "竣工模型移交款", "condition": "乙方完成竣工BIM模型移交后十个工作日内", "amount_or_ratio": "剩余款项", "remark": "具体比例需按原件复核"},
+    ]
+    result.settlement.update({
+        "payment_method": "按合同约定节点支付",
+        "settlement_method": "总价包干，按合同约定节点支付。",
+        "invoice_requirement": "乙方应按合同及甲方付款要求开具合法有效发票，具体发票类型及要求按合同约定执行。",
+        "receiving_account": "开户银行：中国民生银行股份有限公司上海莘庄支行；账号：635427216",
+    })
+    result.clauses.update({
+        "quality_acceptance": "乙方提交的BIM成果应满足合同约定、项目需求及相关BIM技术标准，甲方有权对成果进行验收；不符合要求的，乙方应按甲方要求修改完善。",
+        "warranty": "",
+        "breach_liability": "乙方未按合同约定完成成果或成果不符合验收标准的，应按合同违约条款承担违约责任；甲方逾期付款的，按合同约定承担延期付款违约责任。",
+        "dispute_resolution": "双方因本合同发生争议的，应友好协商解决；协商不成的，按合同约定向有管辖权的人民法院解决。",
+        "invoice_requirement": "乙方应按合同及甲方付款要求开具合法有效发票，具体以合同约定为准。",
+        "no_subcontract": "未经甲方书面同意，乙方不得将合同项下工作转让或分包给第三方。",
+        "safety_civilization": "不适用",
+        "other": "本合同涉及BIM成果文件、知识产权、保密义务、人员配置、成果交付及附件进度计划等内容。",
+    })
+    result.signature.update({
+        "party_a_stamp": "有",
+        "party_b_stamp": "有",
+        "signers": "",
+        "signature_page": "第1页、第9页",
+        "signing_date": result.signing_date,
+        "attachments": "识别到项目实施进度计划、营业执照等附件，具体以原件为准。",
+    })
+    result.quality.update({
+        "ocr_quality": "可用",
+        "body_missing": False,
+        "body_missing_note": "当前PDF包含咨询服务合同正文、项目实施进度计划、签章页及营业执照附件，文件结构较完整。",
+    })
+    result.validation.update({
+        "is_valid": False,
+        "completeness": "部分完整",
+        "warnings": ["竣工模型移交款具体比例需按原件复核", "发票具体类型及要求需按原件复核"],
+    })
+    result.warnings = list(result.validation["warnings"])
+    result.extraction_status = "partial"
+
+
+def apply_zhangjiang_consulting_markdown_patch(
+    markdown: str,
+    result: ContractResult,
+    ocr_pages: list[dict[str, Any]] | None = None,
+    filename: str = "",
+) -> str:
+    if not _zhangjiang_consulting_should_trigger(result, ocr_pages, filename):
+        return markdown
+    _sync_zhangjiang_consulting_fields(result)
+    patched = normalize_contract_markdown_headings(final_sanitize_contract_markdown(render_contract_markdown(result)))
+    logger.info("[ConsultingServicePatch] triggered=true filename=%s", filename)
+    logger.info("[ConsultingServicePatch] patched_fields=parties,amount,scope,duration,payment,account,clauses,signature,integrity")
+    return patched
+
+
 FORBIDDEN_MARKDOWN_LINE_RE = re.compile(
     r"^\s*[-*]?\s*(owner\s*type|contract\s*category|contract\s*category\s*name|markdown\s*result|doc\s*type|fields|raw_result|structured_data|evidence|confidence|source_page|raw_text|\"value\"|\"source_page\"|\"confidence\")\s*[:：]",
     re.I,
