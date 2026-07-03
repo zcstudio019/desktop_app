@@ -175,6 +175,8 @@ export async function createFileProcessJob(
   formData.append('file', file);
   if (options?.documentType) {
     formData.append('documentType', options.documentType);
+    formData.append('document_type', options.documentType);
+    formData.append('doc_type', options.documentType);
   }
   if (options?.customerId) {
     formData.append('customerId', options.customerId);
@@ -247,14 +249,17 @@ export async function createFileProcessJob(
   }
   if (!logPayload.ok) {
     const errorBody = parsedBody && typeof parsedBody === 'object' ? parsedBody as Record<string, unknown> : {};
-    const message = String(errorBody.error_message || errorBody.detail || errorBody.message || uploadResponse.statusText || '上传任务创建失败');
+    const fallbackMessage = uploadResponse.status === 413
+      ? '文件被上传网关拒绝，请确认 Nginx client_max_body_size 已更新并重新加载'
+      : '上传任务创建失败';
+    const message = String(errorBody.error_message || errorBody.detail || errorBody.message || uploadResponse.statusText || fallbackMessage);
     throw new ApiError(uploadResponse.status, message, parsedBody ?? responseText);
   }
   const created = (parsedBody || {}) as ChatJobCreateResponse;
   const jobId = normalizeJobId(created);
-  if (!jobId) {
+  if (created.success !== true || !jobId) {
     console.error('[UploadJob] create response missing job_id', created);
-    throw new Error('上传任务创建失败，后端返回格式异常');
+    throw new Error(created.error_message || '上传任务创建失败，后端未返回 success=true 和有效 job_id');
   }
   return { ...created, jobId };
 }

@@ -69,6 +69,8 @@ async def test_jobs_response_success_returns_job_id_status_message(monkeypatch: 
     body = _response_json(response)
 
     assert body["job_id"]
+    assert body["success"] is True
+    assert body["document_id"] is None
     assert body["status"] == "pending"
     assert body["message"] == "文件已上传，正在后台处理"
     assert "jobId" not in body
@@ -145,7 +147,7 @@ async def test_jobs_response_async_job_create_failure_returns_json_error(monkeyp
     body = _response_json(response)
 
     assert response.status_code == 500
-    assert body["detail"] == "任务创建失败：async_jobs 写入失败"
+    assert body["detail"] == "上传成功，但解析任务创建失败，请联系管理员。错误阶段：create_async_job"
     assert body["job_id"]
     assert body["error_message"]
 
@@ -172,8 +174,8 @@ async def test_jobs_response_celery_dispatch_failure_returns_json_error(monkeypa
     body = _response_json(response)
     job = await fake_storage.get_async_job(body["job_id"])
 
-    assert response.status_code == 500
-    assert body["detail"] == "任务创建失败：后台队列不可用"
+    assert response.status_code == 503
+    assert body["detail"] == "上传成功，但解析任务投递失败，请检查 Celery heavy worker。错误阶段：enqueue_celery"
     assert body["error_message"] == "redis unavailable"
     assert job and job["status"] == "failed"
 

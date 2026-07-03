@@ -509,8 +509,10 @@ export interface ChatSessionSummary {
 }
 
 export interface ChatJobCreateResponse {
+  success?: boolean;
   jobId: string;
   job_id?: string;
+  document_id?: string | null;
   id?: string;
   data?: {
     job_id?: string;

@@ -2679,14 +2679,56 @@ async def create_file_process_job(
     if not hasattr(file_value, "read") or not hasattr(file_value, "filename"):
         raise HTTPException(status_code=400, detail=NO_FILENAME_MESSAGE)
     file = file_value
-    requested_document_type = str(form.get("documentType") or form.get("document_type") or "").strip()
+    requested_document_type = str(
+        form.get("doc_type") or form.get("document_type") or form.get("documentType") or ""
+    ).strip()
     normalized_customer_id = str(form.get("customerId") or form.get("customer_id") or "").strip()
     normalized_customer_name = str(form.get("customerName") or form.get("customer_name") or "").strip()
     filename = file.filename or ""
+    doc_type_source = "form"
+    if not requested_document_type and "合同" in filename:
+        requested_document_type = "contract"
+        doc_type_source = "filename"
+    elif not requested_document_type:
+        doc_type_source = "fallback"
     log_step("form_read_done")
 
-    file_bytes, _ = await _validate_and_read_file(file, requested_document_type)
+    max_size_mb = get_upload_size_limit_mb(requested_document_type, filename)
+    logger.info(
+        "[UploadCreate] start filename=%s size_mb=pending doc_type=%s customer_id=%s",
+        filename,
+        requested_document_type or "unknown",
+        normalized_customer_id,
+    )
+    logger.info(
+        "[UploadCreate] resolved_doc_type=%s source=%s",
+        requested_document_type or "unknown",
+        doc_type_source,
+    )
+    logger.info(
+        "[UploadCreate] size_limit doc_type=%s max_size_mb=%s",
+        requested_document_type or "unknown",
+        max_size_mb,
+    )
+    try:
+        file_bytes, _ = await _validate_and_read_file(file, requested_document_type)
+    except Exception as exc:
+        logger.error(
+            "[UploadCreate] failed stage=validate_size filename=%s size_mb=unknown error=%s",
+            filename,
+            exc,
+            exc_info=True,
+        )
+        raise
     file_size = len(file_bytes)
+    size_mb = file_size / (1024 * 1024)
+    logger.info(
+        "[UploadCreate] validated filename=%s size_mb=%.1f doc_type=%s customer_id=%s",
+        filename,
+        size_mb,
+        requested_document_type or "unknown",
+        normalized_customer_id,
+    )
     if normalized_customer_id and not normalized_customer_name:
         normalized_customer_name = _derive_customer_name_from_customer_id(normalized_customer_id)
     logger.info(
@@ -2703,8 +2745,19 @@ async def create_file_process_job(
     is_contract_job = _is_contract_upload_hint(requested_document_type, filename)
     job_type = CONTRACT_EXTRACT_JOB_TYPE if is_contract_job else FILE_PROCESS_JOB_TYPE
     log_step("file_save_start")
-    temp_file_path = _persist_upload_job_temp_file(job_id, filename or "uploaded_file", file_bytes)
+    try:
+        temp_file_path = _persist_upload_job_temp_file(job_id, filename or "uploaded_file", file_bytes)
+    except Exception as exc:
+        logger.error(
+            "[UploadCreate] failed stage=save_file filename=%s size_mb=%.1f error=%s",
+            filename,
+            size_mb,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="文件上传完成，但服务器保存文件失败。错误阶段：save_file") from exc
     log_step("file_save_done")
+    logger.info("[UploadCreate] file_saved path=%s", temp_file_path)
     logger.info(
         "[File Upload Saved] original_filename=%s saved_path=%s file_ext=%s file_size=%s detected_doc_type=%s customer_id=%s",
         filename,
@@ -2714,8 +2767,7 @@ async def create_file_process_job(
         requested_document_type,
         normalized_customer_id,
     )
-    log_step("create_document_start")
-    log_step("create_document_done")
+    logger.info("[UploadCreate] document_creation=deferred_to_worker")
     request_payload = _build_file_process_job_request_snapshot(
         job_type=job_type,
         document_type=requested_document_type,
@@ -2763,22 +2815,20 @@ async def create_file_process_job(
             }
         )
         log_step("create_job_done")
+        logger.info("[UploadCreate] async_job_created job_id=%s", job_id)
     except Exception as exc:
         _cleanup_upload_job_temp_dir(job_id)
         logger.error(
-            "[File Job Create] async_jobs create failed filename=%s file_size=%s customer_id=%s document_type=%s job_id=%s error=%s",
+            "[UploadCreate] failed stage=create_async_job filename=%s size_mb=%.1f error=%s",
             filename,
-            file_size,
-            normalized_customer_id,
-            requested_document_type,
-            job_id,
+            size_mb,
             exc,
             exc_info=True,
         )
         return JSONResponse(
             status_code=500,
             content={
-                "detail": "任务创建失败：async_jobs 写入失败",
+                "detail": "上传成功，但解析任务创建失败，请联系管理员。错误阶段：create_async_job",
                 "job_id": job_id,
                 "status": "failed",
                 "error_message": str(exc) or "async_jobs 创建失败",
@@ -2803,20 +2853,44 @@ async def create_file_process_job(
             },
         )
         logger.error(
-            "[File Job Create] enqueue failed filename=%s file_size=%s customer_id=%s document_type=%s job_id=%s enqueue_success=%s error=%s",
+            "[UploadCreate] failed stage=enqueue_celery filename=%s size_mb=%.1f error=%s",
             filename,
-            file_size,
-            normalized_customer_id,
-            requested_document_type,
-            job_id,
-            False,
+            size_mb,
             enqueue_error,
             exc_info=True,
         )
         return JSONResponse(
-            status_code=500,
+            status_code=503,
             content={
-                "detail": "任务创建失败：后台队列不可用",
+                "detail": "上传成功，但解析任务投递失败，请检查 Celery heavy worker。错误阶段：enqueue_celery",
+                "job_id": job_id,
+                "status": "failed",
+                "error_message": enqueue_error,
+            },
+        )
+
+    if not enqueue_success:
+        enqueue_error = enqueue_error or "Celery heavy worker 未接受任务"
+        await job_storage_service.update_async_job(
+            job_id,
+            {
+                "status": "failed",
+                "progress_message": "任务派发失败",
+                "error_message": enqueue_error,
+                "finished_at": _utc_now_iso(),
+            },
+        )
+        logger.error(
+            "[UploadCreate] failed stage=enqueue_celery filename=%s size_mb=%.1f error=%s",
+            filename,
+            size_mb,
+            enqueue_error,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "detail": "上传成功，但解析任务投递失败，请检查 Celery heavy worker。错误阶段：enqueue_celery",
                 "job_id": job_id,
                 "status": "failed",
                 "error_message": enqueue_error,
@@ -2833,9 +2907,13 @@ async def create_file_process_job(
         enqueue_success,
         celery_task_id,
     )
+    logger.info("[UploadCreate] celery_task_queued task_id=%s queue=heavy", celery_task_id or "in_process")
+    logger.info("[UploadCreate] success document_id=pending job_id=%s", job_id)
     log_step("response_return")
 
     return JSONResponse(content={
+        "success": True,
+        "document_id": None,
         "job_id": job_id,
         "status": "pending" if enqueue_success else "failed",
         "message": (
