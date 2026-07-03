@@ -449,6 +449,7 @@ def _sync_bohui_material_purchase_fields(result: ContractResult) -> None:
     result.copies = "一式肆份，甲方执贰份，乙方执贰份"
     result.amount.update({
         "contract_amount": "人民币 32,055,959.16 元",
+        "amount_upper": "叁仟贰佰零伍万伍仟玖佰伍拾玖元壹角陆分",
         "amount_lower": "32,055,959.16 元",
         "tax_included_amount": "32,055,959.16 元",
         "tax_excluded_amount": "28,368,105.45 元",
@@ -510,6 +511,7 @@ def _sync_bohui_material_purchase_fields(result: ContractResult) -> None:
         "safety_civilization": "不适用",
     })
     result.line_item_summary.update({
+        "message": "已识别货物清单区域，完整明细建议按原件复核",
         "total_amount": "32,055,959.16 元",
         "recognition_status": "部分成功（已识别清单合计金额，完整明细建议按原件复核）",
     })

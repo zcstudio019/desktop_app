@@ -135,35 +135,68 @@ def test_bohui_material_purchase_final_fields() -> None:
     markdown = content["markdown_result"]
     buyer, seller = data["parties"][:2]
     assert data["doc_type"] == "contract"
+    assert data["doc_type_name"] == "合同"
     assert data["contract_category"] == "material_purchase"
+    assert data["contract_category_name"] == "物资采购合同"
+    assert data["extraction_status"] == "partial"
+    assert data["title"] == "物资材料采购合同（通用版）"
+    assert data["project_name"] == "青浦区徐泾镇张广泾南侧01-49地块项目一期工程"
     assert data["contract_no"] == ""
+    assert data["signing_date"] == ""
+    assert data["signing_place"] == ""
+    assert data["page_count"] == 14
+    assert data["effective_condition"] == "本合同自双方签字并盖章后生效"
     assert data["copies"] == "一式肆份，甲方执贰份，乙方执贰份"
+    assert buyer["name"] == "上海意川建筑科技有限公司"
     assert buyer["unified_social_credit_code"] == "91310118MA1JP7UB2B"
     assert buyer["contact"] == "费慧"
     assert buyer["phone"] == "18621877799"
+    assert buyer["address"] == "上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室"
+    assert seller["name"] == "上海博汇盛建筑安装工程有限公司"
     assert seller["unified_social_credit_code"] == "91310120MABYXGEHXK"
     assert seller["contact"] == "朱海波"
     assert seller["phone"] == "13586577884"
     assert seller["address"] == "上海市松江区泗泾镇沪松公路5599号7幢2楼102室"
     assert "电缆采购" not in data["project"]["scope"]
-    assert "传真、邮件、电话或微信" in data["duration"]["delivery_method"]
+    assert data["duration"]["start_date"] == ""
+    assert data["duration"]["end_date"] == ""
+    assert data["duration"]["period"] == "按甲方订货通知及项目实际供货进度执行"
+    assert data["duration"]["delivery_place"] == "上海青浦区沪青平公路谢家角交叉路口"
+    assert data["duration"]["delivery_method"] == "乙方根据甲方传真、邮件、电话或微信等指示分批交货"
+    assert data["duration"]["acceptance_period"] == "货到现场后按合同验收标准及方法进行验收"
     nodes = data["payment_nodes"]
+    assert [node["node"] for node in nodes] == ["月度进度款", "供货完毕款", "结清余款"]
     assert "70%" in str(nodes) and "80%" in str(nodes)
     assert "廉政规定" not in str(nodes)
     assert "合同价款5%的违约金" not in str(nodes)
     assert "合同结算价10%的违约金" not in str(nodes)
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
     assert "税率13%" in data["settlement"]["invoice_requirement"]
+    assert data["settlement"]["settlement_method"] == "本合同从开始供货后每满1个月开始进度对账，最终以双方确认的结算单为准。"
     assert "浙江泰隆商业银行上海松江支行" in data["settlement"]["receiving_account"]
     assert "31010030201000091777" in data["settlement"]["receiving_account"]
     assert "向本合同签订地人民法院提起诉讼" in data["clauses"]["dispute_resolution"]
+    assert data["clauses"]["dispute_resolution"] == "双方选择向本合同签订地人民法院提起诉讼。"
+    assert "国家、行业、地方质量技术标准" in data["clauses"]["quality_acceptance"]
+    assert "增值税专用发票，税率13%" in data["clauses"]["invoice_requirement"]
+    assert data["clauses"]["no_subcontract"] == "不适用"
+    assert data["clauses"]["safety_civilization"] == "不适用"
+    assert "供货、包装、运输、卸货、成品保护" in data["clauses"]["other"]
+    assert data["amount"]["contract_amount"] == "人民币 32,055,959.16 元"
+    assert "叁仟贰佰零伍万伍仟玖佰伍拾玖元壹角陆分" in data["amount"]["amount_upper"]
+    assert data["amount"]["amount_lower"] == "32,055,959.16 元"
     assert data["amount"]["tax_included_amount"] == "32,055,959.16 元"
     assert data["amount"]["tax_excluded_amount"] == "28,368,105.45 元"
     assert data["amount"]["tax_rate"] == "13%"
     assert data["amount"]["tax_amount"] == "3,687,853.71 元"
+    assert data["amount"]["safety_civilization_fee"] == "不适用"
     assert data["amount"]["price_form"] == "暂定总价，按实际供货数量及合同单价结算"
     assert data["amount"]["amount_check"] == "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致"
+    assert data["amount"]["recognition_status"] == "成功"
+    assert data["line_item_summary"]["message"] == "已识别货物清单区域，完整明细建议按原件复核"
     assert data["line_item_summary"]["total_amount"] == "32,055,959.16 元"
+    assert "部分成功" in data["line_item_summary"]["recognition_status"]
+    assert all(item["name"] not in {"序号", "含税单价", "付款条款", "违约条款", "发票条款"} for item in data["line_items"])
     assert "电缆质保期限" not in data["clauses"]["warranty"]
     assert any(token in data["clauses"]["warranty"] for token in ("货物", "材料", "采购货物"))
     assert "期限为2年" in data["clauses"]["warranty"]
@@ -174,6 +207,15 @@ def test_bohui_material_purchase_final_fields() -> None:
     assert "授权委托书" in data["signature"]["attachments"]
     assert "身份证复印件" in data["signature"]["attachments"]
     assert "廉洁协议" in data["signature"]["attachments"]
+    assert data["signature"]["party_a_stamp"] == "有"
+    assert data["signature"]["party_b_stamp"] == "有"
+    assert data["signature"]["signers"] == ""
+    assert data["signature"]["signature_page"] == "第11页；附件/廉洁协议签章页第14页"
+    assert data["signature"]["signing_date"] == ""
+    assert "页脚显示共17页但当前PDF仅14页" in data["signature"]["attachments"]
+    assert data["quality"]["ocr_quality"] == "可用"
+    assert data["validation"]["completeness"] == "部分完整"
+    assert "物资采购合同正文、货物清单、税务及发票条款、付款条款、违约条款和签章页" in data["quality"]["body_missing_note"]
     assert "页脚显示共17页但当前PDF仅14页" in data["quality"]["body_missing_note"]
     assert "合同编号：甲方（需方）" not in markdown
     assert "合同份数：2、本合同" not in markdown
@@ -185,3 +227,9 @@ def test_bohui_material_purchase_final_fields() -> None:
     assert "收款账户建议按原件复核" in markdown
     assert "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致" in markdown
     assert "## 居民身份证" not in markdown
+    assert "资料类型：居民身份证" not in markdown
+    for forbidden in ("合同金额：未识别", "税率：未识别", "税额：未识别", "安全文明施工费：未识别", "合同价格形式：未识别"):
+        assert forbidden not in markdown
+    lower_markdown = markdown.lower()
+    for forbidden in ("owner type", "contract category", "evidence", "raw_text", "source_page", "confidence", "markdown result"):
+        assert forbidden not in lower_markdown
