@@ -2663,6 +2663,13 @@ async def create_file_process_job(
         raise HTTPException(status_code=503, detail="当前环境不支持上传异步任务，请切换到本地数据库存储。")
 
     log_step("form_read_start")
+    content_type = str(request.headers.get("content-type") or "")
+    content_length = str(request.headers.get("content-length") or "")
+    logger.info(
+        "[UploadCreate] start content_type=%s content_length=%s",
+        content_type,
+        content_length,
+    )
     try:
         form = await request.form()
     except ClientDisconnect:
@@ -2675,9 +2682,37 @@ async def create_file_process_job(
             file_size,
         )
         raise HTTPException(status_code=499, detail="客户端在文件上传过程中断开连接，请重新上传")
+    except Exception as exc:
+        logger.error(
+            "[UploadCreate] failed status=400 stage=multipart_parse reason=%s content_type=%s content_length=%s",
+            exc,
+            content_type,
+            content_length,
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "stage": "multipart_parse",
+                "message": f"multipart/form-data 解析失败：{str(exc) or '请求体不完整'}",
+            },
+        )
+    logger.info("[UploadCreate] form_keys=%s", list(form.keys()))
     file_value = form.get("file")
     if not hasattr(file_value, "read") or not hasattr(file_value, "filename"):
-        raise HTTPException(status_code=400, detail=NO_FILENAME_MESSAGE)
+        logger.error(
+            "[UploadCreate] failed status=400 stage=validate_request reason=file_missing form_keys=%s",
+            list(form.keys()),
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "stage": "validate_request",
+                "message": "上传请求缺少 file 字段",
+            },
+        )
     file = file_value
     requested_document_type = str(
         form.get("doc_type") or form.get("document_type") or form.get("documentType") or ""
@@ -2685,6 +2720,14 @@ async def create_file_process_job(
     normalized_customer_id = str(form.get("customerId") or form.get("customer_id") or "").strip()
     normalized_customer_name = str(form.get("customerName") or form.get("customer_name") or "").strip()
     filename = file.filename or ""
+    logger.info(
+        "[UploadCreate] filename=%s customer_id=%s doc_type_raw=%s document_type_raw=%s documentType_raw=%s",
+        filename,
+        normalized_customer_id,
+        form.get("doc_type"),
+        form.get("document_type"),
+        form.get("documentType"),
+    )
     doc_type_source = "form"
     if not requested_document_type and "合同" in filename:
         requested_document_type = "contract"
@@ -2712,14 +2755,37 @@ async def create_file_process_job(
     )
     try:
         file_bytes, _ = await _validate_and_read_file(file, requested_document_type)
+    except HTTPException as exc:
+        logger.error(
+            "[UploadCreate] failed status=%s stage=validate_size filename=%s size_mb=unknown reason=%s",
+            exc.status_code,
+            filename,
+            exc.detail,
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "success": False,
+                "stage": "validate_size",
+                "message": str(exc.detail),
+            },
+        )
     except Exception as exc:
         logger.error(
-            "[UploadCreate] failed stage=validate_size filename=%s size_mb=unknown error=%s",
+            "[UploadCreate] failed status=400 stage=validate_request filename=%s reason=%s",
             filename,
             exc,
             exc_info=True,
         )
-        raise
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "stage": "validate_request",
+                "message": str(exc) or "上传文件校验失败",
+            },
+        )
     file_size = len(file_bytes)
     size_mb = file_size / (1024 * 1024)
     logger.info(

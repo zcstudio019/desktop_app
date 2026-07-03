@@ -91,6 +91,14 @@ function resolveDirectJobApiBase(): string {
 const API_BASE = resolveApiBase();
 const DIRECT_JOB_API_BASE = resolveDirectJobApiBase();
 export const FILE_JOB_CREATE_TIMEOUT_MS = 120000;
+const LARGE_FILE_JOB_CREATE_TIMEOUT_MS = 15 * 60 * 1000;
+const LARGE_UPLOAD_THRESHOLD_BYTES = 50 * 1024 * 1024;
+
+function getFileJobCreateTimeoutMs(file: File): number {
+  return file.size > LARGE_UPLOAD_THRESHOLD_BYTES
+    ? LARGE_FILE_JOB_CREATE_TIMEOUT_MS
+    : FILE_JOB_CREATE_TIMEOUT_MS;
+}
 
 function buildApiUrl(path: string): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -214,7 +222,7 @@ export async function createFileProcessJob(
   const uploadResponse = await new Promise<{ status: number; statusText: string; responseText: string }>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', requestUrl);
-    xhr.timeout = FILE_JOB_CREATE_TIMEOUT_MS;
+    xhr.timeout = getFileJobCreateTimeoutMs(file);
     Object.entries(authHeaders).forEach(([key, value]) => xhr.setRequestHeader(key, value));
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
@@ -223,7 +231,7 @@ export async function createFileProcessJob(
     };
     xhr.onload = () => resolve({ status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText });
     xhr.onerror = () => reject(new Error('上传任务请求未到达后端或后端未响应，请检查 Nginx/接口日志。'));
-    xhr.ontimeout = () => reject(new Error('文件上传超时，请检查网络或稍后重试'));
+    xhr.ontimeout = () => reject(new Error(`文件上传超时：${file.name}。大文件上传已等待 ${Math.round(xhr.timeout / 60000)} 分钟，请检查网络后重试`));
     xhr.onabort = () => reject(new DOMException('Upload aborted', 'AbortError'));
     const abortListener = () => xhr.abort();
     signal?.addEventListener('abort', abortListener, { once: true });
