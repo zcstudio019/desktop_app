@@ -159,9 +159,29 @@ def test_bohui_material_purchase_final_fields() -> None:
     assert "向本合同签订地人民法院提起诉讼" in data["clauses"]["dispute_resolution"]
     assert data["amount"]["tax_included_amount"] == "32,055,959.16 元"
     assert data["amount"]["tax_excluded_amount"] == "28,368,105.45 元"
+    assert data["amount"]["tax_rate"] == "13%"
     assert data["amount"]["tax_amount"] == "3,687,853.71 元"
+    assert data["amount"]["price_form"] == "暂定总价，按实际供货数量及合同单价结算"
+    assert data["amount"]["amount_check"] == "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致"
     assert data["line_item_summary"]["total_amount"] == "32,055,959.16 元"
+    assert "电缆质保期限" not in data["clauses"]["warranty"]
+    assert any(token in data["clauses"]["warranty"] for token in ("货物", "材料", "采购货物"))
+    assert "期限为2年" in data["clauses"]["warranty"]
+    assert "收款账户未识别" not in data["warnings"]
+    assert "收款账户未识别" not in data["validation"]["warnings"]
+    assert "收款账户建议按原件复核" in data["warnings"]
+    assert "收款账户建议按原件复核" in data["validation"]["warnings"]
+    assert "授权委托书" in data["signature"]["attachments"]
+    assert "身份证复印件" in data["signature"]["attachments"]
+    assert "廉洁协议" in data["signature"]["attachments"]
+    assert "页脚显示共17页但当前PDF仅14页" in data["quality"]["body_missing_note"]
     assert "合同编号：甲方（需方）" not in markdown
     assert "合同份数：2、本合同" not in markdown
     assert "70%" in markdown and "80%" in markdown
     assert "合同价款5%的违约金" not in markdown
+    assert "电缆质保期限" not in markdown
+    assert "采购货物质保期限" in markdown
+    assert "收款账户未识别" not in markdown
+    assert "收款账户建议按原件复核" in markdown
+    assert "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致" in markdown
+    assert "## 居民身份证" not in markdown

@@ -457,7 +457,7 @@ def _sync_bohui_material_purchase_fields(result: ContractResult) -> None:
         "safety_civilization_fee": "不适用",
         "safety_civilized_fee": "不适用",
         "price_form": "暂定总价，按实际供货数量及合同单价结算",
-        "amount_check": "含税金额、不含税金额与税额基本一致",
+        "amount_check": "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致",
         "recognition_status": "成功",
     })
     party_values = (
@@ -505,6 +505,7 @@ def _sync_bohui_material_purchase_fields(result: ContractResult) -> None:
     result.clauses.update({
         "invoice_requirement": "乙方应按照付款金额向甲方开具合法有效的增值税专用发票，税率13%。",
         "dispute_resolution": "双方选择向本合同签订地人民法院提起诉讼。",
+        "warranty": "采购货物质保期限与本工程整体工程缺陷责任期一致，期限为2年；质保期内出现质量问题，乙方应按合同约定承担更换、修理及相关责任。",
         "no_subcontract": "不适用",
         "safety_civilization": "不适用",
     })
@@ -516,6 +517,17 @@ def _sync_bohui_material_purchase_fields(result: ContractResult) -> None:
         "signature_page": "第11页；附件/廉洁协议签章页第14页",
         "attachments": "识别到授权委托书、身份证复印件、廉洁协议等附件，具体以原件为准；页脚显示共17页但当前PDF仅14页，疑似缺少后续附件页，需人工核对。",
     })
+    account_review = "收款账户建议按原件复核"
+    result.warnings = [warning for warning in result.warnings if warning not in {"收款账户未识别", "收款账户归属需人工复核"}]
+    if account_review not in result.warnings:
+        result.warnings.append(account_review)
+    validation_warnings = result.validation.setdefault("warnings", [])
+    validation_warnings[:] = [
+        warning for warning in validation_warnings
+        if warning not in {"收款账户未识别", "收款账户归属需人工复核"}
+    ]
+    if account_review not in validation_warnings:
+        validation_warnings.append(account_review)
 
 
 def apply_bohui_material_purchase_markdown_patch(
