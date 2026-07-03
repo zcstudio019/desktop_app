@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from backend.services.contract_agent import ContractAgent
+
+
+FILENAME = "合同001：张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）机电安装专业分包工程.pdf"
+
+
+def _pages() -> list[dict[str, str | int]]:
+    pages: list[dict[str, str | int]] = [
+        {"page": page, "text": f"建设工程专业分包合同 第{page}页"}
+        for page in range(1, 240)
+    ]
+    pages[0]["text"] = """建设工程专业分包合同
+合同编号：专业-07/2025
+第一部分 合同协议书
+"""
+    pages[1]["text"] = """合同协议书
+承包人：【上海建工智慧营造】有限公司（盖章）
+分包人：上海意川建筑科技有限公司
+分包工程承包范围：机电安装专业分包工程
+"""
+    pages[3]["text"] = "合同价款目录 附件单价 4.00元，本页为章节索引。"
+    pages[220]["text"] = "附件：保密协议"
+    pages[229]["text"] = """保密协议
+8.2本协议自双方法定代表人签字并加盖公章之日起生效，一式贰份，双方各执壹份。
+"""
+    pages[230]["text"] = """保密协议
+7.2.2在诉讼、仲裁或者配合政府行政执法等活动中依法知悉或者披露的。
+7.3任何一方违反本条约定的保密义务，应承担责任。
+"""
+    pages[235]["text"] = """主合同签章页
+承包人（盖章）：【上海建工智慧营造】有限公司
+分包人（盖章）：上海意川建筑科技有限公司
+法定代表人或委托代理人：签字并加
+"""
+    return pages
+
+
+def _run():
+    pages = _pages()
+    return ContractAgent().run({
+        "text": "\n".join(str(page["text"]) for page in pages),
+        "raw_pages": pages,
+        "filename": FILENAME,
+    })
+
+
+def test_contract_001_long_contract_minimum_structured_baseline() -> None:
+    data = _run().structured_data_dict()
+    assert data["doc_type"] == "contract"
+    assert data["contract_category"] == "construction_subcontract"
+    assert data["title"] == "建设工程专业分包合同"
+    assert "张江创新药基地A04C-01地块" in data["project_name"]
+    assert "专业化标准厂房四期项目" in data["project_name"]
+    assert data["contract_no"] == "专业-07/2025"
+    assert data["page_count"] == 239
+    buyer_name = data["parties"][0]["name"]
+    assert "上海建工智慧营造" in buyer_name
+    assert "【" not in buyer_name and "盖章" not in buyer_name
+    assert data["parties"][1]["name"] == "上海意川建筑科技有限公司"
+    assert "4.00" not in data["amount"].get("contract_amount", "")
+    assert not data["amount"].get("contract_amount")
+    assert "8.2" not in data["copies"] and "保密协议" not in data["copies"]
+    dispute = data["clauses"]["dispute_resolution"]
+    assert "保密义务" not in dispute and "行政执法" not in dispute
+    assert data["signature"]["signers"] != "签字并加"
+    assert data["quality"]["body_missing_note"]
+    assert data["quality"]["body_missing_note"] != "未识别"
+    assert all("付款节点已提取" not in warning for warning in data["warnings"])
+
+
+def test_contract_001_long_contract_markdown_forbidden_regressions() -> None:
+    markdown = _run().markdown
+    assert "项目名称：张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）" in markdown
+    assert "合同金额：人民币 4.00 元" not in markdown
+    assert "合同份数：8.2" not in markdown
+    assert "争议解决：7.2.2" not in markdown
+    assert "签字人：签字并加" not in markdown
+    assert "文件完整性：未识别" not in markdown
+    assert "付款节点已提取" not in markdown
