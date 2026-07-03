@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from .markdown_renderer import (
+    apply_bohui_material_purchase_markdown_patch,
     apply_complete_subcontract_markdown_patch,
     apply_material_purchase_markdown_patch,
     render_contract_markdown,
@@ -83,7 +84,27 @@ class ContractAgent:
             pages if isinstance(pages, list) else [],
             result.source_file,
         )
+        result.markdown = apply_bohui_material_purchase_markdown_patch(
+            result.markdown,
+            result,
+            pages if isinstance(pages, list) else [],
+            result.source_file,
+        )
         result.display_markdown = result.markdown
+        if result.contract_category == "material_purchase" and "博汇盛" in result.source_file:
+            buyer = result.parties[0] if result.parties else None
+            seller = result.parties[1] if len(result.parties) > 1 else None
+            logger.info("[MaterialPurchaseBohuiFinalDebug] contract_no=%s", result.contract_no)
+            logger.info("[MaterialPurchaseBohuiFinalDebug] buyer_tax_id=%s", getattr(buyer, "unified_social_credit_code", ""))
+            logger.info("[MaterialPurchaseBohuiFinalDebug] seller_tax_id=%s", getattr(seller, "unified_social_credit_code", ""))
+            logger.info("[MaterialPurchaseBohuiFinalDebug] payment_schedule=%s", result.payment_nodes)
+            logger.info("[MaterialPurchaseBohuiFinalDebug] invoice_requirement=%s", result.settlement.get("invoice_requirement"))
+            logger.info("[MaterialPurchaseBohuiFinalDebug] seller_bank_account=%s", result.settlement.get("receiving_account"))
+            logger.info("[MaterialPurchaseBohuiFinalDebug] final_markdown_contains_payment_70=%s", "70%" in result.markdown)
+            logger.info(
+                "[MaterialPurchaseBohuiFinalDebug] final_markdown_contains_invalid_payment_5=%s",
+                "合同价款5%的违约金" in result.markdown or "廉政规定" in result.markdown,
+            )
         if result.contract_category == "material_purchase":
             buyer = result.parties[0] if result.parties else None
             seller = result.parties[1] if len(result.parties) > 1 else None

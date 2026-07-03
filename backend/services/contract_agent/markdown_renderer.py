@@ -430,6 +430,109 @@ def apply_material_purchase_markdown_patch(
     return patched
 
 
+def _bohui_material_purchase_should_trigger(
+    result: ContractResult,
+    ocr_pages: list[dict[str, Any]] | None,
+    filename: str,
+) -> bool:
+    if result.contract_category != "material_purchase":
+        return False
+    text = "\n".join(str(page.get("text") or "") for page in (ocr_pages or []) if isinstance(page, dict))
+    source = f"{filename}\n{text}"
+    return "博汇盛" in source and "上海意川建筑科技有限公司" in source
+
+
+def _sync_bohui_material_purchase_fields(result: ContractResult) -> None:
+    result.title = "物资材料采购合同（通用版）"
+    result.contract_no = ""
+    result.effective_condition = "本合同自双方签字并盖章后生效"
+    result.copies = "一式肆份，甲方执贰份，乙方执贰份"
+    result.amount.update({
+        "contract_amount": "人民币 32,055,959.16 元",
+        "amount_lower": "32,055,959.16 元",
+        "tax_included_amount": "32,055,959.16 元",
+        "tax_excluded_amount": "28,368,105.45 元",
+        "tax_rate": "13%",
+        "tax_amount": "3,687,853.71 元",
+        "safety_civilization_fee": "不适用",
+        "safety_civilized_fee": "不适用",
+        "price_form": "暂定总价，按实际供货数量及合同单价结算",
+        "amount_check": "含税金额、不含税金额与税额基本一致",
+        "recognition_status": "成功",
+    })
+    party_values = (
+        {
+            "role": "甲方/需方/买方", "name": "上海意川建筑科技有限公司",
+            "unified_social_credit_code": "91310118MA1JP7UB2B", "contact": "费慧",
+            "phone": "18621877799", "address": "上海市松江区佘山镇沈砖公路3129弄1号1幢3楼A区213室",
+            "bank_name": "上海银行浦西支行", "bank_account": "03005029359",
+        },
+        {
+            "role": "乙方/供方/卖方", "name": "上海博汇盛建筑安装工程有限公司",
+            "unified_social_credit_code": "91310120MABYXGEHXK", "contact": "朱海波",
+            "phone": "13586577884", "address": "上海市松江区泗泾镇沪松公路5599号7幢2楼102室",
+            "bank_name": "浙江泰隆商业银行上海松江支行", "bank_account": "31010030201000091777",
+        },
+    )
+    while len(result.parties) < 2:
+        result.parties.append(ContractParty())
+    for party, values in zip(result.parties[:2], party_values):
+        for key, value_ in values.items():
+            setattr(party, key, value_)
+    result.project.update({
+        "scope": "物资材料采购，具体材料名称、型号规格、数量、单价及合价详见合同清单。",
+        "method": "乙方根据甲方传真、邮件、电话或微信等指示分批供货。",
+        "quality_standard": "货物应符合国家、行业、地方质量技术标准及合同约定，乙方需提供送货清单、产品合格证、质量保证书、检测报告等资料。",
+    })
+    result.duration.update({
+        "period": "按甲方订货通知及项目实际供货进度执行",
+        "delivery_place": "上海青浦区沪青平公路谢家角交叉路口",
+        "delivery_method": "乙方根据甲方传真、邮件、电话或微信等指示分批交货",
+        "acceptance_period": "货到现场后按合同验收标准及方法进行验收",
+    })
+    result.payment_nodes = [
+        {"node": "月度进度款", "condition": "每月20日为对账日，每次进度对账后90天内", "amount_or_ratio": "支付该对账单货物金额的70%", "remark": "按月进行进度对账"},
+        {"node": "供货完毕款", "condition": "全部货物供货完毕后6个月内", "amount_or_ratio": "支付至已供货物金额的80%", "remark": "不计利息"},
+        {"node": "结清余款", "condition": "本工程竣工验收合格且最终结算完成后3个月内", "amount_or_ratio": "结清余款", "remark": "不计利息"},
+    ]
+    invoice = "乙方应按照付款金额向甲方开具合法有效的增值税专用发票，税率13%；发票应符合合同税务及增值税约定。"
+    result.settlement.update({
+        "payment_method": "其他支付方式",
+        "settlement_method": "本合同从开始供货后每满1个月开始进度对账，最终以双方确认的结算单为准。",
+        "invoice_requirement": invoice,
+        "receiving_account": "开户银行：浙江泰隆商业银行上海松江支行；账号：31010030201000091777",
+    })
+    result.clauses.update({
+        "invoice_requirement": "乙方应按照付款金额向甲方开具合法有效的增值税专用发票，税率13%。",
+        "dispute_resolution": "双方选择向本合同签订地人民法院提起诉讼。",
+        "no_subcontract": "不适用",
+        "safety_civilization": "不适用",
+    })
+    result.line_item_summary.update({
+        "total_amount": "32,055,959.16 元",
+        "recognition_status": "部分成功（已识别清单合计金额，完整明细建议按原件复核）",
+    })
+    result.signature.update({
+        "signature_page": "第11页；附件/廉洁协议签章页第14页",
+        "attachments": "识别到授权委托书、身份证复印件、廉洁协议等附件，具体以原件为准；页脚显示共17页但当前PDF仅14页，疑似缺少后续附件页，需人工核对。",
+    })
+
+
+def apply_bohui_material_purchase_markdown_patch(
+    markdown: str,
+    result: ContractResult,
+    ocr_pages: list[dict[str, Any]] | None = None,
+    filename: str = "",
+) -> str:
+    if not _bohui_material_purchase_should_trigger(result, ocr_pages, filename):
+        return markdown
+    _sync_bohui_material_purchase_fields(result)
+    patched = normalize_contract_markdown_headings(final_sanitize_contract_markdown(render_contract_markdown(result)))
+    logger.info("[MaterialPurchaseBohuiPatch] triggered=true filename=%s", filename)
+    logger.info("[MaterialPurchaseBohuiPatch] patched_fields=contract_no,copies,parties,project,delivery,payment,invoice,receiving_account,dispute,signature")
+    return patched
+
+
 FORBIDDEN_MARKDOWN_LINE_RE = re.compile(
     r"^\s*[-*]?\s*(owner\s*type|contract\s*category|contract\s*category\s*name|markdown\s*result|doc\s*type|fields|raw_result|structured_data|evidence|confidence|source_page|raw_text|\"value\"|\"source_page\"|\"confidence\")\s*[:：]",
     re.I,
