@@ -32,7 +32,11 @@ from backend.document_types import get_document_display_name, get_document_stora
 from backend.routers.chat_helpers import extract_customer_name as extract_customer_name_from_content
 from backend.routers.chat_storage import _save_to_local_storage
 from backend.services import get_storage_service, supports_structured_storage
-from backend.services.document_extractor_service import build_structured_extraction, detect_document_type_code
+from backend.services.document_extractor_service import (
+    build_structured_extraction,
+    classify_main_document_container,
+    detect_document_type_code,
+)
 from backend.services.company_articles_agent.versioning import refresh_stale_company_articles_payload
 from backend.services.contract_agent import is_contract_like
 from backend.services.contract_agent.markdown_renderer import final_sanitize_contract_markdown, sanitize_contract_result_payload
@@ -1711,6 +1715,9 @@ async def _extract_content_from_file(
 
 def _resolve_document_type_code(text_content: str, explicit_type: str | None, rows: list[dict], filename: str = "") -> str:
     normalized = normalize_document_type_code(explicit_type)
+    container = classify_main_document_container(text_content, filename=filename)
+    if container.get("main_doc_type") == "contract":
+        return "contract"
     if normalized:
         logger.info(
             "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",

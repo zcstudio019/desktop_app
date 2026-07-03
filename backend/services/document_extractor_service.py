@@ -132,6 +132,60 @@ OFFICIAL_BANK_STATEMENT_KEYWORDS = (
     "中国工商银行账户明细清单", "账户明细清单", "银行对账单", "银行账户明细", "银行流水明细", "bank statement",
 )
 
+CONTRACT_FILENAME_KEYWORDS = ("合同", "采购合同", "物资材料采购合同", "物资采购合同", "材料采购合同")
+CONTRACT_FRONT_PAGE_KEYWORDS = (
+    "工程名称", "货物供应工程概况", "货物名称", "计量单位", "数量", "价款",
+    "交货期限及地点", "付款约定", "违约责任", "合同解除", "签章",
+)
+ID_CARD_ROUTER_KEYWORDS = ("居民身份证", "中华人民共和国居民身份证", "公民身份号码", "有效期限", "签发机关")
+
+
+def classify_main_document_container(
+    text_content: str,
+    *,
+    raw_pages: list[dict[str, Any]] | None = None,
+    filename: str = "",
+) -> dict[str, Any]:
+    pages = [page for page in (raw_pages or []) if isinstance(page, dict)]
+    page_count = len(pages) or (1 if str(text_content or "").strip() else 0)
+    front_text = "\n".join(str(page.get("text") or "") for page in pages[:3]) if pages else str(text_content or "")[:12000]
+    later_text = "\n".join(str(page.get("text") or "") for page in pages[3:]) if pages else str(text_content or "")[12000:]
+    full_text = "\n".join((front_text, later_text))
+    filename_hits = sum(token in str(filename or "") for token in CONTRACT_FILENAME_KEYWORDS)
+    front_hits = sum(token in front_text for token in CONTRACT_FRONT_PAGE_KEYWORDS)
+    full_contract_hits = sum(token in full_text for token in CONTRACT_FRONT_PAGE_KEYWORDS)
+    front_id_hits = sum(token in front_text for token in ID_CARD_ROUTER_KEYWORDS)
+    later_id_hits = sum(token in later_text for token in ID_CARD_ROUTER_KEYWORDS)
+    contract_score = filename_hits * 12 + front_hits * 3 + full_contract_hits
+    id_card_score = front_id_hits * 4 + later_id_hits
+    contract_filename = filename_hits > 0
+    contract_front = front_hits >= 2
+    is_contract = contract_filename or contract_front or (page_count > 3 and contract_score > id_card_score + 3)
+    attachment_types: list[str] = []
+    if is_contract and later_id_hits:
+        attachment_types.append("id_card")
+    reason = "contract_keywords_in_front_pages_and_filename" if contract_filename and contract_front else (
+        "contract_keyword_in_filename" if contract_filename else "contract_keywords_in_front_pages"
+    )
+    decision = {
+        "main_doc_type": "contract" if is_contract else "",
+        "attachment_doc_types": attachment_types,
+        "contract_score": contract_score,
+        "id_card_score": id_card_score,
+        "page_count": page_count,
+        "route_agent": "ContractAgent" if is_contract else "",
+        "reason": reason if is_contract else "no_contract_container_override",
+    }
+    logger.info("[DocTypeRouter] filename=%s", filename)
+    logger.info("[DocTypeRouter] page_count=%s", page_count)
+    logger.info("[DocTypeRouter] contract_score=%s", contract_score)
+    logger.info("[DocTypeRouter] id_card_score=%s", id_card_score)
+    logger.info("[DocTypeRouter] main_doc_type=%s", decision["main_doc_type"] or "undetermined")
+    logger.info("[DocTypeRouter] attachment_doc_types=%s", attachment_types)
+    logger.info("[DocTypeRouter] route_agent=%s", decision["route_agent"] or "default")
+    logger.info("[DocTypeRouter] reason=%s", decision["reason"])
+    return decision
+
 BANK_RECEIPT_BUNDLE_KEYWORDS = (
     "单位国内汇款", "电子回单", "银行回单", "汇款回单", "转账回单", "付款凭证", "收款凭证",
     "网上银行电子回单", "回单编号", "业务编号", "交易流水号", "付款人", "收款人", "付款账号", "收款账号",
@@ -234,6 +288,9 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
+    container = classify_main_document_container(text_content, filename=filename)
+    if container.get("main_doc_type") == "contract":
+        return "contract"
     if normalized_explicit:
         logger.info(
             "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
@@ -3195,6 +3252,9 @@ def detect_document_type_code(
     ai_service: Any | None = None,
 ) -> str:
     normalized_explicit = normalize_document_type_code(explicit_type)
+    container = classify_main_document_container(text_content, filename=filename)
+    if container.get("main_doc_type") == "contract":
+        return "contract"
     if normalized_explicit:
         logger.info(
             "document detect result filename=%s user_selected_doc_type=%s detected_doc_type=%s selected_agent=%s matched_rule=%s",
@@ -9238,6 +9298,8 @@ def extract_bank_statement_pdf_fields(
 
 def _resolve_kyc_doc_type(text_content: str, declared_doc_type: str | None, filename: str = "") -> str:
     normalized = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
+    if normalized == "contract" or classify_main_document_container(text_content, filename=filename).get("main_doc_type") == "contract":
+        return ""
     if should_route_to_property_cert(declared_doc_type=normalized, filename=filename, text=text_content):
         return ""
     normalized = normalize_declared_doc_type(normalized, filename=filename) or normalized
@@ -9464,6 +9526,9 @@ def run_document_extraction(
     metadata: dict | None = None,
 ) -> dict[str, Any]:
     normalized_declared = normalize_document_type_code(declared_doc_type) or str(declared_doc_type or "").strip()
+    container = classify_main_document_container(text, raw_pages=pages or [], filename=filename)
+    if container.get("main_doc_type") == "contract":
+        normalized_declared = "contract"
     classified_for_property = classify_kyc_document(text or "", filename=filename)
     if should_route_to_property_cert(
         declared_doc_type=normalized_declared,
@@ -9480,7 +9545,7 @@ def run_document_extraction(
             declared_doc_type=normalized_declared or "property_cert",
             metadata=metadata or {},
         )
-    kyc_doc_type = _resolve_kyc_doc_type(text, normalized_declared, filename)
+    kyc_doc_type = "" if normalized_declared == "contract" else _resolve_kyc_doc_type(text, normalized_declared, filename)
     if kyc_doc_type:
         return _build_kyc_structured_extraction(
             text,
@@ -9491,7 +9556,12 @@ def run_document_extraction(
             metadata=metadata or {},
         )
 
-    document_type_code = detect_document_type_code(text, normalized_declared, rows=(metadata or {}).get("rows") or [])
+    document_type_code = detect_document_type_code(
+        text,
+        normalized_declared,
+        rows=(metadata or {}).get("rows") or [],
+        filename=filename,
+    )
     return build_structured_extraction(
         text,
         document_type_code,

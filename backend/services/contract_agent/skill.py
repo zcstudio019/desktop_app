@@ -3079,7 +3079,7 @@ def apply_material_purchase_enhancements(ocr_pages: list[dict[str, Any]], result
     amount = extract_material_purchase_amounts(ocr_pages)
     if amount.get("tax_included_amount"):
         result["amount"].update(amount)
-    result["title"] = "电缆采购合同" if "电缆" in text else (result.get("title") or "物资采购合同")
+    result["title"] = "电缆采购合同" if "电缆采购合同" in text else (result.get("title") or "物资采购合同")
     result["contract_no"] = _after_label(text, ("合同编号", "合同号", "编号"))
     parties = result.get("parties") or []
     tax_info = extract_material_purchase_party_tax_info(ocr_pages)
@@ -3154,16 +3154,25 @@ def apply_material_purchase_enhancements(ocr_pages: list[dict[str, Any]], result
     result["signature"].update(extract_material_purchase_signature_info(ocr_pages))
     footer_totals = [int(match.group(1)) for match in re.finditer(r"\b\d+\s*/\s*(\d+)\b", text)]
     expected_pages = max(footer_totals, default=len(ocr_pages))
+    attachment_labels = [
+        label for label, markers in (
+            ("授权委托书", ("授权委托书", "授权书")),
+            ("身份证复印件", ("身份证复印件", "居民身份证", "公民身份号码")),
+            ("廉洁协议", ("廉洁协议", "廉政协议")),
+        )
+        if any(marker in text for marker in markers)
+    ]
+    attachment_summary = f"识别到{'、'.join(attachment_labels)}等附件，具体以原件为准。" if attachment_labels else "识别到合同附件清单"
     if expected_pages > len(ocr_pages):
         missing_note = f"页脚显示共{expected_pages}页但当前PDF仅{len(ocr_pages)}页，疑似缺少后续附件页，需人工核对。"
-        result["signature"]["attachments"] = f"识别到合同附件清单；{missing_note}"
+        result["signature"]["attachments"] = f"{attachment_summary.rstrip('。')}；{missing_note}"
         result["quality"].update({
             "body_missing": True,
             "body_missing_note": f"当前PDF包含物资采购合同正文、货物清单、税务及发票条款、付款条款、违约条款和签章页；{missing_note}",
         })
     else:
         missing_note = ""
-        result["signature"]["attachments"] = "识别到合同附件清单"
+        result["signature"]["attachments"] = attachment_summary
         result["quality"]["body_missing_note"] = "当前PDF包含物资采购合同正文、货物清单、税务及发票条款、付款条款、违约条款和签章页，文件结构较完整。"
     warnings = ["签订日期未识别", "收款账户未识别", "完整清单建议按原件复核"]
     if missing_note:
