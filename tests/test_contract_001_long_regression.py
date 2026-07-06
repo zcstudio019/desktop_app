@@ -79,6 +79,38 @@ def _run_selective_ocr_shape():
     })
 
 
+def _run_with_explicit_missing_field_evidence():
+    pages = _pages()
+    pages[0]["text"] += "\n签订日期：2025年7月1日"
+    pages[19]["text"] = "计划开工日期：2025年7月15日；计划竣工日期：2026年11月26日；工期总日历天数：500天。"
+    pages[29]["text"] = """合同价款
+含税金额：50,668,889.52元
+不含税金额：46,485,219.74元
+增值税税额：4,183,669.78元
+税率：9%
+大写金额：伍仟零陆拾陆万捌仟捌佰捌拾玖元伍角贰分
+安全文明施工费：1,234,567.89元
+"""
+    pages[39]["text"] = """工程款支付
+预付款按签约合同价的10%支付。
+月进度款按当月已完工程量的70%支付。
+竣工结算完成后支付至结算总价的97%。
+扣留结算总价的3%作为质量保证金。
+"""
+    pages[69]["text"] = "分包人账户 户名：上海意川建筑科技有限公司；开户银行：上海银行浦西支行；账号：03005029359"
+    pages[118]["text"] = "已标价工程量清单 预算书 分部分项工程 措施项目费 清单合计，完整明细见原件。"
+    pages[235]["text"] = """主合同签章页
+承包人（盖章）：【上海建工智慧营造】有限公司
+分包人（盖章）：上海意川建筑科技有限公司
+委托代理人：张三
+"""
+    return ContractAgent().run({
+        "text": "\n".join(str(page["text"]) for page in pages),
+        "raw_pages": pages,
+        "filename": FILENAME,
+    })
+
+
 def test_contract_001_long_contract_minimum_structured_baseline() -> None:
     data = _run().structured_data_dict()
     assert data["doc_type"] == "contract"
@@ -284,3 +316,35 @@ def test_contract_001_locked_partial_success_baseline() -> None:
     assert "- 合同金额：未识别" in markdown
     assert "- 含税金额：未识别" in markdown
     assert "- 税额：未识别" in markdown
+
+
+def test_contract_001_missing_field_debug_logs_include_candidates_and_text(caplog) -> None:
+    caplog.set_level("INFO", logger="backend.services.contract_agent.skill")
+    _run()
+    log_text = caplog.text
+    for label in ("amount", "date", "duration", "payment", "account", "signature", "bill"):
+        assert f"[ContractMissingFieldDebug] {label}_pages=" in log_text
+        assert f"[ContractMissingFieldDebug] {label}_page_text=" in log_text
+    assert "page_no" in log_text
+    assert "keywords" in log_text
+    assert "snippet" in log_text
+
+
+def test_contract_001_explicit_missing_fields_are_extracted_only_with_original_evidence() -> None:
+    result = _run_with_explicit_missing_field_evidence()
+    data = result.structured_data_dict()
+
+    assert data["amount"]["contract_amount"] == "人民币 50,668,889.52 元"
+    assert data["amount"]["tax_included_amount"] == "50,668,889.52 元"
+    assert data["amount"]["tax_amount"] == "4,183,669.78 元"
+    assert data["amount"]["amount_upper"] == "伍仟零陆拾陆万捌仟捌佰捌拾玖元伍角贰分"
+    assert data["amount"]["safety_civilization_fee"] == "1,234,567.89 元"
+    assert data["signing_date"] == "2025-07-01"
+    assert data["duration"]["start_date"] == "2025年7月15日"
+    assert data["duration"]["end_date"] == "2026年11月26日"
+    assert "500天" in data["duration"]["period"]
+    assert [node["node"] for node in data["payment_nodes"]] == ["预付款", "进度款", "结算款", "质量保证金"]
+    assert data["settlement"]["receiving_account"] == "账户名：上海意川建筑科技有限公司；开户银行：上海银行浦西支行；账号：03005029359；归属需人工复核"
+    assert data["signature"]["signers"] == "张三"
+    assert "已标价工程量清单/预算书" in data["line_item_summary"]["message"]
+    assert data["line_item_summary"]["recognition_status"] == "已定位清单页，未完全结构化"
