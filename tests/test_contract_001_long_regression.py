@@ -116,6 +116,26 @@ def _run_with_explicit_missing_field_evidence():
     })
 
 
+def _run_accepted_contract_001_baseline():
+    pages = _pages()
+    pages[19]["text"] = "计划开工日期：2025年7月28日；计划竣工日期：2027年1月28日；工期总日历天数：550天。"
+    pages[29]["text"] = """合同价款
+人民币
+不含税金额：46,485,219.74元
+税率：9%
+大写金额：伍仟零陆拾陆万捌仟捌佰捌拾玖元伍角贰分
+    小写金额：待原件复核
+"""
+    for page_index in range(7, 13):
+        pages[page_index]["text"] += "\n已标价工程量清单 预算书 分部分项工程 措施项目费 清单合计，完整明细见原件。"
+    pages[8]["text"] += "\n承包人（盖章）：上海建工智慧营造有限公司 分包人（盖章）：上海意川建筑科技有限公司"
+    return ContractAgent().run({
+        "text": "\n".join(str(page["text"]) for page in pages),
+        "raw_pages": pages,
+        "filename": FILENAME,
+    })
+
+
 def test_contract_001_long_contract_minimum_structured_baseline() -> None:
     data = _run().structured_data_dict()
     assert data["doc_type"] == "contract"
@@ -399,3 +419,67 @@ def test_contract_001_closed_amount_has_consistent_review_copy() -> None:
     assert expected_review in markdown
     review_line = next(line for line in markdown.splitlines() if line.startswith("- 需人工复核事项："))
     assert "金额" not in review_line
+
+
+def test_contract_001_accepted_partial_success_regression_baseline() -> None:
+    result = _run_accepted_contract_001_baseline()
+    data = result.structured_data_dict()
+    markdown = result.markdown
+
+    assert data["doc_type"] == "contract"
+    assert data["contract_category"] == "construction_subcontract"
+    assert data["extraction_status"] == "partial"
+    assert data["project_name"] == "张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）"
+    assert data["contract_no"] == "专业-07/2025"
+    assert data["page_count"] == 239
+    assert data["parties"][0]["name"] == "上海建工智慧营造有限公司"
+    assert data["parties"][1]["name"] == "上海意川建筑科技有限公司"
+    assert "上海市浦东新区新场镇" in data["project"]["location"]
+    assert "消防广播系统预留预埋" in data["project"]["scope"]
+    assert "弱电工程" not in data["project"]["scope"]
+    assert "弱电工程" in data["project"]["excluded_scope"]
+
+    assert data["amount"]["contract_amount"] == "人民币 50,668,889.52 元"
+    assert data["amount"]["amount_upper"] == "伍仟零陆拾陆万捌仟捌佰捌拾玖元伍角贰分"
+    assert data["amount"]["amount_lower"] == "50,668,889.52 元"
+    assert data["amount"]["tax_included_amount"] == "50,668,889.52 元"
+    assert "46,485,219.74 元" in data["amount"]["tax_excluded_amount"]
+    assert data["amount"]["tax_rate"] == "9%"
+    assert data["amount"]["tax_amount"] == "4,183,669.78 元"
+    assert data["amount"]["price_form"] == "固定单价（已定位主合同结算条款，需按原件复核）"
+    assert data["amount"]["recognition_status"] == "成功"
+    assert data["duration"]["start_date"] == "2025年7月28日"
+    assert data["duration"]["end_date"] == "2027年1月28日"
+    assert data["duration"]["period"] == "550天"
+
+    expected_markdown = (
+        "- 提取状态：部分成功",
+        "- 合同金额：人民币 50,668,889.52 元",
+        "- 大写金额：伍仟零陆拾陆万捌仟捌佰捌拾玖元伍角贰分",
+        "- 小写金额：50,668,889.52 元",
+        "- 含税金额：50,668,889.52 元",
+        "- 不含税金额：46,485,219.74 元",
+        "- 税率：9%",
+        "- 税额：4,183,669.78 元",
+        "- 金额校验：大写金额与小写金额一致；含税金额、不含税金额、税额及税率校验一致",
+        "- 金额识别状态：成功",
+        "- 开始日期：2025年7月28日",
+        "- 结束日期：2027年1月28日",
+        "- 合同工期/服务期限：550天",
+        "- 付款识别状态：已定位付款条款页，付款节点尚未完全结构化",
+        "- 结算识别状态：已定位结算条款页，部分结构化",
+        "- 发票识别状态：已定位发票条款页，部分结构化",
+        "- 账户识别状态：部分识别",
+    )
+    for expected in expected_markdown:
+        assert expected in markdown
+
+    assert "推算含税金额候选" not in markdown
+    assert "推算税额候选" not in markdown
+    assert "需结合含税金额复核" not in markdown
+    assert "上海建工集团股份有限公司" not in markdown
+    assert "项目名称：【" not in markdown
+    assert "签字人：资格证明" not in markdown
+    assert "签字人：签字并加" not in markdown
+    for technical_status in ("partial", "success", "missing", "failed", "unknown", "pending"):
+        assert not re.search(rf"(?<![A-Za-z_]){technical_status}(?![A-Za-z_])", markdown, flags=re.I)
