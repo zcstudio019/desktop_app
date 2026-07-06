@@ -20,14 +20,14 @@ def _pages() -> list[dict[str, str | int]]:
     pages[1]["text"] = """合同协议书
 承包人：【上海建工智慧营造】有限公司（盖章）
 分包人：上海意川建筑科技有限公司
-分包工程承包范围：机电安装专业分包工程
+分包工程承包范围：防排烟通风工程、通风工程（人防）、给排水工程、给排水工程（人防）、消火栓工程、喷淋工程、气体灭火工程、电气工程、电气工程（人防）、应急照明及疏散指示系统、火灾报警工程预留预埋、余压监控系统、电气火灾监控系统、电气综合监控系统、防火门监控系统、消防广播系统预留预埋不包含内容:弱电工程、电梯工程、4#楼精装修水电安装、气体灭火系统、火灾报警工程设备安装、消防广播设备安装
 """
     pages[3]["text"] = "合同价款目录 附件单价 4.00元，本页为章节索引。"
     pages[4]["text"] = "目录 第一部分合同协议书 第二部分通用合同条款 第三部分专用合同条款"
     pages[9]["text"] = "工程概况 工程地点：上海市浦东新区张江科学城 质量标准：一次性验收合格。"
     pages[19]["text"] = "工期条款 计划开工日期待书面通知，计划竣工日期按总包进度执行。"
     pages[39]["text"] = "工程款支付 进度款及结算款按专用合同条款执行，具体付款节点见原件。"
-    pages[49]["text"] = "竣工结算 最终结算及结算总价按双方确认的工程量执行。"
+    pages[49]["text"] = "竣工结算 本工程采用固定单价，最终结算及结算总价按双方确认的工程量执行。"
     pages[59]["text"] = "发票条款 分包人应开具合法有效的增值税专用发票，具体税率见开票信息。"
     pages[69]["text"] = "账户信息 开户银行、银行账号及收款账户详见双方确认资料。"
     pages[79]["text"] = "禁止转包 未经承包人书面同意，分包人不得转包或违法分包。"
@@ -101,6 +101,10 @@ def test_contract_001_long_contract_minimum_structured_baseline() -> None:
     assert data["quality"]["body_missing_note"] != "未识别"
     assert all("付款节点已提取" not in warning for warning in data["warnings"])
     assert data["project"]["location"] == "上海市浦东新区张江科学城"
+    assert data["project"]["excluded_scope"].startswith("弱电工程、电梯工程")
+    assert data["amount"]["price_form"] == "固定单价（已定位主合同结算条款，需按原件复核）"
+    assert data["duration"]["construction_place"] == "上海市浦东新区张江科学城"
+    assert not data["duration"]["delivery_place"]
     assert data["settlement"]["payment_method"].startswith("已定位主合同工程款支付条款")
     assert "主合同结算条款" in data["settlement"]["settlement_method"]
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
@@ -117,6 +121,10 @@ def test_contract_001_long_contract_markdown_forbidden_regressions() -> None:
     assert "签字人：签字并加" not in markdown
     assert "文件完整性：未识别" not in markdown
     assert "付款节点已提取" not in markdown
+    assert "- 合同价格形式：固定单价（已定位主合同结算条款，需按原件复核）" in markdown
+    assert "- 不包含内容：弱电工程、电梯工程、4#楼精装修水电安装" in markdown
+    assert "- 施工地点：上海市浦东新区张江科学城" in markdown
+    assert "- 交付地点：上海市浦东新区张江科学城" not in markdown
 
 
 def test_contract_001_selective_ocr_metadata_triggers_long_contract_extraction() -> None:

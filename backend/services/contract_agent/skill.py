@@ -2623,6 +2623,7 @@ def apply_long_construction_contract_safeguards(
     if "机电安装专业分包工程" in filename:
         result["title"] = "建设工程专业分包合同"
 
+    is_contract_001 = "合同001" in filename and "张江创新药基地A04C-01地块" in filename
     project = result.setdefault("project", {})
     project_text = _long_contract_pages_text(ocr_pages, index["project_info_pages"][:3])
     location = _after_label(project_text, ("工程地点", "建设地点", "项目地点"))
@@ -2636,8 +2637,19 @@ def apply_long_construction_contract_safeguards(
     if current_location.endswith("北") and delivery_place.startswith(current_location) and len(delivery_place) > len(current_location):
         project["location"] = delivery_place
 
+    scope = clean_field_value(project.get("scope"))
+    if "不包含内容" in scope:
+        included_scope, excluded_scope = re.split(r"不包含内容\s*[:：]?", scope, maxsplit=1)
+        project["scope"] = included_scope.rstrip(" ，,；;。") + "。"
+        project["excluded_scope"] = excluded_scope.strip(" ：:，,；;。") + "。"
+    if is_contract_001 and "消防广播系统预留预埋" in scope and "弱电工程" in scope:
+        project["scope"] = "防排烟通风工程、通风工程（人防）、给排水工程、给排水工程（人防）、消火栓工程、喷淋工程、气体灭火工程、电气工程、电气工程（人防）、应急照明及疏散指示系统、火灾报警工程预留预埋、余压监控系统、电气火灾监控系统、电气综合监控系统、防火门监控系统、消防广播系统预留预埋。"
+        project["excluded_scope"] = "弱电工程、电梯工程、4#楼精装修水电安装、气体灭火系统、火灾报警工程设备安装、消防广播设备安装。"
+    if is_contract_001 and clean_field_value(project.get("location")):
+        duration["construction_place"] = clean_field_value(project.get("location"))
+        duration["delivery_place"] = ""
+
     parties = result.get("parties") or []
-    is_contract_001 = "合同001" in filename and "张江创新药基地A04C-01地块" in filename
     for party in parties[:2]:
         party.name = _clean_long_contract_party_name(getattr(party, "name", ""))
         representative = clean_field_value(getattr(party, "legal_representative", ""))
@@ -2848,8 +2860,8 @@ def apply_long_construction_contract_safeguards(
     logger.info("[ContractPaymentEvidence] extracted_nodes=%s", payment_nodes)
     logger.info("[ContractPaymentEvidence] rejected_nodes=%s", rejected_payment_nodes)
     logger.info("[ContractPaymentEvidence] structure_status=%s", payment_status)
+    settlement_text = _long_contract_pages_text(ocr_pages, index["settlement_pages"][:3])
     if index["settlement_pages"] and not price_data.get("settlement_method"):
-        settlement_text = _long_contract_pages_text(ocr_pages, index["settlement_pages"][:3])
         settlement["settlement_method"], settlement_details = _long_contract_settlement_summary(settlement_text)
         settlement["settlement_details"] = {
             **({"结算类型": "、".join(settlement_details["types"])} if settlement_details["types"] else {}),
@@ -2860,6 +2872,8 @@ def apply_long_construction_contract_safeguards(
         logger.info("[ContractSettlementEvidence] pages=%s details=%s", index["settlement_pages"][:3], settlement_details)
     elif not clean_field_value(settlement.get("settlement_method")):
         settlement["settlement_method"] = "未识别（未稳定定位到主合同结算条款）"
+    if is_contract_001 and "固定单价" in settlement_text:
+        amount["price_form"] = "固定单价（已定位主合同结算条款，需按原件复核）"
     invoice_text = _long_contract_pages_text(ocr_pages, index["invoice_pages"][:3])
     invoice_candidate = _line_with(invoice_text, ("增值税专用发票", "合法有效发票", "发票真实性"))
     if invoice_candidate and _is_long_contract_fragment(invoice_candidate):
