@@ -24,8 +24,9 @@ def _pages() -> list[dict[str, str | int]]:
 """
     pages[3]["text"] = "合同价款目录 附件单价 4.00元，本页为章节索引。"
     pages[4]["text"] = "目录 第一部分合同协议书 第二部分通用合同条款 第三部分专用合同条款"
-    pages[9]["text"] = "工程概况 工程地点：上海市浦东新区张江科学城 质量标准：一次性验收合格。"
+    pages[9]["text"] = "工程概况 工程地点：上海市浦东新区新场镇，东至康新公路，南至古翠路，西至良耀路，北至美济路 质量标准：一次性验收合格。"
     pages[19]["text"] = "工期条款 计划开工日期待书面通知，计划竣工日期按总包进度执行。"
+    pages[29]["text"] = "合同价款 不含税金额：46,485,219.74元；税率：9%；税额：-46,485,215.57元；安全文明施工费：1.10元。"
     pages[39]["text"] = "工程款支付 进度款及结算款按专用合同条款执行，具体付款节点见原件。"
     pages[49]["text"] = "竣工结算 本工程采用固定单价，最终结算及结算总价按双方确认的工程量执行。"
     pages[59]["text"] = "发票条款 分包人应开具合法有效的增值税专用发票，具体税率见开票信息。"
@@ -100,10 +101,10 @@ def test_contract_001_long_contract_minimum_structured_baseline() -> None:
     assert data["quality"]["body_missing_note"]
     assert data["quality"]["body_missing_note"] != "未识别"
     assert all("付款节点已提取" not in warning for warning in data["warnings"])
-    assert data["project"]["location"] == "上海市浦东新区张江科学城"
+    assert "上海市浦东新区新场镇" in data["project"]["location"]
     assert data["project"]["excluded_scope"].startswith("弱电工程、电梯工程")
     assert data["amount"]["price_form"] == "固定单价（已定位主合同结算条款，需按原件复核）"
-    assert data["duration"]["construction_place"] == "上海市浦东新区张江科学城"
+    assert "上海市浦东新区新场镇" in data["duration"]["construction_place"]
     assert not data["duration"]["delivery_place"]
     assert data["settlement"]["payment_method"].startswith("已定位主合同工程款支付条款")
     assert "主合同结算条款" in data["settlement"]["settlement_method"]
@@ -123,8 +124,8 @@ def test_contract_001_long_contract_markdown_forbidden_regressions() -> None:
     assert "付款节点已提取" not in markdown
     assert "- 合同价格形式：固定单价（已定位主合同结算条款，需按原件复核）" in markdown
     assert "- 不包含内容：弱电工程、电梯工程、4#楼精装修水电安装" in markdown
-    assert "- 施工地点：上海市浦东新区张江科学城" in markdown
-    assert "- 交付地点：上海市浦东新区张江科学城" not in markdown
+    assert "- 施工地点：上海市浦东新区新场镇" in markdown
+    assert "- 交付地点：上海市浦东新区新场镇" not in markdown
 
 
 def test_contract_001_selective_ocr_metadata_triggers_long_contract_extraction() -> None:
@@ -240,3 +241,46 @@ def test_contract_001_long_contract_multiline_display_and_calculated_candidates(
     assert "- 发票要求：涉及增值税专用发票，详见“付款与结算”中的发票要求" in markdown
     assert "。；" not in markdown
     assert "上海建工集团股份有限公司" not in markdown
+
+
+def test_contract_001_locked_partial_success_baseline() -> None:
+    result = _run()
+    data = result.structured_data_dict()
+    markdown = result.markdown
+
+    assert "张江创新药基地A04C-01地块" in data["project_name"]
+    assert data["contract_no"] == "专业-07/2025"
+    assert data["page_count"] == 239
+    assert data["parties"][0]["name"] == "上海建工智慧营造有限公司"
+    assert data["parties"][1]["name"] == "上海意川建筑科技有限公司"
+    assert "上海市浦东新区新场镇" in data["project"]["location"]
+    assert data["amount"]["tax_excluded_amount"] == "46,485,219.74 元（已识别，需结合含税金额复核）"
+    assert data["amount"]["tax_rate"] == "9%"
+    assert data["amount"]["price_form"] == "固定单价（已定位主合同结算条款，需按原件复核）"
+    assert data["amount"]["contract_amount"] == ""
+    assert data["amount"]["tax_included_amount"] == ""
+    assert data["amount"]["tax_amount"] == ""
+    assert data["amount"]["safety_civilization_fee"] == ""
+    assert "50,668,889.52 元" in data["amount"]["calculated_tax_included_candidate"]
+    assert "4,183,669.78 元" in data["amount"]["calculated_tax_amount_candidate"]
+
+    assert "- 合同范围：" in markdown
+    assert "- 不包含内容：" in markdown
+    assert "- 施工地点：" in markdown
+    assert "- 交付地点：上海市浦东新区" not in markdown
+
+    forbidden = (
+        "合同金额：人民币 4.00 元",
+        "税额：-",
+        "安全文明施工费：1.10 元",
+        "合同份数：8.2",
+        "项目名称：【",
+        "上海建工集团股份有限公司",
+        "签字人：资格证明",
+        "签字人：签字并加",
+        "的增值税专用发票作为收取合同价款的前提条件",
+    )
+    assert all(item not in markdown for item in forbidden)
+    assert "- 合同金额：未识别" in markdown
+    assert "- 含税金额：未识别" in markdown
+    assert "- 税额：未识别" in markdown
