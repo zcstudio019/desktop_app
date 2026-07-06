@@ -84,11 +84,11 @@ def _run_with_explicit_missing_field_evidence():
     pages[0]["text"] += "\n签订日期：2025年7月1日"
     pages[19]["text"] = "计划开工日期：2025年7月15日；计划竣工日期：2026年11月26日；工期总日历天数：500天。"
     pages[29]["text"] = """合同价款
-含税金额：50,668,889.52元
+人民币
 不含税金额：46,485,219.74元
-增值税税额：4,183,669.78元
 税率：9%
 大写金额：伍仟零陆拾陆万捌仟捌佰捌拾玖元伍角贰分
+小写金额：待原件复核
 安全文明施工费：1,234,567.89元
 """
     pages[39]["text"] = """工程款支付
@@ -98,7 +98,9 @@ def _run_with_explicit_missing_field_evidence():
 扣留结算总价的3%作为质量保证金。
 """
     pages[69]["text"] = "分包人账户 户名：上海意川建筑科技有限公司；开户银行：上海银行浦西支行；账号：03005029359"
-    pages[118]["text"] = "已标价工程量清单 预算书 分部分项工程 措施项目费 清单合计，完整明细见原件。"
+    for page_index in range(7, 13):
+        pages[page_index]["text"] = "已标价工程量清单 预算书 分部分项工程 措施项目费 清单合计，完整明细见原件。"
+    pages[8]["text"] += "\n承包人（盖章）：上海建工智慧营造有限公司 分包人（盖章）：上海意川建筑科技有限公司"
     pages[235]["text"] = """主合同签章页
 承包人（盖章）：【上海建工智慧营造】有限公司
 分包人（盖章）：上海意川建筑科技有限公司
@@ -265,7 +267,7 @@ def test_contract_001_long_contract_multiline_display_and_calculated_candidates(
     result = _run_selective_ocr_shape()
     markdown = result.markdown
     assert "- 付款方式：已定位主合同工程款支付条款，具体付款节点需按原件复核" in markdown
-    assert "  - 付款条款类型：未稳定结构化" in markdown
+    assert "  - 付款条款类型：进度款/结算款已定位，具体比例需复核" in markdown
     assert "  - 付款证据状态：已定位条款页，节点未稳定结构化" in markdown
     assert "- 结算方式：已定位主合同结算条款，具体结算口径需按原件复核" in markdown
     assert "  - 结算证据状态：已定位条款页，结构化程度 partial" in markdown
@@ -339,6 +341,8 @@ def test_contract_001_explicit_missing_fields_are_extracted_only_with_original_e
     assert data["amount"]["tax_amount"] == "4,183,669.78 元"
     assert data["amount"]["amount_upper"] == "伍仟零陆拾陆万捌仟捌佰捌拾玖元伍角贰分"
     assert data["amount"]["safety_civilization_fee"] == "1,234,567.89 元"
+    assert data["quality"]["amount_close_loop"]["context_valid"] is True
+    assert data["quality"]["amount_close_loop"]["fill_official_amount"] is True
     assert data["signing_date"] == "2025-07-01"
     assert data["duration"]["start_date"] == "2025年7月15日"
     assert data["duration"]["end_date"] == "2026年11月26日"
@@ -346,5 +350,6 @@ def test_contract_001_explicit_missing_fields_are_extracted_only_with_original_e
     assert [node["node"] for node in data["payment_nodes"]] == ["预付款", "进度款", "结算款", "质量保证金"]
     assert data["settlement"]["receiving_account"] == "账户名：上海意川建筑科技有限公司；开户银行：上海银行浦西支行；账号：03005029359；归属需人工复核"
     assert data["signature"]["signers"] == "张三"
-    assert "已标价工程量清单/预算书" in data["line_item_summary"]["message"]
+    assert data["line_item_summary"]["message"] == "识别到已标价工程量清单/预算书，疑似位于附件清单页，完整明细需按原件复核"
+    assert data["line_item_summary"]["page_range_conflicts_with_signature"] is True
     assert data["line_item_summary"]["recognition_status"] == "已定位清单页，未完全结构化"

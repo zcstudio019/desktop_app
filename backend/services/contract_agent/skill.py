@@ -2501,6 +2501,66 @@ def _apply_long_contract_amount_guard(
         amount["recognition_status"] = "部分成功"
 
 
+def _close_long_contract_amount_from_uppercase(
+    amount: dict[str, Any], ocr_pages: list[dict[str, Any]], amount_pages: list[int]
+) -> dict[str, Any]:
+    upper = clean_field_value(amount.get("amount_upper"))
+    upper_numeric = chinese_money_to_decimal(upper) if upper else None
+    excluded = _decimal_from_amount_value(amount.get("tax_excluded_amount"))
+    rate_match = re.search(r"(\d+(?:\.\d+)?)\s*%", clean_field_value(amount.get("tax_rate")))
+    calculated_tax = None
+    calculated_included = None
+    if excluded is not None and rate_match:
+        rate = Decimal(rate_match.group(1)) / Decimal("100")
+        calculated_tax = (excluded * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        calculated_included = (excluded + calculated_tax).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    upper_evidence = _evidence_for_value(ocr_pages, amount_pages, upper, ("大写",)) if upper else {}
+    source_page = int(upper_evidence.get("source_page") or 0)
+    source_text = _long_contract_pages_text(ocr_pages, [source_page]) if source_page else ""
+    strong_markers = ("签约合同价", "合同价款", "合同总价", "含税", "人民币", "小写")
+    matched_context = [marker for marker in strong_markers if marker in source_text]
+    context_valid = bool(
+        source_page
+        and "大写" in source_text
+        and any(marker in source_text for marker in ("签约合同价", "合同价款", "合同总价", "含税"))
+        and len(matched_context) >= 2
+    )
+    amount_matches = bool(
+        upper_numeric is not None
+        and calculated_included is not None
+        and abs(upper_numeric - calculated_included) <= Decimal("0.01")
+    )
+    fill_official = context_valid and amount_matches
+    if fill_official:
+        official = f"{calculated_included:,.2f} 元"
+        amount["contract_amount"] = f"人民币 {official}"
+        amount["amount_lower"] = official
+        amount["tax_included_amount"] = official
+        amount["tax_amount"] = f"{calculated_tax:,.2f} 元"
+        amount["tax_amount_source"] = "uppercase_close_loop"
+        amount["amount_check"] = "大写金额与小写金额基本一致；含税金额、不含税金额与税额基本一致"
+        amount["recognition_status"] = "成功"
+    elif upper and excluded is not None and rate_match:
+        amount["amount_check"] = "已识别大写金额、不含税金额及税率，但合同含税金额和税额仍需结合原文复核"
+
+    result = {
+        "uppercase_amount": upper,
+        "uppercase_numeric": f"{upper_numeric:.2f}" if upper_numeric is not None else "missing",
+        "tax_excluded": f"{excluded:.2f}" if excluded is not None else "missing",
+        "tax_rate": amount.get("tax_rate") or "missing",
+        "calculated_tax": f"{calculated_tax:.2f}" if calculated_tax is not None else "missing",
+        "calculated_tax_included": f"{calculated_included:.2f}" if calculated_included is not None else "missing",
+        "source_page": source_page,
+        "source_snippet": upper_evidence.get("snippet", ""),
+        "context_valid": context_valid,
+        "fill_official_amount": fill_official,
+    }
+    for key, value in result.items():
+        logger.info("[ContractAmountCloseLoop] %s=%s", key, value)
+    return result
+
+
 def _is_long_contract_fragment(value: Any) -> bool:
     text = clean_field_value(value)
     return bool(
@@ -2869,6 +2929,8 @@ def apply_long_construction_contract_safeguards(
         f"{calculated_included:,.2f} 元（根据不含税金额及税率推算，非原文稳定识别）"
         if calculated_included is not None else ""
     )
+    close_loop = _close_long_contract_amount_from_uppercase(amount, ocr_pages, index["amount_pages"])
+    quality["amount_close_loop"] = close_loop
     logger.info("[ContractAmountEvidence] amount_pages=%s", index["amount_pages"][:3])
     logger.info("[ContractAmountEvidence] selected_tax_excluded=%s source_page=%s snippet=%s", f"{excluded_value:,.2f}" if excluded_value is not None else "missing", excluded_evidence.get("source_page", 0), excluded_evidence.get("snippet", ""))
     logger.info("[ContractAmountEvidence] selected_tax_rate=%s source_page=%s snippet=%s", amount.get("tax_rate") or "missing", rate_evidence.get("source_page", 0), rate_evidence.get("snippet", ""))
@@ -2974,8 +3036,20 @@ def apply_long_construction_contract_safeguards(
         payment_status = "success" if len(payment_nodes) >= 3 else "partial"
     elif index["payment_pages"]:
         settlement["payment_method"] = "已定位主合同工程款支付条款，具体付款节点需按原件复核"
+        located_payment_types = [
+            label for label, markers in (
+                ("预付款", ("预付款",)),
+                ("进度款", ("进度款", "月进度款")),
+                ("结算款", ("结算款", "支付至")),
+                ("质量保证金", ("质量保证金", "质保金", "保修金")),
+            )
+            if any(marker in payment_text for marker in markers)
+        ]
         settlement["payment_details"] = {
-            "付款条款类型": "未稳定结构化",
+            "付款条款类型": (
+                f"{'/'.join(located_payment_types)}已定位，具体比例需复核"
+                if located_payment_types else "未稳定结构化"
+            ),
             "付款证据状态": "已定位条款页，节点未稳定结构化",
         }
         payment_status = "partial"
@@ -3029,11 +3103,24 @@ def apply_long_construction_contract_safeguards(
     account_text = _long_contract_pages_text(ocr_pages, index["account_pages"][:3])
     if index["account_pages"]:
         settlement["receiving_account"], account_details = _extract_long_contract_account_details(account_text)
+        missing_account_fields = [
+            label for key, label in (
+                ("account_name", "账户名称未识别"),
+                ("bank_name", "开户银行未识别"),
+                ("account", "银行账号未识别"),
+            )
+            if not account_details.get(key)
+        ]
+        if account_details.get("owner") == "未知":
+            missing_account_fields.append("账户归属未稳定确认")
         if settlement["receiving_account"] != "未稳定识别":
             settlement["account_details"] = {
                 "账户结构化状态": "partial",
                 "账户归属": "未稳定确认" if account_details.get("owner") == "未知" else account_details.get("owner", "未稳定确认"),
+                **({"缺失原因": "；".join(missing_account_fields)} if missing_account_fields else {}),
             }
+        elif missing_account_fields:
+            settlement["account_details"] = {"账户结构化状态": "partial", "缺失原因": "；".join(missing_account_fields)}
         quality["account_evidence"] = {"pages": index["account_pages"][:3], **account_details}
         logger.info("[ContractAccountEvidence] details=%s", quality["account_evidence"])
     else:
@@ -3041,12 +3128,27 @@ def apply_long_construction_contract_safeguards(
 
     bill_candidates = located.get("bill_pages", [])[:3]
     if bill_candidates and not result.get("line_items"):
-        bill_pages = sorted(int(item.get("page") or 0) for item in located.get("bill_pages", []) if int(item.get("page") or 0) > 0)
+        strong_bill_markers = {"已标价工程量清单", "预算书", "工程量清单", "分部分项工程", "清单合计"}
+        reliable_bill_candidates = [
+            item for item in located.get("bill_pages", [])
+            if strong_bill_markers.intersection(set(item.get("keywords") or []))
+        ]
+        bill_pages = sorted(int(item.get("page") or 0) for item in reliable_bill_candidates if int(item.get("page") or 0) > 0)
+        if not bill_pages:
+            bill_pages = sorted(int(item.get("page") or 0) for item in bill_candidates if int(item.get("page") or 0) > 0)
         page_range = f"第{bill_pages[0]}页至第{bill_pages[-1]}页" if len(bill_pages) > 1 else f"第{bill_pages[0]}页"
+        signature_page_numbers = set(index.get("signature_pages", []))
+        page_range_conflicts_with_signature = any(bill_pages[0] <= page <= bill_pages[-1] for page in signature_page_numbers)
+        message = (
+            "识别到已标价工程量清单/预算书，疑似位于附件清单页，完整明细需按原件复核"
+            if page_range_conflicts_with_signature
+            else f"识别到已标价工程量清单/预算书（{page_range}），页数较多，完整明细需按原件复核"
+        )
         result["line_item_summary"] = {
-            "message": f"识别到已标价工程量清单/预算书（{page_range}），页数较多，完整明细需按原件复核",
+            "message": message,
             "recognition_status": "已定位清单页，未完全结构化",
-            "page_range": page_range,
+            "page_range": "需按原件复核" if page_range_conflicts_with_signature else page_range,
+            "page_range_conflicts_with_signature": page_range_conflicts_with_signature,
             "related_to_tax_excluded_amount": "需结合清单合计复核",
             "safety_fee_identified": bool(amount.get("safety_civilization_fee")),
         }
@@ -4202,9 +4304,14 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         warnings = [warning for warning in warnings if "付款节点已提取" not in warning]
         long_contract_warnings: list[str] = []
         long_amount = result.get("amount") or {}
-        if not long_amount.get("contract_amount"):
+        if long_amount.get("contract_amount") and long_amount.get("tax_excluded_amount") and long_amount.get("tax_rate"):
+            long_contract_warnings.append("已识别合同金额、不含税金额及税率")
+        elif not long_amount.get("contract_amount"):
             if long_amount.get("tax_excluded_amount") and long_amount.get("tax_rate"):
-                long_contract_warnings.append("已识别不含税金额及税率；含税合同金额、税额、大写金额未在原文中稳定命中")
+                if long_amount.get("amount_upper"):
+                    long_contract_warnings.append("已识别大写金额、不含税金额及税率，但合同含税金额和税额仍需结合原文复核")
+                else:
+                    long_contract_warnings.append("已识别不含税金额及税率；含税合同金额、税额、大写金额未在原文中稳定命中")
             else:
                 long_contract_warnings.append("合同金额未稳定识别")
         if not result.get("signing_date"):
