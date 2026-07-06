@@ -11,6 +11,21 @@ logger = logging.getLogger(__name__)
 
 MISSING = "未识别"
 ID_CARD_RE = re.compile(r"(?<!\d)([1-9]\d{5})(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}([\dXx])(?!\d)")
+DISPLAY_STATUS_MAP = {
+    "partial": "部分结构化",
+    "success": "成功",
+    "missing": "未识别",
+    "failed": "失败",
+    "unknown": "未确认",
+    "pending": "待处理",
+}
+
+
+def localize_markdown_statuses(value: Any) -> str:
+    text = str(value or "")
+    for english, chinese in DISPLAY_STATUS_MAP.items():
+        text = re.sub(rf"(?<![A-Za-z_]){english}(?![A-Za-z_])", chinese, text, flags=re.I)
+    return text
 
 
 def mask_sensitive_text(value: Any) -> str:
@@ -88,7 +103,26 @@ def _payment_section(result: ContractResult, settlement: dict[str, Any]) -> list
     def detail_lines(details: Any) -> list[str]:
         if not isinstance(details, dict):
             return []
-        return [f"  - {label}：{value(item)}" for label, item in details.items() if item]
+        label_map = {
+            "付款证据状态": "付款识别状态",
+            "结算证据状态": "结算识别状态",
+            "发票证据状态": "发票识别状态",
+            "账户结构化状态": "账户识别状态",
+        }
+        exact_value_map = {
+            ("付款证据状态", "已定位条款页，节点未稳定结构化"): "已定位付款条款页，付款节点尚未完全结构化",
+            ("结算证据状态", "已定位条款页，结构化程度 partial"): "已定位结算条款页，部分结构化",
+            ("发票证据状态", "已定位条款页，部分结构化"): "已定位发票条款页，部分结构化",
+            ("账户结构化状态", "partial"): "部分识别",
+        }
+        lines = []
+        for label, item in details.items():
+            if not item:
+                continue
+            display_label = label_map.get(str(label), str(label))
+            display_value = exact_value_map.get((str(label), str(item)), localize_markdown_statuses(item))
+            lines.append(f"  - {display_label}：{value(display_value)}")
+        return lines
 
     lines = ["### 付款与结算", ""]
     payment_nodes = [item for item in (result.payment_nodes or []) if isinstance(item, dict)]
@@ -679,7 +713,7 @@ def apply_zhangjiang_consulting_markdown_patch(
 
 
 FORBIDDEN_MARKDOWN_LINE_RE = re.compile(
-    r"^\s*[-*]?\s*(owner\s*type|contract\s*category|contract\s*category\s*name|markdown\s*result|doc\s*type|fields|raw_result|structured_data|evidence|confidence|source_page|raw_text|\"value\"|\"source_page\"|\"confidence\")\s*[:：]",
+    r"^\s*[-*]?\s*(owner\s*type|contract\s*category|contract\s*category\s*name|markdown\s*result|doc\s*type|fields|raw_result|structured_data|evidence|confidence|source_page|raw_text|snippet|structure_status|evidence_status|\"value\"|\"source_page\"|\"confidence\")\s*[:：]",
     re.I,
 )
 
@@ -741,7 +775,7 @@ def final_sanitize_contract_markdown(markdown: str) -> str:
             text = text[:evidence_index].rstrip()
             break
     forbidden = re.compile(
-        r"^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw_result|raw_json|structured_data|metadata|evidence|confidence|source_page|raw_text|\"value\"|\"source_page\"|\"confidence\"|\"raw_text\")\s*[:\uff1a]",
+        r"^\s*[-*]?\s*(owner\s*type|owner_type|contract\s*category|contract_category|contract\s*category\s*name|contract_category_name|markdown\s*result|markdown_result|doc\s*type|doc_type|agent\s*type|agent_type|fields|raw_result|raw_json|structured_data|metadata|evidence|confidence|source_page|raw_text|snippet|structure_status|evidence_status|\"value\"|\"source_page\"|\"confidence\"|\"raw_text\")\s*[:\uff1a]",
         re.I,
     )
     lines: list[str] = []
@@ -763,6 +797,7 @@ def final_sanitize_contract_markdown(markdown: str) -> str:
     start = next((index for index, line in enumerate(lines) if line.strip() in {"## 合同", "## 鍚堝悓"}), -1)
     content = lines[start:] if start >= 0 else ["## 合同", *lines]
     cleaned = "\n".join(content).replace("\n\n\n", "\n\n").strip()
+    cleaned = localize_markdown_statuses(cleaned)
     return normalize_contract_markdown_headings(cleaned)
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from backend.services.contract_agent import ContractAgent
 from backend.services.contract_agent.schema import ContractParty
 from backend.services.contract_agent.skill import apply_long_construction_contract_safeguards
@@ -268,13 +270,18 @@ def test_contract_001_long_contract_multiline_display_and_calculated_candidates(
     markdown = result.markdown
     assert "- 付款方式：已定位主合同工程款支付条款，具体付款节点需按原件复核" in markdown
     assert "  - 付款条款类型：进度款/结算款已定位，具体比例需复核" in markdown
-    assert "  - 付款证据状态：已定位条款页，节点未稳定结构化" in markdown
+    assert "  - 付款识别状态：已定位付款条款页，付款节点尚未完全结构化" in markdown
     assert "- 结算方式：已定位主合同结算条款，具体结算口径需按原件复核" in markdown
-    assert "  - 结算证据状态：已定位条款页，结构化程度 partial" in markdown
+    assert "  - 结算识别状态：已定位结算条款页，部分结构化" in markdown
     assert "  - 发票类型：增值税专用发票" in markdown
+    assert "  - 发票识别状态：已定位发票条款页，部分结构化" in markdown
+    assert "  - 账户识别状态：部分识别" in markdown
+    assert "  - 缺失原因：账户名称未识别；银行账号未识别；账户归属未稳定确认" in markdown
     assert "- 发票要求：涉及增值税专用发票，详见“付款与结算”中的发票要求" in markdown
     assert "。；" not in markdown
     assert "上海建工集团股份有限公司" not in markdown
+    for technical_status in ("partial", "success", "missing", "failed", "unknown", "pending"):
+        assert not re.search(rf"(?<![A-Za-z_]){technical_status}(?![A-Za-z_])", markdown, flags=re.I)
 
 
 def test_contract_001_locked_partial_success_baseline() -> None:
