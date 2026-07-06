@@ -101,10 +101,10 @@ def test_contract_001_long_contract_minimum_structured_baseline() -> None:
     assert data["quality"]["body_missing_note"] != "未识别"
     assert all("付款节点已提取" not in warning for warning in data["warnings"])
     assert data["project"]["location"] == "上海市浦东新区张江科学城"
-    assert data["settlement"]["payment_method"].startswith("识别到主合同工程款支付条款")
+    assert data["settlement"]["payment_method"].startswith("已定位主合同工程款支付条款")
     assert "主合同结算条款" in data["settlement"]["settlement_method"]
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
-    assert data["settlement"]["receiving_account"] == "识别到账户信息，归属需人工复核"
+    assert data["settlement"]["receiving_account"] == "未稳定识别"
     assert "识别到主合同争议解决条款" in data["clauses"]["dispute_resolution"]
 
 
@@ -126,10 +126,10 @@ def test_contract_001_selective_ocr_metadata_triggers_long_contract_extraction()
     assert data["quality"]["long_contract"] is True
     assert data["quality"]["contract_ocr_meta"]["ocr_pages_count"] < 239
     assert data["quality"]["contract_ocr_meta"]["has_full_page_text"] is False
-    assert data["settlement"]["payment_method"].startswith("识别到主合同工程款支付条款")
+    assert data["settlement"]["payment_method"].startswith("已定位主合同工程款支付条款")
     assert "主合同结算条款" in data["settlement"]["settlement_method"]
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
-    assert data["settlement"]["receiving_account"] == "识别到账户信息，归属需人工复核"
+    assert data["settlement"]["receiving_account"] == "未稳定识别"
     assert "付款方式：未识别（未稳定定位到主合同付款条款）" not in result.markdown
 
 
@@ -151,7 +151,14 @@ def test_contract_001_long_contract_field_safety_guards() -> None:
 税额：-46,485,215.57元
 安全文明施工费：1.10元
 """
+    pages[39]["text"] = """工程款支付
+预付款按签约合同价的10%支付。
+月进度款按当月已完工程量的70%支付。
+竣工结算完成后支付至结算总价的97%。
+扣留结算总价的3%作为质量保证金。
+"""
     pages[59]["text"] = "发票条款 的增值税专用发票作为收取合同价款的前提条件"
+    pages[69]["text"] = "账户信息 开户银行：中国银行上海分行；账号：1234567890123456"
     pages[79]["text"] = "及违法分包，服从承包人对现场管理的要求，并在缺陷责任期承担维修责"
 
     result = {
@@ -197,9 +204,16 @@ def test_contract_001_long_contract_field_safety_guards() -> None:
     assert result["amount"]["safety_civilization_fee"] == ""
     assert result["amount"]["tax_excluded_amount"] == "46,485,219.74 元（已识别，需结合含税金额复核）"
     assert result["amount"]["recognition_status"] == "部分成功"
-    assert result["amount"]["amount_check"] == "识别到不含税金额和税率，但含税金额及税额未稳定识别，需人工复核"
-    assert result["settlement"]["invoice_requirement"].startswith("识别到主合同发票条款")
+    assert result["amount"]["amount_check"] == "识别到不含税金额和税率，可推算含税金额候选，但原文含税金额未稳定识别，需人工复核"
+    assert result["quality"]["amount_evidence"]["calculated_tax_amount_candidate"] == "4,183,669.78"
+    assert result["quality"]["amount_evidence"]["calculated_tax_included_candidate"] == "50,668,889.52"
+    assert [node["node"] for node in result["payment_nodes"]] == ["预付款", "进度款", "结算款", "质量保证金"]
+    assert [node["amount_or_ratio"] for node in result["payment_nodes"]] == ["10%", "70%", "97%", "3%"]
+    assert "作为收取合同价款的前提条件" in result["settlement"]["invoice_requirement"]
+    assert "发票类型：增值税专用发票" in result["settlement"]["invoice_requirement"]
+    assert "税率：9%" in result["settlement"]["invoice_requirement"]
     assert result["clauses"]["invoice_requirement"] == result["settlement"]["invoice_requirement"]
+    assert result["settlement"]["receiving_account"] == "识别到账户信息，但账户名/账号/归属不完整，需人工复核"
     assert "现行国家、行业标准" not in result["clauses"]["breach_liability"]
     assert result["clauses"]["no_subcontract"].startswith("识别到禁止转包及违法分包")
     assert result["signature"]["signers"] == ""
