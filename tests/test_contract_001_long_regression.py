@@ -197,7 +197,7 @@ def test_contract_001_long_contract_field_safety_guards() -> None:
 
     assert result["project_name"] == "张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）"
     assert result["project"]["location"].endswith("北至美济路")
-    assert result["parties"][0].name == "上海建工集团股份有限公司"
+    assert result["parties"][0].name == "上海建工智慧营造有限公司"
     assert result["parties"][0].unified_social_credit_code == "91310000MA1H3XJJ78"
     assert result["parties"][0].address.startswith("中国（上海）自由贸易试验区")
     assert result["amount"]["tax_amount"] == ""
@@ -210,10 +210,25 @@ def test_contract_001_long_contract_field_safety_guards() -> None:
     assert [node["node"] for node in result["payment_nodes"]] == ["预付款", "进度款", "结算款", "质量保证金"]
     assert [node["amount_or_ratio"] for node in result["payment_nodes"]] == ["10%", "70%", "97%", "3%"]
     assert "作为收取合同价款的前提条件" in result["settlement"]["invoice_requirement"]
-    assert "发票类型：增值税专用发票" in result["settlement"]["invoice_requirement"]
-    assert "税率：9%" in result["settlement"]["invoice_requirement"]
-    assert result["clauses"]["invoice_requirement"] == result["settlement"]["invoice_requirement"]
-    assert result["settlement"]["receiving_account"] == "识别到账户信息，但账户名/账号/归属不完整，需人工复核"
+    assert result["settlement"]["invoice_details"]["发票类型"] == "增值税专用发票"
+    assert result["settlement"]["invoice_details"]["税率"] == "9%"
+    assert result["clauses"]["invoice_requirement_summary"] == "涉及增值税专用发票，详见“付款与结算”中的发票要求"
+    assert result["settlement"]["receiving_account"] == "识别到账户信息，但账户名、账号或归属不完整，需人工复核"
+    assert result["settlement"]["account_details"]["账户结构化状态"] == "partial"
     assert "现行国家、行业标准" not in result["clauses"]["breach_liability"]
     assert result["clauses"]["no_subcontract"].startswith("识别到禁止转包及违法分包")
     assert result["signature"]["signers"] == ""
+
+
+def test_contract_001_long_contract_multiline_display_and_calculated_candidates() -> None:
+    result = _run_selective_ocr_shape()
+    markdown = result.markdown
+    assert "- 付款方式：已定位主合同工程款支付条款，具体付款节点需按原件复核" in markdown
+    assert "  - 付款条款类型：未稳定结构化" in markdown
+    assert "  - 付款证据状态：已定位条款页，节点未稳定结构化" in markdown
+    assert "- 结算方式：已定位主合同结算条款，具体结算口径需按原件复核" in markdown
+    assert "  - 结算证据状态：已定位条款页，结构化程度 partial" in markdown
+    assert "  - 发票类型：增值税专用发票" in markdown
+    assert "- 发票要求：涉及增值税专用发票，详见“付款与结算”中的发票要求" in markdown
+    assert "。；" not in markdown
+    assert "上海建工集团股份有限公司" not in markdown

@@ -85,6 +85,11 @@ def _party_rows(result: ContractResult) -> list[str]:
 
 
 def _payment_section(result: ContractResult, settlement: dict[str, Any]) -> list[str]:
+    def detail_lines(details: Any) -> list[str]:
+        if not isinstance(details, dict):
+            return []
+        return [f"  - {label}：{value(item)}" for label, item in details.items() if item]
+
     lines = ["### 付款与结算", ""]
     payment_nodes = [item for item in (result.payment_nodes or []) if isinstance(item, dict)]
     if payment_nodes:
@@ -99,11 +104,13 @@ def _payment_section(result: ContractResult, settlement: dict[str, Any]) -> list
         ])
     else:
         lines.append(f"- 付款方式：{value(settlement.get('payment_method'))}")
-    lines.extend([
-        f"- 结算方式：{value(settlement.get('settlement_method'))}",
-        f"- 发票要求：{value(settlement.get('invoice_requirement'))}",
-        f"- 收款账户：{value(settlement.get('receiving_account'))}",
-    ])
+        lines.extend(detail_lines(settlement.get("payment_details")))
+    lines.append(f"- 结算方式：{value(settlement.get('settlement_method'))}")
+    lines.extend(detail_lines(settlement.get("settlement_details")))
+    lines.append(f"- 发票要求：{value(settlement.get('invoice_requirement'))}")
+    lines.extend(detail_lines(settlement.get("invoice_details")))
+    lines.append(f"- 收款账户：{value(settlement.get('receiving_account'))}")
+    lines.extend(detail_lines(settlement.get("account_details")))
     return lines
 
 
@@ -836,6 +843,8 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 税额：{value(amount.get('tax_amount'))}",
         f"- 安全文明施工费：{value(amount.get('safety_civilization_fee'))}",
         f"- 合同价格形式：{value(amount.get('price_form'))}",
+        *([f"- 推算含税金额候选：{value(amount.get('calculated_tax_included_candidate'))}"] if amount.get("calculated_tax_included_candidate") else []),
+        *([f"- 推算税额候选：{value(amount.get('calculated_tax_amount_candidate'))}"] if amount.get("calculated_tax_amount_candidate") else []),
         f"- 金额校验：{value(amount.get('amount_check'))}",
         f"- 金额识别状态：{value(amount.get('recognition_status'))}",
         "",
@@ -858,7 +867,7 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 保修/质保：{value(clauses.get('warranty'))}",
         f"- 违约责任：{value(clauses.get('breach_liability'))}",
         f"- 争议解决：{value(clauses.get('dispute_resolution'))}",
-        f"- 发票要求：{value(settlement.get('invoice_requirement') or clauses.get('invoice_requirement'))}",
+        f"- 发票要求：{value(clauses.get('invoice_requirement_summary') or clauses.get('invoice_requirement') or settlement.get('invoice_requirement'))}",
         f"- 禁止转包/分包：{value(clauses.get('no_subcontract'))}",
         f"- 安全文明施工：{value(clauses.get('safety_civilization'))}",
         f"- 其他重要条款：{value(clauses.get('other'))}",
