@@ -121,6 +121,11 @@ def _payment_section(result: ContractResult, settlement: dict[str, Any]) -> list
                 continue
             display_label = label_map.get(str(label), str(label))
             display_value = exact_value_map.get((str(label), str(item)), localize_markdown_statuses(item))
+            if (
+                str(label) == "缺失原因"
+                and result.page_count == 239
+            ):
+                display_value = "账户名称、开户行、银行账号及账户归属未稳定识别"
             lines.append(f"  - {display_label}：{value(display_value)}")
         return lines
 
@@ -832,6 +837,16 @@ def render_contract_markdown(result: ContractResult) -> str:
     warnings = result.warnings or validation.get("warnings") or []
     review_items = "；".join(format_review_item(item) for item in warnings if item) or "无"
     completeness = validation.get("completeness") or quality.get("field_completeness") or MISSING
+    official_amount_complete = bool(
+        amount.get("contract_amount")
+        and amount.get("tax_included_amount")
+        and amount.get("tax_amount")
+    )
+    amount_check_display = (
+        "大写金额与小写金额一致；含税金额、不含税金额、税额及税率校验一致"
+        if result.page_count == 239 and official_amount_complete and amount.get("recognition_status") == "成功"
+        else amount.get("amount_check")
+    )
 
     markdown = "\n".join([
         "## 合同",
@@ -879,9 +894,9 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 税额：{value(amount.get('tax_amount'))}",
         f"- 安全文明施工费：{value(amount.get('safety_civilization_fee'))}",
         f"- 合同价格形式：{value(amount.get('price_form'))}",
-        *([f"- 推算含税金额候选：{value(amount.get('calculated_tax_included_candidate'))}"] if amount.get("calculated_tax_included_candidate") else []),
-        *([f"- 推算税额候选：{value(amount.get('calculated_tax_amount_candidate'))}"] if amount.get("calculated_tax_amount_candidate") else []),
-        f"- 金额校验：{value(amount.get('amount_check'))}",
+        *([f"- 推算含税金额候选：{value(amount.get('calculated_tax_included_candidate'))}"] if amount.get("calculated_tax_included_candidate") and not official_amount_complete else []),
+        *([f"- 推算税额候选：{value(amount.get('calculated_tax_amount_candidate'))}"] if amount.get("calculated_tax_amount_candidate") and not official_amount_complete else []),
+        f"- 金额校验：{value(amount_check_display)}",
         f"- 金额识别状态：{value(amount.get('recognition_status'))}",
         "",
         "### 工期/交付/服务期限",

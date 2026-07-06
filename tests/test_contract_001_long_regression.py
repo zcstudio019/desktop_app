@@ -276,7 +276,7 @@ def test_contract_001_long_contract_multiline_display_and_calculated_candidates(
     assert "  - 发票类型：增值税专用发票" in markdown
     assert "  - 发票识别状态：已定位发票条款页，部分结构化" in markdown
     assert "  - 账户识别状态：部分识别" in markdown
-    assert "  - 缺失原因：账户名称未识别；银行账号未识别；账户归属未稳定确认" in markdown
+    assert "  - 缺失原因：账户名称、开户行、银行账号及账户归属未稳定识别" in markdown
     assert "- 发票要求：涉及增值税专用发票，详见“付款与结算”中的发票要求" in markdown
     assert "。；" not in markdown
     assert "上海建工集团股份有限公司" not in markdown
@@ -342,6 +342,7 @@ def test_contract_001_missing_field_debug_logs_include_candidates_and_text(caplo
 def test_contract_001_explicit_missing_fields_are_extracted_only_with_original_evidence() -> None:
     result = _run_with_explicit_missing_field_evidence()
     data = result.structured_data_dict()
+    markdown = result.markdown
 
     assert data["amount"]["contract_amount"] == "人民币 50,668,889.52 元"
     assert data["amount"]["tax_included_amount"] == "50,668,889.52 元"
@@ -360,3 +361,13 @@ def test_contract_001_explicit_missing_fields_are_extracted_only_with_original_e
     assert data["line_item_summary"]["message"] == "识别到已标价工程量清单/预算书，疑似位于附件清单页，完整明细需按原件复核"
     assert data["line_item_summary"]["page_range_conflicts_with_signature"] is True
     assert data["line_item_summary"]["recognition_status"] == "已定位清单页，未完全结构化"
+    assert "- 提取状态：部分成功" in markdown
+    assert "推算含税金额候选" not in markdown
+    assert "推算税额候选" not in markdown
+    assert "- 金额校验：大写金额与小写金额一致；含税金额、不含税金额、税额及税率校验一致" in markdown
+    assert "- 金额识别状态：成功" in markdown
+
+
+def test_contract_001_incomplete_account_uses_complete_user_facing_reason() -> None:
+    markdown = _run_selective_ocr_shape().markdown
+    assert "- 缺失原因：账户名称、开户行、银行账号及账户归属未稳定识别" in markdown
