@@ -56,6 +56,26 @@ def _run():
     })
 
 
+def _run_selective_ocr_shape():
+    full_pages = _pages()
+    selected_numbers = (1, 2, 5, 10, 20, 40, 50, 60, 70, 80, 90, 100, 221, 230, 231, 236, 239)
+    selected = [dict(full_pages[page_no - 1]) for page_no in selected_numbers]
+    selected[0]["pdf_page_count"] = 239
+    selected[0]["contract_ocr_meta"] = {
+        "pdf_page_count": 239,
+        "ocr_pages_count": len(selected),
+        "text_pages_count": len(selected),
+        "scanned_page_indices": list(selected_numbers),
+        "skipped_page_indices_count": 239 - len(selected),
+        "has_full_page_text": False,
+    }
+    return ContractAgent().run({
+        "text": "\n".join(str(page["text"]) for page in selected),
+        "raw_pages": selected,
+        "filename": FILENAME,
+    })
+
+
 def test_contract_001_long_contract_minimum_structured_baseline() -> None:
     data = _run().structured_data_dict()
     assert data["doc_type"] == "contract"
@@ -95,3 +115,17 @@ def test_contract_001_long_contract_markdown_forbidden_regressions() -> None:
     assert "签字人：签字并加" not in markdown
     assert "文件完整性：未识别" not in markdown
     assert "付款节点已提取" not in markdown
+
+
+def test_contract_001_selective_ocr_metadata_triggers_long_contract_extraction() -> None:
+    result = _run_selective_ocr_shape()
+    data = result.structured_data_dict()
+    assert data["page_count"] == 239
+    assert data["quality"]["long_contract"] is True
+    assert data["quality"]["contract_ocr_meta"]["ocr_pages_count"] < 239
+    assert data["quality"]["contract_ocr_meta"]["has_full_page_text"] is False
+    assert data["settlement"]["payment_method"].startswith("识别到主合同工程款支付条款")
+    assert "主合同结算条款" in data["settlement"]["settlement_method"]
+    assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
+    assert data["settlement"]["receiving_account"] == "识别到账户信息，归属需人工复核"
+    assert "付款方式：未识别（未稳定定位到主合同付款条款）" not in result.markdown

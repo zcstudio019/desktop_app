@@ -2364,6 +2364,23 @@ def _long_contract_pages_text(
     )
 
 
+def _contract_ocr_meta(ocr_pages: list[dict[str, Any]]) -> dict[str, Any]:
+    for page in ocr_pages:
+        meta = page.get("contract_ocr_meta") if isinstance(page, dict) else None
+        if isinstance(meta, dict):
+            return dict(meta)
+    return {}
+
+
+def _contract_pdf_page_count(ocr_pages: list[dict[str, Any]]) -> int:
+    meta = _contract_ocr_meta(ocr_pages)
+    if int(meta.get("pdf_page_count") or 0) > 0:
+        return int(meta["pdf_page_count"])
+    explicit = max((int(page.get("pdf_page_count") or 0) for page in ocr_pages if isinstance(page, dict)), default=0)
+    numbered = max((int(page.get("page") or 0) for page in ocr_pages if isinstance(page, dict)), default=0)
+    return max(explicit, numbered, len(ocr_pages))
+
+
 def _reliable_long_contract_amount(
     ocr_pages: list[dict[str, Any]], amount_pages: list[int]
 ) -> tuple[str, list[str]]:
@@ -2398,7 +2415,8 @@ def _clean_long_contract_party_name(name: Any) -> str:
 def apply_long_construction_contract_safeguards(
     ocr_pages: list[dict[str, Any]], result: dict[str, Any], filename: str = ""
 ) -> None:
-    if result.get("contract_category") != "construction_subcontract" or len(ocr_pages) < 150:
+    pdf_page_count = _contract_pdf_page_count(ocr_pages)
+    if result.get("contract_category") != "construction_subcontract" or pdf_page_count < 150:
         return
     located = locate_long_construction_contract_key_pages(ocr_pages, filename)
     index = {
@@ -2430,6 +2448,9 @@ def apply_long_construction_contract_safeguards(
     parties = result.get("parties") or []
     for party in parties[:2]:
         party.name = _clean_long_contract_party_name(getattr(party, "name", ""))
+        representative = clean_field_value(getattr(party, "legal_representative", ""))
+        if not is_valid_person_name(representative) or any(token in representative for token in ("签字并加", "一式", "盖章", "生效")):
+            party.legal_representative = ""
     if parties and "上海建工智慧营造" in parties[0].name:
         parties[0].name = "上海建工智慧营造有限公司"
 
@@ -2542,7 +2563,11 @@ def apply_long_construction_contract_safeguards(
         project["quality_standard"] = quality_candidate
         clauses["quality_acceptance"] = quality_candidate
     ban_text = _long_contract_pages_text(ocr_pages, index["subcontract_ban_pages"][:3])
-    ban_candidate = _line_with(ban_text, ("禁止转包", "不得转包", "不得分包", "违法分包"))
+    ban_candidate = next((
+        clean_field_value(line) for line in ban_text.splitlines()
+        if any(token in line for token in ("禁止转包", "不得转包", "不得分包", "违法分包"))
+        and not line.startswith("--- 第")
+    ), "")
     if ban_candidate:
         ban_candidate = re.split(r"建设工程专业分包合同\s*第\d+页", ban_candidate, maxsplit=1)[0].strip()
         clauses["no_subcontract"] = ban_candidate
@@ -2564,11 +2589,25 @@ def apply_long_construction_contract_safeguards(
             "invoice": bool(index["invoice_pages"]),
             "account": bool(index["account_pages"]),
         },
+        "contract_ocr_meta": _contract_ocr_meta(ocr_pages),
         "body_missing": False,
         "body_missing_note": "当前PDF为长版建设工程专业分包合同，包含主合同正文、专用条款/通用条款、附件及签章页；因文件页数较多，已进行关键页定位，金额、付款、结算、发票等条款需按原件复核。",
     })
     logger.info("[LongContractKeyPageDebug] filename=%s", filename)
-    logger.info("[LongContractKeyPageDebug] page_count=%s", len(ocr_pages))
+    logger.info("[LongContractKeyPageDebug] page_count=%s", pdf_page_count)
+    ocr_meta = _contract_ocr_meta(ocr_pages)
+    logger.info("[LongContractOCRDebug] pdf_page_count=%s", pdf_page_count)
+    logger.info("[LongContractOCRDebug] ocr_pages_count=%s", ocr_meta.get("ocr_pages_count", len(ocr_pages)))
+    logger.info(
+        "[LongContractOCRDebug] text_pages_count=%s",
+        ocr_meta.get("text_pages_count", sum(bool(str(page.get("text") or "").strip()) for page in ocr_pages)),
+    )
+    logger.info("[LongContractOCRDebug] scanned_page_indices=%s", ocr_meta.get("scanned_page_indices", [page.get("page") for page in ocr_pages]))
+    logger.info(
+        "[LongContractOCRDebug] skipped_page_indices_count=%s",
+        ocr_meta.get("skipped_page_indices_count", max(0, pdf_page_count - len(ocr_pages))),
+    )
+    logger.info("[LongContractOCRDebug] has_full_page_text=%s", ocr_meta.get("has_full_page_text", len(ocr_pages) >= pdf_page_count))
     for key, candidates in located.items():
         logger.info("[LongContractKeyPageDebug] %s=%s", key, candidates[:3])
     rejected_details = [
@@ -2579,6 +2618,17 @@ def apply_long_construction_contract_safeguards(
     logger.info("[LongContractKeyPageDebug] selected_amount=%s", selected_amount or "missing")
     if rejected_dispute_reason:
         logger.info("[LongContractKeyPageDebug] rejected_dispute_candidate_reason=%s", rejected_dispute_reason)
+    logger.info("[LongContractExtractionDebug] using_amount_pages=%s", index["amount_pages"][:3])
+    logger.info("[LongContractExtractionDebug] using_payment_pages=%s", index["payment_pages"][:3])
+    logger.info("[LongContractExtractionDebug] using_settlement_pages=%s", index["settlement_pages"][:3])
+    logger.info("[LongContractExtractionDebug] using_invoice_pages=%s", index["invoice_pages"][:3])
+    logger.info("[LongContractExtractionDebug] using_account_pages=%s", index["account_pages"][:3])
+    logger.info(
+        "[LongContractExtractionDebug] amount_context_len=%s payment_context_len=%s invoice_context_len=%s",
+        len(_long_contract_pages_text(ocr_pages, index["amount_pages"][:3])),
+        len(_long_contract_pages_text(ocr_pages, index["payment_pages"][:3])),
+        len(invoice_text),
+    )
 
 
 def apply_construction_subcontract_enhancements(
@@ -3764,6 +3814,6 @@ class ContractSkill:
             page = _source_page(page_items, str(val or ""))
             if page:
                 result["evidence"][key] = {"value": val, "source_page": page, "raw_text": "", "confidence": 0.7}
-        result["page_count"] = len(page_items)
+        result["page_count"] = _contract_pdf_page_count(page_items)
         result["extraction_status"] = "success" if not result["warnings"] else "partial"
         return result

@@ -846,9 +846,9 @@ CONTRACT_KEY_PAGE_KEYWORDS = (
 
 def _contract_selected_page_indices(native_pages: list[dict[str, Any]], total_pages: int) -> list[int]:
     indices: set[int] = set()
-    for page_no in range(1, min(total_pages, 5) + 1):
+    for page_no in range(1, min(total_pages, 15) + 1):
         indices.add(page_no - 1)
-    for page_no in range(max(1, total_pages - 4), total_pages + 1):
+    for page_no in range(max(1, total_pages - 19), total_pages + 1):
         indices.add(page_no - 1)
     for item in native_pages or []:
         if not isinstance(item, dict):
@@ -865,6 +865,30 @@ def _contract_selected_page_indices(native_pages: list[dict[str, Any]], total_pa
     return sorted(index for index in indices if 0 <= index < total_pages)
 
 
+def _contract_directory_target_indices(pages: list[dict[str, Any]], total_pages: int) -> list[int]:
+    targets: set[int] = set()
+    directory_keywords = (
+        "合同协议书", "签约合同价", "合同价款", "工程款支付", "付款方式", "进度款",
+        "竣工结算", "结算方式", "增值税专用发票", "发票", "开户银行", "争议解决",
+        "质量标准", "合同生效", "签字盖章",
+    )
+    for page in pages:
+        text = str(page.get("text") or "")
+        for line in text.splitlines():
+            if not any(keyword in line for keyword in directory_keywords):
+                continue
+            page_match = re.search(r"(?<![\d.])(\d{1,3})(?![\d.])\s*$", line.strip())
+            if not page_match:
+                continue
+            target_page = int(page_match.group(1))
+            if not 1 <= target_page <= total_pages:
+                continue
+            for nearby in (target_page - 1, target_page, target_page + 1):
+                if 1 <= nearby <= total_pages:
+                    targets.add(nearby - 1)
+    return sorted(targets)
+
+
 def _ocr_contract_pdf_pages(
     file_bytes: bytes,
     filename: str,
@@ -874,7 +898,8 @@ def _ocr_contract_pdf_pages(
     images = file_service.pdf_to_images(file_bytes, dpi=220)
     if not images:
         raise HTTPException(status_code=400, detail=PDF_TO_IMAGE_FAILED_MESSAGE)
-    page_indices = _contract_selected_page_indices(native_pages or [], len(images))
+    total_pages = len(images)
+    page_indices = _contract_selected_page_indices(native_pages or [], total_pages)
     raw_pages_by_no: dict[int, dict[str, Any]] = {}
     for page in native_pages or []:
         if not isinstance(page, dict):
@@ -885,7 +910,9 @@ def _ocr_contract_pdf_pages(
             continue
         if page_no:
             raw_pages_by_no[page_no] = {**page, "page": page_no, "source": page.get("source") or "pdf_text"}
-    for page_index in page_indices:
+    scanned_indices: set[int] = set()
+
+    def ocr_page(page_index: int) -> None:
         page_no = page_index + 1
         try:
             compressed = file_service.compress_image(images[page_index])
@@ -901,7 +928,41 @@ def _ocr_contract_pdf_pages(
             "source": "contract_selective_ocr",
             "ocr_strategy": "front_toc_keyword_signature_attachment_pages",
         }
+        scanned_indices.add(page_index)
+
+    for page_index in page_indices:
+        ocr_page(page_index)
+
+    second_stage_indices = _contract_directory_target_indices(
+        [raw_pages_by_no[key] for key in sorted(raw_pages_by_no)], total_pages
+    )
+    for page_index in second_stage_indices:
+        if page_index not in scanned_indices:
+            ocr_page(page_index)
+
     raw_pages = [raw_pages_by_no[key] for key in sorted(raw_pages_by_no)]
+    text_pages_count = sum(
+        1 for page in raw_pages
+        if str(page.get("text") or "").strip() not in {"", OCR_PAGE_FAILED_PLACEHOLDER}
+    )
+    scanned_page_numbers = [index + 1 for index in sorted(scanned_indices)]
+    meta = {
+        "pdf_page_count": total_pages,
+        "ocr_pages_count": len(scanned_indices),
+        "text_pages_count": text_pages_count,
+        "scanned_page_indices": scanned_page_numbers,
+        "skipped_page_indices_count": max(0, total_pages - len(scanned_indices)),
+        "has_full_page_text": text_pages_count >= total_pages,
+    }
+    if raw_pages:
+        raw_pages[0]["contract_ocr_meta"] = meta
+        raw_pages[0]["pdf_page_count"] = total_pages
+    logger.info("[LongContractOCRDebug] pdf_page_count=%s", total_pages)
+    logger.info("[LongContractOCRDebug] ocr_pages_count=%s", len(scanned_indices))
+    logger.info("[LongContractOCRDebug] text_pages_count=%s", text_pages_count)
+    logger.info("[LongContractOCRDebug] scanned_page_indices=%s", scanned_page_numbers)
+    logger.info("[LongContractOCRDebug] skipped_page_indices_count=%s", meta["skipped_page_indices_count"])
+    logger.info("[LongContractOCRDebug] has_full_page_text=%s", meta["has_full_page_text"])
     return _build_raw_text_from_pages(raw_pages), raw_pages
 
 
