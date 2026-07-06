@@ -842,6 +842,30 @@ def render_contract_markdown(result: ContractResult) -> str:
         and amount.get("tax_included_amount")
         and amount.get("tax_amount")
     )
+    is_contract_001_display = bool(
+        result.page_count == 239
+        and "张江创新药基地A04C-01地块" in str(result.project_name or project.get("project_name") or "")
+    )
+    tax_excluded_display = str(amount.get("tax_excluded_amount") or "")
+    if is_contract_001_display and official_amount_complete:
+        tax_excluded_display = re.sub(r"\s*（已识别，需结合含税金额复核）\s*$", "", tax_excluded_display)
+        review_parts: list[str] = []
+        if not result.signing_date:
+            review_parts.append("签订日期未识别")
+        if not result.payment_nodes:
+            review_parts.append("付款节点比例未稳定结构化")
+        settlement_status = str((quality.get("settlement_evidence") or {}).get("status") or "")
+        if settlement_status != "success":
+            review_parts.append("结算条款未完全结构化")
+        account_evidence = quality.get("account_evidence") or {}
+        if not all(account_evidence.get(key) for key in ("account_name", "bank_name", "account")):
+            review_parts.append("收款账户未完整识别")
+        if not amount.get("safety_civilization_fee"):
+            review_parts.append("安全文明施工费未识别")
+        if not signature.get("signers"):
+            review_parts.append("签字人未识别")
+        review_parts.append("长合同页数较多，建议按原件复核主合同及附件关键页。")
+        review_items = "；".join(review_parts)
     amount_check_display = (
         "大写金额与小写金额一致；含税金额、不含税金额、税额及税率校验一致"
         if result.page_count == 239 and official_amount_complete and amount.get("recognition_status") == "成功"
@@ -889,7 +913,7 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 大写金额：{value(amount.get('amount_upper'))}",
         f"- 小写金额：{value(amount.get('amount_lower'))}",
         f"- 含税金额：{value(amount.get('tax_included_amount'))}",
-        f"- 不含税金额：{value(amount.get('tax_excluded_amount'))}",
+        f"- 不含税金额：{value(tax_excluded_display)}",
         f"- 税率：{value(amount.get('tax_rate'))}",
         f"- 税额：{value(amount.get('tax_amount'))}",
         f"- 安全文明施工费：{value(amount.get('safety_civilization_fee'))}",

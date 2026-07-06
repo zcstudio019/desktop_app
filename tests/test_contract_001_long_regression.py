@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from backend.services.contract_agent import ContractAgent
+from backend.services.contract_agent.markdown_renderer import render_contract_markdown
 from backend.services.contract_agent.schema import ContractParty
 from backend.services.contract_agent.skill import apply_long_construction_contract_safeguards
 
@@ -371,3 +372,30 @@ def test_contract_001_explicit_missing_fields_are_extracted_only_with_original_e
 def test_contract_001_incomplete_account_uses_complete_user_facing_reason() -> None:
     markdown = _run_selective_ocr_shape().markdown
     assert "- 缺失原因：账户名称、开户行、银行账号及账户归属未稳定识别" in markdown
+
+
+def test_contract_001_closed_amount_has_consistent_review_copy() -> None:
+    result = _run_with_explicit_missing_field_evidence()
+    result.extraction_status = "partial"
+    result.signing_date = ""
+    result.payment_nodes = []
+    result.amount["tax_excluded_amount"] = "46,485,219.74 元（已识别，需结合含税金额复核）"
+    result.amount["safety_civilization_fee"] = ""
+    result.settlement["receiving_account"] = "识别到账户信息，但账户名、账号或归属不完整，需人工复核"
+    result.quality["account_evidence"] = {"account_name": "", "bank_name": "", "account": "", "owner": "未知"}
+    result.signature["signers"] = ""
+
+    markdown = render_contract_markdown(result)
+    assert "- 提取状态：部分成功" in markdown
+    assert "- 不含税金额：46,485,219.74 元" in markdown
+    assert "需结合含税金额复核" not in markdown
+    assert "推算含税金额候选" not in markdown
+    assert "推算税额候选" not in markdown
+    expected_review = (
+        "- 需人工复核事项：签订日期未识别；付款节点比例未稳定结构化；结算条款未完全结构化；"
+        "收款账户未完整识别；安全文明施工费未识别；签字人未识别；"
+        "长合同页数较多，建议按原件复核主合同及附件关键页。"
+    )
+    assert expected_review in markdown
+    review_line = next(line for line in markdown.splitlines() if line.startswith("- 需人工复核事项："))
+    assert "金额" not in review_line
