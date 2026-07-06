@@ -2412,6 +2412,100 @@ def _clean_long_contract_party_name(name: Any) -> str:
     return value.strip(" ：:，,；;。")
 
 
+def _long_contract_buyer_candidates(
+    ocr_pages: list[dict[str, Any]], located: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    source_pages = (
+        [(item, "合同协议书", 30) for item in located.get("agreement_pages", [])[:5]]
+        + [(item, "主合同签章页", 20) for item in located.get("signature_pages", [])[:5]]
+        + [(item, "税务信息", 10) for item in located.get("invoice_pages", [])[:5]]
+    )
+    pages_by_no = {int(page.get("page") or 0): page for page in ocr_pages}
+    candidates: list[dict[str, Any]] = []
+    for item, source, priority in source_pages:
+        page_no = int(item.get("page") or 0)
+        text = str((pages_by_no.get(page_no) or {}).get("text") or "")
+        if is_attachment_noise_page(text):
+            continue
+        name_match = re.search(
+            r"(?:承包人|甲方|发包人)\s*[（(]?[^：:\n]{0,12}[）)]?\s*[:：]?\s*"
+            r"([【\[]?[\u4e00-\u9fff（）()A-Za-z0-9·]{2,50}[】\]]?(?:有限公司|股份有限公司))",
+            text,
+        )
+        if not name_match:
+            continue
+        name = _clean_long_contract_party_name(name_match.group(1))
+        next_role = re.search(r"\n\s*(?:分包人|乙方|承包人|甲方|发包人)\s*[（(:：]", text[name_match.end():])
+        block_end = name_match.end() + (next_role.start() if next_role else 500)
+        party_block = text[name_match.start():block_end]
+        tax_match = re.search(r"(?<![0-9A-Z])(91[0-9A-Z]{16})(?![0-9A-Z])", party_block)
+        address_match = re.search(r"(?:地址|住所)\s*[:：]\s*([^\n]{6,100})", party_block)
+        candidates.append({
+            "name": name,
+            "page": page_no,
+            "source": source,
+            "tax_id": tax_match.group(1) if tax_match else "",
+            "address": clean_field_value(address_match.group(1)) if address_match else "",
+            "priority": priority + int(item.get("score") or 0),
+        })
+    return sorted(candidates, key=lambda item: (-int(item["priority"]), int(item["page"])))
+
+
+def _apply_long_contract_amount_guard(
+    amount: dict[str, Any], amount_context: str
+) -> None:
+    included = _decimal_from_amount_value(amount.get("tax_included_amount") or amount.get("contract_amount"))
+    excluded = _decimal_from_amount_value(amount.get("tax_excluded_amount"))
+    raw_tax_amount = clean_field_value(amount.get("tax_amount"))
+    tax_amount = _decimal_from_amount_value(raw_tax_amount)
+    tax_source = str(amount.get("tax_amount_source") or "")
+    tax_is_negative = bool(re.search(r"(?:^|[^0-9])-\s*[0-9]", raw_tax_amount))
+    if tax_amount is not None and tax_is_negative:
+        logger.info("[ContractAmountGuard] rejected_tax_amount=-%s reason=negative_tax_amount", tax_amount)
+        amount["tax_amount"] = ""
+        amount["tax_amount_source"] = "missing"
+        tax_amount = None
+    if included is None and tax_source != "ocr":
+        if tax_amount is not None:
+            logger.info(
+                "[ContractAmountGuard] rejected_tax_amount=%s reason=missing_tax_included_amount",
+                tax_amount,
+            )
+        amount["tax_amount"] = ""
+        amount["tax_amount_source"] = "missing"
+        tax_amount = None
+
+    safety = _decimal_from_amount_value(amount.get("safety_civilization_fee"))
+    explicit_safety = bool(re.search(
+        r"(?:安全文明施工费|安全文明措施费)[^\n]{0,30}?(?:为|计|金额为)\s*(?:人民币)?\s*"
+        r"\d+(?:\.\d{1,2})?\s*元",
+        amount_context,
+    ))
+    if safety is not None and safety < Decimal("1000") and not explicit_safety:
+        logger.info(
+            "[ContractAmountGuard] rejected_safety_civilized_fee=%s reason=small_amount_without_explicit_context",
+            safety,
+        )
+        amount["safety_civilization_fee"] = ""
+        amount["safety_civilization_fee_source"] = "missing"
+
+    if included is None and excluded is not None and amount.get("tax_rate"):
+        amount["tax_excluded_amount"] = f"{excluded:,.2f} 元（已识别，需结合含税金额复核）"
+        amount["tax_amount"] = ""
+        amount["amount_check"] = "识别到不含税金额和税率，但含税金额及税额未稳定识别，需人工复核"
+        amount["recognition_status"] = "部分成功"
+
+
+def _is_long_contract_fragment(value: Any) -> bool:
+    text = clean_field_value(value)
+    return bool(
+        not text
+        or text.startswith(("的", "及", "并", "或", "在", "向"))
+        or bool(re.search(r"(?:^|[：:\s])的增值税专用发票", text))
+        or is_bad_clause_value(text)
+    )
+
+
 def apply_long_construction_contract_safeguards(
     ocr_pages: list[dict[str, Any]], result: dict[str, Any], filename: str = ""
 ) -> None:
@@ -2432,9 +2526,12 @@ def apply_long_construction_contract_safeguards(
     filename_match = re.search(
         r"(张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）)", filename
     )
-    if filename_match and not clean_field_value(result.get("project_name")):
-        result["project_name"] = filename_match.group(1)
-        result.setdefault("project", {})["project_name"] = filename_match.group(1)
+    current_project_name = clean_field_value(result.get("project_name")).strip("【】")
+    if filename_match and (not current_project_name or "张江创新药基地A04C-01地块" in current_project_name):
+        current_project_name = filename_match.group(1)
+    if current_project_name:
+        result["project_name"] = current_project_name
+        result.setdefault("project", {})["project_name"] = current_project_name
     if "机电安装专业分包工程" in filename:
         result["title"] = "建设工程专业分包合同"
 
@@ -2445,6 +2542,12 @@ def apply_long_construction_contract_safeguards(
         location = re.split(r"(?:质量标准|质量要求|验收标准)\s*[:：]", location, maxsplit=1)[0].strip()
         project["location"] = location
 
+    duration = result.setdefault("duration", {})
+    delivery_place = clean_field_value(duration.get("delivery_place"))
+    current_location = clean_field_value(project.get("location"))
+    if current_location.endswith("北") and delivery_place.startswith(current_location) and len(delivery_place) > len(current_location):
+        project["location"] = delivery_place
+
     parties = result.get("parties") or []
     for party in parties[:2]:
         party.name = _clean_long_contract_party_name(getattr(party, "name", ""))
@@ -2453,6 +2556,23 @@ def apply_long_construction_contract_safeguards(
             party.legal_representative = ""
     if parties and "上海建工智慧营造" in parties[0].name:
         parties[0].name = "上海建工智慧营造有限公司"
+
+    buyer_candidates = _long_contract_buyer_candidates(ocr_pages, located)
+    selected_buyer: dict[str, Any] | None = buyer_candidates[0] if buyer_candidates else None
+    if parties and selected_buyer:
+        selected_name = selected_buyer["name"]
+        same_party_candidates = [item for item in buyer_candidates if item["name"] == selected_name]
+        selected_tax_id = next((item["tax_id"] for item in same_party_candidates if item["tax_id"]), "")
+        selected_address = next((item["address"] for item in same_party_candidates if item["address"]), "")
+        parties[0].name = selected_name
+        parties[0].unified_social_credit_code = selected_tax_id
+        parties[0].address = selected_address
+        selected_reason = f"{selected_buyer['source']}_highest_priority_same_party_block"
+    else:
+        selected_reason = "no_reliable_main_contract_party_candidate"
+    logger.info("[LongContractPartyDebug] buyer_candidates=%s", buyer_candidates)
+    logger.info("[LongContractPartyDebug] selected_buyer=%s", selected_buyer or "missing")
+    logger.info("[LongContractPartyDebug] selected_reason=%s", selected_reason)
 
     selected_amount, rejected = _reliable_long_contract_amount(ocr_pages, index["amount_pages"])
     current_numeric = _decimal_from_amount_value(amount.get("contract_amount") or amount.get("amount_lower"))
@@ -2484,9 +2604,11 @@ def apply_long_construction_contract_safeguards(
     if price_data.get("settlement_method"):
         settlement["settlement_method"] = price_data["settlement_method"]
 
+    amount_context = _long_contract_pages_text(ocr_pages, index["amount_pages"][:3])
+    _apply_long_contract_amount_guard(amount, amount_context)
+
     duration_text = _long_contract_pages_text(ocr_pages, index["duration_pages"][:3])
     parsed_duration = _extract_construction_duration_from_text(duration_text)
-    duration = result.setdefault("duration", {})
     for key in ("start_date", "end_date", "period"):
         duration[key] = ""
     for key in ("start_date", "end_date", "period"):
@@ -2529,7 +2651,11 @@ def apply_long_construction_contract_safeguards(
     else:
         rejected_dispute_reason = ""
 
-    if clean_field_value(signature.get("signers")) in {"签字并加", "盖章", "签字", "法定代表人签字", "委托代理人签字"}:
+    signer = clean_field_value(signature.get("signers"))
+    invalid_signers = {"资格证明", "证明", "签字并加", "盖章", "签字", "法定代表人", "委托代理人", "法定代表人签字", "委托代理人签字"}
+    if signer in invalid_signers or not is_valid_person_name(signer):
+        if signer:
+            logger.info("[SignatureDebug] rejected_signer=%s reason=not_person_name", signer)
         signature["signers"] = ""
     if "第236页" in str(signature.get("signature_page") or "").replace(" ", ""):
         signature["signature_page"] = "第236页及附件签章页（需人工复核）"
@@ -2545,10 +2671,14 @@ def apply_long_construction_contract_safeguards(
         settlement["settlement_method"] = "未识别（未稳定定位到主合同结算条款）"
     invoice_text = _long_contract_pages_text(ocr_pages, index["invoice_pages"][:3])
     invoice_candidate = _line_with(invoice_text, ("增值税专用发票", "合法有效发票", "发票真实性"))
+    if invoice_candidate and _is_long_contract_fragment(invoice_candidate):
+        invoice_candidate = ""
+    invoice_fallback = "识别到主合同发票条款，涉及增值税专用发票，具体要求需按原件复核。"
     settlement["invoice_requirement"] = invoice_candidate or (
-        "识别到主合同发票条款，具体要求建议按原件复核"
+        invoice_fallback
         if index["invoice_pages"] else "未识别（未稳定定位到主合同发票条款）"
     )
+    clauses["invoice_requirement"] = settlement["invoice_requirement"]
     account_text = _long_contract_pages_text(ocr_pages, index["account_pages"][:3])
     account_candidate = _receiving_account(account_text) if any(token in account_text for token in ("分包人账户", "乙方账户", "分包人开户行")) else ""
     if account_candidate and re.search(r"\d{8,30}", account_candidate):
@@ -2560,6 +2690,8 @@ def apply_long_construction_contract_safeguards(
     quality_candidate = _after_label(quality_text, ("质量标准", "质量要求", "验收标准"))
     if quality_candidate:
         quality_candidate = re.split(r"(?:建设工程专业分包合同\s*第\d+页|工程地点|建设地点|项目地点)\s*[:：]?", quality_candidate, maxsplit=1)[0].strip()
+        if "施工总承包工程" in quality_candidate or "奖项" in quality_candidate:
+            quality_candidate = "结合施工总承包工程的合同要求执行；分包人应配合承包人达到合同约定的质量目标及奖项要求，具体标准需按原件复核。"
         project["quality_standard"] = quality_candidate
         clauses["quality_acceptance"] = quality_candidate
     ban_text = _long_contract_pages_text(ocr_pages, index["subcontract_ban_pages"][:3])
@@ -2570,7 +2702,18 @@ def apply_long_construction_contract_safeguards(
     ), "")
     if ban_candidate:
         ban_candidate = re.split(r"建设工程专业分包合同\s*第\d+页", ban_candidate, maxsplit=1)[0].strip()
-        clauses["no_subcontract"] = ban_candidate
+        clauses["no_subcontract"] = (
+            "识别到禁止转包及违法分包相关条款，分包人应服从承包人现场管理要求，具体条款需按原件复核。"
+            if _is_long_contract_fragment(ban_candidate) or ban_candidate.startswith("及违法分包")
+            else ban_candidate
+        )
+
+    breach = clean_field_value(clauses.get("breach_liability"))
+    if breach and (
+        _is_long_contract_fragment(breach)
+        or ("违约金" in breach and any(token in breach for token in ("国家、行业标准", "质量标准", "承包人要求")))
+    ):
+        clauses["breach_liability"] = "识别到主合同违约责任条款，涉及违约金、质量责任及其他违约责任，具体条款需按原件复核。"
 
     if not rejected_dispute_reason and index["dispute_pages"]:
         dispute_text = _long_contract_pages_text(ocr_pages, index["dispute_pages"][:3])
@@ -3693,8 +3836,12 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
     if (result.get("quality") or {}).get("long_contract"):
         warnings = [warning for warning in warnings if "付款节点已提取" not in warning]
         long_contract_warnings: list[str] = []
-        if not (result.get("amount") or {}).get("contract_amount"):
-            long_contract_warnings.append("合同金额未稳定识别")
+        long_amount = result.get("amount") or {}
+        if not long_amount.get("contract_amount"):
+            if long_amount.get("tax_excluded_amount") and long_amount.get("tax_rate"):
+                long_contract_warnings.append("已识别不含税金额及税率，但合同含税金额、税额未稳定识别")
+            else:
+                long_contract_warnings.append("合同金额未稳定识别")
         if not result.get("signing_date"):
             long_contract_warnings.append("签订日期未识别")
         if not result.get("payment_nodes"):

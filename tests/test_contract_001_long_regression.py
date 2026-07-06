@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from backend.services.contract_agent import ContractAgent
+from backend.services.contract_agent.schema import ContractParty
+from backend.services.contract_agent.skill import apply_long_construction_contract_safeguards
 
 
 FILENAME = "合同001：张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）机电安装专业分包工程.pdf"
@@ -129,3 +131,75 @@ def test_contract_001_selective_ocr_metadata_triggers_long_contract_extraction()
     assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
     assert data["settlement"]["receiving_account"] == "识别到账户信息，归属需人工复核"
     assert "付款方式：未识别（未稳定定位到主合同付款条款）" not in result.markdown
+
+
+def test_contract_001_long_contract_field_safety_guards() -> None:
+    pages = _pages()
+    pages[1]["text"] = """合同协议书
+承包人：上海建工集团股份有限公司
+统一社会信用代码：91310000MA1H3XJJ78
+地址：中国（上海）自由贸易试验区临港新片区环湖西二路888号C楼
+分包人：上海意川建筑科技有限公司
+"""
+    pages[9]["text"] = """工程概况
+工程地点：上海市浦东新区新场镇，东至康新公路，南至古翠路，西至良耀路，北
+质量标准：结合施工总承包工程的合同要求：分包人应配合承包人获得奖项
+"""
+    pages[29]["text"] = """合同价款
+不含税金额：46,485,219.74元
+税率：9%
+税额：-46,485,215.57元
+安全文明施工费：1.10元
+"""
+    pages[59]["text"] = "发票条款 的增值税专用发票作为收取合同价款的前提条件"
+    pages[79]["text"] = "及违法分包，服从承包人对现场管理的要求，并在缺陷责任期承担维修责"
+
+    result = {
+        "contract_category": "construction_subcontract",
+        "project_name": "【张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）】",
+        "project": {
+            "project_name": "【张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）】",
+            "location": "上海市浦东新区新场镇，东至康新公路，南至古翠路，西至良耀路，北",
+        },
+        "parties": [
+            ContractParty(role="甲方/承包人/发包人", name="【上海建工智慧营造】有限公司（盖章）", unified_social_credit_code="91310000WRONG00000", address="错误地址"),
+            ContractParty(role="乙方/分包人", name="上海意川建筑科技有限公司"),
+        ],
+        "amount": {
+            "contract_amount": "",
+            "tax_included_amount": "",
+            "tax_excluded_amount": "46,485,219.74 元",
+            "tax_rate": "9%",
+            "tax_amount": "-46,485,215.57 元",
+            "tax_amount_source": "derived",
+            "safety_civilization_fee": "1.10 元",
+        },
+        "duration": {
+            "delivery_place": "上海市浦东新区新场镇，东至康新公路，南至古翠路，西至良耀路，北至美济路",
+        },
+        "settlement": {},
+        "clauses": {
+            "breach_liability": "支付人民币20万元/项作为违约金应符合现行国家、行业标准及承包人要求",
+        },
+        "signature": {"signers": "资格证明"},
+        "quality": {},
+        "payment_nodes": [],
+    }
+    pages[0]["pdf_page_count"] = 239
+    apply_long_construction_contract_safeguards(pages, result, filename=FILENAME)
+
+    assert result["project_name"] == "张江创新药基地A04C-01地块专业化标准厂房四期项目（除桩基）"
+    assert result["project"]["location"].endswith("北至美济路")
+    assert result["parties"][0].name == "上海建工集团股份有限公司"
+    assert result["parties"][0].unified_social_credit_code == "91310000MA1H3XJJ78"
+    assert result["parties"][0].address.startswith("中国（上海）自由贸易试验区")
+    assert result["amount"]["tax_amount"] == ""
+    assert result["amount"]["safety_civilization_fee"] == ""
+    assert result["amount"]["tax_excluded_amount"] == "46,485,219.74 元（已识别，需结合含税金额复核）"
+    assert result["amount"]["recognition_status"] == "部分成功"
+    assert result["amount"]["amount_check"] == "识别到不含税金额和税率，但含税金额及税额未稳定识别，需人工复核"
+    assert result["settlement"]["invoice_requirement"].startswith("识别到主合同发票条款")
+    assert result["clauses"]["invoice_requirement"] == result["settlement"]["invoice_requirement"]
+    assert "现行国家、行业标准" not in result["clauses"]["breach_liability"]
+    assert result["clauses"]["no_subcontract"].startswith("识别到禁止转包及违法分包")
+    assert result["signature"]["signers"] == ""
