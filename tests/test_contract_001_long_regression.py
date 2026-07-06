@@ -21,6 +21,16 @@ def _pages() -> list[dict[str, str | int]]:
 分包工程承包范围：机电安装专业分包工程
 """
     pages[3]["text"] = "合同价款目录 附件单价 4.00元，本页为章节索引。"
+    pages[4]["text"] = "目录 第一部分合同协议书 第二部分通用合同条款 第三部分专用合同条款"
+    pages[9]["text"] = "工程概况 工程地点：上海市浦东新区张江科学城 质量标准：一次性验收合格。"
+    pages[19]["text"] = "工期条款 计划开工日期待书面通知，计划竣工日期按总包进度执行。"
+    pages[39]["text"] = "工程款支付 进度款及结算款按专用合同条款执行，具体付款节点见原件。"
+    pages[49]["text"] = "竣工结算 最终结算及结算总价按双方确认的工程量执行。"
+    pages[59]["text"] = "发票条款 分包人应开具合法有效的增值税专用发票，具体税率见开票信息。"
+    pages[69]["text"] = "账户信息 开户银行、银行账号及收款账户详见双方确认资料。"
+    pages[79]["text"] = "禁止转包 未经承包人书面同意，分包人不得转包或违法分包。"
+    pages[89]["text"] = "争议解决 双方发生争议应协商解决，具体诉讼管辖法院见专用合同条款。"
+    pages[99]["text"] = "本合同自双方签字盖章后生效，一式肆份，承包人执贰份，分包人执贰份，具有同等法律效力。"
     pages[220]["text"] = "附件：保密协议"
     pages[229]["text"] = """保密协议
 8.2本协议自双方法定代表人签字并加盖公章之日起生效，一式贰份，双方各执壹份。
@@ -68,6 +78,12 @@ def test_contract_001_long_contract_minimum_structured_baseline() -> None:
     assert data["quality"]["body_missing_note"]
     assert data["quality"]["body_missing_note"] != "未识别"
     assert all("付款节点已提取" not in warning for warning in data["warnings"])
+    assert data["project"]["location"] == "上海市浦东新区张江科学城"
+    assert data["settlement"]["payment_method"].startswith("识别到主合同工程款支付条款")
+    assert "主合同结算条款" in data["settlement"]["settlement_method"]
+    assert "增值税专用发票" in data["settlement"]["invoice_requirement"]
+    assert data["settlement"]["receiving_account"] == "识别到账户信息，归属需人工复核"
+    assert "识别到主合同争议解决条款" in data["clauses"]["dispute_resolution"]
 
 
 def test_contract_001_long_contract_markdown_forbidden_regressions() -> None:

@@ -2263,36 +2263,94 @@ def _apply_complete_construction_integrity_note(result: dict[str, Any], text: st
 
 
 LONG_CONTRACT_PAGE_MARKERS: dict[str, tuple[str, ...]] = {
+    "directory_pages": ("目录", "合同协议书", "专用合同条款", "通用合同条款"),
     "agreement_pages": ("合同协议书", "第一部分 合同协议书", "签约合同价", "分包工程承包范围"),
-    "amount_pages": ("签约合同价", "合同价款", "合同总价", "暂定合同价", "不含税", "增值税税额"),
+    "project_info_pages": ("工程名称", "工程地点", "建设地点", "项目地点", "分包工程承包范围"),
+    "amount_pages": ("签约合同价", "合同价款", "合同总价", "暂定合同价", "人民币", "大写", "小写", "含税", "不含税", "增值税", "税率", "税金", "安全文明施工费", "合同价格形式"),
+    "duration_pages": ("计划开工日期", "计划完工日期", "计划竣工日期", "工期总日历天数", "开工日期", "竣工日期", "总工期", "日历天"),
     "payment_pages": ("工程款支付", "付款方式", "进度款", "预付款", "支付至", "质量保证金"),
-    "settlement_pages": ("竣工结算", "最终结算", "结算方式", "工程量按实结算"),
-    "invoice_pages": ("增值税专用发票", "开票信息", "纳税人识别号"),
-    "account_pages": ("开户银行", "银行账号", "收款账户", "分包人账户"),
-    "dispute_pages": ("争议解决", "争议的解决", "人民法院", "仲裁", "管辖"),
-    "effective_pages": ("本合同自", "签字盖章", "一式", "承包人执", "分包人执"),
+    "settlement_pages": ("结算方式", "竣工结算", "最终结算", "工程量按实结算", "固定单价", "固定总价", "综合单价", "结算总价"),
+    "invoice_pages": ("增值税专用发票", "发票", "开票", "税率", "纳税人识别号", "开票信息", "发票真实性", "合法有效发票"),
+    "account_pages": ("开户银行", "银行账号", "账号", "收款账户", "分包人账户", "乙方账户", "分包人开户行"),
+    "quality_pages": ("质量标准", "质量要求", "验收标准", "一次性验收合格"),
+    "subcontract_ban_pages": ("禁止转包", "不得转包", "不得分包", "违法分包"),
+    "dispute_pages": ("争议解决", "争议的解决", "诉讼", "仲裁", "人民法院", "管辖法院", "合同签订地", "工程所在地"),
+    "effective_copy_pages": ("本合同自", "签字盖章", "生效", "一式", "承包人执", "分包人执", "甲方执", "乙方执", "具有同等法律效力"),
     "signature_pages": ("承包人（盖章）", "分包人（盖章）", "甲方（盖章）", "乙方（盖章）"),
 }
 
-LONG_CONTRACT_ATTACHMENT_MARKERS = ("保密协议", "廉洁协议", "廉政协议", "承诺书", "授权委托书")
+LONG_CONTRACT_ATTACHMENT_MARKERS = (
+    "保密协议", "保密义务", "廉洁协议", "廉政", "承诺书", "安全生产协议",
+    "资料交接", "法定代表人授权委托书", "身份证", "营业执照",
+)
+
+LONG_CONTRACT_ALLOWED_ATTACHMENT_MARKERS = ("工程量清单", "报价表", "合同附件清单")
+
+
+def is_attachment_noise_page(page_text: str) -> bool:
+    text = str(page_text or "")
+    if any(marker in text for marker in LONG_CONTRACT_ALLOWED_ATTACHMENT_MARKERS):
+        return False
+    return any(marker in text for marker in LONG_CONTRACT_ATTACHMENT_MARKERS)
+
+
+def _long_page_candidate(page_no: int, text: str, keywords: tuple[str, ...]) -> dict[str, Any] | None:
+    matched = [keyword for keyword in keywords if keyword in text]
+    if not matched:
+        return None
+    heading_bonus = 6 if any(keyword in text[:180] for keyword in matched) else 0
+    score = len(matched) * 4 + heading_bonus
+    snippet = re.sub(r"\s+", " ", text).strip()[:240]
+    return {"page": page_no, "score": score, "keywords": matched, "snippet": snippet}
+
+
+def locate_long_construction_contract_key_pages(
+    ocr_pages: list[dict[str, Any]], filename: str = ""
+) -> dict[str, list[dict[str, Any]]]:
+    located: dict[str, list[dict[str, Any]]] = {key: [] for key in LONG_CONTRACT_PAGE_MARKERS}
+    located["cover_pages"] = []
+    located["attachment_pages"] = []
+    located["rejected_noise_pages"] = []
+    for index, page in enumerate(ocr_pages):
+        page_no = int(page.get("page") or index + 1)
+        text = str(page.get("text") or "")
+        if index < 3:
+            located["cover_pages"].append({
+                "page": page_no, "score": 1, "keywords": ["front_page"],
+                "snippet": re.sub(r"\s+", " ", text).strip()[:240],
+            })
+        noise_page = is_attachment_noise_page(text)
+        if noise_page:
+            reasons = [marker for marker in LONG_CONTRACT_ATTACHMENT_MARKERS if marker in text]
+            noise = {
+                "page": page_no, "score": 0, "keywords": reasons,
+                "reason": "attachment_noise", "snippet": re.sub(r"\s+", " ", text).strip()[:240],
+            }
+            located["attachment_pages"].append(noise)
+            located["rejected_noise_pages"].append(noise)
+        elif "附件" in text or any(marker in text for marker in LONG_CONTRACT_ALLOWED_ATTACHMENT_MARKERS):
+            located["attachment_pages"].append({
+                "page": page_no, "score": 1, "keywords": ["附件"],
+                "reason": "contract_attachment", "snippet": re.sub(r"\s+", " ", text).strip()[:240],
+            })
+        for key, markers in LONG_CONTRACT_PAGE_MARKERS.items():
+            if noise_page and key != "signature_pages":
+                continue
+            candidate = _long_page_candidate(page_no, text, markers)
+            if candidate:
+                located[key].append(candidate)
+    for key in LONG_CONTRACT_PAGE_MARKERS:
+        located[key].sort(key=lambda item: (-int(item["score"]), int(item["page"])))
+    return located
 
 
 def index_long_construction_contract_key_pages(ocr_pages: list[dict[str, Any]]) -> dict[str, list[int]]:
-    index = {key: [] for key in LONG_CONTRACT_PAGE_MARKERS}
-    index["cover_pages"] = [int(page.get("page") or 0) for page in ocr_pages[:3]]
+    located = locate_long_construction_contract_key_pages(ocr_pages)
+    index = {
+        key: [int(item["page"]) for item in candidates]
+        for key, candidates in located.items()
+    }
     index["last_pages"] = [int(page.get("page") or 0) for page in ocr_pages[-10:]]
-    index["attachment_pages"] = []
-    for page in ocr_pages:
-        page_no = int(page.get("page") or 0)
-        text = str(page.get("text") or "")
-        attachment_page = any(marker in text for marker in LONG_CONTRACT_ATTACHMENT_MARKERS)
-        if attachment_page:
-            index["attachment_pages"].append(page_no)
-        for key, markers in LONG_CONTRACT_PAGE_MARKERS.items():
-            if attachment_page and key not in {"signature_pages"}:
-                continue
-            if any(marker in text for marker in markers):
-                index[key].append(page_no)
     return index
 
 
@@ -2342,7 +2400,11 @@ def apply_long_construction_contract_safeguards(
 ) -> None:
     if result.get("contract_category") != "construction_subcontract" or len(ocr_pages) < 150:
         return
-    index = index_long_construction_contract_key_pages(ocr_pages)
+    located = locate_long_construction_contract_key_pages(ocr_pages, filename)
+    index = {
+        key: [int(item["page"]) for item in candidates]
+        for key, candidates in located.items()
+    }
     amount = result.setdefault("amount", {})
     settlement = result.setdefault("settlement", {})
     clauses = result.setdefault("clauses", {})
@@ -2358,6 +2420,13 @@ def apply_long_construction_contract_safeguards(
     if "机电安装专业分包工程" in filename:
         result["title"] = "建设工程专业分包合同"
 
+    project = result.setdefault("project", {})
+    project_text = _long_contract_pages_text(ocr_pages, index["project_info_pages"][:3])
+    location = _after_label(project_text, ("工程地点", "建设地点", "项目地点"))
+    if location:
+        location = re.split(r"(?:质量标准|质量要求|验收标准)\s*[:：]", location, maxsplit=1)[0].strip()
+        project["location"] = location
+
     parties = result.get("parties") or []
     for party in parties[:2]:
         party.name = _clean_long_contract_party_name(getattr(party, "name", ""))
@@ -2371,6 +2440,13 @@ def apply_long_construction_contract_safeguards(
         amount["amount_lower"] = selected_amount
         amount["tax_included_amount"] = selected_amount
         amount["recognition_status"] = "部分成功"
+        selected_amount_pages = [
+            page for page in ocr_pages if int(page.get("page") or 0) in set(index["amount_pages"][:3])
+        ]
+        tax_fields = extract_contract_tax_amounts_from_amount_page(selected_amount_pages)
+        for key in ("amount_upper", "tax_excluded_amount", "tax_rate", "tax_amount", "safety_civilization_fee"):
+            if tax_fields.get(key):
+                amount[key] = tax_fields[key]
     elif current_numeric is None or current_numeric < Decimal("10000"):
         if current_numeric is not None:
             rejected.append(f"{current_numeric:.2f}")
@@ -2379,9 +2455,51 @@ def apply_long_construction_contract_safeguards(
         amount["amount_check"] = "合同金额未稳定识别，需人工复核"
         amount["recognition_status"] = "需人工复核"
 
+    price_pages = list(dict.fromkeys(index["amount_pages"][:3] + index["settlement_pages"][:3]))
+    price_page_items = [page for page in ocr_pages if int(page.get("page") or 0) in set(price_pages)]
+    price_data = extract_price_form_and_settlement_method(price_page_items)
+    if price_data.get("price_form"):
+        amount["price_form"] = price_data["price_form"]
+    if price_data.get("settlement_method"):
+        settlement["settlement_method"] = price_data["settlement_method"]
+
+    duration_text = _long_contract_pages_text(ocr_pages, index["duration_pages"][:3])
+    parsed_duration = _extract_construction_duration_from_text(duration_text)
+    duration = result.setdefault("duration", {})
+    for key in ("start_date", "end_date", "period"):
+        duration[key] = ""
+    for key in ("start_date", "end_date", "period"):
+        parsed_value = parsed_duration.get(key) or ""
+        if key in {"start_date", "end_date"} and not re.search(r"(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日", parsed_value):
+            continue
+        if key == "period" and not re.search(r"(?:总日历天数|合同工期|工期)\D{0,20}\d+\s*天", parsed_value):
+            continue
+        if parsed_value:
+            duration[key] = normalize_contract_date_value(parsed_value) if key != "period" else parsed_value
+
     copies = str(result.get("copies") or "")
     if any(token in copies for token in ("8.2", "保密协议", "本协议自")):
         result["copies"] = ""
+    effective_page_items = [
+        page for page in ocr_pages
+        if int(page.get("page") or 0) in set(index["effective_copy_pages"][:3])
+    ]
+    effective_text = _joined(effective_page_items)
+    effective_condition = extract_contract_effective_condition(effective_page_items)
+    main_copies = _extract_contract_copies_from_effective_clause(effective_text)
+    if effective_condition:
+        result["effective_condition"] = effective_condition
+    if main_copies:
+        result["copies"] = main_copies
+
+    signing_candidates = [
+        page for page in ocr_pages
+        if int(page.get("page") or 0) in set(index["agreement_pages"][:3] + index["signature_pages"][:3])
+    ]
+    signing_text = _joined(signing_candidates)
+    signing_date = _extract_contract_signing_date(signing_candidates, signing_text)
+    if signing_date:
+        result["signing_date"] = signing_date
 
     dispute = str(clauses.get("dispute_resolution") or "")
     if any(token in dispute for token in ("保密义务", "披露", "知悉", "行政执法")):
@@ -2395,23 +2513,69 @@ def apply_long_construction_contract_safeguards(
     if "第236页" in str(signature.get("signature_page") or "").replace(" ", ""):
         signature["signature_page"] = "第236页及附件签章页（需人工复核）"
 
-    if not result.get("payment_nodes"):
-        settlement["payment_method"] = "未识别（未稳定定位到主合同付款条款）"
-    if not clean_field_value(settlement.get("settlement_method")):
+    result["payment_nodes"] = []
+    settlement["payment_method"] = (
+        "识别到主合同工程款支付条款，具体付款节点建议按原件复核"
+        if index["payment_pages"] else "未识别（未稳定定位到主合同付款条款）"
+    )
+    if index["settlement_pages"] and not price_data.get("settlement_method"):
+        settlement["settlement_method"] = "识别到主合同结算条款，具体结算口径建议按原件复核"
+    elif not clean_field_value(settlement.get("settlement_method")):
         settlement["settlement_method"] = "未识别（未稳定定位到主合同结算条款）"
-    if not clean_field_value(settlement.get("invoice_requirement")):
-        settlement["invoice_requirement"] = "未识别（未稳定定位到主合同发票条款）"
+    invoice_text = _long_contract_pages_text(ocr_pages, index["invoice_pages"][:3])
+    invoice_candidate = _line_with(invoice_text, ("增值税专用发票", "合法有效发票", "发票真实性"))
+    settlement["invoice_requirement"] = invoice_candidate or (
+        "识别到主合同发票条款，具体要求建议按原件复核"
+        if index["invoice_pages"] else "未识别（未稳定定位到主合同发票条款）"
+    )
+    account_text = _long_contract_pages_text(ocr_pages, index["account_pages"][:3])
+    account_candidate = _receiving_account(account_text) if any(token in account_text for token in ("分包人账户", "乙方账户", "分包人开户行")) else ""
+    if account_candidate and re.search(r"\d{8,30}", account_candidate):
+        settlement["receiving_account"] = account_candidate
+    elif index["account_pages"]:
+        settlement["receiving_account"] = "识别到账户信息，归属需人工复核"
+
+    quality_text = _long_contract_pages_text(ocr_pages, index["quality_pages"][:3])
+    quality_candidate = _after_label(quality_text, ("质量标准", "质量要求", "验收标准"))
+    if quality_candidate:
+        quality_candidate = re.split(r"(?:建设工程专业分包合同\s*第\d+页|工程地点|建设地点|项目地点)\s*[:：]?", quality_candidate, maxsplit=1)[0].strip()
+        project["quality_standard"] = quality_candidate
+        clauses["quality_acceptance"] = quality_candidate
+    ban_text = _long_contract_pages_text(ocr_pages, index["subcontract_ban_pages"][:3])
+    ban_candidate = _line_with(ban_text, ("禁止转包", "不得转包", "不得分包", "违法分包"))
+    if ban_candidate:
+        ban_candidate = re.split(r"建设工程专业分包合同\s*第\d+页", ban_candidate, maxsplit=1)[0].strip()
+        clauses["no_subcontract"] = ban_candidate
+
+    if not rejected_dispute_reason and index["dispute_pages"]:
+        dispute_text = _long_contract_pages_text(ocr_pages, index["dispute_pages"][:3])
+        if any(token in dispute_text for token in ("保密义务", "披露", "行政执法", "知悉")):
+            clauses["dispute_resolution"] = "未识别（未稳定定位到主合同争议解决条款）"
+            rejected_dispute_reason = "confidentiality_clause"
+        else:
+            clauses["dispute_resolution"] = "识别到主合同争议解决条款，具体方式需按原件复核"
 
     quality.update({
         "long_contract": True,
+        "long_contract_located": {
+            "amount": bool(index["amount_pages"]),
+            "payment": bool(index["payment_pages"]),
+            "settlement": bool(index["settlement_pages"]),
+            "invoice": bool(index["invoice_pages"]),
+            "account": bool(index["account_pages"]),
+        },
         "body_missing": False,
-        "body_missing_note": "当前PDF为长版建设工程专业分包合同，包含主合同正文、专用条款/通用条款、附件及签章页；因文件页数较多，关键金额、付款、结算、发票等条款需按原件复核。",
+        "body_missing_note": "当前PDF为长版建设工程专业分包合同，包含主合同正文、专用条款/通用条款、附件及签章页；因文件页数较多，已进行关键页定位，金额、付款、结算、发票等条款需按原件复核。",
     })
     logger.info("[LongContractKeyPageDebug] filename=%s", filename)
     logger.info("[LongContractKeyPageDebug] page_count=%s", len(ocr_pages))
-    for key, pages in index.items():
-        logger.info("[LongContractKeyPageDebug] %s=%s", key, pages)
-    logger.info("[LongContractKeyPageDebug] rejected_amount_candidates=%s", sorted(set(rejected)))
+    for key, candidates in located.items():
+        logger.info("[LongContractKeyPageDebug] %s=%s", key, candidates[:3])
+    rejected_details = [
+        {"value": value, "page": index["amount_pages"][0] if index["amount_pages"] else 0, "reason": "small_amount_without_contract_price_context"}
+        for value in sorted(set(rejected))
+    ]
+    logger.info("[LongContractKeyPageDebug] rejected_amount_candidates=%s", rejected_details)
     logger.info("[LongContractKeyPageDebug] selected_amount=%s", selected_amount or "missing")
     if rejected_dispute_reason:
         logger.info("[LongContractKeyPageDebug] rejected_dispute_candidate_reason=%s", rejected_dispute_reason)
@@ -3484,14 +3648,29 @@ def _validation(result: dict[str, Any], text: str) -> dict[str, Any]:
         if not result.get("signing_date"):
             long_contract_warnings.append("签订日期未识别")
         if not result.get("payment_nodes"):
-            long_contract_warnings.append("付款条款未稳定定位")
+            long_contract_warnings.append(
+                "付款条款未稳定结构化"
+                if str(settlement.get("payment_method") or "").startswith("识别到")
+                else "付款条款未稳定定位"
+            )
         settlement = result.get("settlement") or {}
-        if str(settlement.get("settlement_method") or "").startswith("未识别"):
+        located = (result.get("quality") or {}).get("long_contract_located") or {}
+        settlement_method = str(settlement.get("settlement_method") or "")
+        if settlement_method.startswith("识别到"):
+            long_contract_warnings.append("结算条款未稳定结构化")
+        elif settlement_method.startswith("未识别"):
             long_contract_warnings.append("结算条款未稳定定位")
-        if str(settlement.get("invoice_requirement") or "").startswith("未识别"):
+        invoice_requirement = str(settlement.get("invoice_requirement") or "")
+        if invoice_requirement.startswith("识别到"):
+            long_contract_warnings.append("发票条款未稳定结构化")
+        elif invoice_requirement.startswith("未识别"):
             long_contract_warnings.append("发票条款未稳定定位")
+        elif located.get("invoice"):
+            long_contract_warnings.append("发票条款未稳定结构化")
         if not clean_field_value(settlement.get("receiving_account")):
             long_contract_warnings.append("收款账户未识别")
+        elif str(settlement.get("receiving_account") or "").startswith("识别到"):
+            long_contract_warnings.append("收款账户归属需人工复核")
         if any(not clean_field_value(getattr(party, "unified_social_credit_code", "")) for party in (result.get("parties") or [])[:2]):
             long_contract_warnings.append("统一社会信用代码未识别")
         long_contract_warnings.append("长合同页数较多，建议按原件复核主合同及附件关键页")
