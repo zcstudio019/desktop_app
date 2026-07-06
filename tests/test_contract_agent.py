@@ -659,7 +659,7 @@ def test_contract_002_agreement_only_pdf_extracts_pages_7_to_10_and_flags_missin
     assert "开始日期：2022年10月1日，具体开工日期以承包人书面通知为准" in markdown
     assert "开始日期：2022年10月1日，具体开工日期以承包人书面通知为准。计划完工日期" not in markdown
     assert "结束日期：2024年6月30日" in markdown
-    assert "合同工期/服务期限：638天" in markdown
+    assert "合同工期：638天" in markdown
     assert "付款方式：未识别（当前PDF未包含工程款支付正文条款）" in markdown
     assert "结算方式：未识别（当前PDF未包含结算正文条款）" in markdown
     assert "发票要求：未识别（当前PDF未包含发票正文条款）" in markdown

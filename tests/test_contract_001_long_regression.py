@@ -465,7 +465,8 @@ def test_contract_001_accepted_partial_success_regression_baseline() -> None:
         "- 金额识别状态：成功",
         "- 开始日期：2025年7月28日",
         "- 结束日期：2027年1月28日",
-        "- 合同工期/服务期限：550天",
+        "### 工期/施工/验收",
+        "- 合同工期：550天",
         "- 付款识别状态：已定位付款条款页，付款节点尚未完全结构化",
         "- 结算识别状态：已定位结算条款页，部分结构化",
         "- 发票识别状态：已定位发票条款页，部分结构化",
@@ -473,6 +474,7 @@ def test_contract_001_accepted_partial_success_regression_baseline() -> None:
     )
     for expected in expected_markdown:
         assert expected in markdown
+    assert "- 交付方式：未识别" not in markdown
 
     assert "推算含税金额候选" not in markdown
     assert "推算税额候选" not in markdown

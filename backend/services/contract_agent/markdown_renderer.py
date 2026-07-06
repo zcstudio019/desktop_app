@@ -846,6 +846,7 @@ def render_contract_markdown(result: ContractResult) -> str:
         result.page_count == 239
         and "张江创新药基地A04C-01地块" in str(result.project_name or project.get("project_name") or "")
     )
+    is_construction_subcontract = result.contract_category == "construction_subcontract"
     tax_excluded_display = str(amount.get("tax_excluded_amount") or "")
     if is_contract_001_display and official_amount_complete:
         tax_excluded_display = re.sub(r"\s*（已识别，需结合含税金额复核）\s*$", "", tax_excluded_display)
@@ -923,13 +924,13 @@ def render_contract_markdown(result: ContractResult) -> str:
         f"- 金额校验：{value(amount_check_display)}",
         f"- 金额识别状态：{value(amount.get('recognition_status'))}",
         "",
-        "### 工期/交付/服务期限",
+        "### 工期/施工/验收" if is_construction_subcontract else "### 工期/交付/服务期限",
         "",
         f"- 开始日期：{value(duration.get('start_date'))}",
         f"- 结束日期：{value(duration.get('end_date'))}",
-        f"- 合同工期/服务期限：{value(duration.get('period'))}",
+        f"- {'合同工期' if is_construction_subcontract else '合同工期/服务期限'}：{value(duration.get('period'))}",
         f"- {'施工地点' if duration.get('construction_place') else '交付地点'}：{value(duration.get('construction_place') or duration.get('delivery_place'))}",
-        f"- 交付方式：{value(duration.get('delivery_method'))}",
+        *([f"- 交付方式：{value(duration.get('delivery_method'))}"] if duration.get("delivery_method") or not is_construction_subcontract else []),
         f"- 验收期限：{value(duration.get('acceptance_period'))}",
         "",
         *_payment_section(result, settlement),
