@@ -23,6 +23,19 @@ logger = logging.getLogger(__name__)
 CREDIT_REPORT_INTENT = "credit_one_page_report"
 MAX_REPORT_CONTEXT_CHARS = 48_000
 MAX_SINGLE_MATERIAL_CHARS = 14_000
+ABNORMAL_FIELD_TEXT = "资料异常，需核验"
+
+_DISALLOWED_SOURCE_KEYS = {
+    "raw_text", "ocr_text", "full_text", "raw_markdown", "raw_html", "html",
+    "page_text", "pages_text", "source_text", "markdown", "markdown_summary",
+    "report_markdown", "summary_markdown", "content_markdown",
+}
+_ABNORMAL_TEXT_PATTERNS = (
+    re.compile(r"<br\s*/?>", re.IGNORECASE),
+    re.compile(r"个人信用报告|企业信用报告|信息概要|信贷记录概要"),
+    re.compile(r"第\s*\d+\s*页\s*(?:/|共)\s*\d+\s*页"),
+    re.compile(r"(?:报告编号|查询请求时间|报告时间).{0,80}(?:信息概要|信贷记录)", re.DOTALL),
+)
 
 _REPORT_PATTERNS = (
     re.compile(r"(?:生成|出|做|整理|分析).{0,12}(?:征信一页纸|征信速览|征信分析报告|标准征信报告|征信报告)"),
@@ -126,15 +139,37 @@ def _material_group(extraction_type: str) -> str:
     return "其他资料"
 
 
-def _extract_material_text(extraction: dict[str, Any]) -> str:
-    data = extraction.get("confirmed_data") or extraction.get("extracted_data") or {}
-    if not isinstance(data, dict):
-        return _safe_json(data)
-    for key in ("markdown", "markdown_summary", "report_markdown", "summary_markdown", "content_markdown"):
-        value = data.get(key)
-        if isinstance(value, str) and value.strip():
-            return _mask_identifiers_in_text(value.strip()[:MAX_SINGLE_MATERIAL_CHARS])
-    return _safe_json(data)
+def _drop_disallowed_source_fields(value: Any) -> Any:
+    """Remove raw document bodies before data enters the report-generation layer."""
+    if isinstance(value, dict):
+        return {
+            key: _drop_disallowed_source_fields(child)
+            for key, child in value.items()
+            if str(key).lower() not in _DISALLOWED_SOURCE_KEYS
+        }
+    if isinstance(value, list):
+        return [_drop_disallowed_source_fields(child) for child in value]
+    return value
+
+
+def _safe_business_scalar(value: Any, field_name: str = "field", max_length: int = 300) -> Any:
+    """Reject page-like/OCR-like text instead of truncating and accidentally exposing it."""
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, (dict, list, tuple, set)):
+        logger.warning("credit report rejected non-scalar field=%s type=%s", field_name, type(value).__name__)
+        return ABNORMAL_FIELD_TEXT
+    text = re.sub(r"[\t\r]+", " ", str(value)).strip()
+    abnormal = (
+        len(text) > max_length
+        or text.count("\n") > 3
+        or len(re.findall(r"(?:^|\n)\s*(?:#{1,6}|[一二三四五六七八九十]+、)", text)) >= 2
+        or any(pattern.search(text) for pattern in _ABNORMAL_TEXT_PATTERNS)
+    )
+    if abnormal:
+        logger.warning("credit report rejected abnormal text field=%s length=%s", field_name, len(text))
+        return ABNORMAL_FIELD_TEXT
+    return _mask_identifiers_in_text(re.sub(r"\s*\n\s*", "；", text))
 
 
 async def get_customer_materials(storage_service: Any, customer_id: str) -> dict[str, Any]:
@@ -143,8 +178,7 @@ async def get_customer_materials(storage_service: Any, customer_id: str) -> dict
     if not customer:
         return {"status": "customer_not_found", "customer": None, "materials": [], "processing": False}
 
-    profile, extractions, documents = await asyncio.gather(
-        storage_service.get_customer_profile(customer_id),
+    extractions, documents = await asyncio.gather(
         storage_service.get_extractions_by_customer(customer_id),
         storage_service.list_documents(customer_id),
     )
@@ -171,15 +205,12 @@ async def get_customer_materials(storage_service: Any, customer_id: str) -> dict
                 "category": category,
                 "type": str(item.get("extraction_type") or "其他资料"),
                 "status": str(item.get("extraction_status") or "success"),
-                "content": _extract_material_text(item),
-                "structured_data": item.get("confirmed_data") or item.get("extracted_data") or {},
+                "structured_data": _drop_disallowed_source_fields(
+                    item.get("confirmed_data") or item.get("extracted_data") or {}
+                ),
                 "created_at": str(item.get("created_at") or ""),
             }
         )
-
-    profile_markdown = ""
-    if isinstance(profile, dict):
-        profile_markdown = _mask_identifiers_in_text(str(profile.get("markdown_content") or "").strip())
 
     return {
         "status": "ok",
@@ -189,7 +220,6 @@ async def get_customer_materials(storage_service: Any, customer_id: str) -> dict
             "id_card_masked": _mask_identifier(customer.get("id_card")),
             "phone_masked": _mask_identifier(customer.get("phone")),
         },
-        "profile_markdown": profile_markdown,
         "materials": materials,
         "document_count": len(documents),
         "successful_material_count": len(successful),
@@ -197,26 +227,8 @@ async def get_customer_materials(storage_service: Any, customer_id: str) -> dict
     }
 
 
-def _split_markdown_sections(markdown: str) -> list[str]:
-    if not markdown.strip():
-        return []
-    chunks = re.split(r"(?=^#{1,4}\s+)", markdown, flags=re.MULTILINE)
-    return [chunk.strip() for chunk in chunks if chunk.strip()]
-
-
-def _section_category(section: str) -> str:
-    heading = section.splitlines()[0].lower() if section else ""
-    if "个人征信" in heading or "个人信用" in heading:
-        return "个人征信"
-    if "企业征信" in heading or "企业信用" in heading:
-        return "企业征信"
-    if any(word in heading for word in ("客户基础", "身份证", "营业执照", "公司章程", "关联企业", "主体关系")):
-        return "KYC及主体关系"
-    return "其他资料"
-
-
 def build_report_context(material_result: dict[str, Any]) -> str:
-    """Build the narrow credit-report context; finance/flow/property are excluded."""
+    """Serialize only the normalized report model; never pass Markdown or OCR text."""
     customer = material_result.get("customer") or {}
     subjects = material_result.get("subjects") or {}
     base = {
@@ -226,51 +238,16 @@ def build_report_context(material_result: dict[str, Any]) -> str:
         "personal_credit_subject_role": subjects.get("personal_credit_subject_role") or "需人工核实",
         "customer_type": customer.get("customer_type") or "暂未获取",
     }
-    buckets: dict[str, list[str]] = {name: [] for name, _ in _TYPE_GROUPS}
-
-    # Profile Markdown may contain finance, flow and property sections. Only copy
-    # explicitly allowed headings; never pass the whole profile to this report.
-    for section in _split_markdown_sections(str(material_result.get("profile_markdown") or "")):
-        category = _section_category(section)
-        if category != "其他资料":
-            buckets[category].append(section)
-    for material in material_result.get("materials") or []:
-        if not isinstance(material, dict):
-            continue
-        category = str(material.get("category") or "其他资料")
-        if category not in buckets:
-            continue
-        content = str(material.get("content") or "").strip()
-        if content:
-            buckets.setdefault(category, []).append(content)
-
-    # Credit evidence receives most of the context budget. Other categories are
-    # deliberately smaller to prevent large transaction tables from overflowing.
-    category_limits = {
-        "个人征信": 18_000,
-        "企业征信": 16_000,
-        "KYC及主体关系": 5_000,
+    model = material_result.get("report_model") if isinstance(material_result.get("report_model"), dict) else {}
+    context = {
+        "customer_basic": base,
+        "enterprise_credit": model.get("enterprise_credit") or {"provided": False},
+        "personal_credit": model.get("personal_credit") or {"provided": False},
+        "metrics": model.get("metrics") or {},
+        "rule_checks": model.get("rule_checks") or [],
+        "materials_processing": bool(material_result.get("processing")),
     }
-    parts = ["## 客户基本信息\n" + _safe_json(base, 3_000)]
-    for category in ("企业征信", "个人征信", "KYC及主体关系"):
-        unique: list[str] = []
-        seen: set[str] = set()
-        for raw in buckets.get(category) or []:
-            compact = raw.strip()
-            fingerprint = compact[:300]
-            if not compact or fingerprint in seen:
-                continue
-            seen.add(fingerprint)
-            unique.append(compact)
-        joined = "\n\n".join(unique)
-        if joined:
-            parts.append(f"## {category}\n{joined[:category_limits[category]]}")
-        else:
-            parts.append(f"## {category}\n未提供或未解析")
-
-    processing_note = "有资料仍在解析，当前报告仅基于已成功保存的结果。" if material_result.get("processing") else "未发现仍在解析的资料。"
-    parts.append(f"## 资料状态\n{processing_note}")
-    return _mask_identifiers_in_text("\n\n".join(parts))[:MAX_REPORT_CONTEXT_CHARS]
+    return _safe_json(context, MAX_REPORT_CONTEXT_CHARS)
 
 
 async def resolve_report_customer(
@@ -318,6 +295,14 @@ def _has_complete_structure(report: str) -> bool:
     return all(heading in report for heading in _REQUIRED_HEADINGS)
 
 
+def _has_unsafe_report_text(report: str) -> bool:
+    return bool(
+        re.search(r"<br\s*/?>", report, re.IGNORECASE)
+        or re.search(r"个人信用报告\s*(?:信息概要|信贷记录概要)", report)
+        or re.search(r"第\s*\d+\s*页\s*(?:/|共)\s*\d+\s*页", report)
+    )
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -334,6 +319,8 @@ def _first(*values: Any) -> Any:
 
 
 def _number(value: Any) -> float | None:
+    if isinstance(value, dict) and "value" in value:
+        value = value.get("value")
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -366,31 +353,81 @@ def _display_number(value: Any) -> Any:
     return str(value)
 
 
-def _display_amount(record: dict[str, Any], *keys: str) -> Any:
-    """Preserve a source-provided currency unit without inventing one."""
-    value = _first(*(record.get(key) for key in keys))
-    displayed = _display_number(value)
-    if displayed == "资料不足" or re.search(r"元|万元|币", str(displayed)):
-        return displayed
-    evidence = str(record.get("evidence") or record.get("source_text") or "")
-    if "万元" in evidence:
-        return f"{displayed}万元"
-    if "人民币元" in evidence or re.search(r"(?:金额|余额|本金)[^。；\n]{0,30}元", evidence):
-        return f"{displayed}元"
-    return displayed
+def _explicit_money_unit(record: dict[str, Any], value: Any, field_name: str) -> str | None:
+    text = str(value or "")
+    if "万元" in text:
+        return "万元"
+    if re.search(r"(?:人民币)?元", text):
+        return "元"
+    for key in (f"{field_name}_unit", "amount_unit", "currency_unit", "unit"):
+        unit = str(record.get(key) or "").strip()
+        if unit in {"元", "人民币元", "万元"}:
+            return "元" if unit == "人民币元" else unit
+    # Evidence is never copied into context/output. Only an exact currency-unit
+    # token may be extracted, then the source text is discarded.
+    evidence = str(record.get("evidence") or "")
+    if evidence and len(evidence) <= 500:
+        if "万元" in evidence:
+            return "万元"
+        if "人民币元" in evidence or re.search(r"(?:金额|余额|本金)[^。；\n]{0,40}元", evidence):
+            return "元"
+    return None
 
 
-def _display_amount_sum(records: list[dict[str, Any]], *keys: str) -> Any:
-    total = _sum_known([_first(*(record.get(key) for key in keys)) for record in records])
-    displayed = _display_number(total)
-    if displayed == "资料不足":
-        return displayed
-    rendered = [_display_amount(record, *keys) for record in records]
-    if rendered and all(str(value).endswith("万元") for value in rendered):
-        return f"{displayed}万元"
-    if rendered and all(str(value).endswith("元") and not str(value).endswith("万元") for value in rendered):
-        return f"{displayed}元"
-    return displayed
+def _money(record: dict[str, Any], *keys: str) -> dict[str, Any] | None:
+    """Return a value/unit object; missing units are explicitly reviewable."""
+    selected_key = next((key for key in keys if record.get(key) not in (None, "")), None)
+    if not selected_key:
+        return None
+    raw = record.get(selected_key)
+    number = _number(raw)
+    if number is None:
+        safe = _safe_business_scalar(raw, selected_key)
+        if safe == ABNORMAL_FIELD_TEXT:
+            return {"value": None, "unit": None, "unit_status": "abnormal"}
+        return {"value": safe, "unit": None, "unit_status": "needs_review"}
+    unit = _explicit_money_unit(record, raw, selected_key)
+    value: int | float = int(number) if number.is_integer() else number
+    return {
+        "value": value,
+        "unit": unit,
+        "unit_status": "confirmed" if unit else "needs_review",
+    }
+
+
+def _money_from_value(value: Any, record: dict[str, Any], field_name: str) -> dict[str, Any] | None:
+    proxy = dict(record)
+    proxy[field_name] = value
+    return _money(proxy, field_name)
+
+
+def _money_sum(records: list[dict[str, Any]], *keys: str) -> dict[str, Any] | None:
+    monies = [_money(record, *keys) for record in records]
+    monies = [money for money in monies if money and _number(money) is not None]
+    if not monies:
+        return None
+    units = {money.get("unit") for money in monies}
+    total = round(sum(_number(money) or 0 for money in monies), 2)
+    unit = next(iter(units)) if len(units) == 1 else None
+    return {
+        "value": int(total) if total.is_integer() else total,
+        "unit": unit,
+        "unit_status": "confirmed" if unit else "needs_review",
+    }
+
+
+def _money_sum_objects(values: list[Any]) -> dict[str, Any] | None:
+    monies = [value for value in values if isinstance(value, dict) and _number(value) is not None]
+    if not monies:
+        return None
+    units = {money.get("unit") for money in monies}
+    total = round(sum(_number(money) or 0 for money in monies), 2)
+    unit = next(iter(units)) if len(units) == 1 else None
+    return {
+        "value": int(total) if total.is_integer() else total,
+        "unit": unit,
+        "unit_status": "confirmed" if unit else "needs_review",
+    }
 
 
 def _unwrap_credit_payload(data: Any, personal: bool) -> dict[str, Any]:
@@ -433,6 +470,13 @@ def _dedupe_records(items: list[dict[str, Any]], keys: tuple[str, ...]) -> list[
     return result
 
 
+def _safe_field(record: dict[str, Any], *keys: str, max_length: int = 300) -> Any:
+    key = next((candidate for candidate in keys if record.get(candidate) not in (None, "")), None)
+    if not key:
+        return None
+    return _safe_business_scalar(record.get(key), key, max_length)
+
+
 def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
     agent = _as_dict(payload.get("agent_result"))
     meta = {**_as_dict(agent.get("report_meta")), **_as_dict(payload.get("report_meta")), **_as_dict(payload.get("report_basic"))}
@@ -446,14 +490,14 @@ def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
     for index, item in enumerate(raw_loans, start=1):
         loans.append({
             "index": index,
-            "institution": _first(item.get("institution"), item.get("institution_name"), item.get("bank")),
-            "institution_type": _first(item.get("institution_type"), item.get("organization_type")),
-            "loan_type": _first(item.get("business_type"), item.get("loan_type"), item.get("term_type")),
-            "contract_amount": _display_amount(item, "loan_amount", "amount", "credit_amount"),
-            "balance": _display_amount(item, "balance", "outstanding_balance", "current_balance"),
-            "start_date": _first(item.get("start_date"), item.get("open_date")),
-            "due_date": _first(item.get("end_date"), item.get("due_date"), item.get("maturity_date")),
-            "status": _first(item.get("status"), item.get("five_category"), item.get("five_classification")),
+            "institution": _safe_field(item, "institution", "institution_name", "bank"),
+            "institution_type": _safe_field(item, "institution_type", "organization_type"),
+            "loan_type": _safe_field(item, "business_type", "loan_type", "term_type"),
+            "contract_amount": _money(item, "loan_amount", "amount", "credit_amount"),
+            "balance": _money(item, "balance", "outstanding_balance", "current_balance"),
+            "start_date": _safe_field(item, "start_date", "open_date"),
+            "due_date": _safe_field(item, "end_date", "due_date", "maturity_date"),
+            "status": _safe_field(item, "status", "five_category", "five_classification"),
         })
     raw_external: list[dict[str, Any]] = []
     for source in (payload, agent):
@@ -461,32 +505,52 @@ def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
     external: list[dict[str, Any]] = []
     for item in _dedupe_records(raw_external, ("guaranteed_subject", "institution_name", "balance", "guarantee_amount")):
         external.append({
-            "guaranteed_subject": _first(item.get("guaranteed_subject"), item.get("guarantee_for"), item.get("customer_name")),
-            "institution": _first(item.get("institution"), item.get("institution_name")),
-            "guarantee_amount": _display_amount(item, "guarantee_amount", "amount"),
-            "balance": _display_amount(item, "guarantee_balance", "balance"),
-            "guarantee_date": _first(item.get("guarantee_date"), item.get("start_date")),
-            "status": _first(item.get("status"), item.get("five_category")),
+            "guaranteed_subject": _safe_field(item, "guaranteed_subject", "guarantee_for", "customer_name"),
+            "institution": _safe_field(item, "institution", "institution_name"),
+            "guarantee_amount": _money(item, "guarantee_amount", "amount"),
+            "balance": _money(item, "guarantee_balance", "balance"),
+            "guarantee_date": _safe_field(item, "guarantee_date", "start_date"),
+            "status": _safe_field(item, "status", "five_category"),
         })
-    abnormal = _as_list(payload.get("abnormal_records")) or _as_list(agent.get("abnormal_records"))
     overdue_records = []
     for item in raw_loans:
         overdue_months = _number(item.get("overdue_months"))
         status = str(_first(item.get("status"), item.get("five_category"), item.get("five_classification")) or "")
         if (overdue_months is not None and overdue_months > 0) or "逾期" in status:
-            overdue_records.append({"description": f"{_first(item.get('institution'), item.get('institution_name')) or '机构未识别'}：{status or f'逾期月数{int(overdue_months or 0)}'}"})
+            overdue_records.append({
+                "institution": _safe_field(item, "institution", "institution_name"),
+                "account_type": _safe_field(item, "business_type", "loan_type"),
+                "current_status": _safe_field(item, "status", "five_category", "five_classification"),
+                "overdue_months": int(overdue_months) if overdue_months is not None else None,
+            })
     guarantee_key_present = "external_guarantee_balance" in summary or "guarantee_balance" in summary
     guarantee_balance = _first(summary.get("external_guarantee_balance"), summary.get("guarantee_balance"))
     return {
         "provided": bool(payload),
-        "report_meta": meta,
-        "summary": summary,
+        "report_meta": {
+            "customer_name": _safe_field(meta, "customer_name", "company_name", "enterprise_name"),
+            "unified_social_credit_code": _safe_field(meta, "unified_social_credit_code"),
+            "report_time": _safe_field(meta, "report_time", "report_date"),
+        },
+        "summary": {
+            "unsettled_credit_balance": _money_from_value(
+                _first(summary.get("unsettled_credit_balance"), summary.get("total_unsettled_balance")),
+                summary,
+                "unsettled_credit_balance",
+            ) if _first(summary.get("unsettled_credit_balance"), summary.get("total_unsettled_balance")) is not None else None,
+            "unsettled_credit_institution_count": _safe_business_scalar(
+                summary.get("unsettled_credit_institution_count"), "unsettled_credit_institution_count"
+            ),
+        },
         "loans": loans,
         "external_guarantees": external,
         "external_guarantee_explicit": guarantee_key_present or bool(external),
-        "external_guarantee_balance": guarantee_balance if guarantee_balance is not None else _sum_known([item.get("balance") for item in raw_external]),
+        "external_guarantee_balance": (
+            _money_from_value(guarantee_balance, summary, "external_guarantee_balance")
+            if guarantee_balance is not None
+            else _money_sum(raw_external, "guarantee_balance", "balance")
+        ),
         "overdue_records": overdue_records,
-        "abnormal_records": abnormal,
     }
 
 
@@ -535,7 +599,9 @@ def _query_matrix(records: list[dict[str, Any]], report_time: Any) -> tuple[list
             if months == 6 and key:
                 hard_6m += 1
             if months == 6 and key == "loan_approval":
-                recent_loan.append(f"{item.get('query_date') or '日期未识别'} / {item.get('query_institution') or '机构未识别'}")
+                date_value = _safe_field(item, "query_date") or "日期未识别"
+                institution = _safe_field(item, "query_institution", "institution") or "机构未识别"
+                recent_loan.append(f"{date_value} / {institution}")
         rows.append({"window": label, **counts})
     return rows, hard_6m, "；".join(dict.fromkeys(recent_loan)) if recent_loan else "未识别到近6个月贷款审批查询明细"
 
@@ -550,14 +616,14 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
     for index, item in enumerate(raw_loans, start=1):
         loans.append({
             "index": index,
-            "institution": _first(item.get("institution"), item.get("institution_name")),
-            "institution_type": item.get("institution_type"),
-            "loan_type": _first(item.get("loan_type"), item.get("business_type")),
-            "contract_amount": _display_amount(item, "loan_amount", "amount", "issued_amount"),
-            "balance": _display_amount(item, "balance", "loan_balance"),
-            "start_date": _first(item.get("start_date"), item.get("open_date")),
-            "due_date": item.get("due_date"),
-            "status": _first(item.get("account_status"), item.get("overdue_status"), item.get("five_category")),
+            "institution": _safe_field(item, "institution", "institution_name"),
+            "institution_type": _safe_field(item, "institution_type"),
+            "loan_type": _safe_field(item, "loan_type", "business_type"),
+            "contract_amount": _money(item, "loan_amount", "amount", "issued_amount"),
+            "balance": _money(item, "balance", "loan_balance"),
+            "start_date": _safe_field(item, "start_date", "open_date"),
+            "due_date": _safe_field(item, "due_date"),
+            "status": _safe_field(item, "account_status", "overdue_status", "five_category"),
         })
     cards = []
     for item in raw_cards:
@@ -567,47 +633,89 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
         if (limit_num := _number(limit)) and (used_num := _number(used)) is not None:
             rate = f"{used_num / limit_num:.2%}"
         cards.append({
-            "issuer": _first(item.get("issuer"), item.get("institution")),
-            "currency": item.get("currency"),
-            "credit_limit": _display_number(limit),
-            "used_amount": _display_number(used),
+            "issuer": _safe_field(item, "issuer", "institution"),
+            "currency": _safe_field(item, "currency"),
+            "credit_limit": _money(item, "credit_limit", "limit"),
+            "used_amount": _money(item, "used_amount", "used_limit", "balance"),
             "usage_rate": rate or "资料不足",
-            "overdue": _first(item.get("overdue_description"), item.get("overdue_status"), item.get("overdue_amount")),
-            "remark": item.get("account_status"),
+            "overdue": _safe_field(item, "overdue_description", "overdue_status", "overdue_amount"),
+            "remark": _safe_field(item, "account_status"),
         })
     related = []
     for item in raw_related:
         related.append({
-            "responsible_subject": responsible_subject or "暂未获取",
-            "related_party": item.get("related_party"),
-            "institution": item.get("institution"),
-            "responsibility_amount": _display_amount(item, "responsibility_amount"),
-            "balance": _display_amount(item, "loan_balance", "balance"),
-            "responsibility_type": item.get("responsibility_type"),
-            "business_type": item.get("business_type"),
-            "as_of_date": item.get("as_of_date"),
+            "responsible_subject": _safe_business_scalar(responsible_subject or "暂未获取", "responsible_subject"),
+            "related_party": _safe_field(item, "related_party"),
+            "institution": _safe_field(item, "institution"),
+            "responsibility_amount": _money(item, "responsibility_amount"),
+            "balance": _money(item, "loan_balance", "balance"),
+            "responsibility_type": _safe_field(item, "responsibility_type"),
+            "business_type": _safe_field(item, "business_type"),
+            "as_of_date": _safe_field(item, "as_of_date"),
         })
-    query_records = _as_list(payload.get("query_records"))
+    query_records = [
+        {
+            "query_date": _safe_field(item, "query_date"),
+            "query_institution": _safe_field(item, "query_institution", "institution"),
+            "query_reason": _safe_field(item, "query_reason", "query_type"),
+        }
+        for item in _as_list(payload.get("query_records"))
+    ]
     matrix, hard_6m, recent_loan = _query_matrix(query_records, basic.get("report_time"))
+    overdue_records = []
+    for item in _as_list(payload.get("overdue_records")):
+        overdue_records.append({
+            "account_type": _safe_field(item, "account_type", "record_type", "business_type"),
+            "institution": _safe_field(item, "institution", "issuer"),
+            "current_status": _safe_field(item, "current_status", "overdue_status", "status"),
+            "overdue_amount": _money(item, "overdue_amount"),
+            "overdue_months": _safe_field(item, "overdue_months"),
+        })
+    public_records = []
+    for item in _as_list(payload.get("public_records")):
+        public_records.append({
+            "record_type": _safe_field(item, "record_type", "type"),
+            "status": _safe_field(item, "status"),
+            "date": _safe_field(item, "date", "record_date"),
+            "amount": _money(item, "amount"),
+            "content": _safe_field(item, "content", "description"),
+        })
+    non_credit_records = []
+    for item in _as_list(payload.get("non_credit_transactions")):
+        non_credit_records.append({
+            "record_type": _safe_field(item, "record_type", "type"),
+            "status": _safe_field(item, "status"),
+            "date": _safe_field(item, "date", "record_date"),
+            "amount": _money(item, "amount"),
+            "content": _safe_field(item, "content", "description"),
+        })
     return {
         "provided": bool(payload),
-        "basic_info": basic,
-        "summary": summary,
+        "basic_info": {
+            key: _safe_business_scalar(value, key)
+            for key, value in basic.items()
+            if key in {"name", "id_type", "id_number", "report_number", "report_time", "marital_status"}
+        },
+        "summary": {
+            key: _safe_business_scalar(value, key) for key, value in summary.items()
+            if key in {
+                "credit_card_account_count", "active_credit_card_account_count", "loan_account_count",
+                "outstanding_loan_account_count", "credit_card_overdue_account_count",
+                "credit_card_90d_overdue_account_count", "loan_overdue_account_count",
+                "loan_90d_overdue_account_count", "personal_related_repayment_responsibility_account_count",
+                "enterprise_related_repayment_responsibility_account_count",
+            }
+        },
         "loans": loans,
         "credit_cards": cards,
         "related_repayment_responsibilities": related,
-        "guarantees": _as_list(payload.get("guarantees")),
-        "overdue_records": [
-            {"description": "；".join(str(value) for value in item.values() if value not in (None, ""))}
-            for item in _as_list(payload.get("overdue_records"))
-        ],
-        "public_records": _as_list(payload.get("public_records")),
-        "non_credit_transactions": _as_list(payload.get("non_credit_transactions")),
+        "overdue_records": overdue_records,
+        "public_records": public_records,
+        "non_credit_transactions": non_credit_records,
         "query_records": query_records,
         "query_matrix": matrix,
         "hard_query_6m_count": hard_6m,
         "recent_loan_approval_queries": recent_loan,
-        "indicators": _as_dict(payload.get("personal_credit_indicators")),
     }
 
 
@@ -649,25 +757,45 @@ def _derive_subjects(customer: dict[str, Any], materials: list[dict[str, Any]], 
                     roles.append("法定代表人")
                 if normalized in {"actual_controller", "actual_controller_name", "controller", "实际控制人"} and "实际控制人" not in roles:
                     roles.append("实际控制人")
-            text = str(material.get("content") or "")
-            escaped = re.escape(str(personal_subject))
-            if re.search(rf"(?:法定代表人|法人)[：:\s]*{escaped}", text) and "法定代表人" not in roles:
-                roles.append("法定代表人")
-            if re.search(rf"实际控制人[：:\s]*{escaped}", text) and "实际控制人" not in roles:
-                roles.append("实际控制人")
     enterprise_identifier = _first(
         enterprise_meta.get("unified_social_credit_code"),
         _find_identifier(materials, ("unified_social_credit_code", "social_credit_code", "credit_code")),
     )
     personal_identifier = _first(personal_basic.get("id_number"), customer.get("id_card"))
     return {
-        "customer_subject": customer.get("name") or "暂未获取",
-        "enterprise_credit_subject": enterprise_subject or "暂未获取",
-        "personal_credit_subject": personal_subject or "暂未获取",
+        "customer_subject": _safe_business_scalar(customer.get("name") or "暂未获取", "customer_subject"),
+        "enterprise_credit_subject": _safe_business_scalar(enterprise_subject or "暂未获取", "enterprise_credit_subject"),
+        "personal_credit_subject": _safe_business_scalar(personal_subject or "暂未获取", "personal_credit_subject"),
         "personal_credit_subject_role": " / ".join(roles) if roles else "需人工核实",
         "enterprise_identifier_masked": _mask_identifier(enterprise_identifier),
         "personal_identifier_masked": _mask_identifier(personal_identifier),
     }
+
+
+def _record_has_current_overdue(record: dict[str, Any]) -> bool:
+    amount = _number(record.get("overdue_amount"))
+    if amount is not None and amount > 0:
+        return True
+    status = " ".join(
+        str(record.get(key) or "")
+        for key in ("current_status", "overdue_status", "account_status", "status", "overdue_description")
+    )
+    if any(marker in status for marker in ("无逾期", "当前无逾期", "从未逾期", "未逾期")):
+        return False
+    return bool(re.search(r"当前.{0,4}逾期|状态.{0,4}逾期|^逾期$", status))
+
+
+def _overdue_conflicts(personal_payload: dict[str, Any], summary: dict[str, Any]) -> list[str]:
+    conflicts: list[str] = []
+    loan_summary = _number(summary.get("loan_overdue_account_count"))
+    card_summary = _number(summary.get("credit_card_overdue_account_count"))
+    loan_current = any(_record_has_current_overdue(item) for item in _as_list(personal_payload.get("loan_accounts")))
+    card_current = any(_record_has_current_overdue(item) for item in _as_list(personal_payload.get("credit_card_accounts")))
+    if loan_summary == 0 and loan_current:
+        conflicts.append("贷款逾期账户数=0，但贷款明细存在当前逾期状态")
+    if card_summary == 0 and card_current:
+        conflicts.append("信用卡逾期账户数=0，但信用卡明细存在当前逾期状态")
+    return conflicts
 
 
 def build_credit_report_model(material_result: dict[str, Any]) -> dict[str, Any]:
@@ -680,38 +808,61 @@ def build_credit_report_model(material_result: dict[str, Any]) -> dict[str, Any]
     personal = _personal_credit_model(personal_payload, subjects.get("personal_credit_subject") or "")
     es = enterprise.get("summary") or {}
     ps = personal.get("summary") or {}
-    personal_loan_balance = _sum_known([item.get("balance") for item in _as_list(personal_payload.get("loan_accounts"))])
-    card_limit = _sum_known([_first(item.get("credit_limit"), item.get("limit")) for item in _as_list(personal_payload.get("credit_card_accounts"))])
-    card_used = _sum_known([_first(item.get("used_amount"), item.get("used_limit"), item.get("balance")) for item in _as_list(personal_payload.get("credit_card_accounts"))])
+    personal_loan_records = _as_list(personal_payload.get("loan_accounts"))
+    card_records = _as_list(personal_payload.get("credit_card_accounts"))
+    personal_loan_balance = _money_sum(personal_loan_records, "balance", "loan_balance")
+    card_limit = _money_sum(card_records, "credit_limit", "limit")
+    card_used = _money_sum(card_records, "used_amount", "used_limit", "balance")
     related_records = _as_list(personal_payload.get("related_repayment_responsibilities"))
     loan_overdue = ps.get("loan_overdue_account_count")
     card_overdue = ps.get("credit_card_overdue_account_count")
     loan_90 = ps.get("loan_90d_overdue_account_count")
     card_90 = ps.get("credit_card_90d_overdue_account_count")
     overdue_90 = None if loan_90 is None and card_90 is None else (_number(loan_90) or 0) + (_number(card_90) or 0)
+    enterprise_balance_value = _first(es.get("unsettled_credit_balance"), es.get("total_unsettled_balance"))
+    enterprise_balance = (
+        enterprise_balance_value
+        if isinstance(enterprise_balance_value, dict)
+        else _money_from_value(enterprise_balance_value, es, "unsettled_credit_balance")
+        if enterprise_balance_value is not None
+        else _money_sum_objects([item.get("balance") for item in enterprise.get("loans") or []])
+    )
+    card_limit_number = _number(card_limit)
+    card_used_number = _number(card_used)
+    overdue_conflicts = _overdue_conflicts(personal_payload, ps)
+    card_summary_count = ps.get("credit_card_account_count")
+    card_detail_count = len(personal.get("credit_cards") or [])
+    card_count_mismatch = (
+        _number(card_summary_count) is not None
+        and int(_number(card_summary_count) or 0) != card_detail_count
+    )
     metrics = {
-        "enterprise_unsettled_loan_balance": _display_number(_first(es.get("unsettled_credit_balance"), es.get("total_unsettled_balance"), _sum_known([_number(item.get("balance")) for item in enterprise.get("loans") or []]))),
-        "enterprise_unsettled_loan_count": _first(es.get("unsettled_credit_institution_count"), len(enterprise.get("loans") or []) or None),
-        "personal_unsettled_loan_balance": _display_number(personal_loan_balance),
+        "enterprise_unsettled_loan_balance": enterprise_balance,
+        "enterprise_unsettled_loan_institution_count": es.get("unsettled_credit_institution_count"),
+        "personal_unsettled_loan_balance": personal_loan_balance,
         "personal_unsettled_loan_account_count": _first(ps.get("outstanding_loan_account_count"), len(personal.get("loans") or []) or None),
-        "personal_credit_card_limit": _display_number(card_limit),
-        "personal_credit_card_used": _display_number(card_used),
-        "credit_card_usage_rate": f"{card_used / card_limit:.2%}" if card_limit and card_used is not None else None,
+        "personal_credit_card_limit": card_limit,
+        "personal_credit_card_used": card_used,
+        "credit_card_usage_rate": f"{card_used_number / card_limit_number:.2%}" if card_limit_number and card_used_number is not None else None,
         "loan_overdue_account_count": loan_overdue,
         "credit_card_overdue_account_count": card_overdue,
         "overdue_90d_account_count": int(overdue_90) if overdue_90 is not None else None,
-        "enterprise_external_guarantee_balance": _display_number(enterprise.get("external_guarantee_balance")),
+        "enterprise_external_guarantee_balance": enterprise.get("external_guarantee_balance"),
         "enterprise_external_guarantee_explicit": bool(enterprise.get("external_guarantee_explicit")),
-        "personal_related_repayment_balance": _display_amount_sum(related_records, "loan_balance", "balance"),
+        "personal_related_repayment_balance": _money_sum(related_records, "loan_balance", "balance"),
         "hard_query_6m_count": personal.get("hard_query_6m_count"),
         "dti": None,
         "online_loan_count": None,
         "large_revolving_due_concentration": None,
         "credit_card_account_count": ps.get("credit_card_account_count"),
+        "credit_card_detail_count": card_detail_count,
+        "credit_card_count_mismatch": card_count_mismatch,
+        "overdue_data_conflicts": overdue_conflicts,
     }
     model = {"subjects": subjects, "enterprise_credit": enterprise, "personal_credit": personal, "metrics": metrics}
     model["rule_checks"] = evaluate_credit_report_rules(model)
     material_result["subjects"] = subjects
+    material_result["report_model"] = model
     return model
 
 
@@ -719,7 +870,7 @@ NARRATIVE_SYSTEM_PROMPT = """你是一名融资资料分析助手。只根据传
 禁止生成 Markdown 表格。禁止修改、补充或重新判断 rule_checks 的状态。禁止自行创造查询、DTI、网贷、信用卡使用率等阈值。
 禁止引用财务报表、资产负债率、营业收入、应收账款、利润、经营现金流、企业流水、个人流水、房产。
 企业贷款与个人贷款必须分开；个人信用卡不得描述为企业信用卡；法人相关还款责任不得描述为企业对外担保。
-资料不足时写“资料不足”，矛盾时写“需人工核实”。不得输出审批概率、额度、利率或放款承诺。
+资料不足时写“资料不足”，可信字段矛盾时写“待核验”。不得输出审批概率、额度、利率或放款承诺。
 只返回 JSON 对象，键必须为：emergency_attention, query_frequency_analysis, historical_credit_features, optimization_urgent, optimization_medium, optimization_long, advantages, risks, comprehensive_summary, one_sentence_conclusion。
 除四个说明字段外，其余字段均为字符串数组。"""
 
@@ -728,11 +879,14 @@ def _default_narrative(report_model: dict[str, Any]) -> dict[str, Any]:
     rules = report_model.get("rule_checks") or []
     risks = [f"{item['item']}：{item['current']}" for item in rules if item.get("status") in {"风险", "关注", "超标"}]
     strengths = [f"{item['item']}：{item['current']}" for item in rules if item.get("status") == "达标"]
-    urgent = [item.get("direction") for item in rules if item.get("status") == "风险" and item.get("direction")]
+    urgent = [item.get("direction") for item in rules if item.get("status") in {"风险", "待核验"} and item.get("direction")]
+    medium = [item.get("direction") for item in rules if item.get("status") in {"关注", "待评估"} and item.get("direction")]
+    long_term = [item.get("direction") for item in rules if item.get("status") == "资料不足" and item.get("direction")]
     personal = report_model.get("personal_credit") or {}
     enterprise = report_model.get("enterprise_credit") or {}
     if personal.get("related_repayment_responsibilities"):
         risks.append("法人个人征信存在相关还款责任，需与企业对外担保分口径核验。")
+        urgent.append("核验法人相关还款责任的责任类型、当前余额及关联主体。")
     if enterprise.get("external_guarantee_explicit") and _number(enterprise.get("external_guarantee_balance")) == 0:
         strengths.append("企业征信明确记录企业对外担保余额为0。")
     features = [
@@ -744,14 +898,38 @@ def _default_narrative(report_model: dict[str, Any]) -> dict[str, Any]:
         "emergency_attention": risks or ["暂无需要立即处理的明确风险事项。"],
         "query_frequency_analysis": "当前值仅作事实展示；未配置统一银行准入阈值的项目均为待评估。",
         "historical_credit_features": features,
-        "optimization_urgent": urgent,
-        "optimization_medium": [item.get("direction") for item in rules if item.get("status") == "关注" and item.get("direction")],
-        "optimization_long": [],
+        "optimization_urgent": list(dict.fromkeys(item for item in urgent if item)),
+        "optimization_medium": list(dict.fromkeys(item for item in medium if item)),
+        "optimization_long": list(dict.fromkeys(item for item in long_term if item))[:4],
         "advantages": strengths,
         "risks": risks,
         "comprehensive_summary": "本报告仅基于已保存的企业征信、个人征信及必要主体关系资料，缺失项目未作推断。",
         "one_sentence_conclusion": "需结合明确征信事实及具体银行正式准入规则进一步人工评估。",
     }
+
+
+def _narrative_has_unsafe_value(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(_narrative_has_unsafe_value(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_narrative_has_unsafe_value(child) for child in value)
+    if not isinstance(value, str):
+        return False
+    return (
+        len(value) > 300
+        or value.count("\n") > 3
+        or any(pattern.search(value) for pattern in _ABNORMAL_TEXT_PATTERNS)
+    )
+
+
+def _merge_required_narrative(parsed: dict[str, Any], report_model: dict[str, Any]) -> dict[str, Any]:
+    default = _default_narrative(report_model)
+    for key in default:
+        if key not in parsed or not isinstance(parsed[key], type(default[key])):
+            parsed[key] = default[key]
+    for key in ("optimization_urgent", "optimization_medium", "optimization_long", "risks", "advantages"):
+        parsed[key] = list(dict.fromkeys([*default[key], *parsed[key]]))
+    return parsed
 
 
 def _parse_narrative(raw: str, report_model: dict[str, Any]) -> dict[str, Any]:
@@ -762,7 +940,7 @@ def _parse_narrative(raw: str, report_model: dict[str, Any]) -> dict[str, Any]:
         return _default_narrative(report_model)
     if not isinstance(parsed, dict):
         return _default_narrative(report_model)
-    forbidden = re.compile(r"资产负债率|营业收入|收入下滑|应收账款|经营现金流|财务报表|企业流水|个人流水|房产|审批概率|大概率通过")
+    forbidden = re.compile(r"资产负债率|营业收入|收入下滑|应收账款|经营现金流|财务报表|企业流水|个人流水|房产|审批概率|大概率通过|<br\s*/?>", re.IGNORECASE)
     rendered = json.dumps(parsed, ensure_ascii=False)
     if forbidden.search(rendered):
         return _default_narrative(report_model)
@@ -770,11 +948,9 @@ def _parse_narrative(raw: str, report_model: dict[str, Any]) -> dict[str, Any]:
     output_numbers = set(re.findall(r"\d+(?:\.\d+)?", rendered))
     if not output_numbers.issubset(source_numbers):
         return _default_narrative(report_model)
-    default = _default_narrative(report_model)
-    for key in default:
-        if key not in parsed or not isinstance(parsed[key], type(default[key])):
-            parsed[key] = default[key]
-    return parsed
+    if _narrative_has_unsafe_value(parsed):
+        return _default_narrative(report_model)
+    return _merge_required_narrative(parsed, report_model)
 
 
 async def generate_credit_one_page_report(
@@ -857,7 +1033,7 @@ async def generate_credit_one_page_report(
 
     narrative = _parse_narrative(raw_narrative, report_model)
     report = _strip_internal_output(render_credit_one_page_report(report_model, narrative, generated_at))
-    if not report or not _has_complete_structure(report):
+    if not report or not _has_complete_structure(report) or _has_unsafe_report_text(report):
         logger.warning("credit one-page report failed structure validation")
         return {
             "message": "报告生成结果不完整，系统未向您展示可能缺失关键信息的内容，请稍后重试。",

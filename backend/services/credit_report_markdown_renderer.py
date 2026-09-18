@@ -2,17 +2,66 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
+ABNORMAL_FIELD_TEXT = "资料异常，需核验"
+
+
+def _format_number(value: Any) -> str:
+    if isinstance(value, float):
+        if value.is_integer():
+            return f"{int(value):,}"
+        return f"{value:,.2f}".rstrip("0").rstrip(".")
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
+def _format_money(value: dict[str, Any]) -> str:
+    amount = value.get("value")
+    if amount in (None, ""):
+        return ABNORMAL_FIELD_TEXT if value.get("unit_status") == "abnormal" else "资料不足"
+    rendered = _format_number(amount)
+    unit = value.get("unit")
+    if unit:
+        return f"{rendered}{unit}"
+    return f"{rendered}（单位待核验）"
+
+
+def _money_number(value: Any) -> float | None:
+    if isinstance(value, dict):
+        value = value.get("value")
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).replace(",", ""))
+    except ValueError:
+        return None
 
 
 def _cell(value: Any, empty: str = "资料不足") -> str:
-    if value is None or value == "":
+    if isinstance(value, dict) and "value" in value:
+        text = _format_money(value)
+    elif value is None or value == "":
         text = empty
     elif isinstance(value, bool):
         text = "是" if value else "否"
     else:
         text = str(value)
-    return text.replace("|", "\\|").replace("\r", " ").replace("\n", "<br>").strip() or empty
+    if (
+        len(text) > 300
+        or re.search(r"<br\s*/?>", text, re.IGNORECASE)
+        or re.search(r"个人信用报告|企业信用报告|信息概要|信贷记录概要", text)
+        or text.count("\n") > 3
+    ):
+        logger.warning("credit report renderer rejected abnormal cell length=%s", len(text))
+        text = ABNORMAL_FIELD_TEXT
+    return text.replace("|", "\\|").replace("\r", " ").replace("\n", "；").strip() or empty
 
 
 def _row_values(item: dict[str, Any], fields: Iterable[str]) -> list[Any]:
@@ -36,7 +85,7 @@ def render_markdown_table(headers: list[str], rows: list[list[Any]], empty_label
 def render_core_metrics_table(metrics: dict[str, Any]) -> str:
     definitions = (
         ("企业未结清贷款余额", "enterprise_unsettled_loan_balance", "企业征信"),
-        ("企业未结清贷款笔数", "enterprise_unsettled_loan_count", "企业征信"),
+        ("企业未结清贷款机构数", "enterprise_unsettled_loan_institution_count", "企业征信原始指标语义"),
         ("个人未结清贷款余额", "personal_unsettled_loan_balance", "个人征信"),
         ("个人未结清贷款账户数", "personal_unsettled_loan_account_count", "个人征信"),
         ("个人信用卡授信额度", "personal_credit_card_limit", "个人征信"),
@@ -70,11 +119,11 @@ def render_credit_card_table(cards: list[dict[str, Any]]) -> str:
     )
 
 
-def render_enterprise_guarantee_table(items: list[dict[str, Any]], explicit_zero: bool = False) -> str:
+def render_enterprise_guarantee_table(items: list[dict[str, Any]], explicit_zero: bool = False, zero_balance: Any = None) -> str:
     if not items and explicit_zero:
         return render_markdown_table(
             ["被担保主体", "贷款机构", "担保金额", "当前余额", "担保日期", "状态"],
-            [["企业征信明确记录为0", "-", "0", "0", "-", "无余额"]],
+            [["企业征信明确记录为0", "-", None, zero_balance, "-", "无余额"]],
         )
     fields = ("guaranteed_subject", "institution", "guarantee_amount", "balance", "guarantee_date", "status")
     return render_markdown_table(
@@ -203,13 +252,27 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 
 {render_credit_card_table(cards)}
 
+**账户数量核对：** {_cell(
+    f"征信概要账户数为{metrics.get('credit_card_account_count')}，本节可稳定提取明细数为{metrics.get('credit_card_detail_count')}，两者不一致，需核验。"
+    if metrics.get('credit_card_count_mismatch')
+    else (
+        f"征信概要账户数与本节可稳定提取明细数均为{metrics.get('credit_card_account_count')}。"
+        if metrics.get('credit_card_account_count') is not None
+        else "资料不足"
+    )
+)}
+
 # 四、担保及相关还款责任
 
 ## 4.1 企业对外担保
 
 本节只采用企业征信口径。
 
-{render_enterprise_guarantee_table(enterprise_guarantees, bool(metrics.get('enterprise_external_guarantee_explicit') and metrics.get('enterprise_external_guarantee_balance') in (0, 0.0, '0')))}
+{render_enterprise_guarantee_table(
+    enterprise_guarantees,
+    bool(metrics.get('enterprise_external_guarantee_explicit') and _money_number(metrics.get('enterprise_external_guarantee_balance')) == 0),
+    metrics.get('enterprise_external_guarantee_balance'),
+)}
 
 ## 4.2 法人相关还款责任
 
@@ -221,19 +284,19 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 
 ## 企业征信逾期
 
-{_record_lines(enterprise_overdue, (('逾期记录', 'description'),))}
+{_record_lines(enterprise_overdue, (('机构', 'institution'), ('账户/业务类型', 'account_type'), ('当前状态', 'current_status'), ('逾期月数', 'overdue_months')))}
 
 ## 个人征信逾期
 
-{_record_lines(personal_overdue, (('逾期记录', 'description'),))}
+{_record_lines(personal_overdue, (('机构', 'institution'), ('账户/业务类型', 'account_type'), ('当前状态', 'current_status'), ('逾期金额', 'overdue_amount'), ('逾期月数', 'overdue_months')))}
 
 ## 公共记录
 
-{_record_lines(public_records, (('记录类型', 'record_type'), ('内容', 'content')))}
+{_record_lines(public_records, (('记录类型', 'record_type'), ('状态', 'status'), ('日期', 'date'), ('金额', 'amount'), ('内容', 'content')))}
 
 ## 非信贷交易记录
 
-{_record_lines(non_credit, (('记录类型', 'record_type'), ('内容', 'content')))}
+{_record_lines(non_credit, (('记录类型', 'record_type'), ('状态', 'status'), ('日期', 'date'), ('金额', 'amount'), ('内容', 'content')))}
 
 # 六、征信查询记录
 
@@ -285,4 +348,3 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 
 {_cell(narrative.get('one_sentence_conclusion') if isinstance(narrative, dict) else None)}
 """.strip()
-

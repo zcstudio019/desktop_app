@@ -58,8 +58,8 @@ class FakeAI:
             "optimization_urgent": [],
             "optimization_medium": [],
             "optimization_long": [],
-            "advantages": ["企业对外担保余额在企业征信中明确记录为零。"],
-            "risks": ["法人个人征信存在相关还款责任，需单独核验。"],
+            "advantages": [],
+            "risks": [],
             "comprehensive_summary": "企业征信与法人个人征信已分口径展示。",
             "one_sentence_conclusion": "需结合具体银行正式准入规则进一步评估。",
         }
@@ -419,3 +419,134 @@ def test_no_materials_and_processing_are_business_safe():
     processing_storage = FakeStorage(customers=[row], extractions={row["customer_id"]: [extraction("personal_credit_report", {}, status="running")]})
     processing = run(generate_credit_one_page_report(processing_storage, FakeAI(), "生成征信一页纸", row["customer_id"]))
     assert processing["data"]["reportStatus"] == "materials_processing"
+
+
+def test_report_does_not_expose_raw_ocr_text():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    leaked = "个人信用报告\n信息概要\n" + "从未逾期过的贷记卡账户。" * 80
+    personal["raw_text"] = leaked
+    personal["public_records"] = [{"record_type": "公共记录", "content": leaked}]
+    storage.extractions[customer_id][1] = extraction(
+        "personal_credit_report", {"report_json": personal, "raw_markdown": leaked}
+    )
+    ai = FakeAI()
+    report = generated(storage, ai)["message"]
+    assert "从未逾期过的贷记卡账户" not in report
+    assert "从未逾期过的贷记卡账户" not in ai.content
+    assert "个人信用报告\n信息概要" not in report
+    assert "资料异常，需核验" in report
+
+
+def test_report_does_not_contain_html_br():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    personal["public_records"] = [{"record_type": "公共记录", "content": "第一段<br>第二段<br/>第三段"}]
+    storage.extractions[customer_id][1] = extraction("personal_credit_report", {"report_json": personal})
+    report = generated(storage)["message"]
+    assert "<br" not in report.lower()
+    assert "资料异常，需核验" in report
+
+
+def test_report_table_headers_are_separate_columns():
+    report = generated()["message"]
+    assert "| 主体信息 | 内容 |" in report
+    assert "| 指标 | 当前情况 | 口径/来源 |" in report
+    assert "| 序号 | 贷款机构 | 机构类别 | 贷款类型 | 合同金额 | 当前余额 | 发放日期 | 到期日期 | 状态/备注 |" in report
+    assert "| 责任主体 | 被担保/关联主体 | 贷款机构 | 责任金额 | 当前余额 | 责任类型 | 业务类型 | 截至日期 |" in report
+    assert "**主体信息内容**" not in report
+
+
+def test_report_table_column_counts_match():
+    report = generated()["message"]
+    tables = []
+    current = []
+    for line in report.splitlines():
+        if line.startswith("|"):
+            current.append(line)
+        elif current:
+            tables.append(current)
+            current = []
+    if current:
+        tables.append(current)
+    assert tables
+    for table in tables:
+        width = table[0].count("|")
+        assert width >= 3
+        assert all(row.count("|") == width for row in table)
+
+
+def test_conflicting_overdue_data_becomes_needs_review():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    personal["credit_summary"]["loan_overdue_account_count"] = 0
+    personal["loan_accounts"][0]["overdue_status"] = "当前逾期"
+    storage.extractions[customer_id][1] = extraction("personal_credit_report", {"report_json": personal})
+    materials = run(get_customer_materials(storage, customer_id))
+    model = build_credit_report_model(materials)
+    rule = next(item for item in model["rule_checks"] if item["item"] == "逾期记录")
+    assert rule["status"] == "待核验"
+    assert rule["current"] == "资料存在冲突"
+    assert "贷款逾期账户数=0" in rule["basis"]
+    report = generated(storage)["message"]
+    assert "| 逾期记录 | 待核验 | 资料存在冲突 |" in report
+    urgent = report.split("## 🔴 紧急（1周内）", 1)[1].split("## 🟡", 1)[0]
+    assert "核对源征信报告" in urgent
+
+
+def test_money_without_unit_marked_needs_review():
+    report = generated()["message"]
+    assert "300,000（单位待核验）" in report
+    assert "180,000（单位待核验）" in report
+
+
+def test_institution_count_not_renamed_to_loan_count():
+    report = generated()["message"]
+    assert "企业未结清贷款机构数" in report
+    assert "企业未结清贷款笔数" not in report
+
+
+def test_overdue_account_count_not_renamed_to_overdue_times():
+    report = generated()["message"]
+    assert "贷款逾期账户数" in report
+    assert "信用卡逾期账户数" in report
+    assert "逾期次数" not in report
+
+
+def test_related_repayment_not_equal_enterprise_guarantee():
+    report = generated()["message"]
+    enterprise = report.split("## 4.1 企业对外担保", 1)[1].split("## 4.2", 1)[0]
+    personal = report.split("## 4.2 法人相关还款责任", 1)[1].split("# 五、", 1)[0]
+    assert "18,739,532" not in enterprise
+    assert "18,739,532元" in personal
+    assert "不等同于企业对外担保" in personal
+
+
+def test_missing_data_does_not_fallback_to_raw_text():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    raw_only = {
+        "report_json": {
+            "basic_info": {"name": "黎云"},
+            "credit_summary": {},
+            "raw_text": "个人信用报告 信息概要 当前逾期账户1个" * 50,
+        }
+    }
+    storage.extractions[customer_id][1] = extraction("personal_credit_report", raw_only)
+    report = generated(storage)["message"]
+    assert "当前逾期账户1个" not in report
+    assert "贷款逾期账户数 | 资料不足" in report
+
+
+def test_credit_card_summary_detail_count_mismatch_is_explained():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    personal["credit_summary"]["credit_card_account_count"] = 11
+    storage.extractions[customer_id][1] = extraction("personal_credit_report", {"report_json": personal})
+    report = generated(storage)["message"]
+    assert "征信概要账户数为11，本节可稳定提取明细数为1，两者不一致，需核验" in report
+    assert "| 信用卡账户数量一致性 | 待核验 |" in report
