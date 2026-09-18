@@ -774,6 +774,23 @@ def test_chat_post_credit_one_page_report_returns_200(monkeypatch):
     assert "| 主体信息 | 内容 |" in payload["message"]
     assert "| 指标 | 当前情况 | 口径/来源 |" in payload["message"]
     assert "| 序号 | 贷款机构 | 机构类别 | 贷款类型 | 合同金额 | 当前余额 | 发放日期 | 到期日期 | 状态/备注 |" in payload["message"]
+    assert "| 发卡行 | 币种 | 信用额度 | 已用额度 | 使用率 | 逾期 | 备注 |" in payload["message"]
+    assert "| 时间范围 | 贷款审批 | 信用卡审批 | 担保资格审查 | 法人资信审查 |" in payload["message"]
+    assert "| 检查项 | 状态 | 当前情况 | 判断依据 | 优化方向 |" in payload["message"]
+    assert payload["message"].splitlines()[0] == "# 征信速览报告"
+
+
+def test_generic_kyc_document_preserves_both_roles_in_final_report():
+    storage = complete_storage()
+    cid = storage.customers[0]["customer_id"]
+    enterprise = enterprise_credit_payload()
+    enterprise["extracted_json"]["actual_controller"] = {"name": "黎云"}
+    storage.extractions[cid][0] = extraction("enterprise_credit_report", enterprise)
+    storage.extractions[cid][2] = extraction("kyc_document_agent", {
+        "doc_type": "business_license", "fields": {"legal_representative": "黎　云"},
+    })
+    report = generated(storage)["message"]
+    assert "个人与企业关系：法定代表人 / 实际控制人" in report
 
 
 def test_single_confirmed_role_is_preserved():

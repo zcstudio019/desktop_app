@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -198,6 +199,14 @@ async def get_customer_materials(storage_service: Any, customer_id: str) -> dict
     materials: list[dict[str, Any]] = []
     for item in successful:
         category = _material_group(str(item.get("extraction_type") or ""))
+        if category == "其他资料":
+            # Generic KYC records identify their actual document type in the
+            # persisted result. Apply the same narrow relation whitelist.
+            saved = _as_dict(item.get("extracted_data"))
+            confirmed = _as_dict(item.get("confirmed_data"))
+            document_category = _material_group(str(confirmed.get("doc_type") or saved.get("doc_type") or ""))
+            if document_category == "KYC及主体关系":
+                category = document_category
         if category == "其他资料":
             continue
         materials.append(
@@ -826,7 +835,9 @@ def _find_identifier(materials: list[dict[str, Any]], keys: tuple[str, ...]) -> 
 
 def _relation_names(value: Any) -> set[str]:
     if isinstance(value, str):
-        cleaned = value.strip()
+        cleaned = unicodedata.normalize("NFKC", value).strip()
+        if re.fullmatch(r"[\u4e00-\u9fff\s]+", cleaned):
+            cleaned = re.sub(r"\s+", "", cleaned)
         return {cleaned} if cleaned else set()
     if isinstance(value, dict):
         names: set[str] = set()
@@ -862,7 +873,8 @@ def _derive_subjects(customer: dict[str, Any], materials: list[dict[str, Any]], 
                     role_names["法定代表人"].update(names)
                 if normalized in {"actualcontroller", "actualcontrollername", "controller", "实际控制人", "实际控制人姓名"}:
                     role_names["实际控制人"].update(names)
-    subject_name = str(personal_subject or "").strip()
+    subject_names = _relation_names(personal_subject)
+    subject_name = next(iter(subject_names)) if len(subject_names) == 1 else ""
     relation_conflict = any(len(names) > 1 for names in role_names.values())
     roles = [role for role in ("法定代表人", "实际控制人") if role_names[role] == {subject_name}]
     enterprise_identifier = _first(
