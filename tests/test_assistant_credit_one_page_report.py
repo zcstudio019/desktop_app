@@ -507,7 +507,8 @@ def test_credit_card_rmb_amount_uses_yuan():
 
 def test_related_liability_rmb_amount_uses_yuan():
     report = generated()["message"]
-    assert "20,000,000元" in report
+    # This fixture declares yuan only for the balance, not responsibility_amount.
+    assert "20,000,000（单位待核验）" in report
     assert "18,739,532元" in report
 
 

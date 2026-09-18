@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from typing import Any
 
@@ -56,7 +57,7 @@ _TYPE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "KYC及主体关系",
         (
             "id_card", "身份证", "business_license", "营业执照", "company_articles", "公司章程",
-            "shareholder_id_card", "股东身份证",
+            "shareholder_id_card", "股东身份证", "account_permit",
         ),
     ),
 )
@@ -209,13 +210,20 @@ async def get_customer_materials(storage_service: Any, customer_id: str) -> dict
                 category = document_category
         if category == "其他资料":
             continue
+        structured = item.get("confirmed_data") or item.get("extracted_data") or {}
+        saved = _as_dict(item.get("extracted_data"))
+        if item.get("extraction_type") == "account_permit" or saved.get("doc_type") == "account_permit":
+            # This document is admitted solely as a structured identity source.
+            # Never include its account numbers or other banking information.
+            structured = {"fields": {"legal_representative":
+                _as_dict(saved.get("fields")).get("legal_representative")}}
         materials.append(
             {
                 "category": category,
                 "type": str(item.get("extraction_type") or "其他资料"),
                 "status": str(item.get("extraction_status") or "success"),
                 "structured_data": _drop_disallowed_source_fields(
-                    item.get("confirmed_data") or item.get("extracted_data") or {}
+                    structured
                 ),
                 "created_at": str(item.get("created_at") or ""),
             }
@@ -383,6 +391,24 @@ def _declared_unit(record: dict[str, Any], keys: tuple[str, ...]) -> str | None:
     return None
 
 
+def _exact_evidence_money_unit(value: Any, evidence: str) -> str | None:
+    """Bind a numeric token to its adjacent unit; never export evidence text."""
+    try:
+        expected = Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, ValueError):
+        return None
+    if not expected.is_finite():
+        return None
+    # No newline, prose, HTML or section boundary is allowed between the amount
+    # and unit. Permit only a parenthesis and short horizontal OCR spacing.
+    pattern = r"(?<![\d.,+\-])([+\-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?![\d.,])[ \t]{0,3}[（(]?[ \t]{0,3}((?:人[ \t]{0,2}民[ \t]{0,2}币[ \t]{0,2})?(?:万元|元))"
+    units = set()
+    for match in re.finditer(pattern, evidence):
+        if Decimal(match.group(1).replace(",", "")) == expected:
+            units.add("万元" if "万" in match.group(2) else "元")
+    return next(iter(units)) if len(units) == 1 else None
+
+
 def _explicit_money_unit(
     record: dict[str, Any],
     value: Any,
@@ -390,6 +416,7 @@ def _explicit_money_unit(
     *,
     section_unit: str | None = None,
     document_unit: str | None = None,
+    exact_evidence: bool = False,
 ) -> str | None:
     if isinstance(value, dict):
         if field_unit := _normalize_money_unit(value.get("unit")):
@@ -412,6 +439,8 @@ def _explicit_money_unit(
     # Evidence is never copied into context/output. Only an exact currency-unit
     # token may be extracted, then the source text is discarded.
     evidence = str(record.get("evidence") or "")
+    if exact_evidence:
+        return _exact_evidence_money_unit(value, evidence)
     if evidence and len(evidence) <= 500:
         if "万元" in evidence:
             return "万元"
@@ -425,6 +454,7 @@ def _money(
     *keys: str,
     section_unit: str | None = None,
     document_unit: str | None = None,
+    exact_evidence: bool = False,
 ) -> dict[str, Any] | None:
     """Return a value/unit object; missing units are explicitly reviewable."""
     selected_key = next((key for key in keys if record.get(key) not in (None, "")), None)
@@ -437,7 +467,7 @@ def _money(
         if safe == ABNORMAL_FIELD_TEXT:
             return {"value": None, "unit": None, "message": ABNORMAL_FIELD_TEXT}
         return {"value": safe, "unit": None}
-    unit = _explicit_money_unit(record, raw, selected_key, section_unit=section_unit, document_unit=document_unit)
+    unit = _explicit_money_unit(record, raw, selected_key, section_unit=section_unit, document_unit=document_unit, exact_evidence=exact_evidence)
     value: int | float = _integer_if_integral(number)
     return {"value": value, "unit": unit}
 
@@ -722,8 +752,8 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str, ge
             "responsible_subject": _safe_business_scalar(responsible_subject or "暂未获取", "responsible_subject"),
             "related_party": _safe_field(item, "related_party"),
             "institution": _safe_field(item, "institution"),
-            "responsibility_amount": _money(item, "responsibility_amount", section_unit=related_section_unit, document_unit=document_unit),
-            "balance": _money(item, "loan_balance", "balance", section_unit=related_section_unit, document_unit=document_unit),
+            "responsibility_amount": _money(item, "responsibility_amount", section_unit=related_section_unit, document_unit=document_unit, exact_evidence=True),
+            "balance": _money(item, "loan_balance", "balance", section_unit=related_section_unit, document_unit=document_unit, exact_evidence=True),
             "responsibility_type": _safe_field(item, "responsibility_type"),
             "business_type": _safe_field(item, "business_type"),
             "as_of_date": _safe_field(item, "as_of_date"),
@@ -836,6 +866,10 @@ def _find_identifier(materials: list[dict[str, Any]], keys: tuple[str, ...]) -> 
 def _relation_names(value: Any) -> set[str]:
     if isinstance(value, str):
         cleaned = unicodedata.normalize("NFKC", value).strip()
+        if (cleaned.startswith("/") or "非法人组织负责" in cleaned
+                or cleaned in {"法定代表人", "法人", "法人代表", "实际控制人", "负责人", "姓名", "需人工核实", "资料不足"}
+                or not re.fullmatch(r"[\u4e00-\u9fffA-Za-z·.'\-\s]{2,80}", cleaned)):
+            return set()
         if re.fullmatch(r"[\u4e00-\u9fff\s]+", cleaned):
             cleaned = re.sub(r"\s+", "", cleaned)
         return {cleaned} if cleaned else set()
@@ -867,8 +901,6 @@ def _derive_subjects(customer: dict[str, Any], materials: list[dict[str, Any]], 
             for key, value in _walk_key_values(structured):
                 normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", key.lower())
                 names = _relation_names(value)
-                if not names and isinstance(value, str) and value.strip():
-                    names = {value.strip()}
                 if normalized in {"legalrepresentative", "legalperson", "legalrepresentativename", "legalpersonname", "法人", "法人姓名", "法定代表人", "法定代表人姓名"}:
                     role_names["法定代表人"].update(names)
                 if normalized in {"actualcontroller", "actualcontrollername", "controller", "实际控制人", "实际控制人姓名"}:
