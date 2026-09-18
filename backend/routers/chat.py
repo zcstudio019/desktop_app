@@ -51,6 +51,11 @@ from backend.services.product_cache_service import get_cache_content
 from backend.services.profile_sync_service import ProfileSyncService
 from backend.services.sqlalchemy_storage_service import SQLAlchemyStorageService
 from backend.services.agents.agent_memory import build_customer_ai_context
+from backend.services.assistant_credit_report_service import (
+    CREDIT_REPORT_INTENT,
+    generate_credit_one_page_report,
+    is_credit_report_request,
+)
 
 from ..middleware.auth import get_current_user_optional
 from ..models.schemas import (
@@ -204,6 +209,11 @@ def recognize_intent(message: str) -> str:
     """
     if not message or not message.strip():
         return "chat"
+
+    # Report requests are narrow and deterministic. Check them before the generic
+    # LLM classifier so "分析征信" is not accidentally routed to scheme matching.
+    if is_credit_report_request(message):
+        return CREDIT_REPORT_INTENT
 
     try:
         prompt = INTENT_PROMPT.format(message=message)
@@ -1554,6 +1564,13 @@ async def _dispatch_intent(
     """
     if intent == "extract":
         return await _handle_extract_intent(request, user_message, conversation_history, current_user)
+    elif intent == CREDIT_REPORT_INTENT:
+        return await generate_credit_one_page_report(
+            storage_service,
+            ai_service,
+            user_message,
+            selected_customer_id=request.customerId,
+        )
     elif intent == "application":
         return await handle_application_intent(
             user_message,

@@ -3112,7 +3112,7 @@ interface IntentActionsProps {
 }
 
 const IntentActions: React.FC<IntentActionsProps> = ({ intent, onAction }) => {
-  if (!intent || intent === 'chat') return null;
+  if (!intent || intent === 'chat' || intent === 'credit_one_page_report') return null;
 
   const actions = {
     extract: { icon: Upload, label: '上传资料', action: 'upload' },

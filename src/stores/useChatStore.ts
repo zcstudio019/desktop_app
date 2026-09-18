@@ -15,6 +15,7 @@ type ChatStatus = 'idle' | 'sending' | 'error';
 type ChatStoreState = {
   messages: ChatMessage[];
   status: ChatStatus;
+  progressMessage: string | null;
   error: string | null;
   sessionId: string | null;
   selectedModel: string;
@@ -26,6 +27,7 @@ type ChatStoreActions = {
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
   setStatus: (status: ChatStatus) => void;
+  setProgressMessage: (message: string | null) => void;
   setError: (error: string | null) => void;
   setSessionId: (sessionId: string | null) => void;
   setSelectedModel: (model: string) => void;
@@ -50,6 +52,7 @@ export const OPENAI_CHAT_MODEL =
 const initialState: ChatStoreState = {
   messages: [],
   status: 'idle',
+  progressMessage: null,
   error: null,
   sessionId: null,
   selectedModel: DEFAULT_CHAT_MODEL,
@@ -88,6 +91,9 @@ const actions: ChatStoreActions = {
   setStatus(status) {
     emit({ ...state, status });
   },
+  setProgressMessage(progressMessage) {
+    emit({ ...state, progressMessage });
+  },
   setError(error) {
     emit({ ...state, error });
   },
@@ -119,6 +125,7 @@ export function useChatStore(): ChatStoreState & ChatStoreActions {
     setMessages: useCallback(actions.setMessages, []),
     addMessage: useCallback(actions.addMessage, []),
     setStatus: useCallback(actions.setStatus, []),
+    setProgressMessage: useCallback(actions.setProgressMessage, []),
     setError: useCallback(actions.setError, []),
     setSessionId: useCallback(actions.setSessionId, []),
     setSelectedModel: useCallback(actions.setSelectedModel, []),

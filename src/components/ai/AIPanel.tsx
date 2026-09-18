@@ -1,12 +1,24 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Bot, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import { useApp } from '../../context/AppContext';
 import { useChatStore } from '../../stores/useChatStore';
 import ChatInput from './ChatInput';
 import ChatMessages from './ChatMessages';
 import ModelSelector from './ModelSelector';
 
 const AIPanel: React.FC = () => {
-  const { clearConversation } = useChatStore();
+  const { state } = useApp();
+  const { clearConversation, setAIContext } = useChatStore();
+
+  useEffect(() => {
+    const storedId = window.localStorage.getItem('currentCustomerId') || window.sessionStorage.getItem('currentCustomerId') || '';
+    const storedName = window.localStorage.getItem('currentCustomerName') || window.sessionStorage.getItem('currentCustomerName') || '';
+    const id = state.extraction.currentCustomerId || storedId;
+    const name = state.extraction.currentCustomer || storedName;
+    setAIContext({
+      selectedCustomer: id ? { id, name: name || id.replace(/^(enterprise_|personal_)/, '') } : null,
+    });
+  }, [setAIContext, state.extraction.currentCustomer, state.extraction.currentCustomerId]);
 
   return (
     <aside

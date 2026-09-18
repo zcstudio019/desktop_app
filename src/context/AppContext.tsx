@@ -95,7 +95,7 @@ export interface ChatMessage {
   /** AI reasoning/thinking process */
   reasoning?: string | null;
   /** Detected intent for structured task messages */
-  intent?: 'extract' | 'application' | 'matching' | 'chat' | null;
+  intent?: 'extract' | 'application' | 'matching' | 'credit_one_page_report' | 'chat' | null;
   /** Structured payload rendered below the message */
   data?: Record<string, unknown> | null;
   /** Weak task association for task-aware conversation rendering */

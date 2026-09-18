@@ -41,6 +41,7 @@ const ChatInput: React.FC = () => {
     selectedModel,
     addMessage,
     setStatus,
+    setProgressMessage,
     setError,
     setSessionId,
   } = useChatStore();
@@ -60,6 +61,13 @@ const ChatInput: React.FC = () => {
     setValue('');
     setError(null);
     setStatus('sending');
+    const isCreditReport = /征信(?:一页纸|速览|分析报告|报告)|标准征信报告/.test(content);
+    setProgressMessage(isCreditReport ? '正在读取客户资料…' : '正在思考');
+    const progressTimers: number[] = [];
+    if (isCreditReport) {
+      progressTimers.push(window.setTimeout(() => setProgressMessage('正在分析征信信息…'), 900));
+      progressTimers.push(window.setTimeout(() => setProgressMessage('正在生成征信速览报告…'), 2200));
+    }
 
     const filePrefix = localFiles.length
       ? localFiles.map((file) => `[FILE:${file.name}:${file.type || 'application/octet-stream'}]`).join('')
@@ -94,6 +102,8 @@ const ChatInput: React.FC = () => {
         ],
         files,
         sessionId,
+        customerId: aiContext.selectedCustomer?.id || null,
+        customerName: aiContext.selectedCustomer?.name || null,
       });
       const nextSessionId = (response as { sessionId?: string | null }).sessionId;
       if (nextSessionId) {
@@ -110,9 +120,13 @@ const ChatInput: React.FC = () => {
         messageType: 'text',
       });
       setStatus('idle');
+      setProgressMessage(null);
     } catch (error) {
       setError(error instanceof Error ? error.message : '发送失败，请稍后重试。');
       setStatus('error');
+      setProgressMessage(null);
+    } finally {
+      progressTimers.forEach((timer) => window.clearTimeout(timer));
     }
   };
 

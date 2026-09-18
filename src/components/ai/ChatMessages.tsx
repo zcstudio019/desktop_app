@@ -1,11 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import { Bot, Loader2, Sparkles } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../../stores/useChatStore';
+import MarkdownBlock from '../MarkdownBlock';
 
 const ChatMessages: React.FC = () => {
-  const { messages, status, error } = useChatStore();
+  const { messages, status, progressMessage, error } = useChatStore();
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -38,15 +37,13 @@ const ChatMessages: React.FC = () => {
               </div>
             ) : null}
             <div
-              className={`max-w-[82%] rounded-2xl px-3.5 py-2.5 text-sm leading-6 shadow-sm ${
+              className={`${isUser ? 'max-w-[82%]' : 'max-w-[96%] min-w-0'} rounded-2xl px-3.5 py-2.5 text-sm leading-6 shadow-sm ${
                 isUser
                   ? 'rounded-br-md bg-blue-600 text-white'
                   : 'rounded-bl-md border border-slate-200 bg-white text-slate-700'
               }`}
             >
-              <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-              </div>
+              {isUser ? <div className="whitespace-pre-wrap">{message.content}</div> : <MarkdownBlock content={message.content} />}
             </div>
           </div>
         );
@@ -59,7 +56,7 @@ const ChatMessages: React.FC = () => {
           </div>
           <div className="inline-flex items-center gap-2 rounded-2xl rounded-bl-md border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-500 shadow-sm">
             <Loader2 className="h-4 w-4 animate-spin" />
-            正在思考
+            {progressMessage || '正在思考'}
           </div>
         </div>
       ) : null}
