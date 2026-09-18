@@ -51,7 +51,7 @@ def render_money(value: Any, unit: str | None = None) -> str:
 def _format_money(value: dict[str, Any]) -> str:
     amount = value.get("value")
     if amount in (None, ""):
-        return ABNORMAL_FIELD_TEXT if value.get("unit_status") == "abnormal" else "资料不足"
+        return _cell(value.get("message")) if value.get("message") else "资料不足"
     return render_money(amount, value.get("unit"))
 
 
@@ -127,8 +127,12 @@ def render_core_metrics_table(metrics: dict[str, Any]) -> str:
 
 
 def render_loan_table(loans: list[dict[str, Any]]) -> str:
-    fields = ("index", "institution", "institution_type", "loan_type", "contract_amount", "balance", "start_date", "due_date", "status")
-    rows = [_row_values(item, fields) for item in loans]
+    rows = []
+    for item in loans:
+        source_status = f"源征信记录状态：{item.get('status')}" if item.get("status") not in (None, "") else None
+        status_parts = [source_status, item.get("due_date_assessment")]
+        status = "；".join(str(value).strip().rstrip("。") for value in status_parts if value not in (None, ""))
+        rows.append(_row_values(item, ("index", "institution", "institution_type", "loan_type", "contract_amount", "balance", "start_date", "due_date")) + [status or None])
     return render_markdown_table(
         list(TABLE_HEADERS["loan"]),
         rows,
@@ -226,6 +230,7 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
     personal = report_model.get("personal_credit") or {}
     metrics = report_model.get("metrics") or {}
     rules = report_model.get("rule_checks") or []
+    dates = report_model.get("dates") if isinstance(report_model.get("dates"), dict) else {}
 
     enterprise_loans = enterprise.get("loans") if isinstance(enterprise.get("loans"), list) else []
     personal_loans = personal.get("loans") if isinstance(personal.get("loans"), list) else []
@@ -264,6 +269,8 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 个人与企业关系：{_cell(subjects.get('personal_credit_subject_role'), '需人工核实')}
 
 报告时间：{generated_at}
+
+源征信报告日期：企业征信 {_cell(dates.get('enterprise_source_report_date'))}；个人征信 {_cell(dates.get('personal_source_report_date'))}
 
 ---
 
@@ -346,6 +353,8 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 {_record_lines(non_credit, (('记录类型', 'record_type'), ('状态', 'status'), ('日期', 'date'), ('金额', 'amount'), ('内容', 'content')))}
 
 # 六、征信查询记录
+
+以下“近1月、近3月、近6月”等统计窗口均以个人征信源报告日期 {_cell(dates.get('personal_source_report_date'))} 为基准，不以本报告生成时间为基准。
 
 {render_query_table(personal.get('query_matrix') or [])}
 

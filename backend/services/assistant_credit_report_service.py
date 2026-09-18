@@ -288,6 +288,16 @@ def _strip_internal_output(text: str) -> str:
     cleaned = _mask_identifiers_in_text(cleaned)
     # Internal identifiers must never be displayed in the assistant response.
     cleaned = re.sub(r"(?im)^.*\b(?:customer_id|evidence_id|extraction_id|doc_id)\b.*$\n?", "", cleaned)
+    internal_statuses = {
+        "needs_review": "待核验",
+        "missing": "资料不足",
+        "pending": "待处理",
+        "unknown": "资料不足",
+        "normalized": "已标准化",
+    }
+    for internal, business_text in internal_statuses.items():
+        cleaned = re.sub(rf"(?i)\b{re.escape(internal)}\b", business_text, cleaned)
+    cleaned = re.sub(r"(?i)\b(?:raw_text|ocr_text|internal_status)\b", "", cleaned)
     return cleaned.strip()
 
 
@@ -300,6 +310,7 @@ def _has_unsafe_report_text(report: str) -> bool:
         re.search(r"<br\s*/?>", report, re.IGNORECASE)
         or re.search(r"个人信用报告\s*(?:信息概要|信贷记录概要)", report)
         or re.search(r"第\s*\d+\s*页\s*(?:/|共)\s*\d+\s*页", report)
+        or re.search(r"(?i)\b(?:needs_review|raw_text|ocr_text|normalized|internal_status)\b", report)
     )
 
 
@@ -411,15 +422,11 @@ def _money(
     if number is None:
         safe = _safe_business_scalar(raw, selected_key)
         if safe == ABNORMAL_FIELD_TEXT:
-            return {"value": None, "unit": None, "unit_status": "abnormal"}
-        return {"value": safe, "unit": None, "unit_status": "needs_review"}
+            return {"value": None, "unit": None, "message": ABNORMAL_FIELD_TEXT}
+        return {"value": safe, "unit": None}
     unit = _explicit_money_unit(record, raw, selected_key, section_unit=section_unit, document_unit=document_unit)
     value: int | float = _integer_if_integral(number)
-    return {
-        "value": value,
-        "unit": unit,
-        "unit_status": "confirmed" if unit else "needs_review",
-    }
+    return {"value": value, "unit": unit}
 
 
 def _money_from_value(
@@ -443,11 +450,7 @@ def _money_sum(records: list[dict[str, Any]], *keys: str) -> dict[str, Any] | No
     units = {money.get("unit") for money in monies}
     total = round(sum((_number(money) or 0.0 for money in monies), 0.0), 2)
     unit = next(iter(units)) if len(units) == 1 else None
-    return {
-        "value": _integer_if_integral(total),
-        "unit": unit,
-        "unit_status": "confirmed" if unit else "needs_review",
-    }
+    return {"value": _integer_if_integral(total), "unit": unit}
 
 
 def _money_sum_objects(values: list[Any]) -> dict[str, Any] | None:
@@ -457,11 +460,7 @@ def _money_sum_objects(values: list[Any]) -> dict[str, Any] | None:
     units = {money.get("unit") for money in monies}
     total = round(sum((_number(money) or 0.0 for money in monies), 0.0), 2)
     unit = next(iter(units)) if len(units) == 1 else None
-    return {
-        "value": _integer_if_integral(total),
-        "unit": unit,
-        "unit_status": "confirmed" if unit else "needs_review",
-    }
+    return {"value": _integer_if_integral(total), "unit": unit}
 
 
 def _unwrap_credit_payload(data: Any, personal: bool) -> dict[str, Any]:
@@ -511,7 +510,7 @@ def _safe_field(record: dict[str, Any], *keys: str, max_length: int = 300) -> An
     return _safe_business_scalar(record.get(key), key, max_length)
 
 
-def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
+def _enterprise_credit_model(payload: dict[str, Any], generated_at: str | None = None) -> dict[str, Any]:
     agent = _as_dict(payload.get("agent_result"))
     meta = {**_as_dict(agent.get("report_meta")), **_as_dict(payload.get("report_meta")), **_as_dict(payload.get("report_basic"))}
     summary = {**_as_dict(agent.get("credit_summary")), **_as_dict(payload.get("credit_summary"))}
@@ -536,6 +535,7 @@ def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
             "balance": _money(item, "balance", "outstanding_balance", "current_balance", section_unit=loan_section_unit, document_unit=document_unit),
             "start_date": _safe_field(item, "start_date", "open_date"),
             "due_date": _safe_field(item, "end_date", "due_date", "maturity_date"),
+            "due_date_assessment": _due_date_assessment(_safe_field(item, "end_date", "due_date", "maturity_date"), generated_at),
             "status": _safe_field(item, "status", "five_category", "five_classification"),
         })
     raw_external: list[dict[str, Any]] = []
@@ -605,6 +605,19 @@ def _parse_date(value: Any) -> datetime | None:
         return None
 
 
+def _due_date_assessment(due_date: Any, generated_at: Any) -> str | None:
+    due = _parse_date(due_date)
+    generated = _parse_date(generated_at)
+    if due is None or generated is None:
+        return None
+    due_text = due.strftime("%Y-%m-%d")
+    if due.date() > generated.date():
+        return f"到期日为{due_text}，截至本报告生成日尚未到期。"
+    if due.date() == generated.date():
+        return f"到期日为{due_text}，与本报告生成日为同一日。"
+    return f"原到期日为{due_text}，早于本报告生成日；当前是否已结清、续贷或展期资料不足，需核实。"
+
+
 def _query_matrix(records: list[dict[str, Any]], report_time: Any) -> tuple[list[dict[str, Any]], int | None, str]:
     windows = (("近1月", 1), ("近2月", 2), ("近3月", 3), ("近6月", 6), ("近9月", 9), ("近1年", 12), ("近2年", 24))
     if not records:
@@ -646,7 +659,7 @@ def _query_matrix(records: list[dict[str, Any]], report_time: Any) -> tuple[list
     return rows, institution_query_6m, "；".join(dict.fromkeys(recent_loan)) if recent_loan else "未识别到近6个月贷款审批查询明细"
 
 
-def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) -> dict[str, Any]:
+def _personal_credit_model(payload: dict[str, Any], responsible_subject: str, generated_at: str | None = None) -> dict[str, Any]:
     basic = _as_dict(payload.get("basic_info"))
     summary = _as_dict(payload.get("credit_summary"))
     raw_loans = _as_list(payload.get("loan_accounts"))
@@ -667,6 +680,7 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
             "balance": _money(item, "balance", "loan_balance", section_unit=loan_section_unit, document_unit=document_unit),
             "start_date": _safe_field(item, "start_date", "open_date"),
             "due_date": _safe_field(item, "due_date"),
+            "due_date_assessment": _due_date_assessment(_safe_field(item, "due_date"), generated_at),
             "status": _safe_field(item, "account_status", "overdue_status", "five_category"),
         })
     cards = []
@@ -708,13 +722,24 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
     matrix, institution_query_6m, recent_loan = _query_matrix(query_records, basic.get("report_time"))
     overdue_records = []
     for item in _as_list(payload.get("overdue_records")):
-        overdue_records.append({
+        normalized_overdue = {
             "account_type": _safe_field(item, "account_type", "record_type", "business_type"),
             "institution": _safe_field(item, "institution", "issuer"),
             "current_status": _safe_field(item, "current_status", "overdue_status", "status"),
             "overdue_amount": _money(item, "overdue_amount", document_unit=document_unit),
             "overdue_months": _safe_field(item, "overdue_months"),
-        })
+        }
+        if normalized_overdue["institution"] and normalized_overdue["account_type"] and _record_has_current_overdue(item):
+            overdue_records.append(normalized_overdue)
+    loan_overdue_count = _number(summary.get("loan_overdue_account_count"))
+    card_overdue_count = _number(summary.get("credit_card_overdue_account_count"))
+    ninety_values = [
+        _number(summary.get(key))
+        for key in ("overdue_90_plus_account_count", "loan_90d_overdue_account_count", "credit_card_90d_overdue_account_count")
+        if summary.get(key) is not None
+    ]
+    if loan_overdue_count == 0 and card_overdue_count == 0 and ninety_values and all(value == 0 for value in ninety_values):
+        overdue_records = []
     public_records = []
     for item in _as_list(payload.get("public_records")):
         public_records.append({
@@ -747,6 +772,7 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
                 "outstanding_loan_account_count", "credit_card_overdue_account_count",
                 "credit_card_90d_overdue_account_count", "loan_overdue_account_count",
                 "loan_90d_overdue_account_count", "personal_related_repayment_responsibility_account_count",
+                "overdue_90_plus_account_count",
                 "enterprise_related_repayment_responsibility_account_count",
             }
         },
@@ -759,6 +785,7 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
             "credit_card_overdue_account_count": _safe_business_scalar(summary.get("credit_card_overdue_account_count"), "credit_card_overdue_account_count"),
             "loan_90d_overdue_account_count": _safe_business_scalar(summary.get("loan_90d_overdue_account_count"), "loan_90d_overdue_account_count"),
             "credit_card_90d_overdue_account_count": _safe_business_scalar(summary.get("credit_card_90d_overdue_account_count"), "credit_card_90d_overdue_account_count"),
+            "overdue_90_plus_account_count": _safe_business_scalar(summary.get("overdue_90_plus_account_count"), "overdue_90_plus_account_count"),
         },
         "public_records": public_records,
         "non_credit_transactions": non_credit_records,
@@ -789,24 +816,48 @@ def _find_identifier(materials: list[dict[str, Any]], keys: tuple[str, ...]) -> 
     return None
 
 
+def _relation_names(value: Any) -> set[str]:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return {cleaned} if cleaned else set()
+    if isinstance(value, dict):
+        names: set[str] = set()
+        for key, child in value.items():
+            normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", str(key).lower())
+            if normalized in {"name", "fullname", "personname", "姓名", "名称"}:
+                names.update(_relation_names(child))
+        return names
+    if isinstance(value, list):
+        names: set[str] = set()
+        for child in value:
+            names.update(_relation_names(child))
+        return names
+    return set()
+
+
 def _derive_subjects(customer: dict[str, Any], materials: list[dict[str, Any]], enterprise_payload: dict[str, Any], personal_payload: dict[str, Any]) -> dict[str, Any]:
     enterprise_meta = {**_as_dict(_as_dict(enterprise_payload.get("agent_result")).get("report_meta")), **_as_dict(enterprise_payload.get("report_meta")), **_as_dict(enterprise_payload.get("report_basic"))}
     personal_basic = _as_dict(personal_payload.get("basic_info"))
     enterprise_subject = _first(enterprise_meta.get("customer_name"), enterprise_meta.get("company_name"), enterprise_meta.get("enterprise_name"))
     personal_subject = personal_basic.get("name")
     relation_sources = [item for item in materials if item.get("category") in {"企业征信", "KYC及主体关系"}]
-    roles: list[str] = []
+    role_names: dict[str, set[str]] = {"法定代表人": set(), "实际控制人": set()}
     if personal_subject:
         for material in relation_sources:
             structured = material.get("structured_data")
             for key, value in _walk_key_values(structured):
-                normalized = key.lower()
-                if str(value).strip() != str(personal_subject).strip():
-                    continue
-                if normalized in {"legal_representative", "legal_person", "legal_representative_name", "法人", "法定代表人"} and "法定代表人" not in roles:
-                    roles.append("法定代表人")
-                if normalized in {"actual_controller", "actual_controller_name", "controller", "实际控制人"} and "实际控制人" not in roles:
-                    roles.append("实际控制人")
+                normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", key.lower())
+                names = _relation_names(value)
+                if not names and isinstance(value, str) and value.strip():
+                    names = {value.strip()}
+                if normalized in {"legalrepresentative", "legalperson", "legalrepresentativename", "legalpersonname", "法人", "法人姓名", "法定代表人", "法定代表人姓名"}:
+                    role_names["法定代表人"].update(names)
+                if normalized in {"actualcontroller", "actualcontrollername", "controller", "实际控制人", "实际控制人姓名"}:
+                    role_names["实际控制人"].update(names)
+    subject_name = str(personal_subject or "").strip()
+    relation_conflict = any(names and names != {subject_name} for names in role_names.values())
+    relation_complete = all(role_names[role] for role in ("法定代表人", "实际控制人"))
+    roles = [role for role in ("法定代表人", "实际控制人") if role_names[role] == {subject_name}]
     enterprise_identifier = _first(
         enterprise_meta.get("unified_social_credit_code"),
         _find_identifier(materials, ("unified_social_credit_code", "social_credit_code", "credit_code")),
@@ -816,7 +867,7 @@ def _derive_subjects(customer: dict[str, Any], materials: list[dict[str, Any]], 
         "customer_subject": _safe_business_scalar(customer.get("name") or "暂未获取", "customer_subject"),
         "enterprise_credit_subject": _safe_business_scalar(enterprise_subject or "暂未获取", "enterprise_credit_subject"),
         "personal_credit_subject": _safe_business_scalar(personal_subject or "暂未获取", "personal_credit_subject"),
-        "personal_credit_subject_role": " / ".join(roles) if roles else "需人工核实",
+        "personal_credit_subject_role": " / ".join(roles) if relation_complete and not relation_conflict else "需人工核实",
         "enterprise_identifier_masked": _mask_identifier(enterprise_identifier),
         "personal_identifier_masked": _mask_identifier(personal_identifier),
     }
@@ -846,14 +897,14 @@ def _overdue_conflicts(personal_payload: dict[str, Any], summary: dict[str, Any]
     return conflicts
 
 
-def build_credit_report_model(material_result: dict[str, Any]) -> dict[str, Any]:
+def build_credit_report_model(material_result: dict[str, Any], generated_at: str | None = None) -> dict[str, Any]:
     materials = material_result.get("materials") if isinstance(material_result.get("materials"), list) else []
     customer = material_result.get("customer") or {}
     enterprise_payload = _latest_credit_payload(materials, "企业征信")
     personal_payload = _latest_credit_payload(materials, "个人征信")
     subjects = _derive_subjects(customer, materials, enterprise_payload, personal_payload)
-    enterprise = _enterprise_credit_model(enterprise_payload)
-    personal = _personal_credit_model(personal_payload, subjects.get("personal_credit_subject") or "")
+    enterprise = _enterprise_credit_model(enterprise_payload, generated_at)
+    personal = _personal_credit_model(personal_payload, subjects.get("personal_credit_subject") or "", generated_at)
     es = enterprise.get("summary") or {}
     ps = personal.get("summary") or {}
     personal_loan_balance = _money_sum_objects([item.get("balance") for item in personal.get("loans") or []])
@@ -861,9 +912,12 @@ def build_credit_report_model(material_result: dict[str, Any]) -> dict[str, Any]
     card_used = _money_sum_objects([item.get("used_amount") for item in personal.get("credit_cards") or []])
     loan_overdue = ps.get("loan_overdue_account_count")
     card_overdue = ps.get("credit_card_overdue_account_count")
+    explicit_90 = ps.get("overdue_90_plus_account_count")
     loan_90 = ps.get("loan_90d_overdue_account_count")
     card_90 = ps.get("credit_card_90d_overdue_account_count")
-    overdue_90 = None if loan_90 is None and card_90 is None else (_number(loan_90) or 0) + (_number(card_90) or 0)
+    overdue_90 = _number(explicit_90)
+    if overdue_90 is None:
+        overdue_90 = None if loan_90 is None and card_90 is None else (_number(loan_90) or 0) + (_number(card_90) or 0)
     enterprise_balance_value = _first(es.get("unsettled_credit_balance"), es.get("total_unsettled_balance"))
     enterprise_balance = (
         enterprise_balance_value
@@ -904,7 +958,17 @@ def build_credit_report_model(material_result: dict[str, Any]) -> dict[str, Any]
         "credit_card_count_mismatch": card_count_mismatch,
         "overdue_data_conflicts": overdue_conflicts,
     }
-    model = {"subjects": subjects, "enterprise_credit": enterprise, "personal_credit": personal, "metrics": metrics}
+    model = {
+        "subjects": subjects,
+        "dates": {
+            "generated_at": generated_at,
+            "enterprise_source_report_date": (enterprise.get("report_meta") or {}).get("report_time"),
+            "personal_source_report_date": (personal.get("basic_info") or {}).get("report_time"),
+        },
+        "enterprise_credit": enterprise,
+        "personal_credit": personal,
+        "metrics": metrics,
+    }
     model["rule_checks"] = evaluate_credit_report_rules(model)
     material_result["subjects"] = subjects
     material_result["report_model"] = model
@@ -915,6 +979,8 @@ NARRATIVE_SYSTEM_PROMPT = """你是一名融资资料分析助手。只根据传
 禁止生成 Markdown 表格。禁止修改、补充或重新判断 rule_checks 的状态。禁止自行创造查询、DTI、网贷、信用卡使用率等阈值。
 禁止引用财务报表、资产负债率、营业收入、应收账款、利润、经营现金流、企业流水、个人流水、房产。
 企业贷款与个人贷款必须分开；个人信用卡不得描述为企业信用卡；法人相关还款责任不得描述为企业对外担保。
+必须区分 source_report_date 与 generated_at。源征信查询窗口只相对于源征信报告日期。禁止把早于 generated_at 的到期日描述为“将于到期”“即将到期”或“距报告时间较近”。
+禁止引用不可靠、要素缺失、疑似或关键词匹配得到的逾期条目；逾期结论只能使用传入的稳定结构化概要和可靠明细。
 资料不足时写“资料不足”，可信字段矛盾时写“待核验”。不得输出审批概率、额度、利率或放款承诺。
 只返回 JSON 对象，键必须为：emergency_attention, query_frequency_analysis, historical_credit_features, optimization_urgent, optimization_medium, optimization_long, advantages, risks, comprehensive_summary, one_sentence_conclusion。
 除四个说明字段外，其余字段均为字符串数组。"""
@@ -985,7 +1051,13 @@ def _parse_narrative(raw: str, report_model: dict[str, Any]) -> dict[str, Any]:
         return _default_narrative(report_model)
     if not isinstance(parsed, dict):
         return _default_narrative(report_model)
-    forbidden = re.compile(r"资产负债率|营业收入|收入下滑|应收账款|经营现金流|财务报表|企业流水|个人流水|房产|审批概率|大概率通过|<br\s*/?>", re.IGNORECASE)
+    forbidden = re.compile(
+        r"资产负债率|营业收入|收入下滑|应收账款|经营现金流|财务报表|企业流水|个人流水|房产|审批概率|大概率通过|<br\s*/?>"
+        r"|将于.{0,30}到期|即将到期|临近到期|距.{0,30}(?:到期|报告时间).{0,20}(?:较近|临近)"
+        r"|要素缺失.{0,20}逾期|逾期.{0,20}要素缺失|疑似逾期|逾期条目"
+        r"|\b(?:needs_review|raw_text|ocr_text|normalized|internal_status)\b",
+        re.IGNORECASE,
+    )
     rendered = json.dumps(parsed, ensure_ascii=False)
     if forbidden.search(rendered):
         return _default_narrative(report_model)
@@ -1051,7 +1123,7 @@ async def generate_credit_one_page_report(
         return {"message": message_text, "data": {"reportStatus": report_status}}
 
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    report_model = build_credit_report_model(materials)
+    report_model = build_credit_report_model(materials, generated_at)
     context = build_report_context(materials)
     user_prompt = f"""以下内容已经由程序按企业征信、个人征信和主体关系分离。请只生成叙述 JSON，不要生成表格或重新分类责任口径。
 

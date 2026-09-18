@@ -488,6 +488,17 @@ def test_person_enterprise_relation_from_structured_kyc():
     assert "个人与企业关系：法定代表人 / 实际控制人" in generated(storage)["message"]
 
 
+def test_person_enterprise_relation_supports_nested_structured_kyc():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    storage.extractions[customer_id][2] = extraction(
+        "business_license",
+        {"legalRepresentative": {"name": "黎云"}, "actualController": {"name": "黎云"}},
+    )
+    materials = run(get_customer_materials(storage, customer_id))
+    assert build_credit_report_model(materials)["subjects"]["personal_credit_subject_role"] == "法定代表人 / 实际控制人"
+
+
 def test_credit_card_rmb_amount_uses_yuan():
     report = generated()["message"]
     assert "100,000元" in report
@@ -535,6 +546,51 @@ def test_query_total_not_called_hard_query_without_rule():
     assert "近6个月征信机构查询次数" in report
     assert "硬查询次数" not in report
     assert "| 查询频率 | 待评估 |" in report
+
+
+def test_past_due_date_uses_generated_at_and_does_not_claim_future_due():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    personal["loan_accounts"][0].update({"institution": "中国建设银行", "due_date": "2026-04-23"})
+    storage.extractions[customer_id][1] = extraction("personal_credit_report", {"report_json": personal})
+    bad_ai = FakeAI()
+    bad_ai.response["historical_credit_features"] = ["中国建设银行贷款将于2026-04-23到期，距报告时间较近。"]
+    report = generated(storage, bad_ai)["message"]
+    assert "原到期日为2026-04-23，早于本报告生成日；当前是否已结清、续贷或展期资料不足，需核实" in report
+    assert "将于2026-04-23到期" not in report
+    assert "距报告时间较近" not in report
+
+
+def test_query_windows_are_explicitly_based_on_source_report_date():
+    report = generated()["message"]
+    assert "均以个人征信源报告日期 2026-03-20 为基准，不以本报告生成时间为基准" in report
+
+
+def test_zero_overdue_removes_unreliable_overdue_items_from_all_sections():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    personal["overdue_records"] = [{"account_type": "逾期"}, {"current_status": "逾期"}]
+    storage.extractions[customer_id][1] = extraction("personal_credit_report", {"report_json": personal})
+    bad_ai = FakeAI()
+    bad_ai.response["historical_credit_features"] = ["存在2条要素缺失的逾期条目。"]
+    bad_ai.response["optimization_urgent"] = ["核验2条要素缺失的逾期条目。"]
+    bad_ai.response["risks"] = ["2条要素缺失的逾期条目构成风险。"]
+    bad_ai.response["comprehensive_summary"] = "存在2条要素缺失的逾期条目。"
+    result = generated(storage, bad_ai)
+    assert result["data"]["reportStatus"] == "completed"
+    assert "2条要素缺失的逾期条目" not in result["message"]
+    assert "2条要素缺失的逾期条目" not in bad_ai.content
+
+
+def test_final_markdown_does_not_expose_internal_statuses():
+    ai = FakeAI()
+    ai.response["historical_credit_features"] = ["needs_review raw_text ocr_text normalized internal_status"]
+    result = generated(ai=ai)
+    forbidden = ("needs_review", "raw_text", "ocr_text", "normalized", "internal_status")
+    assert all(token not in result["message"] for token in forbidden)
+    assert all(token not in ai.content for token in forbidden)
 
 
 def test_report_table_column_counts_match():
@@ -715,3 +771,6 @@ def test_chat_post_credit_one_page_report_returns_200(monkeypatch):
     assert payload["intent"] == "credit_one_page_report"
     assert payload["data"]["reportStatus"] == "completed"
     assert payload["message"].startswith("# 征信速览报告")
+    assert "| 主体信息 | 内容 |" in payload["message"]
+    assert "| 指标 | 当前情况 | 口径/来源 |" in payload["message"]
+    assert "| 序号 | 贷款机构 | 机构类别 | 贷款类型 | 合同金额 | 当前余额 | 发放日期 | 到期日期 | 状态/备注 |" in payload["message"]
