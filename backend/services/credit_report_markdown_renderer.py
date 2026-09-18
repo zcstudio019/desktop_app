@@ -94,6 +94,10 @@ def _row_values(item: dict[str, Any], fields: Iterable[str]) -> list[Any]:
 
 def render_markdown_table(headers: list[str], rows: list[list[Any]], empty_label: str = "资料不足") -> str:
     """Render a valid GFM table with identical column counts for every row."""
+    if not isinstance(headers, list) or not all(isinstance(header, str) for header in headers):
+        raise ValueError("Report table headers must be list[str]")
+    if tuple(headers) not in TABLE_HEADERS.values():
+        raise ValueError("Report table headers do not match the fixed report columns")
     width = len(headers)
     normalized_rows = rows or [[empty_label] * width]
     lines = [
@@ -104,6 +108,24 @@ def render_markdown_table(headers: list[str], rows: list[list[Any]], empty_label
         padded = list(row[:width]) + [empty_label] * max(0, width - len(row))
         lines.append("| " + " | ".join(_cell(value, empty_label) for value in padded) + " |")
     return "\n".join(lines)
+
+
+def has_valid_final_report_tables(markdown: str) -> bool:
+    if not markdown.startswith("# 征信速览报告\n"):
+        return False
+    expected = {"| " + " | ".join(headers) + " |" for headers in TABLE_HEADERS.values()}
+    found: set[str] = set()
+    in_table = False
+    for line in markdown.splitlines():
+        if line.startswith("|"):
+            if not in_table:
+                if line not in expected:
+                    return False
+                found.add(line)
+            in_table = True
+        else:
+            in_table = False
+    return found == expected
 
 
 def render_core_metrics_table(metrics: dict[str, Any]) -> str:

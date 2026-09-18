@@ -774,3 +774,55 @@ def test_chat_post_credit_one_page_report_returns_200(monkeypatch):
     assert "| 主体信息 | 内容 |" in payload["message"]
     assert "| 指标 | 当前情况 | 口径/来源 |" in payload["message"]
     assert "| 序号 | 贷款机构 | 机构类别 | 贷款类型 | 合同金额 | 当前余额 | 发放日期 | 到期日期 | 状态/备注 |" in payload["message"]
+
+
+def test_single_confirmed_role_is_preserved():
+    for key, expected in (("legal_representative", "法定代表人"), ("actual_controller", "实际控制人")):
+        storage = complete_storage()
+        cid = storage.customers[0]["customer_id"]
+        storage.extractions[cid][2] = extraction("business_license", {key: "黎云"})
+        assert f"个人与企业关系：{expected}\n" in generated(storage)["message"]
+
+
+def test_related_liability_section_currency_reaches_details_and_total():
+    storage = complete_storage()
+    cid = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    personal["related_repayment_responsibilities"] = {
+        "currency": "人民币",
+        "records": [
+            {"responsibility_amount": 4000000, "loan_balance": 3424532},
+            {"loan_balance": 15315000},
+        ],
+    }
+    storage.extractions[cid][1] = extraction("personal_credit_report", {"report_json": personal})
+    report = generated(storage)["message"]
+    for amount in ("4,000,000元", "3,424,532元", "18,739,532元"):
+        assert amount in report
+
+
+def test_document_currency_and_money_field_unit_priority():
+    from backend.services.assistant_credit_report_service import _money, _personal_credit_model
+    assert _money({"amount": {"value": 4, "unit": "万元"}, "currency": "人民币"}, "amount")["unit"] == "万元"
+    model = _personal_credit_model({"currency": "人民币", "related_repayment_responsibilities": [{"loan_balance": 18739532}]}, "测试主体")
+    assert model["related_repayment_responsibilities"][0]["balance"]["unit"] == "元"
+
+
+def test_past_due_unknown_survives_empty_llm_emergency_attention():
+    report = generated()["message"]
+    emergency = report.split("## 🚨 紧急关注", 1)[1].split("# 一、", 1)[0]
+    assert "原到期日早于本报告生成日" in emergency
+    assert "建议优先核实当前状态" in emergency
+    assert "逾期" not in emergency
+    assert "暂无需要立即处理" not in emergency
+
+
+def test_runtime_renderer_and_final_markdown_reject_joined_headers():
+    import pytest
+    from backend.services.credit_report_markdown_renderer import render_markdown_table, has_valid_final_report_tables
+    with pytest.raises(ValueError):
+        render_markdown_table(["指标当前情况口径/来源"], [])
+    report = generated()["message"]
+    assert has_valid_final_report_tables(report)
+    assert not has_valid_final_report_tables(report.replace("| 主体信息 | 内容 |", "| **主体信息内容** | |"))
+    assert report.splitlines()[0] == "# 征信速览报告"

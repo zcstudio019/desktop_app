@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any
 
 from services.ai_service import AIService
-from backend.services.credit_report_markdown_renderer import render_credit_one_page_report
+from backend.services.credit_report_markdown_renderer import render_credit_one_page_report, has_valid_final_report_tables
 from backend.services.credit_report_rules_v1 import evaluate_credit_report_rules
 
 logger = logging.getLogger(__name__)
@@ -382,6 +382,10 @@ def _explicit_money_unit(
     section_unit: str | None = None,
     document_unit: str | None = None,
 ) -> str | None:
+    if isinstance(value, dict):
+        if field_unit := _normalize_money_unit(value.get("unit")):
+            return field_unit
+        value = value.get("value")
     text = str(value or "")
     if "万元" in text:
         return "万元"
@@ -665,10 +669,14 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str, ge
     raw_loans = _as_list(payload.get("loan_accounts"))
     raw_cards = _as_list(payload.get("credit_card_accounts"))
     raw_related = _as_list(payload.get("related_repayment_responsibilities"))
-    document_unit = _declared_unit(payload, ("normalized_unit", "document_unit", "amount_unit", "currency_unit", "unit"))
+    document_unit = _declared_unit(payload, ("normalized_unit", "document_unit", "amount_unit", "currency_unit", "unit", "currency"))
     loan_section_unit = _declared_unit(payload, ("loan_currency", "loan_amount_unit", "loan_unit"))
     card_section_unit = _declared_unit(payload, ("credit_card_currency", "credit_card_amount_unit", "credit_card_unit"))
     related_section_unit = _declared_unit(payload, ("related_repayment_currency", "related_repayment_amount_unit", "related_repayment_unit"))
+    related_section = _as_dict(payload.get("related_repayment_responsibilities"))
+    if related_section:
+        raw_related = _as_list(related_section.get("records")) or _as_list(related_section.get("accounts"))
+        related_section_unit = _declared_unit(related_section, ("unit", "currency")) or related_section_unit
     loans = []
     for index, item in enumerate(raw_loans, start=1):
         loans.append({
@@ -855,8 +863,7 @@ def _derive_subjects(customer: dict[str, Any], materials: list[dict[str, Any]], 
                 if normalized in {"actualcontroller", "actualcontrollername", "controller", "实际控制人", "实际控制人姓名"}:
                     role_names["实际控制人"].update(names)
     subject_name = str(personal_subject or "").strip()
-    relation_conflict = any(names and names != {subject_name} for names in role_names.values())
-    relation_complete = all(role_names[role] for role in ("法定代表人", "实际控制人"))
+    relation_conflict = any(len(names) > 1 for names in role_names.values())
     roles = [role for role in ("法定代表人", "实际控制人") if role_names[role] == {subject_name}]
     enterprise_identifier = _first(
         enterprise_meta.get("unified_social_credit_code"),
@@ -867,7 +874,7 @@ def _derive_subjects(customer: dict[str, Any], materials: list[dict[str, Any]], 
         "customer_subject": _safe_business_scalar(customer.get("name") or "暂未获取", "customer_subject"),
         "enterprise_credit_subject": _safe_business_scalar(enterprise_subject or "暂未获取", "enterprise_credit_subject"),
         "personal_credit_subject": _safe_business_scalar(personal_subject or "暂未获取", "personal_credit_subject"),
-        "personal_credit_subject_role": " / ".join(roles) if relation_complete and not relation_conflict else "需人工核实",
+        "personal_credit_subject_role": " / ".join(roles) if roles and not relation_conflict else "需人工核实",
         "enterprise_identifier_masked": _mask_identifier(enterprise_identifier),
         "personal_identifier_masked": _mask_identifier(personal_identifier),
     }
@@ -995,6 +1002,14 @@ def _default_narrative(report_model: dict[str, Any]) -> dict[str, Any]:
     long_term = [item.get("direction") for item in rules if item.get("status") == "资料不足" and item.get("direction")]
     personal = report_model.get("personal_credit") or {}
     enterprise = report_model.get("enterprise_credit") or {}
+    past_due_unknown = [
+        loan for section in (enterprise, personal) for loan in section.get("loans") or []
+        if "早于本报告生成日" in str(loan.get("due_date_assessment") or "")
+    ]
+    emergency = list(risks)
+    if past_due_unknown:
+        quantity = "多笔" if len(past_due_unknown) > 1 else "一笔"
+        emergency.append(f"存在{quantity}贷款原到期日早于本报告生成日，现有资料无法确认是否已结清、续贷或展期，建议优先核实当前状态。")
     if personal.get("related_repayment_responsibilities"):
         risks.append("法人个人征信存在相关还款责任，需与企业对外担保分口径核验。")
         urgent.append("核验法人相关还款责任的责任类型、当前余额及关联主体。")
@@ -1006,7 +1021,7 @@ def _default_narrative(report_model: dict[str, Any]) -> dict[str, Any]:
         f"个人信用卡记录：{len(personal.get('credit_cards') or [])}条" if personal.get("provided") else "个人信用卡资料不足",
     ]
     return {
-        "emergency_attention": risks or ["暂无需要立即处理的明确风险事项。"],
+        "emergency_attention": emergency or ["暂无需要立即处理的明确风险事项。"],
         "query_frequency_analysis": "当前值仅作事实展示；未配置统一银行准入阈值的项目均为待评估。",
         "historical_credit_features": features,
         "optimization_urgent": list(dict.fromkeys(item for item in urgent if item)),
@@ -1040,6 +1055,9 @@ def _merge_required_narrative(parsed: dict[str, Any], report_model: dict[str, An
             parsed[key] = default[key]
     for key in ("optimization_urgent", "optimization_medium", "optimization_long", "risks", "advantages"):
         parsed[key] = list(dict.fromkeys([*default[key], *parsed[key]]))
+    required_attention = [item for item in default["emergency_attention"] if "原到期日早于" in item]
+    if required_attention:
+        parsed["emergency_attention"] = list(dict.fromkeys(required_attention + [item for item in parsed["emergency_attention"] if item != "暂无需要立即处理的明确风险事项。"]))
     return parsed
 
 
@@ -1150,7 +1168,7 @@ async def generate_credit_one_page_report(
 
     narrative = _parse_narrative(raw_narrative, report_model)
     report = _strip_internal_output(render_credit_one_page_report(report_model, narrative, generated_at))
-    if not report or not _has_complete_structure(report) or _has_unsafe_report_text(report):
+    if not report or not _has_complete_structure(report) or _has_unsafe_report_text(report) or not has_valid_final_report_tables(report):
         logger.warning("credit one-page report failed structure validation")
         return {
             "message": "报告生成结果不完整，系统未向您展示可能缺失关键信息的内容，请稍后重试。",
