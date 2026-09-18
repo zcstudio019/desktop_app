@@ -149,10 +149,10 @@ def _display(value: Any) -> str:
         number = _number(value)
         if number is None:
             return "资料不足"
-        rendered = str(int(number)) if number.is_integer() else str(number)
+        rendered = str(int(number)) if number == int(number) else str(number)
         unit = value.get("unit")
         return f"{rendered}{unit}" if unit else f"{rendered}（单位待核验）"
     number = _number(value)
-    if number is not None and number.is_integer():
+    if number is not None and number == int(number):
         return str(int(number))
     return str(value)

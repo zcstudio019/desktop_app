@@ -4,31 +4,44 @@ from __future__ import annotations
 
 import logging
 import re
+from decimal import Decimal
 from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 ABNORMAL_FIELD_TEXT = "资料异常，需核验"
 
 
-def _format_number(value: Any) -> str:
+def format_number(value: Any) -> str:
+    """Format report numbers without assuming a float implementation."""
+    if value is None:
+        return "资料不足"
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return f"{value:,}"
     if isinstance(value, float):
         if value.is_integer():
             return f"{int(value):,}"
         return f"{value:,.2f}".rstrip("0").rstrip(".")
-    if isinstance(value, int):
-        return f"{value:,}"
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return f"{int(value):,}"
+        return format(value, "f").rstrip("0").rstrip(".")
     return str(value)
+
+
+def render_money(value: Any, unit: str | None = None) -> str:
+    text = format_number(value)
+    if text == "资料不足":
+        return text
+    return f"{text}{unit}" if unit else f"{text}（单位待核验）"
 
 
 def _format_money(value: dict[str, Any]) -> str:
     amount = value.get("value")
     if amount in (None, ""):
         return ABNORMAL_FIELD_TEXT if value.get("unit_status") == "abnormal" else "资料不足"
-    rendered = _format_number(amount)
-    unit = value.get("unit")
-    if unit:
-        return f"{rendered}{unit}"
-    return f"{rendered}（单位待核验）"
+    return render_money(amount, value.get("unit"))
 
 
 def _money_number(value: Any) -> float | None:

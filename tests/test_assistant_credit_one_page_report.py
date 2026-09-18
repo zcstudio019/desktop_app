@@ -1,5 +1,6 @@
 import asyncio
 import json
+from decimal import Decimal
 
 from backend.services.assistant_credit_report_service import (
     _REQUIRED_HEADINGS,
@@ -10,12 +11,14 @@ from backend.services.assistant_credit_report_service import (
     is_credit_report_request,
 )
 from backend.services.credit_report_markdown_renderer import (
+    format_number,
     render_credit_card_table,
     render_core_metrics_table,
     render_loan_table,
     render_query_table,
     render_related_liability_table,
     render_rule_check_table,
+    render_money,
 )
 
 
@@ -550,3 +553,90 @@ def test_credit_card_summary_detail_count_mismatch_is_explained():
     report = generated(storage)["message"]
     assert "征信概要账户数为11，本节可稳定提取明细数为1，两者不一致，需核验" in report
     assert "| 信用卡账户数量一致性 | 待核验 |" in report
+
+
+def test_format_number_int():
+    assert format_number(500) == "500"
+
+
+def test_format_number_float_integer():
+    assert format_number(500.0) == "500"
+
+
+def test_format_number_float_decimal():
+    assert format_number(500.25) == "500.25"
+
+
+def test_format_number_decimal_integer():
+    assert format_number(Decimal("500")) == "500"
+
+
+def test_format_number_decimal_fraction():
+    assert format_number(Decimal("500.2500")) == "500.25"
+
+
+def test_format_number_none():
+    assert format_number(None) == "资料不足"
+
+
+def test_render_money_int():
+    assert render_money(500, "元") == "500元"
+    assert render_money(500) == "500（单位待核验）"
+
+
+def test_credit_one_page_report_with_integer_amounts_does_not_crash():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    enterprise = enterprise_credit_payload()["extracted_json"]
+    enterprise["short_term_loans"][0]["loan_amount"] = 500
+    enterprise["short_term_loans"][0]["balance"] = 500
+    enterprise["credit_summary"]["unsettled_credit_balance"] = 500
+    personal = personal_credit_payload()["report_json"]
+    personal["loan_accounts"][0]["loan_amount"] = 500
+    personal["loan_accounts"][0]["balance"] = 500
+    personal["credit_summary"]["credit_card_account_count"] = 7
+    personal["credit_card_accounts"] = personal["credit_card_accounts"] * 7
+    personal["query_records"] = [
+        {"query_date": "2026-03-10", "query_institution": f"银行{i}", "query_reason": "贷款审批"}
+        for i in range(8)
+    ]
+    personal["related_repayment_responsibilities"] = [
+        {"related_party": "上海意川建筑科技有限公司", "loan_balance": 0, "unit": "元"},
+    ]
+    storage.extractions[customer_id] = [
+        extraction("enterprise_credit_report", {"extracted_json": enterprise}),
+        extraction("personal_credit_report", {"report_json": personal}),
+        extraction("business_license", {"legal_representative": "黎云", "actual_controller": "黎云"}),
+    ]
+    result = generated(storage)
+    assert result["data"]["reportStatus"] == "completed"
+    assert "500（单位待核验）" in result["message"]
+    assert "账户数：7" in result["message"]
+    assert "近6个月硬查询次数：8" in result["message"]
+
+
+def test_chat_post_credit_one_page_report_returns_200(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import backend.services as services_package
+    import backend.services.sqlalchemy_storage_service as sqlalchemy_storage_module
+
+    storage = complete_storage()
+    monkeypatch.setattr(services_package, "get_storage_service", lambda: storage)
+    monkeypatch.setattr(sqlalchemy_storage_module, "SQLAlchemyStorageService", lambda: storage)
+    from backend.routers import chat as chat_router
+
+    app = FastAPI()
+    app.include_router(chat_router.router, prefix="/api")
+    monkeypatch.setattr(chat_router, "storage_service", storage)
+    monkeypatch.setattr(chat_router, "ai_service", FakeAI())
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "根据上海意川建筑科技有限公司的资料生成征信一页纸"}]},
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["intent"] == "credit_one_page_report"
+    assert payload["data"]["reportStatus"] == "completed"
+    assert payload["message"].startswith("# 征信速览报告")

@@ -341,16 +341,10 @@ def _sum_known(values: list[Any]) -> float | None:
     return round(sum(parsed), 2) if parsed else None
 
 
-def _display_number(value: Any) -> Any:
-    if value is None or value == "":
-        return "资料不足"
-    if isinstance(value, float):
-        if value.is_integer():
-            return f"{int(value):,}"
-        return f"{value:,.2f}".rstrip("0").rstrip(".")
+def _integer_if_integral(value: int | float) -> int | float:
     if isinstance(value, int):
-        return f"{value:,}"
-    return str(value)
+        return value
+    return int(value) if value == int(value) else value
 
 
 def _explicit_money_unit(record: dict[str, Any], value: Any, field_name: str) -> str | None:
@@ -387,7 +381,7 @@ def _money(record: dict[str, Any], *keys: str) -> dict[str, Any] | None:
             return {"value": None, "unit": None, "unit_status": "abnormal"}
         return {"value": safe, "unit": None, "unit_status": "needs_review"}
     unit = _explicit_money_unit(record, raw, selected_key)
-    value: int | float = int(number) if number.is_integer() else number
+    value: int | float = _integer_if_integral(number)
     return {
         "value": value,
         "unit": unit,
@@ -407,10 +401,10 @@ def _money_sum(records: list[dict[str, Any]], *keys: str) -> dict[str, Any] | No
     if not monies:
         return None
     units = {money.get("unit") for money in monies}
-    total = round(sum(_number(money) or 0 for money in monies), 2)
+    total = round(sum((_number(money) or 0.0 for money in monies), 0.0), 2)
     unit = next(iter(units)) if len(units) == 1 else None
     return {
-        "value": int(total) if total.is_integer() else total,
+        "value": _integer_if_integral(total),
         "unit": unit,
         "unit_status": "confirmed" if unit else "needs_review",
     }
@@ -421,10 +415,10 @@ def _money_sum_objects(values: list[Any]) -> dict[str, Any] | None:
     if not monies:
         return None
     units = {money.get("unit") for money in monies}
-    total = round(sum(_number(money) or 0 for money in monies), 2)
+    total = round(sum((_number(money) or 0.0 for money in monies), 0.0), 2)
     unit = next(iter(units)) if len(units) == 1 else None
     return {
-        "value": int(total) if total.is_integer() else total,
+        "value": _integer_if_integral(total),
         "unit": unit,
         "unit_status": "confirmed" if unit else "needs_review",
     }
