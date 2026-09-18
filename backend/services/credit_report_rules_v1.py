@@ -68,11 +68,11 @@ def evaluate_credit_report_rules(report_model: dict[str, Any]) -> list[dict[str,
     else:
         overdue_90_item = _item("90天以上逾期", "达标", "90天以上逾期账户数：0", "源征信明确记录为0", "持续保持按时还款")
 
-    hard_queries = metrics.get("hard_query_6m_count")
+    institution_queries = metrics.get("institution_query_6m_count")
     query_item = (
-        _item("硬查询次数", "待评估", f"近6个月硬查询次数：{hard_queries}", "已提取当前值，但未配置统一银行准入阈值", "按拟申请银行或产品的正式规则人工评估")
-        if _present(hard_queries)
-        else _item("硬查询次数", "资料不足", "资料不足", "缺少可确认的近6个月分类统计", "补充查询记录或人工核验")
+        _item("查询频率", "待评估", f"近6个月征信机构查询次数：{institution_queries}", "已按查询用途分类汇总，但尚未配置正式硬查询类型范围，不能命名为硬查询", "按拟申请银行或产品的正式规则人工评估")
+        if _present(institution_queries)
+        else _item("查询频率", "资料不足", "资料不足", "缺少可确认的近6个月分类统计", "补充查询记录或人工核验")
     )
 
     card_rate = metrics.get("credit_card_usage_rate")

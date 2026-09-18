@@ -11,6 +11,7 @@ from backend.services.assistant_credit_report_service import (
     is_credit_report_request,
 )
 from backend.services.credit_report_markdown_renderer import (
+    TABLE_HEADERS,
     format_number,
     render_credit_card_table,
     render_core_metrics_table,
@@ -265,7 +266,7 @@ def test_llm_receives_only_credit_facts_not_financial_metrics():
     assert "经营现金流" not in result["message"]
 
 
-def test_hard_query_rule_is_pending_evaluation_not_model_threshold():
+def test_query_frequency_rule_is_pending_evaluation_not_model_threshold():
     storage = complete_storage()
     payload = personal_credit_payload()["report_json"]
     payload["query_records"] = [
@@ -280,9 +281,9 @@ def test_hard_query_rule_is_pending_evaluation_not_model_threshold():
     ]
     materials = run(get_customer_materials(storage, customer_id))
     model = build_credit_report_model(materials)
-    rule = next(item for item in model["rule_checks"] if item["item"] == "硬查询次数")
+    rule = next(item for item in model["rule_checks"] if item["item"] == "查询频率")
     assert rule["status"] == "待评估"
-    assert "未配置统一银行准入阈值" in rule["basis"]
+    assert "尚未配置正式硬查询类型范围" in rule["basis"]
 
 
 def test_missing_dti_is_not_calculated():
@@ -345,8 +346,8 @@ def test_missing_query_records_are_insufficient_not_pending_evaluation():
     storage.extractions[customer_id][1] = extraction("personal_credit_report", {"report_json": personal})
     materials = run(get_customer_materials(storage, customer_id))
     model = build_credit_report_model(materials)
-    assert model["metrics"]["hard_query_6m_count"] is None
-    assert next(item for item in model["rule_checks"] if item["item"] == "硬查询次数")["status"] == "资料不足"
+    assert model["metrics"]["institution_query_6m_count"] is None
+    assert next(item for item in model["rule_checks"] if item["item"] == "查询频率")["status"] == "资料不足"
 
 
 def test_current_customer_and_explicit_name_both_generate():
@@ -460,6 +461,80 @@ def test_report_table_headers_are_separate_columns():
     assert "| 序号 | 贷款机构 | 机构类别 | 贷款类型 | 合同金额 | 当前余额 | 发放日期 | 到期日期 | 状态/备注 |" in report
     assert "| 责任主体 | 被担保/关联主体 | 贷款机构 | 责任金额 | 当前余额 | 责任类型 | 业务类型 | 截至日期 |" in report
     assert "**主体信息内容**" not in report
+
+
+def test_all_credit_report_tables_have_expected_headers():
+    expected = {
+        "subject": ("主体信息", "内容"),
+        "core_metrics": ("指标", "当前情况", "口径/来源"),
+        "loan": ("序号", "贷款机构", "机构类别", "贷款类型", "合同金额", "当前余额", "发放日期", "到期日期", "状态/备注"),
+        "credit_card": ("发卡行", "币种", "信用额度", "已用额度", "使用率", "逾期", "备注"),
+        "enterprise_guarantee": ("被担保主体", "贷款机构", "担保金额", "当前余额", "担保日期", "状态"),
+        "related_liability": ("责任主体", "被担保/关联主体", "贷款机构", "责任金额", "当前余额", "责任类型", "业务类型", "截至日期"),
+        "query": ("时间范围", "贷款审批", "信用卡审批", "担保资格审查", "法人资信审查"),
+        "rule_check": ("检查项", "状态", "当前情况", "判断依据", "优化方向"),
+    }
+    assert TABLE_HEADERS == expected
+    report = generated()["message"]
+    for headers in expected.values():
+        assert "| " + " | ".join(headers) + " |" in report
+
+
+def test_person_enterprise_relation_from_structured_kyc():
+    storage = complete_storage()
+    materials = run(get_customer_materials(storage, storage.customers[0]["customer_id"]))
+    model = build_credit_report_model(materials)
+    assert model["subjects"]["personal_credit_subject_role"] == "法定代表人 / 实际控制人"
+    assert "个人与企业关系：法定代表人 / 实际控制人" in generated(storage)["message"]
+
+
+def test_credit_card_rmb_amount_uses_yuan():
+    report = generated()["message"]
+    assert "100,000元" in report
+    assert "20,000元" in report
+
+
+def test_related_liability_rmb_amount_uses_yuan():
+    report = generated()["message"]
+    assert "20,000,000元" in report
+    assert "18,739,532元" in report
+
+
+def test_unknown_unit_remains_needs_review():
+    report = generated()["message"]
+    assert "300,000（单位待核验）" in report
+
+
+def test_zero_overdue_does_not_render_fake_overdue_detail():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    personal["overdue_records"] = [{"account_type": "逾期", "current_status": "逾期"}]
+    storage.extractions[customer_id][1] = extraction("personal_credit_report", {"report_json": personal})
+    section = generated(storage)["message"].split("## 个人征信逾期", 1)[1].split("## 公共记录", 1)[0]
+    assert "贷款逾期账户数：0" in section
+    assert "信用卡逾期账户数：0" in section
+    assert "90天以上逾期账户数：0" in section
+    assert "账户/业务类型" not in section
+    assert "稳定结构化逾期明细" not in section
+
+
+def test_overdue_section_uses_structured_fields_only():
+    storage = complete_storage()
+    customer_id = storage.customers[0]["customer_id"]
+    personal = personal_credit_payload()["report_json"]
+    personal["raw_text"] = "个人信用报告 信息概要 账户/业务类型：逾期；逾期" * 30
+    storage.extractions[customer_id][1] = extraction("personal_credit_report", {"report_json": personal})
+    section = generated(storage)["message"].split("## 个人征信逾期", 1)[1].split("## 公共记录", 1)[0]
+    assert "账户/业务类型：逾期" not in section
+    assert "个人信用报告" not in section
+
+
+def test_query_total_not_called_hard_query_without_rule():
+    report = generated()["message"]
+    assert "近6个月征信机构查询次数" in report
+    assert "硬查询次数" not in report
+    assert "| 查询频率 | 待评估 |" in report
 
 
 def test_report_table_column_counts_match():
@@ -612,7 +687,7 @@ def test_credit_one_page_report_with_integer_amounts_does_not_crash():
     assert result["data"]["reportStatus"] == "completed"
     assert "500（单位待核验）" in result["message"]
     assert "账户数：7" in result["message"]
-    assert "近6个月硬查询次数：8" in result["message"]
+    assert "近6个月征信机构查询次数：8" in result["message"]
 
 
 def test_chat_post_credit_one_page_report_returns_200(monkeypatch):

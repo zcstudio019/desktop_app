@@ -347,16 +347,44 @@ def _integer_if_integral(value: int | float) -> int | float:
     return int(value) if value == int(value) else value
 
 
-def _explicit_money_unit(record: dict[str, Any], value: Any, field_name: str) -> str | None:
+def _normalize_money_unit(value: Any) -> str | None:
+    text = str(value or "").strip().upper().replace(" ", "")
+    if text in {"万元", "人民币万元", "CNY万元", "RMB万元"}:
+        return "万元"
+    if text in {"元", "人民币", "人民币元", "CNY", "RMB", "CNY元", "RMB元"}:
+        return "元"
+    return None
+
+
+def _declared_unit(record: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        if unit := _normalize_money_unit(record.get(key)):
+            return unit
+    return None
+
+
+def _explicit_money_unit(
+    record: dict[str, Any],
+    value: Any,
+    field_name: str,
+    *,
+    section_unit: str | None = None,
+    document_unit: str | None = None,
+) -> str | None:
     text = str(value or "")
     if "万元" in text:
         return "万元"
     if re.search(r"(?:人民币)?元", text):
         return "元"
-    for key in (f"{field_name}_unit", "amount_unit", "currency_unit", "unit"):
-        unit = str(record.get(key) or "").strip()
-        if unit in {"元", "人民币元", "万元"}:
-            return "元" if unit == "人民币元" else unit
+    unit = _declared_unit(record, (f"{field_name}_unit", "amount_unit", "currency_unit", "unit"))
+    if unit:
+        return unit
+    if account_unit := _declared_unit(record, ("currency", "currency_name", "currency_code")):
+        return account_unit
+    if normalized_section_unit := _normalize_money_unit(section_unit):
+        return normalized_section_unit
+    if normalized_document_unit := _normalize_money_unit(document_unit):
+        return normalized_document_unit
     # Evidence is never copied into context/output. Only an exact currency-unit
     # token may be extracted, then the source text is discarded.
     evidence = str(record.get("evidence") or "")
@@ -368,7 +396,12 @@ def _explicit_money_unit(record: dict[str, Any], value: Any, field_name: str) ->
     return None
 
 
-def _money(record: dict[str, Any], *keys: str) -> dict[str, Any] | None:
+def _money(
+    record: dict[str, Any],
+    *keys: str,
+    section_unit: str | None = None,
+    document_unit: str | None = None,
+) -> dict[str, Any] | None:
     """Return a value/unit object; missing units are explicitly reviewable."""
     selected_key = next((key for key in keys if record.get(key) not in (None, "")), None)
     if not selected_key:
@@ -380,7 +413,7 @@ def _money(record: dict[str, Any], *keys: str) -> dict[str, Any] | None:
         if safe == ABNORMAL_FIELD_TEXT:
             return {"value": None, "unit": None, "unit_status": "abnormal"}
         return {"value": safe, "unit": None, "unit_status": "needs_review"}
-    unit = _explicit_money_unit(record, raw, selected_key)
+    unit = _explicit_money_unit(record, raw, selected_key, section_unit=section_unit, document_unit=document_unit)
     value: int | float = _integer_if_integral(number)
     return {
         "value": value,
@@ -389,10 +422,17 @@ def _money(record: dict[str, Any], *keys: str) -> dict[str, Any] | None:
     }
 
 
-def _money_from_value(value: Any, record: dict[str, Any], field_name: str) -> dict[str, Any] | None:
+def _money_from_value(
+    value: Any,
+    record: dict[str, Any],
+    field_name: str,
+    *,
+    section_unit: str | None = None,
+    document_unit: str | None = None,
+) -> dict[str, Any] | None:
     proxy = dict(record)
     proxy[field_name] = value
-    return _money(proxy, field_name)
+    return _money(proxy, field_name, section_unit=section_unit, document_unit=document_unit)
 
 
 def _money_sum(records: list[dict[str, Any]], *keys: str) -> dict[str, Any] | None:
@@ -475,6 +515,11 @@ def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
     agent = _as_dict(payload.get("agent_result"))
     meta = {**_as_dict(agent.get("report_meta")), **_as_dict(payload.get("report_meta")), **_as_dict(payload.get("report_basic"))}
     summary = {**_as_dict(agent.get("credit_summary")), **_as_dict(payload.get("credit_summary"))}
+    document_unit = _declared_unit(payload, ("normalized_unit", "document_unit", "amount_unit", "currency_unit", "unit")) or _declared_unit(
+        agent, ("normalized_unit", "document_unit", "amount_unit", "currency_unit", "unit")
+    )
+    loan_section_unit = _declared_unit(payload, ("loan_currency", "loan_amount_unit", "loan_unit"))
+    guarantee_section_unit = _declared_unit(payload, ("guarantee_currency", "guarantee_amount_unit", "guarantee_unit"))
     raw_loans: list[dict[str, Any]] = []
     for source in (payload, agent):
         for key in ("active_loans", "short_loans_final", "short_loans", "medium_loans_final", "medium_loans", "long_term_loans", "revolving_loans", "short_term_loans", "medium_long_term_loans", "revolving_overdrafts"):
@@ -487,8 +532,8 @@ def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
             "institution": _safe_field(item, "institution", "institution_name", "bank"),
             "institution_type": _safe_field(item, "institution_type", "organization_type"),
             "loan_type": _safe_field(item, "business_type", "loan_type", "term_type"),
-            "contract_amount": _money(item, "loan_amount", "amount", "credit_amount"),
-            "balance": _money(item, "balance", "outstanding_balance", "current_balance"),
+            "contract_amount": _money(item, "loan_amount", "amount", "credit_amount", section_unit=loan_section_unit, document_unit=document_unit),
+            "balance": _money(item, "balance", "outstanding_balance", "current_balance", section_unit=loan_section_unit, document_unit=document_unit),
             "start_date": _safe_field(item, "start_date", "open_date"),
             "due_date": _safe_field(item, "end_date", "due_date", "maturity_date"),
             "status": _safe_field(item, "status", "five_category", "five_classification"),
@@ -501,8 +546,8 @@ def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
         external.append({
             "guaranteed_subject": _safe_field(item, "guaranteed_subject", "guarantee_for", "customer_name"),
             "institution": _safe_field(item, "institution", "institution_name"),
-            "guarantee_amount": _money(item, "guarantee_amount", "amount"),
-            "balance": _money(item, "guarantee_balance", "balance"),
+            "guarantee_amount": _money(item, "guarantee_amount", "amount", section_unit=guarantee_section_unit, document_unit=document_unit),
+            "balance": _money(item, "guarantee_balance", "balance", section_unit=guarantee_section_unit, document_unit=document_unit),
             "guarantee_date": _safe_field(item, "guarantee_date", "start_date"),
             "status": _safe_field(item, "status", "five_category"),
         })
@@ -531,6 +576,7 @@ def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
                 _first(summary.get("unsettled_credit_balance"), summary.get("total_unsettled_balance")),
                 summary,
                 "unsettled_credit_balance",
+                document_unit=document_unit,
             ) if _first(summary.get("unsettled_credit_balance"), summary.get("total_unsettled_balance")) is not None else None,
             "unsettled_credit_institution_count": _safe_business_scalar(
                 summary.get("unsettled_credit_institution_count"), "unsettled_credit_institution_count"
@@ -540,7 +586,7 @@ def _enterprise_credit_model(payload: dict[str, Any]) -> dict[str, Any]:
         "external_guarantees": external,
         "external_guarantee_explicit": guarantee_key_present or bool(external),
         "external_guarantee_balance": (
-            _money_from_value(guarantee_balance, summary, "external_guarantee_balance")
+            _money_from_value(guarantee_balance, summary, "external_guarantee_balance", section_unit=guarantee_section_unit, document_unit=document_unit)
             if guarantee_balance is not None
             else _money_sum(raw_external, "guarantee_balance", "balance")
         ),
@@ -568,7 +614,7 @@ def _query_matrix(records: list[dict[str, Any]], report_time: Any) -> tuple[list
         return ([{"window": label, "loan_approval": "资料不足", "credit_card_approval": "资料不足", "guarantee_review": "资料不足", "legal_person_review": "资料不足"} for label, _ in windows], None, "查询日期不足，无法按窗口统计")
     rows: list[dict[str, Any]] = []
     recent_loan: list[str] = []
-    hard_6m = 0
+    institution_query_6m = 0
     for label, months in windows:
         counts = {"loan_approval": 0, "credit_card_approval": 0, "guarantee_review": 0, "legal_person_review": 0}
         for item in records:
@@ -591,13 +637,13 @@ def _query_matrix(records: list[dict[str, Any]], report_time: Any) -> tuple[list
             if key:
                 counts[key] += 1
             if months == 6 and key:
-                hard_6m += 1
+                institution_query_6m += 1
             if months == 6 and key == "loan_approval":
                 date_value = _safe_field(item, "query_date") or "日期未识别"
                 institution = _safe_field(item, "query_institution", "institution") or "机构未识别"
                 recent_loan.append(f"{date_value} / {institution}")
         rows.append({"window": label, **counts})
-    return rows, hard_6m, "；".join(dict.fromkeys(recent_loan)) if recent_loan else "未识别到近6个月贷款审批查询明细"
+    return rows, institution_query_6m, "；".join(dict.fromkeys(recent_loan)) if recent_loan else "未识别到近6个月贷款审批查询明细"
 
 
 def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) -> dict[str, Any]:
@@ -606,6 +652,10 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
     raw_loans = _as_list(payload.get("loan_accounts"))
     raw_cards = _as_list(payload.get("credit_card_accounts"))
     raw_related = _as_list(payload.get("related_repayment_responsibilities"))
+    document_unit = _declared_unit(payload, ("normalized_unit", "document_unit", "amount_unit", "currency_unit", "unit"))
+    loan_section_unit = _declared_unit(payload, ("loan_currency", "loan_amount_unit", "loan_unit"))
+    card_section_unit = _declared_unit(payload, ("credit_card_currency", "credit_card_amount_unit", "credit_card_unit"))
+    related_section_unit = _declared_unit(payload, ("related_repayment_currency", "related_repayment_amount_unit", "related_repayment_unit"))
     loans = []
     for index, item in enumerate(raw_loans, start=1):
         loans.append({
@@ -613,8 +663,8 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
             "institution": _safe_field(item, "institution", "institution_name"),
             "institution_type": _safe_field(item, "institution_type"),
             "loan_type": _safe_field(item, "loan_type", "business_type"),
-            "contract_amount": _money(item, "loan_amount", "amount", "issued_amount"),
-            "balance": _money(item, "balance", "loan_balance"),
+            "contract_amount": _money(item, "loan_amount", "amount", "issued_amount", section_unit=loan_section_unit, document_unit=document_unit),
+            "balance": _money(item, "balance", "loan_balance", section_unit=loan_section_unit, document_unit=document_unit),
             "start_date": _safe_field(item, "start_date", "open_date"),
             "due_date": _safe_field(item, "due_date"),
             "status": _safe_field(item, "account_status", "overdue_status", "five_category"),
@@ -629,8 +679,8 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
         cards.append({
             "issuer": _safe_field(item, "issuer", "institution"),
             "currency": _safe_field(item, "currency"),
-            "credit_limit": _money(item, "credit_limit", "limit"),
-            "used_amount": _money(item, "used_amount", "used_limit", "balance"),
+            "credit_limit": _money(item, "credit_limit", "limit", section_unit=card_section_unit, document_unit=document_unit),
+            "used_amount": _money(item, "used_amount", "used_limit", "balance", section_unit=card_section_unit, document_unit=document_unit),
             "usage_rate": rate or "资料不足",
             "overdue": _safe_field(item, "overdue_description", "overdue_status", "overdue_amount"),
             "remark": _safe_field(item, "account_status"),
@@ -641,8 +691,8 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
             "responsible_subject": _safe_business_scalar(responsible_subject or "暂未获取", "responsible_subject"),
             "related_party": _safe_field(item, "related_party"),
             "institution": _safe_field(item, "institution"),
-            "responsibility_amount": _money(item, "responsibility_amount"),
-            "balance": _money(item, "loan_balance", "balance"),
+            "responsibility_amount": _money(item, "responsibility_amount", section_unit=related_section_unit, document_unit=document_unit),
+            "balance": _money(item, "loan_balance", "balance", section_unit=related_section_unit, document_unit=document_unit),
             "responsibility_type": _safe_field(item, "responsibility_type"),
             "business_type": _safe_field(item, "business_type"),
             "as_of_date": _safe_field(item, "as_of_date"),
@@ -655,14 +705,14 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
         }
         for item in _as_list(payload.get("query_records"))
     ]
-    matrix, hard_6m, recent_loan = _query_matrix(query_records, basic.get("report_time"))
+    matrix, institution_query_6m, recent_loan = _query_matrix(query_records, basic.get("report_time"))
     overdue_records = []
     for item in _as_list(payload.get("overdue_records")):
         overdue_records.append({
             "account_type": _safe_field(item, "account_type", "record_type", "business_type"),
             "institution": _safe_field(item, "institution", "issuer"),
             "current_status": _safe_field(item, "current_status", "overdue_status", "status"),
-            "overdue_amount": _money(item, "overdue_amount"),
+            "overdue_amount": _money(item, "overdue_amount", document_unit=document_unit),
             "overdue_months": _safe_field(item, "overdue_months"),
         })
     public_records = []
@@ -671,7 +721,7 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
             "record_type": _safe_field(item, "record_type", "type"),
             "status": _safe_field(item, "status"),
             "date": _safe_field(item, "date", "record_date"),
-            "amount": _money(item, "amount"),
+            "amount": _money(item, "amount", document_unit=document_unit),
             "content": _safe_field(item, "content", "description"),
         })
     non_credit_records = []
@@ -680,7 +730,7 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
             "record_type": _safe_field(item, "record_type", "type"),
             "status": _safe_field(item, "status"),
             "date": _safe_field(item, "date", "record_date"),
-            "amount": _money(item, "amount"),
+            "amount": _money(item, "amount", document_unit=document_unit),
             "content": _safe_field(item, "content", "description"),
         })
     return {
@@ -704,11 +754,17 @@ def _personal_credit_model(payload: dict[str, Any], responsible_subject: str) ->
         "credit_cards": cards,
         "related_repayment_responsibilities": related,
         "overdue_records": overdue_records,
+        "overdue_summary": {
+            "loan_overdue_account_count": _safe_business_scalar(summary.get("loan_overdue_account_count"), "loan_overdue_account_count"),
+            "credit_card_overdue_account_count": _safe_business_scalar(summary.get("credit_card_overdue_account_count"), "credit_card_overdue_account_count"),
+            "loan_90d_overdue_account_count": _safe_business_scalar(summary.get("loan_90d_overdue_account_count"), "loan_90d_overdue_account_count"),
+            "credit_card_90d_overdue_account_count": _safe_business_scalar(summary.get("credit_card_90d_overdue_account_count"), "credit_card_90d_overdue_account_count"),
+        },
         "public_records": public_records,
         "non_credit_transactions": non_credit_records,
         "query_records": query_records,
         "query_matrix": matrix,
-        "hard_query_6m_count": hard_6m,
+        "institution_query_6m_count": institution_query_6m,
         "recent_loan_approval_queries": recent_loan,
     }
 
@@ -770,13 +826,11 @@ def _record_has_current_overdue(record: dict[str, Any]) -> bool:
     amount = _number(record.get("overdue_amount"))
     if amount is not None and amount > 0:
         return True
-    status = " ".join(
-        str(record.get(key) or "")
-        for key in ("current_status", "overdue_status", "account_status", "status", "overdue_description")
-    )
-    if any(marker in status for marker in ("无逾期", "当前无逾期", "从未逾期", "未逾期")):
-        return False
-    return bool(re.search(r"当前.{0,4}逾期|状态.{0,4}逾期|^逾期$", status))
+    statuses = {
+        re.sub(r"\s+", "", str(record.get(key) or ""))
+        for key in ("current_status", "overdue_status", "account_status", "status")
+    }
+    return bool(statuses.intersection({"逾期", "当前逾期", "当前存在逾期"}))
 
 
 def _overdue_conflicts(personal_payload: dict[str, Any], summary: dict[str, Any]) -> list[str]:
@@ -802,12 +856,9 @@ def build_credit_report_model(material_result: dict[str, Any]) -> dict[str, Any]
     personal = _personal_credit_model(personal_payload, subjects.get("personal_credit_subject") or "")
     es = enterprise.get("summary") or {}
     ps = personal.get("summary") or {}
-    personal_loan_records = _as_list(personal_payload.get("loan_accounts"))
-    card_records = _as_list(personal_payload.get("credit_card_accounts"))
-    personal_loan_balance = _money_sum(personal_loan_records, "balance", "loan_balance")
-    card_limit = _money_sum(card_records, "credit_limit", "limit")
-    card_used = _money_sum(card_records, "used_amount", "used_limit", "balance")
-    related_records = _as_list(personal_payload.get("related_repayment_responsibilities"))
+    personal_loan_balance = _money_sum_objects([item.get("balance") for item in personal.get("loans") or []])
+    card_limit = _money_sum_objects([item.get("credit_limit") for item in personal.get("credit_cards") or []])
+    card_used = _money_sum_objects([item.get("used_amount") for item in personal.get("credit_cards") or []])
     loan_overdue = ps.get("loan_overdue_account_count")
     card_overdue = ps.get("credit_card_overdue_account_count")
     loan_90 = ps.get("loan_90d_overdue_account_count")
@@ -843,8 +894,8 @@ def build_credit_report_model(material_result: dict[str, Any]) -> dict[str, Any]
         "overdue_90d_account_count": int(overdue_90) if overdue_90 is not None else None,
         "enterprise_external_guarantee_balance": enterprise.get("external_guarantee_balance"),
         "enterprise_external_guarantee_explicit": bool(enterprise.get("external_guarantee_explicit")),
-        "personal_related_repayment_balance": _money_sum(related_records, "loan_balance", "balance"),
-        "hard_query_6m_count": personal.get("hard_query_6m_count"),
+        "personal_related_repayment_balance": _money_sum_objects([item.get("balance") for item in personal.get("related_repayment_responsibilities") or []]),
+        "institution_query_6m_count": personal.get("institution_query_6m_count"),
         "dti": None,
         "online_loan_count": None,
         "large_revolving_due_concentration": None,

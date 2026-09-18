@@ -10,6 +10,17 @@ from typing import Any, Iterable
 logger = logging.getLogger(__name__)
 ABNORMAL_FIELD_TEXT = "资料异常，需核验"
 
+TABLE_HEADERS: dict[str, tuple[str, ...]] = {
+    "subject": ("主体信息", "内容"),
+    "core_metrics": ("指标", "当前情况", "口径/来源"),
+    "loan": ("序号", "贷款机构", "机构类别", "贷款类型", "合同金额", "当前余额", "发放日期", "到期日期", "状态/备注"),
+    "credit_card": ("发卡行", "币种", "信用额度", "已用额度", "使用率", "逾期", "备注"),
+    "enterprise_guarantee": ("被担保主体", "贷款机构", "担保金额", "当前余额", "担保日期", "状态"),
+    "related_liability": ("责任主体", "被担保/关联主体", "贷款机构", "责任金额", "当前余额", "责任类型", "业务类型", "截至日期"),
+    "query": ("时间范围", "贷款审批", "信用卡审批", "担保资格审查", "法人资信审查"),
+    "rule_check": ("检查项", "状态", "当前情况", "判断依据", "优化方向"),
+}
+
 
 def format_number(value: Any) -> str:
     """Format report numbers without assuming a float implementation."""
@@ -109,17 +120,17 @@ def render_core_metrics_table(metrics: dict[str, Any]) -> str:
         ("90天以上逾期账户数", "overdue_90d_account_count", "个人征信原始指标语义"),
         ("企业对外担保余额", "enterprise_external_guarantee_balance", "仅企业征信口径"),
         ("法人相关还款责任余额", "personal_related_repayment_balance", "仅个人征信相关还款责任口径"),
-        ("近6个月硬查询次数", "hard_query_6m_count", "个人征信查询记录"),
+        ("近6个月征信机构查询次数", "institution_query_6m_count", "个人征信查询记录分类合计；未定义硬查询口径"),
     )
     rows = [[label, metrics.get(key), source] for label, key, source in definitions]
-    return render_markdown_table(["指标", "当前情况", "口径/来源"], rows)
+    return render_markdown_table(list(TABLE_HEADERS["core_metrics"]), rows)
 
 
 def render_loan_table(loans: list[dict[str, Any]]) -> str:
     fields = ("index", "institution", "institution_type", "loan_type", "contract_amount", "balance", "start_date", "due_date", "status")
     rows = [_row_values(item, fields) for item in loans]
     return render_markdown_table(
-        ["序号", "贷款机构", "机构类别", "贷款类型", "合同金额", "当前余额", "发放日期", "到期日期", "状态/备注"],
+        list(TABLE_HEADERS["loan"]),
         rows,
     )
 
@@ -127,7 +138,7 @@ def render_loan_table(loans: list[dict[str, Any]]) -> str:
 def render_credit_card_table(cards: list[dict[str, Any]]) -> str:
     fields = ("issuer", "currency", "credit_limit", "used_amount", "usage_rate", "overdue", "remark")
     return render_markdown_table(
-        ["发卡行", "币种", "信用额度", "已用额度", "使用率", "逾期", "备注"],
+        list(TABLE_HEADERS["credit_card"]),
         [_row_values(item, fields) for item in cards],
     )
 
@@ -135,12 +146,12 @@ def render_credit_card_table(cards: list[dict[str, Any]]) -> str:
 def render_enterprise_guarantee_table(items: list[dict[str, Any]], explicit_zero: bool = False, zero_balance: Any = None) -> str:
     if not items and explicit_zero:
         return render_markdown_table(
-            ["被担保主体", "贷款机构", "担保金额", "当前余额", "担保日期", "状态"],
+            list(TABLE_HEADERS["enterprise_guarantee"]),
             [["企业征信明确记录为0", "-", None, zero_balance, "-", "无余额"]],
         )
     fields = ("guaranteed_subject", "institution", "guarantee_amount", "balance", "guarantee_date", "status")
     return render_markdown_table(
-        ["被担保主体", "贷款机构", "担保金额", "当前余额", "担保日期", "状态"],
+        list(TABLE_HEADERS["enterprise_guarantee"]),
         [_row_values(item, fields) for item in items],
     )
 
@@ -148,7 +159,7 @@ def render_enterprise_guarantee_table(items: list[dict[str, Any]], explicit_zero
 def render_related_liability_table(items: list[dict[str, Any]]) -> str:
     fields = ("responsible_subject", "related_party", "institution", "responsibility_amount", "balance", "responsibility_type", "business_type", "as_of_date")
     return render_markdown_table(
-        ["责任主体", "被担保/关联主体", "贷款机构", "责任金额", "当前余额", "责任类型", "业务类型", "截至日期"],
+        list(TABLE_HEADERS["related_liability"]),
         [_row_values(item, fields) for item in items],
     )
 
@@ -156,7 +167,7 @@ def render_related_liability_table(items: list[dict[str, Any]]) -> str:
 def render_query_table(rows: list[dict[str, Any]]) -> str:
     fields = ("window", "loan_approval", "credit_card_approval", "guarantee_review", "legal_person_review")
     return render_markdown_table(
-        ["时间范围", "贷款审批", "信用卡审批", "担保资格审查", "法人资信审查"],
+        list(TABLE_HEADERS["query"]),
         [_row_values(item, fields) for item in rows],
     )
 
@@ -164,7 +175,7 @@ def render_query_table(rows: list[dict[str, Any]]) -> str:
 def render_rule_check_table(items: list[dict[str, Any]]) -> str:
     fields = ("item", "status", "current", "basis", "direction")
     return render_markdown_table(
-        ["检查项", "状态", "当前情况", "判断依据", "优化方向"],
+        list(TABLE_HEADERS["rule_check"]),
         [_row_values(item, fields) for item in items],
     )
 
@@ -182,6 +193,30 @@ def _record_lines(records: list[dict[str, Any]], labels: tuple[tuple[str, str], 
     for label, key in labels:
         values = [_cell(item.get(key)) for item in records if item.get(key) not in (None, "")]
         lines.append(f"- {label}：{'；'.join(values) if values else '资料不足'}")
+    return "\n".join(lines)
+
+
+def _personal_overdue_section(personal: dict[str, Any], metrics: dict[str, Any]) -> str:
+    summary = personal.get("overdue_summary") if isinstance(personal.get("overdue_summary"), dict) else {}
+    loan = summary.get("loan_overdue_account_count")
+    card = summary.get("credit_card_overdue_account_count")
+    over_90 = metrics.get("overdue_90d_account_count")
+    lines = [
+        f"- 贷款逾期账户数：{_cell(loan)}",
+        f"- 信用卡逾期账户数：{_cell(card)}",
+        f"- 90天以上逾期账户数：{_cell(over_90)}",
+    ]
+    conflicts = metrics.get("overdue_data_conflicts") if isinstance(metrics.get("overdue_data_conflicts"), list) else []
+    if conflicts:
+        lines.append(f"- 状态：待核验（{'；'.join(_cell(item) for item in conflicts)}）")
+        return "\n".join(lines)
+    known_counts = [_money_number(value) for value in (loan, card, over_90)]
+    if all(value == 0 for value in known_counts if value is not None) and any(value is not None for value in known_counts):
+        return "\n".join(lines)
+    if any(value is not None and value > 0 for value in known_counts):
+        details = personal.get("overdue_records") if isinstance(personal.get("overdue_records"), list) else []
+        lines.append("\n**稳定结构化逾期明细：**")
+        lines.append(_record_lines(details, (("机构", "institution"), ("账户/业务类型", "account_type"), ("当前状态", "current_status"), ("逾期金额", "overdue_amount"), ("逾期月数", "overdue_months"))))
     return "\n".join(lines)
 
 
@@ -215,7 +250,6 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
     ]
 
     enterprise_overdue = enterprise.get("overdue_records") if isinstance(enterprise.get("overdue_records"), list) else []
-    personal_overdue = personal.get("overdue_records") if isinstance(personal.get("overdue_records"), list) else []
     public_records = personal.get("public_records") if isinstance(personal.get("public_records"), list) else []
     non_credit = personal.get("non_credit_transactions") if isinstance(personal.get("non_credit_transactions"), list) else []
 
@@ -239,7 +273,7 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 
 # 一、主体基本信息
 
-{render_markdown_table(['主体信息', '内容'], basic_rows)}
+{render_markdown_table(list(TABLE_HEADERS['subject']), basic_rows)}
 
 ## 核心指标
 
@@ -301,7 +335,7 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 
 ## 个人征信逾期
 
-{_record_lines(personal_overdue, (('机构', 'institution'), ('账户/业务类型', 'account_type'), ('当前状态', 'current_status'), ('逾期金额', 'overdue_amount'), ('逾期月数', 'overdue_months')))}
+{_personal_overdue_section(personal, metrics)}
 
 ## 公共记录
 
