@@ -165,6 +165,7 @@ def build_safe_analysis_context(model: ComprehensiveFinancingReportModel) -> dic
             "assets": assets,
             "risk_context": _section(model, "risk_context", ("risk_level", "total_score", "generated_at", "stale")),
             "existing_financing_plan": _section(model, "existing_financing_plan", ("has_saved_result",)),
+            "data_quality": model.data_quality,
             "source_dates": model.source_dates,
         },
         "DERIVED_METRIC": {key: value for key, value in model.derived_metrics.items()
@@ -172,6 +173,32 @@ def build_safe_analysis_context(model: ComprehensiveFinancingReportModel) -> dic
         "STATUS": {row["type"]: row["status"] for row in materials},
         "CONFLICT": [{"type": item.get("type"), "message": item.get("message")} for item in model.conflicts],
         "MISSING_DATA": [row["type"] for row in materials if row["status"] == "missing"],
+    }
+
+
+def build_analysis_input_debug_summary(model: ComprehensiveFinancingReportModel) -> dict[str, Any]:
+    """Non-sensitive audit summary proving which fact sections enter the LLM."""
+    section_names = (
+        "subject_profile", "enterprise_credit", "personal_credit", "enterprise_cashflow",
+        "personal_cashflow", "financials", "assets", "financing_requirement", "risk_context",
+        "existing_financing_plan",
+    )
+    sections = {name: {"included": True, "status": getattr(model, name).get("status")} for name in section_names}
+    sections.update({
+        "derived_metrics": {"included": True}, "conflicts": {"included": True, "count": len(model.conflicts)},
+        "data_quality": {"included": True, "status": model.data_quality.get("status")},
+        "source_dates": {"included": True},
+    })
+    latest = model.financials.get("latest") or {}
+    return {
+        "sections": sections,
+        "checks": {
+            "enterprise_cashflow.total_inflow": model.enterprise_cashflow.get("total_inflow"),
+            "enterprise_cashflow.operating_inflow": model.enterprise_cashflow.get("operating_inflow"),
+            "derived_metrics.monthly_average_operating_inflow": model.derived_metrics.get("monthly_average_operating_inflow"),
+            "financials.latest.debt_asset_ratio": latest.get("debt_asset_ratio"),
+            "financials.latest.net_assets": latest.get("net_assets"),
+        },
     }
 
 
@@ -236,6 +263,20 @@ def validate_analysis_result(result: ComprehensiveFinancingAnalysisResult, model
         errors.append("包含预测利率")
     if re.search(r"(?:中国|建设|工商|农业|交通|招商|浦发|兴业|民生|中信|光大|平安|广发|华夏|邮储|上海|北京)银行", text):
         errors.append("包含具体银行推荐")
+    metadata_inferences = (
+        "合同001", "BIM咨询合同", "材料采购合同", "临空项目", "青浦项目", "多项目并行",
+        "项目承接能力", "技术议价空间", "保函需求", "应收账款融资", "采购垫资",
+    )
+    if any(term in text for term in metadata_inferences):
+        errors.append("使用文件名或合同元数据推断经营事实")
+    availability_checks = (
+        (model.financials.get("status") in {"available", "partial", "confirmed"}, r"财务(?:报表|资料|数据)[^。；\n]{0,10}(?:尚未上传|未上传|缺失)"),
+        (model.enterprise_cashflow.get("status") in {"available", "partial", "confirmed"}, r"(?:银行|企业)流水[^。；\n]{0,10}(?:尚未上传|未上传|缺失)"),
+        (model.enterprise_credit.get("status") in {"available", "partial", "confirmed"}, r"企业征信(?:报告)?[^。；\n]{0,10}(?:尚未上传|未上传|缺失)"),
+        (model.personal_credit.get("status") in {"available", "partial", "confirmed"}, r"个人征信(?:报告)?[^。；\n]{0,10}(?:尚未上传|未上传|缺失)"),
+    )
+    if any(available and re.search(pattern, text) for available, pattern in availability_checks):
+        errors.append("将可用或部分可用资料错误描述为未上传")
     for clause in re.findall(r"内部互转[^。；\n]{0,40}", text):
         if re.search(r"(?:计入|算作|作为)[^。；\n]{0,12}经营(?:收入|入账)", clause) and not re.search(r"不(?:得|应|能|可)?|排除|剔除|未计入|不能", clause):
             errors.append("将内部互转当作经营收入")

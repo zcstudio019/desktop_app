@@ -356,7 +356,7 @@ class ChatResponse(BaseModel):
 
     message: str = Field(..., description="AI response message")
     intent: str | None = Field(
-        default=None, description="Identified intent: 'extract', 'application', 'matching', 'credit_one_page_report', or 'chat'"
+        default=None, description="Identified intent, including structured credit or comprehensive financing analysis reports"
     )
     data: dict[str, Any] | None = Field(default=None, description="Associated data (e.g., extraction result)")
     reasoning: str | None = Field(

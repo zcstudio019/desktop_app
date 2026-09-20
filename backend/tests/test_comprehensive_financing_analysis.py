@@ -12,7 +12,9 @@ from backend.services.comprehensive_financing_analysis_service import (
     analyze_comprehensive_financing_report,
     build_safe_analysis_context,
     validate_analysis_result,
+    build_analysis_input_debug_summary,
 )
+from backend.services import assistant_comprehensive_financing_analysis_service as assistant_analysis
 
 
 @pytest.fixture
@@ -224,3 +226,94 @@ def test_invalid_output_repairs_once_with_same_context(facts, valid_payload):
         return json.dumps(valid_payload, ensure_ascii=False)
     asyncio.run(analyze_comprehensive_financing_report(facts, fake))
     assert len(calls) == 2 and calls[0] == calls[1]
+
+
+def test_real_context_not_replaced_by_file_metadata(facts, valid_payload, monkeypatch):
+    facts.enterprise_cashflow.update({"total_inflow": 42499565.67, "operating_inflow": 19493700.0})
+    facts.derived_metrics["monthly_average_operating_inflow"] = 1624475.0
+    facts.financials["latest"] = {"debt_asset_ratio": 0.9953, "net_assets": 252084.7, "period_type": "monthly"}
+    facts.financials["periods"][-1].update(facts.financials["latest"])
+    captured = {}
+    async def fake_builder(_storage, _customer_id):
+        return facts
+    def fake_llm(_prompt, context_json):
+        captured.update(json.loads(context_json))
+        return json.dumps(valid_payload, ensure_ascii=False)
+    monkeypatch.setattr(assistant_analysis, "build_comprehensive_financing_report_context", fake_builder)
+    class Storage:
+        async def get_customer(self, customer_id):
+            return {"customer_id": customer_id, "name": "上海意川建筑科技有限公司"}
+        async def list_documents(self, _customer_id):
+            raise AssertionError("综合分析不得读取文件列表")
+    result = asyncio.run(assistant_analysis.generate_comprehensive_financing_analysis(
+        Storage(), "生成客户综合融资分析报告", "customer-135", llm=fake_llm,
+    ))
+    assert result["data"]["analysisStatus"] == "completed"
+    assert result["data"]["analysis"] == ComprehensiveFinancingAnalysisResult.model_validate(valid_payload).model_dump()
+    assert captured["FACT"]["enterprise_cashflow"]["total_inflow"] == 42499565.67
+    assert captured["FACT"]["financials"]["periods"][-1]["net_assets"] == 252084.7
+    assert "documents" not in json.dumps(captured)
+
+
+def test_analysis_input_debug_summary_contains_real_model_checks(facts):
+    facts.enterprise_cashflow.update({"total_inflow": 42499565.67, "operating_inflow": 19493700.0})
+    facts.derived_metrics["monthly_average_operating_inflow"] = 1624475.0
+    facts.financials["latest"] = {"debt_asset_ratio": 0.9953, "net_assets": 252084.7}
+    summary = build_analysis_input_debug_summary(facts)
+    assert summary["sections"]["enterprise_credit"]["status"] == "available"
+    assert summary["sections"]["personal_credit"]["status"] == "available"
+    assert summary["sections"]["enterprise_cashflow"]["status"] == "partial"
+    assert summary["sections"]["financials"]["status"] == "available"
+    assert summary["sections"]["personal_cashflow"]["status"] == "missing"
+    assert summary["sections"]["assets"]["status"] == "missing"
+    assert summary["sections"]["financing_requirement"]["status"] == "missing"
+    assert summary["checks"]["enterprise_cashflow.total_inflow"] == 42499565.67
+    assert summary["checks"]["enterprise_cashflow.operating_inflow"] == 19493700.0
+    assert summary["checks"]["derived_metrics.monthly_average_operating_inflow"] == 1624475.0
+    assert summary["checks"]["financials.latest.debt_asset_ratio"] == 0.9953
+    assert summary["checks"]["financials.latest.net_assets"] == 252084.7
+
+
+def test_available_financials_not_reported_missing(facts, valid_payload):
+    valid_payload["financial_analysis"]["summary"] = "财务报表尚未上传，不能分析；月度财务不能直接与全年流水比较。"
+    assert "将可用或部分可用资料错误描述为未上传" in validate(valid_payload, facts)
+
+
+def test_available_enterprise_credit_not_reported_missing(facts, valid_payload):
+    valid_payload["credit_analysis"]["summary"] = "企业征信报告尚未上传。"
+    assert "将可用或部分可用资料错误描述为未上传" in validate(valid_payload, facts)
+
+
+def test_available_personal_credit_not_reported_missing(facts, valid_payload):
+    valid_payload["credit_analysis"]["summary"] = "个人征信报告尚未上传。"
+    assert "将可用或部分可用资料错误描述为未上传" in validate(valid_payload, facts)
+
+
+def test_partial_cashflow_not_reported_missing(facts, valid_payload):
+    valid_payload["cashflow_analysis"]["summary"] = "企业流水尚未上传。"
+    errors = validate(valid_payload, facts)
+    assert "将可用或部分可用资料错误描述为未上传" in errors
+
+
+def test_contract_filename_not_used_to_infer_business_facts(facts, valid_payload):
+    valid_payload["business_analysis"]["summary"] = "根据BIM咨询合同可判断企业具备项目承接能力。"
+    assert "使用文件名或合同元数据推断经营事实" in validate(valid_payload, facts)
+    assert "合同" not in json.dumps(build_safe_analysis_context(facts), ensure_ascii=False)
+
+
+def test_analysis_result_is_not_markdown(facts, valid_payload):
+    result = asyncio.run(analyze_comprehensive_financing_report(facts, lambda *_: json.dumps(valid_payload, ensure_ascii=False)))
+    assert isinstance(result, ComprehensiveFinancingAnalysisResult)
+    assert not isinstance(result, str)
+
+
+def test_missing_assets_not_treated_as_no_assets(facts, valid_payload):
+    valid_payload["asset_and_enhancement_analysis"]["summary"] = "该客户无资产。"
+    assert "将资产资料缺失写成无资产" in validate(valid_payload, facts)
+
+
+def test_comprehensive_request_uses_dedicated_service_path():
+    assert assistant_analysis.is_comprehensive_financing_analysis_request(
+        "根据上海意川建筑科技有限公司的全部资料生成客户综合融资分析报告"
+    )
+    assert assistant_analysis.COMPREHENSIVE_FINANCING_ANALYSIS_INTENT == "comprehensive_financing_analysis_report"

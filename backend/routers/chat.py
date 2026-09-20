@@ -56,6 +56,11 @@ from backend.services.assistant_credit_report_service import (
     generate_credit_one_page_report,
     is_credit_report_request,
 )
+from backend.services.assistant_comprehensive_financing_analysis_service import (
+    COMPREHENSIVE_FINANCING_ANALYSIS_INTENT,
+    generate_comprehensive_financing_analysis,
+    is_comprehensive_financing_analysis_request,
+)
 
 from ..middleware.auth import get_current_user_optional
 from ..models.schemas import (
@@ -214,6 +219,8 @@ def recognize_intent(message: str) -> str:
     # LLM classifier so "分析征信" is not accidentally routed to scheme matching.
     if is_credit_report_request(message):
         return CREDIT_REPORT_INTENT
+    if is_comprehensive_financing_analysis_request(message):
+        return COMPREHENSIVE_FINANCING_ANALYSIS_INTENT
 
     try:
         prompt = INTENT_PROMPT.format(message=message)
@@ -1568,6 +1575,12 @@ async def _dispatch_intent(
         return await generate_credit_one_page_report(
             storage_service,
             ai_service,
+            user_message,
+            selected_customer_id=request.customerId,
+        )
+    elif intent == COMPREHENSIVE_FINANCING_ANALYSIS_INTENT:
+        return await generate_comprehensive_financing_analysis(
+            storage_service,
             user_message,
             selected_customer_id=request.customerId,
         )
