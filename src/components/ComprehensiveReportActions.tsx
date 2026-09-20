@@ -33,7 +33,7 @@ export function ComprehensiveReportActions({ data }: { data: Record<string, unkn
   return <div className="mt-3 border-t border-gray-200 pt-3" data-testid="comprehensive-report-actions">
     <div className="flex gap-2">
       <button disabled={busy} onClick={() => void open('preview')} className="rounded border border-slate-300 px-3 py-1.5 text-xs text-slate-700 disabled:opacity-50">预览综合报告</button>
-      <button disabled={busy} onClick={() => void open('pdf')} className="rounded bg-slate-800 px-3 py-1.5 text-xs text-white disabled:opacity-50">{busy ? '正在读取…' : '下载综合报告 PDF'}</button>
+      <button disabled={busy} onClick={() => void open('pdf')} className="rounded bg-slate-800 px-3 py-1.5 text-xs text-white disabled:opacity-50">{busy ? '正在读取…' : '下载综合报告'}</button>
     </div>
     {error && <p role="alert" className="mt-2 text-xs text-red-700">{error}</p>}
   </div>;

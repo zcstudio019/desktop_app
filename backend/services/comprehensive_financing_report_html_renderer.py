@@ -9,15 +9,16 @@ from typing import Any, Iterable
 from backend.services.comprehensive_financing_analysis_service import ComprehensiveFinancingAnalysisResult
 from backend.services.comprehensive_financing_report_model import CUSTOMER_MATERIAL_TYPES, ComprehensiveFinancingReportModel
 from backend.services.comprehensive_financing_report_markdown_renderer import format_money, format_ratio
+from backend.services.comprehensive_financing_report_display import localize_report_text
 
 
 STATUS = {"confirmed": "已确认", "available": "已获取", "partial": "部分资料", "missing": "资料不足", "needs_review": "待核验"}
 PATH_STATUS = {"potential": "可进一步评估", "conditional": "有条件", "insufficient_data": "资料不足"}
-MATERIAL = {"enterprise_kyc": "KYC主体资料", "enterprise_credit": "企业征信", "personal_credit": "个人征信",
+MATERIAL = {"enterprise_kyc": "主体及身份资料", "enterprise_credit": "企业征信", "personal_credit": "个人征信",
             "enterprise_cashflow": "企业流水", "personal_cashflow": "个人流水", "financial_statements": "财务报表",
             "assets": "资产资料", "financing_requirement": "融资需求", "enterprise_cashflow_classification": "企业流水分类",
             "financial_cashflow_period_mismatch": "财务与流水期间", "source_date_comparability": "资料时点可比性"}
-SOURCE = {"subject_profile": "主体资料", "financing_requirement": "融资需求", "enterprise_credit": "企业征信",
+SOURCE = {"subject_profile": "主体及身份资料", "financing_requirement": "融资需求", "enterprise_credit": "企业征信",
           "personal_credit": "个人征信", "enterprise_cashflow": "企业流水", "personal_cashflow": "个人流水",
           "financials": "财务报表", "assets": "资产资料", "derived_metrics": "程序计算指标",
           "conflicts": "资料冲突核验", "data_scope": "数据范围", "data_quality": "资料完整度", "source_dates": "资料日期"}
@@ -334,7 +335,7 @@ def render_comprehensive_financing_report_html(
     date_text = generated_at.isoformat(sep=" ", timespec="seconds") if isinstance(generated_at, datetime) else str(generated_at)
     customer = report_model.subject_profile.get("enterprise_name") or report_model.customer.get("name")
     summary = analysis_result.executive_summary
-    intro = f"<div class='cover-head'><div class='eyebrow'>FINANCING ANALYSIS REPORT</div><h1>客户综合融资分析报告</h1><div class='meta'><div>企业客户：<strong>{_e(customer)}</strong></div><div>报告生成时间：<strong>{_e(date_text)}</strong></div></div></div>"
+    intro = f"<div class='cover-head'><div class='eyebrow'>客户融资综合分析</div><h1>客户综合融资分析报告</h1><div class='meta'><div>企业客户：<strong>{_e(customer)}</strong></div><div>报告生成时间：<strong>{_e(date_text)}</strong></div></div></div>"
     if analysis_result.validation_fallback_used:
         intro += "<p class='note'>本次部分综合判断采用保守口径，建议结合补充资料进一步核验。</p>"
     intro += "<h3>数据范围</h3>" + _scope(report_model)
@@ -353,4 +354,10 @@ def render_comprehensive_financing_report_html(
     pages.append(_page("融资优势、障碍与核心问题", "04", _strengths_constraints(analysis_result)))
     pages.append(_page("融资路径与行动计划", "05", _paths_actions(analysis_result)))
     pages.append(_page("资料限制与综合结论", "06", _limitations_conclusion(analysis_result)))
-    return "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>客户综合融资分析报告</title><style>" + CSS + "</style></head><body><main class='report'>" + "".join(pages) + "</main></body></html>"
+    rendered = "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>客户综合融资分析报告</title><style>" + CSS + "</style></head><body><main class='report'>" + "".join(pages) + "</main></body></html>"
+    return localize_report_text(
+        rendered,
+        debt_asset_ratio=report_model.derived_metrics.get("debt_asset_ratio"),
+        debt_asset_ratios=(period.get("debt_asset_ratio") for period in report_model.financials.get("periods") or []),
+        html=True,
+    )

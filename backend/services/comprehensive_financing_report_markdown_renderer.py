@@ -12,6 +12,7 @@ from backend.services.comprehensive_financing_report_model import (
     CUSTOMER_MATERIAL_TYPES,
     ComprehensiveFinancingReportModel,
 )
+from backend.services.comprehensive_financing_report_display import localize_report_text
 
 
 STATUS_LABELS = {
@@ -29,7 +30,7 @@ PATH_STATUS_LABELS = {
 }
 
 SOURCE_LABELS = {
-    "subject_profile": "主体资料",
+    "subject_profile": "主体及身份资料",
     "financing_requirement": "融资需求",
     "enterprise_credit": "企业征信",
     "personal_credit": "个人征信",
@@ -47,7 +48,7 @@ SOURCE_LABELS = {
 }
 
 MATERIAL_LABELS = {
-    "enterprise_kyc": "KYC主体资料",
+    "enterprise_kyc": "主体及身份资料",
     "enterprise_credit": "企业征信",
     "personal_credit": "个人征信",
     "enterprise_cashflow": "企业流水",
@@ -425,7 +426,7 @@ def render_comprehensive_financing_report(
         "needs_data_completion": "需补充资料",
         "needs_issue_resolution": "需先解决关键问题",
     }
-    return f"""# 客户综合融资分析报告
+    rendered = f"""# 客户综合融资分析报告
 
 企业客户：{_clean(customer_name)}  
 报告生成时间：{generated_text}
@@ -565,3 +566,8 @@ def render_comprehensive_financing_report(
 
 > {_clean(analysis_result.conclusion.one_sentence)}
 """.strip()
+    return localize_report_text(
+        rendered,
+        debt_asset_ratio=report_model.derived_metrics.get("debt_asset_ratio"),
+        debt_asset_ratios=(period.get("debt_asset_ratio") for period in report_model.financials.get("periods") or []),
+    )

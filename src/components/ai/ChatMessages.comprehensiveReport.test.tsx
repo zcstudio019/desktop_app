@@ -46,11 +46,11 @@ describe('workspace assistant comprehensive report', () => {
     fireEvent.change(screen.getByTestId('ai-message-input'), { target: { value: '生成综合融资分析报告' } });
     fireEvent.click(screen.getByTestId('ai-send-button'));
     expect(await screen.findByText('预览综合报告')).toBeTruthy();
-    expect(screen.getByText('下载综合报告 PDF')).toBeTruthy();
+    expect(screen.getByText('下载综合报告')).toBeTruthy();
     expect(JSON.parse(screen.getByTestId('latest-assistant-message').textContent || '{}')).toMatchObject({
       role: 'assistant', intent: 'comprehensive_financing_analysis_report', data,
     });
-    await act(async () => { fireEvent.click(screen.getByText('下载综合报告 PDF')); });
+    await act(async () => { fireEvent.click(screen.getByText('下载综合报告')); });
     expect(downloadComprehensiveReportPdf).toHaveBeenCalledWith(data.pdfUrl);
     expect(fetchComprehensiveReportArtifact).not.toHaveBeenCalled();
     expect(sendChat).toHaveBeenCalledTimes(1);
@@ -60,5 +60,16 @@ describe('workspace assistant comprehensive report', () => {
     render(<><ChatMessages /><StoreControl /></>);
     fireEvent.click(screen.getByText('征信消息'));
     expect(screen.queryByText('预览综合报告')).toBeNull();
+  });
+
+  it('test_comprehensive_report_button_text_is_chinese', async () => {
+    vi.mocked(sendChat).mockResolvedValue({
+      message: '# 客户综合融资分析报告', intent: 'comprehensive_financing_analysis_report', data, reasoning: null,
+    });
+    render(<><ChatInput /><ChatMessages /></>);
+    fireEvent.change(screen.getByTestId('ai-message-input'), { target: { value: '生成综合融资分析报告' } });
+    fireEvent.click(screen.getByTestId('ai-send-button'));
+    expect(await screen.findByText('下载综合报告')).toBeTruthy();
+    expect(screen.queryByText('下载综合报告 PDF')).toBeNull();
   });
 });
