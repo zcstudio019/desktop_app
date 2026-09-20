@@ -276,6 +276,71 @@ def test_personal_related_repayment_not_counted_as_enterprise_debt(storage):
     assert report.derived_metrics["total_enterprise_credit_balance"] == 500
 
 
+def _add_stable_personal_credit_case(storage):
+    queries = [
+        {"query_date": "2026-02-10", "query_reason": "贷款审批", "query_institution": f"银行{i}"}
+        for i in range(2)
+    ] + [
+        {"query_date": "2026-02-11", "query_reason": "担保资格审查", "query_institution": f"机构{i}"}
+        for i in range(6)
+    ]
+    storage.extractions.append(extraction("personal_credit_report", {
+        "basic_info": {"name": "张三", "report_time": "2026-06-30"},
+        "unit": "元",
+        "credit_summary": {
+            "loan_overdue_account_count": 0,
+            "credit_card_overdue_account_count": 0,
+            "overdue_90_plus_account_count": 0,
+            "outstanding_loan_account_count": 1,
+        },
+        "loan_accounts": [{"balance": 3314569, "balance_unit": "元"}],
+        "credit_card_accounts": [{"credit_limit": 17000, "credit_limit_unit": "元", "used_amount": 1000}],
+        "related_repayment_responsibilities": [{"balance": 18739532, "evidence": "余额 18739532 元"}],
+        "overdue_records": [
+            {"account_type": "贷款", "institution": "历史机构", "overdue_amount": 0, "current_status": "正常"},
+            {"account_type": "信用卡", "institution": "历史机构", "overdue_amount": 0, "current_status": "正常"},
+        ],
+        "query_records": queries,
+    }))
+
+
+def test_comprehensive_personal_overdue_matches_stable_credit_facts(storage):
+    _add_stable_personal_credit_case(storage)
+    overdue = build(storage).personal_credit["people"][0]["overdue_summary"]
+    assert overdue == {
+        "loan_overdue_account_count": 0,
+        "credit_card_overdue_account_count": 0,
+        "overdue_90d_account_count": 0,
+    }
+
+
+def test_comprehensive_query_counts_match_stable_credit_facts(storage):
+    _add_stable_personal_credit_case(storage)
+    query = build(storage).personal_credit["people"][0]["query_summary"]
+    assert query["near_3_months"] == {
+        "window": "近3月", "loan_approval": 0, "credit_card_approval": 0,
+        "guarantee_review": 0, "legal_person_review": 0,
+    }
+    assert query["near_6_months"] == {
+        "window": "近6月", "loan_approval": 2, "credit_card_approval": 0,
+        "guarantee_review": 6, "legal_person_review": 0,
+    }
+
+
+def test_personal_credit_money_unit_does_not_regress(storage):
+    _add_stable_personal_credit_case(storage)
+    person = build(storage).personal_credit["people"][0]
+    assert person["loan_balance_money"] == {"value": 3314569, "unit": "元"}
+    assert person["credit_card_limit_money"] == {"value": 17000, "unit": "元"}
+
+
+def test_related_repayment_money_unit_does_not_regress(storage):
+    _add_stable_personal_credit_case(storage)
+    report = build(storage)
+    assert report.personal_credit["people"][0]["related_repayment_balance_money"] == {"value": 18739532, "unit": "元"}
+    assert report.derived_metrics["total_related_repayment_balance_money"] == {"value": 18739532.0, "unit": "元"}
+
+
 @pytest.mark.parametrize("field,expected", [("total_inflow", 1500), ("operating_inflow", 1000),
                                              ("internal_transfer_inflow", 300), ("related_party_inflow", 200),
                                              ("non_operating_inflow", 500)])

@@ -93,6 +93,9 @@ def _number(value: Any) -> float | None:
 
 
 def format_money(value: Any, unit: Any) -> str:
+    if isinstance(value, dict):
+        unit = value.get("unit") or unit
+        value = value.get("value")
     number = _number(value)
     if number is None:
         return "资料不足"
@@ -207,8 +210,8 @@ def _render_core_metrics(model: ComprehensiveFinancingReportModel) -> str:
     financial_unit = financial.get("unit")
     rows = [
         ["企业征信融资余额", format_money(derived.get("total_enterprise_credit_balance"), enterprise_credit.get("unit"))],
-        ["个人征信贷款余额", format_money(derived.get("total_personal_credit_balance"), model.personal_credit.get("unit"))],
-        ["法人相关还款责任余额", format_money(derived.get("total_related_repayment_balance"), model.personal_credit.get("unit"))],
+        ["个人征信贷款余额", format_money(derived.get("total_personal_credit_balance_money") or derived.get("total_personal_credit_balance"), model.personal_credit.get("unit"))],
+        ["法人相关还款责任余额", format_money(derived.get("total_related_repayment_balance_money") or derived.get("total_related_repayment_balance"), model.personal_credit.get("unit"))],
         ["企业流水总流入", format_money(derived.get("enterprise_total_inflow"), cashflow_unit)],
         ["初步经营入账", format_money(derived.get("enterprise_operating_inflow"), cashflow_unit)],
         ["月均经营入账", format_money(derived.get("monthly_average_operating_inflow"), cashflow_unit)],
@@ -287,18 +290,33 @@ def _render_personal_credit(model: ComprehensiveFinancingReportModel) -> str:
     rows = []
     unit = model.personal_credit.get("unit")
     for person in model.personal_credit.get("people") or []:
-        query = person.get("query_summary") or {}
-        query_text = f"近3个月 {_clean(query.get('last_3_months'))}；近6个月 {_clean(query.get('last_6_months'))}"
-        card = f"额度 {format_money(person.get('credit_card_limit'), unit)}；已用 {format_money(person.get('credit_card_used'), unit)}"
+        overdue = person.get("overdue_summary") or {}
+        overdue_text = (f"贷款 {_clean(overdue.get('loan_overdue_account_count'))}；"
+                        f"信用卡 {_clean(overdue.get('credit_card_overdue_account_count'))}；"
+                        f"90天以上 {_clean(overdue.get('overdue_90d_account_count'))}")
+        card = (f"额度 {format_money(person.get('credit_card_limit_money') or person.get('credit_card_limit'), unit)}；"
+                f"已用 {format_money(person.get('credit_card_used_money') or person.get('credit_card_used'), unit)}")
         rows.append([
-            person.get("name"), _join(person.get("roles") or []), format_money(person.get("loan_balance"), unit),
-            card, (person.get("overdue_summary") or {}).get("count"), query_text,
-            format_money(person.get("related_repayment_balance"), unit), person.get("source_report_date"),
+            person.get("name"), _join(person.get("roles") or []), format_money(person.get("loan_balance_money") or person.get("loan_balance"), unit),
+            card, overdue_text,
+            format_money(person.get("related_repayment_balance_money") or person.get("related_repayment_balance"), unit), person.get("source_report_date"),
         ])
     if not rows:
-        rows.append(["资料不足"] * 8)
-    return render_markdown_table(
-        ["姓名", "角色", "贷款余额", "信用卡", "逾期记录数", "查询", "相关还款责任", "报告日期"], rows
+        rows.append(["资料不足"] * 7)
+    summary = render_markdown_table(
+        ["姓名", "角色", "贷款余额", "信用卡", "逾期账户", "相关还款责任", "报告日期"], rows
+    )
+    query_rows = []
+    for person in model.personal_credit.get("people") or []:
+        for window in (person.get("query_summary") or {}).get("windows") or []:
+            query_rows.append([
+                person.get("name"), window.get("window"), window.get("loan_approval"),
+                window.get("credit_card_approval"), window.get("guarantee_review"), window.get("legal_person_review"),
+            ])
+    if not query_rows:
+        return summary + "\n\n**征信查询窗口：** 资料不足"
+    return summary + "\n\n**征信查询窗口：**\n\n" + render_markdown_table(
+        ["姓名", "查询窗口", "贷款审批", "信用卡审批", "担保资格审查", "法人资信审查"], query_rows
     )
 
 

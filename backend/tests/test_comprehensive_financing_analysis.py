@@ -10,6 +10,7 @@ from backend.services.comprehensive_financing_report_model import ComprehensiveF
 from backend.services.comprehensive_financing_analysis_service import (
     ComprehensiveFinancingAnalysisResult,
     analyze_comprehensive_financing_report,
+    build_conservative_analysis_fallback,
     build_safe_analysis_context,
     validate_analysis_result,
     build_analysis_input_debug_summary,
@@ -59,14 +60,21 @@ def valid_payload(facts):
         "asset_and_enhancement_analysis": section("当前未获取稳定结构化资产资料，无法判断增信能力。", ["assets"]),
         "financing_strengths": [{"title": "资料基础", "fact": "有已保存企业流水", "impact": "可供初步核验",
                                  "source_sections": ["enterprise_cashflow"]}],
-        "financing_constraints": [{"title": "个人收入待核验", "fact": "缺少可用个人流水", "impact": "无法核验稳定可采信个人收入",
-                                   "required_action": "补充个人流水", "source_sections": ["personal_cashflow"]}],
+        "financing_constraints": [
+            {"title": "个人收入待核验", "fact": "缺少可用个人流水", "impact": "无法核验稳定可采信个人收入",
+             "required_action": "补充个人流水", "source_sections": ["personal_cashflow"]},
+            {"title": "资本结构需核验", "fact": "资产负债率较高", "impact": "需核验偿债安全边际",
+             "required_action": "补充完整财务", "source_sections": ["financials"]},
+            {"title": "企业流水结构需核验", "fact": "经营入账为初步分类", "impact": "经营来源仍需核验",
+             "required_action": "核验关联方及内部互转", "source_sections": ["enterprise_cashflow"]},
+        ],
         "core_issues": [{"issue": "资料不完整", "facts": ["个人流水缺失"], "financing_impact": "影响下一步评估",
                          "next_action": "补齐个人流水", "source_sections": ["personal_cashflow"]}],
         "financing_paths": [
             {"path": "信用融资", "status": "conditional", "basis": ["有企业征信"], "missing_conditions": ["明确需求"], "source_sections": ["enterprise_credit", "financing_requirement"]},
             {"path": "抵押融资", "status": "insufficient_data", "basis": [], "missing_conditions": ["资产资料"], "source_sections": ["assets"]},
             {"path": "科技企业专项融资", "status": "insufficient_data", "basis": [], "missing_conditions": ["科技资格资料"], "source_sections": ["subject_profile"]},
+            {"path": "保证/增信融资", "status": "conditional", "basis": ["已有征信资料"], "missing_conditions": ["核验保证责任"], "source_sections": ["enterprise_credit", "personal_credit"]},
         ],
         "action_plan": {"immediate": [{"action": "核验流水关联方", "basis": "分类尚未确认", "source_sections": ["enterprise_cashflow"]}],
                         "short_term": [{"action": "补充个人流水", "basis": "个人收入无法核验", "source_sections": ["personal_cashflow"]}],
@@ -258,7 +266,7 @@ def test_repair_failure_uses_graceful_fallback(facts):
     result = asyncio.run(analyze_comprehensive_financing_report(facts, always_invalid))
     assert len(calls) == 2
     assert result.validation_fallback_used is True
-    assert result.financing_paths == []
+    assert {item.path for item in result.financing_paths} == {"信用融资", "抵押融资", "保证/增信融资", "科技企业专项融资"}
     text = json.dumps(result.model_dump(), ensure_ascii=False)
     assert "无资产" not in text
     assert "无融资需求" not in text
@@ -368,3 +376,54 @@ def test_comprehensive_request_uses_dedicated_service_path():
         "根据上海意川建筑科技有限公司的全部资料生成客户综合融资分析报告"
     )
     assert assistant_analysis.COMPREHENSIVE_FINANCING_ANALYSIS_INTENT == "comprehensive_financing_analysis_report"
+
+
+def test_high_debt_ratio_enters_financing_constraints(facts):
+    result = build_conservative_analysis_fallback(facts)
+    assert any("资产负债率" in item.fact or "资本结构" in item.title for item in result.financing_constraints)
+
+
+def test_thin_net_assets_enters_financing_constraints(facts):
+    facts.financials["latest"].update({"total_assets": 53789185.41, "net_assets": 252084.70, "unit": "元"})
+    result = build_conservative_analysis_fallback(facts)
+    assert any("净资产" in item.fact and "252,084.70元" in item.fact for item in result.financing_constraints)
+
+
+def test_cashflow_structure_enters_financing_constraints(facts):
+    result = build_conservative_analysis_fallback(facts)
+    assert any("流水" in item.title and "内部互转" in item.fact for item in result.financing_constraints)
+
+
+def test_system_missing_risk_report_not_treated_as_customer_financing_constraint(facts):
+    result = build_conservative_analysis_fallback(facts)
+    text = "\n".join(f"{item.title}{item.fact}" for item in result.financing_constraints)
+    assert "风险评估" not in text and "风险报告" not in text
+
+
+def test_missing_financing_plan_not_treated_as_customer_core_issue(facts):
+    result = build_conservative_analysis_fallback(facts)
+    text = "\n".join(f"{item.issue}{' '.join(item.facts)}" for item in result.core_issues)
+    assert "融资方案" not in text and "方案匹配" not in text
+
+
+def test_financing_strengths_not_empty_when_credit_and_cashflow_facts_support_them(facts):
+    result = build_conservative_analysis_fallback(facts)
+    assert result.financing_strengths
+    assert any("流水" in item.title or "经营入账" in item.title for item in result.financing_strengths)
+
+
+def test_financing_paths_are_generated_without_confirmed_financing_requirement(facts):
+    result = build_conservative_analysis_fallback(facts)
+    assert facts.financing_requirement["status"] == "missing"
+    assert {item.path for item in result.financing_paths} >= {"信用融资", "抵押融资", "保证/增信融资", "科技企业专项融资"}
+
+
+def test_mortgage_path_is_insufficient_data_when_assets_missing(facts):
+    path = next(item for item in build_conservative_analysis_fallback(facts).financing_paths if item.path == "抵押融资")
+    assert path.status == "insufficient_data"
+
+
+def test_credit_path_can_be_conditional_without_product_recommendation(facts):
+    path = next(item for item in build_conservative_analysis_fallback(facts).financing_paths if item.path == "信用融资")
+    assert path.status == "conditional"
+    assert not any("银行" in item for item in path.basis + path.missing_conditions)

@@ -147,9 +147,10 @@ def build_safe_analysis_context(model: ComprehensiveFinancingReportModel) -> dic
     """Whitelisted facts only; excludes IDs, source documents, narrative and detail rows."""
     materials = [{"type": row.get("type"), "status": row.get("status"), "latest_date": row.get("latest_date")}
                  for row in model.data_scope.get("materials", [])]
-    personal = [{key: person.get(key) for key in ("roles", "loan_balance", "loan_account_count", "credit_card_limit",
-                                                 "credit_card_used", "credit_card_utilization", "overdue_summary", "query_summary",
-                                                 "related_repayment_balance", "data_status", "source_report_date")}
+    personal = [{key: person.get(key) for key in ("name", "roles", "loan_balance", "loan_balance_money", "loan_account_count",
+                                                 "credit_card_limit", "credit_card_limit_money", "credit_card_used",
+                                                 "credit_card_used_money", "credit_card_utilization", "overdue_summary", "query_summary",
+                                                 "related_repayment_balance", "related_repayment_balance_money", "data_status", "source_report_date")}
                 for person in model.personal_credit.get("people", [])]
     financial = [{key: period.get(key) for key in ("period", "period_type", "unit", "revenue", "operating_cost",
                                                   "gross_profit", "net_profit", "total_assets", "total_liabilities",
@@ -229,6 +230,13 @@ FACT 是已保存事实；DERIVED_METRIC 是程序计算值，不得重算；STA
 融资路径只用信用融资、抵押融资、保证/增信融资、科技企业专项融资、存量融资置换/结构优化，禁止具体银行或产品。缺资产时抵押融资 status=insufficient_data；缺科技资格时科技企业专项融资 status=insufficient_data。
 融资优势、障碍和核心矛盾必须有事实依据；核心矛盾最多 5 项，按重要性排序。行动计划分 immediate、short_term、medium_term。"""
 
+SYSTEM_PROMPT += """
+融资障碍和核心问题按以下顺序选择：已有财务/征信/流水事实形成的约束、跨资料结构问题、影响判断的关键资料缺口。risk_context 和 existing_financing_plan 缺失仅是系统流程状态，禁止作为客户融资障碍或核心问题。
+当资产负债率、净资产、净利润、短期借款、存量征信融资、流水分类或法人相关还款责任已有数据时，必须优先分析这些事实。月度净利润为负只能表述为最新月度口径为负，不得推断持续亏损。
+若企业及个人征信逾期概要明确为零，可形成有限信用基础；若存在连续流水、初步经营入账或历史融资记录，应形成有事实依据的有限融资优势，不得仅输出资料缺口。
+即使融资需求缺失，也必须评估信用融资、抵押融资、保证/增信融资、科技企业专项融资四条路径。信用融资和保证/增信融资只能给出有条件判断；缺资产时抵押融资为资料不足；缺科技资质时科技企业专项融资为资料不足。
+个人征信查询只能引用 query_summary.windows 中稳定查询矩阵，不得自行汇总或改写窗口。"""
+
 
 def _money_registry(model: ComprehensiveFinancingReportModel) -> set[tuple[float, str]]:
     result: set[tuple[float, str]] = set()
@@ -239,6 +247,12 @@ def _money_registry(model: ComprehensiveFinancingReportModel) -> set[tuple[float
             value = section.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 result.add((round(float(value), 2), unit))
+    def add_money(value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        number, unit = value.get("value"), value.get("unit")
+        if isinstance(number, (int, float)) and not isinstance(number, bool) and unit in {"元", "万元", "亿元"}:
+            result.add((round(float(number), 2), unit))
     add(model.enterprise_credit, ("outstanding_loan_balance", "guarantee_balance"), model.enterprise_credit.get("unit"))
     add(model.enterprise_cashflow, ("total_inflow", "total_outflow", "net_inflow", "operating_inflow", "operating_outflow",
         "internal_transfer_inflow", "internal_transfer_outflow", "related_party_inflow", "related_party_outflow",
@@ -247,6 +261,8 @@ def _money_registry(model: ComprehensiveFinancingReportModel) -> set[tuple[float
     for person in model.personal_credit.get("people", []):
         add(person, ("loan_balance", "credit_card_limit", "credit_card_used", "related_repayment_balance"),
             person.get("unit") or model.personal_credit.get("unit") or "元")
+        for key in ("loan_balance_money", "credit_card_limit_money", "credit_card_used_money", "related_repayment_balance_money"):
+            add_money(person.get(key))
     for period in model.financials.get("periods", []):
         add(period, ("revenue", "operating_cost", "gross_profit", "net_profit", "total_assets", "total_liabilities",
             "net_assets", "accounts_receivable", "inventory", "short_term_borrowings", "long_term_borrowings", "operating_cashflow"), period.get("unit"))
@@ -318,10 +334,35 @@ def validate_analysis_result(result: ComprehensiveFinancingAnalysisResult, model
             errors.append("缺资产时抵押融资须标记资料不足")
         if item.path == "科技企业专项融资" and not model.subject_profile.get("technology_enterprise_tags") and item.status != "insufficient_data":
             errors.append("缺科技资格时专项融资须标记资料不足")
+    path_names = {item.path for item in result.financing_paths}
+    for required_path in ("信用融资", "抵押融资", "保证/增信融资", "科技企业专项融资"):
+        if required_path not in path_names:
+            errors.append(f"缺少必要融资路径：{required_path}")
     if model.assets.get("status") == "missing" and not any(item.path == "抵押融资" for item in result.financing_paths):
         errors.append("缺少抵押融资资料不足路径")
     if not model.subject_profile.get("technology_enterprise_tags") and not any(item.path == "科技企业专项融资" for item in result.financing_paths):
         errors.append("缺少科技专项资料不足路径")
+    customer_issue_text = "\n".join(
+        [f"{item.title} {item.fact} {item.impact}" for item in result.financing_constraints]
+        + [f"{item.issue} {' '.join(item.facts)} {item.financing_impact}" for item in result.core_issues]
+    )
+    if re.search(r"(?:风险评估|风险报告).{0,12}(?:缺失|未生成|未找到)|(?:融资方案|方案匹配).{0,12}(?:缺失|未生成|未找到)", customer_issue_text):
+        errors.append("将系统流程状态当作客户融资障碍或核心问题")
+    latest = model.financials.get("latest") or {}
+    debt_ratio = latest.get("debt_asset_ratio")
+    if isinstance(debt_ratio, (int, float)) and debt_ratio >= 0.8 and not re.search(r"资产负债率|资本结构|负债水平", customer_issue_text):
+        errors.append("高资产负债率未进入融资障碍")
+    net_assets, total_assets = latest.get("net_assets"), latest.get("total_assets")
+    if (isinstance(net_assets, (int, float)) and isinstance(total_assets, (int, float)) and total_assets > 0
+            and net_assets / total_assets <= 0.1 and not re.search(r"净资产|资本基础|安全边际", customer_issue_text)):
+        errors.append("净资产基础较薄未进入融资障碍")
+    flow = model.enterprise_cashflow
+    if (flow.get("status") == "partial" or any(isinstance(flow.get(key), (int, float)) and flow.get(key) > 0
+            for key in ("internal_transfer_inflow", "non_operating_inflow"))) and not re.search(r"流水|经营入账|内部互转|未识别", customer_issue_text):
+        errors.append("企业流水结构未进入融资障碍")
+    if model.enterprise_credit.get("status") in {"available", "confirmed"} and flow.get("status") in {"available", "partial", "confirmed"}:
+        if not result.financing_strengths:
+            errors.append("征信与流水事实可用但融资优势为空")
     for item in result.financing_strengths + result.financing_constraints + result.core_issues + result.financing_paths:
         if any(section not in SOURCE_SECTIONS for section in item.source_sections):
             errors.append("事实引用包含未知 section")
@@ -415,6 +456,14 @@ def _repair_instructions(errors: list[str]) -> str:
         instructions.append("cashflow_analysis.summary 必须说明按已保存分类初步统计，且关联方流入尚不能可靠量化、仍需核验。")
     if "资料限制" in joined:
         instructions.append("data_limitations.material_type 只能使用 JSON Schema 中的枚举值。")
+    if "必要融资路径" in joined:
+        instructions.append("financing_paths 必须包含信用融资、抵押融资、保证/增信融资、科技企业专项融资；不得推荐具体银行或产品。")
+    if "系统流程状态" in joined:
+        instructions.append("从 financing_constraints 和 core_issues 中移除风险评估未生成、融资方案未生成；它们只保留在 data_limitations。")
+    if any(term in joined for term in ("高资产负债率", "净资产基础", "企业流水结构")):
+        instructions.append("融资障碍优先写已有财务和流水事实：资本结构、净资产基础、最新期间盈利、存量融资、流水分类；每项引用 Context 原值。")
+    if "融资优势为空" in joined:
+        instructions.append("基于明确的零逾期概要、连续流水、初步经营入账或历史融资记录生成有限优势，禁止使用‘征信优秀’或审批承诺。")
     return "\n".join(instructions)
 
 
@@ -448,6 +497,24 @@ async def repair_comprehensive_financing_analysis_result(
 
 def _status(model: ComprehensiveFinancingReportModel, name: str) -> str:
     return str(getattr(model, name).get("status") or "missing")
+
+
+def _amount_text(value: Any, unit: Any = None) -> str:
+    if isinstance(value, dict):
+        unit = value.get("unit") or unit
+        value = value.get("value")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "资料不足"
+    suffix = str(unit or "").strip()
+    number = f"{float(value):,.2f}" if suffix == "元" else f"{float(value):,.2f}".rstrip("0").rstrip(".")
+    return f"{number}{suffix}" if suffix else f"{number}（单位待核验）"
+
+
+def _personal_money(model: ComprehensiveFinancingReportModel, key: str, numeric_key: str) -> Any:
+    value = model.derived_metrics.get(key)
+    if isinstance(value, dict):
+        return value
+    return {"value": model.derived_metrics.get(numeric_key), "unit": model.personal_credit.get("unit")}
 
 
 def build_conservative_analysis_fallback(
@@ -484,20 +551,114 @@ def build_conservative_analysis_fallback(
             required_data="补充与流水覆盖期一致的财务数据后再核验。",
         ))
 
-    missing_information = [item.limitation for item in limitations if item.material_type in missing]
-    constraints = [
-        Constraint(
-            title="资料待补充",
-            fact=item.limitation,
-            impact=item.impact,
-            required_action=item.required_data,
-            source_sections=[{
-                "risk_assessment": "risk_context",
-                "financing_plan": "existing_financing_plan",
-            }.get(item.material_type, item.material_type)],
-        )
-        for item in limitations if item.material_type in missing
-    ]
+    missing_information = [item.limitation for item in limitations if item.material_type in {
+        "personal_cashflow", "assets", "financing_requirement", "enterprise_cashflow_classification",
+        "financial_cashflow_period_mismatch",
+    }]
+    constraints: list[Constraint] = []
+    debt_ratio = latest.get("debt_asset_ratio")
+    net_assets, total_assets = latest.get("net_assets"), latest.get("total_assets")
+    financial_unit = latest.get("unit")
+    if isinstance(debt_ratio, (int, float)) and debt_ratio >= 0.8:
+        facts = [f"最新财务资产负债率为{debt_ratio * 100:.2f}%"]
+        if isinstance(net_assets, (int, float)):
+            facts.append(f"净资产为{_amount_text(net_assets, financial_unit)}")
+        constraints.append(Constraint(
+            title="资本结构与净资产基础偏弱",
+            fact="；".join(facts) + "。",
+            impact="当前财务口径下负债水平较高、净资产基础较薄，可能影响部分授信产品对资本结构和偿债安全边际的判断。",
+            required_action="结合最新完整年度财务核验资本结构，并明确可执行的资本补充或负债优化安排。",
+            source_sections=["financials", "derived_metrics"],
+        ))
+    net_profit = latest.get("net_profit")
+    if isinstance(net_profit, (int, float)) and net_profit < 0:
+        period_label = "最新月度财务口径" if latest.get("period_type") == "monthly" else "最新财务期间"
+        constraints.append(Constraint(
+            title="最新期间盈利表现承压",
+            fact=f"{period_label}净利润为{_amount_text(net_profit, financial_unit)}。",
+            impact="当前期间盈利表现为负，需要结合完整年度数据判断盈利持续性和偿债来源。",
+            required_action="补充并核验最新完整年度利润数据及利润变化原因。",
+            source_sections=["financials"],
+        ))
+    enterprise_balance = model.enterprise_credit.get("outstanding_loan_balance_money") or {
+        "value": model.enterprise_credit.get("outstanding_loan_balance"), "unit": model.enterprise_credit.get("unit")}
+    short_borrowing = latest.get("short_term_borrowings")
+    if (isinstance(enterprise_balance, dict) and isinstance(enterprise_balance.get("value"), (int, float))) or isinstance(short_borrowing, (int, float)):
+        facts = []
+        if isinstance(enterprise_balance, dict) and isinstance(enterprise_balance.get("value"), (int, float)):
+            facts.append(f"企业征信未结清融资余额为{_amount_text(enterprise_balance)}")
+        if isinstance(short_borrowing, (int, float)):
+            facts.append(f"最新财务短期借款为{_amount_text(short_borrowing, financial_unit)}")
+        constraints.append(Constraint(
+            title="存量融资与短期债务结构需评估",
+            fact="；".join(facts) + "。",
+            impact="存量融资规模及短期债务结构会影响新增融资空间与期限安排。",
+            required_action="核验存量融资到期分布、还款安排和新增融资用途，不预测具体审批额度。",
+            source_sections=["enterprise_credit", "financials"],
+        ))
+    flow = model.enterprise_cashflow
+    if flow.get("status") == "partial" or any(isinstance(flow.get(key), (int, float)) and flow.get(key) > 0
+            for key in ("internal_transfer_inflow", "non_operating_inflow")):
+        flow_unit = flow.get("unit")
+        constraints.append(Constraint(
+            title="企业流水经营入账结构仍需核验",
+            fact=(f"总流入{_amount_text(flow.get('total_inflow'), flow_unit)}；当前分类下初步经营入账"
+                  f"{_amount_text(flow.get('operating_inflow'), flow_unit)}；内部互转流入"
+                  f"{_amount_text(flow.get('internal_transfer_inflow'), flow_unit)}；其他非经营或未识别流入"
+                  f"{_amount_text(flow.get('non_operating_inflow'), flow_unit)}。"),
+            impact="银行流水规模不等于真实经营收入，当前仍有内部互转及非经营或未识别流入，新增融资评估前需进一步核实经营来源。",
+            required_action="核验关联方、内部账户和未识别交易分类，形成可复核的经营入账口径。",
+            source_sections=["enterprise_cashflow", "derived_metrics"],
+        ))
+    related_money = _personal_money(model, "total_related_repayment_balance_money", "total_related_repayment_balance")
+    if isinstance(related_money, dict) and isinstance(related_money.get("value"), (int, float)) and related_money.get("value") > 0:
+        constraints.append(Constraint(
+            title="企业与法人信用责任联动较强",
+            fact=f"法人相关还款责任余额为{_amount_text(related_money)}，并需结合企业融资关系核验。",
+            impact="企业融资与法人个人信用责任存在关联，会影响新增保证或增信安排的可用空间。",
+            required_action="逐笔核验相关还款责任对应的企业债务，避免与企业融资余额重复计算。",
+            source_sections=["enterprise_credit", "personal_credit"],
+        ))
+
+    strengths: list[Strength] = []
+    enterprise_overdue = (model.enterprise_credit.get("overdue_summary") or {}).get("count")
+    personal_overdues = [person.get("overdue_summary") or {} for person in model.personal_credit.get("people", [])]
+    stable_no_overdue = enterprise_overdue == 0 and bool(personal_overdues) and all(
+        overdue.get("loan_overdue_account_count") == 0
+        and overdue.get("credit_card_overdue_account_count") == 0
+        and overdue.get("overdue_90d_account_count") == 0
+        for overdue in personal_overdues
+    )
+    if stable_no_overdue:
+        strengths.append(Strength(
+            title="稳定征信事实未见明确逾期账户",
+            fact="当前稳定企业及个人征信概要中，贷款、信用卡及90天以上逾期账户数均为0。",
+            impact="为后续授信评估提供一定信用基础，但不代表审批结论。",
+            source_sections=["enterprise_credit", "personal_credit"],
+        ))
+    if (flow_period.get("months") or 0) >= 10 and flow.get("account_count"):
+        strengths.append(Strength(
+            title="具备连续经营流水核验基础",
+            fact=f"企业流水覆盖{flow_period.get('start')}至{flow_period.get('end')}，共{flow.get('account_count')}个账户。",
+            impact="具备进一步核验经营真实性和现金流情况的数据基础。",
+            source_sections=["enterprise_cashflow", "source_dates"],
+        ))
+    if isinstance(flow.get("operating_inflow"), (int, float)) and flow.get("operating_inflow") > 0:
+        strengths.append(Strength(
+            title="已识别一定规模的初步经营入账",
+            fact=f"按当前已保存分类初步统计，经营入账为{_amount_text(flow.get('operating_inflow'), flow.get('unit'))}。",
+            impact="企业存在可用于进一步核验经营活动的银行流水基础。",
+            source_sections=["enterprise_cashflow", "derived_metrics"],
+        ))
+    institution_count = model.enterprise_credit.get("outstanding_loan_institution_count")
+    if isinstance(institution_count, (int, float)) and institution_count > 0:
+        strengths.append(Strength(
+            title="存在持续金融机构融资记录",
+            fact=f"企业征信显示已有{int(institution_count)}家金融机构的存量融资记录。",
+            impact="可用于观察历史融资结构与还款表现。",
+            source_sections=["enterprise_credit"],
+        ))
+
     issues = [
         CoreIssue(
             issue=item.title,
@@ -508,15 +669,46 @@ def build_conservative_analysis_fallback(
         )
         for item in constraints[:5]
     ]
-    immediate = [
-        Action(action=item.required_action, basis=item.fact, source_sections=item.source_sections)
-        for item in constraints[:3]
+    if model.financing_requirement.get("status") == "missing" and len(issues) < 5:
+        issues.append(CoreIssue(
+            issue="融资需求尚未明确",
+            facts=[MISSING_COPY["financing_requirement"]],
+            financing_impact="缺少金额、用途和期限会限制融资路径的进一步筛选。",
+            next_action="确认融资主体、金额、用途、期限、用款时间及担保偏好。",
+            source_sections=["financing_requirement"],
+        ))
+    immediate = [Action(action=item.required_action, basis=item.fact, source_sections=item.source_sections) for item in constraints[:3]]
+    if model.financing_requirement.get("status") == "missing":
+        immediate.append(Action(action="确认融资金额、用途、期限及担保偏好。", basis=MISSING_COPY["financing_requirement"], source_sections=["financing_requirement"]))
+    credit_basis = []
+    if model.enterprise_credit.get("status") in {"available", "confirmed"}:
+        credit_basis.append("企业存在已保存的征信及历史融资记录")
+    if (flow_period.get("months") or 0) >= 10:
+        credit_basis.append("企业存在连续经营流水核验基础")
+    credit_missing = ["明确融资需求", "进一步核验经营流水分类"]
+    if isinstance(debt_ratio, (int, float)) and debt_ratio >= 0.8:
+        credit_missing.append("核验较高资产负债率和净资产基础对授信条件的影响")
+    financing_paths = [
+        FinancingPath(path="信用融资", status="conditional", basis=credit_basis,
+                      missing_conditions=credit_missing, source_sections=["enterprise_credit", "enterprise_cashflow", "financials", "financing_requirement"]),
+        FinancingPath(path="抵押融资", status="insufficient_data" if model.assets.get("status") == "missing" else "conditional",
+                      basis=[] if model.assets.get("status") == "missing" else ["已有结构化资产资料可供进一步核验"],
+                      missing_conditions=["当前缺少稳定结构化资产资料，暂无法评估抵押融资条件"] if model.assets.get("status") == "missing" else ["核验权属、估值及可抵押状态"],
+                      source_sections=["assets"]),
+        FinancingPath(path="保证/增信融资", status="conditional",
+                      basis=["法人相关还款责任及保证关系已有征信事实可供核验"],
+                      missing_conditions=["评估法人已有责任规模及可用增信空间"],
+                      source_sections=["personal_credit", "enterprise_credit"]),
+        FinancingPath(path="科技企业专项融资", status="conditional" if model.subject_profile.get("technology_enterprise_tags") else "insufficient_data",
+                      basis=list(model.subject_profile.get("technology_enterprise_tags") or []),
+                      missing_conditions=[] if model.subject_profile.get("technology_enterprise_tags") else ["当前缺少可核验科技企业资质或标签资料"],
+                      source_sections=["subject_profile"]),
     ]
     result = ComprehensiveFinancingAnalysisResult(
         executive_summary=ExecutiveSummary(
-            overall_observation="当前结构化资料可用于基础事实核对；分析采用保守口径，并明确保留资料缺口。",
-            current_financing_readiness="needs_data_completion" if missing else "ready_for_further_evaluation",
-            main_strengths=[],
+            overall_observation="企业具备征信、连续流水和财务分析基础；当前应优先核验资本结构、存量融资、流水分类及企业与法人信用责任联动。",
+            current_financing_readiness="needs_issue_resolution" if constraints else "ready_for_further_evaluation",
+            main_strengths=[item.title for item in strengths],
             main_constraints=[item.fact for item in constraints],
             key_missing_information=missing_information,
         ),
@@ -536,7 +728,7 @@ def build_conservative_analysis_fallback(
             source_sections=["financials", "derived_metrics", "source_dates"],
         ),
         credit_analysis=AnalysisSection(
-            summary="企业征信与个人征信分别按各自主体和资料状态核对，不合并计算。",
+            summary="企业征信与个人征信均按稳定征信事实口径分别核对；逾期和查询结论使用已保存的标准化概要与查询窗口，不合并计算企业和个人债务。",
             source_sections=["enterprise_credit", "personal_credit"],
         ),
         enterprise_person_linkage=AnalysisSection(
@@ -547,17 +739,21 @@ def build_conservative_analysis_fallback(
             summary=MISSING_COPY["assets"] if _status(model, "assets") == "missing" else "资产与增信条件仅按当前结构化资料核对。",
             source_sections=["assets"],
         ),
-        financing_strengths=[],
+        financing_strengths=strengths,
         financing_constraints=constraints,
         core_issues=issues,
-        financing_paths=[],
-        action_plan=ActionPlan(immediate=immediate, short_term=[], medium_term=[]),
+        financing_paths=financing_paths,
+        action_plan=ActionPlan(
+            immediate=immediate,
+            short_term=[Action(action="补充最新完整年度财务、个人流水及资产资料。", basis="用于核验盈利持续性、个人收入与可用增信条件。", source_sections=["financials", "personal_cashflow", "assets"])],
+            medium_term=[Action(action="结合已核验资料优化存量融资期限与主体责任结构。", basis="存量融资、短期借款和法人相关责任需协同评估。", source_sections=["enterprise_credit", "personal_credit", "financials"])],
+        ),
         data_limitations=limitations,
         conclusion=Conclusion(
-            overall="当前可基于已保存结构化资料继续核对，资料缺口补齐前采用保守分析口径。",
-            financing_direction="先补齐并核验关键资料，再进入融资路径评估。",
-            prerequisites=[item.required_data for item in limitations],
-            one_sentence="先补齐关键资料并完成口径核验，再进入下一步融资评估。",
+            overall="企业具备进一步融资评估的数据基础，但资本结构、最新期间盈利、存量融资、流水分类及法人责任联动需要优先核验。",
+            financing_direction="可有条件评估信用融资和保证/增信融资；抵押融资与科技专项融资需先补齐相应资格资料。",
+            prerequisites=[item.required_action for item in constraints[:4]] + (["确认明确融资需求。"] if model.financing_requirement.get("status") == "missing" else []),
+            one_sentence="企业具备进一步评估基础，但需先核验资本结构、存量融资、经营流水及法人责任联动并明确融资需求。",
         ),
     )
     result._validation_fallback_used = True

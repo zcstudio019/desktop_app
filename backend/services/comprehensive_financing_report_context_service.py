@@ -10,14 +10,16 @@ from backend.services.comprehensive_financing_report_model import (
     ComprehensiveFinancingReportModel,
     MaterialRecord,
 )
+from backend.services.credit_fact_adapter import (
+    build_stable_enterprise_credit_facts,
+    build_stable_personal_credit_facts,
+)
 from backend.services.enterprise_bank_statement_agent.customer_flow_aggregator import aggregate_customer_enterprise_flows
 from backend.services.enterprise_bank_flow_diagnostic_service import build_enterprise_bank_flow_diagnostic_from_aggregated
-from backend.services.enterprise_credit_diagnostic_service import build_enterprise_credit_diagnostic_from_payload
 from backend.services.financial_report_agent.customer_report_aggregator import aggregate_customer_financial_reports
 from backend.services.financial_statement_diagnostic_service import build_financial_statement_diagnostic_from_report
 from backend.services.kyc_profile_sync_service import build_customer_kyc_profile
 from backend.services.personal_bank_statement_agent.customer_flow_aggregator import aggregate_customer_personal_flows
-from backend.services.personal_credit_diagnostic_service import build_personal_credit_diagnostic_from_payload
 
 
 MATERIAL_TYPES = (
@@ -59,6 +61,15 @@ def _number(value: Any) -> float | None:
         return float(str(value).replace(",", "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _sum_money_objects(values: list[Any]) -> dict[str, Any] | None:
+    rows = [value for value in values if isinstance(value, dict) and _number(value.get("value")) is not None]
+    if not rows:
+        return None
+    units = {str(row.get("unit") or "").strip() for row in rows}
+    unit = next(iter(units)) if len(units) == 1 and "" not in units else None
+    return {"value": round(sum(_number(row.get("value")) or 0 for row in rows), 2), "unit": unit}
 
 
 def _date(value: Any) -> str | None:
@@ -191,28 +202,11 @@ def _credit(extractions: list[dict[str, Any]], enterprise: bool, people: dict[st
     if enterprise:
         item = items[0]
         payload = _payload(item)
-        diagnostic = build_enterprise_credit_diagnostic_from_payload(payload)
-        debt = _dict(diagnostic.get("debt_summary"))
-        loans = _list(_first(payload.get("loans"), payload.get("loan_accounts"), _dict(payload.get("credit_details")).get("loans")))
-        guarantees = _list(_first(payload.get("guarantees"), payload.get("external_guarantees")))
-        query_records = _list(payload.get("query_records"))
-        info = _dict(_first(payload.get("basic_info"), payload.get("report_info"), payload.get("company_info"), payload.get("report_basic")))
-        subject_name = _text(_first(info.get("company_name"), info.get("enterprise_name"), payload.get("company_name")))
         as_of = _source_date(payload, item)
-        return _section("available", "enterprise_credit_extraction", as_of,
-            subject_name=subject_name, outstanding_loan_balance=_number(debt.get("total_unsettled_balance")),
-            outstanding_loan_institution_count=len({_text(_first(_dict(x).get("institution"), _dict(x).get("lender"))) for x in loans if _text(_first(_dict(x).get("institution"), _dict(x).get("lender")))}) if loans else None,
-            outstanding_loans=[{"institution": _text(_first(x.get("institution"), x.get("institution_name"))),
-                                "balance": _number(x.get("balance")), "due_date": _date(x.get("due_date")),
-                                "classification": _text(_first(x.get("classification"), x.get("five_category")))} for x in loans[:30] if isinstance(x, dict)],
-            overdue_summary={"count": len(_list(_dict(diagnostic.get("loan_summary")).get("overdue_loans")))},
-            nonperforming_summary={"count": len(_list(_dict(diagnostic.get("loan_summary")).get("abnormal_classification_loans")))},
-            five_classification=sorted({_text(_first(_dict(x).get("five_category"), _dict(x).get("classification"))) for x in loans if _text(_first(_dict(x).get("five_category"), _dict(x).get("classification")))}),
-            guarantee_balance=_number(_dict(diagnostic.get("guarantee_summary")).get("external_guarantee_balance")),
-            guarantee_records=[{"beneficiary": _text(x.get("beneficiary")), "balance": _number(_first(x.get("balance"), x.get("amount")))} for x in guarantees[:20] if isinstance(x, dict)],
-            upcoming_or_past_due_records=[{"institution": _text(_dict(x).get("institution")), "balance": _number(_dict(x).get("balance")), "due_date": _date(_dict(x).get("due_date"))} for x in (_list(_dict(diagnostic.get("loan_summary")).get("upcoming_due_loans")) + _list(_dict(diagnostic.get("loan_summary")).get("overdue_loans")))[:20]],
-            query_summary={"count": len(query_records) if "query_records" in payload else None},
-            source_report_date=as_of, unit=_text(_first(payload.get("unit"), info.get("unit"), info.get("currency_unit"))))
+        facts = build_stable_enterprise_credit_facts(payload, as_of)
+        query_records = _list(payload.get("query_records"))
+        facts["query_summary"] = {"count": len(query_records) if "query_records" in payload else None}
+        return _section("available", "stable_credit_fact_adapter", as_of, **facts)
     persons = []
     matched = set()
     unmatched = 0
@@ -226,33 +220,18 @@ def _credit(extractions: list[dict[str, Any]], enterprise: bool, people: dict[st
         if name in matched:
             continue
         matched.add(name)
-        diagnostic = build_personal_credit_diagnostic_from_payload(payload)
-        summary = _dict(_first(payload.get("credit_summary"), payload.get("summary")))
-        debt = _dict(diagnostic.get("debt_summary"))
-        cards = _list(payload.get("credit_card_accounts"))
-        limit = _number(_first(summary.get("credit_card_limit"), summary.get("total_credit_limit")))
-        if limit is None:
-            amounts = [_number(_first(_dict(x).get("credit_limit"), _dict(x).get("limit"))) for x in cards]
-            limit = round(sum(x for x in amounts if x is not None), 2) if any(x is not None for x in amounts) else None
-        used = _number(debt.get("credit_card_used_amount"))
-        related = _list(payload.get("related_repayment_responsibilities"))
-        related_amounts = [_number(_first(_dict(x).get("balance"), _dict(x).get("guarantee_balance"), _dict(x).get("amount"))) for x in related]
-        related_balance = _number(summary.get("related_repayment_balance"))
-        if related_balance is None and any(amount is not None for amount in related_amounts):
-            related_balance = round(sum(amount for amount in related_amounts if amount is not None), 2)
         as_of = _source_date(payload, item)
-        persons.append({"name": name, "roles": people[name],
-            "loan_balance": _number(debt.get("loan_balance")),
-            "loan_account_count": len(_list(payload.get("loan_accounts"))),
-            "credit_card_limit": limit, "credit_card_used": used,
-            "credit_card_utilization": round(used / limit, 4) if used is not None and limit and limit > 0 else None,
-            "overdue_summary": {"count": len(_list(_dict(diagnostic.get("overdue_summary")).get("overdue_records")))},
-            "query_summary": {"last_3_months": _dict(diagnostic.get("query_summary")).get("last_3_months_query_count"), "last_6_months": _dict(diagnostic.get("query_summary")).get("last_6_months_query_count")},
-            "related_repayment_balance": related_balance,
-            "related_repayment_records": [{"institution": _text(x.get("institution")), "balance": _number(_first(x.get("balance"), x.get("amount"))), "responsibility_type": _text(x.get("responsibility_type"))} for x in related[:20] if isinstance(x, dict)],
-            "source_report_date": as_of, "data_status": "available"})
+        persons.append(build_stable_personal_credit_facts(payload, name, people[name], as_of))
     report_dates = [person.get("source_report_date") for person in persons if person.get("source_report_date")]
-    return _section("needs_review" if unmatched else "available" if persons else "needs_review", "personal_credit_extraction", max(report_dates) if report_dates else _latest_date(items), people=persons, unmatched_report_count=unmatched)
+    person_units = {
+        unit for person in persons for unit in (
+            person.get("loan_balance_unit"), person.get("credit_card_limit_money", {}).get("unit") if isinstance(person.get("credit_card_limit_money"), dict) else None,
+            person.get("related_repayment_balance_unit"),
+        ) if unit
+    }
+    return _section("needs_review" if unmatched else "available" if persons else "needs_review", "stable_credit_fact_adapter",
+                    max(report_dates) if report_dates else _latest_date(items), people=persons,
+                    unit=next(iter(person_units)) if len(person_units) == 1 else None, unmatched_report_count=unmatched)
 
 
 def _read_only_override_rows(storage: Any, customer_id: str, kind: str) -> list[dict[str, Any]]:
@@ -705,10 +684,21 @@ async def build_comprehensive_financing_report_context(
     people = _list(personal_credit.get("people"))
     personal_balances = [_number(_dict(person).get("loan_balance")) for person in people]
     related_balances = [_number(_dict(person).get("related_repayment_balance")) for person in people]
+    personal_balance_money = _sum_money_objects([_dict(person).get("loan_balance_money") for person in people])
+    related_balance_money = _sum_money_objects([_dict(person).get("related_repayment_balance_money") for person in people])
+    personal_overdue_values = []
+    for person in people:
+        overdue = _dict(_dict(person).get("overdue_summary"))
+        loan_count = _number(overdue.get("loan_overdue_account_count"))
+        card_count = _number(overdue.get("credit_card_overdue_account_count"))
+        if loan_count is not None or card_count is not None:
+            personal_overdue_values.append(int((loan_count or 0) + (card_count or 0)))
     derived = {
         "total_enterprise_credit_balance": enterprise_credit.get("outstanding_loan_balance"),
         "total_personal_credit_balance": round(sum(x for x in personal_balances if x is not None), 2) if any(x is not None for x in personal_balances) else None,
+        "total_personal_credit_balance_money": personal_balance_money,
         "total_related_repayment_balance": round(sum(x for x in related_balances if x is not None), 2) if any(x is not None for x in related_balances) else None,
+        "total_related_repayment_balance_money": related_balance_money,
         "enterprise_operating_inflow": enterprise_cashflow.get("operating_inflow"),
         "enterprise_total_inflow": enterprise_cashflow.get("total_inflow"),
         "monthly_average_operating_inflow": enterprise_cashflow.get("monthly_average_operating_inflow"),
@@ -716,7 +706,7 @@ async def build_comprehensive_financing_report_context(
         "credit_card_utilization": {str(_dict(person).get("name")): _dict(person).get("credit_card_utilization") for person in people},
         "enterprise_overdue_count": _dict(enterprise_credit.get("overdue_summary")).get("count"),
         "enterprise_query_count": _dict(enterprise_credit.get("query_summary")).get("count"),
-        "personal_overdue_count": sum(int(_dict(_dict(person).get("overdue_summary")).get("count") or 0) for person in people) if people else None,
+        "personal_overdue_count": sum(personal_overdue_values) if personal_overdue_values else None,
         "personal_query_counts": {str(_dict(person).get("name")): _dict(person).get("query_summary") for person in people},
         "financial_period_count": financials.get("period_count"),
     }
