@@ -1140,6 +1140,26 @@ export async function exportCustomerFinancingDiagnosticReportSnapshotPdf(
   downloadBlob(blob, fileName);
 }
 
+/** Fetch only same-origin credit snapshot endpoints with the existing auth flow. */
+export async function fetchCreditReportArtifact(path: string): Promise<{ blob: Blob; fileName: string }> {
+  if (!/^\/api\/customers\/[^/]+\/credit-report\/snapshots\/[a-f0-9]{32}\/(preview|export\/pdf)$/.test(path)) {
+    throw new Error('报告链接无效，请重新生成报告');
+  }
+  const response = await fetch(buildApiUrl(path), { headers: getAuthHeaders() });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || '报告读取失败，请稍后重试');
+  }
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  return { blob: await response.blob(), fileName: encoded ? decodeURIComponent(encoded) : '征信速览报告.pdf' };
+}
+
+export async function downloadCreditReportPdf(path: string): Promise<void> {
+  const { blob, fileName } = await fetchCreditReportArtifact(path);
+  downloadBlob(blob, fileName);
+}
+
 export async function getCustomerExtractions(
   customerId: string,
   signal?: AbortSignal,

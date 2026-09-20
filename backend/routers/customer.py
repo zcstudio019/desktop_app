@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
 # Add desktop_app to path for imports
@@ -1702,6 +1702,43 @@ async def export_customer_financing_diagnostic_report_snapshot_pdf(
     except Exception as exc:
         logger.error("[FinancingDiagnosticExport] pdf failed customer_id=%s report_id=%s error=%s", customer_id, report_id, exc, exc_info=True)
         raise HTTPException(status_code=500, detail="融资诊断报告PDF导出失败") from exc
+
+
+async def _load_credit_export_snapshot(customer_id: str, report_id: str, current_user: dict):
+    customer = await storage_service.get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="未找到该客户")
+    await _ensure_local_customer_access(customer, current_user)
+    getter = getattr(storage_service, "get_credit_report_snapshot", None)
+    snapshot = await getter(customer_id, report_id) if callable(getter) else None
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="未找到该征信报告版本，请先在 AI 助手生成报告")
+    return snapshot
+
+
+@router.get("/{customer_id}/credit-report/snapshots/{report_id}/preview")
+async def preview_credit_report(customer_id: str, report_id: str, current_user: dict = Depends(get_current_user)):
+    from backend.services.credit_report_export_service import snapshot_html
+    snapshot = await _load_credit_export_snapshot(customer_id, report_id, current_user)
+    return HTMLResponse(snapshot_html(snapshot), headers={
+        "Cache-Control": "private, no-store",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'self'; form-action 'none'",
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+@router.get("/{customer_id}/credit-report/snapshots/{report_id}/export/pdf")
+async def export_credit_report_pdf(customer_id: str, report_id: str, current_user: dict = Depends(get_current_user)):
+    from backend.services.credit_report_export_service import snapshot_html, pdf_filename, render_html_pdf, CreditReportExportUnavailable
+    snapshot = await _load_credit_export_snapshot(customer_id, report_id, current_user)
+    try:
+        content = await render_html_pdf(snapshot_html(snapshot))
+    except CreditReportExportUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    response = _download_response({"content": content, "filename": pdf_filename(snapshot), "media_type": "application/pdf"})
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @router.get("/{record_id}", response_model=CustomerDetail)

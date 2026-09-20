@@ -1676,6 +1676,7 @@ class SQLAlchemyStorageService:
             rows = db.execute(
                 select(CustomerFinancingDiagnosticReportSnapshot)
                 .where(CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id)
+                .where(CustomerFinancingDiagnosticReportSnapshot.report_version != "credit_one_page_report_v1")
                 .order_by(
                     desc(CustomerFinancingDiagnosticReportSnapshot.generated_at),
                     desc(CustomerFinancingDiagnosticReportSnapshot.id),
@@ -1695,9 +1696,20 @@ class SQLAlchemyStorageService:
                 select(CustomerFinancingDiagnosticReportSnapshot).where(
                     CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id,
                     CustomerFinancingDiagnosticReportSnapshot.report_id == report_id,
+                    CustomerFinancingDiagnosticReportSnapshot.report_version != "credit_one_page_report_v1",
                 ),
                 table_name="customer_financing_diagnostic_reports",
             )
+            return self._row_to_financing_diagnostic_report_snapshot(row) if row else None
+
+    async def get_credit_report_snapshot(self, customer_id: str, report_id: str) -> dict[str, Any] | None:
+        """Read a frozen credit report without mixing financing-diagnostic history."""
+        with self._session_factory() as db:
+            row = db.execute(select(CustomerFinancingDiagnosticReportSnapshot).where(
+                CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id,
+                CustomerFinancingDiagnosticReportSnapshot.report_id == report_id,
+                CustomerFinancingDiagnosticReportSnapshot.report_version == "credit_one_page_report_v1",
+            )).scalars().first()
             return self._row_to_financing_diagnostic_report_snapshot(row) if row else None
 
     async def save_application_record(self, application_data: dict[str, Any]) -> dict[str, Any]:

@@ -11,6 +11,7 @@
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { CreditReportActions } from './CreditReportActions';
 import remarkGfm from 'remark-gfm';
 import { 
   Send, Paperclip, X, FileText, Upload, ClipboardList, Target, Loader2, 
@@ -3088,6 +3089,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
               {message.content}
             </ReactMarkdown>
           </div>
+          {message.intent === 'credit_one_page_report' && message.data && (
+            <CreditReportActions data={message.data} />
+          )}
         </div>
         {/* Structured Data Card - shown below message based on intent */}
         {message.data && (

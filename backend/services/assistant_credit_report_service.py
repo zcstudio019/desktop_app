@@ -1218,6 +1218,15 @@ async def generate_credit_one_page_report(
             "message": "报告生成结果不完整，系统未向您展示可能缺失关键信息的内容，请稍后重试。",
             "data": {"reportStatus": "model_failed", "reason": "invalid_structure"},
         }
+    # Presentation-only extension: freeze the exact model/narrative used above.
+    # Export failure must not change or discard the already validated Markdown.
+    export_links = {}
+    try:
+        from backend.services.credit_report_export_service import freeze_credit_report
+        export_links = await freeze_credit_report(storage_service, customer_id, report_model, narrative, generated_at, report)
+    except Exception:
+        logger.exception("credit report snapshot could not be saved")
+        export_links = {"exportMessage": "报告已生成，但预览/下载版本保存失败，请稍后重试。"}
     return {
         "message": report,
         "data": {
@@ -1225,5 +1234,6 @@ async def generate_credit_one_page_report(
             "reportType": CREDIT_REPORT_INTENT,
             "templateVersion": "credit_one_page_report_v1",
             "materialsProcessing": bool(materials.get("processing")),
+            **export_links,
         },
     }
