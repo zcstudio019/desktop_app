@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from backend.services.assistant_credit_report_service import resolve_report_customer
@@ -15,6 +16,9 @@ from backend.services.comprehensive_financing_analysis_service import (
 )
 from backend.services.comprehensive_financing_report_context_service import (
     build_comprehensive_financing_report_context,
+)
+from backend.services.comprehensive_financing_report_markdown_renderer import (
+    render_comprehensive_financing_report,
 )
 
 
@@ -60,12 +64,15 @@ async def generate_comprehensive_financing_analysis(
     debug_summary = build_analysis_input_debug_summary(model)
     logger.info("comprehensive financing LLM input summary=%s", json.dumps(debug_summary, ensure_ascii=False))
     analysis = await analyze_comprehensive_financing_report(model, llm=llm)
+    generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    markdown = render_comprehensive_financing_report(model, analysis, generated_at)
     return {
-        "message": "客户综合融资分析已完成。",
+        "message": markdown,
         "data": {
             "analysisStatus": "completed",
             "reportType": model.report_type,
             "templateVersion": model.template_version,
+            "generatedAt": generated_at,
             "analysis": analysis.model_dump(),
             "analysisValidationFallbackUsed": analysis.validation_fallback_used,
             "contextDebugSummary": debug_summary,
