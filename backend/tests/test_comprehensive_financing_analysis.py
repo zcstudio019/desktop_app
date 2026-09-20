@@ -217,7 +217,7 @@ def test_analysis_has_no_raw_ocr_evidence_or_internal_ids(facts, valid_payload, 
     assert validate(valid_payload, facts)
 
 
-def test_invalid_output_repairs_once_with_same_context(facts, valid_payload):
+def test_validation_failure_triggers_repair(facts, valid_payload):
     calls = []
     def fake(prompt, context):
         calls.append(context)
@@ -225,7 +225,58 @@ def test_invalid_output_repairs_once_with_same_context(facts, valid_payload):
             return '{"invalid":true}'
         return json.dumps(valid_payload, ensure_ascii=False)
     asyncio.run(analyze_comprehensive_financing_report(facts, fake))
-    assert len(calls) == 2 and calls[0] == calls[1]
+    assert len(calls) == 2
+    assert json.loads(calls[1])["SAFE_CONTEXT"] == json.loads(calls[0])
+
+
+def test_source_sections_allows_data_quality_or_prompt_never_outputs_it(valid_payload):
+    valid_payload["business_analysis"]["source_sections"] = ["subject_profile", "data_quality"]
+    parsed = ComprehensiveFinancingAnalysisResult.model_validate(valid_payload)
+    assert "data_quality" in parsed.business_analysis.source_sections
+
+
+def test_assets_missing_cannot_be_rendered_as_no_assets(facts, valid_payload):
+    valid_payload["asset_and_enhancement_analysis"]["summary"] = "企业暂无资产。"
+    assert "将资产资料缺失写成无资产" in validate(valid_payload, facts)
+
+
+def test_personal_cashflow_missing_cannot_be_rendered_as_no_income(facts, valid_payload):
+    valid_payload["financing_constraints"][0]["fact"] = "未见个人收入。"
+    assert "将个人流水缺失写成无收入" in validate(valid_payload, facts)
+
+
+def test_financing_requirement_missing_cannot_be_rendered_as_no_need(facts, valid_payload):
+    valid_payload["conclusion"]["overall"] = "客户不需要融资。"
+    assert "将未确认需求写成无需求" in validate(valid_payload, facts)
+
+
+def test_repair_failure_uses_graceful_fallback(facts):
+    calls = []
+    def always_invalid(_prompt, payload):
+        calls.append(payload)
+        return '{"invalid":true}'
+    result = asyncio.run(analyze_comprehensive_financing_report(facts, always_invalid))
+    assert len(calls) == 2
+    assert result.validation_fallback_used is True
+    assert result.financing_paths == []
+    text = json.dumps(result.model_dump(), ensure_ascii=False)
+    assert "无资产" not in text
+    assert "无融资需求" not in text
+    assert "个人无收入" not in text
+
+
+def test_comprehensive_analysis_never_returns_500_for_repairable_output(facts, monkeypatch):
+    async def fake_builder(_storage, _customer_id):
+        return facts
+    monkeypatch.setattr(assistant_analysis, "build_comprehensive_financing_report_context", fake_builder)
+    class Storage:
+        async def get_customer(self, customer_id):
+            return {"customer_id": customer_id, "name": "上海意川建筑科技有限公司"}
+    result = asyncio.run(assistant_analysis.generate_comprehensive_financing_analysis(
+        Storage(), "生成客户综合融资分析报告", "customer-135", llm=lambda *_: '{"invalid":true}',
+    ))
+    assert result["data"]["analysisStatus"] == "completed"
+    assert result["data"]["analysisValidationFallbackUsed"] is True
 
 
 def test_real_context_not_replaced_by_file_metadata(facts, valid_payload, monkeypatch):

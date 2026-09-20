@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from backend.services.comprehensive_financing_report_model import ComprehensiveFinancingReportModel
 
@@ -18,12 +19,22 @@ PATH_STATUS = Literal["potential", "conditional", "insufficient_data"]
 SourceSection = Literal[
     "subject_profile", "financing_requirement", "enterprise_credit", "personal_credit",
     "enterprise_cashflow", "personal_cashflow", "financials", "assets", "risk_context",
-    "existing_financing_plan", "derived_metrics", "conflicts", "data_scope", "source_dates",
+    "existing_financing_plan", "derived_metrics", "conflicts", "data_scope", "data_quality", "source_dates",
 ]
 PATH_NAMES = {"信用融资", "抵押融资", "保证/增信融资", "科技企业专项融资", "存量融资置换/结构优化"}
 SOURCE_SECTIONS = {"subject_profile", "financing_requirement", "enterprise_credit", "personal_credit",
                    "enterprise_cashflow", "personal_cashflow", "financials", "assets", "risk_context",
-                   "existing_financing_plan", "derived_metrics", "conflicts", "data_scope", "source_dates"}
+                   "existing_financing_plan", "derived_metrics", "conflicts", "data_scope", "data_quality", "source_dates"}
+
+logger = logging.getLogger(__name__)
+
+MISSING_COPY = {
+    "personal_cashflow": "当前缺少可用个人流水，无法核验关键自然人的稳定可采信个人收入。",
+    "assets": "当前资料中未找到可用于本次分析的稳定结构化资产资料，无法判断抵押或其他增信能力。",
+    "financing_requirement": "当前尚未确认明确融资金额、用途、期限及担保偏好。",
+    "risk_assessment": "当前未找到可用于本次分析的风险评估结果。",
+    "financing_plan": "当前未找到已保存的融资方案或方案匹配结果。",
+}
 
 
 class StrictModel(BaseModel):
@@ -120,6 +131,11 @@ class ComprehensiveFinancingAnalysisResult(StrictModel):
     action_plan: ActionPlan
     data_limitations: list[DataLimitation]
     conclusion: Conclusion
+    _validation_fallback_used: bool = PrivateAttr(default=False)
+
+    @property
+    def validation_fallback_used(self) -> bool:
+        return self._validation_fallback_used
 
 
 def _section(model: ComprehensiveFinancingReportModel, name: str, keys: tuple[str, ...]) -> dict[str, Any]:
@@ -340,12 +356,22 @@ def validate_analysis_result(result: ComprehensiveFinancingAnalysisResult, model
             errors.append("月度财务与全年流水被直接比较")
         if "financial_cashflow_period_mismatch" not in found_limits:
             errors.append("缺少财务与流水期间不可比限制")
-    if model.personal_cashflow.get("status") == "missing" and re.search(r"无.{0,4}收入|没有.{0,4}收入|可采信个人收入为零", text):
+    if model.personal_cashflow.get("status") == "missing" and re.search(
+        r"(?:个人|关键自然人)?(?:无|没有|未见)(?:稳定|可采信|明确)?(?:个人)?收入|个人没有流水|可采信个人收入为零", text
+    ):
         errors.append("将个人流水缺失写成无收入")
-    if model.assets.get("status") == "missing" and re.search(r"无.{0,4}资产|没有.{0,4}资产|无抵押物", text):
+    if model.assets.get("status") == "missing" and re.search(
+        r"(?:企业|客户)?(?:无|没有|暂无|未持有)(?:可用|有效|明确|任何)?资产|无抵押物", text
+    ):
         errors.append("将资产资料缺失写成无资产")
-    if model.financing_requirement.get("status") == "missing" and re.search(r"无.{0,4}融资需求|没有.{0,4}融资需求", text):
+    if model.financing_requirement.get("status") == "missing" and re.search(
+        r"(?:无|没有|暂无|不需要)(?:明确)?融资需求|客户不需要融资", text
+    ):
         errors.append("将未确认需求写成无需求")
+    if model.risk_context.get("status") == "missing" and re.search(r"无风险|风险为零", text):
+        errors.append("将风险结果缺失写成无风险")
+    if model.existing_financing_plan.get("status") == "missing" and re.search(r"无方案需求|不需要融资方案", text):
+        errors.append("将融资方案缺失写成不需要方案")
     if model.enterprise_credit.get("status") != "missing" and model.personal_credit.get("status") != "missing":
         if "不能简单加总" not in result.enterprise_person_linkage.summary:
             errors.append("未提示企业债务与个人相关责任不可简单加总")
@@ -374,7 +400,15 @@ def _repair_instructions(errors: list[str]) -> str:
     if "source_sections" in joined or "引用包含未知 section" in joined:
         instructions.append("所有 source_sections 只能使用 JSON Schema 枚举中的原始 section 名，不得使用点路径、中文名或自造名称。")
     if "将未确认需求写成无需求" in joined:
-        instructions.append("将所有‘无融资需求/没有融资需求’改成‘当前尚未确认融资金额、用途、期限及担保偏好’。")
+        instructions.append(f"融资需求缺失只能表述为：{MISSING_COPY['financing_requirement']}")
+    if "将资产资料缺失写成无资产" in joined:
+        instructions.append(f"资产资料缺失只能表述为：{MISSING_COPY['assets']}")
+    if "将个人流水缺失写成无收入" in joined:
+        instructions.append(f"个人流水缺失只能表述为：{MISSING_COPY['personal_cashflow']}")
+    if "将风险结果缺失写成无风险" in joined:
+        instructions.append(f"风险结果缺失只能表述为：{MISSING_COPY['risk_assessment']}")
+    if "将融资方案缺失写成不需要方案" in joined:
+        instructions.append(f"融资方案缺失只能表述为：{MISSING_COPY['financing_plan']}")
     if "未提示企业债务与个人相关责任不可简单加总" in joined:
         instructions.append("enterprise_person_linkage.summary 必须逐字包含‘企业融资与法人相关还款责任存在债务关系重叠，不能简单加总。’")
     if "部分流水未说明" in joined or "关联方" in joined:
@@ -382,6 +416,164 @@ def _repair_instructions(errors: list[str]) -> str:
     if "资料限制" in joined:
         instructions.append("data_limitations.material_type 只能使用 JSON Schema 中的枚举值。")
     return "\n".join(instructions)
+
+
+async def repair_comprehensive_financing_analysis_result(
+    model: ComprehensiveFinancingReportModel,
+    safe_context_text: str,
+    original_output: str,
+    validator_errors: list[str],
+    llm: Callable[[str, str], str],
+) -> str:
+    """Repair structure/copy once without changing or reloading the fact context."""
+    schema_text = json.dumps(ComprehensiveFinancingAnalysisResult.model_json_schema(), ensure_ascii=False)
+    repair_payload = json.dumps(
+        {
+            "SAFE_CONTEXT": json.loads(safe_context_text),
+            "INVALID_OUTPUT": original_output,
+            "VALIDATOR_ERRORS": validator_errors[:12],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    repair_prompt = SYSTEM_PROMPT + """
+你正在修复一次无效输出。只能修正 JSON 结构、枚举值和违规表述，不得新增 Context 中没有的事实、金额、比率或结论。
+不得将 missing 改写为“无/没有/未持有/不需要”；不得将 partial 改写为“已确认”。
+资产缺失不得写成无资产；个人流水缺失不得写成无收入；融资需求缺失不得写成无融资需求。
+完整返回修复后的 JSON object，不要解释修复过程。
+""" + "\n针对本次错误的精确修复要求：\n" + _repair_instructions(validator_errors)
+    repair_prompt += "\n严格遵循这个 JSON Schema：\n" + schema_text
+    return await asyncio.to_thread(llm, repair_prompt, repair_payload)
+
+
+def _status(model: ComprehensiveFinancingReportModel, name: str) -> str:
+    return str(getattr(model, name).get("status") or "missing")
+
+
+def build_conservative_analysis_fallback(
+    model: ComprehensiveFinancingReportModel,
+) -> ComprehensiveFinancingAnalysisResult:
+    """Build a deterministic facts-only result when both model outputs fail validation."""
+    missing = {row.get("type") for row in model.data_scope.get("materials", []) if row.get("status") == "missing"}
+    limitations: list[DataLimitation] = []
+    limitation_copy = {
+        "personal_cashflow": (MISSING_COPY["personal_cashflow"], "无法核验关键自然人稳定可采信个人收入", "补充可用个人流水及人工确认结果"),
+        "assets": (MISSING_COPY["assets"], "无法判断抵押或其他资产增信能力", "补充已结构化的资产权属与估值依据"),
+        "financing_requirement": (MISSING_COPY["financing_requirement"], "无法确定融资路径的具体适配条件", "确认融资金额、用途、期限及担保偏好"),
+        "risk_assessment": (MISSING_COPY["risk_assessment"], "本次仅依据当前事实资料作保守分析", "补充有效风险评估结果"),
+        "financing_plan": (MISSING_COPY["financing_plan"], "本次不引用既有产品匹配结论", "如需产品匹配，另行生成并保存融资方案"),
+    }
+    for material_type in ("personal_cashflow", "assets", "financing_requirement", "risk_assessment", "financing_plan"):
+        if material_type in missing:
+            limitation, impact, required = limitation_copy[material_type]
+            limitations.append(DataLimitation(material_type=material_type, limitation=limitation, impact=impact, required_data=required))
+    if _status(model, "enterprise_cashflow") == "partial":
+        limitations.append(DataLimitation(
+            material_type="enterprise_cashflow_classification",
+            limitation="企业流水可用于初步分析，但关联方分类仍未完全核验。",
+            impact="当前经营入账仅代表按已保存分类的初步统计。",
+            required_data="核验关联方与内部账户分类。",
+        ))
+    latest = model.financials.get("latest") or {}
+    flow_period = model.enterprise_cashflow.get("statement_period") or {}
+    if latest.get("period_type") == "monthly" and (flow_period.get("months") or 0) >= 10:
+        limitations.append(DataLimitation(
+            material_type="financial_cashflow_period_mismatch",
+            limitation="最新财务为月度口径，与企业流水覆盖周期不完全可比。",
+            impact="当前不能直接进行同期间收入勾稽。",
+            required_data="补充与流水覆盖期一致的财务数据后再核验。",
+        ))
+
+    missing_information = [item.limitation for item in limitations if item.material_type in missing]
+    constraints = [
+        Constraint(
+            title="资料待补充",
+            fact=item.limitation,
+            impact=item.impact,
+            required_action=item.required_data,
+            source_sections=[{
+                "risk_assessment": "risk_context",
+                "financing_plan": "existing_financing_plan",
+            }.get(item.material_type, item.material_type)],
+        )
+        for item in limitations if item.material_type in missing
+    ]
+    issues = [
+        CoreIssue(
+            issue=item.title,
+            facts=[item.fact],
+            financing_impact=item.impact,
+            next_action=item.required_action,
+            source_sections=item.source_sections,
+        )
+        for item in constraints[:5]
+    ]
+    immediate = [
+        Action(action=item.required_action, basis=item.fact, source_sections=item.source_sections)
+        for item in constraints[:3]
+    ]
+    result = ComprehensiveFinancingAnalysisResult(
+        executive_summary=ExecutiveSummary(
+            overall_observation="当前结构化资料可用于基础事实核对；分析采用保守口径，并明确保留资料缺口。",
+            current_financing_readiness="needs_data_completion" if missing else "ready_for_further_evaluation",
+            main_strengths=[],
+            main_constraints=[item.fact for item in constraints],
+            key_missing_information=missing_information,
+        ),
+        business_analysis=AnalysisSection(
+            summary="企业主体资料与已保存经营资料仅用于基础事实核对，仍需结合资料状态继续核验。",
+            source_sections=["subject_profile", "data_quality"],
+        ),
+        cashflow_analysis=AnalysisSection(
+            summary=("企业流水可用于初步分析；经营入账按当前已保存分类初步统计，关联方流入尚不能可靠量化，仍需核验。"
+                     if _status(model, "enterprise_cashflow") == "partial" else "企业流水按当前结构化资料状态进行事实核对。"),
+            source_sections=["enterprise_cashflow", "derived_metrics"],
+        ),
+        financial_analysis=AnalysisSection(
+            summary=("最新财务为月度口径，与企业流水覆盖周期不同，当前不能直接进行同期间收入勾稽。"
+                     if latest.get("period_type") == "monthly" and (flow_period.get("months") or 0) >= 10
+                     else "财务分析仅引用已保存期间与程序计算指标。"),
+            source_sections=["financials", "derived_metrics", "source_dates"],
+        ),
+        credit_analysis=AnalysisSection(
+            summary="企业征信与个人征信分别按各自主体和资料状态核对，不合并计算。",
+            source_sections=["enterprise_credit", "personal_credit"],
+        ),
+        enterprise_person_linkage=AnalysisSection(
+            summary="企业融资与法人相关还款责任存在债务关系重叠，不能简单加总。",
+            source_sections=["enterprise_credit", "personal_credit"],
+        ),
+        asset_and_enhancement_analysis=AnalysisSection(
+            summary=MISSING_COPY["assets"] if _status(model, "assets") == "missing" else "资产与增信条件仅按当前结构化资料核对。",
+            source_sections=["assets"],
+        ),
+        financing_strengths=[],
+        financing_constraints=constraints,
+        core_issues=issues,
+        financing_paths=[],
+        action_plan=ActionPlan(immediate=immediate, short_term=[], medium_term=[]),
+        data_limitations=limitations,
+        conclusion=Conclusion(
+            overall="当前可基于已保存结构化资料继续核对，资料缺口补齐前采用保守分析口径。",
+            financing_direction="先补齐并核验关键资料，再进入融资路径评估。",
+            prerequisites=[item.required_data for item in limitations],
+            one_sentence="先补齐关键资料并完成口径核验，再进入下一步融资评估。",
+        ),
+    )
+    result._validation_fallback_used = True
+    return result
+
+
+def _parse_and_validate(
+    raw: str,
+    model: ComprehensiveFinancingReportModel,
+) -> tuple[ComprehensiveFinancingAnalysisResult | None, list[str]]:
+    try:
+        result = ComprehensiveFinancingAnalysisResult.model_validate(_parse_json(raw))
+    except (ValueError, ValidationError, json.JSONDecodeError) as exc:
+        return None, [str(exc)[:1000]]
+    errors = validate_analysis_result(result, model)
+    return (result if not errors else None), errors
 
 
 async def analyze_comprehensive_financing_report(
@@ -399,19 +591,24 @@ async def analyze_comprehensive_financing_report(
         def call(system: str, payload: str) -> str:
             return ai.extract(system, payload, "deepseek-chat", 120, 8192)
         llm = call
-    previous_errors: list[str] = []
-    for attempt in range(2):
-        current_prompt = prompt if attempt == 0 else (
-            prompt + "\n上次输出无效，请只修复下列问题，所有事实仍只来自同一 Context："
-            + "；".join(previous_errors[:12]) + "\n精确修复要求：\n" + _repair_instructions(previous_errors)
+    raw = ""
+    errors: list[str] = []
+    try:
+        raw = await asyncio.to_thread(llm, prompt, context_text)
+        result, errors = _parse_and_validate(raw, model)
+        if result is not None:
+            return result
+        repaired_raw = await repair_comprehensive_financing_analysis_result(
+            model, context_text, raw, errors, llm
         )
-        raw = await asyncio.to_thread(llm, current_prompt, context_text)
-        try:
-            result = ComprehensiveFinancingAnalysisResult.model_validate(_parse_json(raw))
-            errors = validate_analysis_result(result, model)
-            if not errors:
-                return result
-            previous_errors = errors
-        except (ValueError, ValidationError, json.JSONDecodeError) as exc:
-            previous_errors = [str(exc)[:500]]
-    raise ValueError("综合融资分析结果未通过校验：" + "；".join(previous_errors[:6]))
+        repaired_result, repair_errors = _parse_and_validate(repaired_raw, model)
+        if repaired_result is not None:
+            return repaired_result
+        errors = repair_errors
+    except Exception as exc:
+        errors = [f"LLM 分析或修复异常：{type(exc).__name__}: {str(exc)[:500]}"]
+    logger.warning(
+        "analysis_validation_fallback_used=True errors=%s",
+        "；".join(errors[:6]),
+    )
+    return build_conservative_analysis_fallback(model)

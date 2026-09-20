@@ -67,6 +67,7 @@ async def generate_comprehensive_financing_analysis(
             "reportType": model.report_type,
             "templateVersion": model.template_version,
             "analysis": analysis.model_dump(),
+            "analysisValidationFallbackUsed": analysis.validation_fallback_used,
             "contextDebugSummary": debug_summary,
         },
         "reasoning": None,
