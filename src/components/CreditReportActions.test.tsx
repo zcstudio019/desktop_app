@@ -13,6 +13,12 @@ describe('CreditReportActions', () => {
     rerender(<CreditReportActions data={data} />);
     expect(screen.getByText('预览报告')).toBeTruthy();
     expect(screen.getByText('下载 PDF')).toBeTruthy();
+    rerender(<CreditReportActions data={{ ...data, reportStatus: 'processing' }} />);
+    expect(screen.queryByText('预览报告')).toBeNull();
+    rerender(<CreditReportActions data={{ ...data, pdfUrl: '' }} />);
+    expect(screen.queryByText('预览报告')).toBeNull();
+    rerender(<CreditReportActions data={{ ...data, pdfUrl: '', exportMessage: '导出暂不可用' }} />);
+    expect(screen.getByText('导出暂不可用')).toBeTruthy();
   });
   it('downloads the frozen PDF link', async () => {
     vi.mocked(downloadCreditReportPdf).mockResolvedValue(undefined);

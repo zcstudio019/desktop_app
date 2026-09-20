@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Bot, Loader2, Sparkles } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import MarkdownBlock from '../MarkdownBlock';
+import { CreditReportActions } from '../CreditReportActions';
 
 const ChatMessages: React.FC = () => {
   const { messages, status, progressMessage, error } = useChatStore();
@@ -43,7 +44,12 @@ const ChatMessages: React.FC = () => {
                   : 'rounded-bl-md border border-slate-200 bg-white text-slate-700'
               }`}
             >
-              {isUser ? <div className="whitespace-pre-wrap">{message.content}</div> : <MarkdownBlock content={message.content} />}
+              {isUser ? <div className="whitespace-pre-wrap">{message.content}</div> : <>
+                <MarkdownBlock content={message.content} />
+                {message.intent === 'credit_one_page_report' && message.data && (
+                  <CreditReportActions data={message.data} />
+                )}
+              </>}
             </div>
           </div>
         );
