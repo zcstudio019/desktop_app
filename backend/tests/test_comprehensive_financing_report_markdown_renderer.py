@@ -57,7 +57,7 @@ def report_model():
         enterprise_credit={"status": "available", "outstanding_loan_balance": 1856.5, "unit": "万元",
                            "outstanding_loan_institution_count": 4, "overdue_summary": {"count": 0},
                            "nonperforming_summary": {"count": 0}, "guarantee_balance": 100,
-                           "upcoming_or_past_due_records": [], "query_summary": {"count": 3},
+                           "loan_record_count": 7, "query_summary": {"count": 3},
                            "source_report_date": "2026-04-15"},
         personal_credit={"status": "available", "unit": "万元", "people": [{"name": "黎云",
                          "roles": ["法定代表人", "实际控制人"], "loan_balance": 300,
@@ -157,6 +157,22 @@ def test_comprehensive_markdown_has_data_scope(markdown):
     assert "| 企业流水 | 部分资料 | 2025-04-01 至 2026-03-31 |" in markdown
 
 
+def test_system_analysis_status_not_rendered_as_customer_data_scope(markdown):
+    data_scope = markdown.split("## 一、客户融资画像", 1)[0]
+    assert "风险评估" not in data_scope
+    assert "已有融资方案" not in data_scope
+
+
+def test_system_analysis_source_refs_not_rendered(report_model, analysis_payload):
+    payload = json.loads(json.dumps(analysis_payload, ensure_ascii=False))
+    payload["business_analysis"]["source_sections"].extend(["risk_context", "existing_financing_plan"])
+    rendered = render_comprehensive_financing_report(
+        report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-20 10:00:00"
+    )
+    assert "风险评估" not in rendered
+    assert "已有融资方案" not in rendered
+
+
 def test_comprehensive_markdown_has_subject_profile(markdown):
     assert "上海意川建筑科技有限公司" in markdown and "黎云" in markdown
 
@@ -175,6 +191,11 @@ def test_comprehensive_markdown_has_financial_section(markdown):
 
 def test_comprehensive_markdown_has_credit_section(markdown):
     assert "1,856.5万元" in markdown and "企业与个人负债联动" in markdown
+
+
+def test_enterprise_credit_uses_unambiguous_loan_record_count(markdown):
+    assert "| 企业贷款记录数 | 7 |" in markdown
+    assert "到期/待核验记录数" not in markdown
 
 
 def test_comprehensive_markdown_has_financing_strengths(markdown):
@@ -200,6 +221,19 @@ def test_comprehensive_markdown_has_action_plan(markdown):
 
 def test_comprehensive_markdown_has_data_limitations(markdown):
     assert "当前缺少可用个人流水" in markdown and "关联方分类仍需核验" in markdown
+
+
+def test_system_analysis_missing_not_rendered_as_customer_data_limitation(report_model, analysis_payload):
+    payload = json.loads(json.dumps(analysis_payload, ensure_ascii=False))
+    payload["data_limitations"].extend([
+        {"material_type": "risk_assessment", "limitation": "风险评估资料不足", "impact": "", "required_data": ""},
+        {"material_type": "financing_plan", "limitation": "已有融资方案资料不足", "impact": "", "required_data": ""},
+    ])
+    rendered = render_comprehensive_financing_report(
+        report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-20 10:00:00"
+    )
+    assert "风险评估资料不足" not in rendered
+    assert "已有融资方案资料不足" not in rendered
 
 
 def test_comprehensive_markdown_has_conclusion(markdown):

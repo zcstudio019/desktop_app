@@ -12,6 +12,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { CreditReportActions } from './CreditReportActions';
+import { ComprehensiveReportActions } from './ComprehensiveReportActions';
 import remarkGfm from 'remark-gfm';
 import { 
   Send, Paperclip, X, FileText, Upload, ClipboardList, Target, Loader2, 
@@ -3092,6 +3093,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
           {message.intent === 'credit_one_page_report' && message.data && (
             <CreditReportActions data={message.data} />
           )}
+          {message.intent === 'comprehensive_financing_analysis_report' && message.data && (
+            <ComprehensiveReportActions data={message.data} />
+          )}
         </div>
         {/* Structured Data Card - shown below message based on intent */}
         {message.data && (
@@ -3116,7 +3120,7 @@ interface IntentActionsProps {
 }
 
 const IntentActions: React.FC<IntentActionsProps> = ({ intent, onAction }) => {
-  if (!intent || intent === 'chat' || intent === 'credit_one_page_report') return null;
+  if (!intent || intent === 'chat' || intent === 'credit_one_page_report' || intent === 'comprehensive_financing_analysis_report') return null;
 
   const actions = {
     extract: { icon: Upload, label: '上传资料', action: 'upload' },

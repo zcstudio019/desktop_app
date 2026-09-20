@@ -11,7 +11,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
-from backend.services.comprehensive_financing_report_model import ComprehensiveFinancingReportModel
+from backend.services.comprehensive_financing_report_model import (
+    CUSTOMER_MATERIAL_TYPES,
+    SYSTEM_ANALYSIS_TYPES,
+    ComprehensiveFinancingReportModel,
+)
 
 
 READINESS = Literal["ready_for_further_evaluation", "conditionally_ready", "needs_data_completion", "needs_issue_resolution"]
@@ -189,7 +193,8 @@ def build_safe_analysis_context(model: ComprehensiveFinancingReportModel) -> dic
                            if key not in {"credit_card_utilization", "personal_query_counts"}},
         "STATUS": {row["type"]: row["status"] for row in materials},
         "CONFLICT": [{"type": item.get("type"), "message": item.get("message")} for item in model.conflicts],
-        "MISSING_DATA": [row["type"] for row in materials if row["status"] == "missing"],
+        "MISSING_DATA": [row["type"] for row in materials
+                         if row["type"] in CUSTOMER_MATERIAL_TYPES and row["status"] == "missing"],
     }
 
 
@@ -231,7 +236,7 @@ FACT 是已保存事实；DERIVED_METRIC 是程序计算值，不得重算；STA
 融资优势、障碍和核心矛盾必须有事实依据；核心矛盾最多 5 项，按重要性排序。行动计划分 immediate、short_term、medium_term。"""
 
 SYSTEM_PROMPT += """
-融资障碍和核心问题按以下顺序选择：已有财务/征信/流水事实形成的约束、跨资料结构问题、影响判断的关键资料缺口。risk_context 和 existing_financing_plan 缺失仅是系统流程状态，禁止作为客户融资障碍或核心问题。
+融资障碍和核心问题按以下顺序选择：已有财务/征信/流水事实形成的约束、跨资料结构问题、影响判断的关键客户资料缺口。risk_context 和 existing_financing_plan 缺失仅是系统流程状态，禁止出现在 executive_summary、financing_constraints、core_issues、action_plan、data_limitations 或 conclusion 中。
 当资产负债率、净资产、净利润、短期借款、存量征信融资、流水分类或法人相关还款责任已有数据时，必须优先分析这些事实。月度净利润为负只能表述为最新月度口径为负，不得推断持续亏损。
 若企业及个人征信逾期概要明确为零，可形成有限信用基础；若存在连续流水、初步经营入账或历史融资记录，应形成有事实依据的有限融资优势，不得仅输出资料缺口。
 即使融资需求缺失，也必须评估信用融资、抵押融资、保证/增信融资、科技企业专项融资四条路径。信用融资和保证/增信融资只能给出有条件判断；缺资产时抵押融资为资料不足；缺科技资质时科技企业专项融资为资料不足。
@@ -348,6 +353,9 @@ def validate_analysis_result(result: ComprehensiveFinancingAnalysisResult, model
     )
     if re.search(r"(?:风险评估|风险报告).{0,12}(?:缺失|未生成|未找到)|(?:融资方案|方案匹配).{0,12}(?:缺失|未生成|未找到)", customer_issue_text):
         errors.append("将系统流程状态当作客户融资障碍或核心问题")
+    if ((model.risk_context.get("status") == "missing" and re.search(r"风险评估|风险报告", text))
+            or (model.existing_financing_plan.get("status") == "missing" and re.search(r"融资方案|方案匹配", text))):
+        errors.append("将系统分析状态写入客户报告")
     latest = model.financials.get("latest") or {}
     debt_ratio = latest.get("debt_asset_ratio")
     if isinstance(debt_ratio, (int, float)) and debt_ratio >= 0.8 and not re.search(r"资产负债率|资本结构|负债水平", customer_issue_text):
@@ -373,13 +381,16 @@ def validate_analysis_result(result: ComprehensiveFinancingAnalysisResult, model
     for item in result.action_plan.immediate + result.action_plan.short_term + result.action_plan.medium_term:
         if any(section not in SOURCE_SECTIONS for section in item.source_sections):
             errors.append("行动计划引用包含未知 section")
-    required_limits = {row["type"] for row in model.data_scope.get("materials", []) if row.get("status") == "missing"}
+    required_limits = {row["type"] for row in model.data_scope.get("materials", [])
+                       if row.get("type") in CUSTOMER_MATERIAL_TYPES and row.get("status") == "missing"}
     found_limits = {item.material_type for item in result.data_limitations}
     known_limits = {row["type"] for row in model.data_scope.get("materials", [])} | {
         "financial_cashflow_period_mismatch", "enterprise_cashflow_classification", "source_date_comparability",
     }
     if not found_limits.issubset(known_limits):
         errors.append("资料限制包含未知资料类型")
+    if found_limits.intersection(SYSTEM_ANALYSIS_TYPES):
+        errors.append("将系统分析状态写入客户资料缺口")
     if not required_limits.issubset(found_limits):
         errors.append("未完整说明缺失资料")
     if model.enterprise_cashflow.get("status") == "partial":
@@ -446,10 +457,8 @@ def _repair_instructions(errors: list[str]) -> str:
         instructions.append(f"资产资料缺失只能表述为：{MISSING_COPY['assets']}")
     if "将个人流水缺失写成无收入" in joined:
         instructions.append(f"个人流水缺失只能表述为：{MISSING_COPY['personal_cashflow']}")
-    if "将风险结果缺失写成无风险" in joined:
-        instructions.append(f"风险结果缺失只能表述为：{MISSING_COPY['risk_assessment']}")
-    if "将融资方案缺失写成不需要方案" in joined:
-        instructions.append(f"融资方案缺失只能表述为：{MISSING_COPY['financing_plan']}")
+    if "将风险结果缺失写成无风险" in joined or "将融资方案缺失写成不需要方案" in joined:
+        instructions.append("风险评估和已有融资方案是系统分析产物；缺失时直接从客户报告内容移除，不写入资料缺口。")
     if "未提示企业债务与个人相关责任不可简单加总" in joined:
         instructions.append("enterprise_person_linkage.summary 必须逐字包含‘企业融资与法人相关还款责任存在债务关系重叠，不能简单加总。’")
     if "部分流水未说明" in joined or "关联方" in joined:
@@ -459,7 +468,9 @@ def _repair_instructions(errors: list[str]) -> str:
     if "必要融资路径" in joined:
         instructions.append("financing_paths 必须包含信用融资、抵押融资、保证/增信融资、科技企业专项融资；不得推荐具体银行或产品。")
     if "系统流程状态" in joined:
-        instructions.append("从 financing_constraints 和 core_issues 中移除风险评估未生成、融资方案未生成；它们只保留在 data_limitations。")
+        instructions.append("从客户报告的所有输出字段中移除风险评估未生成、融资方案未生成。")
+    if "系统分析状态" in joined:
+        instructions.append("不要在 executive_summary、financing_constraints、core_issues、action_plan、data_limitations 或 conclusion 中提及风险评估未生成或融资方案未生成。")
     if any(term in joined for term in ("高资产负债率", "净资产基础", "企业流水结构")):
         instructions.append("融资障碍优先写已有财务和流水事实：资本结构、净资产基础、最新期间盈利、存量融资、流水分类；每项引用 Context 原值。")
     if "融资优势为空" in joined:
@@ -527,10 +538,8 @@ def build_conservative_analysis_fallback(
         "personal_cashflow": (MISSING_COPY["personal_cashflow"], "无法核验关键自然人稳定可采信个人收入", "补充可用个人流水及人工确认结果"),
         "assets": (MISSING_COPY["assets"], "无法判断抵押或其他资产增信能力", "补充已结构化的资产权属与估值依据"),
         "financing_requirement": (MISSING_COPY["financing_requirement"], "无法确定融资路径的具体适配条件", "确认融资金额、用途、期限及担保偏好"),
-        "risk_assessment": (MISSING_COPY["risk_assessment"], "本次仅依据当前事实资料作保守分析", "补充有效风险评估结果"),
-        "financing_plan": (MISSING_COPY["financing_plan"], "本次不引用既有产品匹配结论", "如需产品匹配，另行生成并保存融资方案"),
     }
-    for material_type in ("personal_cashflow", "assets", "financing_requirement", "risk_assessment", "financing_plan"):
+    for material_type in ("personal_cashflow", "assets", "financing_requirement"):
         if material_type in missing:
             limitation, impact, required = limitation_copy[material_type]
             limitations.append(DataLimitation(material_type=material_type, limitation=limitation, impact=impact, required_data=required))

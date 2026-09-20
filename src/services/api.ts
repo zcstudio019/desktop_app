@@ -1160,6 +1160,26 @@ export async function downloadCreditReportPdf(path: string): Promise<void> {
   downloadBlob(blob, fileName);
 }
 
+/** Fetch one frozen comprehensive report through the existing authenticated API. */
+export async function fetchComprehensiveReportArtifact(path: string): Promise<{ blob: Blob; fileName: string }> {
+  if (!/^\/api\/customers\/[^/]+\/comprehensive-financing-report\/snapshots\/[a-f0-9]{32}\/(preview|export\/pdf)$/.test(path)) {
+    throw new Error('综合报告链接无效，请重新生成报告');
+  }
+  const response = await fetch(buildApiUrl(path), { headers: getAuthHeaders() });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || '综合报告读取失败，请稍后重试');
+  }
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  return { blob: await response.blob(), fileName: encoded ? decodeURIComponent(encoded) : '客户综合融资分析报告.pdf' };
+}
+
+export async function downloadComprehensiveReportPdf(path: string): Promise<void> {
+  const { blob, fileName } = await fetchComprehensiveReportArtifact(path);
+  downloadBlob(blob, fileName);
+}
+
 export async function getCustomerExtractions(
   customerId: string,
   signal?: AbortSignal,

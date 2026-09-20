@@ -1676,7 +1676,7 @@ class SQLAlchemyStorageService:
             rows = db.execute(
                 select(CustomerFinancingDiagnosticReportSnapshot)
                 .where(CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id)
-                .where(CustomerFinancingDiagnosticReportSnapshot.report_version != "credit_one_page_report_v1")
+                .where(CustomerFinancingDiagnosticReportSnapshot.report_version.like("v%"))
                 .order_by(
                     desc(CustomerFinancingDiagnosticReportSnapshot.generated_at),
                     desc(CustomerFinancingDiagnosticReportSnapshot.id),
@@ -1696,7 +1696,7 @@ class SQLAlchemyStorageService:
                 select(CustomerFinancingDiagnosticReportSnapshot).where(
                     CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id,
                     CustomerFinancingDiagnosticReportSnapshot.report_id == report_id,
-                    CustomerFinancingDiagnosticReportSnapshot.report_version != "credit_one_page_report_v1",
+                    CustomerFinancingDiagnosticReportSnapshot.report_version.like("v%"),
                 ),
                 table_name="customer_financing_diagnostic_reports",
             )
@@ -1709,6 +1709,16 @@ class SQLAlchemyStorageService:
                 CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id,
                 CustomerFinancingDiagnosticReportSnapshot.report_id == report_id,
                 CustomerFinancingDiagnosticReportSnapshot.report_version == "credit_one_page_report_v1",
+            )).scalars().first()
+            return self._row_to_financing_diagnostic_report_snapshot(row) if row else None
+
+    async def get_comprehensive_financing_report_snapshot(self, customer_id: str, report_id: str) -> dict[str, Any] | None:
+        """Read only this comprehensive report version for the given customer."""
+        with self._session_factory() as db:
+            row = db.execute(select(CustomerFinancingDiagnosticReportSnapshot).where(
+                CustomerFinancingDiagnosticReportSnapshot.customer_id == customer_id,
+                CustomerFinancingDiagnosticReportSnapshot.report_id == report_id,
+                CustomerFinancingDiagnosticReportSnapshot.report_version == "comprehensive_financing_v1",
             )).scalars().first()
             return self._row_to_financing_diagnostic_report_snapshot(row) if row else None
 

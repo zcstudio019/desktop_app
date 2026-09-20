@@ -20,6 +20,7 @@ from backend.services.comprehensive_financing_report_context_service import (
 from backend.services.comprehensive_financing_report_markdown_renderer import (
     render_comprehensive_financing_report,
 )
+from backend.services.comprehensive_financing_report_export_service import freeze_comprehensive_financing_report
 
 
 logger = logging.getLogger(__name__)
@@ -66,12 +67,22 @@ async def generate_comprehensive_financing_analysis(
     analysis = await analyze_comprehensive_financing_report(model, llm=llm)
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     markdown = render_comprehensive_financing_report(model, analysis, generated_at)
+    export_data: dict[str, Any] = {}
+    try:
+        export_data = await freeze_comprehensive_financing_report(
+            storage_service, customer_id, model, analysis, generated_at, markdown,
+        )
+    except Exception:
+        logger.exception("comprehensive report snapshot could not be saved")
+        export_data = {"exportMessage": "报告已生成，预览和 PDF 暂不可用，请稍后重试。"}
     return {
         "message": markdown,
         "data": {
             "analysisStatus": "completed",
             "reportType": model.report_type,
             "templateVersion": model.template_version,
+            "reportStatus": "completed" if export_data.get("reportId") else "export_unavailable",
+            **export_data,
             "generatedAt": generated_at,
             "analysis": analysis.model_dump(),
             "analysisValidationFallbackUsed": analysis.validation_fallback_used,

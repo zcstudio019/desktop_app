@@ -9,6 +9,7 @@ from backend.services.comprehensive_financing_analysis_service import (
     ComprehensiveFinancingAnalysisResult,
 )
 from backend.services.comprehensive_financing_report_model import (
+    CUSTOMER_MATERIAL_TYPES,
     ComprehensiveFinancingReportModel,
 )
 
@@ -141,7 +142,12 @@ def _material_period(material_type: str, material: dict[str, Any], model: Compre
 
 
 def _source_text(source_sections: list[str]) -> str:
-    return _join((SOURCE_LABELS.get(source, "资料来源待核验") for source in source_sections))
+    system_sections = {"risk_context", "existing_financing_plan"}
+    return _join(
+        (SOURCE_LABELS.get(source, "资料来源待核验")
+         for source in source_sections if source not in system_sections),
+        empty="资料来源待核验",
+    )
 
 
 def _bullets(items: list[Any], empty: str = "资料不足") -> str:
@@ -158,6 +164,8 @@ def _render_data_scope(model: ComprehensiveFinancingReportModel) -> str:
     rows = []
     for material in model.data_scope.get("materials", []):
         material_type = str(material.get("type") or "")
+        if material_type not in CUSTOMER_MATERIAL_TYPES:
+            continue
         rows.append([
             MATERIAL_LABELS.get(material_type, "其他资料"),
             STATUS_LABELS.get(material.get("status"), "待核验"),
@@ -279,7 +287,7 @@ def _render_enterprise_credit(model: ComprehensiveFinancingReportModel) -> str:
         ["逾期记录数", (credit.get("overdue_summary") or {}).get("count")],
         ["不良/异常分类记录数", (credit.get("nonperforming_summary") or {}).get("count")],
         ["企业对外担保余额", format_money(credit.get("guarantee_balance"), credit.get("unit"))],
-        ["到期/待核验记录数", len(credit.get("upcoming_or_past_due_records") or [])],
+        ["企业贷款记录数", credit.get("loan_record_count")],
         ["征信查询次数", (credit.get("query_summary") or {}).get("count")],
         ["征信报告日期", credit.get("source_report_date")],
     ]
@@ -390,8 +398,11 @@ def _render_actions(analysis: ComprehensiveFinancingAnalysisResult) -> str:
 
 
 def _render_limitations(analysis: ComprehensiveFinancingAnalysisResult) -> str:
+    allowed = set(CUSTOMER_MATERIAL_TYPES) | {
+        "financial_cashflow_period_mismatch", "enterprise_cashflow_classification", "source_date_comparability",
+    }
     rows = [[MATERIAL_LABELS.get(item.material_type, "其他资料"), item.limitation, item.impact, item.required_data]
-            for item in analysis.data_limitations]
+            for item in analysis.data_limitations if item.material_type in allowed]
     return render_markdown_table(["资料类型", "当前限制", "分析影响", "需要补充/核验"], rows) if rows else "本次结构化分析未列出额外资料限制。"
 
 

@@ -426,7 +426,7 @@ export interface ChatMessage {
   /** Optional reasoning for assistant responses */
   reasoning?: string | null;
   /** Intent for structured task messages */
-  intent?: 'extract' | 'application' | 'matching' | 'credit_one_page_report' | 'chat' | null;
+  intent?: 'extract' | 'application' | 'matching' | 'credit_one_page_report' | 'comprehensive_financing_analysis_report' | 'chat' | null;
   /** Structured payload associated with the message */
   data?: Record<string, unknown> | null;
   /** Weak task association for timeline/result linking */
@@ -491,7 +491,7 @@ export interface ChatResponse {
   /** AI response message */
   message: string;
   /** Detected intent, if any */
-  intent: 'extract' | 'application' | 'matching' | 'credit_one_page_report' | 'chat' | null;
+  intent: 'extract' | 'application' | 'matching' | 'credit_one_page_report' | 'comprehensive_financing_analysis_report' | 'chat' | null;
   /** Additional data based on intent */
   data: Record<string, unknown> | null;
   /** AI reasoning/thinking process (from DeepSeek thinking feature) */

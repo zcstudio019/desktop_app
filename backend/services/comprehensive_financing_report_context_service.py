@@ -7,6 +7,7 @@ from typing import Any
 
 from backend.document_types import normalize_document_type_code
 from backend.services.comprehensive_financing_report_model import (
+    CUSTOMER_MATERIAL_TYPES,
     ComprehensiveFinancingReportModel,
     MaterialRecord,
 )
@@ -716,10 +717,11 @@ async def build_comprehensive_financing_report_context(
     if conflicts and subject.get("status") != "missing":
         subject["status"] = "needs_review" if any(x["type"] in {"enterprise_subject", "legal_representative", "actual_controller"} for x in conflicts) else subject["status"]
         materials[0] = _material("enterprise_kyc", subject)
-    available_count = sum(item.usable for item in materials)
-    missing_count = sum(item.status == "missing" for item in materials)
+    customer_materials = [item for item in materials if item.type in CUSTOMER_MATERIAL_TYPES]
+    available_count = sum(item.usable for item in customer_materials)
+    missing_count = sum(item.status == "missing" for item in customer_materials)
     derived.update({
-        "material_completeness_ratio": round(available_count / len(materials), 4),
+        "material_completeness_ratio": round(available_count / len(customer_materials), 4),
         "available_material_count": available_count,
         "missing_material_count": missing_count,
     })

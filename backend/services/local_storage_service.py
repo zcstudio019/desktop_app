@@ -1503,7 +1503,7 @@ class LocalStorageService:
                 SELECT report_id, customer_id, report_version, report_status,
                        report_json, report_markdown, source_summary, generated_by, generated_at
                 FROM customer_financing_diagnostic_reports
-                WHERE customer_id = ?
+                WHERE customer_id = ? AND report_version LIKE 'v%'
                 ORDER BY datetime(generated_at) DESC, id DESC
                 LIMIT ?
                 ''',
@@ -1548,7 +1548,7 @@ class LocalStorageService:
                 SELECT report_id, customer_id, report_version, report_status,
                        report_json, report_markdown, source_summary, generated_by, generated_at
                 FROM customer_financing_diagnostic_reports
-                WHERE customer_id = ? AND report_id = ?
+                WHERE customer_id = ? AND report_id = ? AND report_version LIKE 'v%'
                 LIMIT 1
                 ''',
                 (customer_id, report_id),
@@ -1576,6 +1576,54 @@ class LocalStorageService:
             }
         except sqlite3.Error as e:
             raise RuntimeError(f"Failed to get financing diagnostic report snapshot: {e}") from e
+        finally:
+            conn.close()
+
+    async def get_comprehensive_financing_report_snapshot(self, customer_id: str, report_id: str) -> dict | None:
+        """Load only a frozen comprehensive report, scoped to its customer."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                """SELECT report_id, customer_id, report_version, report_status,
+                          report_json, report_markdown, source_summary, generated_by, generated_at
+                   FROM customer_financing_diagnostic_reports
+                   WHERE customer_id = ? AND report_id = ? AND report_version = ? LIMIT 1""",
+                (customer_id, report_id, "comprehensive_financing_v1"),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0], "report_id": row[0], "customer_id": row[1],
+                "report_version": row[2], "report_status": row[3] or "draft",
+                "report_json": json.loads(row[4]) if row[4] else {},
+                "report_markdown": row[5] or "",
+                "source_summary": json.loads(row[6]) if row[6] else {},
+                "generated_by": row[7] or "", "generated_at": row[8] or "",
+            }
+        finally:
+            conn.close()
+
+    async def get_credit_report_snapshot(self, customer_id: str, report_id: str) -> dict | None:
+        """Keep credit report lookups separate from both financing report types."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                """SELECT report_id, customer_id, report_version, report_status,
+                          report_json, report_markdown, source_summary, generated_by, generated_at
+                   FROM customer_financing_diagnostic_reports
+                   WHERE customer_id = ? AND report_id = ? AND report_version = ? LIMIT 1""",
+                (customer_id, report_id, "credit_one_page_report_v1"),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0], "report_id": row[0], "customer_id": row[1],
+                "report_version": row[2], "report_status": row[3] or "draft",
+                "report_json": json.loads(row[4]) if row[4] else {},
+                "report_markdown": row[5] or "",
+                "source_summary": json.loads(row[6]) if row[6] else {},
+                "generated_by": row[7] or "", "generated_at": row[8] or "",
+            }
         finally:
             conn.close()
 

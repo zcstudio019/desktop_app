@@ -177,10 +177,6 @@ def build_stable_enterprise_credit_facts(
             for row in external
         ],
         "query_summary": {"count": None},
-        "upcoming_or_past_due_records": [
-            {"institution": row.get("institution"), "balance": _value(row.get("balance")),
-             "balance_money": row.get("balance"), "due_date": row.get("due_date")}
-            for row in loans[:30] if row.get("due_date")
-        ],
+        "loan_record_count": len(loans),
         "source_report_date": source_report_date or report_meta.get("report_time"),
     }

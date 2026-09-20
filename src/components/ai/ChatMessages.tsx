@@ -3,6 +3,7 @@ import { Bot, Loader2, Sparkles } from 'lucide-react';
 import { useChatStore } from '../../stores/useChatStore';
 import MarkdownBlock from '../MarkdownBlock';
 import { CreditReportActions } from '../CreditReportActions';
+import { ComprehensiveReportActions } from '../ComprehensiveReportActions';
 
 const ChatMessages: React.FC = () => {
   const { messages, status, progressMessage, error } = useChatStore();
@@ -48,6 +49,9 @@ const ChatMessages: React.FC = () => {
                 <MarkdownBlock content={message.content} />
                 {message.intent === 'credit_one_page_report' && message.data && (
                   <CreditReportActions data={message.data} />
+                )}
+                {message.intent === 'comprehensive_financing_analysis_report' && message.data && (
+                  <ComprehensiveReportActions data={message.data} />
                 )}
               </>}
             </div>

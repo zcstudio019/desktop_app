@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field, model_validator
 MaterialStatus = Literal["confirmed", "available", "partial", "missing", "needs_review"]
 REPORT_TYPE = "comprehensive_financing_analysis_report"
 TEMPLATE_VERSION = "comprehensive_financing_analysis_report_v1"
+CUSTOMER_MATERIAL_TYPES = (
+    "enterprise_kyc", "enterprise_credit", "personal_credit", "enterprise_cashflow",
+    "personal_cashflow", "financial_statements", "assets", "financing_requirement",
+)
+SYSTEM_ANALYSIS_TYPES = ("risk_assessment", "financing_plan")
 
 
 class MaterialRecord(BaseModel):

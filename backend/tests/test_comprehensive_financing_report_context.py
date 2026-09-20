@@ -436,8 +436,45 @@ def test_saved_scheme_is_reference_only(storage):
 
 def test_missing_materials_do_not_crash_context_builder(storage):
     report = build(storage)
-    assert report.derived_metrics["missing_material_count"] >= 8
+    customer_types = {
+        "enterprise_kyc", "enterprise_credit", "personal_credit", "enterprise_cashflow",
+        "personal_cashflow", "financial_statements", "assets", "financing_requirement",
+    }
+    customer_materials = [item for item in report.data_scope["materials"] if item["type"] in customer_types]
+    assert report.derived_metrics["missing_material_count"] == sum(
+        item["status"] == "missing" for item in customer_materials
+    )
+    assert report.derived_metrics["available_material_count"] == sum(
+        bool(item.get("usable")) for item in customer_materials
+    )
     assert all(item["status"] in {"missing", "available", "partial", "confirmed", "needs_review"} for item in report.data_scope["materials"])
+
+
+def test_system_analysis_status_not_counted_as_customer_materials(storage):
+    report = build(storage)
+    assert len([item for item in report.data_scope["materials"] if item["type"] in {
+        "enterprise_kyc", "enterprise_credit", "personal_credit", "enterprise_cashflow",
+        "personal_cashflow", "financial_statements", "assets", "financing_requirement",
+    }]) == 8
+    assert report.risk_context["status"] == "missing"
+    assert report.existing_financing_plan["status"] == "missing"
+    expected = report.derived_metrics["available_material_count"] / 8
+    assert report.derived_metrics["material_completeness_ratio"] == expected
+
+
+def test_enterprise_credit_exposes_loan_record_count_without_ambiguous_due_count(storage):
+    storage.extractions.append(extraction("enterprise_credit_report", {
+        "basic_info": {"company_name": "上海测试有限公司", "report_date": "2026-06-30"},
+        "credit_summary": {"active_borrowing_balance": 300},
+        "loans": [
+            {"institution": "银行甲", "balance": 100, "due_date": "2025-12-31"},
+            {"institution": "银行乙", "balance": 200, "due_date": "2027-12-31"},
+        ],
+        "unit": "元",
+    }))
+    credit = build(storage).enterprise_credit
+    assert credit["loan_record_count"] == 2
+    assert "upcoming_or_past_due_records" not in credit
 
 
 def test_financial_vs_credit_debt_difference_creates_review_note(storage, monkeypatch):

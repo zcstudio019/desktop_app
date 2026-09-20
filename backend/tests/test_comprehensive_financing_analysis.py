@@ -45,7 +45,12 @@ def facts():
 
 @pytest.fixture
 def valid_payload(facts):
-    missing = [m["type"] for m in facts.data_scope["materials"] if m["status"] == "missing"]
+    customer_material_types = {
+        "enterprise_kyc", "enterprise_credit", "personal_credit", "enterprise_cashflow",
+        "personal_cashflow", "financial_statements", "assets", "financing_requirement",
+    }
+    missing = [m["type"] for m in facts.data_scope["materials"]
+               if m["type"] in customer_material_types and m["status"] == "missing"]
     missing.append("financial_cashflow_period_mismatch")
     section = lambda summary, sources: {"summary": summary, "source_sections": sources}
     return {
@@ -94,6 +99,8 @@ def test_analysis_uses_comprehensive_context_only(facts):
     assert set(context) == {"FACT", "DERIVED_METRIC", "STATUS", "CONFLICT", "MISSING_DATA"}
     assert "internal-123" not in json.dumps(context)
     assert context["FACT"]["enterprise_cashflow"]["operating_inflow"] == 800000
+    assert "risk_assessment" not in context["MISSING_DATA"]
+    assert "financing_plan" not in context["MISSING_DATA"]
 
 
 def test_analysis_result_is_structured(facts, valid_payload):
@@ -398,6 +405,31 @@ def test_system_missing_risk_report_not_treated_as_customer_financing_constraint
     result = build_conservative_analysis_fallback(facts)
     text = "\n".join(f"{item.title}{item.fact}" for item in result.financing_constraints)
     assert "风险评估" not in text and "风险报告" not in text
+
+
+def test_system_analysis_missing_not_required_as_customer_data_limitation(facts, valid_payload):
+    valid_payload["data_limitations"] = [
+        item for item in valid_payload["data_limitations"]
+        if item["material_type"] not in {"risk_assessment", "financing_plan"}
+    ]
+    errors = validate(valid_payload, facts)
+    assert not any("未完整说明缺失资料" in error for error in errors)
+
+
+def test_system_analysis_status_rejected_from_customer_data_limitations(facts, valid_payload):
+    valid_payload["data_limitations"].append({
+        "material_type": "risk_assessment", "limitation": "风险评估资料不足",
+        "impact": "影响分析", "required_data": "生成风险评估",
+    })
+    assert "将系统分析状态写入客户资料缺口" in validate(valid_payload, facts)
+
+
+def test_system_analysis_missing_not_described_as_customer_limitation_anywhere(facts, valid_payload):
+    valid_payload["executive_summary"]["key_missing_information"].append("风险评估未生成")
+    valid_payload["action_plan"]["short_term"].append({
+        "action": "生成融资方案", "basis": "已有融资方案未生成", "source_sections": ["existing_financing_plan"]
+    })
+    assert "将系统分析状态写入客户报告" in validate(valid_payload, facts)
 
 
 def test_missing_financing_plan_not_treated_as_customer_core_issue(facts):
