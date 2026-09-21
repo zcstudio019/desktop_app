@@ -20,6 +20,7 @@ def localized_reports(report_model, analysis_payload):
     report_model.financials["periods"][0]["debt_asset_ratio"] = 0.75
     payload["executive_summary"]["overall_observation"] = (
         "KYC主体资料；企业征信逾期概要 count 为 0；企业流水为 partial 状态；"
+        "企业流水数据质量status为partial；"
         "资产负债率 0.9953；上期资产负债率0.75；经营入账 19493700.0 元；主体科技企业标签为空。"
     )
     payload["business_analysis"]["summary"] = (
@@ -53,6 +54,12 @@ def test_comprehensive_report_has_no_partial_term(localized_reports):
     for report in localized_reports:
         assert "企业流水可用于初步分析，但部分交易分类仍需进一步核验" in report
         assert "partial" not in report
+
+
+def test_comprehensive_report_has_no_status_term(localized_reports):
+    for report in localized_reports:
+        assert "status" not in report.lower()
+        assert "企业流水可用于初步分析，但部分交易分类及关联关系仍需复核" in report
 
 
 def test_comprehensive_report_has_no_internal_status_enum(localized_reports):

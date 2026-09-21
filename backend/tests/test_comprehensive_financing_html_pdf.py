@@ -110,9 +110,10 @@ def test_source_notes_are_visually_secondary(html):
     assert "数据来源：财务报表、资料时点" in html
 
 
-def test_business_ready_status_label_is_updated(report_model, analysis_payload):
+@pytest.mark.parametrize("readiness", ["needs_issue_resolution", "needs_data_completion"])
+def test_business_ready_status_label_is_fixed(report_model, analysis_payload, readiness):
     payload = copy.deepcopy(analysis_payload)
-    payload["executive_summary"]["current_financing_readiness"] = "needs_issue_resolution"
+    payload["executive_summary"]["current_financing_readiness"] = readiness
     rendered = render_comprehensive_financing_report_html(
         report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-21"
     )
@@ -121,13 +122,63 @@ def test_business_ready_status_label_is_updated(report_model, analysis_payload):
     assert "需先解决关键问题" not in rendered
 
 
+def test_pdf_has_no_orphan_final_conclusion_page(html):
+    conclusion = html.split("<div class='conclusion-area'>", 1)[1]
+    assert all(label in conclusion for label in ("综合判断", "当前融资方向", "前置条件", "一句话结论"))
+    assert ".conclusion-area { break-inside:auto; }" in html
+    assert re.search(r"\.final-line\s*\{[^}]*break-inside:avoid", html)
+
+
+def test_pdf_has_no_status_term(report_model, analysis_payload):
+    payload = copy.deepcopy(analysis_payload)
+    payload["cashflow_analysis"]["summary"] = "企业流水数据质量status为partial，关联关系需复核。"
+    html = render_comprehensive_financing_report_html(
+        report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-21"
+    )
+    assert "status" not in html.lower()
+    assert "企业流水可用于初步分析，但部分交易分类及关联关系仍需复核" in html
+
+
+def test_financial_ratio_is_formatted_as_percent(report_model, analysis_payload):
+    report_model.financials["trends"] = {"revenue_growth": -0.6988, "profit_growth": -0.2115,
+                                          "receivable_growth": 0.3603}
+    payload = copy.deepcopy(analysis_payload)
+    payload["financial_analysis"]["summary"] = (
+        "营业收入增长率-0.6988，利润增长率-0.2115，应收账款增长率0.3603。"
+    )
+    rendered = render_comprehensive_financing_report_html(
+        report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-21"
+    )
+    for formatted in ("营业收入增长率-69.88%", "利润增长率-21.15%", "应收账款增长率36.03%"):
+        assert formatted in rendered
+    for raw in ("-0.6988", "-0.2115", "0.3603"):
+        assert raw not in rendered
+
+
+def test_cashflow_change_is_formatted_as_money(report_model, analysis_payload):
+    report_model.financials["trends"] = {"operating_cashflow_change": 1671140.8}
+    payload = copy.deepcopy(analysis_payload)
+    payload["financial_analysis"]["summary"] = "经营现金流变化1671140.8。"
+    rendered = render_comprehensive_financing_report_html(
+        report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-21"
+    )
+    assert "经营现金流变化1,671,140.80元" in rendered
+    assert "1671140.8" not in rendered
+
+
+def test_source_note_does_not_orphan_to_next_page(html):
+    assert ".analysis p { orphans:2; widows:2; break-after:avoid; }" in html
+    assert re.search(r"\.source-note\s*\{[^}]*break-before:avoid", html)
+    assert re.search(r"<div class='analysis'>.*?<p>.*?</p><small class='source-note'>数据来源：", html, re.DOTALL)
+
+
 def test_pdf_contains_no_orphan_section_heading(html):
     for tag in ("h2", "h3", "h4"):
         assert re.search(rf"{tag}\s*\{{[^}}]*break-after:\s*avoid", html)
     assert "第 \" counter(page) \" 页" in html
 
 
-def test_pdf_does_not_change_report_facts(html, report_model, analysis_result):
+def test_pdf_fact_values_are_unchanged(html, report_model, analysis_result):
     from backend.services.comprehensive_financing_report_markdown_renderer import render_comprehensive_financing_report
     markdown = render_comprehensive_financing_report(report_model, analysis_result, "2026-09-21")
     for value in ("42,499,565.67元", "19,493,700.00元", "7,351,500.00元", "1,624,475.00元",

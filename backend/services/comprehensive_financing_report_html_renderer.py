@@ -23,7 +23,7 @@ SOURCE = {"subject_profile": "主体及身份资料", "financing_requirement": "
           "financials": "财务报表", "assets": "资产资料", "derived_metrics": "系统计算结果",
           "conflicts": "资料冲突核验", "data_scope": "数据范围", "data_quality": "资料状态", "source_dates": "资料时点"}
 READINESS = {"ready_for_further_evaluation": "可进入下一步评估", "conditionally_ready": "具备进一步评估基础，但存在前置条件",
-             "needs_data_completion": "需补充关键资料后进一步评估", "needs_issue_resolution": "具备进一步评估基础，但存在前置条件"}
+             "needs_data_completion": "具备进一步评估基础，但存在前置条件", "needs_issue_resolution": "具备进一步评估基础，但存在前置条件"}
 ASSET = {"property": "房产", "vehicle": "车辆", "equipment": "设备", "intellectual_property": "知识产权",
          "equity": "股权", "deposit": "存单", "other_collateral": "其他抵质押物"}
 
@@ -238,7 +238,7 @@ def _paths_actions(analysis: ComprehensiveFinancingAnalysisResult) -> str:
     path_tone = {"potential": "path-green", "conditional": "path-amber", "insufficient_data": "path-gray"}
     cards = "".join(
         f"<article class='path-card'><div class='path-head'><h4>{_e(item.path)}</h4>"
-        f"<span class='path-status {path_tone.get(item.status, 'path-gray')}'>{_e(PATH_STATUS.get(item.status, '待核验'))}</span></div>"
+        f"<span class='path-state {path_tone.get(item.status, 'path-gray')}'>{_e(PATH_STATUS.get(item.status, '待核验'))}</span></div>"
         f"<p><b>依据：</b>{_join(item.basis)}</p><p><b>当前缺口：</b>{_join(item.missing_conditions)}</p></article>"
         for item in analysis.financing_paths)
     content = "<h3>八、融资路径方向</h3><div class='path-grid'>" + (cards or "<p class='muted'>资料不足</p>") + "</div>"
@@ -257,11 +257,12 @@ def _limitations_conclusion(analysis: ComprehensiveFinancingAnalysisResult) -> s
             for item in analysis.data_limitations if item.material_type in allowed]
     content = "<h3>十、资料缺口与分析限制</h3>" + (_table(["资料类型", "当前限制", "分析影响", "需要补充/核验"], rows, class_name="limitations-table") if rows else "<p class='muted'>未列出额外资料限制。</p>")
     conclusion = analysis.conclusion
-    content += "<h3>十一、综合结论</h3>"
+    content += "<div class='conclusion-area'><h3>十一、综合结论</h3>"
     content += f"<div class='analysis'><h4>综合判断</h4><p>{_e(conclusion.overall)}</p></div>"
     content += f"<div class='analysis'><h4>当前融资方向</h4><p>{_e(conclusion.financing_direction)}</p></div>"
     content += "<h4>前置条件</h4>" + _list(conclusion.prerequisites)
     content += f"<div class='final-line'><span>一句话结论</span><strong>{_e(conclusion.one_sentence)}</strong></div>"
+    content += "</div>"
     return content
 
 
@@ -273,7 +274,7 @@ CSS = """
 html { color: #253444; background: #fff; }
 body { margin: 0; font-family: 'Microsoft YaHei','PingFang SC','Noto Sans CJK SC','Source Han Sans SC',sans-serif; font-size: 13.5px; line-height: 1.5; }
 .report { max-width: 186mm; margin: 0 auto; }
-.report-page { break-before: auto; margin-top: 15px; }
+.report-page { break-before: auto; margin-top: 10px; }
 .cover-page { break-after: page; margin-top: 0; }
 .eyebrow,.section-index { color: #66809a; font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .cover-head { border-top: 5px solid #183650; padding-top: 17px; margin-bottom: 18px; }
@@ -287,8 +288,8 @@ body { margin: 0; font-family: 'Microsoft YaHei','PingFang SC','Noto Sans CJK SC
 .cover-page .metric strong { font-size: 12.5px; }
 h1 { color:#183650; font-size: 27px; line-height: 1.3; margin: 8px 0 11px; }
 h2 { color:#183650; font-size: 19px; line-height: 1.35; margin: 7px 0 14px; padding-bottom: 7px; border-bottom: 1px solid #b9c9d5; break-after: avoid; }
-h3 { color:#29465f; font-size: 14px; margin: 20px 0 8px; break-after: avoid; }
-h4 { color:#29465f; font-size: 12px; margin: 10px 0 5px; break-after: avoid; }
+h3 { color:#29465f; font-size: 14px; margin: 15px 0 7px; break-after: avoid; }
+h4 { color:#29465f; font-size: 12px; margin: 7px 0 4px; break-after: avoid; }
 p { margin: 4px 0 8px; }
 small,.muted,.footnote { color:#67798b; font-size: 10px; }
 .meta { color:#526c83; display:flex; gap:20px; }
@@ -309,7 +310,7 @@ small,.muted,.footnote { color:#67798b; font-size: 10px; }
 .financial-facts > div { display:flex; justify-content:space-between; gap:8px; border-bottom:1px solid #e5ebef; padding:5px 0; break-inside:avoid; }
 .financial-facts span { color:#65798b; flex:none; }
 .financial-facts strong { color:#253444; font-weight:550; white-space:nowrap; }
-table { width:100%; border-collapse:collapse; table-layout:fixed; margin:5px 0 12px; font-size:11px; }
+table { width:100%; border-collapse:collapse; table-layout:fixed; margin:5px 0 9px; font-size:11px; }
 thead { display:table-header-group; }
 tr { break-inside:avoid; }
 th,td { border-bottom:1px solid #dce5eb; padding:5px 6px; vertical-align:top; text-align:left; overflow-wrap:anywhere; word-break:break-word; }
@@ -332,32 +333,37 @@ tbody tr:nth-child(even) { background:#f9fbfc; }
 .limitations-table th:nth-child(2),.limitations-table td:nth-child(2) { width:35%; }
 .limitations-table th:nth-child(3),.limitations-table td:nth-child(3) { width:25%; }
 .limitations-table th:nth-child(4),.limitations-table td:nth-child(4) { width:25%; }
-.analysis { border-left:3px solid #a9bfce; padding:6px 10px; margin:9px 0; background:#f7f9fb; }
+.analysis { border-left:3px solid #a9bfce; padding:5px 9px; margin:6px 0; background:#f7f9fb; }
 .analysis h4 { margin-top:0; }
-.item-card { border:1px solid #dce5eb; border-left:3px solid #8ca6ba; padding:8px 11px; margin:7px 0; break-inside:avoid; }
+.analysis p { orphans:2; widows:2; break-after:avoid; }
+.item-card { border:1px solid #dce5eb; border-left:3px solid #8ca6ba; padding:7px 10px; margin:5px 0; break-inside:avoid; }
 .item-card p { margin:3px 0; }
 .strength { border-left-color:#65937e; }
 .constraint { border-left-color:#b79a5c; }
 .issue-no { color:#718b9e; margin-right:7px; }
-.path-status { display:inline-block; padding:1px 6px; border-radius:2px; white-space:nowrap; }
+.path-state { display:inline-block; padding:1px 6px; border-radius:2px; white-space:nowrap; }
 .path-green { color:#386950; background:#e7f0e9; }
 .path-amber { color:#79622c; background:#f7f0dd; }
 .path-gray { color:#66717c; background:#edf0f2; }
 .path-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
-.path-card { border:1px solid #dce5eb; background:#fafcfd; padding:9px 10px; break-inside:avoid; }
+.path-card { border:1px solid #dce5eb; background:#fafcfd; padding:7px 9px; break-inside:avoid; }
 .path-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:5px; }
 .path-head h4 { margin:0; }
 .path-card p { margin:4px 0; overflow-wrap:anywhere; }
 .action-heading { border-bottom:1px solid #dbe4eb; padding-bottom:4px; }
-.action { display:flex; flex-direction:column; border:1px solid #e2e9ee; border-left:2px solid #b7c8d4; padding:4px 9px; margin:4px 0; break-inside:avoid; }
-.source-note { display:block; color:#8a949e; font-size:9px; line-height:1.4; margin-top:4px; font-weight:400; }
-.final-line { background:#ecf3f6; border-left:4px solid #294e6a; padding:12px 14px; margin-top:14px; break-inside:avoid; }
+.action { display:flex; flex-direction:column; border:1px solid #e2e9ee; border-left:2px solid #b7c8d4; padding:4px 9px; margin:3px 0; break-inside:avoid; }
+.source-note { display:block; color:#8a949e; font-size:9px; line-height:1.4; margin-top:4px; font-weight:400; break-before:avoid; }
+.conclusion-area { break-inside:auto; }
+.conclusion-area .analysis { margin:5px 0; }
+.conclusion-area ul { margin-bottom:5px; }
+.conclusion-area li { margin:2px 0; }
+.final-line { background:#ecf3f6; border-left:4px solid #294e6a; padding:9px 12px; margin-top:7px; break-inside:avoid; }
 .final-line span { display:block; color:#65798b; font-size:9px; }
 .final-line strong { display:block; color:#183650; font-size:12px; }
 ul { margin:4px 0 10px; padding-left:18px; }
 li { margin:3px 0; }
 @media screen { body { background:#e8edf1; padding:18px; } .report-page { background:#fff; padding:15mm 12mm; margin:0 auto 14px; box-shadow:0 4px 18px #1d344022; width:210mm; } .report { max-width:none; } }
-@media print { .report-page { margin-top:15px; } .cover-page { margin-top:0; } }
+@media print { .report-page { margin-top:10px; } .cover-page { margin-top:0; } }
 @media (max-width: 700px) { .path-grid { grid-template-columns:1fr; } }
 """
 
@@ -395,5 +401,7 @@ def render_comprehensive_financing_report_html(
         rendered,
         debt_asset_ratio=report_model.derived_metrics.get("debt_asset_ratio"),
         debt_asset_ratios=(period.get("debt_asset_ratio") for period in report_model.financials.get("periods") or []),
+        financial_trends=report_model.financials.get("trends") or {},
+        financial_unit=(report_model.financials.get("latest") or {}).get("unit"),
         html=True,
     )
