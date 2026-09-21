@@ -102,8 +102,13 @@ def localize_report_text(
                   "企业流水可用于初步分析，但部分交易分类仍需进一步核验", text, flags=re.IGNORECASE)
     text = re.sub(r"(?:企业流水)?数据质量\s*status\s*为\s*(?:partial|部分资料)",
                   "企业流水可用于初步分析，但部分交易分类及关联关系仍需复核", text, flags=re.IGNORECASE)
-    text = text.replace("主体科技企业标签为空", "当前未获取可核验的科技企业资质或相关认定资料")
-    text = text.replace("科技企业标签为空", "当前未获取可核验的科技企业资质或相关认定资料")
+    technology_materials = "当前缺少可核验的科技企业资质、认定或相关证明资料"
+    text = re.sub(
+        r"(?:主体)?科技企业标签为空|当前缺少可核验科技企业资质或标签资料|"
+        r"科技企业资质或标签资料|科技标签(?:为空|资料)?",
+        technology_materials, text,
+    )
+    text = text.replace("标签资料", "相关证明资料")
     text = text.replace("资产资料缺失，未获取稳定结构化资产资料，各类资产清单均为空", _MISSING_ASSET_DATA)
     text = re.sub(
         r"(?:房产、车辆、设备、知识产权、股权、存款及其他抵押物|各类资产|资产资料|资产)清单均?为空",

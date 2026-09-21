@@ -78,10 +78,34 @@ def test_missing_technology_and_asset_data_use_materials_language():
     rendered = localize_report_text(
         "科技企业标签为空；房产、车辆、设备、知识产权、股权、存款及其他抵押物清单均为空；"
         "资产资料缺失，未获取稳定结构化资产资料，各类资产清单均为空。"
+        "当前缺少可核验科技企业资质或标签资料；科技标签。"
     )
-    assert "当前未获取可核验的科技企业资质或相关认定资料" in rendered
+    assert "当前缺少可核验的科技企业资质、认定或相关证明资料" in rendered
     assert "当前未获取可用于本次分析的稳定结构化资产资料" in rendered
     assert "标签为空" not in rendered and "清单均为空" not in rendered
+    assert "标签资料" not in rendered and "科技标签" not in rendered
+
+
+def test_comprehensive_report_section_numbers_match_in_markdown_and_html(localized_reports):
+    markdown, html = localized_reports
+    titles = [
+        "五、资产与增信条件", "六、融资优势", "七、融资障碍", "八、当前核心问题",
+        "九、融资路径方向", "十、行动计划", "十一、资料缺口与分析限制", "十二、综合结论",
+    ]
+    for report in (markdown, html):
+        positions = [report.index(title) for title in titles]
+        assert positions == sorted(positions)
+        assert all(report.count(title) == 1 for title in titles)
+        assert "五、融资优势" not in report
+
+
+def test_partial_cashflow_remains_preliminary_in_both_reports(localized_reports):
+    for report in localized_reports:
+        assert "初步统计" in report
+        assert "不代表最终核定真实经营收入" in report
+        assert all(term not in report for term in (
+            "现金流覆盖能力不足", "经营现金流恶化", "企业真实经营现金流为负", "偿债能力不足",
+        ))
 
 
 def test_credit_query_counts_have_no_unconfigured_threshold_judgment():
@@ -107,7 +131,7 @@ def test_comprehensive_report_uses_chinese_source_labels(localized_reports):
         assert "主体及身份资料" in report
         assert "程序计算指标" in report
         assert "资料完整度" in report
-        assert "当前未获取可核验的科技企业资质或相关认定资料" in report
+        assert "当前缺少可核验的科技企业资质、认定或相关证明资料" in report
 
 
 def test_comprehensive_report_formats_debt_ratio_as_percent(localized_reports):

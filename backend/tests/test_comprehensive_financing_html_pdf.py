@@ -75,7 +75,7 @@ def test_pdf_has_no_nearly_empty_asset_page(html):
 def test_core_issue_section_can_span_pages(html):
     assert ".item-card {" in html and "break-inside:avoid;" in html
     assert ".report-page { break-before: auto;" in html
-    assert "<h3>七、当前核心问题</h3>" in html
+    assert "<h3>八、当前核心问题</h3>" in html
 
 
 def test_core_issue_card_does_not_split(html):

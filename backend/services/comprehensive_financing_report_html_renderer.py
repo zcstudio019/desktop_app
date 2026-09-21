@@ -231,7 +231,7 @@ def _strengths_constraints(analysis: ComprehensiveFinancingAnalysisResult) -> st
     constraints = "".join(f"<article class='item-card constraint'><h4>{_e(item.title)}</h4><p><b>当前事实：</b>{_e(item.fact)}</p><p><b>融资影响：</b>{_e(item.impact)}</p><p><b>建议动作：</b>{_e(item.required_action)}</p><small class='source-note'>数据来源：{_sources(item.source_sections)}</small></article>" for item in analysis.financing_constraints)
     issues = "".join(f"<article class='item-card issue'><h4><span class='issue-no'>{i:02d}</span>{_e(item.issue)}</h4><p><b>事实：</b>{_join(item.facts)}</p><p><b>融资影响：</b>{_e(item.financing_impact)}</p><p><b>下一步：</b>{_e(item.next_action)}</p></article>" for i, item in enumerate(analysis.core_issues[:5], 1))
     empty = "<p class='muted'>资料不足</p>"
-    return f"<h3>五、融资优势</h3>{strengths or empty}<h3>六、融资障碍</h3>{constraints or empty}<h3>七、当前核心问题</h3>{issues or empty}"
+    return f"<h3>六、融资优势</h3>{strengths or empty}<h3>七、融资障碍</h3>{constraints or empty}<h3>八、当前核心问题</h3>{issues or empty}"
 
 
 def _paths_actions(analysis: ComprehensiveFinancingAnalysisResult) -> str:
@@ -241,8 +241,8 @@ def _paths_actions(analysis: ComprehensiveFinancingAnalysisResult) -> str:
         f"<span class='path-state {path_tone.get(item.status, 'path-gray')}'>{_e(PATH_STATUS.get(item.status, '待核验'))}</span></div>"
         f"<p><b>依据：</b>{_join(item.basis)}</p><p><b>当前缺口：</b>{_join(item.missing_conditions)}</p></article>"
         for item in analysis.financing_paths)
-    content = "<h3>八、融资路径方向</h3><div class='path-grid'>" + (cards or "<p class='muted'>资料不足</p>") + "</div>"
-    content += "<h3>九、行动计划</h3>"
+    content = "<h3>九、融资路径方向</h3><div class='path-grid'>" + (cards or "<p class='muted'>资料不足</p>") + "</div>"
+    content += "<h3>十、行动计划</h3>"
     for title, actions in (("立即处理", analysis.action_plan.immediate), ("短期处理", analysis.action_plan.short_term),
                            ("中期优化", analysis.action_plan.medium_term)):
         if actions:
@@ -255,9 +255,9 @@ def _limitations_conclusion(analysis: ComprehensiveFinancingAnalysisResult) -> s
     allowed = set(CUSTOMER_MATERIAL_TYPES) | {"financial_cashflow_period_mismatch", "enterprise_cashflow_classification", "source_date_comparability"}
     rows = [[MATERIAL.get(item.material_type, "其他资料"), item.limitation, item.impact, item.required_data]
             for item in analysis.data_limitations if item.material_type in allowed]
-    content = "<h3>十、资料缺口与分析限制</h3>" + (_table(["资料类型", "当前限制", "分析影响", "需要补充/核验"], rows, class_name="limitations-table") if rows else "<p class='muted'>未列出额外资料限制。</p>")
+    content = "<h3>十一、资料缺口与分析限制</h3>" + (_table(["资料类型", "当前限制", "分析影响", "需要补充/核验"], rows, class_name="limitations-table") if rows else "<p class='muted'>未列出额外资料限制。</p>")
     conclusion = analysis.conclusion
-    content += "<div class='conclusion-area'><h3>十一、综合结论</h3>"
+    content += "<div class='conclusion-area'><h3>十二、综合结论</h3>"
     content += f"<div class='analysis'><h4>综合判断</h4><p>{_e(conclusion.overall)}</p></div>"
     content += f"<div class='analysis'><h4>当前融资方向</h4><p>{_e(conclusion.financing_direction)}</p></div>"
     content += "<h4>前置条件</h4>" + _list(conclusion.prerequisites)
