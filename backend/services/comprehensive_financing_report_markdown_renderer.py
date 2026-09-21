@@ -12,7 +12,7 @@ from backend.services.comprehensive_financing_report_model import (
     CUSTOMER_MATERIAL_TYPES,
     ComprehensiveFinancingReportModel,
 )
-from backend.services.comprehensive_financing_report_display import localize_report_text
+from backend.services.comprehensive_financing_report_display import display_path_missing_conditions, localize_report_text
 
 
 STATUS_LABELS = {
@@ -383,7 +383,7 @@ def _render_paths(analysis: ComprehensiveFinancingAnalysisResult) -> str:
     if not analysis.financing_paths:
         return "本次分析未生成可展示的融资路径，建议先补齐关键资料后再评估。"
     rows = [[item.path, PATH_STATUS_LABELS.get(item.status, "待核验"), _join(item.basis),
-             _join(item.missing_conditions)] for item in analysis.financing_paths]
+             _join(display_path_missing_conditions(item.path, item.missing_conditions))] for item in analysis.financing_paths]
     notes = "\n\n".join(_render_source_note(item.source_sections, item.path) for item in analysis.financing_paths)
     return render_markdown_table(["融资路径", "当前状态", "依据", "当前缺口"], rows) + "\n\n" + notes
 

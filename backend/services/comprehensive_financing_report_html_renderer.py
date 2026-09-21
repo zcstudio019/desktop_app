@@ -9,7 +9,7 @@ from typing import Any, Iterable
 from backend.services.comprehensive_financing_analysis_service import ComprehensiveFinancingAnalysisResult
 from backend.services.comprehensive_financing_report_model import CUSTOMER_MATERIAL_TYPES, ComprehensiveFinancingReportModel
 from backend.services.comprehensive_financing_report_markdown_renderer import format_money, format_ratio
-from backend.services.comprehensive_financing_report_display import localize_report_text
+from backend.services.comprehensive_financing_report_display import display_path_missing_conditions, localize_report_text
 
 
 STATUS = {"confirmed": "已确认", "available": "已获取", "partial": "部分资料", "missing": "资料不足", "needs_review": "待核验"}
@@ -239,7 +239,7 @@ def _paths_actions(analysis: ComprehensiveFinancingAnalysisResult) -> str:
     cards = "".join(
         f"<article class='path-card'><div class='path-head'><h4>{_e(item.path)}</h4>"
         f"<span class='path-state {path_tone.get(item.status, 'path-gray')}'>{_e(PATH_STATUS.get(item.status, '待核验'))}</span></div>"
-        f"<p><b>依据：</b>{_join(item.basis)}</p><p><b>当前缺口：</b>{_join(item.missing_conditions)}</p></article>"
+        f"<p><b>依据：</b>{_join(item.basis)}</p><p><b>当前缺口：</b>{_join(display_path_missing_conditions(item.path, item.missing_conditions))}</p></article>"
         for item in analysis.financing_paths)
     content = "<h3>九、融资路径方向</h3><div class='path-grid'>" + (cards or "<p class='muted'>资料不足</p>") + "</div>"
     content += "<h3>十、行动计划</h3>"

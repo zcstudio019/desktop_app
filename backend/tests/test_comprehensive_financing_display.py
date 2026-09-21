@@ -8,7 +8,7 @@ import re
 import pytest
 
 from backend.services.comprehensive_financing_analysis_service import ComprehensiveFinancingAnalysisResult
-from backend.services.comprehensive_financing_report_display import assert_no_internal_english_terms, localize_report_text
+from backend.services.comprehensive_financing_report_display import assert_no_internal_english_terms, display_path_missing_conditions, localize_report_text
 from backend.services.comprehensive_financing_report_html_renderer import render_comprehensive_financing_report_html
 from backend.services.comprehensive_financing_report_markdown_renderer import render_comprehensive_financing_report
 from backend.tests.test_comprehensive_financing_report_markdown_renderer import analysis_payload, report_model
@@ -80,7 +80,7 @@ def test_missing_technology_and_asset_data_use_materials_language():
         "资产资料缺失，未获取稳定结构化资产资料，各类资产清单均为空。"
         "当前缺少可核验科技企业资质或标签资料；科技标签。"
     )
-    assert "当前缺少可核验的科技企业资质、认定或相关证明资料" in rendered
+    assert "当前未获取可核验的科技企业资质、认定或相关证明资料" in rendered
     assert "当前未获取可用于本次分析的稳定结构化资产资料" in rendered
     assert "标签为空" not in rendered and "清单均为空" not in rendered
     assert "标签资料" not in rendered and "科技标签" not in rendered
@@ -131,7 +131,128 @@ def test_comprehensive_report_uses_chinese_source_labels(localized_reports):
         assert "主体及身份资料" in report
         assert "程序计算指标" in report
         assert "资料完整度" in report
-        assert "当前缺少可核验的科技企业资质、认定或相关证明资料" in report
+        assert "当前未获取可核验的科技企业资质、认定或相关证明资料" in report
+
+
+def test_regressed_cashflow_judgment_is_business_safe():
+    source = (
+        "企业流水净流入为负且内部互转规模较大。"
+        "企业流水净流入为负，削弱流水对经营偿债能力的支撑。"
+        "流水对经营偿债能力的支撑不足；真实经营现金流为负；现金流覆盖能力不足。"
+    )
+    rendered = localize_report_text(source)
+    assert "企业流水收支结构仍需进一步核验" in rendered
+    assert "按当前已保存分类口径，流出高于流入；但内部互转、关联关系及未识别交易尚未完全核验" in rendered
+    assert "当前流水分类尚未完全稳定，需要剔除内部互转并核验关联方交易后" in rendered
+    assert all(term not in rendered for term in (
+        "净流入为负", "偿债能力的支撑", "真实经营现金流为负", "现金流覆盖能力不足",
+    ))
+
+
+def test_technology_path_gap_is_presentational_only():
+    conditions = ["当前缺少可核验科技企业资质或标签资料"]
+    assert display_path_missing_conditions("科技企业专项融资", conditions) == [
+        "需补充可核验的科技企业资质、认定或相关证明资料，并明确融资需求"
+    ]
+    assert display_path_missing_conditions("信用融资", conditions) == conditions
+    assert conditions == ["当前缺少可核验科技企业资质或标签资料"]
+    assert display_path_missing_conditions("抵押融资", [
+        "资产清单及权属证明", "资产评估或价值依据", "融资需求待确认"
+    ]) == ["可核验的资产权属及可抵押状态资料", "可核验的资产估值依据", "融资需求待确认"]
+
+
+def test_asset_list_and_action_use_materials_language():
+    rendered = localize_report_text(
+        "未获取资产清单；资产清单为空。补充稳定结构化资产资料，包括权属、估值及可抵押状态。"
+    )
+    assert "当前未获取可用于本次分析的稳定结构化资产资料" in rendered
+    assert "补充可核验的资产权属、估值及可抵押状态资料" in rendered
+    assert "资产清单" not in rendered
+
+
+def test_debt_ratio_threshold_uses_percent_not_internal_decimal():
+    rendered = localize_report_text(
+        "资产负债率长期处于0.995以上。",
+        debt_asset_ratio=0.9953,
+        debt_asset_ratios=[0.9951, 0.9959, 0.9953],
+    )
+    assert "近三个已保存财务期间的资产负债率均在99%以上" in rendered
+    assert "0.995" not in rendered
+
+
+def test_unruled_intensity_words_use_facts_or_review_language():
+    rendered = localize_report_text(
+        "资产负债率极高；相关还款责任规模显著；潜在代偿压力较大。",
+        debt_asset_ratio=0.9953,
+    )
+    assert "资产负债率为99.53%" in rendered
+    assert "相关还款责任需结合被担保主体、余额构成及到期安排进一步评估" in rendered
+    assert "相关责任需结合被担保主体、余额构成及到期安排进一步评估" in rendered
+    assert all(term not in rendered for term in ("极高", "规模显著", "代偿压力较大"))
+
+
+def test_frozen_report_asset_and_summary_regressions_use_business_language():
+    rendered = localize_report_text(
+        "资产资料未获取，未获取稳定结构化资产资料。"
+        "补充个人流水与资产清单（含权属与估值依据）。"
+        "资产清单、权属证明及估值依据。"
+        "资产负债率99.53%、净资产252084.70元，财务杠杆处于极高水平。"
+        "个人相关还款责任余额18739532元，规模显著。"
+        "财务杠杆极高且净资产缓冲极薄。"
+        "流水净流出、个人相关还款责任规模显著及融资需求缺失。"
+    )
+    assert "当前未获取可用于本次分析的稳定结构化资产资料" in rendered
+    assert "补充个人流水，并补充可核验的资产权属、估值及可抵押状态资料" in rendered
+    assert "可核验的资产权属、估值及可抵押状态资料" in rendered
+    assert "18,739,532.00元" in rendered
+    assert all(term not in rendered for term in (
+        "资产清单", "规模显著", "极高", "流水净流出", "潜在代偿压力较大",
+    ))
+    assert "未获取当前未获取" not in localize_report_text("未获取科技企业资格标签")
+
+
+def test_frozen_one_sentence_conclusion_remains_readable():
+    source = (
+        "逾期概要为零与连续企业流水构成有限信用基础，但高杠杆、流水净流出、"
+        "个人相关还款责任规模显著及融资需求、个人流水、资产资料缺失，"
+        "使融资推进需先补足关键材料并作有条件评估。"
+    )
+    rendered = localize_report_text(source)
+    assert "企业及个人征信逾期概要为零，连续企业流水可供核验" in rendered
+    assert "融资需求、个人流水与稳定结构化资产资料待补充后，再作有条件评估" in rendered
+    assert all(term not in rendered for term in ("高杠杆", "流水净流出", "规模显著", "资产资料缺失"))
+
+
+def test_regressed_wording_is_removed_from_markdown_and_html(report_model, analysis_payload):
+    payload = copy.deepcopy(analysis_payload)
+    payload["cashflow_analysis"]["summary"] = "企业流水净流入为负，削弱流水对经营偿债能力的支撑。"
+    payload["financial_analysis"]["summary"] = "资产负债率长期处于0.995以上。"
+    payload["core_issues"][0]["issue"] = "企业流水净流入为负且内部互转规模较大"
+    payload["core_issues"][0]["financing_impact"] = "流水对经营偿债能力的支撑不足"
+    payload["business_analysis"]["summary"] = "科技企业资格标签为空。"
+    payload["asset_and_enhancement_analysis"]["summary"] = "未获取资产清单。"
+    payload["action_plan"]["short_term"][0]["action"] = "补充稳定结构化资产资料，包括权属、估值及可抵押状态"
+    payload["financing_paths"].append({
+        "path": "科技企业专项融资", "status": "insufficient_data", "basis": [],
+        "missing_conditions": ["当前缺少可核验科技企业资质或标签资料"],
+        "source_sections": ["subject_profile", "financing_requirement"],
+    })
+    report_model.financials["periods"][0]["debt_asset_ratio"] = 0.9951
+    report_model.financials["periods"][1]["debt_asset_ratio"] = 0.9959
+    report_model.financials["periods"][2]["debt_asset_ratio"] = 0.9953
+    analysis = ComprehensiveFinancingAnalysisResult.model_validate(payload)
+    for report in (
+        render_comprehensive_financing_report(report_model, analysis, "2026-09-20"),
+        render_comprehensive_financing_report_html(report_model, analysis, "2026-09-20"),
+    ):
+        assert "企业流水收支结构仍需进一步核验" in report
+        assert "需补充可核验的科技企业资质、认定或相关证明资料，并明确融资需求" in report
+        assert "当前未获取可用于本次分析的稳定结构化资产资料" in report
+        assert "近三个已保存财务期间的资产负债率均在99%以上" in report
+        assert all(term not in report for term in (
+            "净流入为负", "现金流覆盖能力不足", "偿债能力的支撑", "科技企业资格标签",
+            "科技企业标签", "标签为空", "标签资料", "未获取资产清单", "0.995",
+        ))
 
 
 def test_comprehensive_report_formats_debt_ratio_as_percent(localized_reports):
