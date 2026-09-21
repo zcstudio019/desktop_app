@@ -31,6 +31,12 @@ _CASHFLOW_CHANGE = re.compile(
 )
 _TREND_FIELDS = {"营业收入增长率": "revenue_growth", "利润增长率": "profit_growth",
                  "应收账款增长率": "receivable_growth"}
+_UNCERTAIN_CASHFLOW = (
+    "按当前已保存分类口径，流出明显高于流入；但由于内部互转、关联关系及未识别交易尚未完全核验，"
+    "当前不能据此直接判断企业真实经营现金流覆盖能力"
+)
+_MISSING_ASSET_DATA = "当前未获取可用于本次分析的稳定结构化资产资料"
+_QUERY_RULE_NOTE = "当前仅作事实展示，具体影响需结合拟申请机构正式准入规则评估"
 
 _FIELD_LABELS = {
     "subject_profile": "主体及身份资料",
@@ -97,6 +103,32 @@ def localize_report_text(
     text = re.sub(r"(?:企业流水)?数据质量\s*status\s*为\s*(?:partial|部分资料)",
                   "企业流水可用于初步分析，但部分交易分类及关联关系仍需复核", text, flags=re.IGNORECASE)
     text = text.replace("主体科技企业标签为空", "当前未获取可核验的科技企业资质或相关认定资料")
+    text = text.replace("科技企业标签为空", "当前未获取可核验的科技企业资质或相关认定资料")
+    text = text.replace("资产资料缺失，未获取稳定结构化资产资料，各类资产清单均为空", _MISSING_ASSET_DATA)
+    text = re.sub(
+        r"(?:房产、车辆、设备、知识产权、股权、存款及其他抵押物|各类资产|资产资料|资产)清单均?为空",
+        _MISSING_ASSET_DATA, text,
+    )
+    text = text.replace("企业流水净流入为负且经营流出高于经营流入", "企业流水收支结构仍需进一步核验")
+    text = re.sub(
+        r"企业流水净流入为负\s*[，,；;]\s*(?:经营)?现金流覆盖能力不足",
+        _UNCERTAIN_CASHFLOW, text,
+    )
+    text = text.replace("按已保存分类初步统计的现金流覆盖能力不足", _UNCERTAIN_CASHFLOW)
+    text = re.sub(
+        r"近1年担保(?:资格)?审查\s*(\d+)次[、，,]\s*近2年(?:担保(?:资格)?审查)?\s*(\d+)次"
+        r"[，,；;]\s*反映个人层面存在(?:较多|频繁|偏高|异常)担保相关审查记录",
+        lambda match: f"近1年担保资格审查{match.group(1)}次，近2年{match.group(2)}次；{_QUERY_RULE_NOTE}",
+        text,
+    )
+    text = re.sub(
+        r"反映个人层面存在(?:较多|频繁|偏高|异常)担保相关审查记录",
+        _QUERY_RULE_NOTE, text,
+    )
+    text = re.sub(
+        r"(担保(?:资格)?审查|征信查询|查询)(?:次数)?(?:较多|频繁|偏高|异常)",
+        lambda match: f"{match.group(1)}情况需结合拟申请机构正式准入规则评估", text,
+    )
     for field, label in _FIELD_LABELS.items():
         text = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(field)}(?![A-Za-z0-9_])", label, text, flags=re.IGNORECASE)
     for status, label in _STATUS_LABELS.items():

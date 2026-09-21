@@ -62,6 +62,36 @@ def test_comprehensive_report_has_no_status_term(localized_reports):
         assert "企业流水可用于初步分析，但部分交易分类及关联关系仍需复核" in report
 
 
+def test_partial_enterprise_cashflow_is_not_a_definitive_coverage_conclusion():
+    rendered = localize_report_text(
+        "企业流水净流入为负且经营流出高于经营流入。"
+        "企业流水净流入为负，现金流覆盖能力不足。"
+    )
+    assert "企业流水收支结构仍需进一步核验" in rendered
+    assert "当前不能据此直接判断企业真实经营现金流覆盖能力" in rendered
+    assert "现金流覆盖能力不足" not in rendered
+    assert "现金流覆盖能力不足" not in localize_report_text("按已保存分类初步统计的现金流覆盖能力不足")
+    assert "企业流水净流入为负且经营流出高于经营流入" not in rendered
+
+
+def test_missing_technology_and_asset_data_use_materials_language():
+    rendered = localize_report_text(
+        "科技企业标签为空；房产、车辆、设备、知识产权、股权、存款及其他抵押物清单均为空；"
+        "资产资料缺失，未获取稳定结构化资产资料，各类资产清单均为空。"
+    )
+    assert "当前未获取可核验的科技企业资质或相关认定资料" in rendered
+    assert "当前未获取可用于本次分析的稳定结构化资产资料" in rendered
+    assert "标签为空" not in rendered and "清单均为空" not in rendered
+
+
+def test_credit_query_counts_have_no_unconfigured_threshold_judgment():
+    rendered = localize_report_text(
+        "近1年担保审查14次、近2年22次，反映个人层面存在较多担保相关审查记录。"
+    )
+    assert "近1年担保资格审查14次，近2年22次；当前仅作事实展示，具体影响需结合拟申请机构正式准入规则评估" in rendered
+    assert all(word not in rendered for word in ("较多", "频繁", "偏高", "异常"))
+
+
 def test_comprehensive_report_has_no_internal_status_enum(localized_reports):
     markdown, html = localized_reports
     assert_no_internal_english_terms(markdown)
