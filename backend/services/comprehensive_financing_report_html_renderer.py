@@ -20,10 +20,10 @@ MATERIAL = {"enterprise_kyc": "主体及身份资料", "enterprise_credit": "企
             "financial_cashflow_period_mismatch": "财务与流水期间", "source_date_comparability": "资料时点可比性"}
 SOURCE = {"subject_profile": "主体及身份资料", "financing_requirement": "融资需求", "enterprise_credit": "企业征信",
           "personal_credit": "个人征信", "enterprise_cashflow": "企业流水", "personal_cashflow": "个人流水",
-          "financials": "财务报表", "assets": "资产资料", "derived_metrics": "程序计算指标",
-          "conflicts": "资料冲突核验", "data_scope": "数据范围", "data_quality": "资料完整度", "source_dates": "资料日期"}
-READINESS = {"ready_for_further_evaluation": "可进入下一步评估", "conditionally_ready": "具备一定基础但存在前置条件",
-             "needs_data_completion": "需补充资料", "needs_issue_resolution": "需先解决关键问题"}
+          "financials": "财务报表", "assets": "资产资料", "derived_metrics": "系统计算结果",
+          "conflicts": "资料冲突核验", "data_scope": "数据范围", "data_quality": "资料状态", "source_dates": "资料时点"}
+READINESS = {"ready_for_further_evaluation": "可进入下一步评估", "conditionally_ready": "具备进一步评估基础，但存在前置条件",
+             "needs_data_completion": "需补充关键资料后进一步评估", "needs_issue_resolution": "具备进一步评估基础，但存在前置条件"}
 ASSET = {"property": "房产", "vehicle": "车辆", "equipment": "设备", "intellectual_property": "知识产权",
          "equity": "股权", "deposit": "存单", "other_collateral": "其他抵质押物"}
 
@@ -55,11 +55,11 @@ def _list(items: Iterable[Any]) -> str:
 
 
 def _analysis(title: str, section: Any) -> str:
-    return f"<div class='analysis'><h4>{_e(title)}</h4><p>{_e(section.summary)}</p><small>数据来源：{_sources(section.source_sections)}</small></div>"
+    return f"<div class='analysis'><h4>{_e(title)}</h4><p>{_e(section.summary)}</p><small class='source-note'>数据来源：{_sources(section.source_sections)}</small></div>"
 
 
-def _page(title: str, number: str, body: str) -> str:
-    return f"<section class='report-page'><div class='section-index'>{_e(number)} · 综合融资分析</div><h2>{_e(title)}</h2>{body}</section>"
+def _page(title: str, body: str, *, class_name: str = "") -> str:
+    return f"<section class='report-page {class_name}'><div class='section-index'>客户综合融资分析报告</div><h2>{_e(title)}</h2>{body}</section>"
 
 
 def _period(model: ComprehensiveFinancingReportModel, kind: str, material: dict[str, Any]) -> str:
@@ -171,7 +171,10 @@ def _financials(model: ComprehensiveFinancingReportModel) -> str:
                                          ("总负债", "total_liabilities"), ("净资产", "net_assets"))]
         trend = "<h3>财务趋势</h3>" + _table(["指标"] + [str(p.get("period") or "资料不足") for p in periods], trend_rows, class_name="compact")
         trend += "<p class='footnote'>各期数据按原报表口径列示；月度与年度期间不直接作同比判断。</p>"
-    return "<h3>核心财务指标</h3>" + _table(["指标", "当前值"], rows, class_name="two-column") + trend
+    facts = "<div class='financial-facts'>" + "".join(
+        f"<div><span>{_e(label)}</span><strong>{_e(value)}</strong></div>" for label, value in rows
+    ) + "</div>"
+    return "<h3>核心财务指标</h3>" + facts + trend
 
 
 def _credit(model: ComprehensiveFinancingReportModel, analysis: ComprehensiveFinancingAnalysisResult) -> str:
@@ -183,25 +186,31 @@ def _credit(model: ComprehensiveFinancingReportModel, analysis: ComprehensiveFin
             ["企业对外担保余额", format_money(credit.get("guarantee_balance_money") or credit.get("guarantee_balance"), credit.get("unit"))],
             ["企业贷款记录数", credit.get("loan_record_count")], ["报告日期", credit.get("source_report_date")]]
     content = "<h3>企业征信摘要</h3>" + _table(["项目", "当前情况"], rows)
-    people_rows, queries = [], []
+    person_blocks = []
     for person in model.personal_credit.get("people") or []:
         unit = person.get("unit") or model.personal_credit.get("unit")
         overdue = person.get("overdue_summary") or {}
-        overdue_text = f"贷款 {overdue.get('loan_overdue_account_count') if overdue.get('loan_overdue_account_count') is not None else '资料不足'}；信用卡 {overdue.get('credit_card_overdue_account_count') if overdue.get('credit_card_overdue_account_count') is not None else '资料不足'}；90天以上 {overdue.get('overdue_90d_account_count') if overdue.get('overdue_90d_account_count') is not None else '资料不足'}"
-        people_rows.append([person.get("name"), _join(person.get("roles") or []),
-                            format_money(person.get("loan_balance_money") or person.get("loan_balance"), unit),
-                            format_money(person.get("credit_card_limit_money") or person.get("credit_card_limit"), unit),
-                            format_money(person.get("credit_card_used_money") or person.get("credit_card_used"), unit),
-                            overdue_text,
-                            format_money(person.get("related_repayment_balance_money") or person.get("related_repayment_balance"), unit),
-                            person.get("source_report_date")])
+        rows = [
+            ["个人贷款余额", format_money(person.get("loan_balance_money") or person.get("loan_balance"), unit)],
+            ["信用卡额度", format_money(person.get("credit_card_limit_money") or person.get("credit_card_limit"), unit)],
+            ["信用卡已用", format_money(person.get("credit_card_used_money") or person.get("credit_card_used"), unit)],
+            ["贷款逾期账户", overdue.get("loan_overdue_account_count")],
+            ["信用卡逾期账户", overdue.get("credit_card_overdue_account_count")],
+            ["90天以上逾期", overdue.get("overdue_90d_account_count")],
+            ["相关还款责任", format_money(person.get("related_repayment_balance_money") or person.get("related_repayment_balance"), unit)],
+            ["报告日期", person.get("source_report_date")],
+        ]
+        person_block = f"<article class='person-credit'><h4>{_e(person.get('name'))}｜{_join(person.get('roles') or [])}</h4>"
+        person_block += _table(["指标", "当前情况"], rows, class_name="person-credit-table") + "</article>"
+        queries = []
         for window in (person.get("query_summary") or {}).get("windows") or []:
-            queries.append([person.get("name"), window.get("window"), window.get("loan_approval"),
+            queries.append([window.get("window"), window.get("loan_approval"),
                             window.get("credit_card_approval"), window.get("guarantee_review"), window.get("legal_person_review")])
-    content += "<h3>法人 / 实际控制人征信摘要</h3>" + _table(
-        ["姓名", "角色", "贷款余额", "信用卡额度", "信用卡已用", "逾期账户", "相关还款责任", "报告日期"], people_rows or [["资料不足"] * 8], class_name="compact")
-    if queries:
-        content += "<h3>征信查询窗口</h3>" + _table(["姓名", "窗口", "贷款审批", "信用卡审批", "担保资格", "法人资信"], queries, class_name="compact")
+        if queries:
+            person_block += f"<h4>{_e(person.get('name'))}征信查询窗口</h4>" + _table(
+                ["时间窗口", "贷款审批", "信用卡审批", "担保资格审查", "法人资信审查"], queries, class_name="query-table")
+        person_blocks.append(person_block)
+    content += "<h3>法人 / 实际控制人征信摘要</h3>" + ("".join(person_blocks) if person_blocks else "<p class='muted'>资料不足</p>")
     content += _analysis("企业与个人负债联动", analysis.enterprise_person_linkage)
     content += _analysis("征信综合分析", analysis.credit_analysis)
     return content
@@ -218,8 +227,8 @@ def _assets(model: ComprehensiveFinancingReportModel, analysis: ComprehensiveFin
 
 
 def _strengths_constraints(analysis: ComprehensiveFinancingAnalysisResult) -> str:
-    strengths = "".join(f"<article class='item-card strength'><h4>{_e(item.title)}</h4><p><b>事实依据：</b>{_e(item.fact)}</p><p><b>融资意义：</b>{_e(item.impact)}</p><small>数据来源：{_sources(item.source_sections)}</small></article>" for item in analysis.financing_strengths)
-    constraints = "".join(f"<article class='item-card constraint'><h4>{_e(item.title)}</h4><p><b>当前事实：</b>{_e(item.fact)}</p><p><b>融资影响：</b>{_e(item.impact)}</p><p><b>建议动作：</b>{_e(item.required_action)}</p><small>数据来源：{_sources(item.source_sections)}</small></article>" for item in analysis.financing_constraints)
+    strengths = "".join(f"<article class='item-card strength'><h4>{_e(item.title)}</h4><p><b>事实依据：</b>{_e(item.fact)}</p><p><b>融资意义：</b>{_e(item.impact)}</p><small class='source-note'>数据来源：{_sources(item.source_sections)}</small></article>" for item in analysis.financing_strengths)
+    constraints = "".join(f"<article class='item-card constraint'><h4>{_e(item.title)}</h4><p><b>当前事实：</b>{_e(item.fact)}</p><p><b>融资影响：</b>{_e(item.impact)}</p><p><b>建议动作：</b>{_e(item.required_action)}</p><small class='source-note'>数据来源：{_sources(item.source_sections)}</small></article>" for item in analysis.financing_constraints)
     issues = "".join(f"<article class='item-card issue'><h4><span class='issue-no'>{i:02d}</span>{_e(item.issue)}</h4><p><b>事实：</b>{_join(item.facts)}</p><p><b>融资影响：</b>{_e(item.financing_impact)}</p><p><b>下一步：</b>{_e(item.next_action)}</p></article>" for i, item in enumerate(analysis.core_issues[:5], 1))
     empty = "<p class='muted'>资料不足</p>"
     return f"<h3>五、融资优势</h3>{strengths or empty}<h3>六、融资障碍</h3>{constraints or empty}<h3>七、当前核心问题</h3>{issues or empty}"
@@ -227,18 +236,18 @@ def _strengths_constraints(analysis: ComprehensiveFinancingAnalysisResult) -> st
 
 def _paths_actions(analysis: ComprehensiveFinancingAnalysisResult) -> str:
     path_tone = {"potential": "path-green", "conditional": "path-amber", "insufficient_data": "path-gray"}
-    rows = "".join(
-        f"<tr><td>{_e(item.path)}</td><td><span class='path-status {path_tone.get(item.status, 'path-gray')}'>{_e(PATH_STATUS.get(item.status, '待核验'))}</span></td>"
-        f"<td>{_join(item.basis)}</td><td>{_join(item.missing_conditions)}</td></tr>"
-        for item in analysis.financing_paths
-    )
-    content = "<h3>八、融资路径方向</h3><table><thead><tr><th>融资路径</th><th>当前状态</th><th>依据</th><th>当前缺口</th></tr></thead><tbody>" + rows + "</tbody></table>"
+    cards = "".join(
+        f"<article class='path-card'><div class='path-head'><h4>{_e(item.path)}</h4>"
+        f"<span class='path-status {path_tone.get(item.status, 'path-gray')}'>{_e(PATH_STATUS.get(item.status, '待核验'))}</span></div>"
+        f"<p><b>依据：</b>{_join(item.basis)}</p><p><b>当前缺口：</b>{_join(item.missing_conditions)}</p></article>"
+        for item in analysis.financing_paths)
+    content = "<h3>八、融资路径方向</h3><div class='path-grid'>" + (cards or "<p class='muted'>资料不足</p>") + "</div>"
     content += "<h3>九、行动计划</h3>"
     for title, actions in (("立即处理", analysis.action_plan.immediate), ("短期处理", analysis.action_plan.short_term),
                            ("中期优化", analysis.action_plan.medium_term)):
         if actions:
             content += f"<h4 class='action-heading'>{_e(title)}</h4>"
-            content += "".join(f"<div class='action'><strong>{_e(item.action)}</strong><span>依据：{_e(item.basis)}</span><small>数据来源：{_sources(item.source_sections)}</small></div>" for item in actions)
+            content += "".join(f"<div class='action'><strong>{_e(item.action)}</strong><span>依据：{_e(item.basis)}</span><small class='source-note'>数据来源：{_sources(item.source_sections)}</small></div>" for item in actions)
     return content
 
 
@@ -246,7 +255,7 @@ def _limitations_conclusion(analysis: ComprehensiveFinancingAnalysisResult) -> s
     allowed = set(CUSTOMER_MATERIAL_TYPES) | {"financial_cashflow_period_mismatch", "enterprise_cashflow_classification", "source_date_comparability"}
     rows = [[MATERIAL.get(item.material_type, "其他资料"), item.limitation, item.impact, item.required_data]
             for item in analysis.data_limitations if item.material_type in allowed]
-    content = "<h3>十、资料缺口与分析限制</h3>" + (_table(["资料类型", "当前限制", "分析影响", "需要补充/核验"], rows) if rows else "<p class='muted'>未列出额外资料限制。</p>")
+    content = "<h3>十、资料缺口与分析限制</h3>" + (_table(["资料类型", "当前限制", "分析影响", "需要补充/核验"], rows, class_name="limitations-table") if rows else "<p class='muted'>未列出额外资料限制。</p>")
     conclusion = analysis.conclusion
     content += "<h3>十一、综合结论</h3>"
     content += f"<div class='analysis'><h4>综合判断</h4><p>{_e(conclusion.overall)}</p></div>"
@@ -257,13 +266,15 @@ def _limitations_conclusion(analysis: ComprehensiveFinancingAnalysisResult) -> s
 
 
 CSS = """
-@page { size: A4; margin: 12mm; }
+@page { size: A4; margin: 12mm;
+  @bottom-right { content: "第 " counter(page) " 页"; color:#8a949e; font-size:9px; }
+}
 * { box-sizing: border-box; }
 html { color: #253444; background: #fff; }
-body { margin: 0; font-family: 'Microsoft YaHei','PingFang SC','Noto Sans CJK SC','Source Han Sans SC',sans-serif; font-size: 11.5px; line-height: 1.58; }
+body { margin: 0; font-family: 'Microsoft YaHei','PingFang SC','Noto Sans CJK SC','Source Han Sans SC',sans-serif; font-size: 13.5px; line-height: 1.5; }
 .report { max-width: 186mm; margin: 0 auto; }
-.report-page { break-before: page; }
-.report-page:first-child { break-before: auto; }
+.report-page { break-before: auto; margin-top: 15px; }
+.cover-page { break-after: page; margin-top: 0; }
 .eyebrow,.section-index { color: #66809a; font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .cover-head { border-top: 5px solid #183650; padding-top: 17px; margin-bottom: 18px; }
 .cover-page .cover-head { padding-top: 10px; margin-bottom: 9px; }
@@ -289,22 +300,39 @@ small,.muted,.footnote { color:#67798b; font-size: 10px; }
 .metric-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
 .metric { background:#f4f7f9; border:1px solid #dbe4eb; padding:8px 10px; min-height:49px; break-inside:avoid; }
 .metric span { display:block; color:#65798b; font-size:10px; }
-.metric strong { display:block; color:#183650; font-size:14px; font-weight:650; overflow-wrap:anywhere; }
+.metric strong { display:block; color:#183650; font-size:14px; font-weight:650; white-space:nowrap; }
 .facts-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 14px; border-top:1px solid #d8e2e9; }
 .facts-grid > div { display:flex; gap:8px; padding:5px 0; border-bottom:1px solid #e5ebef; break-inside:avoid; }
 .facts-grid span { width:95px; flex:none; color:#65798b; }
 .facts-grid strong { font-weight:500; overflow-wrap:anywhere; }
-table { width:100%; border-collapse:collapse; table-layout:fixed; margin:5px 0 12px; font-size:10px; }
+.financial-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 14px; border-top:1px solid #d8e2e9; margin:5px 0 13px; }
+.financial-facts > div { display:flex; justify-content:space-between; gap:8px; border-bottom:1px solid #e5ebef; padding:5px 0; break-inside:avoid; }
+.financial-facts span { color:#65798b; flex:none; }
+.financial-facts strong { color:#253444; font-weight:550; white-space:nowrap; }
+table { width:100%; border-collapse:collapse; table-layout:fixed; margin:5px 0 12px; font-size:11px; }
 thead { display:table-header-group; }
 tr { break-inside:avoid; }
 th,td { border-bottom:1px solid #dce5eb; padding:5px 6px; vertical-align:top; text-align:left; overflow-wrap:anywhere; word-break:break-word; }
 th { background:#eaf0f4; color:#29465f; font-weight:700; }
 tbody tr:nth-child(even) { background:#f9fbfc; }
-.compact { font-size:9px; }
+.compact { font-size:10px; }
 .compact th,.compact td { padding:4px 5px; }
 .two-column { width:76%; }
-.two-column td:last-child { text-align:right; }
-.analysis { border-left:3px solid #a9bfce; padding:6px 10px; margin:9px 0; background:#f7f9fb; break-inside:avoid; }
+.two-column td:last-child { text-align:right; white-space:nowrap; }
+.person-credit { margin:8px 0 12px; }
+.person-credit h4 { margin-bottom:5px; }
+.person-credit-table { width:70%; }
+.person-credit-table th:first-child,.person-credit-table td:first-child { width:42%; }
+.person-credit-table td:last-child { white-space:nowrap; }
+.query-table { font-size:10.5px; }
+.query-table th:not(:first-child),.query-table td:not(:first-child) { text-align:center; }
+.limitations-table { font-size:10.5px; line-height:1.35; margin-bottom:8px; }
+.limitations-table th,.limitations-table td { padding:3px 4px; }
+.limitations-table th:first-child,.limitations-table td:first-child { width:15%; }
+.limitations-table th:nth-child(2),.limitations-table td:nth-child(2) { width:35%; }
+.limitations-table th:nth-child(3),.limitations-table td:nth-child(3) { width:25%; }
+.limitations-table th:nth-child(4),.limitations-table td:nth-child(4) { width:25%; }
+.analysis { border-left:3px solid #a9bfce; padding:6px 10px; margin:9px 0; background:#f7f9fb; }
 .analysis h4 { margin-top:0; }
 .item-card { border:1px solid #dce5eb; border-left:3px solid #8ca6ba; padding:8px 11px; margin:7px 0; break-inside:avoid; }
 .item-card p { margin:3px 0; }
@@ -315,14 +343,22 @@ tbody tr:nth-child(even) { background:#f9fbfc; }
 .path-green { color:#386950; background:#e7f0e9; }
 .path-amber { color:#79622c; background:#f7f0dd; }
 .path-gray { color:#66717c; background:#edf0f2; }
+.path-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.path-card { border:1px solid #dce5eb; background:#fafcfd; padding:9px 10px; break-inside:avoid; }
+.path-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:5px; }
+.path-head h4 { margin:0; }
+.path-card p { margin:4px 0; overflow-wrap:anywhere; }
 .action-heading { border-bottom:1px solid #dbe4eb; padding-bottom:4px; }
-.action { display:flex; flex-direction:column; border-left:2px solid #b7c8d4; padding:4px 10px; margin:6px 0; break-inside:avoid; }
+.action { display:flex; flex-direction:column; border:1px solid #e2e9ee; border-left:2px solid #b7c8d4; padding:4px 9px; margin:4px 0; break-inside:avoid; }
+.source-note { display:block; color:#8a949e; font-size:9px; line-height:1.4; margin-top:4px; font-weight:400; }
 .final-line { background:#ecf3f6; border-left:4px solid #294e6a; padding:12px 14px; margin-top:14px; break-inside:avoid; }
 .final-line span { display:block; color:#65798b; font-size:9px; }
 .final-line strong { display:block; color:#183650; font-size:12px; }
 ul { margin:4px 0 10px; padding-left:18px; }
 li { margin:3px 0; }
 @media screen { body { background:#e8edf1; padding:18px; } .report-page { background:#fff; padding:15mm 12mm; margin:0 auto 14px; box-shadow:0 4px 18px #1d344022; width:210mm; } .report { max-width:none; } }
+@media print { .report-page { margin-top:15px; } .cover-page { margin-top:0; } }
+@media (max-width: 700px) { .path-grid { grid-template-columns:1fr; } }
 """
 
 
@@ -339,21 +375,21 @@ def render_comprehensive_financing_report_html(
     if analysis_result.validation_fallback_used:
         intro += "<p class='note'>本次部分综合判断采用保守口径，建议结合补充资料进一步核验。</p>"
     intro += "<h3>数据范围</h3>" + _scope(report_model)
-    intro += "<h3>综合摘要</h3>" + f"<p>{_e(summary.overall_observation)}</p><p><b>当前融资准备状态：</b>{_e(READINESS.get(summary.current_financing_readiness, '待核验'))}</p>"
+    intro += "<h3>综合摘要</h3>" + f"<p>{_e(summary.overall_observation)}</p><p><b>当前状态：</b>{_e(READINESS.get(summary.current_financing_readiness, '待核验'))}</p>"
     intro += f"<div class='summary-grid'><div><strong>融资优势摘要</strong>{_list(summary.main_strengths)}</div><div><strong>主要融资约束</strong>{_list(summary.main_constraints)}</div></div>"
     intro += "<h3>核心融资指标</h3>" + _core_metrics(report_model)
     pages = [f"<section class='report-page cover-page'>{intro}</section>"]
-    pages.append(_page("客户主体与企业流水", "01", "<h3>一、客户融资画像</h3><h4>主体基本信息</h4>" + _subject(report_model)
+    pages.append(_page("客户主体与企业流水", "<h3>一、客户融资画像</h3><h4>主体基本信息</h4>" + _subject(report_model)
                        + "<h4>当前融资需求</h4>" + _requirement(report_model)
                        + "<h3>二、企业经营与流水分析</h3>" + _cashflow(report_model)
                        + _analysis("企业经营分析", analysis_result.business_analysis)
                        + _analysis("企业流水分析", analysis_result.cashflow_analysis)))
-    pages.append(_page("财务分析", "02", "<h3>三、财务分析</h3>" + _financials(report_model) + _analysis("财务分析结论", analysis_result.financial_analysis)))
-    pages.append(_page("征信与负债", "03", "<h3>四、征信与负债分析</h3>" + _credit(report_model, analysis_result)
+    pages.append(_page("财务分析", "<h3>三、财务分析</h3>" + _financials(report_model) + _analysis("财务分析结论", analysis_result.financial_analysis)))
+    pages.append(_page("征信与负债", "<h3>四、征信与负债分析</h3>" + _credit(report_model, analysis_result)
                        + "<h3>五、资产与增信条件</h3>" + _assets(report_model, analysis_result)))
-    pages.append(_page("融资优势、障碍与核心问题", "04", _strengths_constraints(analysis_result)))
-    pages.append(_page("融资路径与行动计划", "05", _paths_actions(analysis_result)))
-    pages.append(_page("资料限制与综合结论", "06", _limitations_conclusion(analysis_result)))
+    pages.append(_page("融资优势、障碍与核心问题", _strengths_constraints(analysis_result)))
+    pages.append(_page("融资路径与行动计划", _paths_actions(analysis_result)))
+    pages.append(_page("资料限制与综合结论", _limitations_conclusion(analysis_result), class_name="closing-page"))
     rendered = "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>客户综合融资分析报告</title><style>" + CSS + "</style></head><body><main class='report'>" + "".join(pages) + "</main></body></html>"
     return localize_report_text(
         rendered,

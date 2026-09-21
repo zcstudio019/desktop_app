@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 
 import pytest
 
@@ -44,7 +45,8 @@ def test_comprehensive_report_has_no_kyc_term(localized_reports):
 def test_comprehensive_report_has_no_count_term(localized_reports):
     for report in localized_reports:
         assert "企业征信逾期记录数为0" in report
-        assert "count" not in report
+        visible = re.sub(r"<style>.*?</style>", "", report, flags=re.DOTALL)
+        assert "count" not in visible
 
 
 def test_comprehensive_report_has_no_partial_term(localized_reports):

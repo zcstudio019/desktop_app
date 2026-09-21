@@ -143,6 +143,46 @@ def test_comprehensive_markdown_has_title(markdown):
     assert markdown.startswith("# 客户综合融资分析报告")
 
 
+@pytest.mark.parametrize("readiness, expected", [
+    ("ready_for_further_evaluation", "可进入下一步评估"),
+    ("conditionally_ready", "具备进一步评估基础，但存在前置条件"),
+    ("needs_data_completion", "需补充关键资料后进一步评估"),
+    ("needs_issue_resolution", "具备进一步评估基础，但存在前置条件"),
+])
+def test_comprehensive_report_uses_business_ready_status_label(report_model, analysis_payload, readiness, expected):
+    payload = json.loads(json.dumps(analysis_payload, ensure_ascii=False))
+    payload["executive_summary"]["current_financing_readiness"] = readiness
+    rendered = render_comprehensive_financing_report(
+        report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-20 10:00:00"
+    )
+    assert f"**当前状态：** {expected}" in rendered
+    assert "当前融资准备状态" not in rendered
+
+
+def test_comprehensive_report_source_notes_are_secondary_text(markdown):
+    assert "> 数据来源：主体及身份资料、资料完整度" in markdown
+    assert "> 数据来源：企业流水" in markdown
+    assert "> 数据来源（信用融资）：企业征信、企业流水" in markdown
+    assert "- 数据来源：" not in markdown
+    assert "| 数据来源 |" not in markdown
+    assert all(line.startswith("> ") for line in markdown.splitlines() if "数据来源：" in line)
+
+
+def test_comprehensive_report_does_not_show_needs_issue_resolution_literal(report_model, analysis_payload):
+    payload = json.loads(json.dumps(analysis_payload, ensure_ascii=False))
+    payload["executive_summary"]["current_financing_readiness"] = "needs_issue_resolution"
+    rendered = render_comprehensive_financing_report(
+        report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-20 10:00:00"
+    )
+    assert "需先解决关键问题" not in rendered
+    assert "needs_issue_resolution" not in rendered
+
+
+def test_comprehensive_report_conclusion_is_unchanged(markdown, analysis_result):
+    assert analysis_result.conclusion.one_sentence == "补齐关键资料并核验口径后，再进入下一步融资评估。"
+    assert f"> {analysis_result.conclusion.one_sentence}" in markdown
+
+
 @pytest.mark.parametrize("heading", [
     "## 数据范围", "## 一、客户融资画像", "## 二、企业经营与流水分析", "## 三、财务分析",
     "## 四、征信与负债分析", "## 六、融资优势", "## 七、融资障碍", "## 八、当前核心问题",

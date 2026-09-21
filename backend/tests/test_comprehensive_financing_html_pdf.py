@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.services.comprehensive_financing_analysis_service import ComprehensiveFinancingAnalysisResult
 from backend.services.comprehensive_financing_report_html_renderer import render_comprehensive_financing_report_html
 from backend.services.comprehensive_financing_report_export_service import (
     freeze_comprehensive_financing_report, pdf_filename, snapshot_html,
@@ -57,11 +58,82 @@ def test_comprehensive_html_contains_frozen_facts(html):
 
 
 def test_comprehensive_html_has_offline_a4_page_css(html):
-    assert "@page { size: A4; margin: 12mm; }" in html
+    assert "@page { size: A4; margin: 12mm;" in html
     assert "display:table-header-group" in html
     assert "break-inside:avoid" in html
     assert "http://" not in html and "https://" not in html
     assert "<script" not in html
+
+
+def test_pdf_has_no_nearly_empty_asset_page(html):
+    assert ".cover-page { break-after: page;" in html
+    assert ".report-page { break-before: auto;" in html
+    assert html.index("五、资产与增信条件") < html.index("融资优势、障碍与核心问题")
+    assert "break-before: page;" not in html
+
+
+def test_core_issue_section_can_span_pages(html):
+    assert ".item-card {" in html and "break-inside:avoid;" in html
+    assert ".report-page { break-before: auto;" in html
+    assert "<h3>七、当前核心问题</h3>" in html
+
+
+def test_core_issue_card_does_not_split(html):
+    assert "<article class='item-card issue'>" in html
+    assert re.search(r"\.item-card\s*\{[^}]*break-inside:avoid", html)
+    assert not re.search(r"\.report-page\s*\{[^}]*break-inside:avoid", html)
+
+
+def test_financing_paths_render_as_cards(html):
+    assert "<div class='path-grid'>" in html
+    assert html.count("<article class='path-card'>") == 2
+    assert "<th>融资路径</th>" not in html
+    assert "grid-template-columns:repeat(2,minmax(0,1fr))" in html
+
+
+def test_person_credit_summary_not_rendered_as_overwide_table(html, report_model, analysis_result):
+    assert "<article class='person-credit'>" in html
+    assert "个人贷款余额" in html and "相关还款责任" in html
+    assert "<th scope='col'>姓名</th>" not in html
+    report_model.personal_credit["people"][0]["query_summary"]["windows"] = [
+        {"window": "近1月", "loan_approval": 0, "credit_card_approval": 0,
+         "guarantee_review": 0, "legal_person_review": 0}
+    ]
+    with_queries = render_comprehensive_financing_report_html(report_model, analysis_result, "2026-09-21")
+    assert "<th scope='col'>时间窗口</th>" in with_queries
+    assert "<th scope='col'>窗口</th>" not in with_queries
+
+
+def test_source_notes_are_visually_secondary(html):
+    assert "class='source-note'" in html
+    assert re.search(r"\.source-note\s*\{[^}]*color:#8a949e;[^}]*font-size:9px", html)
+    assert "数据来源：财务报表、资料时点" in html
+
+
+def test_business_ready_status_label_is_updated(report_model, analysis_payload):
+    payload = copy.deepcopy(analysis_payload)
+    payload["executive_summary"]["current_financing_readiness"] = "needs_issue_resolution"
+    rendered = render_comprehensive_financing_report_html(
+        report_model, ComprehensiveFinancingAnalysisResult.model_validate(payload), "2026-09-21"
+    )
+    assert "当前状态：</b>具备进一步评估基础，但存在前置条件" in rendered
+    assert "当前融资准备状态" not in rendered
+    assert "需先解决关键问题" not in rendered
+
+
+def test_pdf_contains_no_orphan_section_heading(html):
+    for tag in ("h2", "h3", "h4"):
+        assert re.search(rf"{tag}\s*\{{[^}}]*break-after:\s*avoid", html)
+    assert "第 \" counter(page) \" 页" in html
+
+
+def test_pdf_does_not_change_report_facts(html, report_model, analysis_result):
+    from backend.services.comprehensive_financing_report_markdown_renderer import render_comprehensive_financing_report
+    markdown = render_comprehensive_financing_report(report_model, analysis_result, "2026-09-21")
+    for value in ("42,499,565.67元", "19,493,700.00元", "7,351,500.00元", "1,624,475.00元",
+                  "99.53%", "252,084.70元", "1,856.5万元"):
+        assert value in html and value in markdown
+    assert analysis_result.conclusion.one_sentence in html and analysis_result.conclusion.one_sentence in markdown
 
 
 def test_comprehensive_html_escapes_user_text(report_model, analysis_result):

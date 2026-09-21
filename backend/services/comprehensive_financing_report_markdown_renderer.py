@@ -151,6 +151,11 @@ def _source_text(source_sections: list[str]) -> str:
     )
 
 
+def _render_source_note(source_sections: list[str], subject: str | None = None) -> str:
+    label = f"（{_clean(subject)}）" if subject else ""
+    return f"> 数据来源{label}：{_source_text(source_sections)}"
+
+
 def _bullets(items: list[Any], empty: str = "资料不足") -> str:
     if not items:
         return f"- {empty}"
@@ -158,7 +163,7 @@ def _bullets(items: list[Any], empty: str = "资料不足") -> str:
 
 
 def _analysis_text(summary: str, sources: list[str]) -> str:
-    return f"{_clean(summary)}\n\n数据来源：{_source_text(sources)}"
+    return f"{_clean(summary)}\n\n{_render_source_note(sources)}"
 
 
 def _render_data_scope(model: ComprehensiveFinancingReportModel) -> str:
@@ -345,7 +350,7 @@ def _render_strengths(analysis: ComprehensiveFinancingAnalysisResult) -> str:
     sections = []
     for item in analysis.financing_strengths:
         sections.append(
-            f"### {item.title}\n\n- 事实依据：{_clean(item.fact)}\n- 对融资评估的意义：{_clean(item.impact)}\n- 数据来源：{_source_text(item.source_sections)}"
+            f"### {item.title}\n\n- 事实依据：{_clean(item.fact)}\n- 对融资评估的意义：{_clean(item.impact)}\n\n{_render_source_note(item.source_sections)}"
         )
     return "\n\n".join(sections)
 
@@ -356,7 +361,7 @@ def _render_constraints(analysis: ComprehensiveFinancingAnalysisResult) -> str:
     sections = []
     for item in analysis.financing_constraints:
         sections.append(
-            f"### {item.title}\n\n- 当前事实：{_clean(item.fact)}\n- 对融资的影响：{_clean(item.impact)}\n- 建议动作：{_clean(item.required_action)}\n- 数据来源：{_source_text(item.source_sections)}"
+            f"### {item.title}\n\n- 当前事实：{_clean(item.fact)}\n- 对融资的影响：{_clean(item.impact)}\n- 建议动作：{_clean(item.required_action)}\n\n{_render_source_note(item.source_sections)}"
         )
     return "\n\n".join(sections)
 
@@ -369,7 +374,7 @@ def _render_issues(analysis: ComprehensiveFinancingAnalysisResult) -> str:
         sections.append(
             f"### {index}. {item.issue}\n\n**事实：**\n\n{_bullets(item.facts)}\n\n"
             f"**融资影响：**\n\n{_clean(item.financing_impact)}\n\n"
-            f"**下一步：**\n\n{_clean(item.next_action)}\n\n数据来源：{_source_text(item.source_sections)}"
+            f"**下一步：**\n\n{_clean(item.next_action)}\n\n{_render_source_note(item.source_sections)}"
         )
     return "\n\n".join(sections)
 
@@ -378,8 +383,9 @@ def _render_paths(analysis: ComprehensiveFinancingAnalysisResult) -> str:
     if not analysis.financing_paths:
         return "本次分析未生成可展示的融资路径，建议先补齐关键资料后再评估。"
     rows = [[item.path, PATH_STATUS_LABELS.get(item.status, "待核验"), _join(item.basis),
-             _join(item.missing_conditions), _source_text(item.source_sections)] for item in analysis.financing_paths]
-    return render_markdown_table(["融资路径", "当前状态", "依据", "当前缺口", "数据来源"], rows)
+             _join(item.missing_conditions)] for item in analysis.financing_paths]
+    notes = "\n\n".join(_render_source_note(item.source_sections, item.path) for item in analysis.financing_paths)
+    return render_markdown_table(["融资路径", "当前状态", "依据", "当前缺口"], rows) + "\n\n" + notes
 
 
 def _render_actions(analysis: ComprehensiveFinancingAnalysisResult) -> str:
@@ -392,9 +398,9 @@ def _render_actions(analysis: ComprehensiveFinancingAnalysisResult) -> str:
     for title, actions in groups:
         if not actions:
             continue
-        lines = [f"{index}. {_clean(item.action)}（依据：{_clean(item.basis)}；数据来源：{_source_text(item.source_sections)}）"
+        lines = [f"{index}. {_clean(item.action)}（依据：{_clean(item.basis)}）\n\n{_render_source_note(item.source_sections)}"
                  for index, item in enumerate(actions, 1)]
-        blocks.append(title + "\n\n" + "\n".join(lines))
+        blocks.append(title + "\n\n" + "\n\n".join(lines))
     return "\n\n".join(blocks) if blocks else "当前结构化分析未生成行动事项。"
 
 
@@ -422,9 +428,9 @@ def render_comprehensive_financing_report(
     summary = analysis_result.executive_summary
     readiness_labels = {
         "ready_for_further_evaluation": "可进入下一步评估",
-        "conditionally_ready": "具备一定基础但存在前置条件",
-        "needs_data_completion": "需补充资料",
-        "needs_issue_resolution": "需先解决关键问题",
+        "conditionally_ready": "具备进一步评估基础，但存在前置条件",
+        "needs_data_completion": "需补充关键资料后进一步评估",
+        "needs_issue_resolution": "具备进一步评估基础，但存在前置条件",
     }
     rendered = f"""# 客户综合融资分析报告
 
@@ -440,7 +446,7 @@ def render_comprehensive_financing_report(
 
 **综合观察：** {_clean(summary.overall_observation)}
 
-**当前融资准备状态：** {readiness_labels.get(summary.current_financing_readiness, '待核验')}
+**当前状态：** {readiness_labels.get(summary.current_financing_readiness, '待核验')}
 
 **主要优势：**
 
