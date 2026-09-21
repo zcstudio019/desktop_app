@@ -4,6 +4,8 @@ import { useChatStore } from '../../stores/useChatStore';
 import MarkdownBlock from '../MarkdownBlock';
 import { CreditReportActions } from '../CreditReportActions';
 import { ComprehensiveReportActions } from '../ComprehensiveReportActions';
+import { FinancingRequirementCard } from '../FinancingRequirementCard';
+import type { FinancingRequirementData } from '../../services/api';
 
 const ChatMessages: React.FC = () => {
   const { messages, status, progressMessage, error } = useChatStore();
@@ -52,6 +54,9 @@ const ChatMessages: React.FC = () => {
                 )}
                 {message.intent === 'comprehensive_financing_analysis_report' && message.data && (
                   <ComprehensiveReportActions data={message.data} />
+                )}
+                {message.intent === 'financing_requirement' && typeof message.data?.requirement === 'object' && message.data.requirement !== null && (
+                  <FinancingRequirementCard initial={message.data.requirement as FinancingRequirementData} />
                 )}
               </>}
             </div>

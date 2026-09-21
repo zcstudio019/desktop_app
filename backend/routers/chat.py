@@ -61,6 +61,12 @@ from backend.services.assistant_comprehensive_financing_analysis_service import 
     generate_comprehensive_financing_analysis,
     is_comprehensive_financing_analysis_request,
 )
+from backend.services.assistant_financing_requirement_service import (
+    FINANCING_REQUIREMENT_INTENT,
+    handle_financing_requirement,
+    is_financing_requirement_request,
+)
+from backend.services.financing_requirement_service import get_requirement
 
 from ..middleware.auth import get_current_user_optional
 from ..models.schemas import (
@@ -221,6 +227,8 @@ def recognize_intent(message: str) -> str:
         return CREDIT_REPORT_INTENT
     if is_comprehensive_financing_analysis_request(message):
         return COMPREHENSIVE_FINANCING_ANALYSIS_INTENT
+    if is_financing_requirement_request(message):
+        return FINANCING_REQUIREMENT_INTENT
 
     try:
         prompt = INTENT_PROMPT.format(message=message)
@@ -1522,6 +1530,9 @@ async def chat(
 
     conversation_history = [{"role": msg.role, "content": msg.content} for msg in request.messages[:-1]]
     intent = recognize_intent(user_message)
+    if user_message.strip() in {"确认", "确认修改"} and request.customerId:
+        if get_requirement(request.customerId, status="needs_confirmation"):
+            intent = FINANCING_REQUIREMENT_INTENT
     logger.info(f"Recognized intent: {intent}")
 
     try:
@@ -1583,6 +1594,10 @@ async def _dispatch_intent(
             storage_service,
             user_message,
             selected_customer_id=request.customerId,
+        )
+    elif intent == FINANCING_REQUIREMENT_INTENT:
+        return await handle_financing_requirement(
+            storage_service, user_message, request.customerId, current_user, llm=ai_service.extract,
         )
     elif intent == "application":
         return await handle_application_intent(

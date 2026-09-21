@@ -5,6 +5,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import ChatInput from './ChatInput';
 import ChatMessages from './ChatMessages';
 import ModelSelector from './ModelSelector';
+import FinancingRequirementOverview from './FinancingRequirementOverview';
 
 const AIPanel: React.FC = () => {
   const { state } = useApp();
@@ -58,6 +59,7 @@ const AIPanel: React.FC = () => {
           <div className="flex items-center justify-end border-b border-slate-100 px-4 py-2">
             <ModelSelector />
           </div>
+          <FinancingRequirementOverview />
           <div className="flex-1 overflow-y-auto bg-slate-50/70">
             <ChatMessages />
           </div>

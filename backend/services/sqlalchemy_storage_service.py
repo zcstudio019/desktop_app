@@ -23,6 +23,7 @@ from backend.db_models import (
     Customer,
     CustomerDocumentChunk,
     CustomerFinancingDiagnosticReportSnapshot,
+    FinancingRequirement,
     CustomerProfile,
     CustomerRiskReport,
     CustomerSchemeSnapshot,
@@ -199,6 +200,7 @@ class SQLAlchemyStorageService:
                 ProductCacheEntry.__table__,
                 AsyncJobRecord.__table__,
                 CustomerFinancingDiagnosticReportSnapshot.__table__,
+                FinancingRequirement.__table__,
             ],
             checkfirst=True,
         )

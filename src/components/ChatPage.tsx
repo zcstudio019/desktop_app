@@ -13,6 +13,8 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown';
 import { CreditReportActions } from './CreditReportActions';
 import { ComprehensiveReportActions } from './ComprehensiveReportActions';
+import { FinancingRequirementCard } from './FinancingRequirementCard';
+import type { FinancingRequirementData } from '../services/api';
 import remarkGfm from 'remark-gfm';
 import { 
   Send, Paperclip, X, FileText, Upload, ClipboardList, Target, Loader2, 
@@ -3096,6 +3098,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
           {message.intent === 'comprehensive_financing_analysis_report' && message.data && (
             <ComprehensiveReportActions data={message.data} />
           )}
+          {message.intent === 'financing_requirement' && typeof message.data?.requirement === 'object' && message.data.requirement !== null && (
+            <FinancingRequirementCard initial={message.data.requirement as FinancingRequirementData} />
+          )}
         </div>
         {/* Structured Data Card - shown below message based on intent */}
         {message.data && (
@@ -3120,7 +3125,7 @@ interface IntentActionsProps {
 }
 
 const IntentActions: React.FC<IntentActionsProps> = ({ intent, onAction }) => {
-  if (!intent || intent === 'chat' || intent === 'credit_one_page_report' || intent === 'comprehensive_financing_analysis_report') return null;
+  if (!intent || intent === 'chat' || intent === 'credit_one_page_report' || intent === 'comprehensive_financing_analysis_report' || intent === 'financing_requirement') return null;
 
   const actions = {
     extract: { icon: Upload, label: '上传资料', action: 'upload' },

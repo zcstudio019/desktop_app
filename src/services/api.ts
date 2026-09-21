@@ -545,6 +545,50 @@ export async function sendChat(
   return handleResponse<ChatResponse>(response);
 }
 
+export interface FinancingRequirementData {
+  requirement_id: string;
+  customer_id: string;
+  version: number;
+  status: 'draft' | 'needs_confirmation' | 'confirmed' | 'superseded' | 'cancelled';
+  borrower_entity: string | null;
+  requested_amount: number | null;
+  amount_confirmed: boolean;
+  financing_purpose: string | null;
+  purpose_detail: string | null;
+  term_value: number | null;
+  term_unit: 'day' | 'month' | 'year' | null;
+  term_confirmed: boolean;
+  [key: string]: unknown;
+}
+
+export async function getCurrentFinancingRequirement(customerId: string): Promise<FinancingRequirementData | null> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-requirements/current`, {
+    headers: getAuthHeaders(),
+  });
+  return (await handleResponse<{ requirement: FinancingRequirementData | null }>(response)).requirement;
+}
+
+export async function getPendingFinancingRequirement(customerId: string): Promise<FinancingRequirementData | null> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-requirements/pending`, {
+    headers: getAuthHeaders(),
+  });
+  return (await handleResponse<{ requirement: FinancingRequirementData | null }>(response)).requirement;
+}
+
+export async function createFinancingRequirementDraft(customerId: string, patch: Record<string, unknown>): Promise<FinancingRequirementData> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-requirements/draft`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(patch),
+  });
+  return (await handleResponse<{ requirement: FinancingRequirementData }>(response)).requirement;
+}
+
+export async function confirmFinancingRequirement(customerId: string, requirementId: string): Promise<FinancingRequirementData> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-requirements/${encodeURIComponent(requirementId)}/confirm`, {
+    method: 'POST', headers: getAuthHeaders(),
+  });
+  return (await handleResponse<{ requirement: FinancingRequirementData }>(response)).requirement;
+}
+
 export async function createChatJob(
   request: ChatRequest,
   signal?: AbortSignal

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, Float, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Column, DateTime, Float, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.mysql import LONGTEXT
 
 from .database import Base
@@ -27,6 +27,45 @@ class Customer(Base):
     uploader = Column(String(255), default="")
     upload_time = Column(String(50), default="")
     customer_type = Column(String(20), default="enterprise")
+
+
+class FinancingRequirement(Base):
+    __tablename__ = "financing_requirements"
+    __table_args__ = (UniqueConstraint("customer_id", "version", name="uq_financing_requirement_customer_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    requirement_id = Column(String(64), unique=True, nullable=False, index=True)
+    customer_id = Column(String(64), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    status = Column(String(32), nullable=False, index=True)
+    borrower_entity = Column(String(255))
+    requested_amount = Column(Numeric(18, 2))
+    currency = Column(String(8), default="CNY")
+    amount_confirmed = Column(Integer, default=0)
+    financing_purpose = Column(String(64))
+    purpose_detail = Column(Text)
+    term_value = Column(Integer)
+    term_unit = Column(String(16))
+    term_confirmed = Column(Integer, default=0)
+    term_original = Column(String(100))
+    expected_funding_date = Column(String(50))
+    repayment_preference = Column(String(100))
+    guarantee_preference_json = Column(Text, default="[]")
+    collateral_available_json = Column(Text, default="[]")
+    registered_region = Column(String(255))
+    operating_region = Column(String(255))
+    existing_banks_json = Column(Text, default="[]")
+    preferred_banks_json = Column(Text, default="[]")
+    excluded_banks_json = Column(Text, default="[]")
+    accept_additional_guarantee = Column(Integer)
+    accept_mortgage = Column(Integer)
+    accept_refinancing = Column(Integer)
+    field_sources_json = Column(Text, default="{}")
+    created_by = Column(String(128))
+    confirmed_by = Column(String(128))
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+    confirmed_at = Column(DateTime)
 
 
 class Document(Base):

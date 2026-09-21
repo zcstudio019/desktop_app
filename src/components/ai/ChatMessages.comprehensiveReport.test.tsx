@@ -9,6 +9,7 @@ vi.mock('../../services/api', () => ({
   sendChat: vi.fn(),
   downloadComprehensiveReportPdf: vi.fn(),
   fetchComprehensiveReportArtifact: vi.fn(),
+  getCurrentFinancingRequirement: vi.fn().mockResolvedValue(null),
 }));
 
 const data = {

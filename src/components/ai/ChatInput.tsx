@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { BookOpen, Globe2, Loader2, Mic, Paperclip, Plus, Send, X } from 'lucide-react';
 import { sendChat } from '../../services/api';
 import type { ChatFile, ChatMessage } from '../../services/types';
@@ -47,6 +47,15 @@ const ChatInput: React.FC = () => {
   } = useChatStore();
 
   const busy = status === 'sending';
+
+  useEffect(() => {
+    const compose = (event: Event) => {
+      setValue((event as CustomEvent<string>).detail || '请确认本次融资需求');
+      textareaRef.current?.focus();
+    };
+    window.addEventListener('financing-requirement-compose', compose);
+    return () => window.removeEventListener('financing-requirement-compose', compose);
+  }, []);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const nextFiles = Array.from(event.target.files || []);
