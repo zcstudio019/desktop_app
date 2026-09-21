@@ -7,6 +7,8 @@ import re
 from decimal import Decimal
 from typing import Any, Iterable
 
+from backend.services.credit_report_v11_display import VERIFICATION_CHECKLIST, absence_statement, display_rule_checks
+
 logger = logging.getLogger(__name__)
 ABNORMAL_FIELD_TEXT = "资料异常，需核验"
 
@@ -198,11 +200,11 @@ def render_query_table(rows: list[dict[str, Any]]) -> str:
     )
 
 
-def render_rule_check_table(items: list[dict[str, Any]]) -> str:
+def render_rule_check_table(items: list[dict[str, Any]], metrics: dict[str, Any] | None = None) -> str:
     fields = ("item", "status", "current", "basis", "direction")
     return render_markdown_table(
         list(TABLE_HEADERS["rule_check"]),
-        [_row_values(item, fields) for item in items],
+        [_row_values(item, fields) for item in display_rule_checks(items, metrics or {})],
     )
 
 
@@ -296,7 +298,7 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 
 ---
 
-## 🚨 紧急关注
+## 优先核验事项
 
 {_bullets(emergency, '暂无需要立即处理的明确风险事项。')}
 
@@ -368,11 +370,11 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 
 ## 公共记录
 
-{_record_lines(public_records, (('记录类型', 'record_type'), ('状态', 'status'), ('日期', 'date'), ('金额', 'amount'), ('内容', 'content')))}
+{'- ' + absence_statement(public_records, 'public_records') if absence_statement(public_records, 'public_records') else _record_lines(public_records, (('记录类型', 'record_type'), ('状态', 'status'), ('日期', 'date'), ('金额', 'amount'), ('内容', 'content')))}
 
 ## 非信贷交易记录
 
-{_record_lines(non_credit, (('记录类型', 'record_type'), ('状态', 'status'), ('日期', 'date'), ('金额', 'amount'), ('内容', 'content')))}
+{'- ' + absence_statement(non_credit, 'non_credit_transactions') if absence_statement(non_credit, 'non_credit_transactions') else _record_lines(non_credit, (('记录类型', 'record_type'), ('状态', 'status'), ('日期', 'date'), ('金额', 'amount'), ('内容', 'content')))}
 
 # 六、征信查询记录
 
@@ -392,21 +394,21 @@ def render_credit_one_page_report(report_model: dict[str, Any], narrative: dict[
 
 规则版本：`credit_report_rules_v1`
 
-{render_rule_check_table(rules)}
+{render_rule_check_table(rules, metrics)}
 
-# 九、优化路线图
+# 九、征信核验与补充清单
 
-## 🔴 紧急（1周内）
+## {VERIFICATION_CHECKLIST[0][0]}
 
-{_bullets(narrative.get('optimization_urgent') if isinstance(narrative, dict) else [])}
+{_bullets(VERIFICATION_CHECKLIST[0][1])}
 
-## 🟡 中期（1个月内）
+## {VERIFICATION_CHECKLIST[1][0]}
 
-{_bullets(narrative.get('optimization_medium') if isinstance(narrative, dict) else [])}
+{_bullets(VERIFICATION_CHECKLIST[1][1])}
 
-## 🟢 长期（3-6个月）
+## {VERIFICATION_CHECKLIST[2][0]}
 
-{_bullets(narrative.get('optimization_long') if isinstance(narrative, dict) else [])}
+{_bullets(VERIFICATION_CHECKLIST[2][1])}
 
 # 十、综合说明
 

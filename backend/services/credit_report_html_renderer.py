@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from backend.services.credit_report_markdown_renderer import render_money
+from backend.services.credit_report_v11_display import VERIFICATION_CHECKLIST, absence_statement, display_rule_checks
 
 
 CSS = """
@@ -125,7 +126,7 @@ def render_credit_report_html(report_model: dict, narrative: dict, generated_at:
 
     info=[('企业客户',s.get('customer_subject')),('企业征信主体',s.get('enterprise_credit_subject')),('个人征信主体',s.get('personal_credit_subject')),('个人与企业关系',s.get('personal_credit_subject_role')),('报告生成时间',generated_at),('企业征信源报告日期',dates.get('enterprise_source_report_date')),('个人征信源报告日期',dates.get('personal_source_report_date'))]
     first='<h1>征信速览报告</h1><div class="metadata">'+''.join('<p><b>'+label+'：</b>'+text(v)+'</p>' for label,v in info)+'</div>'
-    first+='<div class="alert"><h3>紧急关注</h3>'+bullets(narrative.get('emergency_attention'),'暂无需要立即处理的明确风险事项。')+'</div>'
+    first+='<div class="alert"><h3>优先核验事项</h3>'+bullets(narrative.get('emergency_attention'),'暂无需要立即处理的明确风险事项。')+'</div>'
     first+='<h2>一、主体基本信息</h2><div class="grid"><div class="card"><h3>企业主体</h3><p>'+text(s.get('enterprise_credit_subject'))+'</p><p>统一社会信用代码：'+text(s.get('enterprise_identifier_masked'))+'</p></div><div class="card"><h3>个人主体</h3><p>'+text(s.get('personal_credit_subject'))+' · '+text(s.get('personal_credit_subject_role'))+'</p><p>证件号码：'+text(s.get('personal_identifier_masked'))+'</p><p>婚姻状况：'+text(basic.get('marital_status'))+'</p><p>征信报告编号：'+text(basic.get('report_number'))+'</p><p>征信报告时间：'+text(basic.get('report_time'))+'</p></div></div>'
     metrics=[('企业未结清贷款余额','enterprise_unsettled_loan_balance'),('个人未结清贷款余额','personal_unsettled_loan_balance'),('个人未结清贷款账户数','personal_unsettled_loan_account_count'),('个人信用卡使用率','credit_card_usage_rate'),('贷款逾期账户数','loan_overdue_account_count'),('90天以上逾期账户数','overdue_90d_account_count'),('企业对外担保余额','enterprise_external_guarantee_balance'),('法人相关还款责任余额','personal_related_repayment_balance')]
     first+='<h2>核心指标</h2><div class="metrics">'+''.join('<div class="metric"><span>'+label+'</span><strong>'+text(m.get(key))+'</strong></div>' for label,key in metrics)+'</div>'
@@ -168,12 +169,8 @@ def render_credit_report_html(report_model: dict, narrative: dict, generated_at:
     third+='</div></div><div class="card"><h3>公共记录 / 非信贷交易记录</h3>'
     for label,key in [('公共记录','public_records'),('非信贷交易记录','non_credit_transactions')]:
         items=p.get(key) or []
-        absence_values={'无','系统明确记载无公共记录','系统中没有您最近5年内的公共信息记录','系统中没有您最近5年内的非信贷交易记录'}
-        descriptions=[str(item[field]) for item in items for field in ('record_type','content','status') if item.get(field)]
-        explicit_absence=bool(items) and bool(descriptions) and all(value in absence_values for value in descriptions)
-        if explicit_absence:
-            third+='<p><span class="badge green">'+label+'：未发现记录（源资料明确记载）</span></p>'
-        third+='<b>'+label+'</b>'+records(p.get(key),[('记录类型','record_type'),('状态','status'),('日期','date'),('金额','amount'),('内容','content')])
+        absence=absence_statement(items,key)
+        third+=('<p>'+text(absence)+'</p>' if absence else '<b>'+label+'</b>'+records(items,[('记录类型','record_type'),('状态','status'),('日期','date'),('金额','amount'),('内容','content')]))
     third+='</div>'
     if p.get('overdue_records'):
         appendices.append(('个人征信逾期明细',table(['机构','业务类型','状态','逾期金额','逾期月数'],p['overdue_records'],['institution','account_type','current_status','overdue_amount','overdue_months'])))
@@ -182,11 +179,11 @@ def render_credit_report_html(report_model: dict, narrative: dict, generated_at:
     fourth+=table(['时间范围','贷款审批','信用卡审批','担保资格审查','法人资信审查'],p.get('query_matrix') or [],['window','loan_approval','credit_card_approval','guarantee_review','legal_person_review'])
     fourth+='<p class="note">查询频率说明：'+text(narrative.get('query_frequency_analysis'))+'</p><p class="note">近期贷款审批查询明细：'+text(p.get('recent_loan_approval_queries'))+'</p>'
     fourth+='<h2>七、历史信贷特征</h2>'+bullets(narrative.get('historical_credit_features'))
-    fourth+='<h2>八、征信指标检查</h2>'+table(['检查项','状态','当前情况','判断依据','优化方向'],report_model.get('rule_checks') or [],['item','status','current','basis','direction'],[17,10,22,28,23])
-    fifth='<h2>九、征信优化路线图</h2><div class="roadmap">'
-    for label,key in [('紧急（1周内）','optimization_urgent'),('中期（1个月内）','optimization_medium'),('长期（3-6个月）','optimization_long')]:
-        fifth+='<div class="card"><h3>'+label+'</h3>'+bullets(narrative.get(key))+'</div>'
+    fourth+='<h2>八、征信指标检查</h2>'+table(['检查项','状态','当前情况','判断依据','优化方向'],display_rule_checks(report_model.get('rule_checks') or [],m),['item','status','current','basis','direction'],[17,10,22,28,23])
+    fifth='<h2>九、征信核验与补充清单</h2><div class="roadmap">'
+    for label,items in VERIFICATION_CHECKLIST:
+        fifth+='<div class="card"><h3>'+text(label)+'</h3>'+bullets(items)+'</div>'
     fifth+='</div><h2>十、综合说明</h2><div class="summary-grid"><div class="card good"><h3>征信优势</h3>'+bullets(narrative.get('advantages'))+'</div><div class="card warn"><h3>征信风险</h3>'+bullets(narrative.get('risks'))+'</div></div><h3>综合说明</h3><p>'+text(narrative.get('comprehensive_summary'))+'</p><div class="conclusion"><b>一句话结论</b><p>'+text(narrative.get('one_sentence_conclusion'))+'</p></div>'
-    pages=[page(1,'主体与核心指标',first),page(2,'贷款及信用卡',second,True),page(3,'担保、逾期与公共记录',third,True),page(4,'查询记录与征信指标',fourth,True),page(5,'优化路线图与综合结论',fifth)]
+    pages=[page(1,'主体与核心指标',first),page(2,'贷款及信用卡',second,True),page(3,'担保、逾期与公共记录',third,True),page(4,'查询记录与征信指标',fourth,True),page(5,'核验与补充清单及综合结论',fifth)]
     pages += [page(i+6,'附页', '<h2>'+text(title)+'</h2>'+content,True) for i,(title,content) in enumerate(appendices)]
     return '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>征信速览报告</title><style>'+CSS+'</style></head><body>'+''.join(pages)+'</body></html>'

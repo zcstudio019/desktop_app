@@ -82,15 +82,91 @@ def test_credit_report_html_uses_same_model_as_markdown(report,html):
 
 
 @pytest.mark.parametrize('page,labels',[
-    (1,['紧急关注','主体基本信息','核心指标']),
+    (1,['优先核验事项','主体基本信息','核心指标']),
     (2,['企业贷款','个人贷款','三、信用卡']),
     (3,['企业对外担保','法人相关还款责任','逾期与公共记录']),
     (4,['征信查询记录','历史信贷特征','征信指标检查']),
-    (5,['征信优化路线图','综合说明','一句话结论']),
+    (5,['征信核验与补充清单','综合说明','一句话结论']),
 ],ids=['page1_contains_summary_and_core_metrics','page2_contains_loans_and_credit_cards','page3_contains_guarantees_and_overdue','page4_contains_queries_and_rule_checks','page5_contains_roadmap_and_summary'])
 def test_page_structure(html,page,labels):
     content=html.split(f'data-page="{page}">',1)[1].split('</section>',1)[0]
     assert all(label in content for label in labels)
+
+
+def test_credit_report_uses_priority_review_title(report):
+    markdown=render_credit_one_page_report(*report,GENERATED_AT)
+    html=render_credit_report_html(*report,GENERATED_AT)
+    for output in (markdown,html):
+        assert '优先核验事项' in output
+        assert '紧急关注' not in output
+        assert '原到期日早于' in output
+
+
+def test_credit_report_does_not_use_passed_status(report):
+    markdown=render_credit_one_page_report(*report,GENERATED_AT)
+    html=render_credit_report_html(*report,GENERATED_AT)
+    for output in (markdown,html):
+        assert '达标' not in output
+        assert '未见异常' in output
+        assert '当前为0' in output
+        assert '贷款及信用卡逾期账户数均为0' in output
+        assert '90天以上逾期账户数：0' in output
+
+
+def test_credit_report_uses_credit_summary_account_count_label(report):
+    model,narrative=report
+    model['metrics']['credit_card_account_count']=11
+    model['metrics']['credit_card_detail_count']=3
+    before=copy.deepcopy(model['rule_checks'])
+    for output in (
+        render_credit_one_page_report(model,narrative,GENERATED_AT),
+        render_credit_report_html(model,narrative,GENERATED_AT),
+    ):
+        assert '征信概要信用账户数' in output
+        assert '概要账户数：11' in output
+        assert '可稳定提取信用卡明细数为3' in output
+        assert '信用卡数量' not in output
+        assert '11张信用卡' not in output
+    assert model['rule_checks']==before
+
+
+def test_credit_report_public_record_is_not_duplicated(report):
+    model,narrative=report
+    model['personal_credit']['public_records']=[{
+        'record_type':'系统中没有您最近5年内的公共信息记录', 'content':'无',
+    }]
+    for output in (
+        render_credit_one_page_report(model,narrative,GENERATED_AT),
+        render_credit_report_html(model,narrative,GENERATED_AT),
+    ):
+        assert output.count('近5年未发现公共记录（源资料明确记载）')==1
+        assert '记录类型：系统中没有您最近5年内的公共信息记录' not in output
+
+
+def test_credit_report_non_credit_record_is_not_duplicated(report):
+    model,narrative=report
+    model['personal_credit']['non_credit_transactions']=[{
+        'record_type':'系统中没有您最近5年内的非信贷交易记录', 'content':'无',
+    }]
+    for output in (
+        render_credit_one_page_report(model,narrative,GENERATED_AT),
+        render_credit_report_html(model,narrative,GENERATED_AT),
+    ):
+        assert output.count('近5年未发现非信贷交易记录（源资料明确记载）')==1
+        assert '记录类型：系统中没有您最近5年内的非信贷交易记录' not in output
+
+
+def test_credit_report_uses_verification_and_supplement_checklist_title(report):
+    for output in (
+        render_credit_one_page_report(*report,GENERATED_AT),
+        render_credit_report_html(*report,GENERATED_AT),
+    ):
+        assert '九、征信核验与补充清单' in output
+        assert '征信优化路线图' not in output
+        for label in ('优先核验','补充资料','后续评估',
+                      '核对源征信报告及未展示账户状态','补充授信及到期明细',
+                      '人工核验贷款机构类别'):
+            assert label in output
 
 
 def test_credit_report_pdf_filename_is_safe(report):
@@ -177,7 +253,7 @@ def test_credit_report_pdf_starts_with_pdf_signature(pdf):
     assert pdf.startswith(b'%PDF-')
 
 
-def test_credit_report_pdf_has_five_pages_and_consistent_facts(pdf):
+def test_credit_report_pdf_remains_five_pages(pdf):
     import fitz
     doc=fitz.open(stream=pdf,filetype='pdf')
     assert len(doc)==5
@@ -201,7 +277,7 @@ def test_realistic_record_volume_keeps_five_pdf_pages(pdf_engine,report):
     import fitz
     doc=fitz.open(stream=run(render_html_pdf(render_credit_report_html(model,narrative,GENERATED_AT))),filetype='pdf')
     assert len(doc)==5
-    headings=['主体与核心指标','贷款及信用卡','担保、逾期与公共记录','查询记录与征信指标','优化路线图与综合结论']
+    headings=['主体与核心指标','贷款及信用卡','担保、逾期与公共记录','查询记录与征信指标','核验与补充清单及综合结论']
     for page,heading in zip(doc,headings):assert heading in page.get_text()
 
 

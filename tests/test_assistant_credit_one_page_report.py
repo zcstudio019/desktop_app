@@ -628,7 +628,7 @@ def test_conflicting_overdue_data_becomes_needs_review():
     assert "贷款逾期账户数=0" in rule["basis"]
     report = generated(storage)["message"]
     assert "| 逾期记录 | 待核验 | 资料存在冲突 |" in report
-    urgent = report.split("## 🔴 紧急（1周内）", 1)[1].split("## 🟡", 1)[0]
+    urgent = report.split("## 优先核验", 1)[1].split("## 补充资料", 1)[0]
     assert "核对源征信报告" in urgent
 
 
@@ -828,7 +828,7 @@ def test_document_currency_and_money_field_unit_priority():
 
 def test_past_due_unknown_survives_empty_llm_emergency_attention():
     report = generated()["message"]
-    emergency = report.split("## 🚨 紧急关注", 1)[1].split("# 一、", 1)[0]
+    emergency = report.split("## 优先核验事项", 1)[1].split("# 一、", 1)[0]
     assert "原到期日早于本报告生成日" in emergency
     assert "建议优先核实当前状态" in emergency
     assert "逾期" not in emergency
