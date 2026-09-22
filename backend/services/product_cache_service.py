@@ -62,8 +62,9 @@ def save_cache_map(enterprise: str, personal: str, enterprise_mortgage: str | No
     payload = {
         "enterprise_credit": enterprise or "",
         "personal": personal or "",
-        "enterprise_mortgage": enterprise_mortgage or "",
     }
+    if enterprise_mortgage is not None:
+        payload["enterprise_mortgage"] = enterprise_mortgage
     with SessionLocal() as db:
         for cache_key, content in payload.items():
             row = _select_first_with_warning(

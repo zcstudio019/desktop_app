@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, Float, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, event, func, inspect, select
 from sqlalchemy.dialects.mysql import LONGTEXT
 
 from .database import Base
@@ -267,6 +267,113 @@ class ProductCacheEntry(Base):
     source = Column(String(64), default="wiki", nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingProduct(Base):
+    __tablename__ = "financing_products"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(String(64), unique=True, nullable=False, index=True)
+    identity_key = Column(String(64), unique=True, nullable=False, index=True)
+    institution_name = Column(String(255), nullable=False)
+    product_name = Column(String(255), nullable=False)
+    product_category = Column(String(32), nullable=False, index=True)
+    region_key = Column(String(255), default="", nullable=False)
+    source_type = Column(String(32), nullable=False, default="feishu_wiki")
+    source_ref = Column(String(255), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingProductVersion(Base):
+    __tablename__ = "financing_product_versions"
+    __table_args__ = (UniqueConstraint("product_id", "version_number", name="uq_financing_product_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version_id = Column(String(64), unique=True, nullable=False, index=True)
+    product_id = Column(String(64), ForeignKey("financing_products.product_id"), nullable=False, index=True)
+    version_number = Column(Integer, nullable=False)
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    effective_from = Column(Date)
+    effective_to = Column(Date)
+    source_snapshot = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False)
+    source_snapshot_hash = Column(String(64), nullable=False, index=True)
+    source_node_token = Column(String(128), nullable=False)
+    source_document_token = Column(String(128), nullable=False)
+    source_imported_at = Column(DateTime, nullable=False)
+    source_updated_at = Column(DateTime)
+    summary = Column(Text, default="")
+    region_scope_json = Column(Text, default="[]")
+    currency = Column(String(8), default="CNY")
+    min_amount = Column(Numeric(18, 2))
+    max_amount = Column(Numeric(18, 2))
+    min_term_months = Column(Integer)
+    max_term_months = Column(Integer)
+    repayment_methods_json = Column(Text, default="[]")
+    guarantee_modes_json = Column(Text, default="[]")
+    collateral_types_json = Column(Text, default="[]")
+    materials_json = Column(Text, default="[]")
+    rate_text = Column(String(255), default="")
+    notes = Column(Text, default="")
+    field_review_json = Column(Text, default="{}")
+    created_by = Column(String(128), nullable=False)
+    published_by = Column(String(128), default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    published_at = Column(DateTime)
+
+
+class FinancingProductRule(Base):
+    __tablename__ = "financing_product_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(String(64), unique=True, nullable=False, index=True)
+    version_id = Column(String(64), ForeignKey("financing_product_versions.version_id"), nullable=False, index=True)
+    rule_group = Column(String(64), nullable=False, default="eligibility")
+    field_name = Column(String(128), nullable=False)
+    operator = Column(String(16), nullable=False)
+    expected_value_json = Column(Text, nullable=False)
+    severity = Column(String(16), nullable=False)
+    failure_action = Column(String(16), nullable=False)
+    message = Column(Text, default="")
+    source_text = Column(Text, default="")
+    sort_order = Column(Integer, default=0)
+
+
+@event.listens_for(FinancingProductVersion, "before_update")
+def _guard_published_version_update(_mapper, _connection, row):
+    state = inspect(row)
+    history = state.attrs.status.history
+    old_status = history.deleted[0] if history.deleted else row.status
+    if old_status not in {"published", "expired", "superseded", "disabled"}:
+        return
+    changed = {attr.key for attr in state.attrs if attr.history.has_changes()}
+    if old_status == "published" and changed == {"status"} and row.status in {"expired", "superseded", "disabled"}:
+        return
+    raise ValueError("已发布版本内容不可修改")
+
+
+@event.listens_for(FinancingProductVersion, "before_delete")
+def _guard_published_version_delete(_mapper, _connection, row):
+    if row.status not in {"draft", "needs_review"}:
+        raise ValueError("已发布版本不可删除")
+
+
+@event.listens_for(FinancingProductRule, "before_update")
+@event.listens_for(FinancingProductRule, "before_delete")
+def _guard_published_rule(_mapper, connection, row):
+    status = connection.execute(select(FinancingProductVersion.status).where(FinancingProductVersion.version_id == row.version_id)).scalar_one_or_none()
+    if status not in {"draft", "needs_review"}:
+        raise ValueError("已发布版本的规则不可修改")
+
+
+@event.listens_for(FinancingProduct, "before_update")
+def _guard_published_product_identity(_mapper, connection, row):
+    exists = connection.execute(select(FinancingProductVersion.version_id).where(
+        FinancingProductVersion.product_id == row.product_id,
+        FinancingProductVersion.status.in_(("published", "expired", "superseded", "disabled")),
+    ).limit(1)).first()
+    if exists:
+        raise ValueError("已有已发布版本时不能修改产品身份")
 
 
 class AsyncJobRecord(Base):
