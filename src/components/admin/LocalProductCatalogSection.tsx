@@ -7,6 +7,10 @@ import {
   type CatalogConflictDecision, type CatalogConflictDetail, type CatalogProductRow, type CatalogRule, type CatalogVersionDetail, type LocalCatalogConflict,
   type LocalCatalogProductSummary, type LocalCatalogSourcesResponse,
 } from '../../services/api';
+import {
+  PRODUCT_CATEGORY_LABELS, PRODUCT_FIELD_LABELS, REVIEW_STATUS_LABELS, RULE_ACTION_LABELS, RULE_FIELD_LABELS,
+  RULE_OPERATOR_LABELS, RULE_SEVERITY_LABELS, VERSION_STATUS_LABELS, productFieldLabel,
+} from './productCatalogLabels';
 
 type Tab = 'sources' | 'products' | 'review' | 'conflicts' | 'published' | 'history';
 const TABS: { id: Tab; label: string }[] = [
@@ -33,9 +37,8 @@ const EDIT_FIELDS: { key: string; label: string; kind?: 'number' | 'list' | 'dat
 ];
 const REVIEW_KEYS = ['external_product_code', 'institution_name', 'product_name', 'product_category', 'max_amount',
   'max_term_months', 'region_scope', 'guarantee_modes', 'collateral_types', 'materials', 'company_age_rule'];
-const STATUS_LABELS: Record<string, string> = { draft: '草稿', needs_review: '待审核', published: '已发布',
-  superseded: '已替代', expired: '已过期', disabled: '已停用' };
-const REVIEW_LABELS: Record<string, string> = { unreviewed: '未审核', reviewing: '审核中', reviewed: '已审核', rejected: '已驳回' };
+const CORE_REVIEW_KEYS = new Set(['external_product_code', 'institution_name', 'product_name', 'product_category']);
+const FIELD_REVIEW_OPTIONS = ['extracted_review', 'needs_review', 'insufficient_data', 'reviewed', 'rejected', 'not_applicable'];
 const CONFLICT_LABELS: Record<string, string> = { unresolved: '待处理', resolved_keep_a: '已选择 A', resolved_keep_b: '已选择 B', resolved_merged: '已合并', resolved_split: '已拆分' };
 
 function preview(value: unknown): string { return value == null ? '—' : typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
@@ -43,6 +46,36 @@ function preview(value: unknown): string { return value == null ? '—' : typeof
 function fieldValue(value: unknown): string {
   if (Array.isArray(value)) return value.join('\n');
   return value == null ? '' : String(value);
+}
+
+function hasValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+function reviewFieldValue(detail: CatalogVersionDetail, key: string): unknown {
+  const values: Record<string, unknown> = {
+    external_product_code: detail.product.external_product_code, institution_name: detail.version.institution_name,
+    product_name: detail.version.product_name, product_category: detail.product.product_category,
+    max_amount: detail.version.max_amount, max_term_months: detail.version.max_term_months,
+    region_scope: detail.version.region_scope_json, guarantee_modes: detail.version.guarantee_modes_json,
+    collateral_types: detail.version.collateral_types_json, materials: detail.version.materials_json,
+    company_age_rule: detail.version.company_age_months,
+  };
+  return values[key];
+}
+
+function pendingReviewFields(detail: CatalogVersionDetail): string[] {
+  return REVIEW_KEYS.filter((key) => {
+    const status = detail.version.field_review_json?.[key];
+    const valuePresent = hasValue(reviewFieldValue(detail, key));
+    if (CORE_REVIEW_KEYS.has(key)) return !valuePresent || !['reviewed', 'confirmed'].includes(status);
+    if (!status || ['extracted_review', 'needs_review'].includes(status)) return true;
+    if (valuePresent) return !['reviewed', 'confirmed'].includes(status);
+    return !['reviewed', 'confirmed', 'insufficient_data', 'not_applicable', 'rejected', 'acknowledged_unknown'].includes(status);
+  });
 }
 
 const LocalProductCatalogSection: React.FC = () => {
@@ -106,7 +139,9 @@ const LocalProductCatalogSection: React.FC = () => {
       setHistory(versions.items.sort((a, b) => b.version.version_number - a.version.version_number));
       setRuleOptions(options);
       setFields(Object.fromEntries(EDIT_FIELDS.map((item) => [item.key, fieldValue(result.version[item.key])])));
-      setReview(result.version.field_review_json || {});
+      setReview(Object.fromEntries(Object.entries(result.version.field_review_json || {}).map(([key, value]) => [
+        key, value === 'confirmed' ? 'reviewed' : value === 'acknowledged_unknown' ? 'insufficient_data' : value,
+      ])));
       setReviewStatus(result.version.review_status);
       setRule({ rule_id: '', field_name: '', operator: 'eq', expected_value: '', severity: 'hard', failure_action: 'exclude', message: '', source_text: '' });
       setError('');
@@ -219,13 +254,23 @@ const LocalProductCatalogSection: React.FC = () => {
     finally { setBusy(''); }
   };
 
+  const confirmExtractedFields = () => {
+    setReview(Object.fromEntries(Object.entries(review).map(([key, value]) => [key, value === 'extracted_review' ? 'reviewed' : value])));
+    setNotice('已将所有“已提取，待人工确认”字段标记为“已确认”。请检查其余待复核字段并保存草稿。');
+  };
+
   const conflictCodes = useMemo(() => new Set(conflicts.filter((item) => item.conflict !== false).map((item) => item.external_product_code)), [conflicts]);
   const displayRows = filter.conflict === 'yes' ? rows.filter((row) => conflictCodes.has(row.product.external_product_code || ''))
     : filter.conflict === 'no' ? rows.filter((row) => !conflictCodes.has(row.product.external_product_code || '')) : rows;
   const editable = !!detail && ['draft', 'needs_review'].includes(detail.version.status);
-  const publishReady = editable && detail.version.review_status === 'reviewed' && !!detail.version.effective_from
-    && !conflictCodes.has(detail.product.external_product_code || '')
-    && REVIEW_KEYS.every((key) => ['confirmed', 'acknowledged_unknown'].includes(detail.version.field_review_json?.[key]));
+  const pendingFields = detail ? pendingReviewFields(detail) : [];
+  const publishIssues = detail ? [
+    ...(!detail.version.effective_from ? ['请先设置生效日期'] : []),
+    ...(detail.version.review_status !== 'reviewed' ? ['请先完成人工审核'] : []),
+    ...(pendingFields.length ? [`尚未完成复核：${pendingFields.map(productFieldLabel).join('、')}`] : []),
+    ...(conflictCodes.has(detail.product.external_product_code || '') ? ['产品编号仍存在未解决冲突'] : []),
+  ] : [];
+  const publishReady = editable && publishIssues.length === 0;
 
   return <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" data-testid="product-catalog-admin">
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -258,14 +303,14 @@ const LocalProductCatalogSection: React.FC = () => {
         <input aria-label="搜索产品" placeholder="搜索编号/产品/银行" value={filter.search} onChange={(event) => setFilter({ ...filter, search: event.target.value })} className="rounded-lg border px-3 py-2" />
         <select aria-label="产品分类" value={filter.category} onChange={(event) => setFilter({ ...filter, category: event.target.value })} className="rounded-lg border px-3 py-2"><option value="">全部分类</option>{sources?.sources.map((source) => <option key={source.category} value={source.category}>{source.label}</option>)}</select>
         <input aria-label="筛选银行" placeholder="银行/机构" value={filter.institution} onChange={(event) => setFilter({ ...filter, institution: event.target.value })} className="rounded-lg border px-3 py-2" />
-        <select aria-label="版本状态" value={filter.status} onChange={(event) => setFilter({ ...filter, status: event.target.value })} className="rounded-lg border px-3 py-2"><option value="">全部状态</option>{['draft', 'needs_review', 'published', 'superseded', 'expired', 'disabled'].map((value) => <option key={value} value={value}>{STATUS_LABELS[value]}</option>)}</select>
+        <select aria-label="版本状态" value={filter.status} onChange={(event) => setFilter({ ...filter, status: event.target.value })} className="rounded-lg border px-3 py-2"><option value="">全部状态</option>{['draft', 'needs_review', 'published', 'superseded', 'expired', 'disabled'].map((value) => <option key={value} value={value}>{VERSION_STATUS_LABELS[value]}</option>)}</select>
         <select aria-label="是否待审核" value={filter.needs_review} onChange={(event) => setFilter({ ...filter, needs_review: event.target.value })} className="rounded-lg border px-3 py-2"><option value="">全部审核状态</option><option value="true">待审核</option><option value="false">已审核</option></select>
         <select aria-label="是否冲突" value={filter.conflict} onChange={(event) => setFilter({ ...filter, conflict: event.target.value })} className="rounded-lg border px-3 py-2"><option value="">全部冲突状态</option><option value="yes">有冲突</option><option value="no">无冲突</option></select>
       </div>
       <div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-slate-50 text-left"><tr>{['编号', '产品', '银行/机构', '分类', '版本', '状态', '额度上限', '期限上限', '待审核', '来源', '更新时间'].map((label) => <th key={label} className="p-2">{label}</th>)}</tr></thead>
         <tbody className="divide-y">{displayRows.map(({ product, version }) => <tr key={version.version_id} className="cursor-pointer hover:bg-slate-50" onClick={() => void openVersion(version.version_id, product.product_id)}>
           <td className="p-2 font-mono">{product.external_product_code || '—'}</td><td className="p-2 font-medium">{version.product_name}</td><td className="p-2">{version.institution_name}</td>
-          <td className="p-2">{product.product_category}</td><td className="p-2">V{version.version_number}</td><td className="p-2">{STATUS_LABELS[version.status] || version.status}</td>
+          <td className="p-2">{PRODUCT_CATEGORY_LABELS[product.product_category] || '其他'}</td><td className="p-2">V{version.version_number}</td><td className="p-2">{VERSION_STATUS_LABELS[version.status] || '未知状态'}</td>
           <td className="p-2">{version.max_amount || '—'}</td><td className="p-2">{version.max_term_months ?? '—'}</td><td className="p-2">{version.needs_review ? '是' : '否'}</td>
           <td className="p-2">{version.source_file || '飞书'}</td><td className="p-2">{version.source_imported_at}</td>
         </tr>)}</tbody></table>{displayRows.length === 0 && <p className="p-6 text-center text-slate-500">暂无符合条件的产品。</p>}</div>
@@ -284,19 +329,19 @@ const LocalProductCatalogSection: React.FC = () => {
           <h4 className="text-lg font-semibold">来源 {side.side.toUpperCase()}</h4>
           <dl className="mt-2 grid grid-cols-[9rem_1fr] gap-1 break-all">{[
             ['产品编号', side.external_product_code], ['产品名称', side.product_name], ['银行/机构', side.institution_name],
-            ['产品分类', side.product_category], ['来源文件', side.source_file], ['来源更新日期', side.source_update_date || '未知'],
+            ['产品分类', PRODUCT_CATEGORY_LABELS[side.product_category] || '其他'], ['来源文件', side.source_file], ['来源更新日期', side.source_update_date || '未知'],
             ['来源 SHA-256', side.source_snapshot_hash],
           ].map(([label, value]) => <React.Fragment key={label}><dt className="text-slate-500">{label}</dt><dd>{value}</dd></React.Fragment>)}</dl>
-          <h5 className="mt-4 font-semibold">已结构化字段</h5><div className="mt-1 max-h-60 overflow-auto rounded bg-slate-50 p-2">{Object.entries(side.structured_fields).map(([key, value]) => <div key={key} className={conflictDetail.differences.some((diff) => diff.field_name === key) ? 'bg-amber-100' : ''}><b>{key}：</b>{preview(value)}</div>)}</div>
-          <h5 className="mt-4 font-semibold">raw_fields</h5><div className="mt-1 max-h-60 overflow-auto rounded bg-slate-50 p-2">{Object.entries(side.raw_fields).map(([key, value]) => <div key={key} className={conflictDetail.differences.some((diff) => diff.field_name === `raw_fields.${key}`) ? 'bg-amber-100' : ''}><b>{key}：</b>{preview(value)}</div>)}</div>
+          <h5 className="mt-4 font-semibold">已结构化字段</h5><div className="mt-1 max-h-60 overflow-auto rounded bg-slate-50 p-2">{Object.entries(side.structured_fields).map(([key, value]) => <div key={key} className={conflictDetail.differences.some((diff) => diff.field_name === key) ? 'bg-amber-100' : ''}><b>{productFieldLabel(key)}：</b>{preview(value)}</div>)}</div>
+          <h5 className="mt-4 font-semibold">来源原始字段</h5><div className="mt-1 max-h-60 overflow-auto rounded bg-slate-50 p-2">{Object.entries(side.raw_fields).map(([key, value]) => <div key={key} className={conflictDetail.differences.some((diff) => diff.field_name === `raw_fields.${key}`) ? 'bg-amber-100' : ''}><b>{key}：</b>{preview(value)}</div>)}</div>
           <h5 className="mt-4 font-semibold">原始 Markdown</h5><pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-3">{side.source_snapshot}</pre>
         </div>)}</div>
         <h4 className="mt-5 font-semibold">差异字段（{conflictDetail.differences.length}）</h4>
-        <div className="mt-2 max-h-80 overflow-auto rounded border text-sm">{conflictDetail.differences.map((diff) => <div key={diff.field_name} className="grid gap-2 border-b bg-amber-50 p-2 sm:grid-cols-[12rem_1fr_1fr]"><b>{diff.field_name}</b><div>A：{preview(diff.a)}</div><div>B：{preview(diff.b)}</div></div>)}</div>
+        <div className="mt-2 max-h-80 overflow-auto rounded border text-sm">{conflictDetail.differences.map((diff) => <div key={diff.field_name} className="grid gap-2 border-b bg-amber-50 p-2 sm:grid-cols-[12rem_1fr_1fr]"><b>{productFieldLabel(diff.field_name)}</b><div>A：{preview(diff.a)}</div><div>B：{preview(diff.b)}</div></div>)}</div>
         {(conflictDetail.source_line_changes?.a_only.length > 0 || conflictDetail.source_line_changes?.b_only.length > 0) && <div className="mt-4 rounded border p-3 text-sm"><h4 className="font-semibold">原文行差异</h4><div className="mt-2 grid gap-3 lg:grid-cols-2"><div><b>仅来源 A</b>{conflictDetail.source_line_changes.a_only.map((line, index) => <pre key={index} className="mt-1 whitespace-pre-wrap bg-rose-50 p-1">{line}</pre>)}</div><div><b>仅来源 B</b>{conflictDetail.source_line_changes.b_only.map((line, index) => <pre key={index} className="mt-1 whitespace-pre-wrap bg-emerald-50 p-1">{line}</pre>)}</div></div></div>}
         {conflictDetail.conflict !== false ? <div className="mt-5 rounded-xl border p-4 text-sm"><h4 className="font-semibold">人工处理</h4>
           <div className="mt-2 flex flex-wrap gap-4">{([['keep_a', '同一产品，选择 A'], ['keep_b', '同一产品，选择 B'], ['merge', '同一产品，逐字段合并'], ['split', '两个不同产品，改编号']] as const).map(([value, label]) => <label key={value}><input type="radio" name="conflict-strategy" checked={conflictStrategy === value} onChange={() => setConflictStrategy(value)} /> {label}</label>)}</div>
-          {conflictStrategy === 'merge' && <div className="mt-3 max-h-72 overflow-auto rounded border p-3"><p className="mb-2">每个差异字段都必须选择来源：</p>{conflictDetail.differences.map((diff) => <div key={diff.field_name} className="flex flex-wrap items-center gap-3 border-b py-2"><b className="min-w-44">{diff.field_name}</b><label><input type="radio" name={`choice-${diff.field_name}`} checked={fieldChoices[diff.field_name] === 'a'} onChange={() => setFieldChoices({ ...fieldChoices, [diff.field_name]: 'a' })} /> 使用 A</label><label><input type="radio" name={`choice-${diff.field_name}`} checked={fieldChoices[diff.field_name] === 'b'} onChange={() => setFieldChoices({ ...fieldChoices, [diff.field_name]: 'b' })} /> 使用 B</label></div>)}</div>}
+          {conflictStrategy === 'merge' && <div className="mt-3 max-h-72 overflow-auto rounded border p-3"><p className="mb-2">每个差异字段都必须选择来源：</p>{conflictDetail.differences.map((diff) => <div key={diff.field_name} className="flex flex-wrap items-center gap-3 border-b py-2"><b className="min-w-44">{productFieldLabel(diff.field_name)}</b><label><input type="radio" name={`choice-${diff.field_name}`} checked={fieldChoices[diff.field_name] === 'a'} onChange={() => setFieldChoices({ ...fieldChoices, [diff.field_name]: 'a' })} /> 使用 A</label><label><input type="radio" name={`choice-${diff.field_name}`} checked={fieldChoices[diff.field_name] === 'b'} onChange={() => setFieldChoices({ ...fieldChoices, [diff.field_name]: 'b' })} /> 使用 B</label></div>)}</div>}
           {conflictStrategy === 'split' && <div className="mt-3 flex flex-wrap gap-3"><label>修改哪一侧编号<select aria-label="修改编号的来源" value={renameSide} onChange={(event) => setRenameSide(event.target.value as 'a' | 'b')} className="ml-2 rounded border p-2"><option value="a">来源 A</option><option value="b">来源 B</option></select></label><label>新产品编号<input aria-label="新产品编号" value={newCode} onChange={(event) => setNewCode(event.target.value)} className="ml-2 rounded border p-2" placeholder="例如 NJB-007" /></label></div>}
           <button type="button" onClick={() => void submitConflictDecision()} disabled={!!busy || !conflictStrategy} className="mt-4 rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50">确认生成待审核草稿</button>
         </div> : <p className="mt-4 text-sm text-emerald-700">该冲突已有人工决议。如需变更，请联系管理员复核来源和现有草稿。</p>}
@@ -305,14 +350,14 @@ const LocalProductCatalogSection: React.FC = () => {
 
     {detail && <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40" role="dialog" aria-modal="true" aria-label="产品详情">
       <div className="h-full w-full max-w-6xl overflow-y-auto bg-white p-6 shadow-xl"><div className="flex items-start justify-between gap-3">
-        <div><h3 className="text-xl font-semibold">{detail.product.external_product_code} · {detail.version.product_name}</h3><p className="text-sm text-slate-500">{detail.version.institution_name} · {detail.product.product_category} · V{detail.version.version_number} · {STATUS_LABELS[detail.version.status] || detail.version.status}</p></div>
+        <div><h3 className="text-xl font-semibold">{detail.product.external_product_code} · {detail.version.product_name}</h3><p className="text-sm text-slate-500">{detail.version.institution_name} · {PRODUCT_CATEGORY_LABELS[detail.product.product_category] || '其他'} · V{detail.version.version_number} · {VERSION_STATUS_LABELS[detail.version.status] || '未知状态'}</p></div>
         <button type="button" aria-label="关闭产品详情" onClick={() => setDetail(null)} className="rounded-lg border p-2"><X size={18} /></button>
       </div>
         {error && <p className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700" role="alert">{error}</p>}
         {notice && <p className="mt-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">{notice}</p>}
         <div className="mt-4 flex flex-wrap gap-2">
           {editable && <button type="button" onClick={() => void saveDraft()} disabled={!!busy} className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50">保存草稿</button>}
-          {editable && <button type="button" onClick={() => void changeLifecycle('publish')} disabled={!publishReady || !!busy} title={publishReady ? '' : '请先保存生效日期、人工审核状态与关键字段复核'} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white disabled:opacity-40">发布</button>}
+          {editable && <button type="button" onClick={() => void changeLifecycle('publish')} disabled={!publishReady || !!busy} title={publishReady ? '' : publishIssues.join('；')} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white disabled:opacity-40">发布</button>}
           {detail.version.status === 'published' && <button type="button" onClick={() => void changeLifecycle('disable')} disabled={!!busy} className="rounded-lg border border-rose-400 px-4 py-2 text-sm text-rose-700">停用</button>}
         </div>
         <div className="mt-5 grid gap-6 lg:grid-cols-2"><div className="space-y-5">
@@ -321,27 +366,29 @@ const LocalProductCatalogSection: React.FC = () => {
               ? <textarea value={fields[item.key] || ''} disabled={!editable} onChange={(event) => setFields({ ...fields, [item.key]: event.target.value })} rows={item.kind === 'list' ? 2 : 3} className="mt-1 w-full rounded-lg border p-2 disabled:bg-slate-50" />
               : <input type={item.kind === 'date' ? 'date' : item.kind === 'number' ? 'number' : 'text'} value={fields[item.key] || ''} disabled={!editable} onChange={(event) => setFields({ ...fields, [item.key]: event.target.value })} className="mt-1 w-full rounded-lg border p-2 disabled:bg-slate-50" />}
           </label>)}</div></div>
-          <div><h4 className="font-semibold">人工审核</h4><select aria-label="人工审核状态" value={reviewStatus} disabled={!editable} onChange={(event) => setReviewStatus(event.target.value)} className="mt-2 rounded-lg border p-2">{['unreviewed', 'reviewing', 'reviewed', 'rejected'].map((value) => <option key={value} value={value}>{REVIEW_LABELS[value]}</option>)}</select>
+          <div><h4 className="font-semibold">人工审核</h4><select aria-label="人工审核状态" value={reviewStatus} disabled={!editable} onChange={(event) => setReviewStatus(event.target.value)} className="mt-2 rounded-lg border p-2">{['unreviewed', 'reviewing', 'reviewed', 'rejected'].map((value) => <option key={value} value={value}>{REVIEW_STATUS_LABELS[value]}</option>)}</select>
+            {editable && <button type="button" onClick={confirmExtractedFields} className="ml-2 rounded-lg border border-blue-300 px-3 py-2 text-sm text-blue-700">确认所有已提取字段</button>}
+            {publishIssues.length > 0 && <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800" aria-label="发布阻断原因"><b>发布前还需处理：</b><ul className="ml-5 mt-1 list-disc">{publishIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul></div>}
             <h5 className="mt-3 font-medium">待审核原因</h5><ul className="ml-5 list-disc text-sm">{detail.version.review_reasons_json?.length ? detail.version.review_reasons_json.map((reason) => <li key={reason}>{reason}</li>) : <li>暂无自动标记原因，请核对来源原文。</li>}</ul>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">{REVIEW_KEYS.map((key) => <label key={key} className="text-xs">{key}<select value={review[key] || 'insufficient_data'} disabled={!editable} onChange={(event) => setReview({ ...review, [key]: event.target.value })} className="mt-1 w-full rounded border p-1">{['extracted_review', 'needs_review', 'insufficient_data', 'confirmed', 'acknowledged_unknown'].map((value) => <option key={value}>{value}</option>)}</select></label>)}</div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">{REVIEW_KEYS.map((key) => <label key={key} className="text-xs">{PRODUCT_FIELD_LABELS[key]}<select aria-label={`${PRODUCT_FIELD_LABELS[key]}复核状态`} value={review[key] || 'insufficient_data'} disabled={!editable} onChange={(event) => setReview({ ...review, [key]: event.target.value })} className="mt-1 w-full rounded border p-1">{FIELD_REVIEW_OPTIONS.map((value) => <option key={value} value={value}>{REVIEW_STATUS_LABELS[value]}</option>)}</select></label>)}</div>
           </div>
           <div><h4 className="font-semibold">产品规则</h4>{detail.rules.length === 0 ? <p className="mt-2 text-sm text-slate-500">暂无结构化规则</p> : detail.rules.map((item) => <div key={item.rule_id} className="mt-2 rounded-lg border p-3 text-sm">
-            <b>{item.field_name} {item.operator} {JSON.stringify(item.expected_value_json)}</b><div>{item.severity} · {item.failure_action} · {item.message}</div><div className="text-slate-500">来源：{item.source_text}</div>
+            <b>{RULE_FIELD_LABELS[item.field_name] || '其他规则字段'} {RULE_OPERATOR_LABELS[item.operator] || '未知操作'} {JSON.stringify(item.expected_value_json)}</b><div>{RULE_SEVERITY_LABELS[item.severity] || '未知级别'} · {RULE_ACTION_LABELS[item.failure_action] || '未知动作'} · {item.message}</div><div className="text-slate-500">来源：{item.source_text}</div>
             {editable && <div className="mt-2 flex gap-2"><button type="button" className="text-blue-700" onClick={() => setRule({ rule_id: item.rule_id, field_name: item.field_name, operator: item.operator, expected_value: JSON.stringify(item.expected_value_json), severity: item.severity, failure_action: item.failure_action, message: item.message, source_text: item.source_text })}>编辑</button><button type="button" className="text-rose-700" onClick={() => void removeRule(item)}>删除</button></div>}
           </div>)}
             {editable && <div className="mt-3 grid gap-2 rounded-lg bg-slate-50 p-3 text-sm sm:grid-cols-2">
-              <label>字段<select aria-label="规则字段" value={rule.field_name} onChange={(event) => setRule({ ...rule, field_name: event.target.value })} className="mt-1 w-full rounded border p-2"><option value="">选择白名单字段</option>{Object.keys(ruleOptions?.fields || {}).map((name) => <option key={name}>{name}</option>)}</select></label>
-              <label>操作符<select aria-label="规则操作符" value={rule.operator} onChange={(event) => setRule({ ...rule, operator: event.target.value })} className="mt-1 w-full rounded border p-2">{ruleOptions?.operators.map((value) => <option key={value}>{value}</option>)}</select></label>
+              <label>字段<select aria-label="规则字段" value={rule.field_name} onChange={(event) => setRule({ ...rule, field_name: event.target.value })} className="mt-1 w-full rounded border p-2"><option value="">选择白名单字段</option>{Object.keys(ruleOptions?.fields || {}).map((name) => <option key={name} value={name}>{RULE_FIELD_LABELS[name] || '其他规则字段'}</option>)}</select></label>
+              <label>操作符<select aria-label="规则操作符" value={rule.operator} onChange={(event) => setRule({ ...rule, operator: event.target.value })} className="mt-1 w-full rounded border p-2">{ruleOptions?.operators.map((value) => <option key={value} value={value}>{RULE_OPERATOR_LABELS[value] || '未知操作'}</option>)}</select></label>
               <label>预期值（JSON 或文本）<input value={rule.expected_value} onChange={(event) => setRule({ ...rule, expected_value: event.target.value })} className="mt-1 w-full rounded border p-2" /></label>
-              <label>严重程度<select value={rule.severity} onChange={(event) => setRule({ ...rule, severity: event.target.value })} className="mt-1 w-full rounded border p-2">{['hard', 'soft', 'info'].map((value) => <option key={value}>{value}</option>)}</select></label>
-              <label>失败动作<select value={rule.failure_action} onChange={(event) => setRule({ ...rule, failure_action: event.target.value })} className="mt-1 w-full rounded border p-2">{['exclude', 'conditional', 'review'].map((value) => <option key={value}>{value}</option>)}</select></label>
+              <label>严重程度<select value={rule.severity} onChange={(event) => setRule({ ...rule, severity: event.target.value })} className="mt-1 w-full rounded border p-2">{['hard', 'soft', 'info'].map((value) => <option key={value} value={value}>{RULE_SEVERITY_LABELS[value]}</option>)}</select></label>
+              <label>失败动作<select value={rule.failure_action} onChange={(event) => setRule({ ...rule, failure_action: event.target.value })} className="mt-1 w-full rounded border p-2">{['exclude', 'conditional', 'review'].map((value) => <option key={value} value={value}>{RULE_ACTION_LABELS[value]}</option>)}</select></label>
               <label>说明<input value={rule.message} onChange={(event) => setRule({ ...rule, message: event.target.value })} className="mt-1 w-full rounded border p-2" /></label>
               <label className="sm:col-span-2">来源原文<textarea value={rule.source_text} onChange={(event) => setRule({ ...rule, source_text: event.target.value })} className="mt-1 w-full rounded border p-2" /></label>
               <button type="button" onClick={() => void saveRule()} disabled={!rule.field_name || !rule.source_text || !!busy} className="rounded bg-blue-600 px-3 py-2 text-white disabled:opacity-40">{rule.rule_id ? '更新规则' : '新增规则'}</button>
             </div>}
           </div>
           <div><h4 className="font-semibold">版本历史</h4>{history.map((item) => <button key={item.version.version_id} type="button" onClick={() => void openVersion(item.version.version_id, item.product.product_id)} className="mt-2 block w-full rounded-lg border p-2 text-left text-sm hover:bg-slate-50">
-            V{item.version.version_number} · {item.version.status} · {item.version.effective_from || '未生效'} ~ {item.version.effective_to || '无结束日'} · {item.version.published_at || '未发布'} · {item.version.published_by || '—'}<div className="break-all font-mono text-xs">{item.version.source_snapshot_hash}</div>
+            V{item.version.version_number} · {VERSION_STATUS_LABELS[item.version.status] || '未知状态'} · {item.version.effective_from || '未生效'} ~ {item.version.effective_to || '无结束日'} · {item.version.published_at || '未发布'} · {item.version.published_by || '—'}<div className="break-all font-mono text-xs">{item.version.source_snapshot_hash}</div>
           </button>)}</div>
         </div><div className="lg:sticky lg:top-0 lg:self-start"><h4 className="font-semibold">来源原文</h4><p className="text-xs text-slate-500">{detail.version.source_file} · {detail.version.source_update_date || '未知日期'} · SHA-256 {detail.version.source_snapshot_hash}</p>
           <pre className="mt-2 max-h-[75vh] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm leading-relaxed">{detail.version.source_snapshot}</pre>

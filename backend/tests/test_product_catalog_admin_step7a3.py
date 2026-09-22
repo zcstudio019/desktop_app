@@ -64,8 +64,23 @@ def reviewed(service, version_id):
     state = service.get_version(version_id)["version"]["field_review_json"]
     for key in ("external_product_code", "institution_name", "product_name", "product_category", "max_amount",
                 "max_term_months", "region_scope", "guarantee_modes", "collateral_types", "materials", "company_age_rule"):
-        state[key] = "confirmed" if state.get(key) == "extracted_review" else "acknowledged_unknown"
+        state[key] = "reviewed" if state.get(key) == "extracted_review" else "insufficient_data"
     service.update_draft(version_id, {"field_review_json": state, "review_status": "reviewed", "effective_from": "2026-09-01"})
+
+
+def ready_state(service, version_id):
+    detail = service.get_version(version_id)
+    version_data = detail["version"]
+    state = version_data["field_review_json"]
+    for key in ("external_product_code", "institution_name", "product_name", "product_category"):
+        state[key] = "reviewed"
+    values = {"max_amount": version_data["max_amount"], "max_term_months": version_data["max_term_months"],
+              "region_scope": version_data["region_scope_json"], "guarantee_modes": version_data["guarantee_modes_json"],
+              "collateral_types": version_data["collateral_types_json"], "materials": version_data["materials_json"],
+              "company_age_rule": version_data["company_age_months"]}
+    for key, value in values.items():
+        state[key] = "reviewed" if value not in (None, "", []) else "insufficient_data"
+    return state
 
 
 def test_admin_can_view_product_sources(setup):
@@ -148,6 +163,65 @@ def test_publish_enters_active_catalog(setup):
     reviewed(service, version(service))
     service.publish(version(service), "admin")
     assert len(service.get_active_products("2026-09-22")) == 1
+
+
+def test_insufficient_data_does_not_block_publish(setup):
+    service, directory, _ = setup
+    sync(service, directory)
+    version_id = version(service)
+    state = ready_state(service, version_id)
+    assert state["region_scope"] == "insufficient_data"
+    assert state["collateral_types"] == "insufficient_data"
+    service.update_draft(version_id, {"field_review_json": state, "review_status": "reviewed", "effective_from": "2026-09-01"})
+    assert service.publish(version_id, "admin")["version"]["status"] == "published"
+
+
+def test_needs_review_blocks_publish(setup):
+    service, directory, _ = setup
+    sync(service, directory)
+    version_id = version(service)
+    state = ready_state(service, version_id)
+    state["guarantee_modes"] = "needs_review"
+    service.update_draft(version_id, {"field_review_json": state, "review_status": "reviewed", "effective_from": "2026-09-01"})
+    with pytest.raises(CatalogError, match="guarantee_modes"):
+        service.publish(version_id, "admin")
+
+
+def test_extracted_review_blocks_publish_until_confirmed(setup):
+    service, directory, _ = setup
+    sync(service, directory)
+    version_id = version(service)
+    state = ready_state(service, version_id)
+    state["max_amount"] = "extracted_review"
+    service.update_draft(version_id, {"field_review_json": state, "review_status": "reviewed", "effective_from": "2026-09-01"})
+    with pytest.raises(CatalogError, match="max_amount"):
+        service.publish(version_id, "admin")
+    state["max_amount"] = "reviewed"
+    service.update_draft(version_id, {"field_review_json": state})
+    assert service.publish(version_id, "admin")["version"]["status"] == "published"
+
+
+def test_required_core_field_missing_blocks_publish(setup):
+    service, directory, _ = setup
+    sync(service, directory)
+    version_id = version(service)
+    state = ready_state(service, version_id)
+    service.update_draft(version_id, {"field_review_json": state, "review_status": "reviewed", "effective_from": "2026-09-01"})
+    with service.session_factory.begin() as db:
+        row = db.query(FinancingProduct).first()
+        row.external_product_code = None
+    with pytest.raises(CatalogError, match="稳定外部编号"):
+        service.publish(version_id, "admin")
+
+
+def test_reviewed_core_fields_allow_publish(setup):
+    service, directory, _ = setup
+    sync(service, directory)
+    version_id = version(service)
+    state = ready_state(service, version_id)
+    assert all(state[key] == "reviewed" for key in ("external_product_code", "institution_name", "product_name", "product_category"))
+    service.update_draft(version_id, {"field_review_json": state, "review_status": "reviewed", "effective_from": "2026-09-01"})
+    assert service.publish(version_id, "admin")["version"]["status"] == "published"
 
 
 def test_disable_removes_from_active_catalog(setup):

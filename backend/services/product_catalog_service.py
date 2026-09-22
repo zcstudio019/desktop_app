@@ -48,13 +48,64 @@ _EDIT_FIELDS = {"effective_from", "effective_to", "summary", "region_scope_json"
                 "tax_grade", "revenue_requirement", "tax_requirement", "invoice_requirement",
                 "credit_overdue_requirement", "credit_query_requirement", "debt_requirement",
                 "collateral_requirement", "suitable_customer_text", "review_status"}
-_REVIEW_REQUIRED = {"institution_name", "product_name", "product_category", "max_amount", "max_term_months",
-                    "region_scope", "guarantee_modes", "collateral_types", "materials", "company_age_rule"}
+REVIEW_CORE_FIELDS = frozenset({"external_product_code", "institution_name", "product_name", "product_category"})
+REVIEW_OPTIONAL_FIELDS = frozenset({"max_amount", "max_term_months", "region_scope", "guarantee_modes",
+                                    "collateral_types", "materials", "company_age_rule"})
+REVIEW_FIELDS = REVIEW_CORE_FIELDS | REVIEW_OPTIONAL_FIELDS
+REVIEW_CONFIRMED = frozenset({"reviewed", "confirmed"})  # confirmed is retained for existing drafts.
+REVIEW_EMPTY_ALLOWED = frozenset({"insufficient_data", "not_applicable", "rejected", "acknowledged_unknown"})
+REVIEW_STATUSES = frozenset({"extracted_review", "needs_review"}) | REVIEW_CONFIRMED | REVIEW_EMPTY_ALLOWED
 _TABLES_READY = False
 
 
 class CatalogError(ValueError):
     pass
+
+
+def _review_field_value(product: FinancingProduct, version: FinancingProductVersion, field_name: str) -> Any:
+    values = {
+        "external_product_code": product.external_product_code,
+        "institution_name": version.institution_name or product.institution_name,
+        "product_name": version.product_name or product.product_name,
+        "product_category": product.product_category,
+        "max_amount": version.max_amount,
+        "max_term_months": version.max_term_months,
+        "region_scope": json.loads(version.region_scope_json or "[]"),
+        "guarantee_modes": json.loads(version.guarantee_modes_json or "[]"),
+        "collateral_types": json.loads(version.collateral_types_json or "[]"),
+        "materials": json.loads(version.materials_json or "[]"),
+        "company_age_rule": version.company_age_months,
+    }
+    return values[field_name]
+
+
+def _has_review_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict, tuple, set)):
+        return bool(value)
+    return True
+
+
+def review_blockers(product: FinancingProduct, version: FinancingProductVersion) -> list[str]:
+    """Return key fields that still require an explicit, truthful administrator decision."""
+    review = json.loads(version.field_review_json or "{}")
+    blockers = []
+    for field_name in REVIEW_FIELDS:
+        status = review.get(field_name)
+        has_value = _has_review_value(_review_field_value(product, version, field_name))
+        if field_name in REVIEW_CORE_FIELDS:
+            if not has_value or status not in REVIEW_CONFIRMED:
+                blockers.append(field_name)
+        elif status in {"needs_review", "extracted_review", None, ""}:
+            blockers.append(field_name)
+        elif has_value and status not in REVIEW_CONFIRMED:
+            blockers.append(field_name)
+        elif not has_value and status not in REVIEW_CONFIRMED | REVIEW_EMPTY_ALLOWED:
+            blockers.append(field_name)
+    return sorted(blockers)
 
 
 def _date(value: Any) -> date | None:
@@ -416,6 +467,8 @@ class ProductCatalogService:
                     if key == "field_review_json":
                         if not isinstance(value, dict):
                             raise CatalogError("字段审核结果必须是对象")
+                        if any(status not in REVIEW_STATUSES for status in value.values()):
+                            raise CatalogError("字段审核结果包含未知状态")
                     elif not isinstance(value, list):
                         raise CatalogError("产品列表字段必须是数组")
                     value = json.dumps(value, ensure_ascii=False)
@@ -425,18 +478,8 @@ class ProductCatalogService:
                 elif key == "review_status" and value not in {"unreviewed", "reviewing", "reviewed", "rejected"}:
                     raise CatalogError("人工审核状态不合法")
                 setattr(version, key, value)
-            if version.source_type == "local_markdown" and "field_review_json" in patch:
-                review = json.loads(version.field_review_json or "{}")
-                required = _REVIEW_REQUIRED | {"external_product_code"}
-                version.needs_review = int(version.review_status != "reviewed" or any(
-                    review.get(key) not in {"confirmed", "acknowledged_unknown"} for key in required
-                ))
-            elif version.source_type == "local_markdown" and "review_status" in patch:
-                review = json.loads(version.field_review_json or "{}")
-                required = _REVIEW_REQUIRED | {"external_product_code"}
-                version.needs_review = int(version.review_status != "reviewed" or any(
-                    review.get(key) not in {"confirmed", "acknowledged_unknown"} for key in required
-                ))
+            if version.source_type in {"local_markdown", "merged_markdown"} and ({"field_review_json", "review_status"} & patch.keys()):
+                version.needs_review = int(version.review_status != "reviewed" or bool(review_blockers(product, version)))
         return self.get_version(version_id)
 
     def add_rule(self, version_id: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -492,10 +535,10 @@ class ProductCatalogService:
             raise CatalogError("最高额度不能小于最低额度")
         if version.min_term_months is not None and version.max_term_months is not None and version.max_term_months < version.min_term_months:
             raise CatalogError("最长期限不能小于最短期限")
-        review = json.loads(version.field_review_json or "{}")
-        required = _REVIEW_REQUIRED | ({"external_product_code"} if version.source_type in {"local_markdown", "merged_markdown"} else set())
-        if any(review.get(key) not in {"confirmed", "acknowledged_unknown"} for key in required):
-            raise CatalogError("关键产品字段尚未完成管理员复核")
+        if version.source_type in {"local_markdown", "merged_markdown"}:
+            pending = review_blockers(product, version)
+            if pending:
+                raise CatalogError("关键产品字段尚未完成管理员复核：" + "、".join(pending))
         for rule in rules:
             validate_rule({"field_name": rule.field_name, "operator": rule.operator,
                            "expected_value": json.loads(rule.expected_value_json), "severity": rule.severity,

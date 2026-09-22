@@ -87,6 +87,47 @@ describe('LocalProductCatalogSection', () => {
     expect((screen.getByText('发布') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('shows Chinese product field and status labels', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    expect((await screen.findAllByText('企业信用')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('草稿').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText('BOCOM-001'));
+    expect(await screen.findByLabelText('产品编号复核状态')).toBeTruthy();
+    expect(screen.getAllByRole('option', { name: '已提取，待人工确认' }).length).toBeGreaterThan(0);
+    expect(screen.queryByText('external_product_code')).toBeNull();
+  });
+
+  it('publish tooltip lists the pending Chinese field name', async () => {
+    const reviewedVersion = { ...version, review_status: 'reviewed', effective_from: '2026-09-22',
+      guarantee_modes_json: [], collateral_types_json: [], materials_json: [], region_scope_json: [], company_age_months: null,
+      field_review_json: { external_product_code: 'reviewed', institution_name: 'reviewed', product_name: 'reviewed', product_category: 'reviewed',
+        max_amount: 'reviewed', max_term_months: 'reviewed', guarantee_modes: 'needs_review', collateral_types: 'insufficient_data',
+        materials: 'insufficient_data', region_scope: 'insufficient_data', company_age_rule: 'insufficient_data' } };
+    vi.mocked(getCatalogVersion).mockResolvedValue({ product, version: reviewedVersion, rules: [] });
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    const publish = await screen.findByRole('button', { name: '发布' });
+    expect(publish).toBeDisabled();
+    expect(publish).toHaveAttribute('title', '尚未完成复核：担保方式');
+    expect(screen.getByText('尚未完成复核：担保方式')).toBeTruthy();
+  });
+
+  it('confirms every extracted field without changing unresolved or insufficient fields', async () => {
+    const extractedVersion = { ...version, field_review_json: { external_product_code: 'extracted_review', institution_name: 'extracted_review',
+      product_name: 'extracted_review', product_category: 'extracted_review', max_amount: 'extracted_review', max_term_months: 'extracted_review',
+      guarantee_modes: 'needs_review', collateral_types: 'insufficient_data', materials: 'insufficient_data', region_scope: 'insufficient_data', company_age_rule: 'insufficient_data' } };
+    vi.mocked(getCatalogVersion).mockResolvedValue({ product, version: extractedVersion, rules: [] });
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    fireEvent.click(await screen.findByRole('button', { name: '确认所有已提取字段' }));
+    expect((screen.getByLabelText('产品编号复核状态') as HTMLSelectElement).value).toBe('reviewed');
+    expect((screen.getByLabelText('担保方式复核状态') as HTMLSelectElement).value).toBe('needs_review');
+    expect((screen.getByLabelText('适用地区复核状态') as HTMLSelectElement).value).toBe('insufficient_data');
+  });
+
   it('shows conflict sides and field summary', async () => {
     render(<LocalProductCatalogSection />);
     await screen.findByText('担保基金');
