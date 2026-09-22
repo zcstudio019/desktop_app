@@ -821,8 +821,8 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
       <section className="mb-6 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm" data-testid="product-cache-section">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-slate-800">产品库缓存</h2>
-            <p className="mt-1 text-sm text-slate-500">用于方案匹配的产品库缓存状态，建议在演示前先完成刷新。</p>
+            <h2 className="text-lg font-semibold text-slate-800">飞书全文缓存（旧方案匹配兼容）</h2>
+            <p className="mt-1 text-sm text-slate-500">旧 /api/scheme 使用此缓存。正式产品目录在管理员页面同步本地 Markdown 后审核发布。</p>
           </div>
           <button
             onClick={handleRefreshCache}
@@ -831,7 +831,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
             data-testid="refresh-cache-button"
           >
             <RefreshCw size={16} className={cacheLoading ? 'animate-spin' : ''} />
-            {cacheLoading ? '更新中...' : '更新产品库'}
+            {cacheLoading ? '刷新中...' : '刷新飞书缓存'}
           </button>
         </div>
 

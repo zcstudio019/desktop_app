@@ -15,9 +15,11 @@ from sqlalchemy.orm import Session
 from backend.database import Base, SessionLocal, engine
 from backend.db_models import FinancingProduct, FinancingProductRule, FinancingProductVersion
 from backend.services.feishu_product_import_service import ParsedProduct, parse_product_document
+from backend.services.markdown_product_import_service import SOURCE_DIR, SOURCE_FILES, scan_sources
+from backend.services.product_catalog_schema import ensure_markdown_catalog_schema
 
 
-PRODUCT_CATEGORIES = frozenset({"enterprise_credit", "enterprise_mortgage", "personal", "other"})
+PRODUCT_CATEGORIES = frozenset({"enterprise_credit", "enterprise_mortgage", "personal", "other", *SOURCE_FILES})
 VERSION_STATUSES = frozenset({"draft", "needs_review", "published", "expired", "superseded", "disabled"})
 OPERATORS = frozenset({"eq", "ne", "in", "not_in", "gt", "gte", "lt", "lte", "between", "contains", "exists", "not_exists"})
 SEVERITIES = frozenset({"hard", "soft", "info"})
@@ -38,10 +40,14 @@ FIELD_TYPES = {
     "asset.has_real_estate": "boolean", "asset.has_vehicle": "boolean",
     "asset.has_equipment": "boolean", "asset.has_confirmed_collateral": "boolean",
 }
-_JSON_FIELDS = {"region_scope_json", "repayment_methods_json", "guarantee_modes_json", "collateral_types_json", "materials_json", "field_review_json"}
+_JSON_FIELDS = {"region_scope_json", "repayment_methods_json", "guarantee_modes_json", "collateral_types_json", "materials_json", "field_review_json", "raw_fields_json"}
 _EDIT_FIELDS = {"effective_from", "effective_to", "summary", "region_scope_json", "currency", "min_amount",
                 "max_amount", "min_term_months", "max_term_months", "repayment_methods_json", "guarantee_modes_json",
-                "collateral_types_json", "materials_json", "rate_text", "notes", "field_review_json"}
+                "collateral_types_json", "materials_json", "rate_text", "notes", "field_review_json",
+                "loan_type", "guarantee_type", "company_age_months", "borrower_age_min", "borrower_age_max",
+                "tax_grade", "revenue_requirement", "tax_requirement", "invoice_requirement",
+                "credit_overdue_requirement", "credit_query_requirement", "debt_requirement",
+                "collateral_requirement", "suitable_customer_text"}
 _REVIEW_REQUIRED = {"institution_name", "product_name", "product_category", "max_amount", "max_term_months",
                     "region_scope", "guarantee_modes", "collateral_types", "materials", "company_age_rule"}
 _TABLES_READY = False
@@ -81,7 +87,7 @@ def _serialize(row: Any) -> dict[str, Any]:
     for column in row.__table__.columns:
         value = getattr(row, column.name)
         if column.name in _JSON_FIELDS or column.name == "expected_value_json":
-            value = json.loads(value or ("{}" if column.name == "field_review_json" else "[]"))
+            value = json.loads(value or ("{}" if column.name in {"field_review_json", "raw_fields_json"} else "[]"))
         elif isinstance(value, (date, datetime)):
             value = value.isoformat()
         elif isinstance(value, Decimal):
@@ -174,6 +180,7 @@ class ProductCatalogService:
         global _TABLES_READY
         if self.ensure_schema and not _TABLES_READY:
             Base.metadata.create_all(bind=engine, tables=[FinancingProduct.__table__, FinancingProductVersion.__table__, FinancingProductRule.__table__], checkfirst=True)
+            ensure_markdown_catalog_schema(engine)
             _TABLES_READY = True
 
     @staticmethod
@@ -221,7 +228,9 @@ class ProductCatalogService:
                 ).order_by(FinancingProductVersion.version_number.desc()).limit(1)) or 0
                 version = FinancingProductVersion(
                     version_id=uuid.uuid4().hex, product_id=product.product_id, version_number=last_number + 1,
+                    institution_name=item.institution_name, product_name=item.product_name,
                     status="draft", source_snapshot=item.snapshot, source_snapshot_hash=snapshot_hash,
+                    source_type="feishu_wiki",
                     source_node_token=node_token, source_document_token=document_token,
                     source_imported_at=datetime.now(timezone.utc).replace(tzinfo=None), source_updated_at=source_updated_at,
                     created_by=actor, field_review_json=json.dumps(item.review, ensure_ascii=False),
@@ -234,6 +243,77 @@ class ProductCatalogService:
                                                 **validate_rule(candidate_rule)))
                 result.append({"product_id": product.product_id, "version_id": version.version_id, "status": "draft", "created": True})
         return result
+
+    def import_markdown_sources(self, actor: str, category: str | None = None, *, directory=SOURCE_DIR) -> dict[str, Any]:
+        """Sync approved local files into drafts; conflicting codes never write a version."""
+        self._prepare()
+        if category is not None and category not in SOURCE_FILES:
+            raise CatalogError("不支持的本地产品分类")
+        scan = scan_sources(directory)
+        selected = [s for s in scan["sources"] if category is None or s.category == category]
+        if any(s.missing for s in selected):
+            raise CatalogError("本地产品库文件缺失")
+        created = unchanged = 0
+        database_conflicts: list[dict[str, Any]] = []
+        with self.session_factory.begin() as db:
+            for source in selected:
+                for item in source.products:
+                    code = item.external_product_code
+                    if code in scan["conflicting_codes"]:
+                        continue
+                    # Same code and hash in another file is a single source product.
+                    if scan["by_code"][code][0] is not item:
+                        continue
+                    product = db.scalar(select(FinancingProduct).where(
+                        FinancingProduct.external_product_code == code
+                    ).with_for_update())
+                    if product and (product.source_type != "local_markdown" or product.source_ref != item.source_file):
+                        database_conflicts.append({"external_product_code": code, "status": "duplicate_conflict", "needs_review": True,
+                                                   "sides": [{"source_file": product.source_ref, "product_name": product.product_name,
+                                                              "snapshot_hash": "existing_database"},
+                                                             {"source_file": item.source_file, "product_name": item.product_name,
+                                                              "snapshot_hash": item.source_snapshot_hash}]})
+                        continue
+                    if product is None:
+                        product = FinancingProduct(product_id=uuid.uuid4().hex,
+                                                   identity_key=hashlib.sha256(f"code:{code}".encode()).hexdigest(),
+                                                   external_product_code=code, institution_name=item.institution_name,
+                                                   product_name=item.product_name, product_category=item.product_category,
+                                                   region_key="", source_type="local_markdown", source_ref=item.source_file)
+                        db.add(product)
+                        db.flush()
+                    existing = db.scalar(select(FinancingProductVersion).where(
+                        FinancingProductVersion.product_id == product.product_id,
+                        FinancingProductVersion.source_snapshot_hash == item.source_snapshot_hash,
+                    ))
+                    if existing:
+                        unchanged += 1
+                        continue
+                    last_number = db.scalar(select(FinancingProductVersion.version_number).where(
+                        FinancingProductVersion.product_id == product.product_id
+                    ).order_by(FinancingProductVersion.version_number.desc()).limit(1)) or 0
+                    version = FinancingProductVersion(
+                        version_id=uuid.uuid4().hex, product_id=product.product_id, version_number=last_number + 1,
+                        institution_name=item.institution_name, product_name=item.product_name,
+                        status="draft", source_snapshot=item.source_snapshot,
+                        source_snapshot_hash=item.source_snapshot_hash, source_type="local_markdown",
+                        source_file=item.source_file, source_update_date=item.source_update_date,
+                        source_node_token="", source_document_token="",
+                        source_imported_at=datetime.now(timezone.utc).replace(tzinfo=None), created_by=actor,
+                        needs_review=1, field_review_json=json.dumps(item.review, ensure_ascii=False),
+                    )
+                    for key, value in item.fields.items():
+                        setattr(version, key, json.dumps(value, ensure_ascii=False) if key in _JSON_FIELDS else value)
+                    db.add(version)
+                    for candidate_rule in item.rules:
+                        db.add(FinancingProductRule(rule_id=uuid.uuid4().hex, version_id=version.version_id,
+                                                    **validate_rule(candidate_rule)))
+                    created += 1
+        return {"category": category, "created_drafts": created, "unchanged": unchanged,
+                "conflicts": scan["conflicts"] + database_conflicts,
+                "parsed_count": sum(len(s.products) for s in selected),
+                "unique_count": len({p.external_product_code for s in selected for p in s.products}),
+                "duplicate_code_count": scan["duplicate_code_count"]}
 
     def get_version(self, version_id: str) -> dict[str, Any]:
         self._prepare()
@@ -265,7 +345,14 @@ class ProductCatalogService:
                 if patch["status"] not in {"draft", "needs_review"}:
                     raise CatalogError("草稿仅可切换为待审核")
                 version.status = patch["status"]
-            if "institution_name" in patch or "product_name" in patch:
+            if ("institution_name" in patch or "product_name" in patch) and version.source_type == "local_markdown":
+                for key in ("institution_name", "product_name"):
+                    if key in patch:
+                        value = str(patch[key]).strip()
+                        if not value:
+                            raise CatalogError("机构和产品名称不能为空")
+                        setattr(version, key, value)
+            elif "institution_name" in patch or "product_name" in patch:
                 prior = db.scalar(select(FinancingProductVersion.version_id).where(
                     FinancingProductVersion.product_id == version.product_id,
                     FinancingProductVersion.version_id != version_id,
@@ -296,6 +383,9 @@ class ProductCatalogService:
                     elif not isinstance(value, list):
                         raise CatalogError("产品列表字段必须是数组")
                     value = json.dumps(value, ensure_ascii=False)
+                elif key in {"company_age_months", "borrower_age_min", "borrower_age_max"}:
+                    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                        raise CatalogError("月数和年龄必须是非负整数")
                 setattr(version, key, value)
         return self.get_version(version_id)
 
@@ -322,8 +412,10 @@ class ProductCatalogService:
 
     @staticmethod
     def _validate_publish(product: FinancingProduct, version: FinancingProductVersion, rules: list[FinancingProductRule]) -> None:
-        if not product.institution_name.strip() or not product.product_name.strip() or product.product_category not in PRODUCT_CATEGORIES:
+        if not (version.institution_name or product.institution_name).strip() or not (version.product_name or product.product_name).strip() or product.product_category not in PRODUCT_CATEGORIES:
             raise CatalogError("机构、产品名称及类别必填")
+        if version.source_type == "local_markdown" and not product.external_product_code:
+            raise CatalogError("本地产品必须有稳定外部编号")
         if version.effective_from is None:
             raise CatalogError("发布日期起始日必填")
         if version.effective_to and version.effective_to <= version.effective_from:
@@ -333,7 +425,8 @@ class ProductCatalogService:
         if version.min_term_months is not None and version.max_term_months is not None and version.max_term_months < version.min_term_months:
             raise CatalogError("最长期限不能小于最短期限")
         review = json.loads(version.field_review_json or "{}")
-        if any(review.get(key) not in {"confirmed", "acknowledged_unknown"} for key in _REVIEW_REQUIRED):
+        required = _REVIEW_REQUIRED | ({"external_product_code"} if version.source_type == "local_markdown" else set())
+        if any(review.get(key) not in {"confirmed", "acknowledged_unknown"} for key in required):
             raise CatalogError("关键产品字段尚未完成管理员复核")
         for rule in rules:
             validate_rule({"field_name": rule.field_name, "operator": rule.operator,
@@ -356,6 +449,7 @@ class ProductCatalogService:
             for old in previous:
                 old.status = "superseded"
             version.status = "published"
+            version.needs_review = 0
             version.published_by = actor
             version.published_at = datetime.now(timezone.utc).replace(tzinfo=None)
         return self.get_version(version_id)

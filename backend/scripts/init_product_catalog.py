@@ -2,6 +2,7 @@
 
 from backend.database import Base, engine
 from backend.db_models import FinancingProduct, FinancingProductRule, FinancingProductVersion
+from backend.services.product_catalog_schema import ensure_markdown_catalog_schema
 
 
 def main() -> None:
@@ -10,6 +11,7 @@ def main() -> None:
         tables=[FinancingProduct.__table__, FinancingProductVersion.__table__, FinancingProductRule.__table__],
         checkfirst=True,
     )
+    ensure_markdown_catalog_schema(engine)
 
 
 if __name__ == "__main__":

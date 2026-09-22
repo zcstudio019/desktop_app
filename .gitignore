@@ -57,6 +57,10 @@ __pycache__/
 
 # Data
 data/
+!backend/data/
+backend/data/*
+!backend/data/product_catalog_sources/
+!backend/data/product_catalog_sources/*.md
 
 data/*.db
 backend/data/*.db

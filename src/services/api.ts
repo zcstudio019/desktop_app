@@ -781,6 +781,66 @@ export interface SavedApplicationListItem {
   savedAt: string;
 }
 
+export interface LocalCatalogSourceStatus {
+  category: string;
+  label: string;
+  source_file: string;
+  missing: boolean;
+  file_updated_at: string | null;
+  declared_count: number | null;
+  parsed_count: number;
+  unique_count: number;
+  duplicate_count: number;
+  conflict_count: number;
+  needs_review_count: number;
+  published_count: number | null;
+}
+
+export interface LocalCatalogSourcesResponse {
+  sources: LocalCatalogSourceStatus[];
+  database_status: string;
+  totals: { parsed_count: number; unique_count: number; duplicate_code_count: number; conflict_count: number; needs_review_count: number };
+}
+
+export interface LocalCatalogProductSummary {
+  external_product_code: string;
+  product_name: string;
+  institution_name: string;
+  source_file: string;
+  snapshot_hash: string;
+  needs_review: boolean;
+  duplicate_conflict: boolean;
+}
+
+export interface LocalCatalogConflict {
+  external_product_code: string;
+  status: string;
+  needs_review: boolean;
+  sides: { source_file: string; product_name: string; snapshot_hash: string }[];
+}
+
+export async function getLocalCatalogSources(signal?: AbortSignal): Promise<LocalCatalogSourcesResponse> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/sources`, { headers: { ...getAuthHeaders() }, signal });
+  return handleResponse<LocalCatalogSourcesResponse>(response);
+}
+
+export async function getLocalCatalogProducts(category: string, signal?: AbortSignal): Promise<{ items: LocalCatalogProductSummary[]; total: number; missing: boolean }> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/sources/${encodeURIComponent(category)}/products`, { headers: { ...getAuthHeaders() }, signal });
+  return handleResponse<{ items: LocalCatalogProductSummary[]; total: number; missing: boolean }>(response);
+}
+
+export async function getLocalCatalogConflicts(signal?: AbortSignal): Promise<{ items: LocalCatalogConflict[]; total: number }> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/sources/conflicts`, { headers: { ...getAuthHeaders() }, signal });
+  return handleResponse<{ items: LocalCatalogConflict[]; total: number }>(response);
+}
+
+export async function syncLocalCatalog(category: string, signal?: AbortSignal): Promise<{ created_drafts: number; unchanged: number; conflicts: LocalCatalogConflict[] }> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/sources/${encodeURIComponent(category)}/sync`, {
+    method: 'POST', headers: { ...getAuthHeaders() }, signal,
+  });
+  return handleResponse<{ created_drafts: number; unchanged: number; conflicts: LocalCatalogConflict[] }>(response);
+}
+
 export interface SavedApplication extends SavedApplicationListItem {
   applicationData: Record<string, unknown>;
 }
