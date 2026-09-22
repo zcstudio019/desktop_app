@@ -303,6 +303,9 @@ class FinancingProductVersion(Base):
     source_snapshot_hash = Column(String(64), nullable=False, index=True)
     source_type = Column(String(32), nullable=False, default="feishu_wiki", server_default="feishu_wiki")
     source_file = Column(String(255), default="", nullable=False, server_default="")
+    source_refs_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="[]")
+    conflict_code = Column(String(64), nullable=True, index=True)
+    conflict_resolution_hash = Column(String(64), nullable=True)
     source_update_date = Column(Date)
     source_node_token = Column(String(128), nullable=False)
     source_document_token = Column(String(128), nullable=False)
@@ -361,6 +364,22 @@ class FinancingProductRule(Base):
     message = Column(Text, default="")
     source_text = Column(Text, default="")
     sort_order = Column(Integer, default=0)
+
+
+class FinancingProductConflict(Base):
+    __tablename__ = "financing_product_conflicts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    external_product_code = Column(String(64), unique=True, nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="unresolved", server_default="unresolved")
+    source_hashes_json = Column(Text, nullable=False, default="[]")
+    source_sides_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    decision_json = Column(Text, nullable=False, default="{}")
+    decision_hash = Column(String(64), nullable=True)
+    resolved_by = Column(String(128), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 @event.listens_for(FinancingProductVersion, "before_update")

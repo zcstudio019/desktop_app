@@ -13,9 +13,11 @@ from backend.middleware.auth import require_admin
 from backend.services.feishu_product_import_service import FeishuProductImportService
 from backend.services.markdown_product_import_service import SOURCE_DIR, SOURCE_FILES, scan_sources
 from backend.services.product_catalog_service import FIELD_TYPES, OPERATORS, CatalogError, ProductCatalogService
+from backend.services.product_conflict_service import ProductConflictService
 
 router = APIRouter(prefix="/product-catalog", tags=["Product Catalog"])
 catalog = ProductCatalogService()
+conflict_manager = ProductConflictService(catalog)
 importer = FeishuProductImportService()
 
 
@@ -30,6 +32,13 @@ class DraftPatch(BaseModel):
 
 class RuleRequest(BaseModel):
     rule: dict[str, Any]
+
+
+class ConflictDecisionRequest(BaseModel):
+    strategy: str
+    field_choices: dict[str, str] = Field(default_factory=dict)
+    rename_side: str | None = None
+    new_code: str | None = None
 
 
 def _bad_request(exc: ValueError) -> HTTPException:
@@ -66,6 +75,8 @@ def import_drafts(request: ImportRequest, user: dict = Depends(require_admin)) -
 def list_local_sources(_user: dict = Depends(require_admin)) -> dict[str, Any]:
     scan = scan_sources()
     summaries = scan["summaries"]
+    current_conflicts = conflict_manager.list_conflicts()
+    unresolved_codes = {row["external_product_code"] for row in current_conflicts["items"] if row["conflict"]}
     database_status = "available"
     try:
         versions = catalog.list_versions()
@@ -93,21 +104,38 @@ def list_local_sources(_user: dict = Depends(require_admin)) -> dict[str, Any]:
             summary["last_synced_at"] = None
     for summary in summaries:
         source = next(s for s in scan["sources"] if s.category == summary["category"])
+        summary["conflict_count"] = len({item.external_product_code for item in source.products} & unresolved_codes)
         summary["source_update_date"] = source.products[0].source_update_date.isoformat() if source.products and source.products[0].source_update_date else None
         path = SOURCE_DIR / summary["source_file"]
         summary["source_snapshot_hash"] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
     return {"sources": summaries, "database_status": database_status,
             "totals": {"parsed_count": scan["parsed_count"], "unique_count": scan["unique_count"],
                        "duplicate_code_count": scan["duplicate_code_count"],
-                       "conflict_count": scan["conflict_count"],
+                       "conflict_count": len(unresolved_codes),
                        "needs_review_count": sum(s["needs_review_count"] for s in summaries)}}
 
 
 @router.get("/sources/conflicts")
 @router.get("/conflicts")
 def list_local_conflicts(_user: dict = Depends(require_admin)) -> dict[str, Any]:
-    conflicts = scan_sources()["conflicts"]
-    return {"items": conflicts, "total": len(conflicts)}
+    return conflict_manager.list_conflicts()
+
+
+@router.get("/conflicts/{code}")
+def get_conflict(code: str, _user: dict = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return conflict_manager.get_conflict(code)
+    except CatalogError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.post("/conflicts/{code}/resolve")
+def resolve_conflict(code: str, request: ConflictDecisionRequest,
+                     user: dict = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return conflict_manager.resolve(code, request.model_dump(), user["username"])
+    except CatalogError as exc:
+        raise _bad_request(exc) from exc
 
 
 @router.get("/sources/{category}/products")
@@ -115,11 +143,12 @@ def list_local_products(category: str, _user: dict = Depends(require_admin)) -> 
     if category not in SOURCE_FILES:
         raise HTTPException(status_code=404, detail="产品库分类不存在")
     scan = scan_sources()
+    unresolved_codes = {row["external_product_code"] for row in conflict_manager.list_conflicts()["items"] if row["conflict"]}
     source = next(s for s in scan["sources"] if s.category == category)
     items = [{"external_product_code": p.external_product_code, "product_name": p.product_name,
               "institution_name": p.institution_name, "source_file": p.source_file,
               "snapshot_hash": p.source_snapshot_hash, "needs_review": p.needs_review,
-              "duplicate_conflict": p.external_product_code in scan["conflicting_codes"]} for p in source.products]
+              "duplicate_conflict": p.external_product_code in unresolved_codes} for p in source.products]
     return {"items": items, "total": len(items), "missing": source.missing}
 
 

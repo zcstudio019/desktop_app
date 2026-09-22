@@ -13,11 +13,12 @@ from sqlalchemy.pool import StaticPool
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend.database import Base
-from backend.db_models import FinancingProduct, FinancingProductRule, FinancingProductVersion
+from backend.db_models import FinancingProduct, FinancingProductRule, FinancingProductVersion, FinancingProductConflict
 from backend.middleware.auth import create_access_token
 from backend.routers import product_catalog as routes
 from backend.services.markdown_product_import_service import SOURCE_FILES, scan_sources
 from backend.services.product_catalog_service import CatalogError, ProductCatalogService
+from backend.services.product_conflict_service import ProductConflictService
 
 
 def document(amount="最高1000万元"):
@@ -33,9 +34,10 @@ def setup(tmp_path, monkeypatch):
         (tmp_path / filename).write_text("# 空产品库\n产品数量：0款\n", encoding="utf-8")
     (tmp_path / SOURCE_FILES["enterprise_credit"]).write_text(document(), encoding="utf-8")
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(engine, tables=[FinancingProduct.__table__, FinancingProductVersion.__table__, FinancingProductRule.__table__])
+    Base.metadata.create_all(engine, tables=[FinancingProduct.__table__, FinancingProductVersion.__table__, FinancingProductRule.__table__, FinancingProductConflict.__table__])
     service = ProductCatalogService(sessionmaker(bind=engine), ensure_schema=False)
     monkeypatch.setattr(routes, "catalog", service)
+    monkeypatch.setattr(routes, "conflict_manager", ProductConflictService(service, directory=tmp_path))
     monkeypatch.setattr(routes, "scan_sources", lambda: scan_sources(tmp_path))
     monkeypatch.setattr(routes, "SOURCE_DIR", tmp_path)
     app = FastAPI()

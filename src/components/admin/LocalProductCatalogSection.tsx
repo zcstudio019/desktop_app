@@ -2,9 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCcw, X } from 'lucide-react';
 import {
   changeCatalogVersion, deleteCatalogRule, getCatalogProductHistory, getCatalogRuleOptions, getCatalogVersion,
-  getLocalCatalogConflicts, getLocalCatalogProducts, getLocalCatalogSources, listCatalogProducts, listCatalogVersions,
-  patchCatalogDraft, saveCatalogRule, syncLocalCatalog,
-  type CatalogProductRow, type CatalogRule, type CatalogVersionDetail, type LocalCatalogConflict,
+  getCatalogConflict, getLocalCatalogConflicts, getLocalCatalogProducts, getLocalCatalogSources, listCatalogProducts, listCatalogVersions,
+  patchCatalogDraft, resolveCatalogConflict, saveCatalogRule, syncLocalCatalog,
+  type CatalogConflictDecision, type CatalogConflictDetail, type CatalogProductRow, type CatalogRule, type CatalogVersionDetail, type LocalCatalogConflict,
   type LocalCatalogProductSummary, type LocalCatalogSourcesResponse,
 } from '../../services/api';
 
@@ -36,6 +36,9 @@ const REVIEW_KEYS = ['external_product_code', 'institution_name', 'product_name'
 const STATUS_LABELS: Record<string, string> = { draft: '草稿', needs_review: '待审核', published: '已发布',
   superseded: '已替代', expired: '已过期', disabled: '已停用' };
 const REVIEW_LABELS: Record<string, string> = { unreviewed: '未审核', reviewing: '审核中', reviewed: '已审核', rejected: '已驳回' };
+const CONFLICT_LABELS: Record<string, string> = { unresolved: '待处理', resolved_keep_a: '已选择 A', resolved_keep_b: '已选择 B', resolved_merged: '已合并', resolved_split: '已拆分' };
+
+function preview(value: unknown): string { return value == null ? '—' : typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
 
 function fieldValue(value: unknown): string {
   if (Array.isArray(value)) return value.join('\n');
@@ -48,6 +51,11 @@ const LocalProductCatalogSection: React.FC = () => {
   const [rows, setRows] = useState<CatalogProductRow[]>([]);
   const [parsed, setParsed] = useState<LocalCatalogProductSummary[]>([]);
   const [conflicts, setConflicts] = useState<LocalCatalogConflict[]>([]);
+  const [conflictDetail, setConflictDetail] = useState<CatalogConflictDetail | null>(null);
+  const [conflictStrategy, setConflictStrategy] = useState<CatalogConflictDecision['strategy'] | ''>('');
+  const [fieldChoices, setFieldChoices] = useState<Record<string, 'a' | 'b'>>({});
+  const [renameSide, setRenameSide] = useState<'a' | 'b'>('b');
+  const [newCode, setNewCode] = useState('');
   const [detail, setDetail] = useState<CatalogVersionDetail | null>(null);
   const [history, setHistory] = useState<CatalogProductRow[]>([]);
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -117,6 +125,42 @@ const LocalProductCatalogSection: React.FC = () => {
     finally { setBusy(''); }
   };
 
+  const openConflict = async (code: string) => {
+    setBusy('conflict');
+    try {
+      const result = await getCatalogConflict(code);
+      setConflictDetail(result);
+      setConflictStrategy('');
+      setFieldChoices({});
+      setRenameSide('b');
+      setNewCode('');
+      setError('');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '冲突详情加载失败'); }
+    finally { setBusy(''); }
+  };
+
+  const submitConflictDecision = async () => {
+    if (!conflictDetail) return;
+    if (!conflictStrategy) { setError('请先选择一种人工处理方式。'); return; }
+    if (conflictStrategy === 'merge' && conflictDetail.differences.some((item) => !fieldChoices[item.field_name])) {
+      setError('请为每个差异字段选择来源 A 或 B。'); return;
+    }
+    if (conflictStrategy === 'split' && !newCode.trim()) { setError('请填写新的唯一产品编号。'); return; }
+    if (!window.confirm('将按当前人工选择生成草稿，并保留两份原始来源记录。确认处理此冲突？')) return;
+    setBusy('resolve');
+    try {
+      const decision: CatalogConflictDecision = { strategy: conflictStrategy };
+      if (conflictStrategy === 'merge') decision.field_choices = fieldChoices;
+      if (conflictStrategy === 'split') { decision.rename_side = renameSide; decision.new_code = newCode.trim().toUpperCase(); }
+      const result = await resolveCatalogConflict(conflictDetail.external_product_code, decision);
+      setNotice(`冲突已处理，生成 ${result.created_drafts} 个待审核草稿；未发布产品。`);
+      setConflictDetail(null);
+      await Promise.all([loadSources(), loadConflicts()]);
+      setError('');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '冲突处理失败'); }
+    finally { setBusy(''); }
+  };
+
   const saveDraft = async () => {
     if (!detail) return;
     setBusy('save');
@@ -175,7 +219,7 @@ const LocalProductCatalogSection: React.FC = () => {
     finally { setBusy(''); }
   };
 
-  const conflictCodes = useMemo(() => new Set(conflicts.map((item) => item.external_product_code)), [conflicts]);
+  const conflictCodes = useMemo(() => new Set(conflicts.filter((item) => item.conflict !== false).map((item) => item.external_product_code)), [conflicts]);
   const displayRows = filter.conflict === 'yes' ? rows.filter((row) => conflictCodes.has(row.product.external_product_code || ''))
     : filter.conflict === 'no' ? rows.filter((row) => !conflictCodes.has(row.product.external_product_code || '')) : rows;
   const editable = !!detail && ['draft', 'needs_review'].includes(detail.version.status);
@@ -228,9 +272,36 @@ const LocalProductCatalogSection: React.FC = () => {
     </div>}
 
     {tab === 'conflicts' && <div className="mt-5 space-y-3">{conflicts.length === 0 ? <p>暂无冲突。</p> : conflicts.map((item) => <div key={item.external_product_code} className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
-      <div className="font-semibold">{item.external_product_code} · 待处理</div><div className="mt-1">冲突字段：{item.conflict_fields?.join('、') || '产品标题或正文不同'}</div>
+      <button type="button" onClick={() => void openConflict(item.external_product_code)} className="font-semibold text-blue-700 underline">{item.external_product_code} · {CONFLICT_LABELS[item.status] || '待处理'} · 查看对照与处理</button><div className="mt-1">冲突字段：{item.conflict_fields?.join('、') || '产品标题或正文不同'}</div>
       {item.sides.map((side, index) => <div key={`${side.snapshot_hash}-${index}`} className="mt-2 rounded bg-white p-2">{index + 1}. {side.source_file} · {side.product_name}<div className="break-all font-mono text-xs">SHA-256: {side.snapshot_hash}</div></div>)}
     </div>)}</div>}
+
+    {conflictDetail && <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/50 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="冲突详情">
+      <div className="mx-auto max-w-7xl rounded-xl bg-white p-5 shadow-xl">
+        <div className="flex justify-between gap-3"><div><h3 className="text-xl font-semibold">{conflictDetail.external_product_code} · 来源冲突</h3><p className="text-sm text-slate-500">逐项核对来源后，由管理员选择处理方式；已发布版本不受影响。</p></div><button type="button" aria-label="关闭冲突详情" onClick={() => setConflictDetail(null)}><X size={20} /></button></div>
+        {error && <p role="alert" className="mt-3 rounded bg-rose-50 p-2 text-sm text-rose-700">{error}</p>}
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">{conflictDetail.sides.map((side) => <div key={side.side} className="min-w-0 rounded-xl border p-4 text-sm">
+          <h4 className="text-lg font-semibold">来源 {side.side.toUpperCase()}</h4>
+          <dl className="mt-2 grid grid-cols-[9rem_1fr] gap-1 break-all">{[
+            ['产品编号', side.external_product_code], ['产品名称', side.product_name], ['银行/机构', side.institution_name],
+            ['产品分类', side.product_category], ['来源文件', side.source_file], ['来源更新日期', side.source_update_date || '未知'],
+            ['来源 SHA-256', side.source_snapshot_hash],
+          ].map(([label, value]) => <React.Fragment key={label}><dt className="text-slate-500">{label}</dt><dd>{value}</dd></React.Fragment>)}</dl>
+          <h5 className="mt-4 font-semibold">已结构化字段</h5><div className="mt-1 max-h-60 overflow-auto rounded bg-slate-50 p-2">{Object.entries(side.structured_fields).map(([key, value]) => <div key={key} className={conflictDetail.differences.some((diff) => diff.field_name === key) ? 'bg-amber-100' : ''}><b>{key}：</b>{preview(value)}</div>)}</div>
+          <h5 className="mt-4 font-semibold">raw_fields</h5><div className="mt-1 max-h-60 overflow-auto rounded bg-slate-50 p-2">{Object.entries(side.raw_fields).map(([key, value]) => <div key={key} className={conflictDetail.differences.some((diff) => diff.field_name === `raw_fields.${key}`) ? 'bg-amber-100' : ''}><b>{key}：</b>{preview(value)}</div>)}</div>
+          <h5 className="mt-4 font-semibold">原始 Markdown</h5><pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-3">{side.source_snapshot}</pre>
+        </div>)}</div>
+        <h4 className="mt-5 font-semibold">差异字段（{conflictDetail.differences.length}）</h4>
+        <div className="mt-2 max-h-80 overflow-auto rounded border text-sm">{conflictDetail.differences.map((diff) => <div key={diff.field_name} className="grid gap-2 border-b bg-amber-50 p-2 sm:grid-cols-[12rem_1fr_1fr]"><b>{diff.field_name}</b><div>A：{preview(diff.a)}</div><div>B：{preview(diff.b)}</div></div>)}</div>
+        {(conflictDetail.source_line_changes?.a_only.length > 0 || conflictDetail.source_line_changes?.b_only.length > 0) && <div className="mt-4 rounded border p-3 text-sm"><h4 className="font-semibold">原文行差异</h4><div className="mt-2 grid gap-3 lg:grid-cols-2"><div><b>仅来源 A</b>{conflictDetail.source_line_changes.a_only.map((line, index) => <pre key={index} className="mt-1 whitespace-pre-wrap bg-rose-50 p-1">{line}</pre>)}</div><div><b>仅来源 B</b>{conflictDetail.source_line_changes.b_only.map((line, index) => <pre key={index} className="mt-1 whitespace-pre-wrap bg-emerald-50 p-1">{line}</pre>)}</div></div></div>}
+        {conflictDetail.conflict !== false ? <div className="mt-5 rounded-xl border p-4 text-sm"><h4 className="font-semibold">人工处理</h4>
+          <div className="mt-2 flex flex-wrap gap-4">{([['keep_a', '同一产品，选择 A'], ['keep_b', '同一产品，选择 B'], ['merge', '同一产品，逐字段合并'], ['split', '两个不同产品，改编号']] as const).map(([value, label]) => <label key={value}><input type="radio" name="conflict-strategy" checked={conflictStrategy === value} onChange={() => setConflictStrategy(value)} /> {label}</label>)}</div>
+          {conflictStrategy === 'merge' && <div className="mt-3 max-h-72 overflow-auto rounded border p-3"><p className="mb-2">每个差异字段都必须选择来源：</p>{conflictDetail.differences.map((diff) => <div key={diff.field_name} className="flex flex-wrap items-center gap-3 border-b py-2"><b className="min-w-44">{diff.field_name}</b><label><input type="radio" name={`choice-${diff.field_name}`} checked={fieldChoices[diff.field_name] === 'a'} onChange={() => setFieldChoices({ ...fieldChoices, [diff.field_name]: 'a' })} /> 使用 A</label><label><input type="radio" name={`choice-${diff.field_name}`} checked={fieldChoices[diff.field_name] === 'b'} onChange={() => setFieldChoices({ ...fieldChoices, [diff.field_name]: 'b' })} /> 使用 B</label></div>)}</div>}
+          {conflictStrategy === 'split' && <div className="mt-3 flex flex-wrap gap-3"><label>修改哪一侧编号<select aria-label="修改编号的来源" value={renameSide} onChange={(event) => setRenameSide(event.target.value as 'a' | 'b')} className="ml-2 rounded border p-2"><option value="a">来源 A</option><option value="b">来源 B</option></select></label><label>新产品编号<input aria-label="新产品编号" value={newCode} onChange={(event) => setNewCode(event.target.value)} className="ml-2 rounded border p-2" placeholder="例如 NJB-007" /></label></div>}
+          <button type="button" onClick={() => void submitConflictDecision()} disabled={!!busy || !conflictStrategy} className="mt-4 rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50">确认生成待审核草稿</button>
+        </div> : <p className="mt-4 text-sm text-emerald-700">该冲突已有人工决议。如需变更，请联系管理员复核来源和现有草稿。</p>}
+      </div>
+    </div>}
 
     {detail && <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40" role="dialog" aria-modal="true" aria-label="产品详情">
       <div className="h-full w-full max-w-6xl overflow-y-auto bg-white p-6 shadow-xl"><div className="flex items-start justify-between gap-3">

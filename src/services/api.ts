@@ -819,9 +819,27 @@ export interface LocalCatalogProductSummary {
 export interface LocalCatalogConflict {
   external_product_code: string;
   status: string;
+  conflict?: boolean;
+  stale_resolution?: boolean;
   needs_review: boolean;
   sides: { source_file: string; product_name: string; snapshot_hash: string }[];
   conflict_fields: string[];
+}
+
+export interface CatalogConflictSide {
+  side: 'a' | 'b'; external_product_code: string; product_name: string; institution_name: string;
+  product_category: string; source_file: string; source_update_date: string | null;
+  source_snapshot_hash: string; source_snapshot: string; raw_fields: Record<string, unknown>;
+  structured_fields: Record<string, unknown>;
+}
+export interface CatalogConflictDetail extends Omit<LocalCatalogConflict, 'sides'> {
+  sides: CatalogConflictSide[];
+  differences: { field_name: string; a: unknown; b: unknown; kind: string }[];
+  source_line_changes: { a_only: string[]; b_only: string[] };
+}
+export interface CatalogConflictDecision {
+  strategy: 'keep_a' | 'keep_b' | 'merge' | 'split';
+  field_choices?: Record<string, 'a' | 'b'>; rename_side?: 'a' | 'b'; new_code?: string;
 }
 
 export interface CatalogProduct { product_id: string; external_product_code: string | null; product_category: string; source_ref: string; institution_name: string; product_name: string }
@@ -854,6 +872,18 @@ export async function getLocalCatalogProducts(category: string, signal?: AbortSi
 export async function getLocalCatalogConflicts(signal?: AbortSignal): Promise<{ items: LocalCatalogConflict[]; total: number }> {
   const response = await fetch(`${API_BASE}/api/product-catalog/sources/conflicts`, { headers: { ...getAuthHeaders() }, signal });
   return handleResponse<{ items: LocalCatalogConflict[]; total: number }>(response);
+}
+
+export async function getCatalogConflict(code: string): Promise<CatalogConflictDetail> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/conflicts/${encodeURIComponent(code)}`, { headers: getAuthHeaders() });
+  return handleResponse<CatalogConflictDetail>(response);
+}
+
+export async function resolveCatalogConflict(code: string, decision: CatalogConflictDecision): Promise<{ status: string; created_drafts: number; version_ids: string[] }> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/conflicts/${encodeURIComponent(code)}/resolve`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(decision),
+  });
+  return handleResponse<{ status: string; created_drafts: number; version_ids: string[] }>(response);
 }
 
 export async function syncLocalCatalog(category: string, signal?: AbortSignal): Promise<{ created_drafts: number; unchanged: number; conflicts: LocalCatalogConflict[] }> {

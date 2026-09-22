@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.database import Base, SessionLocal, engine
-from backend.db_models import FinancingProduct, FinancingProductRule, FinancingProductVersion
+from backend.db_models import FinancingProduct, FinancingProductRule, FinancingProductVersion, FinancingProductConflict
 from backend.services.feishu_product_import_service import ParsedProduct, parse_product_document
 from backend.services.markdown_product_import_service import SOURCE_DIR, SOURCE_FILES, scan_sources
 from backend.services.product_catalog_schema import ensure_markdown_catalog_schema
@@ -40,7 +40,7 @@ FIELD_TYPES = {
     "asset.has_real_estate": "boolean", "asset.has_vehicle": "boolean",
     "asset.has_equipment": "boolean", "asset.has_confirmed_collateral": "boolean",
 }
-_JSON_FIELDS = {"region_scope_json", "repayment_methods_json", "guarantee_modes_json", "collateral_types_json", "materials_json", "field_review_json", "raw_fields_json", "review_reasons_json"}
+_JSON_FIELDS = {"region_scope_json", "repayment_methods_json", "guarantee_modes_json", "collateral_types_json", "materials_json", "field_review_json", "raw_fields_json", "review_reasons_json", "source_refs_json"}
 _EDIT_FIELDS = {"effective_from", "effective_to", "summary", "region_scope_json", "currency", "min_amount",
                 "max_amount", "min_term_months", "max_term_months", "repayment_methods_json", "guarantee_modes_json",
                 "collateral_types_json", "materials_json", "rate_text", "notes", "field_review_json",
@@ -179,7 +179,7 @@ class ProductCatalogService:
     def _prepare(self) -> None:
         global _TABLES_READY
         if self.ensure_schema and not _TABLES_READY:
-            Base.metadata.create_all(bind=engine, tables=[FinancingProduct.__table__, FinancingProductVersion.__table__, FinancingProductRule.__table__], checkfirst=True)
+            Base.metadata.create_all(bind=engine, tables=[FinancingProduct.__table__, FinancingProductVersion.__table__, FinancingProductRule.__table__, FinancingProductConflict.__table__], checkfirst=True)
             ensure_markdown_catalog_schema(engine)
             _TABLES_READY = True
 
@@ -480,11 +480,9 @@ class ProductCatalogService:
     def _validate_publish(product: FinancingProduct, version: FinancingProductVersion, rules: list[FinancingProductRule]) -> None:
         if not (version.institution_name or product.institution_name).strip() or not (version.product_name or product.product_name).strip() or product.product_category not in PRODUCT_CATEGORIES:
             raise CatalogError("机构、产品名称及类别必填")
-        if version.source_type == "local_markdown" and not product.external_product_code:
+        if version.source_type in {"local_markdown", "merged_markdown"} and not product.external_product_code:
             raise CatalogError("本地产品必须有稳定外部编号")
-        if version.source_type == "local_markdown" and product.external_product_code in scan_sources()["conflicting_codes"]:
-            raise CatalogError("产品编号存在来源冲突，不能发布")
-        if version.source_type == "local_markdown" and version.review_status != "reviewed":
+        if version.source_type in {"local_markdown", "merged_markdown"} and version.review_status != "reviewed":
             raise CatalogError("产品草稿尚未通过人工审核")
         if version.effective_from is None:
             raise CatalogError("发布日期起始日必填")
@@ -495,7 +493,7 @@ class ProductCatalogService:
         if version.min_term_months is not None and version.max_term_months is not None and version.max_term_months < version.min_term_months:
             raise CatalogError("最长期限不能小于最短期限")
         review = json.loads(version.field_review_json or "{}")
-        required = _REVIEW_REQUIRED | ({"external_product_code"} if version.source_type == "local_markdown" else set())
+        required = _REVIEW_REQUIRED | ({"external_product_code"} if version.source_type in {"local_markdown", "merged_markdown"} else set())
         if any(review.get(key) not in {"confirmed", "acknowledged_unknown"} for key in required):
             raise CatalogError("关键产品字段尚未完成管理员复核")
         for rule in rules:
@@ -510,6 +508,18 @@ class ProductCatalogService:
             self._editable(version)
             product = db.scalar(select(FinancingProduct).where(FinancingProduct.product_id == version.product_id).with_for_update())
             rules = db.scalars(select(FinancingProductRule).where(FinancingProductRule.version_id == version_id)).all()
+            source_scan = scan_sources()
+            if version.conflict_code:
+                conflict = db.scalar(select(FinancingProductConflict).where(
+                    FinancingProductConflict.external_product_code == version.conflict_code
+                ))
+                current = [item.source_snapshot_hash for item in source_scan["by_code"].get(version.conflict_code, [])]
+                if (conflict is None or not conflict.status.startswith("resolved_")
+                        or json.loads(conflict.source_hashes_json) != current
+                        or version.conflict_resolution_hash != conflict.decision_hash):
+                    raise CatalogError("冲突决议缺失或来源已变化，不能发布")
+            elif product.external_product_code in source_scan["conflicting_codes"]:
+                raise CatalogError("产品编号存在来源冲突，不能发布")
             self._validate_publish(product, version, rules)
             previous = db.scalars(select(FinancingProductVersion).where(
                 FinancingProductVersion.product_id == version.product_id,

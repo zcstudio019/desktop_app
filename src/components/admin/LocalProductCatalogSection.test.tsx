@@ -2,12 +2,14 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import LocalProductCatalogSection from './LocalProductCatalogSection';
 import {
-  getCatalogProductHistory, getCatalogRuleOptions, getCatalogVersion, getLocalCatalogConflicts,
+  getCatalogConflict, getCatalogProductHistory, getCatalogRuleOptions, getCatalogVersion, getLocalCatalogConflicts,
   getLocalCatalogProducts, getLocalCatalogSources, listCatalogProducts, listCatalogVersions, syncLocalCatalog,
+  resolveCatalogConflict,
 } from '../../services/api';
 
 vi.mock('../../services/api', () => ({
   getCatalogProductHistory: vi.fn(), getCatalogRuleOptions: vi.fn(), getCatalogVersion: vi.fn(),
+  getCatalogConflict: vi.fn(), resolveCatalogConflict: vi.fn(),
   getLocalCatalogConflicts: vi.fn(), getLocalCatalogProducts: vi.fn(), getLocalCatalogSources: vi.fn(),
   listCatalogProducts: vi.fn(), listCatalogVersions: vi.fn(), syncLocalCatalog: vi.fn(),
   patchCatalogDraft: vi.fn(), saveCatalogRule: vi.fn(), deleteCatalogRule: vi.fn(), changeCatalogVersion: vi.fn(),
@@ -36,6 +38,13 @@ describe('LocalProductCatalogSection', () => {
         draft_count: 1, published_count: 0, last_synced_at: '2026-09-22' })) });
     vi.mocked(getLocalCatalogConflicts).mockResolvedValue({ total: 1, items: [{ external_product_code: 'NJB-001', status: 'duplicate_conflict', needs_review: true,
       conflict_fields: ['最高额度'], sides: [{ source_file: 'A.md', product_name: '产品A', snapshot_hash: 'abc' }, { source_file: 'B.md', product_name: '产品B', snapshot_hash: 'def' }] }] });
+    vi.mocked(getCatalogConflict).mockResolvedValue({ external_product_code: 'NJB-001', status: 'unresolved', conflict: true, needs_review: true,
+      conflict_fields: ['最高额度'], differences: [{ field_name: 'product_name', a: '产品A', b: '产品B', kind: 'structured' }],
+      source_line_changes: { a_only: ['## 产品A'], b_only: ['## 产品B'] }, sides: [
+        { side: 'a', external_product_code: 'NJB-001', product_name: '产品A', institution_name: '南京银行', product_category: 'enterprise_credit', source_file: 'A.md', source_update_date: '2026-09-01', source_snapshot_hash: 'abc', source_snapshot: '## 产品A', raw_fields: { 最高额度: '500万' }, structured_fields: { max_amount: 5000000 } },
+        { side: 'b', external_product_code: 'NJB-001', product_name: '产品B', institution_name: '南京银行', product_category: 'enterprise_credit', source_file: 'B.md', source_update_date: '2026-09-02', source_snapshot_hash: 'def', source_snapshot: '## 产品B', raw_fields: { 最高额度: '800万' }, structured_fields: { max_amount: 8000000 } },
+      ] });
+    vi.mocked(resolveCatalogConflict).mockResolvedValue({ status: 'resolved_keep_a', created_drafts: 1, version_ids: ['v2'] });
     vi.mocked(getLocalCatalogProducts).mockResolvedValue({ items: [], total: 0, missing: false });
     vi.mocked(listCatalogProducts).mockResolvedValue({ items: [{ product, version }], total: 1 });
     vi.mocked(listCatalogVersions).mockResolvedValue({ items: [{ product, version }], total: 1 });
@@ -85,5 +94,21 @@ describe('LocalProductCatalogSection', () => {
     expect(await screen.findByText(/NJB-001 · 待处理/)).toBeTruthy();
     expect(screen.getByText(/冲突字段：最高额度/)).toBeTruthy();
     expect(screen.getByText(/SHA-256: abc/)).toBeTruthy();
+  });
+
+  it('opens both original sources and requires a human decision', async () => {
+    render(<LocalProductCatalogSection />);
+    await screen.findByText('担保基金');
+    fireEvent.click(within(screen.getByRole('navigation', { name: '产品库管理导航' })).getByRole('button', { name: '冲突' }));
+    fireEvent.click(await screen.findByRole('button', { name: /NJB-001.*查看对照与处理/ }));
+    const dialog = await screen.findByRole('dialog', { name: '冲突详情' });
+    expect(within(dialog).getByText('来源 A')).toBeTruthy();
+    expect(within(dialog).getByText('来源 B')).toBeTruthy();
+    expect(within(dialog).getByText('原文行差异')).toBeTruthy();
+    expect(resolveCatalogConflict).not.toHaveBeenCalled();
+    expect((within(dialog).getByText('确认生成待审核草稿') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByLabelText('同一产品，逐字段合并'));
+    fireEvent.click(within(dialog).getByText('确认生成待审核草稿'));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('每个差异字段');
   });
 });

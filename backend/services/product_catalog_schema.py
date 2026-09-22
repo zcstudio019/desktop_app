@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import inspect, text
 from sqlalchemy.schema import CreateColumn
 
-from backend.db_models import FinancingProduct, FinancingProductVersion
+from backend.db_models import FinancingProduct, FinancingProductVersion, FinancingProductConflict
 
 
 def ensure_markdown_catalog_schema(engine) -> None:
@@ -23,3 +23,7 @@ def ensure_markdown_catalog_schema(engine) -> None:
     for index in FinancingProduct.__table__.indexes:
         if "external_product_code" in {column.name for column in index.columns}:
             index.create(bind=engine, checkfirst=True)
+    for index in FinancingProductVersion.__table__.indexes:
+        if "conflict_code" in {column.name for column in index.columns}:
+            index.create(bind=engine, checkfirst=True)
+    FinancingProductConflict.__table__.create(bind=engine, checkfirst=True)

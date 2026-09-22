@@ -194,6 +194,7 @@ def test_existing_catalog_tables_gain_markdown_columns():
     ensure_markdown_catalog_schema(engine)
     assert "external_product_code" in {x["name"] for x in inspect(engine).get_columns("financing_products")}
     columns = {x["name"] for x in inspect(engine).get_columns("financing_product_versions")}
-    assert {"raw_fields_json", "review_status", "review_reasons_json"} <= columns
+    assert {"raw_fields_json", "review_status", "review_reasons_json", "source_refs_json", "conflict_code", "conflict_resolution_hash"} <= columns
+    assert inspect(engine).has_table("financing_product_conflicts")
     ensure_markdown_catalog_schema(engine)
     engine.dispose()
