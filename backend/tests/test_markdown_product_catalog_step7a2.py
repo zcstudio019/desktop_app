@@ -50,7 +50,8 @@ def review(service, version_id):
     for key in ("external_product_code", "institution_name", "product_name", "product_category", "max_amount",
                 "max_term_months", "region_scope", "guarantee_modes", "collateral_types", "materials", "company_age_rule"):
         data[key] = "confirmed" if data.get(key) == "extracted_review" else "acknowledged_unknown"
-    service.update_draft(version_id, {"effective_from": "2026-09-01", "field_review_json": data})
+    service.update_draft(version_id, {"effective_from": "2026-09-01", "field_review_json": data,
+                                      "review_status": "reviewed"})
 
 
 def test_parse_markdown_product_header():
@@ -192,6 +193,7 @@ def test_existing_catalog_tables_gain_markdown_columns():
         db.execute(text("CREATE TABLE financing_product_versions (id INTEGER PRIMARY KEY, version_id VARCHAR(64), product_id VARCHAR(64), version_number INTEGER, status VARCHAR(32), effective_from DATE, effective_to DATE, source_snapshot TEXT, source_snapshot_hash VARCHAR(64), source_node_token VARCHAR(128), source_document_token VARCHAR(128), source_imported_at DATETIME, source_updated_at DATETIME, summary TEXT, region_scope_json TEXT, currency VARCHAR(8), min_amount NUMERIC, max_amount NUMERIC, min_term_months INTEGER, max_term_months INTEGER, repayment_methods_json TEXT, guarantee_modes_json TEXT, collateral_types_json TEXT, materials_json TEXT, rate_text VARCHAR(255), notes TEXT, field_review_json TEXT, created_by VARCHAR(128), published_by VARCHAR(128), created_at DATETIME, published_at DATETIME)"))
     ensure_markdown_catalog_schema(engine)
     assert "external_product_code" in {x["name"] for x in inspect(engine).get_columns("financing_products")}
-    assert "raw_fields_json" in {x["name"] for x in inspect(engine).get_columns("financing_product_versions")}
+    columns = {x["name"] for x in inspect(engine).get_columns("financing_product_versions")}
+    assert {"raw_fields_json", "review_status", "review_reasons_json"} <= columns
     ensure_markdown_catalog_schema(engine)
     engine.dispose()

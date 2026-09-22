@@ -40,14 +40,14 @@ FIELD_TYPES = {
     "asset.has_real_estate": "boolean", "asset.has_vehicle": "boolean",
     "asset.has_equipment": "boolean", "asset.has_confirmed_collateral": "boolean",
 }
-_JSON_FIELDS = {"region_scope_json", "repayment_methods_json", "guarantee_modes_json", "collateral_types_json", "materials_json", "field_review_json", "raw_fields_json"}
+_JSON_FIELDS = {"region_scope_json", "repayment_methods_json", "guarantee_modes_json", "collateral_types_json", "materials_json", "field_review_json", "raw_fields_json", "review_reasons_json"}
 _EDIT_FIELDS = {"effective_from", "effective_to", "summary", "region_scope_json", "currency", "min_amount",
                 "max_amount", "min_term_months", "max_term_months", "repayment_methods_json", "guarantee_modes_json",
                 "collateral_types_json", "materials_json", "rate_text", "notes", "field_review_json",
                 "loan_type", "guarantee_type", "company_age_months", "borrower_age_min", "borrower_age_max",
                 "tax_grade", "revenue_requirement", "tax_requirement", "invoice_requirement",
                 "credit_overdue_requirement", "credit_query_requirement", "debt_requirement",
-                "collateral_requirement", "suitable_customer_text"}
+                "collateral_requirement", "suitable_customer_text", "review_status"}
 _REVIEW_REQUIRED = {"institution_name", "product_name", "product_category", "max_amount", "max_term_months",
                     "region_scope", "guarantee_modes", "collateral_types", "materials", "company_age_rule"}
 _TABLES_READY = False
@@ -301,6 +301,7 @@ class ProductCatalogService:
                         source_node_token="", source_document_token="",
                         source_imported_at=datetime.now(timezone.utc).replace(tzinfo=None), created_by=actor,
                         needs_review=1, field_review_json=json.dumps(item.review, ensure_ascii=False),
+                        review_status="unreviewed", review_reasons_json=json.dumps(item.review_reasons, ensure_ascii=False),
                     )
                     for key, value in item.fields.items():
                         setattr(version, key, json.dumps(value, ensure_ascii=False) if key in _JSON_FIELDS else value)
@@ -332,6 +333,41 @@ class ProductCatalogService:
             if status:
                 stmt = stmt.where(FinancingProductVersion.status == status)
             return [{"product": _serialize(product), "version": _serialize(version)} for version, product in db.execute(stmt.order_by(FinancingProductVersion.id.desc())).all()]
+
+    def list_products(self, *, category: str | None = None, institution: str | None = None,
+                      status: str | None = None, needs_review: bool | None = None,
+                      search: str | None = None) -> list[dict[str, Any]]:
+        """Return one row per product using its newest version for administrator filters."""
+        latest: dict[str, dict[str, Any]] = {}
+        for row in self.list_versions():
+            product, version = row["product"], row["version"]
+            if status and version["status"] != status:
+                continue
+            if needs_review is not None and bool(version["needs_review"]) != needs_review:
+                continue
+            key = product["product_id"]
+            if key not in latest or version["version_number"] > latest[key]["version"]["version_number"]:
+                latest[key] = row
+        result = []
+        for row in latest.values():
+            product, version = row["product"], row["version"]
+            if category and product["product_category"] != category:
+                continue
+            if institution and institution.casefold() not in version["institution_name"].casefold():
+                continue
+            if search and search.casefold() not in " ".join((product.get("external_product_code") or "",
+                                                              version["product_name"], version["institution_name"])).casefold():
+                continue
+            result.append({"product": product, "version": version})
+        return sorted(result, key=lambda row: ((row["product"].get("external_product_code") or ""), row["product"]["product_id"]))
+
+    def get_product(self, product_id: str) -> dict[str, Any]:
+        versions = self.list_versions(product_id=product_id)
+        if not versions:
+            raise CatalogError("产品不存在")
+        versions.sort(key=lambda row: row["version"]["version_number"], reverse=True)
+        return {"product": versions[0]["product"], "latest_version": versions[0]["version"],
+                "versions": [row["version"] for row in versions]}
 
     def update_draft(self, version_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         self._prepare()
@@ -386,7 +422,21 @@ class ProductCatalogService:
                 elif key in {"company_age_months", "borrower_age_min", "borrower_age_max"}:
                     if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
                         raise CatalogError("月数和年龄必须是非负整数")
+                elif key == "review_status" and value not in {"unreviewed", "reviewing", "reviewed", "rejected"}:
+                    raise CatalogError("人工审核状态不合法")
                 setattr(version, key, value)
+            if version.source_type == "local_markdown" and "field_review_json" in patch:
+                review = json.loads(version.field_review_json or "{}")
+                required = _REVIEW_REQUIRED | {"external_product_code"}
+                version.needs_review = int(version.review_status != "reviewed" or any(
+                    review.get(key) not in {"confirmed", "acknowledged_unknown"} for key in required
+                ))
+            elif version.source_type == "local_markdown" and "review_status" in patch:
+                review = json.loads(version.field_review_json or "{}")
+                required = _REVIEW_REQUIRED | {"external_product_code"}
+                version.needs_review = int(version.review_status != "reviewed" or any(
+                    review.get(key) not in {"confirmed", "acknowledged_unknown"} for key in required
+                ))
         return self.get_version(version_id)
 
     def add_rule(self, version_id: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -410,12 +460,32 @@ class ProductCatalogService:
                 raise CatalogError("规则不存在")
             db.delete(rule)
 
+    def update_rule(self, version_id: str, rule_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        self._prepare()
+        validated = validate_rule(data)
+        with self.session_factory.begin() as db:
+            version = self._version(db, version_id)
+            self._editable(version)
+            rule = db.scalar(select(FinancingProductRule).where(
+                FinancingProductRule.rule_id == rule_id, FinancingProductRule.version_id == version_id
+            ))
+            if rule is None:
+                raise CatalogError("规则不存在")
+            for key, value in validated.items():
+                setattr(rule, key, value)
+            db.flush()
+            return _serialize(rule)
+
     @staticmethod
     def _validate_publish(product: FinancingProduct, version: FinancingProductVersion, rules: list[FinancingProductRule]) -> None:
         if not (version.institution_name or product.institution_name).strip() or not (version.product_name or product.product_name).strip() or product.product_category not in PRODUCT_CATEGORIES:
             raise CatalogError("机构、产品名称及类别必填")
         if version.source_type == "local_markdown" and not product.external_product_code:
             raise CatalogError("本地产品必须有稳定外部编号")
+        if version.source_type == "local_markdown" and product.external_product_code in scan_sources()["conflicting_codes"]:
+            raise CatalogError("产品编号存在来源冲突，不能发布")
+        if version.source_type == "local_markdown" and version.review_status != "reviewed":
+            raise CatalogError("产品草稿尚未通过人工审核")
         if version.effective_from is None:
             raise CatalogError("发布日期起始日必填")
         if version.effective_to and version.effective_to <= version.effective_from:

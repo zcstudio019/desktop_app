@@ -44,6 +44,7 @@ class MarkdownProduct:
     fields: dict[str, Any] = field(default_factory=dict)
     review: dict[str, str] = field(default_factory=dict)
     rules: list[dict[str, Any]] = field(default_factory=list)
+    review_reasons: list[str] = field(default_factory=list)
     needs_review: bool = True
 
 
@@ -259,8 +260,32 @@ def _parse_product(code: str, name: str, snapshot: str, category: str, source_fi
     review.setdefault("max_term_months", review["term"])
     digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
     clean_name = re.sub(r"\s*[（(]20\d{2}年\d{1,2}月\d{1,2}日(?:更新|录入)[）)]\s*$", "", name).strip()
+    reasons = []
+    if review["amount"] != "extracted_review":
+        reasons.append("额度无法稳定解析" if amount_text else "来源未明确额度")
+    if review["term"] != "extracted_review":
+        reasons.append("期限表达有歧义" if term_text else "来源未明确期限")
+    if review["region_scope"] != "extracted_review":
+        reasons.append("地区未明确或不能可靠映射")
+    if any("征信" in key or "查询" in key for key in raw):
+        reasons.append("征信要求仅保留自然语言，待核对事实口径")
+    ambiguous = sorted(set(_AMBIGUOUS.findall(snapshot)))
+    if ambiguous:
+        reasons.append("来源含待人工判断表述：" + "、".join(ambiguous))
+    if any(key in raw for key in ("公司要求", "借款人要求", "申请人要求", "准入条件", "流水要求")):
+        reasons.append("综合准入字段保留原文，尚未拆分为硬规则")
+    known_labels = {"机构", "机构名称", "银行名称", "贷款银行", "合作银行", "银行",
+                    "最高额度", "最低额度", "贷款额度", "授信额度", "融资额度", "额度",
+                    "贷款授信最长期限", "贷款期限", "授信期限", "融资期限", "借款期限", "期限",
+                    "还款方式", "还本付息方式", "申请材料", "进件材料", "所需材料", "所需资料", "材料清单", "准备材料",
+                    "适用地区", "业务地区", "地区范围", "地域范围", "服务区域", "准入区域", "准入地区",
+                    "企业成立年限", "成立年限", "成立时间", "借款人年龄", "申请人年龄", "贷款人年龄", "年龄要求", "年龄"}
+    known_labels.update(label for labels in aliases.values() for label in labels)
+    unmapped = [key for key in raw if key not in known_labels]
+    if unmapped:
+        reasons.append("存在无法映射字段，已保留原文：" + "、".join(unmapped[:5]))
     return MarkdownProduct(code, clean_name, institution, category, source_file, source_date,
-                           snapshot, digest, raw, fields, review, rules, True)
+                           snapshot, digest, raw, fields, review, rules, reasons, True)
 
 
 def parse_markdown_source(category: str, content: str, *, file_updated_at: str | None = None) -> ParsedSource:
@@ -301,7 +326,9 @@ def scan_sources(directory: Path = SOURCE_DIR) -> dict[str, Any]:
     for code, items in by_code.items():
         first = items[0]
         if any(x.product_name != first.product_name or x.source_snapshot_hash != first.source_snapshot_hash for x in items[1:]):
+            differing_keys = sorted({key for x in items for key in x.raw_fields if any(other.raw_fields.get(key) != x.raw_fields.get(key) for other in items)})
             conflicts.append({"external_product_code": code, "status": "duplicate_conflict", "needs_review": True,
+                              "conflict_fields": differing_keys[:20],
                               "sides": [{"source_file": x.source_file, "product_name": x.product_name,
                                          "snapshot_hash": x.source_snapshot_hash} for x in items]})
         else:

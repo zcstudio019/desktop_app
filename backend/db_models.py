@@ -311,6 +311,8 @@ class FinancingProductVersion(Base):
     summary = Column(Text, default="")
     raw_fields_json = Column(Text().with_variant(LONGTEXT(), "mysql"), default="{}")
     needs_review = Column(Integer, default=1, server_default="1", nullable=False)
+    review_status = Column(String(16), default="unreviewed", server_default="unreviewed", nullable=False)
+    review_reasons_json = Column(Text, default="[]")
     loan_type = Column(String(255), default="")
     guarantee_type = Column(String(255), default="")
     region_scope_json = Column(Text, default="[]")

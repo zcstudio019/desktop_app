@@ -22,3 +22,11 @@
 版本状态：`draft`、`needs_review`、`published`、`expired`、`superseded`、`disabled`。到期产品即使状态仍为 `published`，也会被有效期查询排除。
 
 `POST /api/product-catalog/import/feishu`（原 `/import`）仍可按原有批准节点导入飞书草稿，作为兼容入口。Dashboard 的飞书全文缓存按钮只服务旧方案匹配。
+
+## Step 7A.3 管理页面与正式同步
+
+管理员入口 `/admin` 的“产品库管理”包含产品源、产品列表、待审核、冲突、已发布、版本历史。产品详情将结构化字段与单产品 Markdown 原文并排展示，可编辑 Draft、逐项确认提取字段、设置独立的人工审核状态（`unreviewed`、`reviewing`、`reviewed`、`rejected`），并对照来源原文新增、编辑或删除白名单规则。发布前需人工审核状态为 `reviewed`、关键字段已确认、生效日期有效且当前来源编号无冲突。Published 版本禁止修改，可停用。
+
+管理员 API 增加 `GET /products` 筛选、`GET /products/{product_id}`、`GET /products/{product_id}/versions`、`GET /rule-options`、规则 GET/PATCH 和 `GET /conflicts` 兼容别名。所有变更接口沿用 `require_admin`。每类来源状态包含 Markdown 文件哈希、资料更新日期、Draft/Published 数量与上次同步时间。冲突接口返回双方文件、产品名、完整段落哈希和差异字段摘要；冲突编号不会被同步或发布。
+
+在可访问项目运行数据库的环境执行 `python backend/scripts/sync_local_product_catalog.py`。脚本先读取当前三张产品表并将压缩备份写入 `backend/data/product_catalog_backups/`，再幂等导入六份 Markdown，仅生成 Draft，并立即重复同步验证不会增版。脚本保存包含冲突详情及 Draft、Published、Active 数量的同步报告。数据库连通性检查失败时在任何写入之前终止。执行前应确认环境指向预期运行库；不会批量发布产品。

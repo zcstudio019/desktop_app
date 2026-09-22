@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime
 from typing import Any
 
@@ -10,8 +11,8 @@ from pydantic import BaseModel, Field
 
 from backend.middleware.auth import require_admin
 from backend.services.feishu_product_import_service import FeishuProductImportService
-from backend.services.markdown_product_import_service import SOURCE_FILES, scan_sources
-from backend.services.product_catalog_service import CatalogError, ProductCatalogService
+from backend.services.markdown_product_import_service import SOURCE_DIR, SOURCE_FILES, scan_sources
+from backend.services.product_catalog_service import FIELD_TYPES, OPERATORS, CatalogError, ProductCatalogService
 
 router = APIRouter(prefix="/product-catalog", tags=["Product Catalog"])
 catalog = ProductCatalogService()
@@ -67,18 +68,34 @@ def list_local_sources(_user: dict = Depends(require_admin)) -> dict[str, Any]:
     summaries = scan["summaries"]
     database_status = "available"
     try:
-        published = catalog.list_versions(status="published")
-        counts = {name: 0 for name in SOURCE_FILES.values()}
-        for item in published:
+        versions = catalog.list_versions()
+        counts = {name: {"draft": 0, "published": 0, "last_synced_at": None} for name in SOURCE_FILES.values()}
+        for item in versions:
             source_file = item["version"].get("source_file")
             if source_file in counts:
-                counts[source_file] += 1
+                version = item["version"]
+                if version["status"] in {"draft", "needs_review"}:
+                    counts[source_file]["draft"] += 1
+                if version["status"] == "published":
+                    counts[source_file]["published"] += 1
+                timestamp = version["source_imported_at"]
+                if timestamp and (counts[source_file]["last_synced_at"] is None or timestamp > counts[source_file]["last_synced_at"]):
+                    counts[source_file]["last_synced_at"] = timestamp
         for summary in summaries:
-            summary["published_count"] = counts[summary["source_file"]]
+            summary["published_count"] = counts[summary["source_file"]]["published"]
+            summary["draft_count"] = counts[summary["source_file"]]["draft"]
+            summary["last_synced_at"] = counts[summary["source_file"]]["last_synced_at"]
     except Exception:
         database_status = "unavailable"
         for summary in summaries:
             summary["published_count"] = None
+            summary["draft_count"] = None
+            summary["last_synced_at"] = None
+    for summary in summaries:
+        source = next(s for s in scan["sources"] if s.category == summary["category"])
+        summary["source_update_date"] = source.products[0].source_update_date.isoformat() if source.products and source.products[0].source_update_date else None
+        path = SOURCE_DIR / summary["source_file"]
+        summary["source_snapshot_hash"] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
     return {"sources": summaries, "database_status": database_status,
             "totals": {"parsed_count": scan["parsed_count"], "unique_count": scan["unique_count"],
                        "duplicate_code_count": scan["duplicate_code_count"],
@@ -87,6 +104,7 @@ def list_local_sources(_user: dict = Depends(require_admin)) -> dict[str, Any]:
 
 
 @router.get("/sources/conflicts")
+@router.get("/conflicts")
 def list_local_conflicts(_user: dict = Depends(require_admin)) -> dict[str, Any]:
     conflicts = scan_sources()["conflicts"]
     return {"items": conflicts, "total": len(conflicts)}
@@ -103,6 +121,35 @@ def list_local_products(category: str, _user: dict = Depends(require_admin)) -> 
               "snapshot_hash": p.source_snapshot_hash, "needs_review": p.needs_review,
               "duplicate_conflict": p.external_product_code in scan["conflicting_codes"]} for p in source.products]
     return {"items": items, "total": len(items), "missing": source.missing}
+
+
+@router.get("/products")
+def list_products(category: str | None = None, institution: str | None = None, status: str | None = None,
+                  needs_review: bool | None = None, search: str | None = None,
+                  _user: dict = Depends(require_admin)) -> dict[str, Any]:
+    items = catalog.list_products(category=category, institution=institution, status=status,
+                                  needs_review=needs_review, search=search)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/products/{product_id}")
+def get_product(product_id: str, _user: dict = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return catalog.get_product(product_id)
+    except CatalogError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.get("/products/{product_id}/versions")
+def product_versions(product_id: str, _user: dict = Depends(require_admin)) -> dict[str, Any]:
+    items = catalog.list_versions(product_id=product_id)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/rule-options")
+def rule_options(_user: dict = Depends(require_admin)) -> dict[str, Any]:
+    return {"fields": FIELD_TYPES, "operators": sorted(OPERATORS),
+            "severities": ["hard", "soft", "info"], "failure_actions": ["exclude", "conditional", "review"]}
 
 
 @router.post("/sync-local")
@@ -148,6 +195,24 @@ def update_draft(version_id: str, patch: DraftPatch, _user: dict = Depends(requi
 def add_rule(version_id: str, request: RuleRequest, _user: dict = Depends(require_admin)) -> dict[str, Any]:
     try:
         return catalog.add_rule(version_id, request.rule)
+    except CatalogError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.get("/versions/{version_id}/rules")
+def list_rules(version_id: str, _user: dict = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        items = catalog.get_version(version_id)["rules"]
+        return {"items": items, "total": len(items)}
+    except CatalogError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.patch("/versions/{version_id}/rules/{rule_id}")
+def update_rule(version_id: str, rule_id: str, request: RuleRequest,
+                _user: dict = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return catalog.update_rule(version_id, rule_id, request.rule)
     except CatalogError as exc:
         raise _bad_request(exc) from exc
 

@@ -787,6 +787,8 @@ export interface LocalCatalogSourceStatus {
   source_file: string;
   missing: boolean;
   file_updated_at: string | null;
+  source_update_date: string | null;
+  source_snapshot_hash: string | null;
   declared_count: number | null;
   parsed_count: number;
   unique_count: number;
@@ -794,6 +796,8 @@ export interface LocalCatalogSourceStatus {
   conflict_count: number;
   needs_review_count: number;
   published_count: number | null;
+  draft_count: number | null;
+  last_synced_at: string | null;
 }
 
 export interface LocalCatalogSourcesResponse {
@@ -817,7 +821,25 @@ export interface LocalCatalogConflict {
   status: string;
   needs_review: boolean;
   sides: { source_file: string; product_name: string; snapshot_hash: string }[];
+  conflict_fields: string[];
 }
+
+export interface CatalogProduct { product_id: string; external_product_code: string | null; product_category: string; source_ref: string; institution_name: string; product_name: string }
+export interface CatalogVersion {
+  version_id: string; product_id: string; version_number: number; status: string; institution_name: string; product_name: string;
+  effective_from: string | null; effective_to: string | null; published_at: string | null; published_by: string;
+  source_file: string; source_update_date: string | null; source_snapshot: string; source_snapshot_hash: string;
+  source_imported_at: string; needs_review: number; review_status: string; review_reasons_json: string[];
+  field_review_json: Record<string, string>; raw_fields_json: Record<string, string | string[]>;
+  min_amount: string | null; max_amount: string | null; min_term_months: number | null; max_term_months: number | null;
+  [key: string]: unknown;
+}
+export interface CatalogRule {
+  rule_id: string; version_id: string; field_name: string; operator: string; expected_value_json: unknown;
+  severity: string; failure_action: string; message: string; source_text: string; rule_group: string; sort_order: number;
+}
+export interface CatalogVersionDetail { product: CatalogProduct; version: CatalogVersion; rules: CatalogRule[] }
+export interface CatalogProductRow { product: CatalogProduct; version: CatalogVersion }
 
 export async function getLocalCatalogSources(signal?: AbortSignal): Promise<LocalCatalogSourcesResponse> {
   const response = await fetch(`${API_BASE}/api/product-catalog/sources`, { headers: { ...getAuthHeaders() }, signal });
@@ -839,6 +861,62 @@ export async function syncLocalCatalog(category: string, signal?: AbortSignal): 
     method: 'POST', headers: { ...getAuthHeaders() }, signal,
   });
   return handleResponse<{ created_drafts: number; unchanged: number; conflicts: LocalCatalogConflict[] }>(response);
+}
+
+export async function listCatalogProducts(filters: Record<string, string> = {}): Promise<{ items: CatalogProductRow[]; total: number }> {
+  const query = new URLSearchParams(filters).toString();
+  const response = await fetch(`${API_BASE}/api/product-catalog/products${query ? `?${query}` : ''}`, { headers: getAuthHeaders() });
+  return handleResponse<{ items: CatalogProductRow[]; total: number }>(response);
+}
+
+export async function getCatalogVersion(versionId: string): Promise<CatalogVersionDetail> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/versions/${encodeURIComponent(versionId)}`, { headers: getAuthHeaders() });
+  return handleResponse<CatalogVersionDetail>(response);
+}
+
+export async function getCatalogProductHistory(productId: string): Promise<{ items: CatalogProductRow[]; total: number }> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/products/${encodeURIComponent(productId)}/versions`, { headers: getAuthHeaders() });
+  return handleResponse<{ items: CatalogProductRow[]; total: number }>(response);
+}
+
+export async function listCatalogVersions(status?: string): Promise<{ items: CatalogProductRow[]; total: number }> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  const response = await fetch(`${API_BASE}/api/product-catalog/versions${query}`, { headers: getAuthHeaders() });
+  return handleResponse<{ items: CatalogProductRow[]; total: number }>(response);
+}
+
+export async function patchCatalogDraft(versionId: string, fields: Record<string, unknown>): Promise<CatalogVersionDetail> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/versions/${encodeURIComponent(versionId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ fields }),
+  });
+  return handleResponse<CatalogVersionDetail>(response);
+}
+
+export async function getCatalogRuleOptions(): Promise<{ fields: Record<string, string>; operators: string[]; severities: string[]; failure_actions: string[] }> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/rule-options`, { headers: getAuthHeaders() });
+  return handleResponse<{ fields: Record<string, string>; operators: string[]; severities: string[]; failure_actions: string[] }>(response);
+}
+
+export async function saveCatalogRule(versionId: string, rule: Record<string, unknown>, ruleId?: string): Promise<CatalogRule> {
+  const suffix = ruleId ? `/rules/${encodeURIComponent(ruleId)}` : '/rules';
+  const response = await fetch(`${API_BASE}/api/product-catalog/versions/${encodeURIComponent(versionId)}${suffix}`, {
+    method: ruleId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ rule }),
+  });
+  return handleResponse<CatalogRule>(response);
+}
+
+export async function deleteCatalogRule(versionId: string, ruleId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/versions/${encodeURIComponent(versionId)}/rules/${encodeURIComponent(ruleId)}`, {
+    method: 'DELETE', headers: getAuthHeaders(),
+  });
+  await handleResponse(response);
+}
+
+export async function changeCatalogVersion(versionId: string, action: 'publish' | 'disable'): Promise<CatalogVersionDetail> {
+  const response = await fetch(`${API_BASE}/api/product-catalog/versions/${encodeURIComponent(versionId)}/${action}`, {
+    method: 'POST', headers: getAuthHeaders(),
+  });
+  return handleResponse<CatalogVersionDetail>(response);
 }
 
 export interface SavedApplication extends SavedApplicationListItem {
