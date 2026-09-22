@@ -11,6 +11,7 @@ import {
   PRODUCT_CATEGORY_LABELS, PRODUCT_FIELD_LABELS, REVIEW_STATUS_LABELS, RULE_ACTION_LABELS, RULE_FIELD_LABELS,
   RULE_OPERATOR_LABELS, RULE_SEVERITY_LABELS, VERSION_STATUS_LABELS, productFieldLabel,
 } from './productCatalogLabels';
+import { SPACING } from '../../styles/design-tokens';
 
 type Tab = 'sources' | 'products' | 'review' | 'conflicts' | 'published' | 'history';
 const TABS: { id: Tab; label: string }[] = [
@@ -381,8 +382,8 @@ const LocalProductCatalogSection: React.FC = () => {
       </div>
     </div>}
 
-    {detail && <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40" role="dialog" aria-modal="true" aria-label="产品详情">
-      <div className="h-full w-full max-w-6xl overflow-y-auto bg-white p-6 shadow-xl"><div className="sticky top-0 z-20 -mx-6 -mt-6 flex items-start justify-between gap-3 border-b bg-white px-6 py-4 shadow-sm">
+    {detail && <div className="fixed inset-x-0 bottom-0 z-50 flex justify-end bg-slate-900/40" style={{ top: SPACING.headerHeight }} role="dialog" aria-modal="true" aria-label="产品详情" data-testid="product-detail-overlay">
+      <div className="h-full w-full max-w-6xl overflow-y-auto bg-white p-6 shadow-xl" data-testid="product-detail-panel"><div className="sticky top-0 z-20 -mx-6 -mt-6 flex items-start justify-between gap-3 border-b bg-white px-6 py-4 shadow-sm" data-testid="product-detail-header">
         <div><h3 className="text-xl font-semibold">产品详情</h3><p className="mt-1 text-sm text-slate-700">{detail.product.external_product_code} · {detail.version.product_name}</p><p className="text-sm text-slate-500">{detail.version.institution_name} · {PRODUCT_CATEGORY_LABELS[detail.product.product_category] || '其他'} · V{detail.version.version_number} · {VERSION_STATUS_LABELS[detail.version.status] || '未知状态'}</p></div>
         <button type="button" aria-label="关闭产品详情" title="关闭" onClick={requestCloseDetail} className="flex shrink-0 items-center gap-1 rounded-lg border px-3 py-2 text-sm hover:bg-slate-100"><X size={18} />关闭</button>
       </div>
