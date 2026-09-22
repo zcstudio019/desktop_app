@@ -11,6 +11,7 @@ export const PAGE_TITLES: Record<PageType, string> = {
   upload: '上传资料',
   application: '申请表生成',
   scheme: '方案匹配',
+  'product-catalog': '产品库管理',
   chat: 'AI 对话',
   admin: '账号管理',
 };

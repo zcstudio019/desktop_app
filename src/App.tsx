@@ -9,6 +9,7 @@ import LoginPage from './components/LoginPage';
 import CustomerListPage from './components/CustomerListPage';
 import CustomerDataPage from './components/CustomerDataPage';
 import AdminUsersPage from './components/AdminUsersPage';
+import ProductCatalogPage from './components/ProductCatalogPage';
 import WorkspacePage from './pages/Workspace';
 import { getCurrentUser } from './services/api';
 
@@ -29,6 +30,7 @@ const PAGE_PATH_MAP: Record<PageType, string> = {
   upload: '/upload',
   application: '/application',
   scheme: '/scheme',
+  'product-catalog': '/product-catalog',
   chat: '/chat',
   data: '/data',
   admin: '/admin',
@@ -48,6 +50,7 @@ function getInitialPageFromLocation(): PageType {
     '/upload': 'upload',
     '/application': 'application',
     '/scheme': 'scheme',
+    '/product-catalog': 'product-catalog',
     '/matching': 'scheme',
     '/chat': 'chat',
     '/data': 'data',
@@ -193,6 +196,15 @@ const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageType>(() => getInitialPageFromLocation());
 
   useEffect(() => {
+    if (authChecking || !isLoggedIn || role === 'admin') return;
+    if (currentPage === 'admin' || currentPage === 'product-catalog'
+      || ['/admin', '/product-catalog'].includes(window.location.pathname.replace(/\/+$/, ''))) {
+      setCurrentPage('workspace');
+      window.history.replaceState({}, '', '/workspace');
+    }
+  }, [authChecking, isLoggedIn, role, currentPage]);
+
+  useEffect(() => {
     const checkAuth = async (): Promise<void> => {
       const token = localStorage.getItem('auth_token');
       if (!token) {
@@ -252,11 +264,11 @@ const App: React.FC = () => {
   const handleNavigate = useCallback(
     (page: string): void => {
       const normalizedPage = page === 'matching' ? 'scheme' : page === 'dashboard' ? 'workspace' : page;
-      const validPages: PageType[] = ['workspace', 'dashboard', 'customers', 'upload', 'application', 'scheme', 'chat', 'data', 'admin'];
+      const validPages: PageType[] = ['workspace', 'dashboard', 'customers', 'upload', 'application', 'scheme', 'product-catalog', 'chat', 'data', 'admin'];
       if (!validPages.includes(normalizedPage as PageType)) {
         return;
       }
-      if (normalizedPage === 'admin' && role !== 'admin') {
+      if ((normalizedPage === 'admin' || normalizedPage === 'product-catalog') && role !== 'admin') {
         setCurrentPage('workspace');
         return;
       }
@@ -281,6 +293,8 @@ const App: React.FC = () => {
         return <ApplicationPage />;
       case 'scheme':
         return <SchemeMatchPage />;
+      case 'product-catalog':
+        return role === 'admin' ? <ProductCatalogPage /> : <WorkspacePage onNavigate={handleNavigate} />;
       case 'chat':
         return <ChatPage onNavigate={handleNavigate} />;
       case 'admin':

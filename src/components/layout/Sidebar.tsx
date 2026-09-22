@@ -11,6 +11,7 @@ import {
   LogOut,
   Sheet,
   Shield,
+  Database,
   LucideIcon,
 } from 'lucide-react';
 import { BRAND } from '../../config/brand';
@@ -22,6 +23,7 @@ export type PageType =
   | 'upload'
   | 'application'
   | 'scheme'
+  | 'product-catalog'
   | 'chat'
   | 'data'
   | 'admin';
@@ -58,6 +60,13 @@ const BASE_NAV_ITEMS: NavItemConfig[] = [
   { id: 'scheme', icon: Target, label: '方案匹配', description: '匹配融资产品与建议方案' },
   { id: 'chat', icon: MessageSquare, label: 'AI 对话', description: '资料问答与风险评估报告' },
 ];
+
+const PRODUCT_CATALOG_NAV_ITEM: NavItemConfig = {
+  id: 'product-catalog',
+  icon: Database,
+  label: '产品库管理',
+  description: '维护产品、版本与规则',
+};
 
 const ADMIN_NAV_ITEM: NavItemConfig = {
   id: 'admin',
@@ -104,7 +113,9 @@ const Logo: React.FC = () => (
 );
 
 const Sidebar: React.FC<SidebarProps> = ({ currentPage, onNavigate, username, userRole, onLogout }) => {
-  const navItems = userRole === 'admin' ? [...BASE_NAV_ITEMS, ADMIN_NAV_ITEM] : BASE_NAV_ITEMS;
+  const navItems = userRole === 'admin'
+    ? [...BASE_NAV_ITEMS.flatMap((item) => item.id === 'scheme' ? [item, PRODUCT_CATALOG_NAV_ITEM] : [item]), ADMIN_NAV_ITEM]
+    : BASE_NAV_ITEMS;
 
   return (
     <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col overflow-y-auto bg-sidebar-bg" style={{ backgroundColor: '#1E293B' }} data-testid="sidebar">

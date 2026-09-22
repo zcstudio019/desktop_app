@@ -2,7 +2,6 @@
 import { KeyRound, RefreshCcw, Shield, Trash2, UserCog, X } from 'lucide-react';
 import { ApiError, type UserInfo } from '../services/types';
 import { deleteUser, listUsers, resetPassword } from '../services/api';
-import LocalProductCatalogSection from './admin/LocalProductCatalogSection';
 
 interface AdminUsersPageProps {
   currentUsername?: string;
@@ -118,7 +117,6 @@ const AdminUsersPage: React.FC<AdminUsersPageProps> = ({ currentUsername }) => {
 
   return (
     <div className="space-y-6 p-6 md:p-8" data-testid="admin-users-page">
-      <LocalProductCatalogSection />
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>

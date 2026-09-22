@@ -43,6 +43,7 @@ function buildDashboardPagePath(page: PageType, customerId?: string | null, cust
     upload: '/upload',
     application: '/application',
     scheme: '/scheme',
+    'product-catalog': '/product-catalog',
     chat: '/chat',
     data: '/data',
     admin: '/admin',
