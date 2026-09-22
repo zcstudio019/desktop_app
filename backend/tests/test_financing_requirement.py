@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -29,6 +29,104 @@ def make_draft(factory, **changes):
         "financing_purpose": "采购", "purpose_detail": "材料采购",
         "term_value": 12, "term_unit": "month", "term_confirmed": True, **changes,
     }, "alice", borrower_name="上海意川建筑科技有限公司", session_factory=factory)
+
+
+def version_count(factory):
+    with factory() as db:
+        return db.scalar(select(func.count()).select_from(FinancingRequirement))
+
+
+def test_get_current_requirement_is_read_only(factory):
+    for _ in range(3):
+        assert get_requirement("135", session_factory=factory) is None
+        assert get_requirement("135", status="needs_confirmation", session_factory=factory) is None
+    assert version_count(factory) == 0
+
+
+def test_unchanged_edit_does_not_create_new_version(factory):
+    first = make_draft(factory)
+    confirm_requirement("135", first["requirement_id"], "alice", session_factory=factory)
+    with pytest.raises(ValueError, match="未发生变化"):
+        create_requirement_draft("135", {
+            "requested_amount": 5_000_000.0, "financing_purpose": "采购",
+            "purpose_detail": "材料采购", "term_value": 12, "term_unit": "month",
+            "term_original": "12个月", "guarantee_preference": [],
+        }, "alice", session_factory=factory)
+    assert version_count(factory) == 1
+    assert get_requirement("135", session_factory=factory)["version"] == 1
+
+
+def test_pending_unchanged_edit_does_not_create_new_version(factory):
+    first = make_draft(factory)
+    with pytest.raises(ValueError, match="未发生变化"):
+        create_requirement_draft("135", {"requested_amount": "5000000.00"}, "alice", session_factory=factory)
+    assert version_count(factory) == 1
+    assert get_requirement("135", status="needs_confirmation", session_factory=factory)["requirement_id"] == first["requirement_id"]
+
+
+@pytest.mark.parametrize("patch", [
+    {"requested_amount": 8_000_000},
+    {"term_value": 24},
+    {"financing_purpose": "项目垫资"},
+    {"excluded_banks": ["乙银行"]},
+])
+def test_changed_field_creates_new_version(factory, patch):
+    first = make_draft(factory)
+    confirm_requirement("135", first["requirement_id"], "alice", session_factory=factory)
+    second = create_requirement_draft("135", patch, "alice", session_factory=factory)
+    assert second["version"] == 2
+    assert version_count(factory) == 2
+
+
+def test_list_order_and_empty_strings_do_not_create_version(factory):
+    first = make_draft(factory, excluded_banks=["乙银行", "甲银行"])
+    confirm_requirement("135", first["requirement_id"], "alice", session_factory=factory)
+    with pytest.raises(ValueError, match="未发生变化"):
+        create_requirement_draft("135", {"excluded_banks": ["甲银行", "乙银行"], "registered_region": ""}, "alice", session_factory=factory)
+    assert version_count(factory) == 1
+
+
+def test_draft_sources_are_server_recorded(factory):
+    manual = make_draft(factory)
+    assert manual["draft_source"] == "manual_form"
+    chat = create_requirement_draft("135", {"requested_amount": 8_000_000}, "alice",
+                                    draft_source="chat_user_input", session_factory=factory)
+    assert chat["draft_source"] == "chat_user_input"
+
+
+def test_production_regression_does_not_use_real_customer(factory):
+    with pytest.raises(ValueError, match="专用测试客户"):
+        create_requirement_draft("enterprise_上海意川建筑科技有限公司", {"requested_amount": 5_000_000},
+                                 "regression", draft_source="production_regression", session_factory=factory)
+    assert version_count(factory) == 0
+    with pytest.raises(ValueError, match="专用测试客户"):
+        create_requirement_draft("enterprise_上海意川建筑科技有限公司", {"requested_amount": 5_000_000},
+                                 "step6_regression", session_factory=factory)
+    assert version_count(factory) == 0
+    row = create_requirement_draft("enterprise_融资需求回归测试客户", {"requested_amount": 5_000_000},
+                                   "regression", draft_source="production_regression", session_factory=factory)
+    assert row["version"] == 1 and row["draft_source"] == "production_regression"
+
+
+def test_requirement_source_chat_user_input(factory, monkeypatch):
+    from backend.services import assistant_financing_requirement_service as assistant
+
+    class Storage:
+        async def get_customer(self, _customer_id):
+            return {"customer_id": "135", "name": "意川", "uploader": "alice"}
+
+    async def access(_customer_id, _user):
+        return {"name": "意川"}
+
+    original_create = create_requirement_draft
+    monkeypatch.setattr(assistant, "require_customer_access", access)
+    monkeypatch.setattr(assistant, "create_requirement_draft", lambda cid, patch, actor, **kw:
+                        original_create(cid, patch, actor, session_factory=factory, **kw))
+    result = asyncio.run(assistant.handle_financing_requirement(
+        Storage(), "这个客户想融资500万，用于材料采购，期限一年", "135", {"username": "alice"}))
+    assert result["data"]["requirement"]["draft_source"] == "chat_user_input"
+    assert result["data"]["requirement"]["version"] == 1
+    assert get_requirement("135", session_factory=factory) is None
 
 
 def test_create_financing_requirement_draft(factory):
@@ -198,9 +296,16 @@ def test_requirement_http_access_and_confirmation(factory, monkeypatch):
             assert (await client.get(path + "/current")).status_code == 403
             current["username"] = "alice"
             assert (await client.get(path + "/current")).json()["requirement"] is None
+            assert (await client.get(path + "/pending")).json()["requirement"] is None
+            assert version_count(factory) == 0
             draft = (await client.post(path + "/draft", json={"requested_amount": 5_000_000, "amount_confirmed": True,
                 "financing_purpose": "采购", "term_value": 12, "term_unit": "month", "term_confirmed": True})).json()["requirement"]
             assert draft["status"] == "needs_confirmation"
+            assert draft["draft_source"] == "manual_form"
+            assert (await client.get(path + "/pending")).json()["requirement"]["version"] == 1
+            unchanged = await client.post(path + "/draft", json={"requested_amount": 5_000_000})
+            assert unchanged.status_code == 422 and "未发生变化" in unchanged.json()["detail"]
+            assert version_count(factory) == 1
             assert (await client.get(path + "/current")).json()["requirement"] is None
             confirmed = (await client.post(path + "/" + draft["requirement_id"] + "/confirm")).json()["requirement"]
             assert confirmed["status"] == "confirmed"

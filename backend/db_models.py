@@ -61,6 +61,7 @@ class FinancingRequirement(Base):
     accept_mortgage = Column(Integer)
     accept_refinancing = Column(Integer)
     field_sources_json = Column(Text, default="{}")
+    draft_source = Column(String(32), nullable=True, index=True)
     created_by = Column(String(128))
     confirmed_by = Column(String(128))
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

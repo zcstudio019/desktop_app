@@ -47,6 +47,7 @@ async def draft_requirement(customer_id: str, patch: RequirementPatch, user: dic
     try:
         return {"requirement": create_requirement_draft(
             customer_id, patch, user["username"], borrower_name=str(customer.get("name") or ""),
+            draft_source="manual_form",
         )}
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

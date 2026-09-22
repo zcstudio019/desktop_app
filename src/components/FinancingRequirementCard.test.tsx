@@ -38,6 +38,30 @@ describe('FinancingRequirementCard', () => {
     expect(await screen.findByText('融资需求 V2')).toBeTruthy();
   });
 
+  it('does not create a version when the edit form is opened and cancelled', () => {
+    render(<FinancingRequirementCard initial={{ ...draft, status: 'confirmed' }} />);
+    fireEvent.click(screen.getByText('修改需求'));
+    fireEvent.click(screen.getByText('取消修改'));
+    expect(createFinancingRequirementDraft).not.toHaveBeenCalled();
+  });
+
+  it('does not create a version when saved values are unchanged', async () => {
+    render(<FinancingRequirementCard initial={{ ...draft, status: 'confirmed' }} />);
+    fireEvent.click(screen.getByText('修改需求'));
+    fireEvent.click(screen.getByText('保存待确认版本'));
+    expect(await screen.findByText('融资需求未发生变化，无需保存新版本。')).toBeTruthy();
+    expect(createFinancingRequirementDraft).not.toHaveBeenCalled();
+  });
+
+  it('does not invent a purpose when editing a partial draft', async () => {
+    render(<FinancingRequirementCard initial={{ ...draft, financing_purpose: null, purpose_detail: null }} />);
+    fireEvent.click(screen.getByText('修改需求'));
+    expect((screen.getByLabelText('用途') as HTMLSelectElement).value).toBe('');
+    fireEvent.click(screen.getByText('保存待确认版本'));
+    expect(await screen.findByText('融资需求未发生变化，无需保存新版本。')).toBeTruthy();
+    expect(createFinancingRequirementDraft).not.toHaveBeenCalled();
+  });
+
   it('cannot confirm a draft without the four required facts', () => {
     render(<FinancingRequirementCard initial={{ ...draft, term_value: null }} />);
     expect((screen.getByText('确认需求') as HTMLButtonElement).disabled).toBe(true);

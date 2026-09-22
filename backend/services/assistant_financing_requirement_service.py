@@ -84,7 +84,14 @@ async def handle_financing_requirement(storage: Any, message: str, selected_cust
             patch = RequirementPatch.model_validate(values)
     if patch is None:
         return {"message": "请说明本次融资金额、用途和期限；我会先整理待确认需求。", "data": {"requirementStatus": "missing_fields"}}
-    draft = create_requirement_draft(customer_id, patch, username, borrower_name=str(customer.get("name") or ""))
+    try:
+        draft = create_requirement_draft(customer_id, patch, username,
+                                         borrower_name=str(customer.get("name") or ""), draft_source="chat_user_input")
+    except ValueError as exc:
+        if "未发生变化" not in str(exc):
+            raise
+        current = get_requirement(customer_id, status="needs_confirmation") or get_requirement(customer_id)
+        return {"message": "融资需求未发生变化，无需保存新版本。", "data": {"requirementStatus": "unchanged", "requirement": current}}
     missing = []
     for key, label in (("requested_amount", "金额"), ("financing_purpose", "用途"), ("term_value", "期限")):
         if not draft.get(key):

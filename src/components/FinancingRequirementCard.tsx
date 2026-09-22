@@ -10,13 +10,24 @@ export function FinancingRequirementCard({ initial }: { initial: FinancingRequir
   const [item, setItem] = useState(initial);
   const [editing, setEditing] = useState(false);
   const [amountWan, setAmountWan] = useState(item.requested_amount ? String(item.requested_amount / 10000) : '');
-  const [purpose, setPurpose] = useState(item.financing_purpose || '采购');
+  const [purpose, setPurpose] = useState(item.financing_purpose || '');
   const [detail, setDetail] = useState(item.purpose_detail || '');
   const [months, setMonths] = useState(item.term_value ? String(item.term_unit === 'year' ? item.term_value * 12 : item.term_value) : '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => { setItem(initial); }, [initial.requirement_id, initial.status]);
   const canConfirm = Boolean(item.borrower_entity && item.requested_amount && item.financing_purpose && item.term_value && item.amount_confirmed && item.term_confirmed);
+
+  function toggleEdit() {
+    if (!editing) {
+      setAmountWan(item.requested_amount == null ? '' : String(item.requested_amount / 10000));
+      setPurpose(item.financing_purpose || '');
+      setDetail(item.purpose_detail || '');
+      setMonths(item.term_value == null ? '' : String(item.term_unit === 'year' ? item.term_value * 12 : item.term_value));
+    }
+    setError('');
+    setEditing(value => !value);
+  }
 
   async function confirm() {
     setBusy(true); setError('');
@@ -34,9 +45,14 @@ export function FinancingRequirementCard({ initial }: { initial: FinancingRequir
       const amount = Number(amountWan);
       const term = Number(months);
       if (!(amount > 0) || !Number.isInteger(term) || term <= 0) throw new Error('请填写有效的金额和期限');
+      const originalMonths = item.term_value == null ? null : item.term_unit === 'year' ? item.term_value * 12 : item.term_value;
+      if (amount * 10000 === item.requested_amount && (purpose || null) === item.financing_purpose
+          && detail.trim() === (item.purpose_detail || '').trim() && term === originalMonths) {
+        throw new Error('融资需求未发生变化，无需保存新版本。');
+      }
       const updated = await createFinancingRequirementDraft(item.customer_id, {
         requested_amount: amount * 10000, currency: 'CNY', amount_confirmed: true,
-        financing_purpose: purpose, purpose_detail: detail || purpose,
+        financing_purpose: purpose || null, purpose_detail: detail.trim() || null,
         term_value: term, term_unit: 'month', term_confirmed: true, term_original: `${term}个月`,
       });
       setItem(updated); setEditing(false);
@@ -56,14 +72,14 @@ export function FinancingRequirementCard({ initial }: { initial: FinancingRequir
     </div>
     {editing && <div className="mt-3 grid gap-2">
       <label>金额（万元）<input aria-label="金额（万元）" type="number" min="0.01" value={amountWan} onChange={e => setAmountWan(e.target.value)} className="ml-2 w-28 rounded border p-1" /></label>
-      <label>用途<select aria-label="用途" value={purpose} onChange={e => setPurpose(e.target.value)} className="ml-2 rounded border p-1">{purposes.map(value => <option key={value}>{value}</option>)}</select></label>
+      <label>用途<select aria-label="用途" value={purpose} onChange={e => setPurpose(e.target.value)} className="ml-2 rounded border p-1"><option value="">待确认</option>{purposes.map(value => <option key={value}>{value}</option>)}</select></label>
       <label>用途说明<input aria-label="用途说明" value={detail} onChange={e => setDetail(e.target.value)} className="ml-2 rounded border p-1" /></label>
       <label>期限（月）<input aria-label="期限（月）" type="number" min="1" value={months} onChange={e => setMonths(e.target.value)} className="ml-2 w-20 rounded border p-1" /></label>
       <button type="button" disabled={busy} onClick={() => void saveEdit()} className="w-fit rounded bg-slate-800 px-3 py-1 text-white">保存待确认版本</button>
     </div>}
     <div className="mt-3 flex gap-2">
       {item.status === 'needs_confirmation' && <button type="button" disabled={busy || !canConfirm} onClick={() => void confirm()} className="rounded bg-blue-700 px-3 py-1 text-white disabled:opacity-50">确认需求</button>}
-      <button type="button" disabled={busy} onClick={() => setEditing(value => !value)} className="rounded border border-slate-300 px-3 py-1">修改需求</button>
+      <button type="button" disabled={busy} onClick={toggleEdit} className="rounded border border-slate-300 px-3 py-1">{editing ? '取消修改' : '修改需求'}</button>
     </div>
     {!canConfirm && item.status === 'needs_confirmation' && <p className="mt-2 text-xs text-amber-700">需明确确认融资主体、金额、用途和期限。</p>}
     {error && <p role="alert" className="mt-2 text-xs text-red-700">{error}</p>}

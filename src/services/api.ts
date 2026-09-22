@@ -550,6 +550,7 @@ export interface FinancingRequirementData {
   customer_id: string;
   version: number;
   status: 'draft' | 'needs_confirmation' | 'confirmed' | 'superseded' | 'cancelled';
+  draft_source?: 'chat_user_input' | 'manual_form' | 'application_form' | 'production_regression' | 'migration' | 'system_import' | null;
   borrower_entity: string | null;
   requested_amount: number | null;
   amount_confirmed: boolean;

@@ -160,6 +160,9 @@ def init_database() -> None:
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
         dialect = engine.dialect.name.lower()
+        if not _mysql_column_exists(connection, "financing_requirements", "draft_source"):
+            connection.execute(text("ALTER TABLE financing_requirements ADD COLUMN draft_source VARCHAR(32) NULL"))
+            connection.commit()
         if dialect == "mysql":
             _repair_mysql_charset_and_text_columns(connection)
             if not _mysql_column_exists(connection, "async_jobs", "execution_payload_json"):

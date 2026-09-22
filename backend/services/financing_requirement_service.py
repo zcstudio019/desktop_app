@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +22,40 @@ STATUSES = {"draft", "needs_confirmation", "confirmed", "superseded", "cancelled
 LIST_FIELDS = {"guarantee_preference", "collateral_available", "existing_banks", "preferred_banks", "excluded_banks"}
 BOOL_FIELDS = {"accept_additional_guarantee", "accept_mortgage", "accept_refinancing"}
 CORE_FIELDS = {"borrower_entity", "requested_amount", "financing_purpose", "term_value", "term_unit"}
+DRAFT_SOURCES = {"chat_user_input", "manual_form", "application_form", "production_regression", "migration", "system_import"}
+logger = logging.getLogger(__name__)
+VERSION_FIELDS = {
+    "borrower_entity", "requested_amount", "currency", "amount_confirmed", "financing_purpose",
+    "purpose_detail", "term_value", "term_unit", "term_confirmed", "expected_funding_date",
+    "repayment_preference", "guarantee_preference", "collateral_available", "registered_region",
+    "operating_region", "existing_banks", "preferred_banks", "excluded_banks",
+    "accept_additional_guarantee", "accept_mortgage", "accept_refinancing",
+}
+
+
+def normalized_requirement(data: dict[str, Any]) -> dict[str, Any]:
+    """Compare business values, ignoring presentation and list order."""
+    result: dict[str, Any] = {}
+    for key in VERSION_FIELDS:
+        value = data.get(key)
+        if key in LIST_FIELDS:
+            result[key] = tuple(sorted({str(item).strip() for item in (value or []) if str(item).strip()}))
+        elif key == "requested_amount":
+            try:
+                result[key] = Decimal(str(value)).quantize(Decimal("0.01")) if value not in (None, "") else None
+            except InvalidOperation as exc:
+                raise ValueError("融资金额格式无效") from exc
+        elif key in {"term_value"}:
+            result[key] = int(value) if value not in (None, "") else None
+        elif isinstance(value, str):
+            result[key] = value.strip() or None
+        else:
+            result[key] = value
+    if result["term_value"] is not None and result["term_unit"] == "year":
+        result["term_value"] *= 12
+        result["term_unit"] = "month"
+    result["currency"] = result["currency"] or "CNY"
+    return result
 
 
 class RequirementPatch(BaseModel):
@@ -102,6 +138,7 @@ def requirement_to_dict(row: FinancingRequirement) -> dict[str, Any]:
         "requirement_id": row.requirement_id, "customer_id": row.customer_id,
         "version": row.version, "status": row.status,
         "field_sources": _loads(row.field_sources_json, {}),
+        "draft_source": row.draft_source,
         "created_by": row.created_by, "confirmed_by": row.confirmed_by,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -120,7 +157,12 @@ def get_requirement(customer_id: str, *, status: str = "confirmed", session_fact
 
 
 def create_requirement_draft(customer_id: str, patch: RequirementPatch | dict[str, Any], actor: str,
-                             *, borrower_name: str | None = None, session_factory=SessionLocal) -> dict[str, Any]:
+                             *, borrower_name: str | None = None, draft_source: str = "manual_form",
+                             session_factory=SessionLocal) -> dict[str, Any]:
+    if draft_source not in DRAFT_SOURCES:
+        raise ValueError("融资需求草稿来源无效")
+    if (draft_source == "production_regression" or actor == "step6_regression") and not customer_id.startswith("enterprise_融资需求回归测试客户"):
+        raise ValueError("生产回归只能使用专用测试客户")
     patch = patch if isinstance(patch, RequirementPatch) else RequirementPatch.model_validate(patch)
     changes = patch.model_dump(exclude_unset=True)
     if not changes:
@@ -129,7 +171,7 @@ def create_requirement_draft(customer_id: str, patch: RequirementPatch | dict[st
         latest = db.execute(select(FinancingRequirement).where(
             FinancingRequirement.customer_id == customer_id,
             FinancingRequirement.status.in_(["needs_confirmation", "draft", "confirmed"]),
-        ).order_by(desc(FinancingRequirement.version)).limit(1)).scalar_one_or_none()
+        ).order_by(desc(FinancingRequirement.version)).limit(1).with_for_update()).scalar_one_or_none()
         base = requirement_to_dict(latest) if latest else {}
         version = (db.execute(select(func.max(FinancingRequirement.version)).where(
             FinancingRequirement.customer_id == customer_id)).scalar() or 0) + 1
@@ -141,12 +183,15 @@ def create_requirement_draft(customer_id: str, patch: RequirementPatch | dict[st
         data = {key: base.get(key) for key in RequirementPatch.model_fields}
         data.update(changes)
         data["currency"] = "CNY"
+        if latest and normalized_requirement(data) == normalized_requirement(base):
+            raise ValueError("融资需求未发生变化，无需保存新版本。")
         sources = dict(base.get("field_sources") or {})
         for key in changes:
             sources[key] = borrower_source if key == "borrower_entity" and borrower_source else "user_explicit"
         row = FinancingRequirement(
             requirement_id=str(uuid.uuid4()), customer_id=customer_id, version=version,
             status="needs_confirmation", created_by=actor, field_sources_json=json.dumps(sources, ensure_ascii=False),
+            draft_source=draft_source,
         )
         for key, value in data.items():
             if key in LIST_FIELDS:
@@ -160,6 +205,8 @@ def create_requirement_draft(customer_id: str, patch: RequirementPatch | dict[st
         db.add(row)
         db.commit()
         db.refresh(row)
+        logger.info("financing_requirement_draft_created requirement_id=%s version=%s source=%s created_by=%s",
+                    row.requirement_id, row.version, row.draft_source, row.created_by)
         return requirement_to_dict(row)
 
 
