@@ -48,6 +48,10 @@ function fieldValue(value: unknown): string {
   return value == null ? '' : String(value);
 }
 
+function editSnapshot(fields: Record<string, string>, review: Record<string, string>, reviewStatus: string): string {
+  return JSON.stringify({ fields, review, reviewStatus });
+}
+
 function hasValue(value: unknown): boolean {
   if (value == null) return false;
   if (typeof value === 'string') return value.trim() !== '';
@@ -94,6 +98,8 @@ const LocalProductCatalogSection: React.FC = () => {
   const [fields, setFields] = useState<Record<string, string>>({});
   const [review, setReview] = useState<Record<string, string>>({});
   const [reviewStatus, setReviewStatus] = useState('unreviewed');
+  const [initialEditSnapshot, setInitialEditSnapshot] = useState('');
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [ruleOptions, setRuleOptions] = useState<{ fields: Record<string, string>; operators: string[] } | null>(null);
   const [rule, setRule] = useState({ rule_id: '', field_name: '', operator: 'eq', expected_value: '', severity: 'hard', failure_action: 'exclude', message: '', source_text: '' });
   const [filter, setFilter] = useState({ category: '', institution: '', status: '', needs_review: '', search: '', conflict: '' });
@@ -138,11 +144,15 @@ const LocalProductCatalogSection: React.FC = () => {
       setDetail(result);
       setHistory(versions.items.sort((a, b) => b.version.version_number - a.version.version_number));
       setRuleOptions(options);
-      setFields(Object.fromEntries(EDIT_FIELDS.map((item) => [item.key, fieldValue(result.version[item.key])])));
-      setReview(Object.fromEntries(Object.entries(result.version.field_review_json || {}).map(([key, value]) => [
+      const nextFields = Object.fromEntries(EDIT_FIELDS.map((item) => [item.key, fieldValue(result.version[item.key])]));
+      const nextReview = Object.fromEntries(Object.entries(result.version.field_review_json || {}).map(([key, value]) => [
         key, value === 'confirmed' ? 'reviewed' : value === 'acknowledged_unknown' ? 'insufficient_data' : value,
-      ])));
+      ]));
+      setFields(nextFields);
+      setReview(nextReview);
       setReviewStatus(result.version.review_status);
+      setInitialEditSnapshot(editSnapshot(nextFields, nextReview, result.version.review_status));
+      setShowDiscardConfirm(false);
       setRule({ rule_id: '', field_name: '', operator: 'eq', expected_value: '', severity: 'hard', failure_action: 'exclude', message: '', source_text: '' });
       setError('');
     } catch (cause) { setError(cause instanceof Error ? cause.message : '产品详情加载失败'); }
@@ -209,6 +219,7 @@ const LocalProductCatalogSection: React.FC = () => {
       }
       const saved = await patchCatalogDraft(detail.version.version_id, patch);
       setDetail(saved);
+      setInitialEditSnapshot(editSnapshot(fields, review, reviewStatus));
       setNotice('草稿与人工审核状态已保存。');
       await loadRows(tab);
       setError('');
@@ -271,6 +282,28 @@ const LocalProductCatalogSection: React.FC = () => {
     ...(conflictCodes.has(detail.product.external_product_code || '') ? ['产品编号仍存在未解决冲突'] : []),
   ] : [];
   const publishReady = editable && publishIssues.length === 0;
+  const detailDirty = editable && initialEditSnapshot !== '' && editSnapshot(fields, review, reviewStatus) !== initialEditSnapshot;
+  const finishCloseDetail = useCallback(() => {
+    setDetail(null);
+    setShowDiscardConfirm(false);
+    setInitialEditSnapshot('');
+  }, []);
+  const requestCloseDetail = useCallback(() => {
+    if (detailDirty) setShowDiscardConfirm(true);
+    else finishCloseDetail();
+  }, [detailDirty, finishCloseDetail]);
+
+  useEffect(() => {
+    if (!detail) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      if (showDiscardConfirm) setShowDiscardConfirm(false);
+      else requestCloseDetail();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [detail, requestCloseDetail, showDiscardConfirm]);
 
   return <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" data-testid="product-catalog-admin">
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -349,9 +382,9 @@ const LocalProductCatalogSection: React.FC = () => {
     </div>}
 
     {detail && <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40" role="dialog" aria-modal="true" aria-label="产品详情">
-      <div className="h-full w-full max-w-6xl overflow-y-auto bg-white p-6 shadow-xl"><div className="flex items-start justify-between gap-3">
-        <div><h3 className="text-xl font-semibold">{detail.product.external_product_code} · {detail.version.product_name}</h3><p className="text-sm text-slate-500">{detail.version.institution_name} · {PRODUCT_CATEGORY_LABELS[detail.product.product_category] || '其他'} · V{detail.version.version_number} · {VERSION_STATUS_LABELS[detail.version.status] || '未知状态'}</p></div>
-        <button type="button" aria-label="关闭产品详情" onClick={() => setDetail(null)} className="rounded-lg border p-2"><X size={18} /></button>
+      <div className="h-full w-full max-w-6xl overflow-y-auto bg-white p-6 shadow-xl"><div className="sticky top-0 z-20 -mx-6 -mt-6 flex items-start justify-between gap-3 border-b bg-white px-6 py-4 shadow-sm">
+        <div><h3 className="text-xl font-semibold">产品详情</h3><p className="mt-1 text-sm text-slate-700">{detail.product.external_product_code} · {detail.version.product_name}</p><p className="text-sm text-slate-500">{detail.version.institution_name} · {PRODUCT_CATEGORY_LABELS[detail.product.product_category] || '其他'} · V{detail.version.version_number} · {VERSION_STATUS_LABELS[detail.version.status] || '未知状态'}</p></div>
+        <button type="button" aria-label="关闭产品详情" title="关闭" onClick={requestCloseDetail} className="flex shrink-0 items-center gap-1 rounded-lg border px-3 py-2 text-sm hover:bg-slate-100"><X size={18} />关闭</button>
       </div>
         {error && <p className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700" role="alert">{error}</p>}
         {notice && <p className="mt-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">{notice}</p>}
@@ -394,6 +427,11 @@ const LocalProductCatalogSection: React.FC = () => {
           <pre className="mt-2 max-h-[75vh] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm leading-relaxed">{detail.version.source_snapshot}</pre>
         </div></div>
       </div>
+      {showDiscardConfirm && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" role="alertdialog" aria-modal="true" aria-label="未保存修改">
+        <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl"><h3 className="text-lg font-semibold">未保存的修改</h3><p className="mt-2 text-sm text-slate-600">当前有未保存的修改，关闭后将丢失这些内容，是否继续？</p>
+          <div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setShowDiscardConfirm(false)} className="rounded-lg border px-4 py-2 text-sm">返回编辑</button><button type="button" onClick={finishCloseDetail} className="rounded-lg bg-rose-600 px-4 py-2 text-sm text-white">继续关闭</button></div>
+        </div>
+      </div>}
     </div>}
   </section>;
 };

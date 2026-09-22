@@ -87,6 +87,73 @@ describe('LocalProductCatalogSection', () => {
     expect((screen.getByText('发布') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('test_product_detail_has_close_button', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    const close = await screen.findByRole('button', { name: '关闭产品详情' });
+    expect(close).toHaveAttribute('title', '关闭');
+    expect(close).toHaveTextContent('关闭');
+  });
+
+  it('test_close_button_closes_detail', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    fireEvent.click(await screen.findByRole('button', { name: '关闭产品详情' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '产品详情' })).toBeNull());
+    expect(screen.getByText('产品列表')).toBeTruthy();
+  });
+
+  it('test_escape_closes_detail', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    expect(await screen.findByRole('dialog', { name: '产品详情' })).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '产品详情' })).toBeNull());
+  });
+
+  it('test_unsaved_changes_warn_before_close', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    fireEvent.change(await screen.findByLabelText('银行/机构'), { target: { value: '修改后的机构' } });
+    fireEvent.click(screen.getByRole('button', { name: '关闭产品详情' }));
+    const warning = await screen.findByRole('alertdialog', { name: '未保存修改' });
+    expect(within(warning).getByText('当前有未保存的修改，关闭后将丢失这些内容，是否继续？')).toBeTruthy();
+    fireEvent.click(within(warning).getByRole('button', { name: '返回编辑' }));
+    expect(screen.getByRole('dialog', { name: '产品详情' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '关闭产品详情' }));
+    fireEvent.click(await screen.findByRole('button', { name: '继续关闭' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '产品详情' })).toBeNull());
+  });
+
+  it('test_published_product_closes_without_warning', async () => {
+    const published = { ...version, status: 'published', review_status: 'reviewed' };
+    vi.mocked(getCatalogVersion).mockResolvedValue({ product, version: published, rules: [] });
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    fireEvent.click(await screen.findByRole('button', { name: '关闭产品详情' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '产品详情' })).toBeNull());
+    expect(screen.queryByRole('alertdialog', { name: '未保存修改' })).toBeNull();
+  });
+
+  it('test_close_preserves_current_product_list_state', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    const search = screen.getByLabelText('搜索产品');
+    fireEvent.change(search, { target: { value: 'BOCOM' } });
+    await waitFor(() => expect(listCatalogProducts).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'BOCOM' })));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    const callsBeforeClose = vi.mocked(listCatalogProducts).mock.calls.length;
+    fireEvent.click(await screen.findByRole('button', { name: '关闭产品详情' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '产品详情' })).toBeNull());
+    expect((screen.getByLabelText('搜索产品') as HTMLInputElement).value).toBe('BOCOM');
+    expect(vi.mocked(listCatalogProducts).mock.calls.length).toBe(callsBeforeClose);
+  });
+
   it('shows Chinese product field and status labels', async () => {
     render(<LocalProductCatalogSection />);
     fireEvent.click(screen.getByText('产品列表'));
