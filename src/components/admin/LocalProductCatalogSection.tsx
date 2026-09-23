@@ -306,6 +306,19 @@ const LocalProductCatalogSection: React.FC = () => {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [detail, requestCloseDetail, showDiscardConfirm]);
 
+  useEffect(() => {
+    if (!detail) return undefined;
+    const pageScroller = document.querySelector<HTMLElement>('[data-testid="content-area"]');
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousPageOverflow = pageScroller?.style.overflowY || '';
+    document.body.style.overflow = 'hidden';
+    if (pageScroller) pageScroller.style.overflowY = 'hidden';
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      if (pageScroller) pageScroller.style.overflowY = previousPageOverflow;
+    };
+  }, [detail]);
+
   return <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" data-testid="product-catalog-admin">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div><h2 className="text-xl font-semibold text-slate-900">产品库管理</h2><p className="text-sm text-slate-500">本地 Markdown 编辑源 → 待审核草稿 → 人工发布</p></div>
@@ -382,11 +395,14 @@ const LocalProductCatalogSection: React.FC = () => {
       </div>
     </div>}
 
-    {detail && <div className="fixed inset-x-0 bottom-0 z-50 flex justify-end bg-slate-900/40" style={{ top: SPACING.headerHeight }} role="dialog" aria-modal="true" aria-label="产品详情" data-testid="product-detail-overlay">
-      <div className="h-full w-full max-w-6xl overflow-y-auto bg-white p-6 shadow-xl" data-testid="product-detail-panel"><div className="sticky top-0 z-20 -mx-6 -mt-6 flex items-start justify-between gap-3 border-b bg-white px-6 py-4 shadow-sm" data-testid="product-detail-header">
+    {detail && <div className="fixed inset-x-0 bottom-0 z-30" style={{ top: SPACING.headerHeight }} role="dialog" aria-modal="true" aria-label="产品详情" data-testid="product-detail-layer">
+      <button type="button" aria-label="关闭产品详情遮罩" onClick={requestCloseDetail} className="absolute inset-0 z-0 cursor-default bg-slate-950/25" data-testid="product-detail-overlay" />
+      <div className="absolute bottom-0 right-0 top-0 z-10 flex w-full max-w-6xl flex-col overflow-hidden bg-white shadow-2xl sm:w-[85vw] xl:w-[80vw]" data-testid="product-detail-panel">
+        <div className="z-20 flex shrink-0 items-start justify-between gap-3 border-b bg-white px-6 py-4 shadow-sm" data-testid="product-detail-header">
         <div><h3 className="text-xl font-semibold">产品详情</h3><p className="mt-1 text-sm text-slate-700">{detail.product.external_product_code} · {detail.version.product_name}</p><p className="text-sm text-slate-500">{detail.version.institution_name} · {PRODUCT_CATEGORY_LABELS[detail.product.product_category] || '其他'} · V{detail.version.version_number} · {VERSION_STATUS_LABELS[detail.version.status] || '未知状态'}</p></div>
         <button type="button" aria-label="关闭产品详情" title="关闭" onClick={requestCloseDetail} className="flex shrink-0 items-center gap-1 rounded-lg border px-3 py-2 text-sm hover:bg-slate-100"><X size={18} />关闭</button>
-      </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-6" data-testid="product-detail-body">
         {error && <p className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700" role="alert">{error}</p>}
         {notice && <p className="mt-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">{notice}</p>}
         <div className="mt-4 flex flex-wrap gap-2">
@@ -427,8 +443,9 @@ const LocalProductCatalogSection: React.FC = () => {
         </div><div className="lg:sticky lg:top-0 lg:self-start"><h4 className="font-semibold">来源原文</h4><p className="text-xs text-slate-500">{detail.version.source_file} · {detail.version.source_update_date || '未知日期'} · SHA-256 {detail.version.source_snapshot_hash}</p>
           <pre className="mt-2 max-h-[75vh] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm leading-relaxed">{detail.version.source_snapshot}</pre>
         </div></div>
+        </div>
       </div>
-      {showDiscardConfirm && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" role="alertdialog" aria-modal="true" aria-label="未保存修改">
+      {showDiscardConfirm && <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4" role="alertdialog" aria-modal="true" aria-label="未保存修改">
         <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl"><h3 className="text-lg font-semibold">未保存的修改</h3><p className="mt-2 text-sm text-slate-600">当前有未保存的修改，关闭后将丢失这些内容，是否继续？</p>
           <div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setShowDiscardConfirm(false)} className="rounded-lg border px-4 py-2 text-sm">返回编辑</button><button type="button" onClick={finishCloseDetail} className="rounded-lg bg-rose-600 px-4 py-2 text-sm text-white">继续关闭</button></div>
         </div>

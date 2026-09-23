@@ -101,31 +101,33 @@ describe('LocalProductCatalogSection', () => {
     render(<LocalProductCatalogSection />);
     fireEvent.click(screen.getByText('产品列表'));
     fireEvent.click(await screen.findByText('BOCOM-001'));
-    const overlay = await screen.findByTestId('product-detail-overlay');
+    const layer = await screen.findByTestId('product-detail-layer');
+    const panel = screen.getByTestId('product-detail-panel');
     const detailHeader = screen.getByTestId('product-detail-header');
     const close = screen.getByRole('button', { name: '关闭产品详情' });
-    expect(overlay).toHaveStyle({ top: `${SPACING.headerHeight}px` });
+    expect(layer).toHaveStyle({ top: `${SPACING.headerHeight}px` });
+    expect(panel).toContainElement(detailHeader);
     expect(detailHeader).toContainElement(close);
-    expect(detailHeader).toHaveClass('sticky', 'top-0', 'z-20');
+    expect(detailHeader).toHaveClass('shrink-0', 'z-20');
   });
 
   it('test_product_detail_starts_below_global_header', async () => {
     render(<LocalProductCatalogSection />);
     fireEvent.click(screen.getByText('产品列表'));
     fireEvent.click(await screen.findByText('BOCOM-001'));
-    const overlay = await screen.findByTestId('product-detail-overlay');
-    expect(overlay).toHaveStyle({ top: `${SPACING.headerHeight}px` });
-    expect(overlay).not.toHaveClass('inset-0');
+    const layer = await screen.findByTestId('product-detail-layer');
+    expect(layer).toHaveStyle({ top: `${SPACING.headerHeight}px` });
+    expect(layer).not.toHaveClass('inset-0');
   });
 
   it('test_close_button_visible_after_scroll', async () => {
     render(<LocalProductCatalogSection />);
     fireEvent.click(screen.getByText('产品列表'));
     fireEvent.click(await screen.findByText('BOCOM-001'));
-    const panel = await screen.findByTestId('product-detail-panel');
-    panel.scrollTop = 500;
-    fireEvent.scroll(panel);
-    expect(screen.getByTestId('product-detail-header')).toHaveClass('sticky', 'top-0');
+    const body = await screen.findByTestId('product-detail-body');
+    body.scrollTop = 500;
+    fireEvent.scroll(body);
+    expect(screen.getByTestId('product-detail-panel')).toContainElement(screen.getByTestId('product-detail-header'));
     expect(screen.getByRole('button', { name: '关闭产品详情' })).toBeVisible();
   });
 
@@ -133,10 +135,65 @@ describe('LocalProductCatalogSection', () => {
     render(<LocalProductCatalogSection />);
     fireEvent.click(screen.getByText('产品列表'));
     fireEvent.click(await screen.findByText('BOCOM-001'));
-    const overlay = await screen.findByTestId('product-detail-overlay');
-    expect(overlay).toHaveClass('fixed', 'bottom-0');
-    expect(overlay).toHaveStyle({ top: `${SPACING.headerHeight}px` });
-    expect(screen.getByTestId('product-detail-panel')).toHaveClass('h-full', 'overflow-y-auto');
+    const layer = await screen.findByTestId('product-detail-layer');
+    expect(layer).toHaveClass('fixed', 'bottom-0');
+    expect(layer).toHaveStyle({ top: `${SPACING.headerHeight}px` });
+    expect(screen.getByTestId('product-detail-panel')).toHaveClass('top-0', 'bottom-0', 'overflow-hidden');
+  });
+
+  it('test_product_detail_has_overlay', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    expect(await screen.findByTestId('product-detail-overlay')).toBeVisible();
+  });
+
+  it('test_background_content_is_dimmed', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    expect(await screen.findByTestId('product-detail-overlay')).toHaveClass('absolute', 'inset-0', 'bg-slate-950/25');
+  });
+
+  it('test_background_scroll_locked', async () => {
+    render(<main data-testid="content-area" style={{ overflowY: 'auto' }}><LocalProductCatalogSection /></main>);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    await screen.findByRole('dialog', { name: '产品详情' });
+    expect(document.body.style.overflow).toBe('hidden');
+    expect(screen.getByTestId('content-area').style.overflowY).toBe('hidden');
+  });
+
+  it('test_drawer_scrolls_independently', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    expect(await screen.findByTestId('product-detail-panel')).toHaveClass('flex-col', 'overflow-hidden');
+    expect(screen.getByTestId('product-detail-body')).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
+  });
+
+  it('test_drawer_header_and_body_same_layer', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    const panel = await screen.findByTestId('product-detail-panel');
+    const header = screen.getByTestId('product-detail-header');
+    const body = screen.getByTestId('product-detail-body');
+    expect(panel).toContainElement(header);
+    expect(panel).toContainElement(body);
+    expect(header.parentElement).toBe(panel);
+    expect(body.parentElement).toBe(panel);
+  });
+
+  it('test_close_restores_background_scroll', async () => {
+    render(<main data-testid="content-area" style={{ overflowY: 'auto' }}><LocalProductCatalogSection /></main>);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    await screen.findByRole('dialog', { name: '产品详情' });
+    fireEvent.click(screen.getByRole('button', { name: '关闭产品详情' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '产品详情' })).toBeNull());
+    expect(document.body.style.overflow).toBe('');
+    expect(screen.getByTestId('content-area').style.overflowY).toBe('auto');
   });
 
   it('test_close_button_closes_detail', async () => {
