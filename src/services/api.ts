@@ -590,6 +590,47 @@ export async function confirmFinancingRequirement(customerId: string, requiremen
   return (await handleResponse<{ requirement: FinancingRequirementData }>(response)).requirement;
 }
 
+export type ProductMatchingStatus = 'eligible' | 'conditional' | 'ineligible' | 'manual_review' | 'product_configuration_error';
+
+export interface ProductMatchRuleResult {
+  rule_id: string; rule_source: 'product_rule' | 'system_builtin'; field_name: string;
+  result: 'passed' | 'failed' | 'unknown' | 'review' | null; explanation: string;
+}
+
+export interface ProductMatchItemData {
+  product_id: string; version_id: string; external_product_code: string;
+  institution_name: string; product_name: string; product_category: string;
+  max_amount: string | null; max_term_months: number | null; overall_status: ProductMatchingStatus;
+  blocking_reasons: string[]; missing_information: string[]; review_reasons: string[];
+  soft_gaps: string[]; rule_results: ProductMatchRuleResult[];
+}
+
+export interface ProductMatchingSnapshotData {
+  status: 'completed' | 'no_active_products'; snapshot_id: string | null; reused?: boolean;
+  customer_id?: string; requirement_id?: string; requirement_version?: number;
+  catalog_as_of_date?: string; catalog_version_hash?: string; generated_at?: string;
+  message?: string;
+  precheck?: { active_product_count: number; published_product_count: number; active_rule_count: number };
+  summary: Record<ProductMatchingStatus, number> & { total: number; boundary_notice?: string };
+  data_quality: { missing_domains?: string[]; conflicted_fields?: string[]; stale_fields?: string[]; preliminary_fields?: string[] };
+  items: ProductMatchItemData[];
+}
+
+export async function runProductMatching(customerId: string, requirementId: string): Promise<ProductMatchingSnapshotData> {
+  const response = await fetch(`${API_BASE}/api/product-matching/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ customer_id: customerId, requirement_id: requirementId }),
+  });
+  return handleResponse<ProductMatchingSnapshotData>(response);
+}
+
+export async function getLatestProductMatching(customerId: string): Promise<ProductMatchingSnapshotData | null> {
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/product-matching/latest`, {
+    headers: getAuthHeaders(),
+  });
+  return (await handleResponse<{ snapshot: ProductMatchingSnapshotData | null }>(response)).snapshot;
+}
+
 export async function createChatJob(
   request: ChatRequest,
   signal?: AbortSignal

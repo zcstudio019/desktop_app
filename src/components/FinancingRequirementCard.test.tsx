@@ -1,11 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FinancingRequirementCard } from './FinancingRequirementCard';
-import { confirmFinancingRequirement, createFinancingRequirementDraft, type FinancingRequirementData } from '../services/api';
+import { confirmFinancingRequirement, createFinancingRequirementDraft, getLatestProductMatching, type FinancingRequirementData } from '../services/api';
 
 vi.mock('../services/api', () => ({
   confirmFinancingRequirement: vi.fn(),
   createFinancingRequirementDraft: vi.fn(),
+  getLatestProductMatching: vi.fn(),
+  runProductMatching: vi.fn(),
 }));
 
 const draft: FinancingRequirementData = {
@@ -16,7 +18,10 @@ const draft: FinancingRequirementData = {
 };
 
 describe('FinancingRequirementCard', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getLatestProductMatching).mockResolvedValue(null);
+  });
 
   it('shows the extracted draft and confirms only through the explicit button', async () => {
     vi.mocked(confirmFinancingRequirement).mockResolvedValue({ ...draft, status: 'confirmed' });

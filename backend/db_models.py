@@ -366,6 +366,58 @@ class FinancingProductRule(Base):
     sort_order = Column(Integer, default=0)
 
 
+class ProductMatchSnapshot(Base):
+    __tablename__ = "product_match_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id = Column(String(64), unique=True, nullable=False, index=True)
+    context_hash = Column(String(64), unique=True, nullable=False, index=True)
+    customer_id = Column(String(128), nullable=False, index=True)
+    requirement_id = Column(String(64), nullable=False, index=True)
+    requirement_version = Column(Integer, nullable=False)
+    facts_snapshot_id = Column(String(64), nullable=True)
+    facts_hash = Column(String(64), nullable=False, index=True)
+    facts_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="{}")
+    catalog_as_of_date = Column(Date, nullable=False)
+    catalog_version_hash = Column(String(64), nullable=False, index=True)
+    generated_at = Column(DateTime, nullable=False)
+    generated_by = Column(String(128), nullable=False, default="")
+    eligible_count = Column(Integer, nullable=False, default=0)
+    conditional_count = Column(Integer, nullable=False, default=0)
+    ineligible_count = Column(Integer, nullable=False, default=0)
+    manual_review_count = Column(Integer, nullable=False, default=0)
+    configuration_error_count = Column(Integer, nullable=False, default=0)
+    summary_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="{}")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ProductMatchItem(Base):
+    __tablename__ = "product_match_items"
+    __table_args__ = (UniqueConstraint("snapshot_id", "version_id", name="uq_product_match_snapshot_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id = Column(String(64), ForeignKey("product_match_snapshots.snapshot_id"), nullable=False, index=True)
+    product_id = Column(String(64), nullable=False, index=True)
+    version_id = Column(String(64), nullable=False, index=True)
+    external_product_code = Column(String(64), nullable=False, default="")
+    institution_name = Column(String(255), nullable=False, default="")
+    product_name = Column(String(255), nullable=False, default="")
+    product_category = Column(String(32), nullable=False, default="")
+    max_amount = Column(Numeric(18, 2), nullable=True)
+    max_term_months = Column(Integer, nullable=True)
+    overall_status = Column(String(40), nullable=False, index=True)
+    hard_fail_count = Column(Integer, nullable=False, default=0)
+    hard_unknown_count = Column(Integer, nullable=False, default=0)
+    soft_fail_count = Column(Integer, nullable=False, default=0)
+    review_count = Column(Integer, nullable=False, default=0)
+    blocking_reasons_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    missing_information_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    review_reasons_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    soft_gaps_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    rule_results_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class FinancingProductConflict(Base):
     __tablename__ = "financing_product_conflicts"
 

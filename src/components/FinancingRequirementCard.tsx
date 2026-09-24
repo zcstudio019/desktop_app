@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { confirmFinancingRequirement, createFinancingRequirementDraft, type FinancingRequirementData } from '../services/api';
+import { ProductMatchingPanel } from './ProductMatchingPanel';
 
 const statusLabel: Record<FinancingRequirementData['status'], string> = {
   draft: '草稿', needs_confirmation: '待确认', confirmed: '已确认', superseded: '已被新版本替代', cancelled: '已取消',
@@ -83,5 +84,6 @@ export function FinancingRequirementCard({ initial }: { initial: FinancingRequir
     </div>
     {!canConfirm && item.status === 'needs_confirmation' && <p className="mt-2 text-xs text-amber-700">需明确确认融资主体、金额、用途和期限。</p>}
     {error && <p role="alert" className="mt-2 text-xs text-red-700">{error}</p>}
+    {item.status === 'confirmed' && <ProductMatchingPanel requirement={item} />}
   </div>;
 }

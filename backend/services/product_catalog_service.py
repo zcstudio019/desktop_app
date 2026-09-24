@@ -17,6 +17,7 @@ from backend.db_models import FinancingProduct, FinancingProductRule, FinancingP
 from backend.services.feishu_product_import_service import ParsedProduct, parse_product_document
 from backend.services.markdown_product_import_service import SOURCE_DIR, SOURCE_FILES, scan_sources
 from backend.services.product_catalog_schema import ensure_markdown_catalog_schema
+from backend.services.customer_matching_facts_service import MATCHING_FACT_FIELD_TYPES
 
 
 PRODUCT_CATEGORIES = frozenset({"enterprise_credit", "enterprise_mortgage", "personal", "other", *SOURCE_FILES})
@@ -24,22 +25,7 @@ VERSION_STATUSES = frozenset({"draft", "needs_review", "published", "expired", "
 OPERATORS = frozenset({"eq", "ne", "in", "not_in", "gt", "gte", "lt", "lte", "between", "contains", "exists", "not_exists"})
 SEVERITIES = frozenset({"hard", "soft", "info"})
 FAILURE_ACTIONS = frozenset({"exclude", "conditional", "review"})
-FIELD_TYPES = {
-    "requirement.amount": "number", "requirement.purpose": "string", "requirement.term_months": "number",
-    "requirement.accept_mortgage": "boolean", "requirement.accept_additional_guarantee": "boolean",
-    "requirement.registered_region": "string", "requirement.operating_region": "string",
-    "customer.company_age_months": "number", "customer.registered_region": "string",
-    "customer.operating_region": "string", "customer.enterprise_type": "string",
-    "credit.enterprise_overdue_count": "number", "credit.personal_overdue_count": "number",
-    "credit.overdue_90d_count": "number", "credit.enterprise_outstanding_balance": "number",
-    "credit.personal_outstanding_balance": "number", "credit.related_repayment_balance": "number",
-    "financial.total_assets": "number", "financial.total_liabilities": "number", "financial.net_assets": "number",
-    "financial.debt_asset_ratio": "number", "financial.revenue": "number", "financial.net_profit": "number",
-    "cashflow.coverage_months": "number", "cashflow.operating_inflow": "number",
-    "cashflow.average_monthly_operating_inflow": "number",
-    "asset.has_real_estate": "boolean", "asset.has_vehicle": "boolean",
-    "asset.has_equipment": "boolean", "asset.has_confirmed_collateral": "boolean",
-}
+FIELD_TYPES = MATCHING_FACT_FIELD_TYPES
 _JSON_FIELDS = {"region_scope_json", "repayment_methods_json", "guarantee_modes_json", "collateral_types_json", "materials_json", "field_review_json", "raw_fields_json", "review_reasons_json", "source_refs_json"}
 _EDIT_FIELDS = {"effective_from", "effective_to", "summary", "region_scope_json", "currency", "min_amount",
                 "max_amount", "min_term_months", "max_term_months", "repayment_methods_json", "guarantee_modes_json",
@@ -177,8 +163,8 @@ def validate_rule(data: dict[str, Any]) -> dict[str, Any]:
     if operator not in {"exists", "not_exists"}:
         if operator in {"gt", "gte", "lt", "lte", "between"} and kind != "number":
             raise CatalogError("大小比较仅支持数值字段")
-        if operator == "contains" and kind != "string":
-            raise CatalogError("contains 仅支持文本字段")
+        if operator == "contains" and kind not in {"string", "list"}:
+            raise CatalogError("contains 仅支持文本或列表字段")
         for item in values:
             if kind == "number":
                 _decimal(item)
@@ -186,8 +172,10 @@ def validate_rule(data: dict[str, Any]) -> dict[str, Any]:
                     raise CatalogError("数值规则不能使用空值")
             elif kind == "boolean" and not isinstance(item, bool):
                 raise CatalogError("布尔规则预期值必须为 true 或 false")
-            elif kind == "string" and (not isinstance(item, str) or not item.strip()):
+            elif kind in {"string", "date"} and (not isinstance(item, str) or not item.strip()):
                 raise CatalogError("文本规则预期值必须为非空字符串")
+            elif kind == "list" and operator != "contains" and not isinstance(item, list):
+                raise CatalogError("列表规则预期值类型不正确")
         if operator == "between" and _decimal(values[0]) > _decimal(values[1]):
             raise CatalogError("区间上下界颠倒")
     source_text = str(data.get("source_text") or "").strip()
@@ -208,6 +196,10 @@ def fact_state(facts: dict[str, Any], field_name: str) -> dict[str, Any]:
         if not isinstance(value, dict) or part not in value or value[part] is None or (isinstance(value[part], str) and not value[part].strip()):
             return {"status": "unknown", "reason": "insufficient_data", "value": None}
         value = value[part]
+    if isinstance(value, dict) and value.get("status") in {"known", "unknown", "not_applicable", "conflict"}:
+        if value["status"] != "known":
+            return {"status": value["status"], "reason": value.get("reason") or "insufficient_data", "value": None}
+        value = value.get("value")
     kind = FIELD_TYPES[field_name]
     if kind == "boolean" and not isinstance(value, bool):
         return {"status": "unknown", "reason": "insufficient_data", "value": None}
