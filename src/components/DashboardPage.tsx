@@ -44,6 +44,7 @@ function buildDashboardPagePath(page: PageType, customerId?: string | null, cust
     application: '/application',
     scheme: '/scheme',
     'product-catalog': '/product-catalog',
+    'financing-execution': '/financing-execution',
     chat: '/chat',
     data: '/data',
     admin: '/admin',

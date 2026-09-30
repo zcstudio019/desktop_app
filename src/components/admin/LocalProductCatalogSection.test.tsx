@@ -5,7 +5,7 @@ import { SPACING } from '../../styles/design-tokens';
 import {
   getCatalogConflict, getCatalogProductHistory, getCatalogRuleOptions, getCatalogVersion, getLocalCatalogConflicts,
   getLocalCatalogProducts, getLocalCatalogSources, listCatalogProducts, listCatalogVersions, syncLocalCatalog,
-  resolveCatalogConflict,
+  resolveCatalogConflict, getProductExecutionMetrics,
 } from '../../services/api';
 
 vi.mock('../../services/api', () => ({
@@ -14,6 +14,7 @@ vi.mock('../../services/api', () => ({
   getLocalCatalogConflicts: vi.fn(), getLocalCatalogProducts: vi.fn(), getLocalCatalogSources: vi.fn(),
   listCatalogProducts: vi.fn(), listCatalogVersions: vi.fn(), syncLocalCatalog: vi.fn(),
   patchCatalogDraft: vi.fn(), saveCatalogRule: vi.fn(), deleteCatalogRule: vi.fn(), changeCatalogVersion: vi.fn(),
+  getProductExecutionMetrics: vi.fn(),
 }));
 
 const categories = [
@@ -52,6 +53,7 @@ describe('LocalProductCatalogSection', () => {
     vi.mocked(getCatalogVersion).mockResolvedValue({ product, version, rules: [] });
     vi.mocked(getCatalogProductHistory).mockResolvedValue({ items: [{ product, version }], total: 1 });
     vi.mocked(getCatalogRuleOptions).mockResolvedValue({ fields: { 'requirement.amount': 'number' }, operators: ['eq'], severities: ['hard'], failure_actions: ['exclude'] });
+    vi.mocked(getProductExecutionMetrics).mockResolvedValue({ product_id: 'p1', product_version_id: 'v1', sample_size: 3, application_count: 3, submitted_count: 3, approved_count: 1, partially_approved_count: 1, rejected_count: 1, disbursed_count: 2, submitted_amount_total: '24000000.00', approved_amount_total: '13000000.00', disbursed_amount_total: '13000000.00', supplement_application_count: 1, supplement_round_total: 2, average_approval_days: 3, average_disbursement_days: 2, pending_rule_feedback_count: 1 });
     vi.mocked(syncLocalCatalog).mockResolvedValue({ created_drafts: 1, unchanged: 0, conflicts: [] });
   });
 
@@ -86,6 +88,15 @@ describe('LocalProductCatalogSection', () => {
     expect(screen.getByText(/征信要求 \| 征信良好/)).toBeTruthy();
     expect(screen.getByText('暂无结构化规则')).toBeTruthy();
     expect((screen.getByText('发布') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('shows factual product execution feedback without success rate or ranking', async () => {
+    render(<LocalProductCatalogSection />);
+    fireEvent.click(screen.getByText('产品列表'));
+    fireEvent.click(await screen.findByText('BOCOM-001'));
+    expect(await screen.findByText('执行反馈')).toBeTruthy();
+    expect(screen.getByText('样本：3笔')).toBeTruthy();
+    expect(screen.queryByText(/成功率|排行榜/)).toBeNull();
   });
 
   it('test_product_detail_has_close_button', async () => {

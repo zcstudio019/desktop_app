@@ -14,11 +14,13 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Search, Users, Clock, User, Filter, Download, RefreshCw, X, AlertCircle } from 'lucide-react';
-import { listCustomers, getCustomerDetail } from '../services/api';
+import { listCustomers, getCustomerDetail, getCurrentFinancingRequirement } from '../services/api';
+import type { FinancingRequirementData } from '../services/api';
 import { ApiError } from '../services/types';
 import type { CustomerListItem, CustomerDetail } from '../services/types';
 import { DataSectionCard, ArrayDataCard, isArrayOfObjects, getBankReconciliationDisplayMarkdown, getContractDisplayMarkdown } from './DataDisplayComponents';
 import EnterpriseBankStatementView, { looksLikeEnterpriseBankStatementData } from './documents/EnterpriseBankStatementView';
+import { FinancingRequirementCard } from './FinancingRequirementCard';
 
 interface CustomerListPageProps {
   userRole: string;
@@ -275,6 +277,9 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [financingRequirement, setFinancingRequirement] = useState<FinancingRequirementData | null>(null);
+  const [requirementLoading, setRequirementLoading] = useState(false);
+  const [requirementError, setRequirementError] = useState('');
 
   const isAdmin = userRole === 'admin';
   const modalRef = useRef<HTMLDivElement>(null);
@@ -367,9 +372,19 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
     setDetailLoading(true);
     setDetailError('');
     setSelectedDetail(null);
+    setFinancingRequirement(null);
+    setRequirementError('');
+    setRequirementLoading(true);
     try {
-      const detail = await getCustomerDetail(recordId);
+      const [detail, requirement] = await Promise.all([
+        getCustomerDetail(recordId),
+        getCurrentFinancingRequirement(recordId).catch((error: unknown) => {
+          setRequirementError(error instanceof Error ? error.message : '获取融资需求失败');
+          return null;
+        }),
+      ]);
       setSelectedDetail(detail);
+      setFinancingRequirement(requirement);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         setDetailError(err.message);
@@ -380,6 +395,7 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
       }
     } finally {
       setDetailLoading(false);
+      setRequirementLoading(false);
     }
   }, []);
 
@@ -387,6 +403,8 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
     setShowModal(false);
     setSelectedDetail(null);
     setDetailError('');
+    setFinancingRequirement(null);
+    setRequirementError('');
   }, []);
 
   const handleBackdropClick = useCallback(
@@ -650,7 +668,7 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={handleBackdropClick}>
           <div
             ref={modalRef}
-            className="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4 max-h-[85vh] flex flex-col"
+            className="bg-white rounded-2xl shadow-xl w-full max-w-6xl mx-4 max-h-[85vh] flex flex-col"
           >
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <h3 className="text-lg font-semibold text-gray-800 truncate">
@@ -658,6 +676,7 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
               </h3>
               <button
                 onClick={closeModal}
+                aria-label="关闭客户详情"
                 className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
               >
                 <X size={20} />
@@ -702,6 +721,27 @@ const CustomerListPage: React.FC<CustomerListPageProps> = ({ userRole, username 
                       </div>
                     )}
                   </div>
+
+                  <section aria-label="融资业务链路" className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
+                    <div className="mb-3">
+                      <h4 className="text-base font-semibold text-slate-800">融资业务链路</h4>
+                      <p className="mt-1 text-sm text-slate-500">融资需求、产品匹配、融资方案、融资执行与融资复盘。</p>
+                    </div>
+                    {requirementLoading && <div className="text-sm text-slate-500">正在加载融资需求...</div>}
+                    {!requirementLoading && requirementError && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                        融资业务链路加载失败：{requirementError}
+                      </div>
+                    )}
+                    {!requirementLoading && !requirementError && financingRequirement && (
+                      <FinancingRequirementCard initial={financingRequirement} />
+                    )}
+                    {!requirementLoading && !requirementError && !financingRequirement && (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+                        当前客户尚无融资需求。请先在 AI 对话中确认融资需求，再进入产品匹配与后续流程。
+                      </div>
+                    )}
+                  </section>
 
                   {getContractDisplayMarkdown(selectedDetail.fields) ? (
                     <article className="prose prose-slate max-w-none rounded-lg border border-slate-200 bg-white p-4">

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { confirmFinancingRequirement, createFinancingRequirementDraft, type FinancingRequirementData } from '../services/api';
 import { ProductMatchingPanel } from './ProductMatchingPanel';
+import { formatAmountWan } from '../utils/businessFormatters';
 
 const statusLabel: Record<FinancingRequirementData['status'], string> = {
   draft: '草稿', needs_confirmation: '待确认', confirmed: '已确认', superseded: '已被新版本替代', cancelled: '已取消',
@@ -67,7 +68,7 @@ export function FinancingRequirementCard({ initial }: { initial: FinancingRequir
     <div className="mt-1 text-xs text-slate-600">状态：{statusLabel[item.status]}</div>
     <div className="mt-2 grid gap-1 text-slate-700">
       <div>融资主体：{item.borrower_entity || '待确认'}</div>
-      <div>融资金额：{item.requested_amount ? `${item.requested_amount.toLocaleString('zh-CN')}元` : '待确认'}{item.requested_amount && !item.amount_confirmed ? '（约数，需确认）' : ''}</div>
+      <div>融资金额：{item.requested_amount ? formatAmountWan(item.requested_amount) : '待确认'}{item.requested_amount && !item.amount_confirmed ? '（约数，需确认）' : ''}</div>
       <div>融资用途：{item.purpose_detail || item.financing_purpose || '待确认'}</div>
       <div>融资期限：{item.term_value ? `${item.term_value}${item.term_unit === 'month' ? '个月' : item.term_unit === 'year' ? '年' : '天'}` : '待确认'}</div>
     </div>

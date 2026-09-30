@@ -11,6 +11,7 @@ import CustomerDataPage from './components/CustomerDataPage';
 import AdminUsersPage from './components/AdminUsersPage';
 import ProductCatalogPage from './components/ProductCatalogPage';
 import WorkspacePage from './pages/Workspace';
+import FinancingExecutionDashboard from './pages/FinancingExecutionDashboard';
 import { getCurrentUser } from './services/api';
 
 const CUSTOMER_CONTEXT_STORAGE_KEYS = [
@@ -31,6 +32,7 @@ const PAGE_PATH_MAP: Record<PageType, string> = {
   application: '/application',
   scheme: '/scheme',
   'product-catalog': '/product-catalog',
+  'financing-execution': '/financing-execution',
   chat: '/chat',
   data: '/data',
   admin: '/admin',
@@ -51,6 +53,7 @@ function getInitialPageFromLocation(): PageType {
     '/application': 'application',
     '/scheme': 'scheme',
     '/product-catalog': 'product-catalog',
+    '/financing-execution': 'financing-execution',
     '/matching': 'scheme',
     '/chat': 'chat',
     '/data': 'data',
@@ -264,7 +267,7 @@ const App: React.FC = () => {
   const handleNavigate = useCallback(
     (page: string): void => {
       const normalizedPage = page === 'matching' ? 'scheme' : page === 'dashboard' ? 'workspace' : page;
-      const validPages: PageType[] = ['workspace', 'dashboard', 'customers', 'upload', 'application', 'scheme', 'product-catalog', 'chat', 'data', 'admin'];
+      const validPages: PageType[] = ['workspace', 'dashboard', 'customers', 'upload', 'application', 'scheme', 'product-catalog', 'financing-execution', 'chat', 'data', 'admin'];
       if (!validPages.includes(normalizedPage as PageType)) {
         return;
       }
@@ -295,6 +298,8 @@ const App: React.FC = () => {
         return <SchemeMatchPage />;
       case 'product-catalog':
         return role === 'admin' ? <ProductCatalogPage /> : <WorkspacePage onNavigate={handleNavigate} />;
+      case 'financing-execution':
+        return <FinancingExecutionDashboard />;
       case 'chat':
         return <ChatPage onNavigate={handleNavigate} />;
       case 'admin':

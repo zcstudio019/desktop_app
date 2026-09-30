@@ -7,6 +7,8 @@ vi.mock('../services/api', () => ({
   confirmFinancingRequirement: vi.fn(),
   createFinancingRequirementDraft: vi.fn(),
   getLatestProductMatching: vi.fn(),
+  listCustomerFinancingPlans: vi.fn().mockResolvedValue([]),
+  listFinancingApplications: vi.fn().mockResolvedValue([]),
   runProductMatching: vi.fn(),
 }));
 

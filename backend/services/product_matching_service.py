@@ -197,6 +197,10 @@ class ProductMatchingService:
                 configuration_error_count=counts["product_configuration_error"],
                 summary_json=_canonical(summary),
             ))
+            # ProductMatchItem references snapshot_id through a database foreign
+            # key, but the ORM models intentionally do not expose a relationship.
+            # Flush the parent explicitly so MySQL inserts it before its items.
+            db.flush()
             for item in items:
                 db.add(ProductMatchItem(
                     snapshot_id=snapshot_id, product_id=item["product_id"], version_id=item["version_id"],
@@ -231,6 +235,7 @@ class ProductMatchingService:
     @staticmethod
     def _item_dict(row: ProductMatchItem) -> dict[str, Any]:
         return {
+            "product_match_item_id": row.id,
             "product_id": row.product_id, "version_id": row.version_id,
             "external_product_code": row.external_product_code, "institution_name": row.institution_name,
             "product_name": row.product_name, "product_category": row.product_category,

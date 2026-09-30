@@ -4,14 +4,16 @@ import {
   changeCatalogVersion, deleteCatalogRule, getCatalogProductHistory, getCatalogRuleOptions, getCatalogVersion,
   getCatalogConflict, getLocalCatalogConflicts, getLocalCatalogProducts, getLocalCatalogSources, listCatalogProducts, listCatalogVersions,
   patchCatalogDraft, resolveCatalogConflict, saveCatalogRule, syncLocalCatalog,
+  getProductExecutionMetrics,
   type CatalogConflictDecision, type CatalogConflictDetail, type CatalogProductRow, type CatalogRule, type CatalogVersionDetail, type LocalCatalogConflict,
-  type LocalCatalogProductSummary, type LocalCatalogSourcesResponse,
+  type LocalCatalogProductSummary, type LocalCatalogSourcesResponse, type ProductExecutionMetricsData,
 } from '../../services/api';
 import {
   PRODUCT_CATEGORY_LABELS, PRODUCT_FIELD_LABELS, REVIEW_STATUS_LABELS, RULE_ACTION_LABELS, RULE_FIELD_LABELS,
   RULE_OPERATOR_LABELS, RULE_SEVERITY_LABELS, VERSION_STATUS_LABELS, productFieldLabel,
 } from './productCatalogLabels';
 import { SPACING } from '../../styles/design-tokens';
+import { formatAmountWan, formatMonths } from '../../utils/businessFormatters';
 
 type Tab = 'sources' | 'products' | 'review' | 'conflicts' | 'published' | 'history';
 const TABS: { id: Tab; label: string }[] = [
@@ -107,6 +109,7 @@ const LocalProductCatalogSection: React.FC = () => {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [executionMetrics, setExecutionMetrics] = useState<ProductExecutionMetricsData | null>(null);
 
   const loadSources = useCallback(async () => setSources(await getLocalCatalogSources()), []);
   const loadConflicts = useCallback(async () => setConflicts((await getLocalCatalogConflicts()).items), []);
@@ -139,12 +142,14 @@ const LocalProductCatalogSection: React.FC = () => {
   const openVersion = async (versionId: string, productId: string) => {
     setBusy('detail');
     try {
-      const [result, versions, options] = await Promise.all([
+      const [result, versions, options, metrics] = await Promise.all([
         getCatalogVersion(versionId), getCatalogProductHistory(productId), getCatalogRuleOptions(),
+        getProductExecutionMetrics(productId, versionId),
       ]);
       setDetail(result);
       setHistory(versions.items.sort((a, b) => b.version.version_number - a.version.version_number));
       setRuleOptions(options);
+      setExecutionMetrics(metrics);
       const nextFields = Object.fromEntries(EDIT_FIELDS.map((item) => [item.key, fieldValue(result.version[item.key])]));
       const nextReview = Object.fromEntries(Object.entries(result.version.field_review_json || {}).map(([key, value]) => [
         key, value === 'confirmed' ? 'reviewed' : value === 'acknowledged_unknown' ? 'insufficient_data' : value,
@@ -358,7 +363,7 @@ const LocalProductCatalogSection: React.FC = () => {
         <tbody className="divide-y">{displayRows.map(({ product, version }) => <tr key={version.version_id} className="cursor-pointer hover:bg-slate-50" onClick={() => void openVersion(version.version_id, product.product_id)}>
           <td className="p-2 font-mono">{product.external_product_code || '—'}</td><td className="p-2 font-medium">{version.product_name}</td><td className="p-2">{version.institution_name}</td>
           <td className="p-2">{PRODUCT_CATEGORY_LABELS[product.product_category] || '其他'}</td><td className="p-2">V{version.version_number}</td><td className="p-2">{VERSION_STATUS_LABELS[version.status] || '未知状态'}</td>
-          <td className="p-2">{version.max_amount || '—'}</td><td className="p-2">{version.max_term_months ?? '—'}</td><td className="p-2">{version.needs_review ? '是' : '否'}</td>
+          <td className="p-2">{version.max_amount ? formatAmountWan(version.max_amount) : '—'}</td><td className="p-2">{version.max_term_months ? formatMonths(version.max_term_months) : '—'}</td><td className="p-2">{version.needs_review ? '是' : '否'}</td>
           <td className="p-2">{version.source_file || '飞书'}</td><td className="p-2">{version.source_imported_at}</td>
         </tr>)}</tbody></table>{displayRows.length === 0 && <p className="p-6 text-center text-slate-500">暂无符合条件的产品。</p>}</div>
     </div>}
@@ -440,6 +445,7 @@ const LocalProductCatalogSection: React.FC = () => {
           <div><h4 className="font-semibold">版本历史</h4>{history.map((item) => <button key={item.version.version_id} type="button" onClick={() => void openVersion(item.version.version_id, item.product.product_id)} className="mt-2 block w-full rounded-lg border p-2 text-left text-sm hover:bg-slate-50">
             V{item.version.version_number} · {VERSION_STATUS_LABELS[item.version.status] || '未知状态'} · {item.version.effective_from || '未生效'} ~ {item.version.effective_to || '无结束日'} · {item.version.published_at || '未发布'} · {item.version.published_by || '—'}<div className="break-all font-mono text-xs">{item.version.source_snapshot_hash}</div>
           </button>)}</div>
+          <div data-testid="product-execution-metrics"><h4 className="font-semibold">执行反馈</h4>{executionMetrics ? <div className="mt-2 grid gap-2 rounded-lg bg-slate-50 p-3 text-sm sm:grid-cols-3"><div>样本：{executionMetrics.sample_size}笔</div><div>申请：{executionMetrics.application_count}笔</div><div>批复：{executionMetrics.approved_count}笔</div><div>部分批复：{executionMetrics.partially_approved_count}笔</div><div>拒绝：{executionMetrics.rejected_count}笔</div><div>放款：{executionMetrics.disbursed_count}笔</div><div>申请金额：{formatAmountWan(executionMetrics.submitted_amount_total)}</div><div>批复金额：{formatAmountWan(executionMetrics.approved_amount_total)}</div><div>放款金额：{formatAmountWan(executionMetrics.disbursed_amount_total)}</div><div>补件申请：{executionMetrics.supplement_application_count}笔</div><div>补件轮次：{executionMetrics.supplement_round_total}</div><div>规则反馈待审核：{executionMetrics.pending_rule_feedback_count}条</div></div> : <p className="mt-2 text-sm text-slate-500">暂无已定稿执行样本。</p>}<p className="mt-1 text-xs text-slate-500">仅展示真实执行事实与样本量。</p></div>
         </div><div className="lg:sticky lg:top-0 lg:self-start"><h4 className="font-semibold">来源原文</h4><p className="text-xs text-slate-500">{detail.version.source_file} · {detail.version.source_update_date || '未知日期'} · SHA-256 {detail.version.source_snapshot_hash}</p>
           <pre className="mt-2 max-h-[75vh] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm leading-relaxed">{detail.version.source_snapshot}</pre>
         </div></div>

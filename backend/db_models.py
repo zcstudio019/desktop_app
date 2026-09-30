@@ -418,6 +418,764 @@ class ProductMatchItem(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class FinancingPlan(Base):
+    __tablename__ = "financing_plans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    financing_plan_id = Column(String(64), unique=True, nullable=False, index=True)
+    customer_id = Column(String(128), nullable=False, index=True)
+    requirement_id = Column(String(64), nullable=False, index=True)
+    requirement_version = Column(Integer, nullable=False)
+    source_match_snapshot_id = Column(String(64), ForeignKey("product_match_snapshots.snapshot_id"), nullable=False, index=True)
+    current_version_id = Column(String(64), nullable=True, index=True)
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    created_by = Column(String(128), nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingPlanVersion(Base):
+    __tablename__ = "financing_plan_versions"
+    __table_args__ = (UniqueConstraint("financing_plan_id", "version_no", name="uq_financing_plan_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_version_id = Column(String(64), unique=True, nullable=False, index=True)
+    financing_plan_id = Column(String(64), ForeignKey("financing_plans.financing_plan_id"), nullable=False, index=True)
+    version_no = Column(Integer, nullable=False)
+    plan_type = Column(String(24), nullable=False)
+    target_amount = Column(Numeric(18, 2), nullable=False)
+    covered_amount = Column(Numeric(18, 2), nullable=False)
+    funding_gap = Column(Numeric(18, 2), nullable=False)
+    currency = Column(String(8), nullable=False, default="CNY")
+    summary = Column(Text, nullable=False, default="")
+    rationale = Column(Text, nullable=False, default="")
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    generation_status = Column(String(40), nullable=False, index=True)
+    required_actions_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    missing_information_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    conditions_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    source_requirement_version = Column(Integer, nullable=False)
+    source_facts_hash = Column(String(64), nullable=False, index=True)
+    source_match_snapshot_id = Column(String(64), ForeignKey("product_match_snapshots.snapshot_id"), nullable=False, index=True)
+    source_catalog_hash = Column(String(64), nullable=False, index=True)
+    created_by = Column(String(128), nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    confirmed_by = Column(String(128), nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+
+
+class FinancingPlanItem(Base):
+    __tablename__ = "financing_plan_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_item_id = Column(String(64), unique=True, nullable=False, index=True)
+    plan_version_id = Column(String(64), ForeignKey("financing_plan_versions.plan_version_id"), nullable=False, index=True)
+    product_id = Column(String(64), nullable=False, index=True)
+    product_version_id = Column(String(64), nullable=False, index=True)
+    product_match_item_id = Column(Integer, ForeignKey("product_match_items.id"), nullable=False, index=True)
+    external_product_code = Column(String(64), nullable=False, default="")
+    institution_name = Column(String(255), nullable=False, default="")
+    product_name = Column(String(255), nullable=False, default="")
+    proposed_amount = Column(Numeric(18, 2), nullable=False)
+    proposed_term_months = Column(Integer, nullable=False)
+    match_status = Column(String(40), nullable=False)
+    item_role = Column(String(24), nullable=False)
+    sequence_no = Column(Integer, nullable=False, default=0)
+    reason = Column(Text, nullable=False, default="")
+    notes = Column(Text, nullable=False, default="")
+    conditions_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    risks_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    manual_approved_by = Column(String(128), nullable=True)
+    manual_approved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingPlanGap(Base):
+    __tablename__ = "financing_plan_gaps"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    gap_id = Column(String(64), unique=True, nullable=False, index=True)
+    plan_version_id = Column(String(64), ForeignKey("financing_plan_versions.plan_version_id"), nullable=False, index=True)
+    gap_type = Column(String(32), nullable=False)
+    description = Column(Text, nullable=False)
+    related_product_id = Column(String(64), nullable=True)
+    related_fact_field = Column(String(128), nullable=True)
+    severity = Column(String(16), nullable=False, default="info")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ManualCandidateOverride(Base):
+    __tablename__ = "manual_candidate_overrides"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    override_id = Column(String(64), unique=True, nullable=False, index=True)
+    customer_id = Column(String(128), nullable=False, index=True)
+    requirement_id = Column(String(64), nullable=False, index=True)
+    match_snapshot_id = Column(String(64), ForeignKey("product_match_snapshots.snapshot_id"), nullable=False, index=True)
+    product_match_item_id = Column(Integer, ForeignKey("product_match_items.id"), nullable=False, index=True)
+    product_id = Column(String(64), nullable=False, index=True)
+    product_version_id = Column(String(64), nullable=False, index=True)
+    previous_status = Column(String(32), nullable=False)
+    new_status = Column(String(32), nullable=False)
+    operator_id = Column(String(128), nullable=False)
+    operator_name = Column(String(255), nullable=False)
+    reason = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingPlanCondition(Base):
+    __tablename__ = "financing_plan_conditions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    condition_id = Column(String(64), unique=True, nullable=False, index=True)
+    plan_version_id = Column(String(64), ForeignKey("financing_plan_versions.plan_version_id"), nullable=False, index=True)
+    plan_item_id = Column(String(64), ForeignKey("financing_plan_items.plan_item_id"), nullable=True, index=True)
+    condition_type = Column(String(32), nullable=False, default="other")
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    source_type = Column(String(64), nullable=False)
+    source_rule_id = Column(String(64), nullable=True)
+    source_fact_field = Column(String(128), nullable=True)
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    required = Column(Integer, nullable=False, default=1)
+    sort_order = Column(Integer, nullable=False, default=0)
+    updated_by = Column(String(128), nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingPlanMaterial(Base):
+    __tablename__ = "financing_plan_materials"
+    __table_args__ = (UniqueConstraint("plan_version_id", "material_code", name="uq_plan_version_material"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    material_id = Column(String(64), unique=True, nullable=False, index=True)
+    plan_version_id = Column(String(64), ForeignKey("financing_plan_versions.plan_version_id"), nullable=False, index=True)
+    plan_item_id = Column(String(64), ForeignKey("financing_plan_items.plan_item_id"), nullable=True, index=True)
+    material_code = Column(String(128), nullable=False)
+    material_name = Column(String(255), nullable=False)
+    material_category = Column(String(64), nullable=False, default="other")
+    required = Column(Integer, nullable=False, default=1)
+    status = Column(String(24), nullable=False, default="missing", index=True)
+    source_type = Column(String(64), nullable=False)
+    source_product_rule_id = Column(String(64), nullable=True)
+    notes = Column(Text, nullable=False, default="")
+    required_by_products_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    updated_by = Column(String(128), nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingPlanExplanation(Base):
+    __tablename__ = "financing_plan_explanations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    explanation_id = Column(String(64), unique=True, nullable=False, index=True)
+    plan_version_id = Column(String(64), ForeignKey("financing_plan_versions.plan_version_id"), unique=True, nullable=False, index=True)
+    plan_summary = Column(Text, nullable=False, default="")
+    coverage_summary = Column(Text, nullable=False, default="")
+    product_structure_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    key_conditions_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    funding_gap_summary = Column(Text, nullable=False, default="")
+    risk_notes_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    next_actions_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    generated_by = Column(String(32), nullable=False, default="template")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingPlanSelection(Base):
+    __tablename__ = "financing_plan_selections"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    selection_id = Column(String(64), unique=True, nullable=False, index=True)
+    customer_id = Column(String(128), nullable=False, index=True)
+    requirement_id = Column(String(64), nullable=False, index=True)
+    primary_plan_version_id = Column(String(64), ForeignKey("financing_plan_versions.plan_version_id"), nullable=True, index=True)
+    backup_plan_version_ids_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    conditional_plan_version_ids_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    status = Column(String(24), nullable=False, default="draft", index=True)
+    selected_by = Column(String(128), nullable=False, default="")
+    selected_at = Column(DateTime, nullable=False)
+    finalized_by = Column(String(128), nullable=True)
+    finalized_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingPlanReportSnapshot(Base):
+    __tablename__ = "financing_plan_report_snapshots"
+    __table_args__ = (UniqueConstraint("plan_selection_id", "report_type", "report_version", name="uq_plan_report_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_id = Column(String(64), unique=True, nullable=False, index=True)
+    plan_selection_id = Column(String(64), ForeignKey("financing_plan_selections.selection_id"), nullable=False, index=True)
+    primary_plan_version_id = Column(String(64), nullable=True, index=True)
+    report_type = Column(String(16), nullable=False, index=True)
+    report_version = Column(Integer, nullable=False)
+    structured_payload_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False)
+    rendered_html = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False)
+    source_requirement_version = Column(Integer, nullable=False)
+    source_match_snapshot_id = Column(String(64), nullable=False, index=True)
+    source_facts_hash = Column(String(64), nullable=False, index=True)
+    source_catalog_hash = Column(String(64), nullable=False, index=True)
+    generated_by = Column(String(128), nullable=False, default="")
+    generated_at = Column(DateTime, nullable=False)
+
+
+class FinancingApplication(Base):
+    __tablename__ = "financing_applications"
+    # MySQL must see the referenced business key as unique while the table is
+    # being created; an index emitted after CREATE TABLE is too late for the
+    # self-referencing parent_application_id foreign key.
+    __table_args__ = (
+        UniqueConstraint("application_id", name="uq_financing_application_application_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    application_id = Column(String(64), nullable=False)
+    parent_application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=True, index=True)
+    attempt_no = Column(Integer, nullable=False, default=1)
+    customer_id = Column(String(128), nullable=False, index=True)
+    requirement_id = Column(String(64), nullable=False, index=True)
+    requirement_version = Column(Integer, nullable=False)
+    plan_id = Column(String(64), ForeignKey("financing_plans.financing_plan_id"), nullable=False, index=True)
+    plan_version_id = Column(String(64), ForeignKey("financing_plan_versions.plan_version_id"), nullable=False, index=True)
+    plan_item_id = Column(String(64), ForeignKey("financing_plan_items.plan_item_id"), nullable=False, index=True)
+    product_id = Column(String(64), nullable=False, index=True)
+    product_version_id = Column(String(64), nullable=False, index=True)
+    external_product_code = Column(String(64), nullable=False, default="")
+    institution_name = Column(String(255), nullable=False, default="")
+    product_name = Column(String(255), nullable=False, default="")
+    application_no = Column(String(64), unique=True, nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    target_amount = Column(Numeric(18, 2), nullable=False)
+    submitted_amount = Column(Numeric(18, 2), nullable=True)
+    approved_amount = Column(Numeric(18, 2), nullable=True)
+    disbursed_amount = Column(Numeric(18, 2), nullable=True)
+    target_term_months = Column(Integer, nullable=False)
+    approved_term_months = Column(Integer, nullable=True)
+    target_interest_rate = Column(Numeric(10, 6), nullable=True)
+    approved_interest_rate = Column(Numeric(10, 6), nullable=True)
+    responsible_user_id = Column(String(128), nullable=True)
+    responsible_user_name = Column(String(255), nullable=True)
+    current_stage_code = Column(String(40), nullable=False, default="01_material_preparation")
+    submission_channel = Column(String(64), nullable=True)
+    submission_reference = Column(String(128), nullable=True)
+    submission_notes = Column(Text, nullable=False, default="")
+    approval_reference = Column(String(128), nullable=True)
+    rejection_reason = Column(Text, nullable=False, default="")
+    rejection_code = Column(String(64), nullable=True)
+    disbursement_reference = Column(String(128), nullable=True)
+    final_result = Column(String(64), nullable=True)
+    submitted_at = Column(DateTime, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+    disbursed_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    created_by = Column(String(128), nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingApplicationStage(Base):
+    __tablename__ = "financing_application_stages"
+    __table_args__ = (UniqueConstraint("application_id", "stage_code", name="uq_application_stage_code"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stage_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    stage_code = Column(String(40), nullable=False)
+    stage_name = Column(String(64), nullable=False)
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    entered_by = Column(String(128), nullable=True)
+    completed_by = Column(String(128), nullable=True)
+    notes = Column(Text, nullable=False, default="")
+    sequence_no = Column(Integer, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingApplicationTask(Base):
+    __tablename__ = "financing_application_tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    stage_id = Column(String(64), ForeignKey("financing_application_stages.stage_id"), nullable=False, index=True)
+    task_type = Column(String(40), nullable=False)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    status = Column(String(24), nullable=False, default="todo", index=True)
+    priority = Column(String(16), nullable=False, default="normal", index=True)
+    assignee_user_id = Column(String(128), nullable=True)
+    assignee_user_name = Column(String(255), nullable=True)
+    due_date = Column(Date, nullable=True)
+    source_type = Column(String(40), nullable=False)
+    source_ref = Column(String(64), nullable=True, index=True)
+    related_material_id = Column(String(64), nullable=True, index=True)
+    related_condition_id = Column(String(64), nullable=True, index=True)
+    required = Column(Integer, nullable=False, default=1)
+    completed_at = Column(DateTime, nullable=True)
+    completed_by = Column(String(128), nullable=True)
+    notes = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingApplicationEvent(Base):
+    __tablename__ = "financing_application_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    from_status = Column(String(32), nullable=True)
+    to_status = Column(String(32), nullable=True)
+    operator_id = Column(String(128), nullable=False)
+    operator_name = Column(String(255), nullable=False)
+    payload_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="{}")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingSupplementRequest(Base):
+    __tablename__ = "financing_supplement_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    supplement_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    request_no = Column(String(64), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=False)
+    requested_by_bank = Column(String(255), nullable=True)
+    requested_at = Column(DateTime, nullable=False)
+    due_date = Column(Date, nullable=True, index=True)
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    completed_at = Column(DateTime, nullable=True)
+    completed_by = Column(String(128), nullable=True)
+    notes = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingApplicationMaterial(Base):
+    __tablename__ = "financing_application_materials"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    application_material_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    supplement_request_id = Column(String(64), ForeignKey("financing_supplement_requests.supplement_id"), nullable=True, index=True)
+    material_type = Column(String(64), nullable=False, default="other", index=True)
+    material_name = Column(String(255), nullable=False)
+    material_category = Column(String(64), nullable=False, default="other")
+    owner_type = Column(String(32), nullable=False, default="enterprise", index=True)
+    owner_id = Column(String(128), nullable=True, index=True)
+    owner_name = Column(String(255), nullable=True)
+    required = Column(Integer, nullable=False, default=1)
+    required_verified = Column(Integer, nullable=False, default=0)
+    status = Column(String(24), nullable=False, default="required_missing", index=True)
+    source_type = Column(String(40), nullable=False)
+    source_id = Column(String(64), nullable=True, index=True)
+    source_document_id = Column(String(64), nullable=True, index=True)
+    customer_material_id = Column(String(64), nullable=True, index=True)
+    source_file_id = Column(String(64), nullable=True, index=True)
+    file_reference = Column(String(512), nullable=True)
+    valid_from = Column(Date, nullable=True)
+    valid_to = Column(Date, nullable=True)
+    coverage_start = Column(Date, nullable=True)
+    coverage_end = Column(Date, nullable=True)
+    version_no = Column(Integer, nullable=False, default=1)
+    replaces_material_id = Column(String(64), nullable=True, index=True)
+    rejection_reason = Column(Text, nullable=False, default="")
+    verified_by = Column(String(128), nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingApplicationPackage(Base):
+    __tablename__ = "financing_application_packages"
+    __table_args__ = (UniqueConstraint("application_id", "package_version", name="uq_application_package_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    package_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    package_version = Column(Integer, nullable=False)
+    status = Column(String(24), nullable=False, default="draft", index=True)
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingApplicationPackageItem(Base):
+    __tablename__ = "financing_application_package_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    package_item_id = Column(String(64), unique=True, nullable=False, index=True)
+    package_id = Column(String(64), ForeignKey("financing_application_packages.package_id"), nullable=False, index=True)
+    application_material_id = Column(String(64), ForeignKey("financing_application_materials.application_material_id"), nullable=False, index=True)
+    customer_material_id = Column(String(64), nullable=True, index=True)
+    source_file_id = Column(String(64), nullable=True, index=True)
+    material_type = Column(String(64), nullable=False)
+    material_name = Column(String(255), nullable=False)
+    owner_type = Column(String(32), nullable=False, default="enterprise")
+    owner_name = Column(String(255), nullable=True)
+    file_name = Column(String(255), nullable=True)
+    file_hash = Column(String(128), nullable=False, default="")
+    source_file_path = Column(String(512), nullable=True)
+    display_name = Column(String(255), nullable=True)
+    package_file_name = Column(String(255), nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    required = Column(Integer, nullable=False, default=1)
+    included = Column(Integer, nullable=False, default=1)
+    notes = Column(Text, nullable=False, default="")
+
+
+class FinancingSubmissionPackage(Base):
+    __tablename__ = "financing_submission_packages"
+    __table_args__ = (UniqueConstraint("application_id", "submission_version", name="uq_submission_package_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    submission_package_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    application_package_id = Column(String(64), ForeignKey("financing_application_packages.package_id"), nullable=False, index=True)
+    submission_version = Column(Integer, nullable=False)
+    institution_name = Column(String(255), nullable=False)
+    product_name = Column(String(255), nullable=False)
+    status = Column(String(24), nullable=False, default="draft", index=True)
+    manifest_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="{}")
+    package_hash = Column(String(64), nullable=False, index=True)
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    submitted_at = Column(DateTime, nullable=True)
+
+
+class FinancingSupplementPackage(Base):
+    __tablename__ = "financing_supplement_packages"
+    __table_args__ = (UniqueConstraint("supplement_request_id", "package_version", name="uq_supplement_package_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    supplement_package_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    supplement_request_id = Column(String(64), ForeignKey("financing_supplement_requests.supplement_id"), nullable=False, index=True)
+    package_version = Column(Integer, nullable=False)
+    status = Column(String(24), nullable=False, default="draft", index=True)
+    manifest_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="{}")
+    package_hash = Column(String(64), nullable=False, default="")
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    submitted_at = Column(DateTime, nullable=True)
+    submitted_by = Column(String(128), nullable=True)
+    submission_reference = Column(String(128), nullable=True)
+
+
+class FinancingSupplementPackageItem(Base):
+    __tablename__ = "financing_supplement_package_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    package_item_id = Column(String(64), unique=True, nullable=False, index=True)
+    supplement_package_id = Column(String(64), ForeignKey("financing_supplement_packages.supplement_package_id"), nullable=False, index=True)
+    application_material_id = Column(String(64), ForeignKey("financing_application_materials.application_material_id"), nullable=False, index=True)
+    source_file_id = Column(String(64), nullable=True, index=True)
+    material_type = Column(String(64), nullable=False)
+    material_name = Column(String(255), nullable=False)
+    file_name = Column(String(255), nullable=True)
+    file_hash = Column(String(128), nullable=False, default="")
+    source_file_path = Column(String(512), nullable=True)
+    required = Column(Integer, nullable=False, default=1)
+
+
+class FinancingMaterialEvent(Base):
+    __tablename__ = "financing_material_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    material_event_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    application_material_id = Column(String(64), nullable=True, index=True)
+    package_id = Column(String(64), nullable=True, index=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    operator_id = Column(String(128), nullable=False)
+    operator_name = Column(String(255), nullable=False)
+    payload_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="{}")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingContact(Base):
+    __tablename__ = "financing_contacts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contact_id = Column(String(64), unique=True, nullable=False, index=True)
+    contact_type = Column(String(24), nullable=False, index=True)
+    customer_id = Column(String(128), nullable=True, index=True)
+    institution_name = Column(String(255), nullable=True, index=True)
+    branch_name = Column(String(255), nullable=True)
+    name = Column(String(255), nullable=False, index=True)
+    title = Column(String(128), nullable=True)
+    department = Column(String(255), nullable=True)
+    mobile = Column(String(64), nullable=True)
+    phone = Column(String(64), nullable=True)
+    email = Column(String(255), nullable=True)
+    wechat = Column(String(128), nullable=True)
+    is_primary = Column(Integer, nullable=False, default=0)
+    related_person_id = Column(String(128), nullable=True, index=True)
+    status = Column(String(24), nullable=False, default="active", index=True)
+    notes = Column(Text, nullable=False, default="")
+    created_by = Column(String(128), nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingApplicationContact(Base):
+    __tablename__ = "financing_application_contacts"
+    __table_args__ = (UniqueConstraint("application_id", "contact_id", name="uq_financing_application_contact"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    application_contact_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    contact_id = Column(String(64), ForeignKey("financing_contacts.contact_id"), nullable=False, index=True)
+    role = Column(String(40), nullable=False, default="handler")
+    is_primary = Column(Integer, nullable=False, default=0)
+    created_by = Column(String(128), nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingCommunicationRecord(Base):
+    __tablename__ = "financing_communication_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    communication_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    customer_id = Column(String(128), nullable=False, index=True)
+    contact_id = Column(String(64), ForeignKey("financing_contacts.contact_id"), nullable=True, index=True)
+    communication_side = Column(String(24), nullable=False, index=True)
+    channel = Column(String(24), nullable=False, index=True)
+    direction = Column(String(24), nullable=False)
+    feedback_tag = Column(String(40), nullable=True, index=True)
+    subject = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    occurred_at = Column(DateTime, nullable=False, index=True)
+    operator_id = Column(String(128), nullable=False)
+    operator_name = Column(String(255), nullable=False)
+    related_task_id = Column(String(64), nullable=True, index=True)
+    related_supplement_id = Column(String(64), nullable=True, index=True)
+    related_review_feedback_id = Column(String(64), nullable=True, index=True)
+    related_approval_record_id = Column(String(64), nullable=True, index=True)
+    follow_up_required = Column(Integer, nullable=False, default=0)
+    next_follow_up_at = Column(DateTime, nullable=True)
+    outcome = Column(String(32), nullable=False, default="info_only", index=True)
+    internal_note = Column(Text, nullable=False, default="")
+    status = Column(String(24), nullable=False, default="active", index=True)
+    voided_by = Column(String(128), nullable=True)
+    voided_at = Column(DateTime, nullable=True)
+    void_reason = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingFollowUp(Base):
+    __tablename__ = "financing_followups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    follow_up_id = Column(String(64), unique=True, nullable=False, index=True)
+    customer_id = Column(String(128), nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    communication_record_id = Column(String(64), ForeignKey("financing_communication_records.communication_id"), nullable=True, index=True)
+    related_task_id = Column(String(64), nullable=True, index=True)
+    follow_up_type = Column(String(24), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    assignee_user_id = Column(String(128), nullable=True, index=True)
+    assignee_user_name = Column(String(255), nullable=True)
+    due_at = Column(DateTime, nullable=False, index=True)
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    priority = Column(String(16), nullable=False, default="normal")
+    completed_at = Column(DateTime, nullable=True)
+    completed_by = Column(String(128), nullable=True)
+    result = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingReviewFeedback(Base):
+    __tablename__ = "financing_review_feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feedback_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    feedback_type = Column(String(32), nullable=False, index=True)
+    feedback_date = Column(DateTime, nullable=False)
+    institution_contact = Column(String(255), nullable=True)
+    content = Column(Text, nullable=False)
+    related_stage = Column(String(40), nullable=False)
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingApprovalRecord(Base):
+    __tablename__ = "financing_approval_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    approval_record_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    approval_status = Column(String(24), nullable=False, index=True)
+    submitted_amount = Column(Numeric(18, 2), nullable=False)
+    approved_amount = Column(Numeric(18, 2), nullable=True)
+    approved_term_months = Column(Integer, nullable=True)
+    approved_interest_rate = Column(Numeric(10, 6), nullable=True)
+    guarantee_method = Column(String(255), nullable=True)
+    repayment_method = Column(String(255), nullable=True)
+    approval_reference = Column(String(128), nullable=True)
+    approval_date = Column(DateTime, nullable=False)
+    approval_expiry_date = Column(Date, nullable=True)
+    conditions_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False, default="[]")
+    notes = Column(Text, nullable=False, default="")
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingApprovalCondition(Base):
+    __tablename__ = "financing_approval_conditions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    approval_condition_id = Column(String(64), unique=True, nullable=False, index=True)
+    approval_record_id = Column(String(64), ForeignKey("financing_approval_records.approval_record_id"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    required = Column(Integer, nullable=False, default=1)
+    updated_by = Column(String(128), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FinancingDisbursementRecord(Base):
+    __tablename__ = "financing_disbursement_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    disbursement_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    disbursement_no = Column(String(64), unique=True, nullable=False, index=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    disbursed_at = Column(DateTime, nullable=False)
+    bank_reference = Column(String(128), nullable=True)
+    recipient_name = Column(String(255), nullable=True)
+    recipient_account_masked = Column(String(128), nullable=True)
+    purpose = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=False, default="")
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingApplicationOutcome(Base):
+    __tablename__ = "financing_application_outcomes"
+    __table_args__ = (UniqueConstraint("application_id", "outcome_version", name="uq_application_outcome_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    outcome_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    customer_id = Column(String(128), nullable=False, index=True)
+    product_id = Column(String(64), nullable=False, index=True)
+    product_version_id = Column(String(64), nullable=False, index=True)
+    requirement_id = Column(String(64), nullable=False, index=True)
+    plan_version_id = Column(String(64), nullable=False, index=True)
+    outcome_version = Column(Integer, nullable=False, default=1)
+    supersedes_outcome_id = Column(String(64), nullable=True, index=True)
+    final_status = Column(String(48), nullable=False, index=True)
+    submitted_amount = Column(Numeric(18, 2), nullable=True)
+    approved_amount = Column(Numeric(18, 2), nullable=True)
+    disbursed_amount = Column(Numeric(18, 2), nullable=True)
+    submitted_term_months = Column(Integer, nullable=True)
+    approved_term_months = Column(Integer, nullable=True)
+    submitted_interest_rate = Column(Numeric(10, 6), nullable=True)
+    approved_interest_rate = Column(Numeric(10, 6), nullable=True)
+    approval_date = Column(DateTime, nullable=True)
+    disbursement_date = Column(DateTime, nullable=True)
+    rejection_code = Column(String(64), nullable=True)
+    rejection_reason = Column(Text, nullable=False, default="")
+    disbursement_variance_reason = Column(String(64), nullable=True)
+    final_notes = Column(Text, nullable=False, default="")
+    source_type = Column(String(40), nullable=False, default="execution")
+    status = Column(String(24), nullable=False, default="finalized", index=True)
+    closed_at = Column(DateTime, nullable=False)
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class FinancingApplicationRejectionReason(Base):
+    __tablename__ = "financing_application_rejection_reasons"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rejection_reason_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    outcome_id = Column(String(64), ForeignKey("financing_application_outcomes.outcome_id"), nullable=False, index=True)
+    reason_code = Column(String(48), nullable=False, index=True)
+    description = Column(Text, nullable=False, default="")
+    source_type = Column(String(32), nullable=False)
+    confirmed_by = Column(String(128), nullable=False)
+    confirmed_at = Column(DateTime, nullable=False)
+
+
+class FinancingSupplementOutcome(Base):
+    __tablename__ = "financing_supplement_outcomes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    supplement_outcome_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, unique=True, index=True)
+    supplement_count = Column(Integer, nullable=False, default=0)
+    supplement_material_count = Column(Integer, nullable=False, default=0)
+    supplement_rounds = Column(Integer, nullable=False, default=0)
+    categories_json = Column(Text, nullable=False, default="[]")
+    generated_at = Column(DateTime, nullable=False)
+
+
+class ApplicationBottleneck(Base):
+    __tablename__ = "financing_application_bottlenecks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bottleneck_id = Column(String(64), unique=True, nullable=False, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    bottleneck_type = Column(String(40), nullable=False, index=True)
+    source_id = Column(String(64), nullable=True, index=True)
+    description = Column(Text, nullable=False)
+    started_at = Column(DateTime, nullable=False)
+    resolved_at = Column(DateTime, nullable=True)
+    duration_days = Column(Integer, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ProductRuleFeedback(Base):
+    __tablename__ = "product_rule_feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feedback_id = Column(String(64), unique=True, nullable=False, index=True)
+    product_id = Column(String(64), nullable=False, index=True)
+    product_version_id = Column(String(64), nullable=False, index=True)
+    rule_id = Column(String(64), nullable=True, index=True)
+    application_id = Column(String(64), ForeignKey("financing_applications.application_id"), nullable=False, index=True)
+    feedback_type = Column(String(40), nullable=False, index=True)
+    expected_result = Column(Text, nullable=False, default="")
+    actual_bank_feedback = Column(Text, nullable=False)
+    evidence_source = Column(String(40), nullable=False)
+    evidence_reference = Column(String(128), nullable=True)
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    reviewed_by = Column(String(128), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    created_by = Column(String(128), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+@event.listens_for(FinancingApplicationOutcome, "before_update")
+def _guard_finalized_application_outcome_update(_mapper, _connection, row):
+    state = inspect(row)
+    old_status = state.attrs.status.history.deleted[0] if state.attrs.status.history.deleted else row.status
+    if old_status == "finalized":
+        raise ValueError("已定稿的融资申请结果不可修改，请创建修正版本")
+
+
+@event.listens_for(FinancingApplicationOutcome, "before_delete")
+def _guard_application_outcome_delete(_mapper, _connection, _row):
+    raise ValueError("融资申请结果不可删除")
+
+
 class FinancingProductConflict(Base):
     __tablename__ = "financing_product_conflicts"
 
@@ -432,6 +1190,25 @@ class FinancingProductConflict(Base):
     resolved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+@event.listens_for(FinancingPlanSelection, "before_update")
+def _guard_finalized_plan_selection_update(_mapper, _connection, row):
+    state = inspect(row)
+    history = state.attrs.status.history
+    old_status = history.deleted[0] if history.deleted else row.status
+    if old_status == "finalized":
+        raise ValueError("已定稿的方案选择不可修改")
+
+
+@event.listens_for(FinancingPlanReportSnapshot, "before_update")
+def _guard_plan_report_snapshot_update(_mapper, _connection, _row):
+    raise ValueError("融资方案报告快照不可修改")
+
+
+@event.listens_for(FinancingPlanReportSnapshot, "before_delete")
+def _guard_plan_report_snapshot_delete(_mapper, _connection, _row):
+    raise ValueError("融资方案报告快照不可删除")
 
 
 @event.listens_for(FinancingProductVersion, "before_update")
@@ -469,6 +1246,53 @@ def _guard_published_product_identity(_mapper, connection, row):
     ).limit(1)).first()
     if exists:
         raise ValueError("已有已发布版本时不能修改产品身份")
+
+
+@event.listens_for(FinancingPlanVersion, "before_update")
+def _guard_confirmed_plan_version_update(_mapper, _connection, row):
+    state = inspect(row)
+    history = state.attrs.status.history
+    old_status = history.deleted[0] if history.deleted else row.status
+    if old_status != "confirmed":
+        return
+    changed = {attr.key for attr in state.attrs if attr.history.has_changes()}
+    if changed == {"status"} and row.status == "superseded":
+        return
+    raise ValueError("已确认方案版本不可修改")
+
+
+@event.listens_for(FinancingPlanItem, "before_update")
+@event.listens_for(FinancingPlanItem, "before_delete")
+def _guard_confirmed_plan_item(_mapper, connection, row):
+    status = connection.execute(select(FinancingPlanVersion.status).where(
+        FinancingPlanVersion.plan_version_id == row.plan_version_id,
+    )).scalar_one_or_none()
+    if status == "confirmed":
+        raise ValueError("已确认方案版本的产品项不可修改")
+
+
+@event.listens_for(FinancingPlanGap, "before_update")
+@event.listens_for(FinancingPlanGap, "before_delete")
+def _guard_confirmed_plan_gap(_mapper, connection, row):
+    status = connection.execute(select(FinancingPlanVersion.status).where(
+        FinancingPlanVersion.plan_version_id == row.plan_version_id,
+    )).scalar_one_or_none()
+    if status == "confirmed":
+        raise ValueError("已确认方案版本的缺口不可修改")
+
+
+@event.listens_for(FinancingPlanCondition, "before_update")
+@event.listens_for(FinancingPlanCondition, "before_delete")
+@event.listens_for(FinancingPlanMaterial, "before_update")
+@event.listens_for(FinancingPlanMaterial, "before_delete")
+@event.listens_for(FinancingPlanExplanation, "before_update")
+@event.listens_for(FinancingPlanExplanation, "before_delete")
+def _guard_confirmed_plan_artifact(_mapper, connection, row):
+    status = connection.execute(select(FinancingPlanVersion.status).where(
+        FinancingPlanVersion.plan_version_id == row.plan_version_id,
+    )).scalar_one_or_none()
+    if status == "confirmed":
+        raise ValueError("已确认方案版本的条件、材料及说明不可修改")
 
 
 class AsyncJobRecord(Base):

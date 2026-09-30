@@ -12,6 +12,7 @@ import {
   Sheet,
   Shield,
   Database,
+  BriefcaseBusiness,
   LucideIcon,
 } from 'lucide-react';
 import { BRAND } from '../../config/brand';
@@ -24,6 +25,7 @@ export type PageType =
   | 'application'
   | 'scheme'
   | 'product-catalog'
+  | 'financing-execution'
   | 'chat'
   | 'data'
   | 'admin';
@@ -58,6 +60,7 @@ const BASE_NAV_ITEMS: NavItemConfig[] = [
   { id: 'data', icon: Sheet, label: '资料汇总', description: '维护客户核心资料汇总' },
   { id: 'application', icon: FileText, label: '申请表', description: '生成并编辑贷款申请表' },
   { id: 'scheme', icon: Target, label: '方案匹配', description: '匹配融资产品与建议方案' },
+  { id: 'financing-execution', icon: BriefcaseBusiness, label: '融资执行', description: '跟进进件、审批与放款' },
   { id: 'chat', icon: MessageSquare, label: 'AI 对话', description: '资料问答与风险评估报告' },
 ];
 

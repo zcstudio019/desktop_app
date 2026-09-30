@@ -598,6 +598,7 @@ export interface ProductMatchRuleResult {
 }
 
 export interface ProductMatchItemData {
+  product_match_item_id?: number;
   product_id: string; version_id: string; external_product_code: string;
   institution_name: string; product_name: string; product_category: string;
   max_amount: string | null; max_term_months: number | null; overall_status: ProductMatchingStatus;
@@ -612,7 +613,7 @@ export interface ProductMatchingSnapshotData {
   message?: string;
   precheck?: { active_product_count: number; published_product_count: number; active_rule_count: number };
   summary: Record<ProductMatchingStatus, number> & { total: number; boundary_notice?: string };
-  data_quality: { missing_domains?: string[]; conflicted_fields?: string[]; stale_fields?: string[]; preliminary_fields?: string[] };
+  data_quality: { missing_domains?: string[]; missing_fields?: string[]; conflicted_fields?: string[]; stale_fields?: string[]; preliminary_fields?: string[] };
   items: ProductMatchItemData[];
 }
 
@@ -629,6 +630,545 @@ export async function getLatestProductMatching(customerId: string): Promise<Prod
     headers: getAuthHeaders(),
   });
   return (await handleResponse<{ snapshot: ProductMatchingSnapshotData | null }>(response)).snapshot;
+}
+
+export type FinancingPlanCandidateStatus = 'usable' | 'conditional' | 'manual_review' | 'excluded';
+
+export interface FinancingPlanCandidatePoolData {
+  customer_id: string; requirement_id: string; requirement_version: number; match_snapshot_id: string;
+  facts_hash: string; catalog_hash: string; target_amount: string; covered_amount: string; funding_gap: string;
+  currency: string; generation_status: 'complete' | 'partial' | 'insufficient_candidates' | 'manual_review_required';
+  counts: Record<FinancingPlanCandidateStatus, number>;
+  candidates: Array<{
+    product_match_item_id: number; product_id: string; product_version_id: string; external_product_code: string;
+    institution_name: string; product_name: string; match_status: ProductMatchingStatus;
+    max_amount: string | null; max_term_months: number | null; eligible_amount_cap: string | null;
+    missing_information: string[]; review_reasons: string[]; blocking_reasons: string[];
+    candidate_status: FinancingPlanCandidateStatus;
+  }>;
+}
+
+export async function buildFinancingPlanCandidates(customerId: string, requirementId: string, matchSnapshotId: string): Promise<FinancingPlanCandidatePoolData> {
+  const response = await fetch(`${API_BASE}/api/financing-plans/candidates`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ customer_id: customerId, requirement_id: requirementId, match_snapshot_id: matchSnapshotId }),
+  });
+  return handleResponse<FinancingPlanCandidatePoolData>(response);
+}
+
+export interface FinancingPlanCombinationItemData {
+  product_match_item_id: number; product_id: string; product_version_id: string;
+  external_product_code: string; institution_name: string; product_name: string;
+  match_status: ProductMatchingStatus;
+  candidate_status: FinancingPlanCandidateStatus; proposed_amount: string; proposed_term_months: number;
+  manual_override_id: string | null;
+  allocation_cap: string; min_amount: string | null; conditions: string[];
+  missing_information: string[]; review_reasons: string[];
+}
+
+export interface FinancingPlanCombinationData {
+  combination_id: string; plan_type: 'primary_candidate' | 'backup_candidate' | 'conditional';
+  generation_status: 'complete' | 'partial'; target_amount: string; covered_amount: string; funding_gap: string;
+  items: FinancingPlanCombinationItemData[]; product_count: number; institution_count: number;
+  institution_concentration: boolean; conditions: string[]; missing_information: string[]; risks: string[];
+  gaps: Array<{ gap_type: string; description: string; severity: string }>;
+  is_complete: boolean; requires_manual_review: boolean; source_match_snapshot_id: string;
+}
+
+export interface FinancingPlanCombinationResponseData {
+  customer_id: string; requirement_id: string; requirement_version: number; source_match_snapshot_id: string;
+  target_amount: string; covered_amount: string; funding_gap: string; currency: string;
+  generation_status: 'complete' | 'partial' | 'insufficient_candidates' | 'manual_review_required';
+  formal_combinations: FinancingPlanCombinationData[];
+  conditional_combinations: FinancingPlanCombinationData[];
+  partial_combinations: FinancingPlanCombinationData[];
+  manual_review_candidates: FinancingPlanCandidatePoolData['candidates'];
+  excluded_candidates: FinancingPlanCandidatePoolData['candidates'];
+}
+
+export async function generateFinancingPlanCombinations(customerId: string, requirementId: string, matchSnapshotId: string): Promise<FinancingPlanCombinationResponseData> {
+  const response = await fetch(`${API_BASE}/api/financing-plans/combinations`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ customer_id: customerId, requirement_id: requirementId, match_snapshot_id: matchSnapshotId }),
+  });
+  return handleResponse<FinancingPlanCombinationResponseData>(response);
+}
+
+export interface FinancingPlanData {
+  financing_plan_id: string; customer_id: string; requirement_id: string; requirement_version: number;
+  source_match_snapshot_id: string; current_version_id: string; status: string;
+  versions: Array<{
+    plan_version_id: string; version_no: number; plan_type: string; target_amount: string; covered_amount: string;
+    funding_gap: string; status: string; generation_status: string;
+    items: Array<{ product_match_item_id: number; institution_name: string; product_name: string; proposed_amount: string; proposed_term_months: number; item_role: string; reason: string; notes: string; conditions: string[]; risks: string[] }>;
+    gaps: Array<{ gap_type: string; description: string; severity: string }>;
+    condition_checklist: Array<{ condition_id: string; condition_type: string; title: string; description: string; status: string; required: boolean }>;
+    material_checklist: Array<{ material_id: string; material_name: string; material_category: string; status: string; required: boolean; required_by_products: string[] }>;
+    explanation: null | { plan_summary: string; coverage_summary: string; funding_gap_summary: string; key_conditions: string[]; risk_notes: string[]; next_actions: string[] };
+  }>;
+}
+
+export async function createFinancingPlanFromCombination(customerId: string, requirementId: string, matchSnapshotId: string, combinationId: string): Promise<FinancingPlanData> {
+  const response = await fetch(`${API_BASE}/api/financing-plans/from-combination`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({
+      customer_id: customerId, requirement_id: requirementId,
+      match_snapshot_id: matchSnapshotId, combination_id: combinationId,
+    }),
+  });
+  return handleResponse<FinancingPlanData>(response);
+}
+
+export async function createManualCandidateOverride(customerId: string, requirementId: string, matchSnapshotId: string, productMatchItemId: number, reason: string) {
+  const response = await fetch(`${API_BASE}/api/financing-plans/manual-overrides`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ customer_id: customerId, requirement_id: requirementId, match_snapshot_id: matchSnapshotId, product_match_item_id: productMatchItemId, new_status: 'conditional', reason }),
+  });
+  return handleResponse<{ override_id: string; new_status: 'conditional' }>(response);
+}
+
+export async function updateFinancingPlan(planId: string, payload: Record<string, unknown>): Promise<FinancingPlanData> {
+  const response = await fetch(`${API_BASE}/api/financing-plans/${encodeURIComponent(planId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload),
+  });
+  return handleResponse<FinancingPlanData>(response);
+}
+
+export async function updateFinancingPlanCondition(planId: string, conditionId: string, status: string) {
+  const response = await fetch(`${API_BASE}/api/financing-plans/${encodeURIComponent(planId)}/conditions/${encodeURIComponent(conditionId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ status }),
+  });
+  return handleResponse<Record<string, unknown>>(response);
+}
+
+export async function updateFinancingPlanMaterial(planId: string, materialId: string, status: string) {
+  const response = await fetch(`${API_BASE}/api/financing-plans/${encodeURIComponent(planId)}/materials/${encodeURIComponent(materialId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ status }),
+  });
+  return handleResponse<Record<string, unknown>>(response);
+}
+
+export async function validateFinancingPlan(planId: string) {
+  const response = await fetch(`${API_BASE}/api/financing-plans/${encodeURIComponent(planId)}/validate`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse<{ valid: boolean; errors: string[] }>(response);
+}
+
+export async function confirmFinancingPlan(planId: string): Promise<FinancingPlanData> {
+  const response = await fetch(`${API_BASE}/api/financing-plans/${encodeURIComponent(planId)}/confirm`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse<FinancingPlanData>(response);
+}
+
+export async function listCustomerFinancingPlans(customerId: string, requirementId?: string): Promise<FinancingPlanData[]> {
+  const query = requirementId ? `?requirement_id=${encodeURIComponent(requirementId)}` : '';
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-plans${query}`, { headers: getAuthHeaders() });
+  return (await handleResponse<{ plans: FinancingPlanData[] }>(response)).plans;
+}
+
+export interface FinancingPlanSelectionData {
+  selection_id: string; customer_id: string; requirement_id: string;
+  primary_plan_version_id: string | null; backup_plan_version_ids: string[];
+  conditional_plan_version_ids: string[]; status: 'draft' | 'finalized' | 'superseded' | 'cancelled';
+  selected_by: string; selected_at: string; finalized_by?: string | null; finalized_at?: string | null; notes: string;
+}
+
+export interface FinancingPlanVersionDiffData {
+  customer_id: string; from_version: { id: string; version_no: number }; to_version: { id: string; version_no: number };
+  amount_changes: Record<string, { from: string; to: string }>;
+  count_changes: { product_count: { from: number; to: number }; institution_count: { from: number; to: number } };
+  product_changes: { added: Array<Record<string, unknown>>; removed: Array<Record<string, unknown>>; changed: Array<Record<string, unknown>> };
+  condition_changes: { added: string[]; removed: string[]; changed: Array<{ name: string; from: string; to: string }> };
+  material_changes: { added: string[]; removed: string[]; changed: Array<{ name: string; from: string; to: string }> };
+  gap_changes: { added: string[]; removed: string[]; changed: Array<{ name: string; from: string; to: string }> };
+  summary: string;
+}
+
+export interface FinancingPlanReportData {
+  report_id: string; plan_selection_id: string; report_type: 'internal' | 'customer'; report_version: number;
+  structured_payload: Record<string, unknown>; rendered_html: string; generated_at: string;
+}
+
+export async function createFinancingPlanSelection(payload: {
+  customer_id: string; requirement_id: string; primary_plan_version_id?: string | null;
+  backup_plan_version_ids?: string[]; conditional_plan_version_ids?: string[]; notes?: string;
+}): Promise<FinancingPlanSelectionData> {
+  const response = await fetch(`${API_BASE}/api/financing-plans/selections`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload) });
+  return handleResponse<FinancingPlanSelectionData>(response);
+}
+
+export async function finalizeFinancingPlanSelection(selectionId: string): Promise<FinancingPlanSelectionData> {
+  const response = await fetch(`${API_BASE}/api/financing-plans/selections/${encodeURIComponent(selectionId)}/finalize`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse<FinancingPlanSelectionData>(response);
+}
+
+export async function compareFinancingPlanVersions(versionA: string, versionB: string): Promise<FinancingPlanVersionDiffData> {
+  const response = await fetch(`${API_BASE}/api/financing-plans/compare`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ version_a: versionA, version_b: versionB }) });
+  return handleResponse<FinancingPlanVersionDiffData>(response);
+}
+
+export async function generateFinancingPlanReport(selectionId: string, reportType: 'internal' | 'customer'): Promise<FinancingPlanReportData> {
+  const response = await fetch(`${API_BASE}/api/financing-plan-reports/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ selection_id: selectionId, report_type: reportType }) });
+  return handleResponse<FinancingPlanReportData>(response);
+}
+
+export async function downloadFinancingPlanReportPdf(reportId: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/api/financing-plan-reports/${encodeURIComponent(reportId)}/pdf`, { headers: getAuthHeaders() });
+  if (!response.ok) await handleResponse(response);
+  return response.blob();
+}
+
+export interface FinancingApplicationData {
+  application_id: string; parent_application_id: string | null; attempt_no: number;
+  customer_id: string; customer_name?: string; requirement_id: string; requirement_version: number;
+  plan_id: string; plan_version_id: string; plan_item_id: string; product_id: string; product_version_id: string;
+  external_product_code: string; institution_name: string; product_name: string; application_no: string; status: string;
+  target_amount: string; submitted_amount: string | null; approved_amount: string | null; disbursed_amount: string | null;
+  target_term_months: number; approved_term_months: number | null; target_interest_rate: string | null; approved_interest_rate: string | null;
+  responsible_user_id: string | null; responsible_user_name: string | null; current_stage_code: string;
+  submission_channel: string | null; submission_reference: string | null; approval_reference: string | null;
+  rejection_reason: string; rejection_code?: string | null; rejected_at?: string | null;
+  disbursement_reference: string | null; final_result: string | null;
+  updated_at?: string | null; next_action?: string; overdue_task_count?: number;
+  blocking_items?: string[]; next_task?: { task_id: string; title: string; due_date: string | null } | null;
+  stages: Array<{ stage_id: string; stage_code: string; stage_name: string; status: string; sequence_no: number; notes?: string }>;
+  tasks: Array<{ task_id: string; stage_id: string; task_type: string; title: string; description: string; status: string; priority: string; assignee_user_id?: string | null; assignee_user_name: string | null; due_date: string | null; source_type: string; source_ref: string | null; required: boolean; completed_by?: string | null; completed_at?: string | null; notes: string }>;
+  events: Array<{ event_id: string; event_type: string; from_status: string | null; to_status: string | null; operator_name: string; payload: Record<string, unknown>; created_at: string | null }>;
+  supplements?: Array<{ supplement_id: string; request_no: string; description: string; requested_by_bank: string | null; requested_at: string; due_date: string | null; status: string; completed_at: string | null; completed_by: string | null; notes: string }>;
+  application_materials?: ApplicationMaterialData[];
+  review_feedback?: Array<{ feedback_id: string; feedback_type: string; feedback_date: string; institution_contact: string | null; content: string; related_stage: string; created_by: string }>;
+  approval_records?: Array<{ approval_record_id: string; approval_status: string; submitted_amount: string; approved_amount: string | null; approved_term_months: number | null; approved_interest_rate: string | null; guarantee_method: string | null; repayment_method: string | null; approval_reference: string | null; approval_date: string; approval_expiry_date: string | null; notes: string }>;
+  approval_conditions?: Array<{ approval_condition_id: string; approval_record_id: string; title: string; description: string; status: string; required: boolean }>;
+  disbursements?: Array<{ disbursement_id: string; disbursement_no: string; amount: string; disbursed_at: string; bank_reference: string | null; recipient_name: string | null; recipient_account_masked: string | null; purpose: string | null; notes: string }>;
+}
+
+export interface ApplicationMaterialData {
+  application_material_id: string; supplement_request_id: string | null;
+  material_type: string; material_name: string; material_category: string;
+  owner_type: string; owner_id: string | null; owner_name: string | null;
+  required: boolean; required_verified: boolean; status: string; source_type: string;
+  source_id: string | null; source_document_id: string | null; customer_material_id: string | null;
+  source_file_id: string | null; file_reference: string | null; valid_from: string | null; valid_to: string | null;
+  coverage_start: string | null; coverage_end: string | null; version_no: number;
+  replaces_material_id: string | null; rejection_reason: string; verified_by: string | null;
+  verified_at: string | null; notes: string;
+}
+
+export interface ApplicationMaterialSummaryData {
+  total_required: number; verified_count: number; available_count: number;
+  missing_count: number; expired_count: number; review_count: number;
+}
+
+export interface ApplicationMaterialMatchCandidate {
+  customer_material_id: string; source_file_id: string; source_document_id: string;
+  file_name: string; file_hash: string; file_path: string; document_type: string;
+  owner_id: string; owner_name: string; owner_type: string; valid_to: string | null;
+  period_start: string | null; period_end: string | null; confirmed: boolean;
+  extraction_id: string | null; status: string;
+}
+
+export interface ApplicationMaterialMatchResult {
+  application_material_id: string; material_name: string; result: string;
+  candidates: ApplicationMaterialMatchCandidate[];
+}
+
+export interface ApplicationPackageData {
+  package_id: string; application_id: string; package_version: number; status: string;
+  created_by: string; created_at: string | null;
+  items: Array<{ package_item_id: string; application_material_id: string; material_type: string;
+    material_name: string; owner_type: string; owner_name: string | null; file_name: string | null;
+    file_hash: string; package_file_name: string | null; required: boolean; included: boolean }>;
+}
+
+export interface SubmissionPackageData {
+  submission_package_id: string; application_id: string; application_package_id: string;
+  submission_version: number; institution_name: string; product_name: string; status: string;
+  manifest: Record<string, unknown>; package_hash: string; submitted_at: string | null;
+}
+
+export interface SupplementPackageData {
+  supplement_package_id: string; application_id: string; supplement_request_id: string;
+  package_version: number; status: string; manifest: Record<string, unknown>;
+  package_hash: string; submitted_at: string | null; submission_reference: string | null;
+}
+
+export interface FinancingExecutionDashboardData {
+  total_applications: number;
+  status_counts: Record<string, number>;
+  amounts: Record<string, string>;
+  applications: FinancingApplicationData[];
+  follow_up_metrics?: { today_count: number; overdue_count: number; waiting_customer_count: number;
+    waiting_institution_count: number; items: FinancingFollowUpData[] };
+}
+
+export interface FinancingContactData {
+  contact_id: string; contact_type: string; customer_id: string | null; institution_name: string | null;
+  branch_name: string | null; name: string; title: string | null; department: string | null;
+  mobile: string | null; phone: string | null; email: string | null; wechat: string | null;
+  is_primary: boolean; related_person_id: string | null; status: string; notes: string;
+  role?: string; application_primary?: boolean;
+}
+
+export interface FinancingCommunicationData {
+  communication_id: string; application_id: string; customer_id: string; contact_id: string | null;
+  contact_name: string | null; contact_organization: string | null; communication_side: string;
+  channel: string; direction: string; feedback_tag: string | null; subject: string; content: string;
+  occurred_at: string; operator_name: string; related_task_id: string | null;
+  related_supplement_id: string | null; related_review_feedback_id: string | null;
+  related_approval_record_id: string | null; follow_up_required: boolean;
+  next_follow_up_at: string | null; outcome: string; internal_note: string; status: string;
+}
+
+export interface FinancingFollowUpData {
+  follow_up_id: string; customer_id: string; application_id: string;
+  communication_record_id: string | null; related_task_id: string | null; follow_up_type: string;
+  title: string; description: string; assignee_user_id: string | null; assignee_user_name: string | null;
+  due_at: string; status: string; priority: string; overdue: boolean;
+  completed_at: string | null; completed_by: string | null; result: string;
+}
+
+export interface FinancingTimelineItemData {
+  type: string; id: string; occurred_at: string; title: string;
+  description: string | Record<string, unknown>; operator_name?: string; status?: string;
+}
+
+export interface FinancingApplicationOutcomeData {
+  outcome_id: string; application_id: string; customer_id: string; product_id: string;
+  product_version_id: string; requirement_id: string; plan_version_id: string;
+  outcome_version: number; supersedes_outcome_id: string | null; final_status: string;
+  submitted_amount: string | null; approved_amount: string | null; disbursed_amount: string | null;
+  submitted_term_months: number | null; approved_term_months: number | null;
+  submitted_interest_rate: string | null; approved_interest_rate: string | null;
+  approval_date: string | null; disbursement_date: string | null;
+  rejection_code: string | null; rejection_reason: string; final_notes: string;
+  status: string; closed_at: string; rejection_reasons: Array<{ reason_code: string; reason_label: string; description: string; source_type: string }>;
+  approval_variance: { amount_delta: string | null; approval_ratio: string | null; term_delta_months: number | null; interest_rate_delta: string | null };
+  disbursement_variance: { amount_delta: string | null; reason: string | null };
+}
+
+export interface ProductExecutionMetricsData {
+  product_id: string; product_version_id: string | null; sample_size: number;
+  application_count: number; submitted_count: number; approved_count: number;
+  partially_approved_count: number; rejected_count: number; disbursed_count: number;
+  submitted_amount_total: string; approved_amount_total: string; disbursed_amount_total: string;
+  supplement_application_count: number; supplement_round_total: number;
+  average_approval_days: number | null; average_disbursement_days: number | null;
+  pending_rule_feedback_count: number;
+}
+
+export interface CustomerFinancingReviewData {
+  customer_id: string; requirement_id: string; requirement_version: number;
+  requirement: { amount: string | null; purpose: string | null; term_value: number | null; term_unit: string | null };
+  application_count: number; outcome_count: number; submitted_amount: string;
+  approved_amount: string; disbursed_amount: string; funding_gap: string;
+  actual_coverage_ratio: string | null; execution_status: string; message: string;
+  rejection_reasons: Array<{ reason_code: string; reason_label: string; description: string }>;
+  rule_feedback: Array<Record<string, unknown>>;
+  lifecycle_timeline?: Array<{ type: string; title: string; occurred_at: string | null; reference_id: string; application_id?: string }>;
+}
+
+async function applicationAction(applicationId: string, action: string, payload?: Record<string, unknown>): Promise<FinancingApplicationData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/${action}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+  return handleResponse<FinancingApplicationData>(response);
+}
+
+export async function listFinancingApplications(customerId: string, requirementId?: string): Promise<FinancingApplicationData[]> {
+  const query = requirementId ? `?requirement_id=${encodeURIComponent(requirementId)}` : '';
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-applications${query}`, { headers: getAuthHeaders() });
+  return (await handleResponse<{ applications: FinancingApplicationData[] }>(response)).applications;
+}
+
+export async function createFinancingApplications(customerId: string, planVersionId: string): Promise<FinancingApplicationData[]> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/from-plan`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ customer_id: customerId, plan_version_id: planVersionId }) });
+  return (await handleResponse<{ applications: FinancingApplicationData[] }>(response)).applications;
+}
+
+export const startApplicationPreparation = (id: string) => applicationAction(id, 'start-preparation');
+export const markApplicationReady = (id: string) => applicationAction(id, 'ready-to-submit');
+export const submitFinancingApplication = (id: string, payload: Record<string, unknown> = {}) => applicationAction(id, 'submit', payload);
+export const markApplicationUnderReview = (id: string) => applicationAction(id, 'under-review');
+export const requestApplicationSupplement = (id: string, payload: { description: string; required_materials: string[]; due_date?: string | null }) => applicationAction(id, 'supplement', payload);
+export const recordApplicationApproval = (id: string, payload: Record<string, unknown>) => applicationAction(id, 'approval', payload);
+export const recordApplicationRejection = (id: string, payload: Record<string, unknown>) => applicationAction(id, 'rejection', payload);
+export const recordApplicationDisbursement = (id: string, payload: Record<string, unknown>) => applicationAction(id, 'disbursement', payload);
+export const retryFinancingApplication = (id: string) => applicationAction(id, 'retry');
+export const advanceFinancingApplicationStage = (id: string, targetStageCode: string) => applicationAction(id, 'advance-stage', { target_stage_code: targetStageCode });
+
+export async function getFinancingExecutionDashboard(filters: Record<string, string | boolean> = {}): Promise<FinancingExecutionDashboardData> {
+  const query = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value !== '' && value !== false) query.set(key, String(value)); });
+  const response = await fetch(`${API_BASE}/api/financing-execution/dashboard${query.size ? `?${query}` : ''}`, { headers: getAuthHeaders() });
+  return handleResponse<FinancingExecutionDashboardData>(response);
+}
+
+export async function listApplicationContacts(applicationId: string): Promise<FinancingContactData[]> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/contacts`, { headers: getAuthHeaders() });
+  return (await handleResponse<{ contacts: FinancingContactData[] }>(response)).contacts;
+}
+
+export async function createFinancingContact(payload: Record<string, unknown>): Promise<FinancingContactData> {
+  const response = await fetch(`${API_BASE}/api/financing-contacts`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload) });
+  return handleResponse<FinancingContactData>(response);
+}
+
+export async function attachApplicationContact(applicationId: string, contactId: string, role: string): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/contacts`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ contact_id: contactId, role, is_primary: false }) });
+  return handleResponse<Record<string, unknown>>(response);
+}
+
+export async function listApplicationCommunications(applicationId: string, side = ''): Promise<FinancingCommunicationData[]> {
+  const query = side ? `?side=${encodeURIComponent(side)}` : '';
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/communications${query}`, { headers: getAuthHeaders() });
+  return (await handleResponse<{ communications: FinancingCommunicationData[] }>(response)).communications;
+}
+
+export async function createApplicationCommunication(applicationId: string, payload: Record<string, unknown>): Promise<FinancingCommunicationData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/communications`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload) });
+  return handleResponse<FinancingCommunicationData>(response);
+}
+
+export async function createTaskFromCommunication(communicationId: string, payload: Record<string, unknown> = {}): Promise<FinancingApplicationData> {
+  const response = await fetch(`${API_BASE}/api/financing-communications/${encodeURIComponent(communicationId)}/create-task`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload) });
+  return handleResponse<FinancingApplicationData>(response);
+}
+
+export async function createSupplementFromCommunication(communicationId: string, requiredMaterials: string[]): Promise<FinancingApplicationData> {
+  const response = await fetch(`${API_BASE}/api/financing-communications/${encodeURIComponent(communicationId)}/create-supplement`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ required_materials: requiredMaterials }) });
+  return handleResponse<FinancingApplicationData>(response);
+}
+
+export async function createReviewFeedbackFromCommunication(communicationId: string, feedbackType = 'general'): Promise<FinancingApplicationData> {
+  const response = await fetch(`${API_BASE}/api/financing-communications/${encodeURIComponent(communicationId)}/create-review-feedback`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ feedback_type: feedbackType }) });
+  return handleResponse<FinancingApplicationData>(response);
+}
+
+export async function listFinancingFollowUps(applicationId?: string): Promise<FinancingFollowUpData[]> {
+  const query = applicationId ? `?application_id=${encodeURIComponent(applicationId)}` : '';
+  const response = await fetch(`${API_BASE}/api/financing-followups${query}`, { headers: getAuthHeaders() });
+  return (await handleResponse<{ follow_ups: FinancingFollowUpData[] }>(response)).follow_ups;
+}
+
+export async function completeFinancingFollowUp(followUpId: string, result = ''): Promise<FinancingFollowUpData> {
+  const response = await fetch(`${API_BASE}/api/financing-followups/${encodeURIComponent(followUpId)}/complete`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ result }) });
+  return handleResponse<FinancingFollowUpData>(response);
+}
+
+export async function getFinancingApplicationTimeline(applicationId: string): Promise<FinancingTimelineItemData[]> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/timeline`, { headers: getAuthHeaders() });
+  return (await handleResponse<{ timeline: FinancingTimelineItemData[] }>(response)).timeline;
+}
+
+export async function getFinancingApplicationOutcome(applicationId: string): Promise<FinancingApplicationOutcomeData | null> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/outcome`, { headers: getAuthHeaders() });
+  return (await handleResponse<{ outcome: FinancingApplicationOutcomeData | null }>(response)).outcome;
+}
+
+export async function finalizeFinancingApplicationOutcome(applicationId: string, payload: Record<string, unknown> = {}): Promise<FinancingApplicationOutcomeData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/outcome/finalize`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload) });
+  return handleResponse<FinancingApplicationOutcomeData>(response);
+}
+
+export async function getProductExecutionMetrics(productId: string, productVersionId?: string): Promise<ProductExecutionMetricsData> {
+  const query = productVersionId ? `?product_version_id=${encodeURIComponent(productVersionId)}` : '';
+  const response = await fetch(`${API_BASE}/api/products/${encodeURIComponent(productId)}/execution-metrics${query}`, { headers: getAuthHeaders() });
+  return handleResponse<ProductExecutionMetricsData>(response);
+}
+
+export async function getCustomerFinancingReview(customerId: string, requirementId?: string): Promise<CustomerFinancingReviewData> {
+  const query = requirementId ? `?requirement_id=${encodeURIComponent(requirementId)}` : '';
+  const response = await fetch(`${API_BASE}/api/customers/${encodeURIComponent(customerId)}/financing-review${query}`, { headers: getAuthHeaders() });
+  return handleResponse<CustomerFinancingReviewData>(response);
+}
+
+export const createApplicationSupplement = (id: string, payload: Record<string, unknown>) => applicationAction(id, 'supplements', payload);
+export async function completeApplicationSupplement(id: string, supplementId: string): Promise<FinancingApplicationData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(id)}/supplements/${encodeURIComponent(supplementId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ complete: true }) });
+  return handleResponse<FinancingApplicationData>(response);
+}
+export const addApplicationReviewFeedback = (id: string, payload: Record<string, unknown>) => applicationAction(id, 'review-feedback', payload);
+export const updateApplicationApprovalCondition = (id: string, conditionId: string, status: string) => applicationAction(id, `approval-conditions/${encodeURIComponent(conditionId)}`, { status });
+export const createApplicationDisbursement = (id: string, payload: Record<string, unknown>) => applicationAction(id, 'disbursements', payload);
+
+export async function updateApplicationMaterial(applicationId: string, materialId: string, payload: Record<string, unknown>): Promise<FinancingApplicationData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/materials/${encodeURIComponent(materialId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload) });
+  return handleResponse<FinancingApplicationData>(response);
+}
+
+export async function getApplicationMaterials(applicationId: string): Promise<{ application_id: string; materials: ApplicationMaterialData[]; summary: ApplicationMaterialSummaryData; events: Array<Record<string, unknown>> }> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/materials`, { headers: getAuthHeaders() });
+  return handleResponse(response);
+}
+
+export const matchApplicationMaterials = async (applicationId: string) => {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/materials/match`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse<{ application_id: string; results: ApplicationMaterialMatchResult[]; summary: ApplicationMaterialSummaryData }>(response);
+};
+
+export async function selectApplicationMaterial(applicationId: string, materialId: string, documentId: string): Promise<ApplicationMaterialData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/materials/${encodeURIComponent(materialId)}/select`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ document_id: documentId }) });
+  return handleResponse<ApplicationMaterialData>(response);
+}
+
+export async function replaceApplicationMaterial(applicationId: string, materialId: string, documentId: string, rejectionReason: string): Promise<ApplicationMaterialData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/materials/${encodeURIComponent(materialId)}/replace`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify({ document_id: documentId, rejection_reason: rejectionReason }) });
+  return handleResponse<ApplicationMaterialData>(response);
+}
+
+export async function getApplicationMaterialExtraction(applicationId: string, materialId: string): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/materials/${encodeURIComponent(materialId)}/extraction`, { headers: getAuthHeaders() });
+  return handleResponse<Record<string, unknown>>(response);
+}
+
+export const verifyApplicationMaterial = async (applicationId: string, materialId: string) => {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/materials/${encodeURIComponent(materialId)}/verify`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse<ApplicationMaterialData>(response);
+};
+
+export async function createApplicationPackage(applicationId: string): Promise<ApplicationPackageData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/packages`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse<ApplicationPackageData>(response);
+}
+
+export async function listApplicationPackages(applicationId: string): Promise<{ packages: ApplicationPackageData[]; submission_packages: SubmissionPackageData[]; supplement_packages: SupplementPackageData[] }> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/packages`, { headers: getAuthHeaders() });
+  return handleResponse(response);
+}
+
+export async function freezeApplicationPackage(packageId: string): Promise<ApplicationPackageData> {
+  const response = await fetch(`${API_BASE}/api/financing-application-packages/${encodeURIComponent(packageId)}/freeze`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse<ApplicationPackageData>(response);
+}
+
+export async function createSubmissionPackage(packageId: string): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE}/api/financing-application-packages/${encodeURIComponent(packageId)}/submission-package`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse(response);
+}
+
+export async function downloadSubmissionPackageZip(submissionPackageId: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/api/financing-submission-packages/${encodeURIComponent(submissionPackageId)}/zip`, { headers: getAuthHeaders() });
+  if (!response.ok) await handleResponse(response);
+  return response.blob();
+}
+
+export async function createSupplementPackage(supplementId: string): Promise<Record<string, unknown>> {
+  const response = await fetch(`${API_BASE}/api/financing-supplements/${encodeURIComponent(supplementId)}/packages`, { method: 'POST', headers: getAuthHeaders() });
+  return handleResponse(response);
+}
+
+async function taskAction(applicationId: string, taskId: string, action: string, payload: Record<string, unknown>): Promise<FinancingApplicationData> {
+  void applicationId;
+  const response = await fetch(`${API_BASE}/api/financing-applications/tasks/${encodeURIComponent(taskId)}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload) });
+  return handleResponse<FinancingApplicationData>(response);
+}
+
+export const completeFinancingApplicationTask = (applicationId: string, taskId: string, notes = '') => taskAction(applicationId, taskId, 'complete', { notes });
+export const blockFinancingApplicationTask = (applicationId: string, taskId: string, blockReason: string) => taskAction(applicationId, taskId, 'block', { block_reason: blockReason });
+export const unblockFinancingApplicationTask = (applicationId: string, taskId: string, reason = '') => taskAction(applicationId, taskId, 'unblock', { reason, target_status: 'in_progress' });
+
+export async function updateFinancingApplicationTask(applicationId: string, taskId: string, payload: Record<string, unknown>): Promise<FinancingApplicationData> {
+  const response = await fetch(`${API_BASE}/api/financing-applications/${encodeURIComponent(applicationId)}/tasks/${encodeURIComponent(taskId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload) });
+  return handleResponse<FinancingApplicationData>(response);
 }
 
 export async function createChatJob(

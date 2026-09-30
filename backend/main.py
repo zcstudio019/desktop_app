@@ -31,7 +31,7 @@ from services.ocr_service import OCRServiceError
 from services.wiki_service import WikiServiceError
 
 from .models.schemas import HealthResponse
-from .routers import agent, application, auth, chat, customer, dashboard, feishu, file, financing_requirement, product_catalog, product_matching, scheme, wiki
+from .routers import agent, application, auth, chat, customer, dashboard, feishu, file, financing_application, financing_plan, financing_requirement, product_catalog, product_matching, scheme, wiki
 
 GENERIC_SERVER_ERROR_MESSAGE = "服务暂时不可用，请稍后重试。"
 GENERIC_AI_ERROR_MESSAGE = "AI 服务暂时不可用，请稍后重试。"
@@ -76,6 +76,8 @@ app.include_router(customer.documents_router, prefix="/api")
 app.include_router(financing_requirement.router, prefix="/api")
 app.include_router(product_catalog.router, prefix="/api")
 app.include_router(product_matching.router, prefix="/api")
+app.include_router(financing_plan.router, prefix="/api")
+app.include_router(financing_application.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 
 
