@@ -46,8 +46,26 @@ def _load(value: str | None, fallback):
         return fallback
 
 
-def _money(value: Any) -> str:
-    return f"{Decimal(str(value or 0)):,.2f}".rstrip("0").rstrip(".")
+def format_report_amount_wan(value: Any, *, missing_label: str = "资料不足") -> str:
+    """Format a stored yuan amount for business-facing reports without losing precision."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return missing_label
+    amount_wan = Decimal(str(value)) / Decimal("10000")
+    rendered = format(amount_wan, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return f"{rendered or '0'}万元"
+
+
+def _display_count(value: Any) -> str:
+    """Preserve a computed zero while keeping missing/uncomputed counts explicit."""
+    if value is None:
+        return "未计算"
+    return str(value)
+
+
+def _escape(value: Any) -> str:
+    return html.escape("" if value is None else str(value))
 
 
 def _customer_safe_text(value: Any) -> str:
@@ -318,29 +336,29 @@ class FinancingPlanReportService:
 
 
 def render_financing_plan_html(payload: dict[str, Any]) -> str:
-    e = lambda value: html.escape(str(value or ""))
+    e = _escape
     role_labels = {"primary": "主方案", "backup": "备选方案", "conditional": "条件性方案"}
     status_labels = {"pending": "待完成", "satisfied": "已满足", "waived": "已豁免", "not_applicable": "不适用", "missing": "缺失", "available": "已有", "uploaded": "已上传", "verified": "已核验"}
     plan_html = []
     for plan in payload.get("plans", []):
-        rows = "".join(f"<tr><td>{e(x['institution_name'])}</td><td>{e(x['product_name'])}</td><td>{_money(x['proposed_amount'])}元</td><td>{e(x['proposed_term_months'])}个月</td></tr>" for x in plan["items"])
+        rows = "".join(f"<tr><td>{e(x['institution_name'])}</td><td>{e(x['product_name'])}</td><td>{format_report_amount_wan(x.get('proposed_amount'))}</td><td>{e(x['proposed_term_months'])}个月</td></tr>" for x in plan["items"])
         conditions = "".join(f"<li>{e(x['title'])}（{e(status_labels.get(x['status'], '待确认'))}）</li>" for x in plan["conditions"]) or "<li>暂无</li>"
         materials = "".join(f"<li>{e(x['name'])}（{e(status_labels.get(x['status'], '待确认'))}）</li>" for x in plan["materials"]) or "<li>暂无</li>"
         gaps = "".join(f"<li>{e(x['description'])}</li>" for x in plan["gaps"]) or "<li>当前未记录额外缺口</li>"
-        plan_html.append(f"<section class='card'><h2>{role_labels.get(plan['role'], e(plan['role']))}</h2><p>覆盖金额：{_money(plan['covered_amount'])}元　未覆盖金额：{_money(plan['funding_gap'])}元</p><table><thead><tr><th>机构</th><th>产品</th><th>规划金额</th><th>规划期限</th></tr></thead><tbody>{rows}</tbody></table><h3>当前条件</h3><ul>{conditions}</ul><h3>材料清单</h3><ul>{materials}</ul><h3>融资缺口与风险</h3><ul>{gaps}</ul></section>")
+        plan_html.append(f"<section class='card'><h2>{role_labels.get(plan['role'], e(plan['role']))}</h2><p>目标金额：{format_report_amount_wan(plan.get('target_amount'))}　覆盖金额：{format_report_amount_wan(plan.get('covered_amount'))}　未覆盖金额：{format_report_amount_wan(plan.get('funding_gap'))}</p><table><thead><tr><th>机构</th><th>产品</th><th>规划金额</th><th>规划期限</th></tr></thead><tbody>{rows}</tbody></table><h3>当前条件</h3><ul>{conditions}</ul><h3>材料清单</h3><ul>{materials}</ul><h3>融资缺口与风险</h3><ul>{gaps}</ul></section>")
     if not plan_html:
-        plan_html.append(f"<section class='card empty'><h2>暂未形成正式主方案</h2><p>当前产品库中尚无可直接形成正式融资方案的产品组合。</p><p>目标金额：{_money(payload['requirement']['amount'])}元　当前覆盖：0元　当前缺口：{_money(payload['requirement']['amount'])}元</p></section>")
+        plan_html.append(f"<section class='card empty'><h2>暂未形成正式主方案</h2><p>当前产品库中尚无可直接形成正式融资方案的产品组合。</p><p>目标金额：{format_report_amount_wan(payload['requirement'].get('amount'))}　当前覆盖：{format_report_amount_wan(0)}　当前缺口：{format_report_amount_wan(payload['requirement'].get('amount'))}</p></section>")
     audit = ""
     internal_summary = ""
     if payload.get("report_type") == "internal":
         audit_data = payload.get("audit", {})
         matching = payload.get("matching_summary", {})
-        internal_summary = f"<section><h2>当前数据与产品匹配摘要</h2><p>符合当前已知硬条件：{e(matching.get('eligible', 0))}　条件性匹配：{e(matching.get('conditional', 0))}　不符合明确硬条件：{e(matching.get('ineligible', 0))}　需要人工复核：{e(matching.get('manual_review', 0))}　产品配置异常：{e(matching.get('product_configuration_error', 0))}</p><p>数据质量信息已按生成时点冻结在报告快照中。</p></section>"
+        internal_summary = f"<section><h2>当前数据与产品匹配摘要</h2><p>符合当前已知硬条件：{e(_display_count(matching.get('eligible')))}　条件性匹配：{e(_display_count(matching.get('conditional')))}　不符合明确硬条件：{e(_display_count(matching.get('ineligible')))}　需要人工复核：{e(_display_count(matching.get('manual_review')))}　产品配置异常：{e(_display_count(matching.get('product_configuration_error')))}</p><p>数据质量信息已按生成时点冻结在报告快照中。</p></section>"
         audit = f"<section><h2>版本与审计信息</h2><p>选择记录：{e(payload['selection']['id'])}　操作人：{e(payload['selection']['selected_by'])}</p><p>来源匹配快照：{e(payload['source']['match_snapshot_id'])}</p><p>人工放行记录：{len(audit_data.get('manual_overrides', []))}条</p></section>"
     actions = "".join(f"<li>{e(x)}</li>" for x in payload.get("next_actions", []))
     return f"""<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><style>
 @page{{size:A4;margin:16mm}}*{{box-sizing:border-box}}body{{font-family:'Microsoft YaHei','Noto Sans CJK SC',sans-serif;color:#1f2937;font-size:12px;line-height:1.65}}h1{{font-size:24px}}h2{{font-size:17px;border-bottom:1px solid #ddd;padding-bottom:4px}}h3{{font-size:13px}}.meta,.card{{border:1px solid #d1d5db;border-radius:8px;padding:12px;margin:12px 0;break-inside:avoid}}table{{width:100%;border-collapse:collapse;table-layout:fixed}}th,td{{border:1px solid #ddd;padding:6px;word-break:break-word}}.notice{{margin-top:18px;color:#64748b;border-top:1px solid #ddd;padding-top:10px}}.empty{{background:#fffbeb}}
-</style></head><body><h1>{e(payload['title'])}</h1><div class='meta'><p>客户：{e(payload['customer_name'])}</p><p>融资需求：{_money(payload['requirement']['amount'])}元　用途：{e(payload['requirement']['purpose'])}　期限：{e(payload['requirement']['term'])}</p><p>主方案状态：{e(payload['primary_status'])}</p></div>{internal_summary}{''.join(plan_html)}<section><h2>下一步</h2><ol>{actions}</ol></section>{audit}<p class='notice'>{e(payload['disclaimer'])}</p></body></html>"""
+</style></head><body><h1>{e(payload['title'])}</h1><div class='meta'><p>客户：{e(payload['customer_name'])}</p><p>融资需求：{format_report_amount_wan(payload['requirement'].get('amount'))}　用途：{e(payload['requirement']['purpose'])}　期限：{e(payload['requirement']['term'])}</p><p>主方案状态：{e(payload['primary_status'])}</p></div>{internal_summary}{''.join(plan_html)}<section><h2>下一步</h2><ol>{actions}</ol></section>{audit}<p class='notice'>{e(payload['disclaimer'])}</p></body></html>"""
 
 
 async def render_financing_plan_pdf(rendered_html: str) -> bytes:

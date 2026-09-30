@@ -23,7 +23,7 @@ from backend.db_models import (
 )
 from backend.services.financing_plan_report_service import (
     DISCLAIMER, FinancingPlanReportError, FinancingPlanReportService,
-    render_financing_plan_html, use_validated_llm_enhancement,
+    format_report_amount_wan, render_financing_plan_html, use_validated_llm_enhancement,
     validate_llm_report_enhancement,
 )
 from backend.services.financing_plan_service import FinancingPlanItemInput, FinancingPlanDraftInput, FinancingPlanService
@@ -185,6 +185,80 @@ def test_html_render(factory):
     assert "<!doctype html>" in value["rendered_html"] and DISCLAIMER in value["rendered_html"] and "@page" in value["rendered_html"]
 
 
+def test_report_amount_format_integer():
+    assert format_report_amount_wan("8000000") == "800万元"
+    assert format_report_amount_wan("5000000") == "500万元"
+    assert format_report_amount_wan("3500000") == "350万元"
+
+
+def test_report_amount_format_decimal():
+    assert format_report_amount_wan("125000") == "12.5万元"
+
+
+def test_report_amount_format_zero():
+    assert format_report_amount_wan(0) == "0万元"
+
+
+def test_report_amount_preserves_precision():
+    assert format_report_amount_wan(Decimal("123456.78")) == "12.345678万元"
+
+
+def test_report_matching_summary_displays_zero():
+    payload = {
+        "report_type": "internal", "title": "融资规划方案", "customer_name": "测试客户",
+        "requirement": {"amount": "8000000", "purpose": "材料采购", "term": "12个月"},
+        "primary_status": "暂未形成正式主方案", "plans": [], "next_actions": [],
+        "matching_summary": {"eligible": 0, "conditional": 0, "ineligible": 3, "manual_review": 2, "product_configuration_error": 0},
+        "selection": {"id": "selection", "selected_by": "operator"},
+        "source": {"match_snapshot_id": "snapshot"}, "audit": {"manual_overrides": []}, "disclaimer": DISCLAIMER,
+    }
+    rendered = render_financing_plan_html(payload)
+    assert "符合当前已知硬条件：0" in rendered
+    assert "条件性匹配：0" in rendered
+    assert "不符合明确硬条件：3" in rendered
+    assert "需要人工复核：2" in rendered
+    assert "产品配置异常：0" in rendered
+
+
+def test_report_matching_summary_preserves_unknown():
+    payload = {
+        "report_type": "internal", "title": "融资规划方案", "customer_name": "测试客户",
+        "requirement": {"amount": "8000000", "purpose": "材料采购", "term": "12个月"},
+        "primary_status": "暂未形成正式主方案", "plans": [], "next_actions": [],
+        "matching_summary": {}, "selection": {"id": "selection", "selected_by": "operator"},
+        "source": {"match_snapshot_id": "snapshot"}, "audit": {"manual_overrides": []}, "disclaimer": DISCLAIMER,
+    }
+    rendered = render_financing_plan_html(payload)
+    assert "符合当前已知硬条件：未计算" in rendered
+    assert "产品配置异常：未计算" in rendered
+
+
+def test_internal_report_amount_unit(factory):
+    seed(factory, [{"status": "manual_review", "max_amount": None}]); _, reports = services(factory)
+    selected = selection_for(factory)
+    with factory.begin() as db:
+        snapshot = db.scalar(select(ProductMatchSnapshot))
+        snapshot.summary_json = '{"eligible":0,"conditional":0,"ineligible":3,"manual_review":2,"product_configuration_error":0}'
+    html = reports.generate_report(selected["selection_id"], "internal", generated_by="operator")["rendered_html"]
+    assert "融资需求：800万元" in html and "当前覆盖：0万元" in html and "当前缺口：800万元" in html
+    assert "8,000,000元" not in html
+
+
+def test_customer_report_amount_unit(factory):
+    seed(factory, [{"status": "manual_review", "max_amount": None}]); _, reports = services(factory)
+    html = reports.generate_report(selection_for(factory)["selection_id"], "customer", generated_by="operator")["rendered_html"]
+    assert "融资需求：800万元" in html and "当前覆盖：0万元" in html and "当前缺口：800万元" in html
+    assert "8,000,000元" not in html
+
+
+def test_existing_report_snapshot_immutable(factory, monkeypatch):
+    seed(factory, [{"status": "manual_review", "max_amount": None}]); _, reports = services(factory)
+    report = reports.generate_report(selection_for(factory)["selection_id"], "customer", generated_by="operator")
+    frozen_html = report["rendered_html"]
+    monkeypatch.setattr("backend.services.financing_plan_report_service.render_financing_plan_html", lambda payload: "changed")
+    assert reports.get_report(report["report_id"])["rendered_html"] == frozen_html
+
+
 @pytest.mark.asyncio
 async def test_pdf_render(monkeypatch):
     class Page:
@@ -212,6 +286,42 @@ async def test_pdf_render(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright.async_api", async_api)
     from backend.services.financing_plan_report_service import render_financing_plan_pdf
     assert (await render_financing_plan_pdf("<h1>融资规划方案</h1>")).startswith(b"%PDF")
+
+
+@pytest.mark.asyncio
+async def test_html_pdf_content_consistency(monkeypatch):
+    captured = {}
+    class Page:
+        async def set_content(self, value, **kwargs): captured["html"] = value
+        async def emulate_media(self, **kwargs): pass
+        async def evaluate(self, value): pass
+        async def pdf(self, **kwargs): return b"%PDF-1.4 consistent"
+    class Context:
+        async def route(self, *args): pass
+        async def new_page(self): return Page()
+    class Browser:
+        async def new_context(self, **kwargs): return Context()
+        async def close(self): pass
+    class Chromium:
+        async def launch(self, **kwargs): return Browser()
+    class Manager:
+        chromium = Chromium()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+    package = types.ModuleType("playwright")
+    async_api = types.ModuleType("playwright.async_api")
+    async_api.async_playwright = lambda: Manager()
+    package.async_api = async_api
+    monkeypatch.setitem(sys.modules, "playwright", package)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", async_api)
+    html = render_financing_plan_html({
+        "report_type": "customer", "title": "融资规划方案", "customer_name": "上海意川建筑科技有限公司",
+        "requirement": {"amount": "8000000", "purpose": "材料采购", "term": "12个月"},
+        "primary_status": "暂未形成正式主方案", "plans": [], "next_actions": [], "disclaimer": DISCLAIMER,
+    })
+    from backend.services.financing_plan_report_service import render_financing_plan_pdf
+    await render_financing_plan_pdf(html)
+    assert captured["html"] == html
 
 
 def test_report_without_primary_plan(factory):
